@@ -15,11 +15,14 @@ Install:  sudo install -m 755 sycl/tools/gpustat.py /usr/local/sbin/
 Env: GPUSTAT_INTERVAL (s), GPUSTAT_POWER_WINDOW (s), GPUSTAT_PCI (the card, e.g. 0000:03:00.0; default the first
 Intel GPU on xe), GPUSTAT_VRAM_MB (the total; default the card's largest PCI BAR, which maps all of VRAM with
 resizable BAR - a little above what the runtime reports as usable).
+GPUSTAT_FDINFO_ONLY=1: publish only load/VRAM from this card's process fdinfo; no hwmon, PCIe-link or frequency
+polling. Useful with idle unload: an empty client set needs no GPU reads. The default full sampler is unchanged.
 """
 import collections, glob, json, os, subprocess, time
 
 OUT = "/run/gpustat.json"
 INTERVAL = float(os.environ.get("GPUSTAT_INTERVAL", "3"))   # each sample scans /proc/*/fd; keep it modest
+FDINFO_ONLY = os.environ.get("GPUSTAT_FDINFO_ONLY") == "1"
 NAMES = {"e223": "Intel(R) Arc(TM) Pro B70 Graphics"}
 
 
@@ -100,7 +103,7 @@ def hw_temps(h):
         if name and v: t[name] = int(v) / 1000
     return t
 
-def clients():
+def clients(pci=None):
     """{client_id: {pid, comm, vram_kb, cycles, total_cycles}} across all processes."""
     res = {}
     for pdir in glob.glob("/proc/[0-9]*"):
@@ -115,6 +118,8 @@ def clients():
                 info = dict(l.split(":\t", 1) for l in open(f"{pdir}/fdinfo/{fd}").read().splitlines() if l.startswith("drm-"))
             except Exception:
                 continue
+            if pci is not None and info.get("drm-pdev") != pci:
+                continue
             cid = info.get("drm-client-id")
             if not cid or cid in res:
                 continue
@@ -125,7 +130,32 @@ def clients():
                         "cg": rd(f"{pdir}/cgroup", ""), "vram_kb": kb("drm-resident-vram0"), "cycles": cyc, "total": tot}
     return res
 
+def fdinfo_sample(previous, current, now):
+    ratios = []
+    for cid, c in current.items():
+        p = previous.get(cid)
+        if p and c["total"] > p["total"] and c["cycles"] >= p["cycles"]:
+            ratios.append(100 * (c["cycles"] - p["cycles"]) / (c["total"] - p["total"]))
+    return {
+        "pci": PCI, "ts": now,
+        "busy_pct": round(min(100, sum(ratios)), 1) if ratios or not current else None,
+        "vram_used_mb": sum(c["vram_kb"] for c in current.values()) // 1024,
+        "vram_total_mb": TOTAL_MB,
+    }
+
+
 def main():
+    if FDINFO_ONLY:
+        previous = {}
+        while True:
+            current = clients(PCI)
+            out = fdinfo_sample(previous, current, time.time())
+            tmp = OUT + ".tmp"
+            with open(tmp, "w") as f: json.dump(out, f)
+            os.chmod(tmp, 0o644); os.replace(tmp, OUT)
+            previous = current
+            time.sleep(INTERVAL)
+    # The existing full hardware sampler remains the default.
     h = hwmon_dir()
     dev_id = (rd(f"/sys/bus/pci/devices/{PCI}/device", "0x0") or "0x0")[2:]
     name = card_name(dev_id)
