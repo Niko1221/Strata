@@ -1,0 +1,455 @@
+{
+  "machine": {
+    "gpu": [
+      "NVIDIA GeForce RTX 3090",
+      "NVIDIA GeForce RTX 3060"
+    ],
+    "gpu_vram_mib": 36864,
+    "gpu_driver": "580.178.04",
+    "cuda": "13.0",
+    "cpu": "AMD Ryzen 7 7700X 8-Core Processor",
+    "cpu_cores": 8,
+    "cpu_threads": 16,
+    "ram_gib": 122.6,
+    "os": "Linux 7.0.0-31-generic",
+    "python": "3.14.4",
+    "strata_version": "0.1.43",
+    "strata_commit": "7695859a",
+    "engine_version": "0.1.43",
+    "model": "qwen3.8-flash-next-iq2_xs",
+    "quant": "IQ2_XS",
+    "context": 262144,
+    "parallel_slots": 1,
+    "config": {
+      "exe": "strata",
+      "args": [
+        "--pack",
+        "iq2_xs",
+        "--native",
+        "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+        "--ple-gguf",
+        "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+        "--expert-profile",
+        "expert-profile.bin",
+        "--expert-cache",
+        "auto",
+        "--prefill",
+        "auto",
+        "--spec",
+        "4",
+        "--spec-min-p",
+        "0.5",
+        "--mtp",
+        "rt",
+        "--max-context",
+        "262144",
+        "--kv",
+        "int8",
+        "--kv-resident",
+        "32768",
+        "--vision",
+        "--vram-reserve-mib",
+        "700"
+      ],
+      "model_name": "qwen3.8-flash-next-iq2_xs",
+      "lib_dirs": [
+        "/usr/bin",
+        "/usr/lib64"
+      ],
+      "port": 8092,
+      "api_monitor": false,
+      "gpu": "0,1",
+      "gpus_asked": true,
+      "draft_vocab": "cyrillic",
+      "vision": {
+        "exe": "strata/engine/strata-vision",
+        "mmproj": "models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+        "model": "models/IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+        "gpu": true,
+        "max_tokens": 1024
+      }
+    },
+    "launch": "strata --pack iq2_xs --native Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700",
+    "engine_info": {
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "max_context": 262144,
+      "images": true,
+      "version": "0.1.43",
+      "logit_bias": 1,
+      "context": 262144,
+      "kv": "int8",
+      "kv_resident": 32768,
+      "expert_slots": 14294,
+      "expert_cache_mib": 19617,
+      "expert_slots_primary": 1536,
+      "expert_cache_primary_mib": 2112,
+      "spec": 6,
+      "mtp_max": 4,
+      "lookup": 3,
+      "vram_free_mib": 3111,
+      "cvec": 0,
+      "arena_mib": 33812,
+      "pool_workers": 7,
+      "pcie_frac": "0.09",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": 0,
+      "conversation_cache_slots": 4,
+      "conversation_cache_min_free_mib": 2560,
+      "conversation_cache_min_tokens": 0,
+      "tail_role_token": -1,
+      "vram_elastic": 0,
+      "engine": "0.1.43"
+    },
+    "vram_after": {
+      "elastic": false
+    }
+  },
+  "max_new": 256,
+  "results": {
+    "131072": {
+      "target_tokens": 130800,
+      "requests": [
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 67.109,
+          "total_s": 68.721,
+          "prompt_tokens": 127710,
+          "reused_tokens": 0,
+          "read_tokens": 127710,
+          "generated_tokens": 147,
+          "prompt_tps": 1904.9,
+          "prompt_tps_source": "engine",
+          "decode_tps": 90.5,
+          "decode_tps_source": "engine",
+          "prompt_ms": 67042.4,
+          "decode_ms": 1625.0,
+          "drafts_offered": 123,
+          "drafts_accepted": 77,
+          "run": 0
+        },
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 67.311,
+          "total_s": 68.527,
+          "prompt_tokens": 127710,
+          "reused_tokens": 0,
+          "read_tokens": 127710,
+          "generated_tokens": 125,
+          "prompt_tps": 1899.1,
+          "prompt_tps_source": "engine",
+          "decode_tps": 101.7,
+          "decode_tps_source": "engine",
+          "prompt_ms": 67246.8,
+          "decode_ms": 1228.8,
+          "drafts_offered": 95,
+          "drafts_accepted": 68,
+          "run": 1
+        }
+      ],
+      "prompt_tps": {
+        "median": 1902.0,
+        "min": 1899.1,
+        "max": 1904.9,
+        "n": 2
+      },
+      "ttft_s": {
+        "median": 67.21,
+        "min": 67.109,
+        "max": 67.311,
+        "n": 2
+      },
+      "decode_tps": {
+        "median": 96.1,
+        "min": 90.5,
+        "max": 101.7,
+        "n": 2
+      },
+      "reused_tokens": {
+        "median": 0.0,
+        "min": 0,
+        "max": 0,
+        "n": 2
+      }
+    },
+    "170000": {
+      "target_tokens": 169728,
+      "requests": [
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 89.541,
+          "total_s": 90.943,
+          "prompt_tokens": 165608,
+          "reused_tokens": 0,
+          "read_tokens": 165608,
+          "generated_tokens": 132,
+          "prompt_tps": 1851.1,
+          "prompt_tps_source": "engine",
+          "decode_tps": 93.3,
+          "decode_tps_source": "engine",
+          "prompt_ms": 89464.3,
+          "decode_ms": 1414.7,
+          "drafts_offered": 111,
+          "drafts_accepted": 67,
+          "run": 0
+        },
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 89.708,
+          "total_s": 91.419,
+          "prompt_tokens": 165608,
+          "reused_tokens": 0,
+          "read_tokens": 165608,
+          "generated_tokens": 169,
+          "prompt_tps": 1847.6,
+          "prompt_tps_source": "engine",
+          "decode_tps": 98.0,
+          "decode_tps_source": "engine",
+          "prompt_ms": 89631.9,
+          "decode_ms": 1723.7,
+          "drafts_offered": 135,
+          "drafts_accepted": 91,
+          "run": 1
+        }
+      ],
+      "prompt_tps": {
+        "median": 1849.35,
+        "min": 1847.6,
+        "max": 1851.1,
+        "n": 2
+      },
+      "ttft_s": {
+        "median": 89.624,
+        "min": 89.541,
+        "max": 89.708,
+        "n": 2
+      },
+      "decode_tps": {
+        "median": 95.65,
+        "min": 93.3,
+        "max": 98.0,
+        "n": 2
+      },
+      "reused_tokens": {
+        "median": 0.0,
+        "min": 0,
+        "max": 0,
+        "n": 2
+      }
+    },
+    "200000": {
+      "target_tokens": 199728,
+      "requests": [
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 107.616,
+          "total_s": 108.968,
+          "prompt_tokens": 194825,
+          "reused_tokens": 0,
+          "read_tokens": 194825,
+          "generated_tokens": 130,
+          "prompt_tps": 1811.9,
+          "prompt_tps_source": "engine",
+          "decode_tps": 95.2,
+          "decode_tps_source": "engine",
+          "prompt_ms": 107526.4,
+          "decode_ms": 1365.2,
+          "drafts_offered": 89,
+          "drafts_accepted": 65,
+          "run": 0
+        },
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 107.809,
+          "total_s": 109.146,
+          "prompt_tokens": 194825,
+          "reused_tokens": 0,
+          "read_tokens": 194825,
+          "generated_tokens": 128,
+          "prompt_tps": 1808.6,
+          "prompt_tps_source": "engine",
+          "decode_tps": 94.7,
+          "decode_tps_source": "engine",
+          "prompt_ms": 107720.3,
+          "decode_ms": 1351.0,
+          "drafts_offered": 101,
+          "drafts_accepted": 67,
+          "run": 1
+        }
+      ],
+      "prompt_tps": {
+        "median": 1810.25,
+        "min": 1808.6,
+        "max": 1811.9,
+        "n": 2
+      },
+      "ttft_s": {
+        "median": 107.713,
+        "min": 107.616,
+        "max": 107.809,
+        "n": 2
+      },
+      "decode_tps": {
+        "median": 94.95,
+        "min": 94.7,
+        "max": 95.2,
+        "n": 2
+      },
+      "reused_tokens": {
+        "median": 0.0,
+        "min": 0,
+        "max": 0,
+        "n": 2
+      }
+    },
+    "230000": {
+      "target_tokens": 229728,
+      "requests": [
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 126.15,
+          "total_s": 127.954,
+          "prompt_tokens": 224047,
+          "reused_tokens": 0,
+          "read_tokens": 224047,
+          "generated_tokens": 162,
+          "prompt_tps": 1777.5,
+          "prompt_tps_source": "engine",
+          "decode_tps": 89.1,
+          "decode_tps_source": "engine",
+          "prompt_ms": 126049.6,
+          "decode_ms": 1817.9,
+          "drafts_offered": 133,
+          "drafts_accepted": 80,
+          "run": 0
+        },
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 126.143,
+          "total_s": 127.353,
+          "prompt_tokens": 224047,
+          "reused_tokens": 0,
+          "read_tokens": 224047,
+          "generated_tokens": 121,
+          "prompt_tps": 1777.6,
+          "prompt_tps_source": "engine",
+          "decode_tps": 98.8,
+          "decode_tps_source": "engine",
+          "prompt_ms": 126041.0,
+          "decode_ms": 1224.9,
+          "drafts_offered": 88,
+          "drafts_accepted": 66,
+          "run": 1
+        }
+      ],
+      "prompt_tps": {
+        "median": 1777.55,
+        "min": 1777.5,
+        "max": 1777.6,
+        "n": 2
+      },
+      "ttft_s": {
+        "median": 126.147,
+        "min": 126.143,
+        "max": 126.15,
+        "n": 2
+      },
+      "decode_tps": {
+        "median": 93.95,
+        "min": 89.1,
+        "max": 98.8,
+        "n": 2
+      },
+      "reused_tokens": {
+        "median": 0.0,
+        "min": 0,
+        "max": 0,
+        "n": 2
+      }
+    },
+    "262144": {
+      "target_tokens": 261872,
+      "requests": [
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 146.356,
+          "total_s": 147.835,
+          "prompt_tokens": 255433,
+          "reused_tokens": 0,
+          "read_tokens": 255433,
+          "generated_tokens": 131,
+          "prompt_tps": 1746.6,
+          "prompt_tps_source": "engine",
+          "decode_tps": 87.7,
+          "decode_tps_source": "engine",
+          "prompt_ms": 146243.5,
+          "decode_ms": 1493.7,
+          "drafts_offered": 108,
+          "drafts_accepted": 65,
+          "run": 0
+        },
+        {
+          "ok": true,
+          "err": null,
+          "ttft_s": 146.511,
+          "total_s": 148.018,
+          "prompt_tokens": 255433,
+          "reused_tokens": 0,
+          "read_tokens": 255433,
+          "generated_tokens": 137,
+          "prompt_tps": 1744.8,
+          "prompt_tps_source": "engine",
+          "decode_tps": 90.1,
+          "decode_tps_source": "engine",
+          "prompt_ms": 146397.6,
+          "decode_ms": 1520.7,
+          "drafts_offered": 111,
+          "drafts_accepted": 70,
+          "run": 1
+        }
+      ],
+      "prompt_tps": {
+        "median": 1745.7,
+        "min": 1744.8,
+        "max": 1746.6,
+        "n": 2
+      },
+      "ttft_s": {
+        "median": 146.433,
+        "min": 146.356,
+        "max": 146.511,
+        "n": 2
+      },
+      "decode_tps": {
+        "median": 88.9,
+        "min": 87.7,
+        "max": 90.1,
+        "n": 2
+      },
+      "reused_tokens": {
+        "median": 0.0,
+        "min": 0,
+        "max": 0,
+        "n": 2
+      }
+    }
+  },
+  "engine_log": [
+    "[strata] layer split: card order 1,0 (the faster card last; \"gpu_order\": \"as_given\" keeps 0,1, #1352)",
+    "[strata] layer split: card order 1,0 (the faster card last; \"gpu_order\": \"as_given\" keeps 0,1, #1352)",
+    "[strata] layer split across GPUs [0, 1] (auto)",
+    "[strata] loading the experts into RAM (about 39 GB) and locking part of them for the GPU.",
+    "         Please wait and don't close this window; the browser opens when it is ready.",
+    "[strata] filling the GPU's expert cache (1536 experts, 2.06 GiB of VRAM) ...",
+    "[strata] almost ready ...",
+    "ready: http://127.0.0.1:8092/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on, API key required)"
+  ]
+}

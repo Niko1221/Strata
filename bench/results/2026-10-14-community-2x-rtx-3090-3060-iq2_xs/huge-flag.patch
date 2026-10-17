@@ -1,0 +1,66 @@
+diff --git a/tools/strata_bench.py b/tools/strata_bench.py
+index c960276..517883f 100644
+--- a/tools/strata_bench.py
++++ b/tools/strata_bench.py
+@@ -222,9 +222,9 @@ def pctl(values, p):
+ 
+ # ---------------------------------------------------------------------------------------------------- the suite
+ class Suite:
+-    def __init__(self, base, key, ctx, runs, think, log=print, want_clients=0, want_long=False, quick=False):
++    def __init__(self, base, key, ctx, runs, think, log=print, want_clients=0, want_long=False, want_huge=False, quick=False):
+         self.base, self.key, self.ctx, self.runs, self.think, self.log = base, key, ctx, runs, think, log
+-        self.clients, self.want_long = want_clients, want_long
++        self.clients, self.want_long, self.want_huge = want_clients, want_long, want_huge
+         self.quick = quick
+         self.nonce = str(int(time.time()))
+         self.tokens_per_word, self.overhead = 1.1, 40
+@@ -408,6 +408,8 @@ class Suite:
+             self.run_clients(self.clients)
+         if self.want_long:
+             self.run_prompt(32768, "32K")
++        if self.want_huge:
++            self.run_prompt(65536, "64K")
+         return self.out
+ 
+ 
+@@ -750,7 +752,8 @@ def render_readme(res: dict) -> str:
+           f"timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation "
+           f"cache cannot help the fresh-prompt tests.", "",
+           f"- short chat: the three questions of `tools/ab_engine.py`, up to {CHAT_MAX_TOKENS} new tokens, {p['runs']} runs",
+-          f"- 4K / 16K{' / 32K' if 'prompt' in res['results'] and '32K' in res['results']['prompts'] else ''} prompts: generated word lists sized by a calibration request, "
++          f"- 4K / 16K{' / 32K' if 'prompt' in res['results'] and '32K' in res['results']['prompts'] else ''}"
++          f"{' / 64K' if 'prompt' in res['results'] and '64K' in res['results']['prompts'] else ''} prompts: generated word lists sized by a calibration request, "
+           f"{LONG_MAX_TOKENS} new tokens, {p['runs']} fresh prompts each",
+           f"- agent session: system prompt and four tools, then {AGENT_TURNS} turns that each add about {AGENT_WORDS} words of a project file "
+           f"and continue from the model's own earlier answers (the way agent clients resend a conversation), {AGENT_MAX_TOKENS} new tokens per turn, "
+@@ -840,6 +843,7 @@ def main(argv=None) -> int:
+     ap.add_argument("--runs", type=int, default=3, help="runs per test (default 3)")
+     ap.add_argument("--clients", type=int, default=0, metavar="N", help="also send N requests at once")
+     ap.add_argument("--long", action="store_true", help="also a prompt of about 32,768 tokens")
++    ap.add_argument("--huge", action="store_true", help="also a prompt of about 65,536 tokens")
+     ap.add_argument("--think", action="store_true", help="leave thinking on (the default suite turns it off)")
+     ap.add_argument("--out", help="where to write the results folder (default: bench/results)")
+     ap.add_argument("--compare", metavar="DIR", help="a results folder (or its results.json) to put beside this run")
+@@ -900,7 +904,8 @@ def main(argv=None) -> int:
+                 return 1
+         t0 = time.time()
+         pre = collect_machine(base, key, cfg)
+-        suite = Suite(base, key, pre.get("context"), max(1, a.runs), a.think, log=say, want_clients=a.clients, want_long=a.long)
++        suite = Suite(base, key, pre.get("context"), max(1, a.runs), a.think, log=say, want_clients=a.clients, want_long=a.long,
++                      want_huge=a.huge)
+         slots = pre.get("parallel_slots") or 1
+         if a.clients and a.clients > slots:
+             say(f"Note: the server runs {slots} request(s) at a time (--batch), so {a.clients} clients will partly wait their turn.")
+@@ -910,9 +915,11 @@ def main(argv=None) -> int:
+         if not machine.get("gpu"):
+             machine["gpu"] = pre.get("gpu")
+         res = {"schema": SCHEMA, "tool": "tools/strata_bench.py", "date": datetime.date.today().isoformat(),
+-               "params": {"runs": suite.runs, "think": a.think, "clients": a.clients, "long": a.long, "started_server": started,
++               "params": {"runs": suite.runs, "think": a.think, "clients": a.clients, "long": a.long, "huge": a.huge,
++                          "started_server": started,
+                           "command": "python tools/strata_bench.py" + "".join(
+                               f" {x}" for x in (f"--clients {a.clients}" if a.clients else "", "--long" if a.long else "",
++                                                "--huge" if a.huge else "",
+                                                 "--think" if a.think else "", f"--runs {a.runs}" if a.runs != 3 else "") if x)},
+                "elapsed_s": time.time() - t0, "machine": machine, "results": out}
+         parent = Path(a.out) if a.out else ROOT / "bench" / "results"

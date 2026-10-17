@@ -1,0 +1,8 @@
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+[strata] layer split: card order 1,0 (the faster card last; "gpu_order": "as_given" keeps 0,1, #1352)
+[strata] layer split across GPUs [0, 1] (auto)
+[strata] loading the experts into RAM (about 39 GB) and locking part of them for the GPU.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (1536 experts, 2.06 GiB of VRAM) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:8092/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on, API key required)
