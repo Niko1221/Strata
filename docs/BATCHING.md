@@ -185,7 +185,8 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
-- Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
+- Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`) - with
+  `STRATA_SLOT_CACHE_AFFINITY=1`, by the conversations they hold (below).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
 ## Reading a prompt beside pipelined groups (experimental, opt-in)
@@ -351,6 +352,82 @@ joiners' longest stop 12.2 s on both) and gave the same SHA-256 for six greedy a
 one cold 64K prompt joining four streams: `STRATA_BATCH_DECODE_SHARE=2.0` 2.4 s longest stop and 37.2 s TTFT, `=0` 14.0
 s and 13.8 s. Pieces of one chunk (`PIECE=8192`) cost the long prompt the most. Not measured: other GPU pairs, three or
 more stages, HIP and SYCL (built for CUDA only), sampled decoding, prompts with pictures.
+
+## Keeping conversations in pipelined slots (opt-in)
+
+With a layer split, `--batch` runs the slots in pipeline groups (`--batch-groups`). A group's batch window spans its
+slots up to its last active one, and an idle slot below an active one runs as a pad row that writes its state. So in
+a pipelined group a finished slot is not a reliable conversation cache, and the server places requests by the groups
+alone. Agent clients (Claude Code, Codex) send long conversations - tens of thousands of tokens - in many short turns,
+with short side requests in between, and whatever is lost between two turns is read again.
+
+What that cost on one machine: the engine log of 3 x RTX A4000 16 GB (layer split, `--batch` 3-6 in 3 groups,
+Qwen3.8-Flash-Next IQ3_S, 200K context), two people working with Claude Code and Codex, 2026-10-09 to 2026-10-14.
+Of 3,027 prompts of 8K tokens or more, 538 reused less than half of their previous turn, and 40.7M prompt tokens
+were read again. By prompt lengths (the log has no content, so this is a heuristic):
+
+| Why the previous turn was gone | Prompts | Tokens read again |
+| --- | ---: | ---: |
+| it was in a batch slot that another conversation took | 170 | 16.4M |
+| it ran on the solo path, and the next request (often a short side request) replaced the main session | 244 | 15.0M |
+| the client changed the history (not addressed here) | 63 | 6.1M |
+| no earlier turn (a first turn, or a restart) | 66 | 3.1M |
+
+At this machine's ~2,900 tok/s for long prompts, the first two rows are about three hours of prompt reading in six
+days. What follows addresses them: the engine keeps idle slots and parks the solo path's conversation, the server
+places requests by what the slots hold, and a placement policy (`serve/slot_policy.py`) decides which history to give
+up. Each part is opt-in.
+
+### Engine: only the active slots in a window (`STRATA_PIPELINE_ACTIVE_ROWS=1`)
+
+With `STRATA_PIPELINE_ACTIVE_ROWS=1` (a layer split with `--batch` and more than one group), a group's window lists
+only its active slots (`include/strata/program/pipeline_rows.hpp`, `Verifier::batch_launch_rows`): there is no pad
+row, an idle slot keeps its conversation, and `INFO` says `slot_padding_safe=1`. After restoring a prompt's prefix the
+engine says where it came from: `CACHE_SOURCE <slot> <tokens>` (-1: the main session, a checkpoint or the
+conversation cache).
+
+Measured on the machine above (the same binary with the variable off / on, `tools/serve_load.py`, 6 clients x 2048
+tokens at temperature 0, one run each): 177.4 / 173.5 tok/s in total (-2.2%), first token p50 2.4 / 3.7 s; one client
+67.3 / 66.7 tok/s. With all six slots busy the windows hold the same rows either way; runs of this configuration with
+other builds measured 173.9-178.2 tok/s, so this is close to the spread between runs, but it was not repeated.
+
+### Engine: keep the solo path's conversation (`park=B`)
+
+A request alone runs on the solo path, whose state is the engine's main session, not a slot. When the next request is
+another conversation - an agent's short side request between two turns of a long one - the main session is
+overwritten. With `STRATA_PIPELINE_ACTIVE_ROWS=1` the engine takes `park=B` on `GEN` / `BGEN` (`INFO slot_park=1`):
+when the prompt is another conversation (it does not share what the main session holds up to its last turn - the
+last `<|im_start|>`, where its latest reply begins), it first copies the main session's conversation (and its last
+checkpoint) into idle slot B - never the slot it restores from or is admitted to - and says
+`PARKED B <tokens>`. Copying 36-37K tokens took 414-451 ms (five runs, the machine above).
+
+### Server: placement by what the slots hold (`STRATA_SLOT_CACHE_AFFINITY=1`)
+
+With `"env": {"STRATA_SLOT_CACHE_AFFINITY": "1"}` in the server config and pipelined groups, `pick_slot` asks the
+placement policy in `serve/slot_policy.py` instead of placing by the groups alone. The server side is the same for any
+policy:
+
+- The policy gets each slot's state: busy, the tokens it holds, when it was last used (counted from the request's real
+  end, `BDONE`), whether its state is intact, the spreading order, the group size, the observed prompt rate and
+  whether the engine runs active slots only (`slot_padding_safe=1`). Without that engine capability the server tracks
+  from the `BADM` / `BT` / `BDONE` lines which idle slot a later window of its group has padded over, and marks it.
+- With `INFO slot_park=1` the server tracks what the main session holds; when a request is another conversation (as
+  the engine decides it, with `INFO turn_token`), it asks the policy for a slot and sends `park=B`; `PARKED` updates that slot's state. A claim
+  the engine did not use is released.
+
+The policy's interface is `place`, `park_destination`, `cache_state`, `superseded_slots`, `reliable_flags`,
+`configure` / `settings` (their docstrings say what they
+answer). This part ships them as an interface without a policy: with `STRATA_SLOT_CACHE_AFFINITY=1` (or
+`STRATA_CACHE_TRACE=1`) and no policy they raise `NotImplementedError`; with both off nothing changes.
+
+`/metrics` shows what happened: `live.cache_events` (the last 96: allocation, admission with the tokens reused and
+read, resume and cache source, park claims and `parked`, expiries), each request's key, client
+address, slot and cache source in `requests[]`, `live.peer_ip` and `live.solo_*` (the request on the solo path and
+where its cache came from), and for slots the client of the conversation each one holds; with
+`STRATA_SLOT_CACHE_AFFINITY=1` also each idle slot's protection and scores and `live.slot_policy`; with
+`STRATA_CACHE_TRACE=1` each request's snapshot of how long a start every slot shared with its prompt (lengths only,
+`serve/cache_trace.py`). The client address is the socket's (behind a reverse proxy, the proxy's); `X-Forwarded-For`
+and request fields are not used. No prompt text or token ids are recorded.
 
 ## The VRAM expert tier keeps adapting in batch windows
 
@@ -559,6 +636,10 @@ On top of `GEN` / `GENI`:
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
+| `INFO ... slot_padding_safe=1` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`: a pipelined group's window runs its active slots only; an idle slot keeps its conversation; with it `slot_park=1` and `turn_token=<id>` (the token a turn begins with) |
+| `CACHE_SOURCE <slot> <tokens>` | out | `STRATA_PIPELINE_ACTIVE_ROWS=1`, after a prompt's restore: the idle slot its reused prefix came from (-1: the main session, a checkpoint or the conversation cache) and how long it is |
+| `park=B` (a key of `GEN` / `BGEN`) | in | with `INFO slot_park=1`: before a different conversation replaces the main session's, copy that one into idle slot B |
+| `PARKED <slot> <tokens>` | out | `park=` copied that many tokens into the slot (0: the copy failed, the slot holds nothing usable) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
