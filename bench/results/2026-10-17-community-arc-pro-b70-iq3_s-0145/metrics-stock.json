@@ -1,0 +1,21 @@
+{
+ "arena_mib": 47962,
+ "context": 32768,
+ "conversation_cache_slots": 4,
+ "cvec": "project:4-44",
+ "engine": "0.1.45",
+ "expert_cache_mib": 26416,
+ "expert_slots": 13536,
+ "images": false,
+ "kv": "int8",
+ "max_context": 32768,
+ "model": "qwen3.8-flash-next-iq3_s",
+ "mtp_max": 4,
+ "note": "snapshot taken 2026-10-17 after the benchmark runs (port 8080); vram_free_mib drifts with other VRAM users; host-side GPU detection names the display card (Arc B580), the serving card is the Arc Pro B70 (see engine log)",
+ "pcie_frac": "0.34",
+ "pool_workers": 7,
+ "spec": 6,
+ "spec_min_p": "0.50",
+ "version": "0.1.45",
+ "vram_free_mib": 211
+}

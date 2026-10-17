@@ -1,0 +1,7 @@
+condition,runs,prompt_tokens,reused_tokens,generated_tokens,prompt_tps,decode_tps,draft_accepted,draft_total,note
+decode-story,1,48,0,1400,56.6,27.8,617,1263,finish=length
+decode-explan,1,47,0,1299,68.8,38.0,621,1208,finish=stop
+prompt-4k,1,4021,0,5,421.3,,,first-word reply only
+prompt-20k,1,19880,0,4,1004.5,,,first-word reply only
+esp-on,1,58,0,500,,,148,355,finish=length scene written to the cap
+esp-off,1,58,0,500,,,125,294,finish=length no refusal this run
