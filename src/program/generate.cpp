@@ -13504,6 +13504,10 @@ int main(int argc, char** argv) {
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
             int64_t dp_tested[8] = {}, dp_ok[8] = {};   // STRATA_SPEC_DEPTH=1: MTP drafts tested / accepted by depth
+            // STRATA_MTP_ADAPTIVE=1: the MTP window's own size from DraftPolicy's learned expected-commits-per-ms
+            // (choose_mtp).  The output is whatever the window verifies, so the size changes speed only; without
+            // the flag the drafter's windows are used unchanged.
+            static const bool mtp_adapt = std::getenv("STRATA_MTP_ADAPTIVE") != nullptr;
             std::vector<int32_t> cbuf((size_t) S, 0), ctail;
             strata::spec::PromptLookupSource lookup_src(sfx);
             static const bool chain_fixed = std::getenv("STRATA_LOOKUP_CHAIN_FIXED") != nullptr;   // no policy gate
@@ -14215,6 +14219,8 @@ int main(int argc, char** argv) {
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
                 }
+                // STRATA_MTP_ADAPTIVE=1: the MTP window's own size from the policy's learned expected-commits-per-ms
+                if (mtp_adapt && use_mtp && !from_sfx && !first_window) T = std::min(T, policy.choose_mtp(T));
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
                 if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
@@ -15581,6 +15587,9 @@ int main(int argc, char** argv) {
             // full window can overrun)
             const int room = (int) std::min<int64_t>(o.spec, o.max_context - p);
             T = std::min(T, room);
+            // STRATA_MTP_ADAPTIVE=1: the MTP window's own size from the policy's learned expected-commits-per-ms
+            if (std::getenv("STRATA_MTP_ADAPTIVE") != nullptr && use_mtp && !from_sfx && !first_window)
+                T = std::min(T, policy.choose_mtp(T));
             // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
             int chain_n = 0, cm = 0;
             if (o.lookup_chain > 0 && use_mtp && !first_window && !from_sfx && T < room) {

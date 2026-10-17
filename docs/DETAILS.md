@@ -1389,6 +1389,17 @@ without penalties, so more of its guesses are now rejected. Requests without pen
 
 **Sampled drafting (opt-in, 0.1.40.2).** With temperature above 0 the engine keeps a draft only when it equals the token the model sampled for that position, and the draft layer proposes its best guess. Two opt-in switches change how the draft layer drafts a sampled request; greedy requests (temperature 0) are never touched and stay byte-identical. `STRATA_SPEC_COUPLED=1` (or `--coupled-draft`) drafts by sampling with the request's own settings and the random number the checking row will use; the text for a seed does not change. `STRATA_SPEC_PROB=1` is speculative rejection sampling: the draft layer samples its guess from its own distribution q, the check accepts it with probability min(1, p/q) (p is the model's distribution after penalties, top_k, top_p, min_p and temperature) and otherwise samples the replacement from the leftover distribution, so every token is distributed exactly as without drafts (the text for a seed then depends on the drafts, so it is reproducible only for the same engine, flags and prompt). Guesses without a distribution (prompt lookup, suffix drafts) keep the exact-match rule, which is already exact. Neither is faster in a way that holds up: on an RTX 3060 (IQ3_XXS, 200-token story and code answers, 10 interleaved pairs) the default's median output speed was 42.4 / 43.2 / 43.3 tok/s at temperature 0.3 / 0.7 / 1.0, coupled drafting 40.6 / 42.4 / 43.3 and rejection sampling 41.0 / 42.6 / 42.6, with run-to-run differences of up to 5% between repeats; drafts kept per round fell at 0.3 and rose by about 5 points at 1.0, which the cost of the longer sampled windows ate. `STRATA_SPEC_DEPTH=1` prints the acceptance by draft depth for each request; `STRATA_SPEC_MIN_TEMP=0.9` limits sampled drafting to hotter requests. Proof that the rejection rule keeps the distribution: `spec_prob_test` (chi-square, 2 million trials per case) and `spec_verify_parity` (GPU against the host reference).
 
+**The MTP window's own size (opt-in, `STRATA_MTP_ADAPTIVE=1`).** The draft policy (the thing that picks a lookup
+window over the MTP's when its measured expected-commits-per-ms is better) also measures every window size it sees
+- the round's time and how many tokens that size committed. With the flag it picks the MTP window's size by the
+same rule: among the sizes up to the drafter's own, the best expected-commits-per-ms, taking a smaller one only
+when it beats the full window by the policy's margin (3%). Every size is measured first - the full window first
+(3 rounds each, then the smaller ones largest-first), so a guessed cost cannot price a size out for good; a size
+that has gone stale is re-measured the same way. Verification keeps the output whatever the window is - the
+window only decides how many drafts one round checks - so greedy text is unchanged and a seeded request's draws
+stay tied to their positions. Without the flag nothing asks the policy and every window is the drafter's own.
+The policy's expectations are pinned by `src/spec/draft_policy_test.cpp`.
+
 ---
 
 ### The Responses API and Codex CLI

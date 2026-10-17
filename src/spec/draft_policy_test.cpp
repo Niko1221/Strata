@@ -114,6 +114,40 @@ int main() {
               "chain: stale full size is re-probed despite a profitable shorter chain");
         check(probes > 0 && confident, "chain: stale re-probes retain the MTP confidence gate");
     }
+    {
+        // STRATA_MTP_ADAPTIVE's choose_mtp: every size is measured before a guess can price one out - the full
+        // window first (it is the incumbent), then the smaller ones - and then the best expected-commits-per-ms
+        // size wins, but only against the full window by `margin`
+        DraftPolicy p(4);
+        check(p.choose_mtp(4) == 4, "MTP size: a fresh policy measures the full window first (4)");
+        for (int i = 0; i < 3; ++i) p.observe(false, 4, 1, 0, cost(4));
+        check(p.choose_mtp(4) == 3, "MTP size: then the largest unmeasured size (3)");
+        for (int i = 0; i < 3; ++i) p.observe(false, 3, 1, 0, cost(3));
+        check(p.choose_mtp(4) == 2, "MTP size: then the next one (2)");
+        for (int i = 0; i < 3; ++i) p.observe(false, 2, 1, 0, cost(2));
+        check(p.choose_mtp(4) == 1, "MTP size: then the last one (1)");
+        for (int i = 0; i < 3; ++i) p.observe(false, 1, 0, 0, cost(1));
+        // every size commits 2 tokens: the cheapest window (2) has the best rate and beats 4 by the margin
+        for (int i = 0; i < 30; ++i) {
+            p.observe(false, 4, 1, 0, cost(4));
+            p.observe(false, 3, 1, 0, cost(3));
+        }
+        check(p.choose_mtp(4) == 2, "MTP size: the best expected-commits-per-ms size wins (2 of 4)");
+    }
+    {
+        // a full window that pays keeps winning: nothing shrinks without a margin
+        DraftPolicy p(4);
+        for (int t = 1; t <= 4; ++t)
+            for (int i = 0; i < 6; ++i) p.observe(false, t, t - 1, 0, cost(t));   // every draft accepted
+        check(p.choose_mtp(4) == 4, "MTP size: a paying full window stays (4)");
+    }
+    {
+        // nothing but the target token is ever committed: the cheapest window wins
+        DraftPolicy p(6);
+        for (int t = 1; t <= 6; ++t)
+            for (int i = 0; i < 6; ++i) p.observe(false, t, 0, 0, cost(t));       // every draft rejected
+        check(p.choose_mtp(6) == 1, "MTP size: a window whose drafts never land shrinks to 1");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

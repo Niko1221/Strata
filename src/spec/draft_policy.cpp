@@ -57,6 +57,27 @@ double DraftPolicy::mtp_tokens(int t) const {
     return 1.0 + 0.7 * (t - 1);       // before any MTP window of this size: a typical acceptance
 }
 
+int DraftPolicy::choose_mtp(int t_mtp) const {
+    const int full = std::clamp(t_mtp, 1, max_t_);
+    if (full <= 1) return full;
+    // measure every size before a guess prices one out - the full window first (it is the incumbent and the one a
+    // guessed cost would lock out for good), then the smaller ones largest-first; a stale size gets the same
+    // treatment (only the round's speed is at stake: the output is whatever the window verifies)
+    if (mtp_n_[full] < kProbes || stale(full)) return full;
+    for (int t = full - 1; t >= 1; --t)
+        if (mtp_n_[t] < kProbes || stale(t)) return t;
+    int best = full;
+    double best_r = mtp_tokens(full) / cost_ms(full);
+    for (int t = 1; t < full; ++t) {
+        const double r = mtp_tokens(t) / cost_ms(t);
+        if (r > best_r * (1.0 + margin_)) {
+            best = t;
+            best_r = r;
+        }
+    }
+    return best;
+}
+
 DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const {
     Pick p;
     p.t = std::clamp(t_mtp, 1, max_t_);

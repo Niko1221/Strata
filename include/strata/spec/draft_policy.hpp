@@ -32,6 +32,13 @@ public:
     };
     /// `t_mtp`: the MTP's window; `lookup_k`: the lookup proposal's length (0 = none); `match`: its match length.
     Pick choose(int t_mtp, int lookup_k, int match) const;
+
+    /// STRATA_MTP_ADAPTIVE=1: the MTP window's own size, from the same learned expected-commits-per-ms - among
+    /// 1..t_mtp the size whose mean committed tokens per measured ms is best.  A smaller size is taken only when
+    /// it beats the full window's rate by `margin`; a size with fewer than a few measurements (or gone stale) is
+    /// tried first so a guessed cost cannot veto it forever.  Verification keeps the output whatever the window
+    /// is, so only the round's speed is at stake.  Callers ask only with the flag: without it nothing changes.
+    int choose_mtp(int t_mtp) const;
     /// After the round: the window it used, the drafts accepted, and the round's time (verify + commit + draft).
     void observe(bool lookup, int t, int accepted, int match, double round_ms);
 
