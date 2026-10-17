@@ -3,6 +3,9 @@
 **Status:** screening report, not a change. No engine code touched.
 **Scanned:** all 754 open pull requests on `Niko1221/Strata` on 2026-10-17 (search API), verified against
 `upstream/main` at `296b59d2`.
+**Corrected:** same day, after re-checking the tree directly: two PRs were wrongly listed as already in `main`,
+and #1358's merge state was wrong. See [Corrections to this scan](#corrections-to-this-scan). The scan's own
+numbers are unchanged.
 **Target host:** the PC in [Q36_MEMORY_COMPACTION.md](Q36_MEMORY_COMPACTION.md) - RTX 4060 Max-Q Laptop
 (8188 MiB), Ryzen 7 7735HS, 62 GB, Ubuntu, no swap, NVMe.
 **Model/path:** `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`, `--kv int8 --mtp 2`, 32K context, `--family qwen36`.
@@ -113,27 +116,175 @@ expert pool, so the main-engine routing and VRAM PRs above do not reach it.
    (#1581, #1117, #2399) compiles.
 3. **Then A/B in this order:** #1581 (prefill) -> #1838 (RAM tier) -> #1949 (free CPU win on the main
    engine) -> #1262 / #1989 (VRAM back to experts) -> the decode-kernel set.
-4. Most are **CONFLICTING** against current `main` (#1581, #1838, #1262, #1989, #1181, ...);
-   **#2775** and **#1358** are cleanly mergeable today.
+4. Most are **CONFLICTING** against current `main` (#1581, #1838, #1262, #1989, #1181, ...); **#1949**,
+   **#2751**, **#2515**, **#2660**, **#2698** and **#2775** are mergeable today. #1358 is not (corrected below);
+   it is 6 lines in one file, so it can be redone by hand.
 5. Follow `AGENTS.md`: one change at a time, against a same-day build, with the numbers recorded. The
    headline #1581 number bundles SM75 kernels this card cannot use.
+
+## Implementation plan
+
+Recorded 2026-10-17, for the 8 GB laptop in [Q36_MEMORY_COMPACTION.md](Q36_MEMORY_COMPACTION.md) on branch
+`docs/upstream-pr-scan-8gb`. Nothing here has been built or measured on this PC: every expected effect is the
+PR author's number on the PR author's hardware, and is marked as such. This plan revises
+[Practical order](#practical-order) in one way - the cheap, mergeable, bit-exact items go first, because they
+cost little if they turn out to be flat, and the biggest headline item (#1581) carries the most caveats.
+
+**Blocker found while writing this plan:** the host this plan was written on has no `nvcc` and no `nvidia-smi`
+in the shell, and no step can be built until that is settled. That is step 0.1.
+
+### The one command
+
+Every phase is measured with the same engine run and read off the same two numbers. It needs only the model
+and a built image - no other tool.
+
+```bash
+MODEL=/home/george/apps/llamacpp/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+
+# prompt-token speed (pp) over a 32K prompt, then token-generation speed (tg) for 32 tokens
+IMAGE=strata:pr-ph0 MODEL_FILE="$MODEL" \
+  docker/run.sh engine --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
+```
+
+It prints three lines like `bench 0: pp32768 1280.0 tok/s, tg32 13.6 tok/s`. The decode number is `tg`; `pp`
+is prefill and is the number #1581 moves. A shorter `--bench-pp` gives a quicker number; 32768 measures decode
+at the context this box runs. Without Docker the same run is
+`./build/strata --native "$MODEL" --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2`.
+
+The only things that change from phase to phase are the image tag and, for the opt-in PRs, one switch. The
+baseline is `strata:pr-ph0`; a phase's number is a win only if it beats that, read from the same command.
+
+### Phase 0 - prerequisites (no engine change)
+
+| Step | Do | Done when |
+|---|---|---|
+| 0.1 | Confirm the toolkit: `nvcc --version` | `nvcc` >= 12.5, or 12.0 for sm_89 from the distro `nvidia-cuda-toolkit`. Below that, #1358 first |
+| 0.2 | Build the branch and tag the image | `IMAGE_TAG=strata:pr-ph0 docker/build.sh` returns |
+| 0.3 | Merge [#2660](https://github.com/Niko1221/Strata/pull/2660) `strata_profile.py` and [#2515](https://github.com/Niko1221/Strata/pull/2515) setup pins | merged; neither changes a tok/s |
+| 0.4 | Record the baseline | run the one command and write the `tg` (and `pp`) down |
+
+Phase 0 has no expected speed-up; step 0.4 is the number every later phase is compared against. #2660 and
+#2515 are merged here without testing: #2660 only says where the time goes, and #2515 only makes the pack
+load.
+
+### Phase 1 - cheap, safe, unblocking (all mergeable today)
+
+| Step | PR | Why this box | Measure | Expected |
+|---|---|---|---|---|
+| 1.1 | [#2515](https://github.com/Niko1221/Strata/pull/2515) setup pins | this pack is UD-Q4_K_XL, and the PR fixes exactly the failure it produces: `blk.34.experts are Q4_K/Q6_K, which the native expert kernels do not take` | merge (done in Phase 0) | correctness: the pack must load |
+| 1.2 | [#1949](https://github.com/Niko1221/Strata/pull/1949) AVX2 accumulators | bit-exact bug fix, no flag, no default changed | merge; the q36 run is expected flat | 2.1x on the router and 190 -> 155 us Q5_1 (Zen 3, author's). Our q36 Q4_K/Q5_K pack is **not** covered |
+| 1.3 | [#2751](https://github.com/Niko1221/Strata/pull/2751) `STRATA_POOL_FUSED` | the only perf PR here that touches the shared CPU pool q36 uses | the one command, switch off then on | -8..-11% per layer (Ryzen 7 3800X, author's), compute-bound IQ rows. Our rows are RAM-bound, so expect less |
+
+#2751 is the only one of the three expected to move a q36 tok/s, so it is the only one that gets a run. The
+switch is opt-in, so both arms are the same image.
+
+```bash
+MODEL=/home/george/apps/llamacpp/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+
+# 1.3 (#2751): read tg with the switch off, then on
+IMAGE=strata:pr2751 MODEL_FILE="$MODEL" docker/run.sh engine \
+  --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
+env STRATA_POOL_FUSED=1 IMAGE=strata:pr2751 MODEL_FILE="$MODEL" docker/run.sh engine \
+  --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
+```
+
+- **1.1 / 1.2 PASS:** merged; no number required (1.2 is expected flat on the q36 run).
+- **1.3 PASS:** the `tg` with `STRATA_POOL_FUSED=1` is higher than without. A flat result is recorded, not
+  argued with - it would mean our Q4_K/Q5_K rows really are RAM-bound, which is the report's own read.
+
+### Phase 2 - VRAM and prefill (largest effect, most caveats)
+
+| Step | PR | Caveat that decides the outcome | Expected |
+|---|---|---|---|
+| 2.1 | [#1581](https://github.com/Niko1221/Strata/pull/1581) prefill VRAM loan | CONFLICTING and opt-in; needs 0.1. The PR's headline bundles SM75-only kernels this sm_89 card cannot use, and the loan itself has no isolated measurement. Watch for the TG regression the PR saw | PP 422.5 -> 865.2 t/s (2080 Super Max-Q 8 GB, author's) is an **upper bound**, not an expectation. TG -7.4% (INT8) |
+| 2.2 | [#2775](https://github.com/Niko1221/Strata/pull/2775) per-client expert memory | Mergeable, opt-in. Only pays off when more than one program shares the server | +21% tok/s agent step after a program switch (RTX 5070 Ti, author's); +11% already-adapted |
+
+2.1 is the one prefill number. This report records no switch name for #1581, so read it from the PR before
+running; the same build runs both arms (switch off, then on). 2.2 is server behaviour and is flat in the
+bench run, so it is merged without a tok/s to read.
+
+```bash
+MODEL=/home/george/apps/llamacpp/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+LOAN_ENV=${LOAN_ENV:?set this to the switch the PR documents}
+
+# 2.1 (#1581): read pp (prefill), not tg; watch tg for the -7.4% the PR saw
+IMAGE=strata:pr1581 MODEL_FILE="$MODEL" docker/run.sh engine \
+  --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
+env "$LOAN_ENV=1" IMAGE=strata:pr1581 MODEL_FILE="$MODEL" docker/run.sh engine \
+  --bench-pp 32768 --bench-tg 32 --kv int8 --mtp 2
+```
+
+- **2.1 PASS:** the `pp` with the switch on is higher than with it off, and `tg` did not fall by more than the
+  PR's own -7.4%. Quote 422.5 -> 865.2 only as the author's number on a 2080 Super Max-Q.
+- **2.2:** merged; no bench number (a single-program run cannot show it, and this box's bench is one).
+
+### Phase 3 - only if we run the Flash-Next main engine
+
+The q36 driver has its own router, K/V and expert pool, so none of these reach it. On a 62 GB box the main
+engine streams its 71.7 GiB of experts, which is where they apply. One at a time, in this order: #1838
+(`STRATA_RAM_ADAPT`), then #1262 / #1989 (VRAM back to experts), then #1181 (O(n) plan, output-identical, on
+by default), then the second-tier decode kernels. [#1888](https://github.com/Niko1221/Strata/pull/1888) and
+[#2075](https://github.com/Niko1221/Strata/pull/2075) address the same cost - take one, never both.
+
+These do not run on our Qwen3.6 pack, so there is no tok/s to read here until a Flash-Next pack is present.
+The measurement stays the same shape - build the image, run the engine once, read the decode number - but the
+main engine takes a `--pack`, so copy the run from a recorded Flash-Next config rather than the q36 line
+above. Until that pack exists, the phase is recorded as untested, not skipped.
+
+### Phase 4 - re-screen the two mis-parked PRs
+
+[#1614](https://github.com/Niko1221/Strata/pull/1614) `--kv-pool-tokens` and
+[#1548](https://github.com/Niko1221/Strata/pull/1548) / [#2224](https://github.com/Niko1221/Strata/pull/2224)
+`STRATA_PCIE_BALANCE` are not in the tree and were parked in error (see
+[Corrections](#corrections-to-this-scan)). They have not had the screen the rest of this report got, and no
+value claim is made for either. This is a reading step, not a run: for each, write one row in the report's
+table format - what it changes, which files, opt-in or default, whether it reaches the q36 driver. Only after
+that does either get a tok/s to read.
+
+### What this plan does not do
+
+- It does not re-measure any PR number on this PC. Phase 0.4 is the first number that will be ours.
+- It does not plan [#2698](https://github.com/Niko1221/Strata/pull/2698) (the same int8 K/V idea as the local
+  #2742 already on this branch), [#2318](https://github.com/Niko1221/Strata/pull/2318) `--kv q2k` (the local
+  int8 K/V already captures the bigger win, and the PR's own text reports prompt KL 3.8-5.3x q4_0's), or
+  #2321 / #1820 (main-engine `verify.cpp`; the q36 driver does not include that path).
+- It does not commit to any order beyond Phase 1: if the baseline run (0.4) shows the time is somewhere this
+  report did not screen for, that finding comes before the rest.
 
 ## Already in main (do not apply)
 
 Verified present in `upstream/main` at `296b59d2`; these PRs are stale after the history rewrite:
 
 - #1101 prefill Stager sleep (`src/prefill/prefill.cpp`), #1125 `q8k_quant_avx2`, #1237 pinned stage buffers
-  (as `STRATA_STAGE_PIN`), #1548 / #2224 `STRATA_PCIE_BALANCE`, #1614 `--kv-pool-tokens`,
-  #1107 `STRATA_PREFILL_GROUP_GATHER`, #2042 `STRATA_EXCHANGE_ROTATE`, #1517 `STRATA_ADAPT_NOWAIT`,
-  #1089 `bench_eviction`, #2073 `STRATA_PLE_AUTO_MMAP`, #1166 `--host-core`,
+  (as `STRATA_STAGE_PIN`), #1107 `STRATA_PREFILL_GROUP_GATHER`, #2042 `STRATA_EXCHANGE_ROTATE`,
+  #1517 `STRATA_ADAPT_NOWAIT`, #1089 `bench_eviction`, #2073 `STRATA_PLE_AUTO_MMAP`, #1166 `--host-core`,
   #1597 `--conversation-cache-min-tokens`.
 - #2321 is **partly** merged: the 256/8 route-resident kernel exists in `src/kernels/cuda/native_router.cu`,
   but the `verify.cpp` defaults/guard for it do not.
 
+## Corrections to this scan
+
+Applied the same day, after re-checking the branch's own tree. `upstream/main` in this checkout is exactly
+`296b59d2`, the commit the scan used, so the search is against the same source.
+
+- **#1548 / #2224 `STRATA_PCIE_BALANCE` and #1614 `--kv-pool-tokens` are not in `main`.** Neither symbol
+  appears in `src/`, `include/`, `serve/`, `tools/`, `sycl/`, `setup.py` or `CMakeLists.txt`, and a community
+  report in `bench/results/2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/` also records both as
+  not in `main`. They were parked under "already in main" in error: applying them would not be a no-op. No
+  value claim is made here - they have not had the screen the rest of this report got, and they are Phase 4
+  of the [implementation plan](#implementation-plan).
+- **#1358 is not cleanly mergeable.** This scan said it was; the GitHub API on the same day reports
+  `mergeable: false`, `mergeable_state: dirty`. The patch is 6 added / 2 removed lines in `src/core/vmm.cpp`,
+  so the conflict is small and can be redone by hand. It is still the prerequisite for the VMM features.
+- **Merge state re-checked live** for the rest of the shortlist: #1949, #2751, #2515, #2660, #2698 and #2775
+  are mergeable; #1581, #1838, #1262, #1989, #1181 and #1358 are conflicting. The scan's own table entries
+  agreed with all of these.
+
 ## Duplicates and rejected
 
-- Duplicates: #1117 = resubmission of #1030; #1548 = refile of #1038; #2399 resubmits #2201 and bundles
-  #2398; #1107 replaced #1033; #1089 reposts #991; #2698 vs local #2742.
+- Duplicates: #1117 = resubmission of #1030; #1548 = refile of the closed #1038 (it is the live copy of that
+  change, not a rejection - see Phase 4 of the [implementation plan](#implementation-plan)); #2399 resubmits
+  #2201 and bundles #2398; #1107 replaced #1033; #1089 reposts #991; #2698 vs local #2742.
 - Wrong vendor or arch: AMD/HIP/gfx (#2398, #2399, #2522, #2078, #1360, #2628, ...), Intel/SYCL/Arc
   (#2394, #2485, #2486, #2555, #2583, ...), Metal/Apple, Volta/Turing/Pascal device code
   (#2069, #2145, #2220, #2221, #1742, #1744), Windows/WSL-only (#1911, #1324, #1325, #1520, #2672, #1498).
@@ -149,4 +300,6 @@ Verified present in `upstream/main` at `296b59d2`; these PRs are stale after the
 - Applicability is judged from the files each PR touches and the flags present in `upstream/main`; a PR can
   still conflict, need the other half of a stacked pair, or behave differently on sm_89.
 - The "already in main" check is a flag/symbol search plus an `git apply --check`; a partial merge is
-  possible and is called out where seen (#2321).
+  possible and is called out where seen (#2321). It also produced two wrong calls (#1548/#2224 and #1614),
+  corrected above: a search can find a look-alike symbol, or the feature can be absent under the name the PR
+  chose.
