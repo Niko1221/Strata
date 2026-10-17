@@ -1,0 +1,324 @@
+{
+  "before": {
+    "health": {
+      "status": "ok",
+      "max_context": 196608,
+      "model": "qwen3.8-flash-next-ud-q4_k_xl-rpc",
+      "images": true,
+      "api_key": "<REDACTED>",
+      "loaded": true,
+      "service": "strata"
+    },
+    "props": {
+      "default_generation_settings": {
+        "n_ctx": 196608,
+        "params": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "repeat_penalty": 1.0,
+          "n_predict": -1
+        }
+      },
+      "total_slots": 1,
+      "model_alias": "qwen3.8-flash-next-ud-q4_k_xl-rpc",
+      "chat_template": "{%- set image_count = namespace(value=0) %}\n{%- set video_count = namespace(value=0) %}\n{%- macro render_content(content, do_vision_count, is_system_content=false) %}\n    {%- if content is string %}\n        {{- content }}\n    {%- elif content is iterable and content is not mapping %}\n        {%- for item in content %}\n            {%- if 'image' in item or 'image_url' in item or item.type == 'image' %}\n                {%- if is_system_content %}\n                    {{- raise_exception('System message cannot contain images.') }}\n                {%- endif %}\n                {%- if do_vision_count %}\n                    {%- set image_count.value = image_count.value + 1 %}\n                {%- endif %}\n                {%- if add_vision_id %}\n                    {{- 'Picture ' ~ image_count.value ~ ': ' }}\n                {%- endif %}\n                {{- '<|vision_start|><|image_pad|><|vision_end|>' }}\n            {%- elif 'video' in item or item.type == 'video' %}\n                {%- if is_system_content %}\n                    {{- raise_exception('System message cannot contain videos.') }}\n                {%- endif %}\n                {%- if do_vision_count %}\n                    {%- set video_count.value = video_count.value + 1 %}\n                {%- endif %}\n                {%- if add_vision_id %}\n                    {{- 'Video ' ~ video_count.value ~ ': ' }}\n                {%- endif %}\n                {{- '<|vision_start|><|video_pad|><|vision_end|>' }}\n            {%- elif 'text' in item %}\n                {{- item.text }}\n            {%- else %}\n                {{- raise_exception('Unexpected item type in content.') }}\n            {%- endif %}\n        {%- endfor %}\n    {%- elif content is none or content is undefined %}\n        {{- '' }}\n    {%- else %}\n        {{- raise_exception('Unexpected content type.') }}\n    {%- endif %}\n{%- endmacro %}\n{%- if not messages %}\n    {{- raise_exception('No messages provided.') }}\n{%- endif %}\n{%- set sysns = namespace(count=0, text='') %}\n{%- for message in messages %}\n    {%- if sysns.count == loop.index0 and (message.role == 'system' or message.role == 'developer') %}\n        {%- set sys_content = render_content(message.content, false, true)|trim %}\n        {%- if sys_content %}\n            {%- set sysns.text = sysns.text + ('\\n' if sysns.text else '') + sys_content %}\n        {%- endif %}\n        {%- set sysns.count = sysns.count + 1 %}\n    {%- endif %}\n{%- endfor %}\n{%- set num_sys = sysns.count %}\n{%- set merged_system = sysns.text %}\n{%- set reasoning_instructions = '' %}\n{%- if enable_thinking is undefined or enable_thinking is true %}\n    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n    {%- if resolved_reasoning_effort == 'high' %}\n        {%- set resolved_reasoning_effort = 'xhigh' %}\n    {%- endif %}\n    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}\n        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh (default), medium, and low.') }}\n    {%- endif %}\n    {%- if resolved_reasoning_effort == 'xhigh' %}\n        {%- set reasoning_instructions = 'Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.' %}\n    {%- elif resolved_reasoning_effort == 'low' %}\n        {%- set reasoning_instructions = 'Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.' %}\n    {%- endif %}\n{%- endif %}\n{%- if tools and tools is iterable and tools is not mapping %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if reasoning_instructions %}\n        {{- reasoning_instructions + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou have access to the following functions:\\n\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\" }}\n    {{- '\\n\\nIf you choose to call a function ONLY reply in the following format with NO suffix:\\n\\n<tool_call>\\n<function=example_function_name>\\n<parameter=example_parameter_1>\\nvalue_1\\n</parameter>\\n<parameter=example_parameter_2>\\nThis is the value for the second parameter\\nthat can span\\nmultiple lines\\n</parameter>\\n</function>\\n</tool_call>\\n\\n<IMPORTANT>\\nReminder:\\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\\n- Required parameters MUST be specified\\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\\n</IMPORTANT>' }}\n    {%- if merged_system %}\n        {{- '\\n\\n' + merged_system }}\n    {%- endif %}\n    {{- '<|im_end|>\\n' }}\n{%- else %}\n    {%- if merged_system %}\n        {{- '<|im_start|>system\\n' + (reasoning_instructions + '\\n\\n' if reasoning_instructions else '')  + merged_system + '<|im_end|>\\n' }}\n    {%- elif reasoning_instructions %}\n        {{- '<|im_start|>system\\n' + reasoning_instructions + '<|im_end|>\\n' }}\n    {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" %}\n        {%- set content = render_content(message.content, false)|trim %}\n        {%- if not(content.startswith('<tool_response>') and content.endswith('</tool_response>')) %}\n            {%- set ns.multi_step_tool = false %}\n            {%- set ns.last_query_index = index %}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- for message in messages %}\n    {%- if loop.index0 >= num_sys %}\n    {%- set content = render_content(message.content, true)|trim %}\n    {%- if message.role == \"system\" or message.role == \"developer\" %}\n        {{- raise_exception('System message must be at the beginning.') }}\n    {%- elif message.role == \"user\" %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n        {%- set reasoning_content = '' %}\n        {%- if message.reasoning_content is string %}\n            {%- set reasoning_content = message.reasoning_content %}\n        {%- endif %}\n        {%- set reasoning_content = reasoning_content|trim %}\n        {%- if preserve_thinking is undefined or preserve_thinking is true or loop.index0 > ns.last_query_index %}\n            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content }}\n        {%- else %}\n            {{- '<|im_start|>' + message.role + '\\n' + content }}\n        {%- endif %}\n        {%- if message.tool_calls and message.tool_calls is iterable and message.tool_calls is not mapping %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if tool_call.function is defined %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {%- if tool_call.name is not defined or tool_call.name is none %}\n                    {{- raise_exception('Tool call is missing a function name.') }}\n                {%- endif %}\n                {%- if loop.first %}\n                    {%- if content|trim %}\n                        {{- '\\n\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n                    {%- else %}\n                        {{- '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n                    {%- endif %}\n                {%- else %}\n                    {{- '\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}\n                {%- endif %}\n                {%- if tool_call.arguments is mapping %}\n                    {%- for args_name, args_value in tool_call.arguments|items %}\n                        {{- '<parameter=' + args_name + '>\\n' }}\n                        {%- set args_value = args_value | string if args_value is string else args_value | tojson | safe %}\n                        {{- args_value }}\n                        {{- '\\n</parameter>\\n' }}\n                    {%- endfor %}\n                {%- elif tool_call.arguments is string %}\n                    {%- if tool_call.arguments|trim %}\n                        {{- raise_exception('Tool call arguments for function \"' + (tool_call.name | string) + '\" were passed as a JSON string. Parse them into an object before calling apply_chat_template.') }}\n                    {%- endif %}\n                {%- elif tool_call.arguments is defined and tool_call.arguments is not none %}\n                    {{- raise_exception('Tool call arguments for function \"' + (tool_call.name | string) + '\" must be an object/mapping or a JSON string.') }}\n                {%- endif %}\n                {{- '</function>\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.previtem and loop.previtem.role != \"tool\" %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if not loop.last and loop.nextitem.role != \"tool\" %}\n            {{- '<|im_end|>\\n' }}\n        {%- elif loop.last %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- else %}\n        {{- raise_exception('Unexpected message role.') }}\n    {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- else %}\n        {{- '<think>\\n' }}\n    {%- endif %}\n{%- endif %}\n{#- Unsloth fixes - developer role, merged system messages, tool calling #}",
+      "chat_template_caps": {
+        "supports_tools": true,
+        "supports_tool_calls": true,
+        "supports_system_role": true,
+        "supports_parallel_tool_calls": true,
+        "supports_preserve_reasoning": true
+      },
+      "modalities": {
+        "vision": true
+      },
+      "models_autoload": true,
+      "is_sleeping": false,
+      "model_path": "/mnt/ware/llm_stuff/strata-data/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+      "build_info": "Strata 0.1.43"
+    },
+    "local": {
+      "service": {
+        "exit_code": 0,
+        "stdout": "ActiveState=active\nInvocationID=e1dab8ff307f45c8b3560504bf9d41b8\nMainPID=1100488\nMemoryCurrent=64815202304\nMemoryPeak=64927240192\n",
+        "stderr": ""
+      },
+      "config_sha256": {
+        "exit_code": 0,
+        "stdout": "64c02a02ef9d8b068c332e16d372e55cac3b4437b8f1325a0aa86b3863f59f63  <HOME>/.local/state/strata-stage-rpc/worker.json\n",
+        "stderr": ""
+      },
+      "binary_sha256": {
+        "exit_code": 0,
+        "stdout": "62f91faae75ab2500268546ca4ea096c72c682e907526062c9f25c1831b196fd  <HOME>/AI-tools/Strata-rpc/build-rpc-kquant/strata\n",
+        "stderr": ""
+      },
+      "source": {
+        "exit_code": 0,
+        "stdout": "7695859aa13afb248bdb4d36f9b2e95707db079d\n",
+        "stderr": ""
+      },
+      "dirty": {
+        "exit_code": 0,
+        "stdout": " M CMakeLists.txt\n M include/strata/core/conversation_cache.hpp\n M include/strata/core/verify.hpp\n M include/strata/prefill/prefill.hpp\n M serve/server.py\n M serve/telemetry.py\n M serve/web/app.css\n M serve/web/app.js\n M serve/web/index.html\n M serve/web/sprite.svg\n M src/core/verify.cpp\n M src/prefill/prefill.cpp\n M src/program/generate.cpp\n M tools/conversation_cache_disabled.py\n?? docs/STAGE_RPC.md\n?? docs/WEB_CODE_PREVIEW.md\n?? include/strata/rpc/\n?? serve/rpc_telemetry.py\n?? serve/web/code-preview.js\n?? serve/web/licenses/\n?? serve/web/mermaid.min.js\n?? serve/web/rpc-dashboard.js\n?? src/rpc/\n?? tests/rpc/\n",
+        "stderr": ""
+      },
+      "source_diff_sha256": {
+        "exit_code": 0,
+        "stdout": "1f57a3fdb90e4591c6fd2396e48c1324c20be46a4ceb528caefc89ab931d9925  -\n",
+        "stderr": ""
+      },
+      "build_identity": {
+        "exit_code": 0,
+        "stdout": "stage-v1 85ea98c3eb3c1d6e14760c83506d3265d6f5eaabdd44fd049df704936fe3080f\n",
+        "stderr": ""
+      },
+      "cpu": {
+        "exit_code": 0,
+        "stdout": "{\n   \"lscpu\": [\n      {\n         \"field\": \"Architecture:\",\n         \"data\": \"x86_64\"\n      },{\n         \"field\": \"CPU op-mode(s):\",\n         \"data\": \"32-bit, 64-bit\"\n      },{\n         \"field\": \"Address sizes:\",\n         \"data\": \"48 bits physical, 48 bits virtual\"\n      },{\n         \"field\": \"Byte Order:\",\n         \"data\": \"Little Endian\"\n      },{\n         \"field\": \"CPU(s):\",\n         \"data\": \"24\"\n      },{\n         \"field\": \"On-line CPU(s) list:\",\n         \"data\": \"0-23\"\n      },{\n         \"field\": \"Vendor ID:\",\n         \"data\": \"AuthenticAMD\"\n      },{\n         \"field\": \"Model name:\",\n         \"data\": \"AMD Ryzen 9 5900X 12-Core Processor\"\n      },{\n         \"field\": \"CPU family:\",\n         \"data\": \"25\"\n      },{\n         \"field\": \"Model:\",\n         \"data\": \"33\"\n      },{\n         \"field\": \"Thread(s) per core:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Core(s) per socket:\",\n         \"data\": \"24\"\n      },{\n         \"field\": \"Socket(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Stepping:\",\n         \"data\": \"0\"\n      },{\n         \"field\": \"BogoMIPS:\",\n         \"data\": \"7399.99\"\n      },{\n         \"field\": \"Flags:\",\n         \"data\": \"fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl xtopology cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw perfctr_core ssbd ibrs ibpb stibp vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves user_shstk clzero xsaveerptr wbnoinvd arat npt lbrv nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload vgif umip pku ospke vaes vpclmulqdq rdpid overflow_recov succor fsrm\"\n      },{\n         \"field\": \"Virtualization:\",\n         \"data\": \"AMD-V\"\n      },{\n         \"field\": \"Hypervisor vendor:\",\n         \"data\": \"KVM\"\n      },{\n         \"field\": \"Virtualization type:\",\n         \"data\": \"full\"\n      },{\n         \"field\": \"L1d cache:\",\n         \"data\": \"1.5 MiB (24 instances)\"\n      },{\n         \"field\": \"L1i cache:\",\n         \"data\": \"1.5 MiB (24 instances)\"\n      },{\n         \"field\": \"L2 cache:\",\n         \"data\": \"12 MiB (24 instances)\"\n      },{\n         \"field\": \"L3 cache:\",\n         \"data\": \"384 MiB (24 instances)\"\n      },{\n         \"field\": \"NUMA node(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"NUMA node0 CPU(s):\",\n         \"data\": \"0-23\"\n      },{\n         \"field\": \"Vulnerability Gather data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Ghostwrite:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Indirect target selection:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Itlb multihit:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability L1tf:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Meltdown:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mmio stale data:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Old microcode:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Reg file data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Retbleed:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Spec rstack overflow:\",\n         \"data\": \"Mitigation; Safe RET\"\n      },{\n         \"field\": \"Vulnerability Spec store bypass:\",\n         \"data\": \"Mitigation; Speculative Store Bypass disabled via prctl\"\n      },{\n         \"field\": \"Vulnerability Spectre v1:\",\n         \"data\": \"Mitigation; usercopy/swapgs barriers and __user pointer sanitization\"\n      },{\n         \"field\": \"Vulnerability Spectre v2:\",\n         \"data\": \"Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected\"\n      },{\n         \"field\": \"Vulnerability Srbds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsa:\",\n         \"data\": \"Mitigation; Clear CPU buffers\"\n      },{\n         \"field\": \"Vulnerability Tsx async abort:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Vmscape:\",\n         \"data\": \"Not affected\"\n      }\n   ]\n}\n",
+        "stderr": ""
+      },
+      "ram": {
+        "exit_code": 0,
+        "stdout": "               total        used        free      shared  buff/cache   available\nMem:     105395945472 49066717184   752312320  4633694208 61010284544 56329228288\nSwap:    68719472640  5821534208 62897938432\n",
+        "stderr": ""
+      },
+      "os": {
+        "exit_code": 0,
+        "stdout": "Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\n",
+        "stderr": ""
+      },
+      "storage": {
+        "exit_code": 0,
+        "stdout": "/dev/sdb1 ext4 rw,noatime\n",
+        "stderr": ""
+      },
+      "gpu": {
+        "exit_code": 0,
+        "stdout": "NVIDIA GeForce RTX 3090, 24576, 20758, 3361, 580.178.04, 420.00\n",
+        "stderr": ""
+      }
+    },
+    "remote": {
+      "service": {
+        "exit_code": 0,
+        "stdout": "ActiveState=active\nInvocationID=9f9710514acc48e1af636527b009a6b2\nMainPID=619721\nMemoryCurrent=31513640960\nMemoryPeak=31857950720\n",
+        "stderr": ""
+      },
+      "config_sha256": {
+        "exit_code": 0,
+        "stdout": "e3ea67264b92bf3f86a0d9db8fda196c06d7525e99cf1f6e96c07a5bf542e982  <HOME>/AI-tools/Strata-rpc/strata-rpc.json\n",
+        "stderr": ""
+      },
+      "binary_sha256": {
+        "exit_code": 0,
+        "stdout": "83e2c84bc75b9da07206ce35d8c08677f870f3349b0f17a473c0252f03a3d2ec  <HOME>/AI-tools/Strata-rpc/build-rpc-kquant/strata\n",
+        "stderr": ""
+      },
+      "source": {
+        "exit_code": 0,
+        "stdout": "7695859aa13afb248bdb4d36f9b2e95707db079d\n",
+        "stderr": ""
+      },
+      "dirty": {
+        "exit_code": 0,
+        "stdout": " M CMakeLists.txt\n M include/strata/core/conversation_cache.hpp\n M include/strata/core/verify.hpp\n M include/strata/prefill/prefill.hpp\n M serve/server.py\n M serve/telemetry.py\n M serve/web/app.css\n M serve/web/app.js\n M serve/web/index.html\n M serve/web/sprite.svg\n M src/core/verify.cpp\n M src/prefill/prefill.cpp\n M src/program/generate.cpp\n D sycl/third_party/ggml/LICENSE\n D sycl/third_party/ggml/ggml-common.h\n M tools/conversation_cache_disabled.py\n?? baseline-single-192k.json\n?? cancel-192k-k16.json\n?? cancel-final-192k-k16.json\n?? context-192k-k16.json\n?? context-final-192k-k16.json\n?? context-replay-192k-k16.json\n?? docs/STAGE_RPC.md\n?? docs/WEB_CODE_PREVIEW.md\n?? include/strata/rpc/\n?? optout-parity-20261011-v2/\n?? optout-parity-20261011/\n?? rpc-128k-pipelined-k20.json\n?? rpc-192k-k16-final.json\n?? rpc-192k-k16-ready.json\n?? rpc-192k-k16-ready.stdout.jsonl\n?? rpc-192k-k16.json\n?? rpc-192k-k20.json\n?? rpc-192k-k24.json\n?? rpc-64k-k20.json\n?? serve/rpc_telemetry.py\n?? serve/web/code-preview.js\n?? serve/web/licenses/\n?? serve/web/mermaid.min.js\n?? serve/web/rpc-dashboard.js\n?? src/rpc/\n?? strata_stage_rpc.py\n?? telemetry-after.json\n?? telemetry-after.stdout.jsonl\n?? telemetry-before.json\n?? telemetry-before.stdout.jsonl\n?? telemetry-cancel.json\n?? telemetry-cancel.stdout.json\n?? tests/rpc/\n?? unsloth-bench-128k.json\n?? unsloth-bench-128k.stdout.jsonl\n?? unsloth-bench-192k.json\n?? unsloth-bench-192k.stdout.jsonl\n?? unsloth-context-128k.json\n?? unsloth-context-128k.stdout.json\n?? unsloth-context-192k.json\n?? unsloth-context-192k.stdout.json\n",
+        "stderr": ""
+      },
+      "source_diff_sha256": {
+        "exit_code": 0,
+        "stdout": "5c384f42aafd4307427448849fe3aa271c494161d814521805b1c86be69d019d  -\n",
+        "stderr": ""
+      },
+      "build_identity": {
+        "exit_code": 0,
+        "stdout": "stage-v1 85ea98c3eb3c1d6e14760c83506d3265d6f5eaabdd44fd049df704936fe3080f\n",
+        "stderr": ""
+      },
+      "cpu": {
+        "exit_code": 0,
+        "stdout": "{\n   \"lscpu\": [\n      {\n         \"field\": \"Architecture:\",\n         \"data\": \"x86_64\"\n      },{\n         \"field\": \"CPU op-mode(s):\",\n         \"data\": \"32-bit, 64-bit\"\n      },{\n         \"field\": \"Address sizes:\",\n         \"data\": \"48 bits physical, 48 bits virtual\"\n      },{\n         \"field\": \"Byte Order:\",\n         \"data\": \"Little Endian\"\n      },{\n         \"field\": \"CPU(s):\",\n         \"data\": \"32\"\n      },{\n         \"field\": \"On-line CPU(s) list:\",\n         \"data\": \"0-31\"\n      },{\n         \"field\": \"Vendor ID:\",\n         \"data\": \"AuthenticAMD\"\n      },{\n         \"field\": \"Model name:\",\n         \"data\": \"AMD Ryzen 9 9950X3D 16-Core Processor\"\n      },{\n         \"field\": \"CPU family:\",\n         \"data\": \"26\"\n      },{\n         \"field\": \"Model:\",\n         \"data\": \"68\"\n      },{\n         \"field\": \"Thread(s) per core:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Core(s) per socket:\",\n         \"data\": \"32\"\n      },{\n         \"field\": \"Socket(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Stepping:\",\n         \"data\": \"0\"\n      },{\n         \"field\": \"BogoMIPS:\",\n         \"data\": \"8600.02\"\n      },{\n         \"field\": \"Flags:\",\n         \"data\": \"fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl xtopology cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw perfctr_core ssbd perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves user_shstk avx_vnni avx512_bf16 clzero xsaveerptr wbnoinvd arat npt lbrv nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload vgif vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid movdiri movdir64b overflow_recov succor fsrm avx512_vp2intersect flush_l1d\"\n      },{\n         \"field\": \"Virtualization:\",\n         \"data\": \"AMD-V\"\n      },{\n         \"field\": \"Hypervisor vendor:\",\n         \"data\": \"KVM\"\n      },{\n         \"field\": \"Virtualization type:\",\n         \"data\": \"full\"\n      },{\n         \"field\": \"L1d cache:\",\n         \"data\": \"2 MiB (32 instances)\"\n      },{\n         \"field\": \"L1i cache:\",\n         \"data\": \"2 MiB (32 instances)\"\n      },{\n         \"field\": \"L2 cache:\",\n         \"data\": \"16 MiB (32 instances)\"\n      },{\n         \"field\": \"L3 cache:\",\n         \"data\": \"512 MiB (32 instances)\"\n      },{\n         \"field\": \"NUMA node(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"NUMA node0 CPU(s):\",\n         \"data\": \"0-31\"\n      },{\n         \"field\": \"Vulnerability Gather data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Ghostwrite:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Indirect target selection:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Itlb multihit:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability L1tf:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Meltdown:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mmio stale data:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Old microcode:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Reg file data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Retbleed:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Spec rstack overflow:\",\n         \"data\": \"Mitigation; IBPB on VMEXIT only\"\n      },{\n         \"field\": \"Vulnerability Spec store bypass:\",\n         \"data\": \"Mitigation; Speculative Store Bypass disabled via prctl\"\n      },{\n         \"field\": \"Vulnerability Spectre v1:\",\n         \"data\": \"Mitigation; usercopy/swapgs barriers and __user pointer sanitization\"\n      },{\n         \"field\": \"Vulnerability Spectre v2:\",\n         \"data\": \"Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP disabled; PBRSB-eIBRS Not affected; BHI Not affected\"\n      },{\n         \"field\": \"Vulnerability Srbds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsa:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsx async abort:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Vmscape:\",\n         \"data\": \"Not affected\"\n      }\n   ]\n}\n",
+        "stderr": ""
+      },
+      "ram": {
+        "exit_code": 0,
+        "stdout": "               total        used        free      shared  buff/cache   available\nMem:     45689458688 24002732032   458477568 17609424896 39425732608 21686726656\nSwap:    68719472640    12570624 68706902016\n",
+        "stderr": ""
+      },
+      "os": {
+        "exit_code": 0,
+        "stdout": "Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\n",
+        "stderr": ""
+      },
+      "storage": {
+        "exit_code": 0,
+        "stdout": "/dev/sdb1 ext4 rw,noatime\n",
+        "stderr": ""
+      },
+      "gpu": {
+        "exit_code": 0,
+        "stdout": "NVIDIA GeForce RTX 5090, 32607, 31547, 656, 615.71.09, 600.00\n",
+        "stderr": ""
+      }
+    },
+    "totals": {
+      "since": 1791920679.571583,
+      "requests": 42,
+      "prompt_tokens": 292553,
+      "reused": 90483,
+      "output_tokens": 2068,
+      "prompt_ms": 170268.4,
+      "decode_ms": 29124.199999999997,
+      "drafts_offered": 1978,
+      "drafts_accepted": 1259
+    }
+  },
+  "after": {
+    "health": {
+      "status": "ok",
+      "max_context": 196608,
+      "model": "qwen3.8-flash-next-ud-q4_k_xl-rpc",
+      "images": true,
+      "api_key": "<REDACTED>",
+      "loaded": true,
+      "service": "strata"
+    },
+    "local": {
+      "service": {
+        "exit_code": 0,
+        "stdout": "ActiveState=active\nInvocationID=e1dab8ff307f45c8b3560504bf9d41b8\nMainPID=1100488\nMemoryCurrent=79813222400\nMemoryPeak=80931061760\n",
+        "stderr": ""
+      },
+      "config_sha256": {
+        "exit_code": 0,
+        "stdout": "64c02a02ef9d8b068c332e16d372e55cac3b4437b8f1325a0aa86b3863f59f63  <HOME>/.local/state/strata-stage-rpc/worker.json\n",
+        "stderr": ""
+      },
+      "binary_sha256": {
+        "exit_code": 0,
+        "stdout": "62f91faae75ab2500268546ca4ea096c72c682e907526062c9f25c1831b196fd  <HOME>/AI-tools/Strata-rpc/build-rpc-kquant/strata\n",
+        "stderr": ""
+      },
+      "source": {
+        "exit_code": 0,
+        "stdout": "7695859aa13afb248bdb4d36f9b2e95707db079d\n",
+        "stderr": ""
+      },
+      "dirty": {
+        "exit_code": 0,
+        "stdout": " M CMakeLists.txt\n M include/strata/core/conversation_cache.hpp\n M include/strata/core/verify.hpp\n M include/strata/prefill/prefill.hpp\n M serve/server.py\n M serve/telemetry.py\n M serve/web/app.css\n M serve/web/app.js\n M serve/web/index.html\n M serve/web/sprite.svg\n M src/core/verify.cpp\n M src/prefill/prefill.cpp\n M src/program/generate.cpp\n M tools/conversation_cache_disabled.py\n?? docs/STAGE_RPC.md\n?? docs/WEB_CODE_PREVIEW.md\n?? include/strata/rpc/\n?? serve/rpc_telemetry.py\n?? serve/web/code-preview.js\n?? serve/web/licenses/\n?? serve/web/mermaid.min.js\n?? serve/web/rpc-dashboard.js\n?? src/rpc/\n?? tests/rpc/\n",
+        "stderr": ""
+      },
+      "source_diff_sha256": {
+        "exit_code": 0,
+        "stdout": "1f57a3fdb90e4591c6fd2396e48c1324c20be46a4ceb528caefc89ab931d9925  -\n",
+        "stderr": ""
+      },
+      "build_identity": {
+        "exit_code": 0,
+        "stdout": "stage-v1 85ea98c3eb3c1d6e14760c83506d3265d6f5eaabdd44fd049df704936fe3080f\n",
+        "stderr": ""
+      },
+      "cpu": {
+        "exit_code": 0,
+        "stdout": "{\n   \"lscpu\": [\n      {\n         \"field\": \"Architecture:\",\n         \"data\": \"x86_64\"\n      },{\n         \"field\": \"CPU op-mode(s):\",\n         \"data\": \"32-bit, 64-bit\"\n      },{\n         \"field\": \"Address sizes:\",\n         \"data\": \"48 bits physical, 48 bits virtual\"\n      },{\n         \"field\": \"Byte Order:\",\n         \"data\": \"Little Endian\"\n      },{\n         \"field\": \"CPU(s):\",\n         \"data\": \"24\"\n      },{\n         \"field\": \"On-line CPU(s) list:\",\n         \"data\": \"0-23\"\n      },{\n         \"field\": \"Vendor ID:\",\n         \"data\": \"AuthenticAMD\"\n      },{\n         \"field\": \"Model name:\",\n         \"data\": \"AMD Ryzen 9 5900X 12-Core Processor\"\n      },{\n         \"field\": \"CPU family:\",\n         \"data\": \"25\"\n      },{\n         \"field\": \"Model:\",\n         \"data\": \"33\"\n      },{\n         \"field\": \"Thread(s) per core:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Core(s) per socket:\",\n         \"data\": \"24\"\n      },{\n         \"field\": \"Socket(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Stepping:\",\n         \"data\": \"0\"\n      },{\n         \"field\": \"BogoMIPS:\",\n         \"data\": \"7399.99\"\n      },{\n         \"field\": \"Flags:\",\n         \"data\": \"fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl xtopology cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw perfctr_core ssbd ibrs ibpb stibp vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves user_shstk clzero xsaveerptr wbnoinvd arat npt lbrv nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload vgif umip pku ospke vaes vpclmulqdq rdpid overflow_recov succor fsrm\"\n      },{\n         \"field\": \"Virtualization:\",\n         \"data\": \"AMD-V\"\n      },{\n         \"field\": \"Hypervisor vendor:\",\n         \"data\": \"KVM\"\n      },{\n         \"field\": \"Virtualization type:\",\n         \"data\": \"full\"\n      },{\n         \"field\": \"L1d cache:\",\n         \"data\": \"1.5 MiB (24 instances)\"\n      },{\n         \"field\": \"L1i cache:\",\n         \"data\": \"1.5 MiB (24 instances)\"\n      },{\n         \"field\": \"L2 cache:\",\n         \"data\": \"12 MiB (24 instances)\"\n      },{\n         \"field\": \"L3 cache:\",\n         \"data\": \"384 MiB (24 instances)\"\n      },{\n         \"field\": \"NUMA node(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"NUMA node0 CPU(s):\",\n         \"data\": \"0-23\"\n      },{\n         \"field\": \"Vulnerability Gather data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Ghostwrite:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Indirect target selection:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Itlb multihit:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability L1tf:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Meltdown:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mmio stale data:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Old microcode:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Reg file data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Retbleed:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Spec rstack overflow:\",\n         \"data\": \"Mitigation; Safe RET\"\n      },{\n         \"field\": \"Vulnerability Spec store bypass:\",\n         \"data\": \"Mitigation; Speculative Store Bypass disabled via prctl\"\n      },{\n         \"field\": \"Vulnerability Spectre v1:\",\n         \"data\": \"Mitigation; usercopy/swapgs barriers and __user pointer sanitization\"\n      },{\n         \"field\": \"Vulnerability Spectre v2:\",\n         \"data\": \"Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected\"\n      },{\n         \"field\": \"Vulnerability Srbds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsa:\",\n         \"data\": \"Mitigation; Clear CPU buffers\"\n      },{\n         \"field\": \"Vulnerability Tsx async abort:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Vmscape:\",\n         \"data\": \"Not affected\"\n      }\n   ]\n}\n",
+        "stderr": ""
+      },
+      "ram": {
+        "exit_code": 0,
+        "stdout": "               total        used        free      shared  buff/cache   available\nMem:     105395945472 45872185344  1835638784  3886174208 62488109056 59523760128\nSwap:    68719472640  9698762752 59020709888\n",
+        "stderr": ""
+      },
+      "os": {
+        "exit_code": 0,
+        "stdout": "Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\n",
+        "stderr": ""
+      },
+      "storage": {
+        "exit_code": 0,
+        "stdout": "/dev/sdb1 ext4 rw,noatime\n",
+        "stderr": ""
+      },
+      "gpu": {
+        "exit_code": 0,
+        "stdout": "NVIDIA GeForce RTX 3090, 24576, 20780, 3338, 580.178.04, 420.00\n",
+        "stderr": ""
+      }
+    },
+    "remote": {
+      "service": {
+        "exit_code": 0,
+        "stdout": "ActiveState=active\nInvocationID=9f9710514acc48e1af636527b009a6b2\nMainPID=619721\nMemoryCurrent=31672045568\nMemoryPeak=31857950720\n",
+        "stderr": ""
+      },
+      "config_sha256": {
+        "exit_code": 0,
+        "stdout": "e3ea67264b92bf3f86a0d9db8fda196c06d7525e99cf1f6e96c07a5bf542e982  <HOME>/AI-tools/Strata-rpc/strata-rpc.json\n",
+        "stderr": ""
+      },
+      "binary_sha256": {
+        "exit_code": 0,
+        "stdout": "83e2c84bc75b9da07206ce35d8c08677f870f3349b0f17a473c0252f03a3d2ec  <HOME>/AI-tools/Strata-rpc/build-rpc-kquant/strata\n",
+        "stderr": ""
+      },
+      "source": {
+        "exit_code": 0,
+        "stdout": "7695859aa13afb248bdb4d36f9b2e95707db079d\n",
+        "stderr": ""
+      },
+      "dirty": {
+        "exit_code": 0,
+        "stdout": " M CMakeLists.txt\n M include/strata/core/conversation_cache.hpp\n M include/strata/core/verify.hpp\n M include/strata/prefill/prefill.hpp\n M serve/server.py\n M serve/telemetry.py\n M serve/web/app.css\n M serve/web/app.js\n M serve/web/index.html\n M serve/web/sprite.svg\n M src/core/verify.cpp\n M src/prefill/prefill.cpp\n M src/program/generate.cpp\n D sycl/third_party/ggml/LICENSE\n D sycl/third_party/ggml/ggml-common.h\n M tools/conversation_cache_disabled.py\n?? baseline-single-192k.json\n?? cancel-192k-k16.json\n?? cancel-final-192k-k16.json\n?? context-192k-k16.json\n?? context-final-192k-k16.json\n?? context-replay-192k-k16.json\n?? docs/STAGE_RPC.md\n?? docs/WEB_CODE_PREVIEW.md\n?? include/strata/rpc/\n?? optout-parity-20261011-v2/\n?? optout-parity-20261011/\n?? rpc-128k-pipelined-k20.json\n?? rpc-192k-k16-final.json\n?? rpc-192k-k16-ready.json\n?? rpc-192k-k16-ready.stdout.jsonl\n?? rpc-192k-k16.json\n?? rpc-192k-k20.json\n?? rpc-192k-k24.json\n?? rpc-64k-k20.json\n?? serve/rpc_telemetry.py\n?? serve/web/code-preview.js\n?? serve/web/licenses/\n?? serve/web/mermaid.min.js\n?? serve/web/rpc-dashboard.js\n?? src/rpc/\n?? strata_stage_rpc.py\n?? telemetry-after.json\n?? telemetry-after.stdout.jsonl\n?? telemetry-before.json\n?? telemetry-before.stdout.jsonl\n?? telemetry-cancel.json\n?? telemetry-cancel.stdout.json\n?? tests/rpc/\n?? unsloth-bench-128k.json\n?? unsloth-bench-128k.stdout.jsonl\n?? unsloth-bench-192k.json\n?? unsloth-bench-192k.stdout.jsonl\n?? unsloth-context-128k.json\n?? unsloth-context-128k.stdout.json\n?? unsloth-context-192k.json\n?? unsloth-context-192k.stdout.json\n",
+        "stderr": ""
+      },
+      "source_diff_sha256": {
+        "exit_code": 0,
+        "stdout": "5c384f42aafd4307427448849fe3aa271c494161d814521805b1c86be69d019d  -\n",
+        "stderr": ""
+      },
+      "build_identity": {
+        "exit_code": 0,
+        "stdout": "stage-v1 85ea98c3eb3c1d6e14760c83506d3265d6f5eaabdd44fd049df704936fe3080f\n",
+        "stderr": ""
+      },
+      "cpu": {
+        "exit_code": 0,
+        "stdout": "{\n   \"lscpu\": [\n      {\n         \"field\": \"Architecture:\",\n         \"data\": \"x86_64\"\n      },{\n         \"field\": \"CPU op-mode(s):\",\n         \"data\": \"32-bit, 64-bit\"\n      },{\n         \"field\": \"Address sizes:\",\n         \"data\": \"48 bits physical, 48 bits virtual\"\n      },{\n         \"field\": \"Byte Order:\",\n         \"data\": \"Little Endian\"\n      },{\n         \"field\": \"CPU(s):\",\n         \"data\": \"32\"\n      },{\n         \"field\": \"On-line CPU(s) list:\",\n         \"data\": \"0-31\"\n      },{\n         \"field\": \"Vendor ID:\",\n         \"data\": \"AuthenticAMD\"\n      },{\n         \"field\": \"Model name:\",\n         \"data\": \"AMD Ryzen 9 9950X3D 16-Core Processor\"\n      },{\n         \"field\": \"CPU family:\",\n         \"data\": \"26\"\n      },{\n         \"field\": \"Model:\",\n         \"data\": \"68\"\n      },{\n         \"field\": \"Thread(s) per core:\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Core(s) per socket:\",\n         \"data\": \"32\"\n      },{\n         \"field\": \"Socket(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"Stepping:\",\n         \"data\": \"0\"\n      },{\n         \"field\": \"BogoMIPS:\",\n         \"data\": \"8600.02\"\n      },{\n         \"field\": \"Flags:\",\n         \"data\": \"fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl xtopology cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw perfctr_core ssbd perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves user_shstk avx_vnni avx512_bf16 clzero xsaveerptr wbnoinvd arat npt lbrv nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload vgif vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid movdiri movdir64b overflow_recov succor fsrm avx512_vp2intersect flush_l1d\"\n      },{\n         \"field\": \"Virtualization:\",\n         \"data\": \"AMD-V\"\n      },{\n         \"field\": \"Hypervisor vendor:\",\n         \"data\": \"KVM\"\n      },{\n         \"field\": \"Virtualization type:\",\n         \"data\": \"full\"\n      },{\n         \"field\": \"L1d cache:\",\n         \"data\": \"2 MiB (32 instances)\"\n      },{\n         \"field\": \"L1i cache:\",\n         \"data\": \"2 MiB (32 instances)\"\n      },{\n         \"field\": \"L2 cache:\",\n         \"data\": \"16 MiB (32 instances)\"\n      },{\n         \"field\": \"L3 cache:\",\n         \"data\": \"512 MiB (32 instances)\"\n      },{\n         \"field\": \"NUMA node(s):\",\n         \"data\": \"1\"\n      },{\n         \"field\": \"NUMA node0 CPU(s):\",\n         \"data\": \"0-31\"\n      },{\n         \"field\": \"Vulnerability Gather data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Ghostwrite:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Indirect target selection:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Itlb multihit:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability L1tf:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Meltdown:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Mmio stale data:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Old microcode:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Reg file data sampling:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Retbleed:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Spec rstack overflow:\",\n         \"data\": \"Mitigation; IBPB on VMEXIT only\"\n      },{\n         \"field\": \"Vulnerability Spec store bypass:\",\n         \"data\": \"Mitigation; Speculative Store Bypass disabled via prctl\"\n      },{\n         \"field\": \"Vulnerability Spectre v1:\",\n         \"data\": \"Mitigation; usercopy/swapgs barriers and __user pointer sanitization\"\n      },{\n         \"field\": \"Vulnerability Spectre v2:\",\n         \"data\": \"Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP disabled; PBRSB-eIBRS Not affected; BHI Not affected\"\n      },{\n         \"field\": \"Vulnerability Srbds:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsa:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Tsx async abort:\",\n         \"data\": \"Not affected\"\n      },{\n         \"field\": \"Vulnerability Vmscape:\",\n         \"data\": \"Not affected\"\n      }\n   ]\n}\n",
+        "stderr": ""
+      },
+      "ram": {
+        "exit_code": 0,
+        "stdout": "               total        used        free      shared  buff/cache   available\nMem:     45689458688 24385519616   376311808 17609424896 39125106688 21303939072\nSwap:    68719472640    12570624 68706902016\n",
+        "stderr": ""
+      },
+      "os": {
+        "exit_code": 0,
+        "stdout": "Linux 7.0.0-38-generic #38-Ubuntu SMP PREEMPT_DYNAMIC Fri Sep  4 09:10:14 UTC 2026 x86_64\n",
+        "stderr": ""
+      },
+      "storage": {
+        "exit_code": 0,
+        "stdout": "/dev/sdb1 ext4 rw,noatime\n",
+        "stderr": ""
+      },
+      "gpu": {
+        "exit_code": 0,
+        "stdout": "NVIDIA GeForce RTX 5090, 32607, 31551, 652, 615.71.09, 600.00\n",
+        "stderr": ""
+      }
+    },
+    "totals": {
+      "since": 1791920679.571583,
+      "requests": 118,
+      "prompt_tokens": 3608267,
+      "reused": 2228738,
+      "output_tokens": 24746,
+      "prompt_ms": 1066479.2000000002,
+      "decode_ms": 326010.8,
+      "drafts_offered": 21756,
+      "drafts_accepted": 15702
+    }
+  }
+}

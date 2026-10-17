@@ -1,0 +1,79 @@
+{
+  "fixture": "reservation-workflow",
+  "attempt": 2,
+  "started": 1791922057.1627252,
+  "finished": 1791922164.2500048,
+  "wall_s": 107.08727955818176,
+  "exit_code": 0,
+  "timed_out": false,
+  "passed": true,
+  "changed_files": [
+    "allocate.ts",
+    "requests.ts",
+    "stock.ts"
+  ],
+  "policy_violations": [],
+  "original_manifest": {
+    "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+    "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+    "allocate.ts": "58e47304e459b99183d5b6ae48ee4855bf1d79ad8096f43405c65c57ff6ab567",
+    "requests.ts": "91b65480911f10ee4dca1dcccbdced97931360d3052ec1f9d41687fc04aa2829",
+    "stock.ts": "1c484ba860b55f8aa7e86db94317e60b47cc97900d38ea3fe7914e4d5522a8c3"
+  },
+  "solution_manifest": {
+    "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "README.md": "61de9b6157a877bd02ea4550c93cd4ca9ac91c1b6d7d2c1b8ac7067f18bdc1ef",
+    "acceptance.test.ts": "c614137762b363c873dd4b74447a1e10b68f1cbfd480c2187bd9294cc99df598",
+    "allocate.ts": "d73a554cf0badc0dc4328b9c4939864566e720fabbc7b4a2fd5d86da21749beb",
+    "requests.ts": "08c385e66df68f85ea4cc3ee04f17905e8c485540ec08575fa19138e4deb442f",
+    "stock.ts": "671f9f0e50c8169f6935a0fcb73939f068fe03977783e96121ed3470a18a5fbf"
+  },
+  "verification": {
+    "tests": 32,
+    "pass": 32,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0,
+    "exit_code": 0,
+    "duration_s": 0.1379392147064209,
+    "command": [
+      "node",
+      "--test",
+      "acceptance.test.ts"
+    ],
+    "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+  },
+  "codex": {
+    "events": 20,
+    "invalid_jsonl_lines": 0,
+    "turn_completed": 1,
+    "turn_failed": 0,
+    "errors": [],
+    "usage": [
+      {
+        "input_tokens": 288518,
+        "cached_input_tokens": 210090,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 3411,
+        "reasoning_output_tokens": 1934
+      }
+    ],
+    "tool_calls": 6,
+    "command_calls": 5,
+    "command_errors": 0,
+    "file_change_calls": 1,
+    "test_command_calls": 2
+  },
+  "native_counter_deltas": {
+    "requests": 7,
+    "prompt_tokens": 288518,
+    "reused": 210090,
+    "output_tokens": 3411,
+    "prompt_ms": 58860.5,
+    "decode_ms": 45657.100000000006,
+    "drafts_offered": 2983,
+    "drafts_accepted": 2107
+  }
+}

@@ -1,0 +1,11 @@
+Done — the refactor is complete and all tests pass on the first run, with no repair rounds needed.
+
+**Results:** `node --test acceptance.test.ts` exits cleanly (its TAP output wraps the file as 1 top-level pass, 0 fail); running the same file directly with the spec reporter shows the real counts: **24 tests, 24 pass, 0 fail**.
+
+**Changes:**
+
+- [validation.ts](<ARTIFACTS>/quality/coding/refactor-orders-3/project/validation.ts) (new) — exported `validateOrders`: rejects a non-array input with `RangeError('orders')`, checks each record (non-empty trimmed customer, integer `priceCents >= 0`, integer `quantity > 0`, boolean-or-undefined `cancelled`) and throws `RangeError('order')` for invalid records — including cancelled ones, matching the "invalid cancelled record still rejected" test. Returns new records with trimmed customers; never mutates input.
+- [aggregation.ts](<ARTIFACTS>/quality/coding/refactor-orders-3/project/aggregation.ts) (new) — exported `aggregateOrders`: skips cancelled records, groups by customer in a Map, sums `priceCents * quantity` and quantities, and returns summaries sorted by customer in code-point order (same `<`/`>` comparator as the original, so `'A'` sorts before `'a'`).
+- [orders.ts](<ARTIFACTS>/quality/coding/refactor-orders-3/project/orders.ts) — keeps the exported `Order` and `Summary` types and `summarizeOrders`, which is now just `aggregateOrders(validateOrders(orders))`. The helpers import the types from `orders.ts` as type-only imports, so there's no runtime import cycle.
+
+Public exports, error types, and input immutability are unchanged; only the three allowed files were touched.

@@ -1,0 +1,73 @@
+{
+  "fixture": "merge-windows",
+  "attempt": 1,
+  "started": 1791921401.069102,
+  "finished": 1791921490.4170973,
+  "wall_s": 89.34799528121948,
+  "exit_code": 0,
+  "timed_out": false,
+  "passed": true,
+  "changed_files": [
+    "windows.ts"
+  ],
+  "policy_violations": [],
+  "original_manifest": {
+    "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+    "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+    "windows.ts": "f75076f653579fcf2ecd48e1050f572619f01c535d26321ee2044515a697d7f6"
+  },
+  "solution_manifest": {
+    "AGENTS.md": "693de9d1162cf95f671f946766f728926cffb894aae05e238b3ae4038359f483",
+    "README.md": "28be01bbab97f325fbf3642dd049a65f50ee65613938c214390a220d5fd5a1c3",
+    "acceptance.test.ts": "8e1ae260de9d390ac3c6edf0b94bde2d923acbc7b854b347e2ac9fc3c2fabcef",
+    "windows.ts": "77e9deb06aaa76f21e9640fb2a7f6eccfbe451b394bec60887c91df9c4842b38"
+  },
+  "verification": {
+    "tests": 25,
+    "pass": 25,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0,
+    "exit_code": 0,
+    "duration_s": 0.11740803718566895,
+    "command": [
+      "node",
+      "--test",
+      "acceptance.test.ts"
+    ],
+    "isolation": "read-only Bubblewrap mounts; fresh network namespace; cleared environment; 60 s timeout"
+  },
+  "codex": {
+    "events": 18,
+    "invalid_jsonl_lines": 0,
+    "turn_completed": 1,
+    "turn_failed": 0,
+    "errors": [],
+    "usage": [
+      {
+        "input_tokens": 280564,
+        "cached_input_tokens": 202693,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1993,
+        "reasoning_output_tokens": 1035
+      }
+    ],
+    "tool_calls": 6,
+    "command_calls": 5,
+    "command_errors": 0,
+    "file_change_calls": 1,
+    "test_command_calls": 2
+  },
+  "native_counter_deltas": {
+    "requests": 7,
+    "prompt_tokens": 280564,
+    "reused": 202693,
+    "output_tokens": 1993,
+    "prompt_ms": 59590.60000000009,
+    "decode_ms": 26963.0,
+    "drafts_offered": 1763,
+    "drafts_accepted": 1235
+  }
+}

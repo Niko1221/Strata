@@ -1,0 +1,154 @@
+TAP version 13
+# Subtest: empty
+ok 1 - empty
+  ---
+  duration_ms: 1.315722
+  type: 'test'
+  ...
+# Subtest: single
+ok 2 - single
+  ---
+  duration_ms: 0.28498
+  type: 'test'
+  ...
+# Subtest: grouping
+ok 3 - grouping
+  ---
+  duration_ms: 0.18196
+  type: 'test'
+  ...
+# Subtest: trim and group
+ok 4 - trim and group
+  ---
+  duration_ms: 0.207831
+  type: 'test'
+  ...
+# Subtest: cancelled ignored
+ok 5 - cancelled ignored
+  ---
+  duration_ms: 0.17533
+  type: 'test'
+  ...
+# Subtest: case sensitive
+ok 6 - case sensitive
+  ---
+  duration_ms: 0.16267
+  type: 'test'
+  ...
+# Subtest: zero price
+ok 7 - zero price
+  ---
+  duration_ms: 0.16624
+  type: 'test'
+  ...
+# Subtest: frozen input
+ok 8 - frozen input
+  ---
+  duration_ms: 0.110051
+  type: 'test'
+  ...
+# Subtest: unchanged input
+ok 9 - unchanged input
+  ---
+  duration_ms: 0.843641
+  type: 'test'
+  ...
+# Subtest: invalid array
+ok 10 - invalid array
+  ---
+  duration_ms: 0.461929
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"","priceCents":100,"quantity":1,"cancelled":false}
+ok 11 - invalid {"customer":"","priceCents":100,"quantity":1,"cancelled":false}
+  ---
+  duration_ms: 0.17376
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":" ","priceCents":100,"quantity":1,"cancelled":false}
+ok 12 - invalid {"customer":" ","priceCents":100,"quantity":1,"cancelled":false}
+  ---
+  duration_ms: 0.071729
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":-1,"quantity":1,"cancelled":false}
+ok 13 - invalid {"customer":"a","priceCents":-1,"quantity":1,"cancelled":false}
+  ---
+  duration_ms: 0.055429
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":1.5,"quantity":1,"cancelled":false}
+ok 14 - invalid {"customer":"a","priceCents":1.5,"quantity":1,"cancelled":false}
+  ---
+  duration_ms: 0.05185
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":null,"quantity":1,"cancelled":false}
+ok 15 - invalid {"customer":"a","priceCents":null,"quantity":1,"cancelled":false}
+  ---
+  duration_ms: 0.05031
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":null,"quantity":1,"cancelled":false}
+ok 16 - invalid {"customer":"a","priceCents":null,"quantity":1,"cancelled":false}
+  ---
+  duration_ms: 0.0515
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":100,"quantity":0,"cancelled":false}
+ok 17 - invalid {"customer":"a","priceCents":100,"quantity":0,"cancelled":false}
+  ---
+  duration_ms: 0.05067
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":100,"quantity":-1,"cancelled":false}
+ok 18 - invalid {"customer":"a","priceCents":100,"quantity":-1,"cancelled":false}
+  ---
+  duration_ms: 0.04971
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":100,"quantity":1.5,"cancelled":false}
+ok 19 - invalid {"customer":"a","priceCents":100,"quantity":1.5,"cancelled":false}
+  ---
+  duration_ms: 0.04812
+  type: 'test'
+  ...
+# Subtest: invalid {"customer":"a","priceCents":100,"quantity":1,"cancelled":"yes"}
+ok 20 - invalid {"customer":"a","priceCents":100,"quantity":1,"cancelled":"yes"}
+  ---
+  duration_ms: 0.04893
+  type: 'test'
+  ...
+# Subtest: invalid null
+ok 21 - invalid null
+  ---
+  duration_ms: 0.0426
+  type: 'test'
+  ...
+# Subtest: invalid cancelled record still rejected
+ok 22 - invalid cancelled record still rejected
+  ---
+  duration_ms: 0.08851
+  type: 'test'
+  ...
+# Subtest: exported validation helper
+ok 23 - exported validation helper
+  ---
+  duration_ms: 0.340681
+  type: 'test'
+  ...
+# Subtest: exported aggregation helper
+ok 24 - exported aggregation helper
+  ---
+  duration_ms: 0.22449
+  type: 'test'
+  ...
+1..24
+# tests 24
+# suites 0
+# pass 24
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 94.908104

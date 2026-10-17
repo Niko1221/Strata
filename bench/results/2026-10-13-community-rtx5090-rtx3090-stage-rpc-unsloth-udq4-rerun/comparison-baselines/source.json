@@ -1,0 +1,8 @@
+{
+  "previous_unsloth": "https://github.com/Niko1221/Strata/pull/2166",
+  "previous_unsloth_head": "78df47eb158438174c69769c0da19f50aa073e25",
+  "previous_unsloth_results_sha256": "1c9ba689a854bfd335af40f0560e92edef5a27e883cc082edb1dfca24bbbff8c",
+  "gsq_original_results_sha256": "d2bdd29727788e91c17a7e76f70670721f8ae84c0d1cef4cd0f8d697086ffb11",
+  "gsq_run_id": "20261013T125409Z-883c46fd",
+  "note": "GSQ is a retained earlier local run, not a new measurement in this interval. Its shared-workload raw data is included for audit."
+}

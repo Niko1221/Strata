@@ -1,0 +1,39 @@
+{
+  "report": "2026-10-13-community-rtx5090-rtx3090-stage-rpc-unsloth-udq4-rerun",
+  "speed_measured_requests": 36,
+  "speed_failed": 0,
+  "recall_passed": 6,
+  "coding_passed": 9,
+  "assertions_passed": 243,
+  "tool_calls": 65,
+  "worker_peak_mib": 16290.0,
+  "quality_rates": {
+    "requests": 76,
+    "prompt_tokens": 3315714,
+    "reused": 2138255,
+    "fresh_tokens": 1177459,
+    "output_tokens": 22678,
+    "prompt_ms": 896210.7999999999,
+    "decode_ms": 296886.6,
+    "drafts_offered": 19778,
+    "drafts_accepted": 14443,
+    "decode_expert_cache": {
+      "coordinator": {
+        "hits": 6509627,
+        "lookups": 6629508,
+        "records": 76,
+        "hit_rate": 0.981917059305155
+      },
+      "worker": {
+        "hits": 3428663,
+        "lookups": 4894762,
+        "records": 76,
+        "hit_rate": 0.7004759373387307
+      }
+    },
+    "expert_file_mb": 0,
+    "fresh_prompt_tps": 1313.8192487749534,
+    "decode_tps": 76.38606794648193,
+    "mtp_acceptance_pct": 73.02558398220245
+  }
+}

@@ -1,0 +1,62 @@
+Using the Strata server already running at http://127.0.0.1:8090.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 69.2 tok/s, first token 0.437 s, 100 tokens
+  run 1 q2: decode 51.7 tok/s, first token 0.42 s, 100 tokens
+  run 1 q3: decode 55.1 tok/s, first token 0.433 s, 100 tokens
+  run 2 q1: decode 78.9 tok/s, first token 0.423 s, 100 tokens
+  run 2 q2: decode 64.5 tok/s, first token 0.388 s, 100 tokens
+  run 2 q3: decode 66.4 tok/s, first token 0.406 s, 100 tokens
+  run 3 q1: decode 80.4 tok/s, first token 0.425 s, 100 tokens
+  run 3 q2: decode 61.6 tok/s, first token 0.394 s, 100 tokens
+  run 3 q3: decode 67.0 tok/s, first token 0.404 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 1062.7 tok/s (0 reused), first token 3.801 s
+  run 2: 4019 tokens, prompt 1182.2 tok/s (0 reused), first token 3.417 s
+  run 3: 4019 tokens, prompt 1177.2 tok/s (0 reused), first token 3.433 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 1319.7 tok/s (0 reused), first token 12.193 s
+  run 2: 16058 tokens, prompt 1366.2 tok/s (0 reused), first token 11.778 s
+  run 3: 16058 tokens, prompt 1362.8 tok/s (0 reused), first token 11.809 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 1.203 s
+  run 1 turn 1: prompt 3704, reused 623, read 3081, first token 4.493 s
+  run 1 turn 2: prompt 5237, reused 3767, read 1470, first token 2.523 s
+  run 1 turn 3: prompt 8681, reused 5301, read 3380, first token 4.224 s
+  run 1 turn 4: prompt 11594, reused 8734, read 2860, first token 3.326 s
+  run 1 turn 5: prompt 14501, reused 11657, read 2844, first token 2.959 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 1.118 s
+  run 2 turn 1: prompt 3701, reused 621, read 3080, first token 3.242 s
+  run 2 turn 2: prompt 5234, reused 3765, read 1469, first token 1.923 s
+  run 2 turn 3: prompt 8678, reused 5298, read 3380, first token 3.298 s
+  run 2 turn 4: prompt 11602, reused 8741, read 2861, first token 2.369 s
+  run 2 turn 5: prompt 14505, reused 11661, read 2844, first token 2.397 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 1.113 s
+  run 3 turn 1: prompt 3701, reused 621, read 3080, first token 3.251 s
+  run 3 turn 2: prompt 5234, reused 3764, read 1470, first token 1.928 s
+  run 3 turn 3: prompt 8678, reused 5297, read 3381, first token 3.296 s
+  run 3 turn 4: prompt 11575, reused 8715, read 2860, first token 2.418 s
+  run 3 turn 5: prompt 14446, reused 11600, read 2846, first token 2.359 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 32049 tokens, prompt 1399.1 tok/s (0 reused), first token 22.937 s
+  run 2: 32049 tokens, prompt 1395.0 tok/s (0 reused), first token 23.006 s
+  run 3: 32049 tokens, prompt 1399.1 tok/s (0 reused), first token 22.937 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     66.40   (51.70 - 80.40, n=9)
+  chat first token (s)                   0.42   (0.39 - 0.44, n=9)
+  4K prompt tok/s                     1177.20   (1062.70 - 1182.20, n=3)
+  4K first token (s)                     3.43   (3.42 - 3.80, n=3)
+  16K prompt tok/s                    1362.80   (1319.70 - 1366.20, n=3)
+  16K first token (s)                   11.81   (11.78 - 12.19, n=3)
+  32K prompt tok/s                    1399.10   (1395.00 - 1399.10, n=3)
+  32K first token (s)                   22.94   (22.94 - 23.01, n=3)
+  agent cache hit %                     68.81   (68.75 - 68.81, n=3)
+  agent re-read tokens/session           2.00   (1.00 - 4.00, n=3)
+  agent turn first token (s)             2.96   (1.92 - 4.49, n=15)
+  agent decode tok/s                    81.10   (72.70 - 114.10, n=15)
+
+Report: <ARTIFACTS>/speed/upstream/2026-10-13-community-rtx-5090-qwen3-8-flash-next-ud-q4-k-xl-rpc/README.md
+Share it: open a pull request that adds the folder <ARTIFACTS>/speed/upstream/2026-10-13-community-rtx-5090-qwen3-8-flash-next-ud-q4-k-xl-rpc (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.

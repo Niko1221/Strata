@@ -1,0 +1,117 @@
+{
+  "Chat decode t/s": {
+    "previous_unsloth": {
+      "median": 71.3,
+      "min": 60.0,
+      "max": 78.8,
+      "n": 9
+    },
+    "current_unsloth": {
+      "median": 66.4,
+      "min": 51.7,
+      "max": 80.4,
+      "n": 9
+    },
+    "gsq_iq3s": {
+      "max": 173.1,
+      "median": 135.6,
+      "min": 107.9,
+      "n": 9
+    }
+  },
+  "4K fresh prefill t/s": {
+    "previous_unsloth": {
+      "median": 1226.4,
+      "min": 1224.2,
+      "max": 1226.4,
+      "n": 3
+    },
+    "current_unsloth": {
+      "median": 1177.2,
+      "min": 1062.7,
+      "max": 1182.2,
+      "n": 3
+    },
+    "gsq_iq3s": {
+      "max": 2606.2,
+      "median": 2581.6,
+      "min": 2568.1,
+      "n": 3
+    }
+  },
+  "16K fresh prefill t/s": {
+    "previous_unsloth": {
+      "median": 1420.4,
+      "min": 1419.3,
+      "max": 1424.0,
+      "n": 3
+    },
+    "current_unsloth": {
+      "median": 1362.8,
+      "min": 1319.7,
+      "max": 1366.2,
+      "n": 3
+    },
+    "gsq_iq3s": {
+      "max": 3290.3,
+      "median": 3273.0,
+      "min": 3258.1,
+      "n": 3
+    }
+  },
+  "32K fresh prefill t/s": {
+    "previous_unsloth": {
+      "median": 1446.1,
+      "min": 1445.1,
+      "max": 1454.4,
+      "n": 3
+    },
+    "current_unsloth": {
+      "median": 1399.1,
+      "min": 1395.0,
+      "max": 1399.1,
+      "n": 3
+    },
+    "gsq_iq3s": null
+  },
+  "Agent follow-up decode t/s": {
+    "previous_unsloth": {
+      "median": 88.7,
+      "min": 61.5,
+      "max": 124.9,
+      "n": 15
+    },
+    "current_unsloth": {
+      "median": 81.1,
+      "min": 72.7,
+      "max": 114.1,
+      "n": 15
+    },
+    "gsq_iq3s": {
+      "max": 191.1,
+      "median": 140.8,
+      "min": 81.8,
+      "n": 15
+    }
+  },
+  "Agent follow-up TTFT s": {
+    "previous_unsloth": {
+      "median": 2.29,
+      "min": 1.863,
+      "max": 3.204,
+      "n": 15
+    },
+    "current_unsloth": {
+      "median": 2.959,
+      "min": 1.923,
+      "max": 4.493,
+      "n": 15
+    },
+    "gsq_iq3s": {
+      "max": 1.517,
+      "median": 1.294,
+      "min": 0.899,
+      "n": 15
+    }
+  }
+}

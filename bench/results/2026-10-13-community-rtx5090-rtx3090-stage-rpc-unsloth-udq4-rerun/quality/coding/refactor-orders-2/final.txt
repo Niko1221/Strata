@@ -1,0 +1,11 @@
+All tests pass on the first run — no repair rounds were needed.
+
+**Result:** `node --test acceptance.test.ts` exits 0 (it reports the file as a single top-level test: 1 pass, 0 fail). Running the test file directly enumerates the individual cases: **24 passed, 0 failed**, including the two dedicated helper tests for `./validation.ts` and `./aggregation.ts`.
+
+**Changes:**
+
+- [validation.ts](<ARTIFACTS>/quality/coding/refactor-orders-2/project/validation.ts) (new) — exports `validateOrders`, which rejects non-arrays with `RangeError('orders')`, rejects invalid records (including cancelled ones and bad `cancelled` types) with `RangeError('order')`, and returns new records with trimmed customer names without touching the input.
+- [aggregation.ts](<ARTIFACTS>/quality/coding/refactor-orders-2/project/aggregation.ts) (new) — exports `aggregateOrders`, which skips cancelled records, groups by customer into fresh summary objects, sums `priceCents * quantity` and quantities, and sorts by customer in code-point order.
+- [orders.ts](<ARTIFACTS>/quality/coding/refactor-orders-2/project/orders.ts) (modified) — keeps the exported `Order` and `Summary` types and `summarizeOrders`, which now simply returns `aggregateOrders(validateOrders(orders))`. The validation/aggregation logic was removed from it rather than duplicated. Both helper files use type-only imports from orders.ts, so there's no runtime import cycle.
+
+Tests, AGENTS.md, and config were left untouched; only the three allowed files were changed or created.
