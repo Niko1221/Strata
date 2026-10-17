@@ -1,0 +1,30 @@
+{
+  "commit": "477ac13cbe8e582c20484871ce459d20d82df09d",
+  "files": {
+    "expert-profile-sycl.bin": {
+      "sha256": "ddddf9b361dd1cb1e68ef8d130759fa15da3b84d74f21d37b28f377493b80bbc",
+      "bytes": 196632
+    },
+    "strata": {
+      "sha256": "cb7c3836a4f2865b2a2f558de57b7c4d963977fb3714c70f0a82061ceecc2358",
+      "bytes": 90719800
+    },
+    "index.txt": {
+      "sha256": "1afe12b36cd2d13bf122b741fa0e81e1f751319cc3c451e54ba75524d825f148",
+      "bytes": 93687
+    },
+    "native_experts.txt": {
+      "sha256": "ae28cf7a2a1c9063c4b55d6c8cf86d4d079dcddcf597f9e8697c9157d462c0ee",
+      "bytes": 3296
+    }
+  },
+  "build_options": [
+    "CMAKE_BUILD_TYPE:STRING=Release",
+    "STRATA_SYCL_AOT:STRING=bmg-g31"
+  ],
+  "strata_memory_limits": [
+    "MemoryMax=34359738368",
+    "MemorySwapMax=0",
+    "LimitMEMLOCK=infinity"
+  ]
+}

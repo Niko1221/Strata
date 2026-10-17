@@ -1,0 +1,14 @@
+[strata] 2026-10-17 09:17:01 engine started: <strata>/build-sycl-aot/strata --serve --pack <data>/packs/iq3_xxs --native <data>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf <data>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --expert-profile <strata>/data/expert-profile-sycl.bin --expert-cache auto --stream-experts --prefill 4096 --spec 4 --spec-min-p 0.5 --mtp <data>/mtp/rt --max-context 262144 --kv int8 --vram-reserve-mib 2048 --ple-io direct --kv-resident 32768 --prefill-borrow
+strata generate: profile <strata>/data/expert-profile-sycl.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 0.79 s (999 MiB/s)
+strata generate: GPU 0: Intel(R) Graphics [0xe223], compute capability 20.2
+strata generate: expert cache auto: 24.44 GiB free, 2048 MiB reserved (+184 MiB for the draft head) -> 10261 slots
+strata generate: expert cache 13758 slots, 22.26 GiB of VRAM; policy is
+strata generate: 12018 of 10818 experts missing from VRAM (+ 1200 in the prompt loan's slots) mirrored in pinned host memory (19.63 GiB, 16.9 s); the GPU reads them over PCIe
+strata generate: adaptive swaps off: with STRATA_VERIFY_NO_HOST an expert they move out of VRAM would be neither there nor mirrored
+strata trace: 4043 MiB free after the expert cache and the graphs
+strata generate: session is up (engine 0.1.45)
+strata: copy engine: the prompt path's expert copies run on the GPU's copy engine (queue group 1), not the compute engine (STRATA_COPY_ENGINE=0 turns it off)
+strata mtp: draft head over 106299 tokens (178.4 MiB)
+strata serve: 3779 MiB of VRAM free with everything loaded

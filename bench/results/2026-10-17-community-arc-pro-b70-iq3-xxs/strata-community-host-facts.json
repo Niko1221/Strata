@@ -1,0 +1,17 @@
+{
+  "cpu": "AMD Ryzen 9 PRO 3900 12-Core Processor",
+  "host_mem_total_kib": 65730400,
+  "kernel": "7.0.14-24-pve",
+  "pve_version": "pve-manager/9.2.21/4f6e0ac86f9e8c7f (running kernel: 7.0.14-24-pve)",
+  "ct_limits": {
+    "cores": "16",
+    "memory": "40960",
+    "swap": "10240",
+    "unprivileged": "1"
+  },
+  "background_load": [
+    "0.98",
+    "1.56",
+    "2.53"
+  ]
+}
