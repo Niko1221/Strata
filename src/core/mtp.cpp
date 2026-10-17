@@ -345,9 +345,11 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
+    const bool kv_f16k8v_was = qsa_kv_f16k8v();
     const bool kv_int8_was = qsa_kv_int8();
     qsa_set_kv_hybrid(false);
-    if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
+    qsa_set_kv_f16k8v(false);
+    if (kv_hybrid_was || kv_f16k8v_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4/k16v8: plain INT8
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
     if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
@@ -363,6 +365,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
+    qsa_set_kv_f16k8v(kv_f16k8v_was);
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;

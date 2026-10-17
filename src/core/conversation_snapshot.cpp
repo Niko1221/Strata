@@ -33,15 +33,18 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const auto s = strata::kernels::qsa_real_shapes();
-    const bool int8_keys = st.kv_int8 || st.kv_hybrid;
+    const bool k_int8 = st.k_int8();
+    const bool v_int8 = st.v_int8();
     if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
-        (st.kv_q4 && g.head_dim % 32) || (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
+        (st.kv_q4 && g.head_dim % 32) || ((k_int8 || v_int8) && !st.kv_q4 && g.head_dim % 64)) {
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
-                              : (size_t) g.head_dim * (int8_keys ? 1 : 2);
+                              : (size_t) g.head_dim * (k_int8 ? 1 : 2);
+    const size_t v_per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+                                : (size_t) g.head_dim * (v_int8 ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
     const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
@@ -54,13 +57,14 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
-                           int8_keys && !st.kv_q4 ? (uint64_t) (g.head_dim / 64) * 2 : 0}) ||
+                           k_int8 && !st.kv_q4 ? (uint64_t) (g.head_dim / 64) * 2 : 0}) ||
+        !product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv, v_per}) ||
+        !product(l.value_scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
+                                 v_int8 && !st.kv_q4 ? (uint64_t) (g.head_dim / 64) * 2 : 0}) ||
         !product(l.pooled, {(uint64_t) pooled, (uint64_t) g.idx_key_dim, sizeof(float)})) {
         error = "conversation snapshot: K/V byte count overflow";
         return false;
     }
-    l.value_data = l.data;
-    l.value_scales = l.scales;
     if (st.kv_hybrid) {
         if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
                                    (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
@@ -77,6 +81,9 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
     if (st.kv_hybrid)
         return {host ? st.host.k_q : st.k_q, host ? st.host.v_q4 : st.v_q4, host ? st.host.k_scale : st.k_scale,
                 nullptr, st.idx_pooled};
+    if (st.kv_f16k_q8v)
+        return {host ? st.host.k_pool : st.k_pool, host ? st.host.v_q : st.v_q, nullptr,
+                host ? st.host.v_scale : st.v_scale, st.idx_pooled};
     if (st.kv_q4)
         return {host ? st.host.k_q4 : st.k_q4, host ? st.host.v_q4 : st.v_q4, nullptr, nullptr, st.idx_pooled};
     if (st.kv_int8)
@@ -102,8 +109,10 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
         }
     }
     if (st.kv_mode == 2 && (!st.page_table ||
-        (st.kv_q4 ? !st.k_q4 || !st.v_q4 : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
-                                                    : !st.k_pool || !st.v_pool))) {
+        (st.kv_q4 ? !st.k_q4 || !st.v_q4
+                  : st.kv_f16k_q8v ? !st.k_pool || !st.v_q || !st.v_scale
+                  : st.kv_int8 ? !st.k_q || !st.v_q || !st.k_scale || !st.v_scale
+                               : !st.k_pool || !st.v_pool))) {
         error = "conversation snapshot: invalid draft ring";
         return false;
     }

@@ -44,8 +44,8 @@ struct KvHostPools {
 /// The KV storage format, for the functions below that move whole blocks (`fmt`): fp16, int8 (+ scales), q4_0, and
 /// K8V4 (`--kv k8v4`: K as int8 codes + scales, V as rotated q4_0 - three runs, `k_q`, `k_scale`, `v_q4`).
 /// (A bool `int8` argument still reads as kKvF16 / kKvInt8.)  kKvHybrid is 3, the number conversation snapshots
-/// already give K8V4.
-enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3 };
+/// already give K8V4; kKvF16K8V is 4, the mixed K16V8 format (FP16 K, INT8 V).
+enum KvFormat : int { kKvF16 = 0, kKvInt8 = 1, kKvQ4 = 2, kKvHybrid = 3, kKvF16K8V = 4 };
 
 /// K8V4's halves as the single-format append kernels see them, so a hybrid layer's host copy (and the prompt path's
 /// staging pool) is written by the same calls that write its VRAM pools: K is "int8 whose V is K", V is "q4_0 whose
@@ -59,6 +59,21 @@ inline KvHostPools kv_hybrid_k_half(const KvHostPools& h) {
 inline KvHostPools kv_hybrid_v_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q4 = h.v_q4; r.v_q4 = h.v_q4;
+    return r;
+}
+
+/// K16V8's halves for the single-format append kernels: the folded duplicate points both sides at the
+/// array the half owns, so the kernel's "unused" lane writes the same value to the same address.
+inline KvHostPools kv_f16_k_half(const KvHostPools& h) {
+    KvHostPools r;
+    r.k_pool = h.k_pool; r.v_pool = h.k_pool;
+    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
+    return r;
+}
+inline KvHostPools kv_int8_v_half(const KvHostPools& h) {
+    KvHostPools r;
+    r.k_q = h.v_q; r.v_q = h.v_q; r.k_scale = h.v_scale; r.v_scale = h.v_scale;
+    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 

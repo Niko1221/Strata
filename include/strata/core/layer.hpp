@@ -223,6 +223,13 @@ struct QsaState {
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
     bool kv_hybrid = false;
+    /// Mixed K16V8 (`--kv k16v8`): K in FP16, V in INT8 (codes + one FP16 scale per 64 values): 1,552 B per cell.
+    /// Uses k_pool + v_q/v_scale. Unrotated on both sides; the MTP drafter stays plain INT8, as under K8V4.
+    bool kv_f16k_q8v = false;
+    /// The K side is INT8 codes (plain int8 or the hybrid's K half).
+    bool k_int8() const { return kv_int8 || kv_hybrid; }
+    /// The V side is INT8 codes (plain int8 or the mixed K16V8's V half). The hybrid's V is Q4_0.
+    bool v_int8() const { return kv_int8 || kv_f16k_q8v; }
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
@@ -318,8 +325,13 @@ bool qsa_kv_q4();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
+/// Mixed K16V8 (`--kv k16v8`): K in FP16, V in INT8 (codes + FP16 scale per 64): 1,552 B per cell. Streams too.
+void qsa_set_kv_f16k8v(bool enabled);
+bool qsa_kv_f16k8v();
+/// The state's KV format for the block-moving functions of kv_stream.hpp
+/// (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid / kKvF16K8V).
 inline int qsa_kv_format(const QsaState& st) {
+    if (st.kv_f16k_q8v) return strata::kernels::kKvF16K8V;
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }

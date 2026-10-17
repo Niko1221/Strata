@@ -49,13 +49,25 @@ struct Fixture {
     Fixture(int fmt, int mode) {
         auto& st = state;
         st.kv_mode = mode; st.kv_int8 = fmt==kKvInt8; st.kv_q4 = fmt==kKvQ4; st.kv_hybrid = fmt==3;
+        st.kv_f16k_q8v = fmt==4;
         st.n_pages = 24; st.n_slots = mode ? 4 : st.n_pages;
         st.max_cells = st.n_pages * 4; st.idx_pooled_rows = mode==2 ? 2 : st.max_cells/4+2;
         const size_t per = fmt==kKvQ4 ? kv_q4_bytes_per_head((int)g.head_dim) : g.head_dim*((st.kv_int8 || st.kv_hybrid) ? 1:2);
         const size_t rows = st.max_cells*g.n_head_kv, slot_rows = st.n_slots*4*g.n_head_kv;
         sizes = {rows*per, rows*per, fmt==kKvInt8 ? rows*(g.head_dim/64)*2:0,
                  fmt==kKvInt8 ? rows*(g.head_dim/64)*2:0, (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
-        if (fmt==3) {
+        if (fmt==4) {
+            sizes = {rows*per, rows*g.head_dim, 0, rows*(g.head_dim/64)*2,
+                     (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
+            alloc(st.k_pool,slot_rows*per); alloc(st.v_q,slot_rows*g.head_dim);
+            alloc(st.v_scale,slot_rows*(g.head_dim/64)*2);
+            if (mode) {
+                alloc(st.host.k_pool,sizes[0],true); alloc(st.host.v_q,sizes[1],true);
+                alloc(st.host.v_scale,sizes[3],true);
+            }
+            sources[0]=mode?st.host.k_pool:st.k_pool; sources[1]=mode?st.host.v_q:st.v_q;
+            sources[3]=mode?st.host.v_scale:st.v_scale;
+        } else if (fmt==3) {
             sizes = {rows*per, rows*kv_q4_bytes_per_head((int)g.head_dim), rows*(g.head_dim/64)*2, 0,
                      (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
             alloc(st.k_q,sizes[0]); alloc(st.v_q4,sizes[1]); alloc(st.k_scale,sizes[2]);
@@ -305,7 +317,7 @@ void full_session(int fmt, int mode, int experts) {
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
-    for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
+    for (int fmt : std::array<int,5>{kKvF16,kKvInt8,kKvQ4,3,4}) for (int mode : {0,1,2}) {
         if (fmt==3 && mode!=0) continue;
         Fixture f(fmt,mode);
         if (fmt==3) {
@@ -373,7 +385,8 @@ int main() {
                 const int64_t b1=(upto+s.page_size-1)/s.page_size,b0=std::max<int64_t>(0,b1-f.state.n_slots);
                 const size_t block=kv_block_bytes(s,fmt)/2;
                 // Codes and scales are separate in INT8; check code bytes here.
-                const size_t code_block=fmt==kKvInt8 ? s.page_size*s.n_head_kv*s.head_dim : block;
+                const size_t code_block=fmt==kKvInt8 ? s.page_size*s.n_head_kv*s.head_dim
+                                      : fmt==4 ? s.page_size*s.n_head_kv*s.head_dim*2 : block;
                 const void* slots=fmt==kKvQ4?(void*)f.state.k_q4:fmt==kKvInt8?(void*)f.state.k_q:(void*)f.state.k_pool;
                 std::vector<uint8_t> got(code_block);
                 for (int64_t page=b0;page<b1;++page) {

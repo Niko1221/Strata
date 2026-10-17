@@ -79,6 +79,10 @@ template <int KV_MODE>
 __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long long row, int d0, float* out) {
     if constexpr (KV_MODE == 0) load8_f16(p, value, row, d0, out);
     else if constexpr (KV_MODE == 1) load8_q8(p, value, row, d0, out);
+    else if constexpr (KV_MODE == 4) {   // K16V8: FP16 K, INT8 V
+        if (value) load8_q8(p, value, row, d0, out);
+        else load8_f16(p, value, row, d0, out);
+    }
     else if constexpr (KV_MODE == 3) {
         // hybrid K8V4: both sides are defined - K unrotated INT8, V rotated Q4_0 - so a value=true call
         // reads the Q4_0 pool instead of dereferencing the null v_q (no call site does today; PR review)
@@ -265,6 +269,9 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
         if constexpr (KV_MODE == 0) {
             v = __half2float(__ushort_as_half(p.v_pool[srow[c] * HD + t]));
         } else if constexpr (KV_MODE == 1) {
+            const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
+            v = (float) p.v_q[srow[c] * HD + t] * sc;
+        } else if constexpr (KV_MODE == 4) {   // K16V8: V is INT8
             const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
             v = (float) p.v_q[srow[c] * HD + t] * sc;
         } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
@@ -525,6 +532,9 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     if constexpr (KV_MODE == 0) {
         return __half2float(__ushort_as_half(p.v_pool[row * HD + d]));
     } else if constexpr (KV_MODE == 1) {
+        const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
+        return (float) p.v_q[row * HD + d] * sc;
+    } else if constexpr (KV_MODE == 4) {
         const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
         return (float) p.v_q[row * HD + d] * sc;
     } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
@@ -902,9 +912,10 @@ bool lane_cell_attn() {
     return on;
 }
 
-// 0 fp16, 1 int8, 2 q4_0, 3 int8 K with q4_0 V
+// 0 fp16, 1 int8, 2 q4_0, 3 int8 K with q4_0 V, 4 fp16 K with int8 V
 int attn_kv_mode(const QsaAttnPools& p) {
-    return p.k_q4 != nullptr ? 2 : (p.k_q != nullptr && p.v_q4 != nullptr ? 3 : (p.k_q != nullptr ? 1 : 0));
+    return p.k_q4 != nullptr ? 2 : (p.k_q != nullptr && p.v_q4 != nullptr ? 3
+                        : (p.k_pool != nullptr && p.v_q != nullptr ? 4 : (p.k_q != nullptr ? 1 : 0)));
 }
 
 // STRATA_ATTN_MERGE_V2: 1 merges with attn_merge_v2_kernel, 0 with attn_merge_kernel.  Unset it follows
@@ -934,8 +945,7 @@ void launch_merge(int v2, const float* part_acc, const float* part_m, const floa
 // kernel where it is built (the parity harness: never the environment).
 void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                          int64_t cap, const QsaShapes& s, float* scratch, int64_t n_q, cudaStream_t st, int kernel) {
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = attn_kv_mode(pools);
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
     // per query: [acc: n_chunks*n_head*HD][m: n_chunks*n_head][l: n_chunks*n_head], all offsets from one stride
     const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
@@ -965,7 +975,8 @@ void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_
 #endif
 #define STRATA_ATTN_LC(M) attn_chunk_kernel<M, true><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
-        if (kv_mode == 3) STRATA_ATTN_LC(3);
+        if (kv_mode == 4) STRATA_ATTN_LC(4);
+        else if (kv_mode == 3) STRATA_ATTN_LC(3);
         else if (kv_mode == 2) STRATA_ATTN_LC(2);
         else if (kv_mode == 1) STRATA_ATTN_LC(1);
         else STRATA_ATTN_LC(0);
@@ -1007,7 +1018,11 @@ void launch_chunks_batch(const float* q, const QsaAttnPools& pools, const int32_
                                                           scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
     else
 #endif
-    if (kv_mode == 3)
+    if (kv_mode == 4)
+        STRATA_ATTN_CHUNK_SEL(4, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
+                                                                (int) s.page_size, scale, part_acc, part_m, part_l,
+                                                                n_chunks, (int) cap, stride);
+    else if (kv_mode == 3)
         STRATA_ATTN_CHUNK_SEL(3, pre)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv,
                                                                 (int) s.page_size, scale, part_acc, part_m, part_l,
                                                                 n_chunks, (int) cap, stride);
@@ -1093,12 +1108,14 @@ bool qsa_decode_attn_slots(const float* q, const QsaAttnSlotPools& pools, const 
     cudaStream_t st = (cudaStream_t) stream;
 #define STRATA_ATTN_SLOTS(M, LC) attn_chunk_slots_kernel<M, LC><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
     if (lane_cell) {
-        if (kv_mode == 3) STRATA_ATTN_SLOTS(3, true);
+        if (kv_mode == 4) STRATA_ATTN_SLOTS(4, true);
+        else if (kv_mode == 3) STRATA_ATTN_SLOTS(3, true);
         else if (kv_mode == 2) STRATA_ATTN_SLOTS(2, true);
         else if (kv_mode == 1) STRATA_ATTN_SLOTS(1, true);
         else STRATA_ATTN_SLOTS(0, true);
     } else {
-        if (kv_mode == 3) STRATA_ATTN_SLOTS(3, false);
+        if (kv_mode == 4) STRATA_ATTN_SLOTS(4, false);
+        else if (kv_mode == 3) STRATA_ATTN_SLOTS(3, false);
         else if (kv_mode == 2) STRATA_ATTN_SLOTS(2, false);
         else if (kv_mode == 1) STRATA_ATTN_SLOTS(1, false);
         else STRATA_ATTN_SLOTS(0, false);
@@ -1123,8 +1140,7 @@ void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, co
         std::fprintf(stderr, "qsa_decode_attn_batch_rows: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = attn_kv_mode(pools);
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
     const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
     float* part_acc = scratch;
@@ -1152,7 +1168,8 @@ void qsa_decode_attn_batch_rows(const float* q, const QsaAttnPoolsRows& rows, co
     }
 #define STRATA_ATTN_ROWS(M) attn_chunk_rows_kernel<M><<<grid, THREADS, 0, st>>>(q, rows, ids, steps, (int) s.n_head_kv, \
         (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
-    if (kv_mode == 3) STRATA_ATTN_ROWS(3);
+    if (kv_mode == 4) STRATA_ATTN_ROWS(4);
+    else if (kv_mode == 3) STRATA_ATTN_ROWS(3);
     else if (kv_mode == 2) STRATA_ATTN_ROWS(2);
     else if (kv_mode == 1) STRATA_ATTN_ROWS(1);
     else STRATA_ATTN_ROWS(0);
@@ -1178,11 +1195,11 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
-    if (kv_mode == 3 ? (!pools.k_scale || !pools.v_q4)
+    const int kv_mode = attn_kv_mode(pools);
+    if (kv_mode == 4 ? (!pools.k_pool || !pools.v_q || !pools.v_scale)
+                     : (kv_mode == 3 ? (!pools.k_scale || !pools.v_q4)
                      : (kv_mode == 2 ? (!pools.v_q4) : (kv_mode == 1 ? (!pools.v_q || !pools.k_scale || !pools.v_scale)
-                                                                     : (!pools.k_pool || !pools.v_pool)))) {
+                                                                     : (!pools.k_pool || !pools.v_pool))))) {
         std::fprintf(stderr, "qsa_decode_attn: incomplete KV pools\n");
         std::exit(1);
     }
@@ -1199,7 +1216,10 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
                                                           scale, part_acc, part_m, part_l, n_chunks, 0, 0);
     else
 #endif
-    if (kv_mode == 3)
+    if (kv_mode == 4)
+        STRATA_ATTN_CHUNK(4)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
+                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+    else if (kv_mode == 3)
         STRATA_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
                                                         scale, part_acc, part_m, part_l, n_chunks, 0, 0);
     else if (kv_mode == 2)

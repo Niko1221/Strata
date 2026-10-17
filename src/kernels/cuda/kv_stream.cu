@@ -33,7 +33,15 @@ struct Runs {
 Runs runs_of(const QsaAttnPools& slots, const KvHostPools& host, int fmt, const QsaShapes& s) {
     const int rows = (int) (s.n_head_kv * s.page_size);
     Runs r{};
-    if (fmt == kKvHybrid) {   // K8V4: int8 K codes, their scales, rotated q4_0 V
+    if (fmt == kKvF16K8V) {   // K16V8: fp16 K, int8 V codes, V scales
+        const int k = rows * (int) s.head_dim * 2;
+        const int v = rows * (int) s.head_dim;
+        const int scales = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
+        r.src[0] = (const uint8_t*) host.k_pool; r.dst[0] = (uint8_t*) slots.k_pool; r.len[0] = k;
+        r.src[1] = (const uint8_t*) host.v_q;    r.dst[1] = (uint8_t*) slots.v_q;    r.len[1] = v;
+        r.src[2] = (const uint8_t*) host.v_scale; r.dst[2] = (uint8_t*) slots.v_scale; r.len[2] = scales;
+        r.n = 3;
+    } else if (fmt == kKvHybrid) {   // K8V4: int8 K codes, their scales, rotated q4_0 V
         const int codes = rows * (int) s.head_dim, scales = rows * (int) (s.head_dim / KV_Q8_GROUP) * 2;
         const int v = rows * (int) kv_q4_bytes_per_head((int) s.head_dim);
         r.src[0] = (const uint8_t*) host.k_q;     r.dst[0] = (uint8_t*) slots.k_q;     r.len[0] = codes;
@@ -201,6 +209,9 @@ uint64_t kv_block_bytes(const QsaShapes& s, int fmt) {
     if (fmt == kKvHybrid)
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 +
                rows * kv_q4_bytes_per_head((int) s.head_dim);
+    if (fmt == kKvF16K8V)
+        return rows * (uint64_t) s.head_dim * 2 + rows * (uint64_t) s.head_dim +
+               rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2;
     if (fmt == kKvQ4) return rows * kv_q4_bytes_per_head((int) s.head_dim) * 2;
     return fmt == kKvInt8 ? rows * (uint64_t) s.head_dim * 2 + rows * (uint64_t) (s.head_dim / KV_Q8_GROUP) * 2 * 2
                 : rows * (uint64_t) s.head_dim * 2 * 2;

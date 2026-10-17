@@ -1634,6 +1634,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                            kc_b, kc_b, (int) (NKV * HD), n, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_steps(st.v_q4, st.v_q4, st.page_table, step_b, kStepCount, n, vc_b, vc_b, s, cs,
                                            mirror ? &hv : nullptr);
+                    } else if (st.kv_f16k_q8v) {   // K16V8: FP16 K (per token) + INT8 V (batched)
+                        const KvHostPools hk = kv_f16_k_half(st.host), hv = kv_int8_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        for (int t = tb; t < te; ++t)
+                            kv_append_step(st.k_pool, st.k_pool, st.page_table, step_ + t * kStepCount,
+                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs,
+                                           mirror ? &hk : nullptr);
+                        kv_append_q8_steps(st.v_q, st.v_q, st.v_scale, st.v_scale, st.page_table, step_b, kStepCount,
+                                           vc_b, vc_b, (int) (NKV * HD), n, s, cs, mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
                         kv_append_q4_steps(st.k_q4, st.v_q4, st.page_table, step_b, kStepCount, n, kc_b, vc_b, s, cs,
                                            &st.host);
@@ -1655,6 +1664,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, mirror ? &hk : nullptr);
                         kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
+                    } else if (st.kv_f16k_q8v) {
+                        const KvHostPools hk = kv_f16_k_half(st.host), hv = kv_int8_v_half(st.host);
+                        const bool mirror = st.host.present();
+                        kv_append_step(st.k_pool, st.k_pool, st.page_table, step_t,
+                                       kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, mirror ? &hk : nullptr);
+                        kv_append_q8_step(st.v_q, st.v_q, st.v_scale, st.v_scale, st.page_table, step_t,
+                                          vcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, mirror ? &hv : nullptr);
                     } else if (st.kv_q4)
                         kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kcur_ + t * NKV * HD,
                                           vcur_ + t * NKV * HD, s, cs, &st.host);

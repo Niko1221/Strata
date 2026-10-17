@@ -57,6 +57,10 @@ struct Pools {   // one K/V pool set of `pages` pages
             p.k_q = host ? halloc<int8_t>(rows * s.head_dim) : dalloc<int8_t>(rows * s.head_dim);
             p.k_scale = host ? halloc<uint16_t>(rows * 4) : dalloc<uint16_t>(rows * 4);
             p.v_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
+        } else if (fmt == k::kKvF16K8V) {
+            p.k_pool = host ? halloc<uint16_t>(rows * s.head_dim) : dalloc<uint16_t>(rows * s.head_dim);
+            p.v_q = host ? halloc<int8_t>(rows * s.head_dim) : dalloc<int8_t>(rows * s.head_dim);
+            p.v_scale = host ? halloc<uint16_t>(rows * 4) : dalloc<uint16_t>(rows * 4);
         } else if (fmt == k::kKvQ4) {
             const size_t b = rows * k::kv_q4_bytes_per_head((int) s.head_dim);
             p.k_q4 = host ? halloc<uint8_t>(b) : dalloc<uint8_t>(b);
@@ -87,6 +91,12 @@ void append(const Pools& pl, const int32_t* table, const int32_t* step, const fl
         k::kv_append_q8_step(pl.p.k_q, pl.p.k_q, pl.p.k_scale, pl.p.k_scale, table, step, kc, kc, s, nullptr,
                              host ? &hk : nullptr);
         k::kv_append_q4_step(pl.p.v_q4, pl.p.v_q4, table, step, vc, vc, s, nullptr, host ? &hv : nullptr);
+    } else if (fmt == k::kKvF16K8V) {   // K16V8: the same folded calls, FP16 K + INT8 V
+        const k::KvHostPools hk = host ? k::kv_f16_k_half(*host) : k::KvHostPools{},
+                             hv = host ? k::kv_int8_v_half(*host) : k::KvHostPools{};
+        k::kv_append_step(pl.p.k_pool, pl.p.k_pool, table, step, kc, kc, s, nullptr, host ? &hk : nullptr);
+        k::kv_append_q8_step(pl.p.v_q, pl.p.v_q, pl.p.v_scale, pl.p.v_scale, table, step, vc, vc, s, nullptr,
+                             host ? &hv : nullptr);
     } else if (fmt == k::kKvQ4) k::kv_append_q4_step(pl.p.k_q4, pl.p.v_q4, table, step, kc, vc, s, nullptr, host);
     else if (fmt == k::kKvInt8) k::kv_append_q8_step(pl.p.k_q, pl.p.v_q, pl.p.k_scale, pl.p.v_scale, table, step, kc, vc, s, nullptr, host);
     else k::kv_append_step(pl.p.k_pool, pl.p.v_pool, table, step, kc, vc, s, nullptr, host);
@@ -115,7 +125,8 @@ std::vector<int32_t> selection(int64_t n_kv, int64_t width, std::mt19937& rng) {
 }
 
 bool run(int fmt) {
-    const char* name = fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
+    const char* name = fmt == k::kKvHybrid ? "k8v4" : fmt == k::kKvF16K8V ? "k16v8"
+                     : fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
     k::QsaShapes s = k::qsa_real_shapes();
     const int64_t N = 40000, n_blocks = (N + 3) / 4, n_slots = 8 * 516 + 700;   // must evict: slots < blocks
     const int64_t cap = k::qsa_selection_width(k::kTopkMaxCells, s), NQ = 8;
@@ -237,10 +248,17 @@ bool run(int fmt) {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     std::printf("kv_stream_parity: streamed vs resident KV, bitwise\n");
-    const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid);
-    if (!a || !b || !c || !d) ++g_fail;
+    const char* only = argc > 1 ? argv[1] : nullptr;
+    auto want = [&](const char* n) { return only == nullptr || std::strcmp(only, n) == 0; };
+    bool a = true, b = true, c = true, d = true, e = true;
+    if (want("int8")) a = run(k::kKvInt8);
+    if (want("fp16")) b = run(k::kKvF16);
+    if (want("q4_0")) c = run(k::kKvQ4);
+    if (want("k8v4")) d = run(k::kKvHybrid);
+    if (want("k16v8")) e = run(k::kKvF16K8V);
+    if (!a || !b || !c || !d || !e) ++g_fail;
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

@@ -1011,6 +1011,10 @@ void take_stage(Alloc& o_borrowed, const core::SessionState& ss, const strata::k
         st.k_q = o.take<int8_t>(rows * s.head_dim, ok);
         st.k_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
+    } else if (q0.kv_f16k_q8v) {   // K16V8: FP16 K, INT8 V codes, V scales
+        st.k_pool = o.take<uint16_t>(rows * s.head_dim, ok);
+        st.v_q = o.take<int8_t>(rows * s.head_dim, ok);
+        st.v_scale = o.take<uint16_t>(rows * (s.head_dim / 64), ok);
     } else if (q0.kv_q4) {
         st.k_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
         st.v_q4 = o.take<uint8_t>(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), ok);
@@ -3107,7 +3111,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
                                                           host_w, staged ? &m.stage : nullptr);
-                        else
+                        else if (st.kv_f16k_q8v) {   // K16V8: two folded appends (the K8V4 idiom)
+                            const strata::kernels::KvHostPools hk = strata::kernels::kv_f16_k_half(st.host),
+                                                            sk = strata::kernels::kv_f16_k_half(m.stage),
+                                                            hv = strata::kernels::kv_int8_v_half(st.host),
+                                                            sv = strata::kernels::kv_int8_v_half(m.stage);
+                            kv_append(m.Kc, m.Kc, T, p0, st.page_table, s.page_size, st.k_pool, st.k_pool,
+                                      nullptr, nullptr, nullptr, nullptr, m.cs, host_w ? &hk : nullptr,
+                                      staged ? &sk : nullptr);
+                            kv_append(m.Vc, m.Vc, T, p0, st.page_table, s.page_size, nullptr, nullptr,
+                                      st.v_q, st.v_q, st.v_scale, st.v_scale, m.cs, host_w ? &hv : nullptr,
+                                      staged ? &sv : nullptr);
+                        } else
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
