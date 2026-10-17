@@ -22,7 +22,16 @@ Controlled scaling run on one bare-metal host. Each row used a fresh Strata proc
 | 3 | 1,772.6 | 2.289 | 2,752.9 | 5.866 | 3,583.8 | 8.990 |
 | 4 | 1,828.8 | 2.219 | 2,887.2 | 5.594 | 3,982.2 | 8.113 |
 
-From 1 to 4 GPUs, median chat decode improved 1.89x and 32K prompt processing improved 2.09x.
+### Extended 128K prefill
+
+| GPUs | Actual prompt tokens | Prompt tok/s median (range) | TTFT s median (range) | Scaling vs. 1 GPU |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 127,975 | 1,820.0 (1,819.1–1,824.2) | 70.460 (70.293–70.484) | 1.00× |
+| 2 | 127,975 | 3,481.0 (3,478.4–3,491.8) | 36.901 (36.791–36.930) | 1.91× |
+| 3 | 127,975 | 4,837.3 (4,821.9–4,855.2) | 26.597 (26.495–26.676) | 2.66× |
+| 4 | 127,975 | 5,925.9 (5,923.9–5,943.5) | 21.734 (21.686–21.735) | 3.26× |
+
+From 1 to 4 GPUs, median chat decode improved 1.89×, 32K prompt processing improved 2.09×, and 128K prompt processing improved 3.26×.
 
 ## Hardware and software
 
@@ -41,12 +50,13 @@ GPU order was `[2]`, `[2,3]`, `[2,3,1]`, then `[2,3,1,0]`.
 
 ## Method and artifacts
 
-The built-in long suite ran three repetitions per configuration. Model load time was excluded. No other inference workload ran during the matrix.
+The built-in long suite ran three repetitions per configuration. The separate 128K extension reused Strata's prompt generator, calibration, timing parser, and unique fresh-prompt tags for three repetitions per configuration with a 24-token output cap. Model load and warm-up time were excluded, every measured 128K request reported zero reused tokens, and no other inference workload ran during either matrix.
 
 - Raw per-request data: [`results/`](results/)
 - Exact launch configurations: [`configs/`](configs/)
-- Matrix runner: [`run-matrix.sh`](run-matrix.sh)
+- Stock matrix runner: [`run-matrix.sh`](run-matrix.sh)
+- 128K companion and matrix runner: [`bench-128k.py`](bench-128k.py), [`run-128k-matrix.sh`](run-128k-matrix.sh)
 
 ## Limitations
 
-Speed suite only; no correctness or long-context recall test was run. Results cover one host, one model quantization, and one 220 W power limit.
+Speed suite only; no correctness or long-context recall test was run. The 128K extension measures ingestion speed, not answer quality. Results cover one host, one model quantization, and one 220 W power limit.

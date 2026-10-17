@@ -1,0 +1,216 @@
+{
+ "schema": 1,
+ "tool": "bench-128k.py using tools/strata_bench.py",
+ "date": "2026-10-17",
+ "params": {
+  "runs": 3,
+  "think": false,
+  "target_prompt_tokens": 131072,
+  "generated_token_cap": 24,
+  "fresh_prompt_tags": true,
+  "warmup_excluded": true,
+  "model_load_excluded": true
+ },
+ "elapsed_s": 69.25054287910461,
+ "machine": {
+  "gpu": [
+   "NVIDIA GeForce RTX 3090",
+   "NVIDIA GeForce RTX 3090",
+   "NVIDIA GeForce RTX 3090",
+   "NVIDIA GeForce RTX 3090"
+  ],
+  "gpu_vram_mib": 98304,
+  "gpu_driver": "595.91.07",
+  "cuda": "13.2",
+  "cpu": "AMD EPYC 7702 64-Core Processor",
+  "cpu_cores": 64,
+  "cpu_threads": 128,
+  "ram_gib": 247.3,
+  "os": "Linux 7.0.0-38-generic",
+  "python": "3.14.4",
+  "strata_version": "0.1.45",
+  "strata_commit": "477ac13c",
+  "engine_version": "0.1.45",
+  "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+  "quant": "UD-IQ4_XS",
+  "context": 262144,
+  "parallel_slots": 1,
+  "config": {
+   "exe": "strata",
+   "args": [
+    "--pack",
+    "unsloth-ud-iq4_xs",
+    "--native",
+    "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "--expert-profile",
+    "expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--resident-budget-gib",
+    "55"
+   ],
+   "model_name": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+   "lib_dirs": [
+    "/usr/local/cuda-13.0/bin",
+    "/usr/local/cuda-13.0/lib64"
+   ],
+   "port": 8080,
+   "gpu": [
+    2,
+    3,
+    1,
+    0
+   ],
+   "gpus_asked": true,
+   "layer_split": "auto",
+   "open_browser": false
+  },
+  "launch": "strata --pack unsloth-ud-iq4_xs --native Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --resident-budget-gib 55",
+  "engine_info": {
+   "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+   "max_context": 262144,
+   "images": false,
+   "version": "0.1.45",
+   "logit_bias": 1,
+   "context": 262144,
+   "kv": "int8",
+   "kv_resident": 32768,
+   "expert_slots": 24576,
+   "expert_cache_mib": 56762,
+   "expert_slots_primary": 6144,
+   "expert_cache_primary_mib": 14612,
+   "spec": 6,
+   "mtp_max": 4,
+   "lookup": 3,
+   "vram_free_mib": 4055,
+   "cvec": 0,
+   "arena_mib": 15354,
+   "pool_workers": 63,
+   "pcie_frac": "0.55",
+   "spec_min_p": "0.50",
+   "conversation_cache_mib": 0,
+   "conversation_cache_slots": 4,
+   "conversation_cache_min_free_mib": 2560,
+   "conversation_cache_min_tokens": 0,
+   "tail_role_token": -1,
+   "vram_elastic": 0,
+   "prefill_cap": 8192,
+   "prefill_stages": 4,
+   "stream_all_min": 1024,
+   "prefill_pipe": 0,
+   "engine": "0.1.45"
+  },
+  "vram_after": {
+   "elastic": false
+  }
+ },
+ "results": {
+  "chat": {},
+  "prompts": {
+   "128K": {
+    "target_tokens": 131072,
+    "requests": [
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 21.735,
+      "total_s": 21.981,
+      "prompt_tokens": 127975,
+      "reused_tokens": 0,
+      "read_tokens": 127975,
+      "generated_tokens": 24,
+      "prompt_tps": 5925.9,
+      "prompt_tps_source": "engine",
+      "decode_tps": 92.5,
+      "decode_tps_source": "engine",
+      "prompt_ms": 21596.0,
+      "decode_ms": 259.5,
+      "drafts_offered": 20,
+      "drafts_accepted": 15,
+      "run": 0
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 21.686,
+      "total_s": 22.001,
+      "prompt_tokens": 127975,
+      "reused_tokens": 0,
+      "read_tokens": 127975,
+      "generated_tokens": 24,
+      "prompt_tps": 5943.5,
+      "prompt_tps_source": "engine",
+      "decode_tps": 73.0,
+      "decode_tps_source": "engine",
+      "prompt_ms": 21531.9,
+      "decode_ms": 328.7,
+      "drafts_offered": 27,
+      "drafts_accepted": 9,
+      "run": 1
+     },
+     {
+      "ok": true,
+      "err": null,
+      "ttft_s": 21.734,
+      "total_s": 21.987,
+      "prompt_tokens": 127975,
+      "reused_tokens": 0,
+      "read_tokens": 127975,
+      "generated_tokens": 24,
+      "prompt_tps": 5923.9,
+      "prompt_tps_source": "engine",
+      "decode_tps": 90.1,
+      "decode_tps_source": "engine",
+      "prompt_ms": 21603.0,
+      "decode_ms": 266.3,
+      "drafts_offered": 22,
+      "drafts_accepted": 15,
+      "run": 2
+     }
+    ],
+    "prompt_tps": {
+     "median": 5925.9,
+     "min": 5923.9,
+     "max": 5943.5,
+     "n": 3
+    },
+    "ttft_s": {
+     "median": 21.734,
+     "min": 21.686,
+     "max": 21.735,
+     "n": 3
+    },
+    "prompt_tokens": {
+     "median": 127975,
+     "min": 127975,
+     "max": 127975,
+     "n": 3
+    },
+    "reused_tokens": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    }
+   }
+  },
+  "agent": {},
+  "clients": {},
+  "skipped": {},
+  "failures": []
+ }
+}
