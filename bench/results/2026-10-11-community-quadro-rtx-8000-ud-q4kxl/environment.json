@@ -1,0 +1,170 @@
+{
+ "collected_at": "2026-10-11T12:52:31+0000",
+ "hostname": "z620-ai",
+ "os": "Ubuntu 24.04.4 LTS\"\n",
+ "kernel": "6.8.0-146-generic",
+ "nvcc_version": "release 12.0",
+ "cuda_build_dir": "/usr/local/cuda-12.2/bin,/usr/local/cuda-12.2/lib64",
+ "cuda_driver_reported": "580.178.04",
+ "rocm": "n/a (CUDA build)",
+ "gpus": [
+  {
+   "name": "Quadro RTX 8000",
+   "index": "0",
+   "memory_total_mib": "49152 MiB",
+   "memory_used_mib": "48180 MiB",
+   "driver_version": "580.178.04",
+   "power_limit_w": "200.00 W",
+   "power_draw_w": "99.35 W",
+   "pcie_gen_current": "3",
+   "pcie_gen_max": "3",
+   "pcie_width_current": "16",
+   "pcie_width_max": "16",
+   "temperature_c": "68",
+   "clock_sm_mhz": "1905 MHz",
+   "clock_sm_max_mhz": "2100 MHz",
+   "vbios": "90.02.4A.00.01"
+  }
+ ],
+ "cpu": {
+  "model": "Intel(R) Xeon(R) CPU E5-2687W 0 @ 3.10GHz",
+  "logical_processors": 16,
+  "physical_cores": "8",
+  "avx2": false,
+  "avx512f": false,
+  "avx512bw": false,
+  "amx_tile": false,
+  "governor": "schedutil",
+  "march": "-march=                     \t\tsandybridge"
+ },
+ "memory": {
+  "mem_total_gib": 125.72,
+  "mem_available_gib": 82.23,
+  "swap_total_gib": 8.0,
+  "hugepages_total": "0",
+  "rated_ram_speed": "not measured (needs root)"
+ },
+ "storage_model_dir": {
+  "device": "sda2",
+  "rotational": "not measured",
+  "model": "not measured"
+ },
+ "storage_repo_dir": {
+  "device": "sda2",
+  "rotational": "not measured",
+  "model": "not measured"
+ },
+ "power_profile": "not measured",
+ "background_load": {
+  "loadavg_1_5_15": "6.42 5.00 2.84",
+  "other_gpu_processes": "27502, /home/asx/sources/Strata/engine/strata-vision, 1266 MiB\n27516, /home/asx/sources/Strata/engine/strata, 46836 MiB"
+ },
+ "strata": {
+  "repo": "/home/asx/sources/Strata",
+  "commit": "61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406",
+  "commit_short": "61b3fb5d",
+  "describe": "v0.1.42",
+  "dirty": true,
+  "engine_version": "0.1.42",
+  "build_provenance": {
+   "source": "local",
+   "version": "0.1.42",
+   "archs": [
+    75
+   ],
+   "vision": "gpu",
+   "cuda_dirs": [
+    "/usr/local/cuda-12.2/bin",
+    "/usr/local/cuda-12.2/lib64"
+   ],
+   "src": "1e0c97588848ea0f",
+   "vision_src": "1fb2b3fb797ec402",
+   "isa_floor": "avx"
+  }
+ },
+ "engine_config": {
+  "config_file": "strata-unsloth-ud-q4_k_xl.json",
+  "args": [
+   "--pack",
+   "/opt/models/gguf/packs/unsloth-ud-q4_k_xl",
+   "--native",
+   "/opt/models/gguf/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+   "--expert-profile",
+   "/home/asx/sources/Strata/data/expert-profile.bin",
+   "--expert-cache",
+   "auto",
+   "--prefill",
+   "auto",
+   "--spec",
+   "4",
+   "--mtp",
+   "/opt/models/gguf/mtp/rt",
+   "--max-context",
+   "131072",
+   "--kv",
+   "int8",
+   "--kv-resident",
+   "32768",
+   "--resident-budget-gib",
+   "71",
+   "--vision",
+   "--vram-reserve-mib",
+   "700",
+   "--pcie-frac",
+   "0.32",
+   "--spec-min-p",
+   "0.70"
+  ],
+  "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+  "port": 8080,
+  "gpu": 0,
+  "vision": true
+ },
+ "engine_reported": {
+  "model": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+  "max_context": 131072,
+  "images": true,
+  "version": "0.1.42",
+  "logit_bias": 1,
+  "context": 131072,
+  "kv": "int8",
+  "kv_resident": 32768,
+  "expert_slots": 13099,
+  "expert_cache_mib": 39173,
+  "expert_slots_primary": 13099,
+  "expert_cache_primary_mib": 39173,
+  "spec": 6,
+  "mtp_max": 4,
+  "lookup": 3,
+  "vram_free_mib": 335,
+  "cvec": 0,
+  "arena_mib": 34276,
+  "pool_workers": 7,
+  "pcie_frac": "0.32",
+  "spec_min_p": "0.70",
+  "conversation_cache_mib": 0,
+  "conversation_cache_slots": 4,
+  "conversation_cache_min_free_mib": 2560,
+  "conversation_cache_min_tokens": 0,
+  "tail_role_token": -1,
+  "vram_elastic": 0,
+  "engine": "0.1.42"
+ },
+ "hardware_static": {
+  "gpu_name": "Quadro RTX 8000",
+  "gpu_count": 1,
+  "gpu_note": null,
+  "cpu_name": "Intel(R) Xeon(R) CPU E5-2687W 0 @ 3.10GHz",
+  "cores": 8,
+  "threads": 16,
+  "psutil": true
+ },
+ "props": {
+  "total_slots": 1,
+  "model_path": "/opt/models/gguf/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf"
+ },
+ "not_measured": [
+  "PCIe bandwidth under load (the engine's own startup probe is quoted instead, from the log)",
+  "RAM rated speed (dmidecode needs root)"
+ ]
+}

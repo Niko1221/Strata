@@ -1,0 +1,51 @@
+nohup: ignoring input
+25 requests, 72.3 min left, last decode 73.7 tok/s
+50 requests, 69.7 min left, last decode 75.5 tok/s
+75 requests, 67.0 min left, last decode 73.2 tok/s
+100 requests, 64.3 min left, last decode 63.2 tok/s
+125 requests, 61.6 min left, last decode 75.3 tok/s
+150 requests, 59.0 min left, last decode 69.4 tok/s
+175 requests, 56.4 min left, last decode 74.4 tok/s
+200 requests, 53.7 min left, last decode 75.0 tok/s
+225 requests, 51.0 min left, last decode 73.4 tok/s
+250 requests, 48.4 min left, last decode 74.1 tok/s
+275 requests, 45.7 min left, last decode 70.3 tok/s
+300 requests, 43.1 min left, last decode 75.3 tok/s
+325 requests, 40.5 min left, last decode 74.2 tok/s
+350 requests, 37.8 min left, last decode 75.5 tok/s
+375 requests, 35.2 min left, last decode 76.0 tok/s
+400 requests, 32.6 min left, last decode 76.6 tok/s
+425 requests, 29.9 min left, last decode 74.5 tok/s
+450 requests, 27.2 min left, last decode 71.5 tok/s
+475 requests, 24.6 min left, last decode 76.3 tok/s
+500 requests, 22.0 min left, last decode 67.9 tok/s
+525 requests, 19.3 min left, last decode 73.1 tok/s
+550 requests, 16.7 min left, last decode 74.9 tok/s
+575 requests, 14.0 min left, last decode 75.2 tok/s
+600 requests, 11.4 min left, last decode 73.7 tok/s
+625 requests, 8.7 min left, last decode 74.2 tok/s
+650 requests, 6.1 min left, last decode 70.7 tok/s
+675 requests, 3.4 min left, last decode 78.9 tok/s
+700 requests, 0.8 min left, last decode 77.0 tok/s
+{
+ "requests": 708,
+ "ok": 708,
+ "failed": 0,
+ "first_failure": null,
+ "errors": [],
+ "finish_reasons": {
+  "length": 491,
+  "stop": 217
+ },
+ "decode_tps_first_decile": 73.95,
+ "decode_tps_last_decile": 75.0,
+ "decode_tps_median_all": 74.2,
+ "prompt_tps_first_decile": 341.85,
+ "prompt_tps_last_decile": 342.3,
+ "ram_used_gib_first": 42.94,
+ "ram_used_gib_last": 42.97,
+ "vram_used_mib_max": 48180,
+ "vram_free_mib_min": 335,
+ "temp_max_c": 69.0,
+ "conv_cache_slots_last": 4
+}
