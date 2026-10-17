@@ -112,7 +112,8 @@ async function loadHealth() {
     }
     $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
                                           : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it — unless Web search is on: the search query then goes out to the engine.`;
+    $("chat-empty-sub").innerHTML = `${esc(health.model)} runs on this PC. Nothing leaves it.<br>` +
+      `Web search is off by default &ndash; when on, only the search query goes out.`;
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
@@ -378,7 +379,7 @@ function projectionText(c) {
   const [mode, range, single] = String(c).split(":");
   const [a, b] = (range || "").split("-");
   return `${mode === "project" ? "Projection" : "Additive"} control vector on layers ${a}–${b}` +
-         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Sampling. Its package ` +
+         `${single ? ` (layer ${single.replace("single", "")}'s direction)` : ""}. Per chat in Chat Settings. Its package ` +
          "describes the vector as a refusal-direction projection; measure the speed yourself";
 }
 function renderAbout(eng, hw, st) {
@@ -574,7 +575,7 @@ let settings = {...DEFAULTS, ...store.get("sampling", {})};
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
-const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, on: false};
+const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, reader: "off", on: false};
 const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper"};
 let ws = {...WS_DEFAULTS, ...store.get("ws", {})};   // Web search: the composer's globe and the drawer's section
 
@@ -710,7 +711,8 @@ function updateAssistant(el, m, streaming) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
       src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}Sources${esc(ename)}:</span>` +
-        m.sources.map((s, k) => `<a class="st-source" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.url)}">[${k + 1}] ${esc(s.title || s.url)}${s.content ? ' <span class="st-source__read">read</span>' : ""}</a>`).join(" | ");
+        m.sources.map((s, k) => `<a class="st-source" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.url)}">[${k + 1}] ${esc(s.title || s.url)}${s.read_via === "jina" ? ' <span class="st-source__read">read via Jina</span>' : s.content ? ' <span class="st-source__read">read</span>' : ""}</a>`).join(" | ") +
+        (m.sourcesNote ? ` <span class="st-sources__label st-sources__label--warn">${icon("warning", "st-icon st-icon--sm")}${esc(m.sourcesNote)}</span>` : "");
     } else if (m.sourcesNote) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
@@ -825,9 +827,14 @@ async function send() {
                                        body: JSON.stringify({query: text, engine: ws.engine, url: ws.url,
                                                             api_key: ws.key, max_results: +ws.max || 6,
                                                             read_pages: ws.read !== false, read_max: +ws.readmax || 2,
-                                                            page_limit: ws.plim !== false, page_chars: +ws.plimchars || 5000})});
+                                                            page_limit: ws.plim !== false, page_chars: +ws.plimchars || 5000,
+                                                            reader: ws.reader || "off"})});
       const sj = await sr.json().catch(() => ({}));
-      if (sr.ok && sj.results && sj.results.length) { sources = sj.results; sourceEngine = ws.engine; }
+      if (sr.ok && sj.results && sj.results.length) {
+        sources = sj.results; sourceEngine = ws.engine;
+        const unread = sj.results.filter(r => r.read_error);
+        if (unread.length) sourcesNote = `${unread.length} page(s) could not be read: ${unread[0].read_error}`;
+      }
       else { sourcesNote = (sj.error && sj.error.message) || "no results"; toast("warn", "Web search found nothing", sourcesNote, 6000); }
     } catch (e) {
       if (e.name !== "AbortError") { sourcesNote = e.message || String(e); toast("error", "Web search failed", sourcesNote, 6000); }
@@ -956,7 +963,7 @@ $("export-btn").onclick = () => {
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
   const srcs = (m) => (m.sources && m.sources.length)
     ? `\n\nSources (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search"}):\n\n` +
-      m.sources.map((s, k) => `[${k + 1}] [${s.title || s.url}](${s.url})`).join(" | ")
+      m.sources.map((s, k) => `[${k + 1}] [${s.title || s.url}](${s.url})`).join(" | ") + (m.sourcesNote ? `\n\nWarning: ${m.sourcesNote}` : "")
     : (m.sourcesNote ? `\n\nSources (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search"}): ${m.sourcesNote}` : "");
   const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
     `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}${srcs(m)}\n`).join("\n");
@@ -1073,6 +1080,7 @@ function loadDrawer(s = settings) {
   $("s-ws-readmax").value = ws.readmax || 2;
   $("s-ws-plim").setAttribute("aria-checked", String(ws.plim !== false));
   $("s-ws-plim-chars").value = ws.plimchars || 5000;
+  $("s-ws-reader").value = ws.reader || "off";
   paintWsRows();
   outputs();
 }
@@ -1135,6 +1143,10 @@ function paintWsRows() {
   const limOn = $("s-ws-plim").getAttribute("aria-checked") === "true";
   $("ws-plim-row").hidden = !limOn;
   $("o-ws-plim").textContent = limOn ? `${$("s-ws-plim-chars").value || 5000} per page` : "whole pages, capped by model context";
+  $("ws-reader-row").hidden = !readOn;
+  const rd = $("s-ws-reader").value || "off";
+  $("o-ws-jina").textContent = rd === "off" ? "no third party" : rd === "fallback" ? "Jina only on failure" : "Jina for every page";
+  $("ws-jina-note").hidden = rd === "off" || !readOn;
 }
 $("s-ws-engine").onchange = paintWsRows;
 $("s-ws-max").oninput = paintWsRows;
@@ -1142,11 +1154,13 @@ $("s-ws-read").onclick = () => {$("s-ws-read").setAttribute("aria-checked", Stri
 $("s-ws-readmax").oninput = paintWsRows;
 $("s-ws-plim").onclick = () => {$("s-ws-plim").setAttribute("aria-checked", String($("s-ws-plim").getAttribute("aria-checked") !== "true")); paintWsRows();};
 $("s-ws-plim-chars").oninput = paintWsRows;
+$("s-ws-reader").onchange = paintWsRows;
 $("s-reset").onclick = () => {
   ws = {...WS_DEFAULTS}; store.set("ws", ws); paintWebsearch();   // reset also the web search: DuckDuckGo, no key, off
   loadDrawer(DEFAULTS);                                           // loadDrawer fills the ws fields from ws
 };
 $("s-apply").onclick = async () => {
+  const wasOn = ws.on;
   const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
   settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
@@ -1160,31 +1174,42 @@ $("s-apply").onclick = async () => {
         readmax: Math.max(1, Math.min(5, +$("s-ws-readmax").value || 2)),
         plim: $("s-ws-plim").getAttribute("aria-checked") === "true",
         plimchars: Math.max(1000, Math.min(100000, +$("s-ws-plim-chars").value || 5000)),
+        reader: $("s-ws-reader").value || "off",
         on: $("s-ws").getAttribute("aria-checked") === "true"};
   store.set("ws", ws);
   paintWebsearch();
+  if (ws.on && !wasOn) announceWsOn();   // only on the off->on flip, not on every save
   const share = $("s-share").getAttribute("aria-checked") === "true";
   openDrawer(false);
   if (share || sharedOn) {
     try {
       await saveShared(share, settings);
-      toast("success", "Sampling saved", share ? "Other apps (omp, API clients) use these settings from their next request."
+      toast("success", "Settings saved", share ? "Other apps (omp, API clients) use these settings from their next request."
                                                : "Other apps use their own settings again.");
     } catch (e) {
       toast("error", "Saved here, but not for other apps", e.message, 6000);
     }
     return;
   }
-  toast("success", "Sampling saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
+  toast("success", "Settings saved", settings.temperature === 0 ? "Greedy: the same question gives the same answer." : "");
 };
 $("sampling-btn").onclick = () => openDrawer(true);
+function announceWsOn() {   // privacy notice exactly when search starts sending queries out
+  const en = ENGINE_NAMES[ws.engine] || ws.engine;
+  let text = `Search queries now go to ${en}. Chats still stay on this PC.`;
+  if (ws.read !== false && ws.reader === "fallback")
+    text += " Pages that fail to read directly go through r.jina.ai - a third party sees those URLs.";
+  else if (ws.read !== false && ws.reader === "always")
+    text += " Every page is read through r.jina.ai - a third party sees those URLs.";
+  toast("warn", "Web search on", text, text.length > 90 ? 9000 : 6000);
+}
 function paintWebsearch() {
   const b = $("websearch-btn");
   b.classList.toggle("st-btn--on", ws.on);
   b.setAttribute("aria-pressed", ws.on ? "true" : "false");
   $("s-ws").setAttribute("aria-checked", String(ws.on));
 }
-$("websearch-btn").onclick = () => { ws.on = !ws.on; store.set("ws", ws); paintWebsearch(); };
+$("websearch-btn").onclick = () => { ws.on = !ws.on; store.set("ws", ws); paintWebsearch(); if (ws.on) announceWsOn(); };
 paintWebsearch();
 $("drawer-close").onclick = () => openDrawer(false);
 $("scrim").onclick = () => openDrawer(false);
