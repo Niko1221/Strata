@@ -605,6 +605,47 @@ void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_tabl
     if (stream == nullptr) check_sync("kv_append");
 }
 
+/// The steps variant of `kv_append` for FP16 pools (kv_append_q8_steps' twin): `n_tok` cells in
+/// ONE launch, row r's cell and K/V row taken from `step[r * step_stride]` and
+/// `cur[r * cur_stride]`.  Same body as `kv_append_kernel` per row.
+__global__ void kv_append_f16_steps_kernel(uint16_t* __restrict__ k_pool, uint16_t* __restrict__ v_pool,
+                                           const int32_t* __restrict__ table, const int32_t* __restrict__ step,
+                                           const float* __restrict__ kcur, const float* __restrict__ vcur,
+                                           int kv_heads, int head_dim, int page_size, int step_stride,
+                                           int cur_stride, KvHostPools host) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const int r = blockIdx.y;
+    if (i >= kv_heads * head_dim) return;
+    const long long pos = (long long) __ldg(step + (size_t) r * step_stride + kStepPos);
+    const int h = i / head_dim, d = i - h * head_dim;
+    const long long page = (long long) table[pos / page_size];
+    if (page >= 0) {
+        const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
+        k_pool[row * head_dim + d] = f16_from_f32(kcur[(size_t) r * cur_stride + i]);
+        v_pool[row * head_dim + d] = f16_from_f32(vcur[(size_t) r * cur_stride + i]);
+    }
+    if (host.k_pool != nullptr) {
+        const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
+        host.k_pool[row * head_dim + d] = f16_from_f32(kcur[(size_t) r * cur_stride + i]);
+        host.v_pool[row * head_dim + d] = f16_from_f32(vcur[(size_t) r * cur_stride + i]);
+    }
+}
+
+void kv_append_f16_steps(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
+                         int step_stride, const float* kcur, const float* vcur, int cur_stride, int n_tok,
+                         const QsaShapes& s, void* stream, const KvHostPools* host) {
+    validate(s, "kv_append_f16 (steps)");
+    if (n_tok < 1) return;
+    if (step == nullptr) fail("kv_append_f16 (steps): step is null");
+    const long long n = s.n_head_kv * s.head_dim;
+    const dim3 grid((unsigned) grid_for(n, THREADS), (unsigned) n_tok);
+    kv_append_f16_steps_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(
+        k_pool, v_pool, page_table, step, kcur, vcur, (int) s.n_head_kv, (int) s.head_dim, (int) s.page_size,
+        step_stride, cur_stride, host ? *host : KvHostPools{});
+    check_launch("kv_append_f16 (steps)");
+    if (stream == nullptr) check_sync("kv_append_f16 (steps)");
+}
+
 void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, const QsaShapes& s,
                     const int32_t* step, int64_t max_blocks, float* cell_scores, void* stream) {
     validate(s, "qsa_index");

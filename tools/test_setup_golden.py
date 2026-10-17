@@ -56,7 +56,10 @@ def normalize(v, t: Path):
     if isinstance(v, list):
         return [normalize(x, t) for x in v]
     if isinstance(v, str):
-        return re.sub(rf"(?<![w.-]){re.escape(setup.EXE)}(?![w.-])", "<EXE>", v.replace(str(t), "<T>").replace("\\", "/"))   # #973: only the whole name, not "strata-x.log" on Linux
+        text = v.replace(str(t), "<T>").replace("\\", "/")
+        # Only whole executable names: do not rewrite strata-x.log or other tool names.
+        text = re.sub(rf"(?<![w.-]){re.escape(setup.VEXE)}(?![w.-])", "<VEXE>", text)
+        return re.sub(rf"(?<![w.-]){re.escape(setup.EXE)}(?![w.-])", "<EXE>", text)
     return v
 
 
@@ -101,6 +104,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "amd_gpus", lambda: []),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, avx512)),
+            mock.patch.object(setup.os, "cpu_count", lambda: 12),
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "is_wsl", lambda: False),
@@ -169,6 +173,14 @@ class Golden(unittest.TestCase):
                 key = f"{prof} {family} {model or 'recommended'}"
                 if self.golden[key]["code"] == 0:
                     yield key, ram, found, family, model
+
+    def test_executable_names_are_portable(self):
+        for exe, vision in (("strata", "strata-vision"), ("strata.exe", "strata-vision.exe")):
+            with mock.patch.object(setup, "EXE", exe), mock.patch.object(setup, "VEXE", vision):
+                self.assertEqual(normalize(f"/tmp/engine/{exe}", Path("/tmp")), "<T>/engine/<EXE>")
+                self.assertEqual(normalize(f"/tmp/engine/{vision}", Path("/tmp")), "<T>/engine/<VEXE>")
+                self.assertEqual(normalize("strata-x.log", Path("/tmp")), "strata-x.log")
+                self.assertEqual(normalize("strata-vision.log", Path("/tmp")), "strata-vision.log")
 
     def test_the_baseline_covers_every_kind_of_pc(self):
         written = [k for k, v in self.golden.items() if v["code"] == 0]

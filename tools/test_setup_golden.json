@@ -29,6 +29,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -71,6 +72,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -113,6 +115,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -155,6 +158,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -202,6 +206,8 @@
     "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -213,7 +219,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -250,6 +256,7 @@
     "--resident-experts"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -295,6 +302,7 @@
     "--resident-experts"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -340,6 +348,7 @@
     "--resident-experts"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -385,6 +394,7 @@
     "--resident-experts"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -435,6 +445,8 @@
    "env": {
     "STRATA_HC_Q8": "1"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -446,7 +458,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -483,6 +495,7 @@
     "--resident-experts"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -528,6 +541,7 @@
     "--resident-experts"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -572,6 +586,7 @@
     "int8"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -616,6 +631,7 @@
     "int8"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": [
     0,
@@ -666,6 +682,8 @@
    "env": {
     "STRATA_HC_Q8": "1"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -677,7 +695,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -714,6 +732,7 @@
     "int8"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -756,6 +775,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -798,6 +818,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -838,6 +859,7 @@
     "int8"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -884,6 +906,8 @@
    "env": {
     "STRATA_HC_Q8": "1"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -895,7 +919,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -933,6 +957,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -975,6 +1000,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1017,6 +1043,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1059,6 +1086,7 @@
     "32768"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1106,6 +1134,8 @@
     "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
+   "drafter": "mtp",
+
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1117,7 +1147,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/unsloth-ud-q4_k_xl/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
