@@ -909,14 +909,15 @@ def parse_stage_in_flight_sample(line: str) -> dict | None:
     return {"elapsed_us": elapsed_us, "in_flight_us": in_flight_us}
 
 
-def slot_expire_s() -> float:
-    """STRATA_SLOT_EXPIRE_S, in seconds, from the server's environment: which held batch slot pick_slot gives a new
-    conversation when none is empty.  Off (unset, 0 or unreadable): the one used longest ago, as in earlier releases.
-    Set (600 suits coding agents): a slot idle that long has expired and goes first, the one used longest ago among
-    them; else the one holding the shortest history, so a short side request does not take the slot of a long
-    conversation that is still going."""
+def slot_expire_s(env: dict | None = None) -> float:
+    """STRATA_SLOT_EXPIRE_S, in seconds: which held batch slot pick_slot gives a new conversation when none is empty.
+    Read from the engine's environment (child_env: the server's, plus the run config's "env" block), or the server's
+    when there is none.  Off (unset, 0 or unreadable): the one used longest ago, as in earlier releases.  Set (600
+    suits coding agents): a slot idle that long has expired and goes first, the one used longest ago among them; else
+    the one holding the shortest history, so a short side request does not take the slot of a long conversation that
+    is still going."""
     try:
-        return max(0.0, float(os.environ.get("STRATA_SLOT_EXPIRE_S", "0")))
+        return max(0.0, float((os.environ if env is None else env).get("STRATA_SLOT_EXPIRE_S", "0")))
     except ValueError:
         return 0.0
 
@@ -956,6 +957,8 @@ class StrataEngine:
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
+        if env is not None:              # the config's "env" block reaches the engine's environment, so it sets this too
+            self.SLOT_EXPIRE_S = slot_expire_s(env)
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")

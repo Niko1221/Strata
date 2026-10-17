@@ -254,6 +254,18 @@ class Setting(unittest.TestCase):
             with mock.patch.dict(os.environ, {"STRATA_SLOT_EXPIRE_S": value}):
                 self.assertEqual(slot_expire_s(), want, value)
 
+    def test_strata_slot_expire_s_from_the_run_config(self):
+        # the config's "env" block reaches the engine's environment (child_env), which the engine reads it from
+        from serve.server import child_env
+        with mock.patch.dict(os.environ):
+            os.environ.pop("STRATA_SLOT_EXPIRE_S", None)
+            self.assertEqual(slot_expire_s(child_env({"env": {"STRATA_SLOT_EXPIRE_S": "600"}})), 600.0)
+            self.assertEqual(slot_expire_s(child_env({})), 0.0)
+        with mock.patch.dict(os.environ, {"STRATA_SLOT_EXPIRE_S": "300"}):
+            self.assertEqual(slot_expire_s(child_env({})), 300.0)                                  # the server's, as before
+            self.assertEqual(slot_expire_s(child_env({"env": {"STRATA_SLOT_EXPIRE_S": "60"}})), 60.0)  # the config wins
+        self.assertEqual(slot_expire_s({"STRATA_SLOT_EXPIRE_S": "junk"}), 0.0)
+
 
 class OneSlotGroups(unittest.TestCase):
     """--batch 2 on a two-GPU layer split: two pipelined groups of ONE slot.  No slot sits below another in its group,
