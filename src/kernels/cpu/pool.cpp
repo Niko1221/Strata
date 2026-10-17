@@ -767,11 +767,12 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     }
 }
 
-void ExpertPool::run_phase(int mode, int n_tasks) {
+void ExpertPool::run_phase(int mode, int n_tasks, const std::function<void()>* aside) {
     wait_parked("before a phase");
     mode_ = mode;
     njobs_ = n_tasks;
     const uint32_t e = begin_batch(n_tasks);
+    if (aside != nullptr && *aside) (*aside)();   // the workers are on the tasks already; the host joins them after this
     if (host_works_) drain(-1, host_scratch_, e);
     wait_done(n_tasks);
     wait_parked("after a phase");
@@ -839,7 +840,11 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
 }
 
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n) {
-    if (n <= 0) return;
+    run_split_multi_native(f, jobs, n, std::function<void()>());
+}
+
+void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, const std::function<void()>& aside) {
+    if (n <= 0) { if (aside) aside(); return; }
     const auto t0 = std::chrono::steady_clock::now();
     // more distinct experts than buffers: run them in batches
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
@@ -849,7 +854,7 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         mrows_ = (int64_t) nb * f.n_ff;
         mtasks_ = phase_tasks(mrows_);
         const auto a = std::chrono::steady_clock::now();
-        run_phase(5, mtasks_);
+        run_phase(5, mtasks_, b0 == 0 ? &aside : nullptr);
         const auto b = std::chrono::steady_clock::now();
         for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)

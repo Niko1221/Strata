@@ -1899,6 +1899,14 @@ the pairs in which the switched arm won). They are here so you can try them on y
   (+4.4%) gain, but an RTX 5070 on Windows loses 2.6% on Q2_0 (IQ3_XXS no faster) and an RTX 5090 Laptop (WSL2, Core Ultra 9
   275HX, native IQ3_XXS pack, `--expert-cache-per-layer`) loses 21%: 84.6 vs 106.6 tok/s medians of 5 generations of 256
   tokens from one build, the slowest of the fast run above the fastest of the slow one (#2010).
+  **With `--peer-device`** the same variable also gates the peer tier: its copies go in layer order over its own link
+  with the same kind of landing signal, and a layer waits only for the tier that swapped in it (before, peer mode ran
+  without the overlap, and every window began with a blocking wait for both tiers). `STRATA_PEER_LAUNCH_IN_POOL=1` (opt-in,
+  separate) runs the peer's launch (~30 us of host work a layer) on the host thread right after the CPU pool's first phase
+  is published instead of before the pool starts; the rows are the same. RTX 5060 Ti (PCIe 3.0 x8) + RTX 3060, IQ3_XXS, 7 greedy requests of
+  300-600 tokens, means of two alternating rounds: on 0.1.43 72.2 -> 75.9 tok/s (the wait was 3.0-7.7 ms of a 27-43 ms
+  window in 94-99% of the windows, 0.2 ms after), code +8-10%; on 0.1.43.1, with its stream-ordered signal, 75.6 -> 77.1
+  (inside the spread), code 91.7 -> 96.3. One rig only; not measured on HIP, Windows or a layer split.
 - **`STRATA_ADAPT_CALLBACK_WARMUP` (Linux, on by default since 0.1.43.1; =0 turns it off): start the GPU host-callback thread before the CPU
   pool pins the host thread.** A callback thread created later can inherit the host's one-CPU affinity and compete
   with the verifier spinning for its signal (#1975). The warm-up runs and synchronizes one no-op host callback before
