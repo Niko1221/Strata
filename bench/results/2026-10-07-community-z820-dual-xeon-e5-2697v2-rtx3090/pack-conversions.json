@@ -1,0 +1,16 @@
+{
+ "schema": 1,
+ "tool": "tools/iq_pack.py",
+ "compat_bf16": false,
+ "source_shards": [
+  {
+   "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+   "size": 54817524224
+  },
+  {
+   "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+   "size": 28800138432
+  }
+ ],
+ "tensors": []
+}
