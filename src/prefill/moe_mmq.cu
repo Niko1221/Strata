@@ -684,4 +684,9 @@ void set_bounds(int32_t* dst, int32_t rows, void* stream) {
 }
 #endif
 
+// src/prefill/ggml_cuda_host.cu's pool: the slab it may hand out instead of a cudaMalloc (see the header)
+extern "C" void strata_mmq_pool_slab(int dev, void* base, size_t bytes);
+
+void pool_slab(int dev, void* base, size_t bytes) { strata_mmq_pool_slab(dev, base, bytes); }
+
 }  // namespace strata::prefill::mmq
