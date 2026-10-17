@@ -578,7 +578,9 @@ let busy = null;                      // {controller, msg}
 
 function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
-                                           files: (m.files || []).map((f) => ({name: f.name}))})));
+                                           files: (m.files || []).map((f) => ({name: f.name})),
+                                           // a tool's picture is base64 in the page, not something to keep on disk
+                                           tools: (m.tools || []).map((t) => ({...t, images: undefined}))})));
 }
 function timeStr(t) { return new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}); }
 
@@ -640,6 +642,12 @@ function toolHtml(t, k) {
       body += `<div class="tool-call__label">${t.ok ? "Result" : "Error"}${t.chars ? ` · ${fmt(t.chars)} characters` : ""}` +
               `${t.truncated ? ", cut for the model" : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
+    if ((t.images || []).length) {          // the picture the model was shown, not the base64 it cost
+      body += `<div class="tool-call__label">${t.images.length} picture${t.images.length > 1 ? "s" : ""} from the tool</div>` +
+              `<div class="tool-call__imgs">` +
+              t.images.map((src) => `<img src="${esc(src)}" alt="picture from ${esc(t.tool || t.name || "the tool")}">`).join("") +
+              `</div>`;
+    }
   }
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
@@ -669,7 +677,7 @@ function onTool(m, x) {
   if (x.event === "call") {
     Object.assign(t, {name: x.name, server: x.server, tool: x.tool, arguments: x.arguments, round: x.round, state: "running"});
   } else if (x.event === "result") {
-    Object.assign(t, {result: x.text, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
+    Object.assign(t, {result: x.text, images: x.images, ok: x.ok, chars: x.chars, truncated: x.truncated, ms: x.ms,
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
@@ -767,7 +775,10 @@ function assistantMessages(m) {
     const at = Math.min(Math.max(pos, calls[0].at || 0), m.text.length);
     out.push({role: "assistant", content: m.text.slice(pos, at).trim(),
               tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))});
-    for (const t of calls) out.push({role: "tool", tool_call_id: t.id, content: t.result});
+    // a picture the tool handed back goes back as a picture, so the next question can still look at it
+    for (const t of calls) out.push({role: "tool", tool_call_id: t.id,
+      content: (t.images || []).length ? [{type: "text", text: t.result},
+        ...t.images.map((src) => ({type: "image_url", image_url: {url: src}}))] : t.result});
     pos = at;
   }
   const rest = m.text.slice(pos).trim();

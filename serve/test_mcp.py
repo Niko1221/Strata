@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import mcp_fake_server as fake  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.mcp import McpCancelled, McpHub, hub_from_config  # noqa: E402
+from serve.mcp import MAX_RESULT_IMAGES, McpCancelled, McpHub, hub_from_config  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,21 @@ def call_script(name, **params):
     """The model's text for one tool call, as Qwen's template asks for it."""
     body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in params.items())
     return f"</think>\n\nLet me check.\n\n<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
+
+
+class FakeVision:
+    """A stand-in image encoder: every picture "encodes" to three rows in one file, and it remembers what it was
+    given (serve/test_server.py's FakeVision, small enough to sit next to the tool loop)."""
+
+    def __init__(self, d):
+        self.dir = Path(d)
+        self.rows = self.dir / "img.sve"
+        self.rows.write_bytes(b"rows")
+        self.seen: list = []
+
+    def encode(self, source):
+        self.seen.append(source)
+        return self.rows, 3
 
 
 class ScriptedEngine(MockEngine):
@@ -106,6 +121,42 @@ class Client(unittest.TestCase):
         r = self.hub.call("fake__echo", {"text": "hello wörld"})
         self.assertEqual((r["ok"], r["text"], r["server"], r["tool"]), (True, "hello wörld", "fake", "echo"))
         self.assertEqual(self.hub.call("fake__add", {"a": 2, "b": 40})["text"], "42")
+
+    def test_pictures_become_pixels(self):
+        """An image block - or an embedded resource holding one - reaches the model as the picture, not as text."""
+        self.hub.routes()
+        png = f"data:image/png;base64,{fake.PNG}"
+        r = self.hub.call("fake__picture", {"n": 2})
+        self.assertEqual(r["images"], [png, png])
+        self.assertEqual([p["type"] for p in r["parts"]], ["text", "text", "image", "text", "text", "image"])
+        self.assertEqual(r["text"], "picture 1 of 2:\n[image (image/png, 69 bytes)]\n"
+                                    "picture 2 of 2:\n[image (image/png, 69 bytes)]")
+        self.assertEqual(self.hub.call("fake__picture", {"kind": "resource"})["images"], [png])
+        self.assertIsNone(self.hub.call("fake__echo", {"text": "no pictures here"})["parts"])
+        # past a cap a picture stays what it always was: a line naming it, and why
+        r = self.hub.call("fake__picture", {"n": MAX_RESULT_IMAGES + 2})
+        self.assertEqual(len(r["images"]), MAX_RESULT_IMAGES)
+        self.assertIn(f"past the {MAX_RESULT_IMAGES} pictures one result may carry", r["text"])
+        r = self.hub.call("fake__picture", {"mime": "application/pdf"})
+        self.assertEqual((r["images"], r["parts"]), ([], None))
+        self.assertIn("is not an image type, not shown to the model", r["text"])
+        r = self.hub.call("fake__picture", {"kind": "audio"})                 # audio is not a picture
+        self.assertEqual(r["images"], [])
+        self.assertIn("[audio (audio/mpeg, 69 bytes): not shown to the model]", r["text"])
+
+    def test_the_character_cap_cuts_the_text_not_the_pictures(self):
+        """`max_result_chars` is about the text a context has to hold; a picture is not text."""
+        self.hub.routes()
+        cap = self.hub.settings["max_result_chars"]          # the class shares one hub, so put it back after
+        self.hub.settings["max_result_chars"] = 40
+        try:
+            r = self.hub.call("fake__picture", {"n": 1})
+        finally:
+            self.hub.settings["max_result_chars"] = cap
+        self.assertTrue(r["truncated"])
+        self.assertEqual(len(r["images"]), 1)
+        self.assertEqual([p["type"] for p in r["parts"]], ["text", "text", "image", "text"])
+        self.assertEqual("".join(p["text"] for p in r["parts"] if p["type"] == "text"), r["text"])
 
     def test_errors_become_text(self):
         self.hub.routes()
@@ -242,19 +293,25 @@ class ToolLoop(unittest.TestCase):
                           {"timeout_s": 10, "max_result_chars": 500, "max_rounds": 2})
         self.hub.start(wait=True)
         self.httpd = None
+        self.tmp = None
 
     def tearDown(self):
         if self.httpd:
             self.httpd.shutdown()
             self.httpd.server_close()
+        if self.tmp:
+            self.tmp.cleanup()
         self.hub.close()
         del os.environ["FAKE_MCP_LOG"]
         os.unlink(self.log.name)
 
-    def start(self, *scripts, delay_s=0.0):
+    def start(self, *scripts, delay_s=0.0, vision=False):
         tok = ByteTokenizer()
+        self.tok = tok
         self.engine = ScriptedEngine(tok, list(scripts), delay_s=delay_s)
-        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.tmp = tempfile.TemporaryDirectory() if vision else None
+        self.svc = Service(self.engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                           vision=FakeVision(self.tmp.name) if vision else None)
         self.svc.mcp = self.hub
         self.httpd = serve(self.svc, port=0)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
@@ -353,6 +410,32 @@ class ToolLoop(unittest.TestCase):
         self.assertEqual((mcp[-1]["ok"], mcp[-1]["text"]), (False, "error: it failed on purpose"))
         self.assertIn("<tool_response>\nerror: it failed on purpose\n</tool_response>", self.engine.prompt_text(1))
         self.assertEqual(self.chunks(text)[-1]["choices"][0]["finish_reason"], "stop")
+
+    def test_a_tool_picture_reaches_the_model(self):
+        """A picture an MCP tool hands back goes to the vision encoder and into the next prompt, in the order the
+        server sent it; the web app gets the same picture to show."""
+        self.start(call_script("fake__picture", n=2), "</think>\n\nI see two pictures.", vision=True)
+        code, out = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, out)
+        mcp = [c["strata_mcp"] for c in self.chunks(out) if "strata_mcp" in c]
+        png = f"data:image/png;base64,{fake.PNG}"
+        self.assertEqual(mcp[-1]["images"], [png, png])
+        prompt = self.tok.decode(self.engine.prompts[1])
+        self.assertIn("picture 1 of 2:\n[image (image/png, 69 bytes)]<|vision_start|>", prompt)
+        self.assertIn("picture 2 of 2:\n[image (image/png, 69 bytes)]<|vision_start|>", prompt)
+        pad = self.tok.encode("<|image_pad|>", parse_special=True)[0]
+        self.assertEqual(self.engine.prompts[1].count(pad), 6)               # two pictures, three rows each
+        self.assertEqual(self.svc.vision.seen, [png] * 4)                    # each one checked, then encoded
+
+    def test_a_tool_picture_without_a_vision_encoder(self):
+        """This server cannot read the picture: the chat goes on with a note in its place, as it does for a picture
+        an API client's own tool hands back."""
+        self.start(call_script("fake__picture", n=1), "</think>\n\nI cannot see it.")
+        code, out = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, out)
+        prompt = self.tok.decode(self.engine.prompts[1])
+        self.assertIn("[image omitted: this server has no image encoder]", prompt)
+        self.assertNotIn("<|vision_start|>", prompt)
 
     def test_truncated_for_the_model(self):
         self.start(call_script("fake__big", n=3000), "</think>\n\nLong.")
