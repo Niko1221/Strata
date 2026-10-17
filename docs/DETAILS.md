@@ -1081,7 +1081,13 @@ document in the same chat re-reads up to 16K tokens of it (55 s at 262K on a Tes
 prompt's own ids (the prefix is always the longest common start), a prefix that cannot be marked is said in the server's
 window and ignored, and a malformed field is a 400. One pinned prefix at a time per engine (a new one replaces it);
 it needs `--prompt-cache 3` or more. `tools/research_run.py` runs a document and a question list against a server with and
-without it. The engine's own key is `pin=N` on the `GEN` line.
+without it. The engine's own key is `pin=N` on the `GEN` line. Pictures before the boundary count with the tokens they
+take in the prompt, so a chat with a photo in its history is marked too (before, any picture in the request turned the
+field off); a boundary inside a picture's tokens is ignored. A chat client can use `{"messages": K}` with K the index of
+its final user message, so a turn resumes where its replayed history ends even when that message carries per-turn text
+the next turn drops. Measured on a DGX Spark (GB10, UD-Q4_K_XL, 2026-10-17): a four-turn chat with a picture in its first
+message read 86-108 new tokens per turn and started answering after 0.96-1.2 s, and it answered questions about the
+picture correctly from the pinned checkpoint.
 
 **Multiple conversations (opt-in).** Add `--conversation-cache-mib 8192
 --conversation-cache-slots 4` to the engine arguments to park up to four conversations
