@@ -913,10 +913,11 @@ print(r.choices[0].message.content)
   `strata-<model>.json` renders such a request without thinking - Anthropic's own rule, and what Claude Code's short
   helper calls (a session title in a few dozen tokens) need; its real turns ask for thinking when it is on there.
 - **Streaming.** With `"stream": true` everything arrives as it is made: the thinking, the answer, and tool calls
-  (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do). While the model reads a
-  long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
-  15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
-  connection or pressing stop in your app really stops the model, so the next request starts at once.
+  (the tool's name first, then its arguments piece by piece, like OpenAI and Anthropic do - a parameter that is not a
+  string waits for its end, see the switch below). While the model reads a long prompt the stream sends keep-alives,
+  so agents do not time out; the server window prints progress every 15 s, and `GET /status` says what it is doing
+  (`reading the prompt`, `answering`, tokens so far). Closing the connection or pressing stop in your app really
+  stops the model, so the next request starts at once.
 - **Tool calls in other forms (opt-in).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
   tool the request declared also when the model writes it as `<parameter=NAME>` instead of `<function=NAME>`, as JSON
   (`{"name": ..., "arguments": ...}`) inside `<tool_call>`, as a `<function=NAME>` block at the start of a line
@@ -924,6 +925,24 @@ print(r.choices[0].message.content)
   second call's parameters merge into the first). Anything else in those forms stays the text it is. Measured on
   1,462 agent turns (Qwen3.8 under Claude Code, from signalnine/q27's drift corpus): 98.3% read as intended with it,
   92.9% without. Off by default, so what a client gets back is unchanged unless you turn it on.
+- **A tool call's array or object argument in pieces (opt-in).** A parameter whose declared type is not a string -
+  an array, an object, a number - is held until it ends and goes out as one `tool_args` piece. An agent app that
+  shows the arguments as they arrive therefore sits on `{"edits":` and then shows the finished call at once: measured
+  on a real `edit` call from an agent (two edits, 3,223 characters of arguments), 27 argument deltas, 26 of them
+  carrying 78 characters in all and one carrying 3,145 - 97% of the arguments in a single piece, with the stream
+  quiet for the whole time the model wrote the array (the keep-alive covers that, `KEEPALIVE_S` 10 s). A string
+  parameter has no such hold: it goes out character by character, which is why a long `write_file` looks fine while
+  an `edit` does not.
+  `"stream_all_tool_args": true` in `strata-<model>.json` sends that text as it is written, in pieces, the way a
+  string parameter already does: the same call at a token width of 8 sends 44 argument pieces with none longer than
+  9 characters instead of 15 pieces with one of 217. A client joins the pieces either way (the final `tool_call` of
+  a call that was streamed is not sent again), so the arguments it parses are the same; only how finely they arrive
+  changes. Only a value that opens with `[`, `{` or `"` is JSON text and streams in pieces: a parameter whose schema
+  is not a plain `"string"` is not necessarily JSON - a union type, an `anyOf`, no declared type at all, or a model
+  that writes `abc` for an integer or `yes` for a boolean - and such a value waits for its end and goes out quoted,
+  exactly as it does without the switch (a client that joined the raw text would have had invalid JSON, and the
+  final `tool_call` of a streamed call is not sent again to correct it). Numbers and `true`/`false`/`null` wait for
+  their end too: they are short, and nothing about them needs the stream. Off by default.
 - **opencode's environment block in the user turn (opt-in).** opencode writes an `<env>` block (working directory,
   today's date) near the start of its system message, ahead of ~40K characters of instructions and tool definitions that
   are the same in every session. The prefix cache only reuses a prompt's start, so every new folder and every new day
@@ -991,9 +1010,9 @@ print(r.choices[0].message.content)
 - **Model settings in the web page (0.1.39, #564).** The About tab's Model settings card shows and changes a few of
   the keys above in `strata-<model>.json`: the `sampling` defaults (temperature, top_p, top_k, min_p),
   `reasoning_budget_tokens`, `fit_max_tokens`, `anthropic_thinking`, `effort_position`, `aliases`, `idle_unload_s`,
-  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser` and `--vram-reserve-mib`. An empty field removes the
-  key (its default). Every other key of the file stays as it is, the earlier file is kept as
-  `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
+  `lazy_load`, `engine_silence_s`, `api_monitor`, `open_browser`, `stream_all_tool_args` and `--vram-reserve-mib`.
+  An empty field removes the key (its default). Every other key of the file stays as it is, the earlier file is kept
+  as `strata-<model>.json.bak`, and the model uses the change from its next start. Only Strata's own page can save
   (JSON, the API key when one is set, as for the Chat settings); the network, key, MCP and program keys are not
   editable there.
 - **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:

@@ -874,13 +874,22 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 
+# What a tool argument may be streamed as (stream_all_args): the characters that can only open a JSON value - an
+# array, an object, a quoted string.  A parameter whose schema is not a plain "string" is not necessarily JSON: a
+# union type, an anyOf, no type at all, or a model that writes `abc` for an integer or `yes` for a boolean.  Passing
+# such a value through as written sends it unquoted, and the pieces the client joins are not valid JSON - the final
+# tool_call of a call that was streamed is not sent again, so the client keeps the broken text (#2057 review).
+# Numbers, `true`/`false`/`null` and bare words wait for their end and go out through json.dumps, as without the
+# switch: they are short, and streaming them buys nothing the array of an `edit` call does not already get.
+RAW_STREAM_STARTS = "[{\""
+
 
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, stream_all_args: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
@@ -890,6 +899,13 @@ class OutputParser:
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
+        # stream_all_args (opt-in, the config's "stream_all_tool_args"): a parameter that is not a string - an array,
+        # an object, a number - is streamed too, as the JSON text the model writes, instead of one piece when the
+        # parameter ends.  A client concatenates the pieces either way (the final "tool_call" of a call that was
+        # streamed is not sent again), so this changes only how finely the arguments arrive: what they add up to is
+        # the same JSON.  Without it an `edits`-style argument - a whole array of objects - leaves the stream quiet
+        # for minutes while the model writes it, and an app shows nothing of it until it ends.
+        self.stream_all_args = stream_all_args
         # #804/#1058: calls found inside the reasoning wait here as [raw text, ToolCall | None] until the turn shows
         # they were acts: only whitespace (or more calls) after them, then the end of the turn or `</think>`.  The
         # reasoning text before them is tracked (code fence, inline code, current line) to tell an act from a quote.
@@ -1103,7 +1119,7 @@ class OutputParser:
                         args('"')
                         self.ss, self.sval_started = "str", False
                     else:
-                        self.ss = "raw"
+                        self.ss, self.sval_started = "raw", False
                 elif stripped.startswith("</function>"):
                     args("}")
                     self.sp += len("</function>")
@@ -1137,20 +1153,48 @@ class OutputParser:
                 return out
             elif self.ss == "raw":
                 end = param_end(rest)
-                if end < 0:
-                    return out
-                value = rest[:end]
-                if value.startswith("\n"):
-                    value = value[1:]
-                if value.endswith("\n"):
-                    value = value[:-1]
-                try:
-                    v = json.loads(value)
-                except ValueError:
-                    v = value
-                args(json.dumps(v, ensure_ascii=False))
-                self.sp += end + len(PARAM_END)
-                self.ss = "between"
+                if end >= 0:
+                    value = rest[:end]
+                    if self.sval_started:              # pieces of it have gone out: only what is left, as written
+                        args(value.strip("\n"))
+                    else:
+                        if value.startswith("\n"):
+                            value = value[1:]
+                        if value.endswith("\n"):
+                            value = value[:-1]
+                        try:
+                            v = json.loads(value)
+                        except ValueError:
+                            v = value
+                        args(json.dumps(v, ensure_ascii=False))
+                    self.sp += end + len(PARAM_END)
+                    self.ss = "between"
+                    continue
+                if not self.stream_all_args:
+                    return out          # the value goes out whole, once it ends
+                # still arriving: pass its JSON text through, holding back a possible partial </parameter> (the same
+                # hold the "str" state does) and a candidate end whose follower has not arrived yet
+                if not self.sval_started:
+                    if not rest:
+                        return out                     # the value has not started yet
+                    if rest[:1] == "\n":               # the value's leading newline is not part of it
+                        self.sp += 1
+                        rest = rest[1:]
+                        if not rest:
+                            return out                 # its first character has not arrived yet
+                    if rest[:1] not in RAW_STREAM_STARTS:
+                        # not JSON text (a bare word, `yes` for a boolean, `abc` for an integer, an empty value):
+                        # it waits for its end and goes out quoted, as without the switch, so the pieces the client
+                        # joins add up (#2057 review)
+                        return out
+                    self.sval_started = True
+                safe = rest.find(PARAM_END) if end == -2 else len(rest) - self._hold(rest, (PARAM_END,))
+                if safe > 0 and rest[safe - 1] == "\n":     # may be the trailing newline before </parameter>
+                    safe -= 1
+                if safe > 0:
+                    args(rest[:safe])
+                    self.sp += safe
+                return out
             else:
                 return out
 
@@ -1163,7 +1207,10 @@ class OutputParser:
         if self.ss == "str":
             tail += '"'
         elif self.ss == "raw":
-            tail += json.dumps(self.buf[self.sp:].strip("\n"))
+            # pieces of the value have gone out as written: the rest of it goes out the same way, or the JSON the
+            # client has been given would not add up
+            rest = self.buf[self.sp:].strip("\n")
+            tail += rest if self.sval_started else json.dumps(rest)
         tail += "}"
         out.append(Event("tool_args", tail, call=self.scall))
         self.ss = "done"
