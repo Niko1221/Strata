@@ -1,0 +1,5 @@
+[strata] mapping the experts from the model files (about 30 GB, --mmap-experts): they are not loaded into RAM - the OS file cache reads them as the GPU's expert cache fills and as requests need them.
+[strata] filling the GPU's expert cache (8277 experts, 15.76 GiB of VRAM) ...
+[strata] done: 256 tokens in 39 s (10.2 tok/s) (length, cancel=False), expert cache 88.7% hit
+[strata] done: 256 tokens in 171 s (27.6 tok/s) (length, cancel=False), expert cache 93.4% hit
+[strata] done: 256 tokens in 11 s (44.7 tok/s) (length, cancel=False), expert cache 97.3% hit

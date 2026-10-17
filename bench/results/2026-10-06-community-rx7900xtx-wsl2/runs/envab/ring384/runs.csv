@@ -1,0 +1,4 @@
+kind,iteration,prompt_tokens,cached_tokens,completion_tokens,ttft_s,total_s,prefill_tok_s,decode_tok_s
+short,1,77,0,251,2.05,8.71,37.5,37.67
+long,1,9964,0,256,116.16,121.27,85.8,50.07
+followup,1,10243,9959,256,2.43,6.16,116.7,68.75
