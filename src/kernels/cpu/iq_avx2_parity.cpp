@@ -6,8 +6,8 @@
 //         IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS gate/up rows, IQ4_NL and Q2_0 down rows: every variant
 //         this CPU runs, 1..8 tokens, each token's rows bit for bit the scalar variant's rows for that token alone (so
 //         also the same at every width, #152); the scalar rows against ggml-cpu's vec_dot (Q2_0: a double
-//         reference), rel <= 1e-5; and where the engine's dispatch (native_gu_rows) takes the multi-token kernel from
-//         one token on (native_gu_mt_min), each token's rows the same alone and in a group.
+//         reference), rel <= 1e-5; and where the engine's dispatch takes the multi-token kernel from one token on,
+//         each token's gate/up and IQ4_NL down rows the same alone and in rotated groups.
 //     iq_avx2_parity --bench [--cpu N] [--nt 1,2,3,4] [--mb 256] [--reps 5] [--pairs iq3_s/iq4_nl,...] [--dispatch]
 //         ms per expert on one thread: each variant, ggml-cpu's per-token dot, and the engine's dispatch
 //         (native_gu_rows, native_down_rows / q2_rows_any) over --mb MB of expert blobs - far more than an L3 holds, so
@@ -352,14 +352,15 @@ int check_down(int d_type) {
 }
 
 #if !defined(STRATA_IQ_PARITY_DISPATCH_ONLY)
-// #152 through the engine's dispatch: where native_gu_rows gives a format the multi-token kernel from one token on
-// (native_gu_mt_min 1: IQ3_S where its grid is gathered, or every format under STRATA_IQ_MT_MIN=1), each token's
-// gate/up rows must be the same alone and in any group.
-int check_engine_width(int type) {
-    const int mt = cpu::native_gu_mt_min(type);
+// #152 through the engine's dispatch: require identical rows only where the multi-token kernel is used from one
+// token on. Rotate the group so each token changes slot and neighbours. STRATA_IQ_MT_MIN=1 covers both projections.
+int check_engine_width(int type, bool down = false) {
+    const char* env = std::getenv("STRATA_IQ_MT_MIN");
+    const int mt = down ? (env ? std::atoi(env) : 2) : cpu::native_gu_mt_min(type);
+    const char* name = type_name(down ? 20 : type);
     if (mt != 1) {
         std::printf("  %-8s engine: ggml's dot below %d tokens, its one-token rows round differently (#152)\n",
-                    type_name(type), mt);
+                    name, mt);
         return 0;
     }
     cpu::NativeFmt f;
@@ -369,21 +370,27 @@ int check_engine_width(int type) {
     uint64_t seed = 0xe9900000ull + (uint64_t) type;
     fill_blob(blob.data(), f, seed);
     const Acts a(f, 13u + (unsigned) type);
-    const size_t R = (size_t) kFF;
+    const size_t R = (size_t) (down ? kH : kFF);
+    const void* const* acts = down ? a.dnp : a.gup;
+    const auto run = down ? cpu::native_down_rows : cpu::native_gu_rows;
     std::vector<float> one(kMaxT * R), ff(kMaxT * R);
     for (int t = 0; t < kMaxT; ++t) {
         float* o = &one[t * R];
-        cpu::native_gu_rows(f, blob.data(), &a.gup[t], 1, &o, 0, (int) kFF);
+        run(f, blob.data(), &acts[t], 1, &o, 0, (int) R);
     }
     size_t differ = 0;
-    for (int nt = 2; nt <= kMaxT; ++nt) {
+    for (int nt = 1; nt <= kMaxT; ++nt) for (int shift = 0; shift < kMaxT; ++shift) {
         float* fp[kMaxT];
-        for (int t = 0; t < nt; ++t) fp[t] = &ff[t * R];
-        cpu::native_gu_rows(f, blob.data(), a.gup, nt, fp, 0, (int) kFF);
-        for (int t = 0; t < nt; ++t) differ += rows_differ(fp[t], &one[t * R], R);
+        const void* ap[kMaxT];
+        for (int t = 0; t < nt; ++t) {
+            fp[t] = &ff[t * R];
+            ap[t] = acts[(t + shift) % kMaxT];
+        }
+        run(f, blob.data(), ap, nt, fp, 0, (int) R);
+        for (int t = 0; t < nt; ++t) differ += rows_differ(fp[t], &one[((t + shift) % kMaxT) * R], R);
     }
-    std::printf("  %-8s engine: multi-token from one token on, 2..8 tokens: %zu gate/up rows differ from the one-token "
-                "rows\n", type_name(type), differ);
+    std::printf("  %-8s engine: 1..8 tokens, rotated groups: %zu %s rows differ from the one-token rows\n",
+                name, differ, down ? "down" : "gate/up");
     return differ ? 1 : 0;
 }
 #endif
@@ -571,6 +578,7 @@ int main(int argc, char** argv) {
     for (int type : {20, 42}) failures += check_down(type);
 #if !defined(STRATA_IQ_PARITY_DISPATCH_ONLY)
     for (int type : {16, 17, 22, 18, 21, 23}) failures += check_engine_width(type);
+    failures += check_engine_width(21, true);
 #endif
     std::printf("iq_avx2_parity: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
