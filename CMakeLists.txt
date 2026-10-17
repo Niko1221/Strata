@@ -1980,6 +1980,28 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME aux_cpus_test COMMAND aux_cpus_test)
 endif()
 
+# CUDA release kernels must not spill or keep a per-thread array in local memory: every access there is a round trip
+# to device memory in the hottest loops the engine has, and nothing on the build machine says so without -Xptxas -v
+# or a GPU.  tools/check_cuda_spills.py reads the resource usage the compiler wrote into the kernel libraries
+# (cuobjdump: STACK and LOCAL per entry function and per sm_) and fails on any kernel outside its ALLOWED table, which
+# carries the measured allowance of the kernels that hold such an array on purpose.  CUDA only: HIP has no cuobjdump.
+if(STRATA_ENABLE_CUDA AND STRATA_BUILD_TESTS AND NOT STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906)
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    set(_strata_spill_libs)
+    foreach(_t strata_kernels strata_core strata_engine strata_prefill strata_qwen35 strata_mmq strata_mmq_w4a4 strata_kq)
+      if(TARGET ${_t})
+        list(APPEND _strata_spill_libs $<TARGET_FILE:${_t}>)
+      endif()
+    endforeach()
+    add_test(NAME cuda_spill_guard COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_cuda_spills.py
+             --cuobjdump ${CUDAToolkit_BIN_DIR}/cuobjdump${CMAKE_EXECUTABLE_SUFFIX} ${_strata_spill_libs})
+    set_tests_properties(cuda_spill_guard PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+  else()
+    message(STATUS "strata: no python3 - the cuda_spill_guard test is NOT registered")
+  endif()
+endif()
+
 if(STRATA_BUILD_TESTS)
   enable_testing()
   # Model-level checks may be absent from source distributions.
