@@ -289,6 +289,7 @@
   .who-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .bubble .who { font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--sm-muted); font-weight: 800; }
   .bubble.user .body, .bubble .think { white-space: pre-wrap; }
+  .attach-sum { margin: 0 0 8px; color: var(--sm-slate); font-size: .92em; }
   .bubble .think { color: var(--sm-muted); font-size: .85em; margin-top: 6px; }
   .bubble .body p { margin: 0 0 8px; }
   .bubble .body h1, .bubble .body h2, .bubble .body h3, .bubble .body h4, .bubble .body h5, .bubble .body h6 {
@@ -556,7 +557,7 @@
         <div class="h-head"><span>Threads</span></div>
         <div class="h-list" id="h-threads"></div>
       </section>
-      <p class="hud-foot">Saved in this browser. Drag a thread onto the prompt to attach it.</p>
+      <p class="hud-foot">Saved in this browser. A thread dropped on the prompt is summarized, then sent ahead of what you type.</p>
     </div>
   </aside>
   <div class="split">
@@ -1375,15 +1376,77 @@
     sendBtn.disabled = on;
     stopBtn.hidden = !on;
   }
-  async function sendChat(text, typed, files) {
+  function chatBody(messages) {
+    return {
+      model: modelName,
+      messages: messages,
+      stream: true,
+      reasoning_effort: settings.thinking,
+      temperature: settings.temperature,
+      top_p: settings.top_p,
+      top_k: settings.top_k,
+      max_tokens: settings.max ? Number(settings.max) : undefined,
+      seed: settings.seed ? Number(settings.seed) : undefined
+    };
+  }
+  async function collectReply(messages) {
+    const res = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: abort.signal,
+      body: JSON.stringify(chatBody(messages))
+    });
+    if (!res.ok) {
+      let msg = "HTTP " + res.status;
+      try { msg = (await res.json()).error.message || msg; } catch (e) { /* body was not JSON */ }
+      throw new Error(msg);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let content = "";
+    let reasoning = "";
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buf += dec.decode(chunk.value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        let packet;
+        try { packet = JSON.parse(data); } catch (e) { continue; }
+        if (packet.error) throw new Error(packet.error.message || "the engine reported an error");
+        const delta = (packet.choices && packet.choices[0] && packet.choices[0].delta) || {};
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        if (delta.content) content += delta.content;
+      }
+    }
+    return (content || reasoning).trim();
+  }
+  async function sendChat(text, typed, files, preface) {
     const history = turns.map(function (t) { return { role: t.role, content: t.content }; });
     history.push({ role: "user", content: text });
     turns.push({
       role: "user", content: text, shown: typed || "",
-      files: (files || []).map(function (f) { return { name: f.name, size: f.size || 0, kind: f.kind || "file" }; })
+      files: (files || []).map(function (f) {
+        return {
+          name: f.name, size: f.size || 0, kind: f.kind || "file",
+          title: f.title || "", summary: f.summary || ""
+        };
+      })
     });
     const mine = bubble("user", function () { return text; });
     mine.body.textContent = "";
+    if (preface) {
+      const sum = document.createElement("div");
+      sum.className = "attach-sum";
+      sum.textContent = preface;
+      mine.body.appendChild(sum);
+    }
     if (typed) {
       const line = document.createElement("div");
       line.textContent = typed;
@@ -1424,17 +1487,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: abort.signal,
-        body: JSON.stringify({
-          model: modelName,
-          messages: history,
-          stream: true,
-          reasoning_effort: settings.thinking,
-          temperature: settings.temperature,
-          top_p: settings.top_p,
-          top_k: settings.top_k,
-          max_tokens: settings.max ? Number(settings.max) : undefined,
-          seed: settings.seed ? Number(settings.seed) : undefined
-        })
+        body: JSON.stringify(chatBody(history))
       });
       if (!res.ok) {
         let msg = "HTTP " + res.status;
@@ -1872,10 +1925,20 @@
     if (t.role !== "user") {
       return { role: "assistant", content: t.content || "", reasoning: t.reasoning || "", stats: t.stats || null };
     }
-    const files = (t.files || []).map(function (f) { return { name: f.name, size: f.size || 0, kind: f.kind || "file" }; });
+    const files = (t.files || []).map(function (f) {
+      return {
+        name: f.name, size: f.size || 0, kind: f.kind || "file",
+        title: f.title || "", summary: f.summary || ""
+      };
+    });
     const shown = t.shown != null ? t.shown : t.content;
-    const content = [shown].concat(files.map(function (f) { return "File: " + f.name + " (not attached)"; }))
-      .filter(Boolean).join("\n\n");
+    const ahead = files.filter(function (f) { return f.summary; }).map(function (f) {
+      return "Summary of \"" + (f.title || f.name) + "\":\n\n" + f.summary;
+    });
+    const missing = files.filter(function (f) { return !f.summary; }).map(function (f) {
+      return "File: " + f.name + " (not attached)";
+    });
+    const content = ahead.concat(shown ? [shown] : [], missing).filter(Boolean).join("\n\n");
     return { role: "user", content: content, shown: shown, files: files };
   }
   function syncThread() {
@@ -1917,8 +1980,15 @@
       const live = JSON.parse(JSON.stringify(saved));
       turns.push(live);
       if (live.role === "user") {
-        const v = bubble("user", function () { return live.shown != null ? live.shown : live.content; });
+        const v = bubble("user", function () { return live.content; });
         v.body.textContent = "";
+        (live.files || []).forEach(function (f) {
+          if (!f.summary) return;
+          const sum = document.createElement("div");
+          sum.className = "attach-sum";
+          sum.textContent = "Summary of \"" + (f.title || f.name) + "\":\n\n" + f.summary;
+          v.body.appendChild(sum);
+        });
         if (live.shown) {
           const line = document.createElement("div");
           line.textContent = live.shown;
@@ -2234,7 +2304,7 @@
     const safe = String(t.title || "thread").replace(/[\\/:*?"<>|]/g, " ").trim() || "thread";
     const name = safe + ".md";
     const row = fileRow({ name: name, size: text.length });
-    if (!remember(row, { kind: "file", name: name, size: text.length, text: text })) {
+    if (!remember(row, { kind: "thread", name: name, title: t.title || safe, size: text.length, text: text })) {
       const slot = row.closest(".file-slot");
       if (slot) slot.remove();
       markFaces();
@@ -2437,19 +2507,51 @@
     ev.preventDefault();
     addFiles(ev.dataTransfer.files);
   });
-  document.getElementById("composer").addEventListener("submit", function (ev) {
+  document.getElementById("composer").addEventListener("submit", async function (ev) {
     ev.preventDefault();
+    if (abort) return;
     const typed = promptEl.value.trim();
     const files = attachments.slice();
-    const blocks = files.filter(function (item) { return item.text; }).map(fileBlock);
-    const names = files.filter(function (item) { return !item.text; }).map(function (item) { return "File: " + item.name; });
-    const text = [typed].concat(blocks, names).filter(Boolean).join("\n\n");
-    if (!text || abort || !modelName) return;
+    const threads = files.filter(function (item) { return item.kind === "thread" && item.text; });
+    const rest = files.filter(function (item) { return item.kind !== "thread"; });
+    const blocks = rest.filter(function (item) { return item.text; }).map(fileBlock);
+    const names = rest.filter(function (item) { return !item.text; }).map(function (item) { return "File: " + item.name; });
+    if (!typed && !threads.length && !blocks.length && !names.length) return;
+    if (!modelName) { note("Load a model first."); return; }
+    let preface = "";
+    if (threads.length) {
+      note("Summarizing the attached chat…");
+      setBusy(true);
+      abort = new AbortController();
+      try {
+        const parts = [];
+        for (let i = 0; i < threads.length; i++) {
+          const item = threads[i];
+          const summary = await collectReply([{
+            role: "user",
+            content: "Summarize the conversation below as Markdown: a short title, then headings and bullet lists for the key points, decisions, and open questions. Write in the language of the conversation. Reply with the summary only.\n\n" + item.text
+          }]);
+          if (!summary) throw new Error("The attached chat could not be summarized.");
+          item.summary = summary;
+          parts.push("Summary of \"" + (item.title || item.name) + "\":\n\n" + summary);
+        }
+        preface = parts.join("\n\n");
+      } catch (err) {
+        note(err.name === "AbortError" ? "" : (err.message || "The attached chat could not be summarized."));
+        setBusy(false);
+        abort = null;
+        return;
+      }
+      abort = null;
+      setBusy(false);
+    }
+    const text = [preface, typed].concat(blocks, names).filter(Boolean).join("\n\n");
+    if (!text) return;
     promptEl.value = "";
     attachments.splice(0, attachments.length);
     clearFileDock();
     note("");
-    sendChat(text, typed, files);
+    sendChat(text, typed, files, preface);
   });
   promptEl.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
