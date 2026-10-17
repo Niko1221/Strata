@@ -384,6 +384,10 @@ scores it against the routing of the next layer: every 100 windows the engine lo
 outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesses and of the vote-ranked top 4 / 8 / 12, how much of the PCIe share they
 would cover, and the predictor thread's time per window. It costs CPU (the predictor is a thread beside the expert pool), so use it to measure, not to
 time. `tools/replay_cache_policy.py` replays a `--dump-routing` trace through the adaptive tier's swap policy offline.
+`tools/replay_kv_stream_policy.py` does the same for the KV streaming page pool: it replays a selection trace (or a
+built-in synthetic pattern) through the pool's policies - the resolve kernel's CLOCK against LRFU, LRU and Belady -
+and reports misses and the bytes each would re-read (#2415). It runs without a GPU or a model pack; real selection
+traces need an engine-side dump that does not exist yet.
 
 Time to first token is prompt length / prompt speed: with Q2_0 about 4 s at 4K, 25 s at 32K, under 2 minutes at 128K
 and 4.5 minutes at 262K (engine 0.1.13 made long prompts about twice as fast, below).
