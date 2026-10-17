@@ -1,0 +1,11 @@
+{
+ "engine_version": "0.1.41",
+ "image": "strata-gfx906:0.1.41",
+ "engine_binary_md5": "160611838796d4b172ec3a642ccd988d",
+ "engine_binary_bytes": 24982264,
+ "build": "source build, -DSTRATA_HIP_GFX906=ON (STRATA_USE_HIP not defined)",
+ "rocm": "7.14",
+ "rocm_source": "mixa3607/rocm-gfx906:7.14-complete",
+ "kernel": "7.0.0-34-generic",
+ "os": "Ubuntu"
+}
