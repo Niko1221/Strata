@@ -1,0 +1,78 @@
+{
+  "host": {
+    "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
+    "mem_total_gib": 60,
+    "kernel": "7.0.0-38-generic",
+    "os": "Ubuntu 26.04.1 LTS",
+    "gpus": "2x Intel Arc Pro B50 (Battlemage G21, 8086:e212, xe driver)",
+    "layer_split": "25",
+    "driver": [
+      "intel-opencl-icd 26.05.37020.3-1",
+      "libze-intel-gpu1 26.05.37020.3-1",
+      "libze1 1.28.2-2",
+      ""
+    ],
+    "oneapi": "2026.1.1",
+    "build": "Release, JIT (no intel-ocloc on this host)",
+    "gpu_firmware": "21.1182",
+    "virtualisation": "bare metal, no container/VM for Strata"
+  },
+  "config": {
+    "model": "qwen3.8-flash-next-iq3_xxs",
+    "context": 262144,
+    "args": [
+      "--pack",
+      "/models/strata/packs/iq3_xxs",
+      "--native",
+      "/models/strata/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "--ple-gguf",
+      "/models/strata/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+      "--expert-profile",
+      "/opt/strata/data/expert-profile-sycl.bin",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "1024",
+      "--spec",
+      "4",
+      "--spec-min-p",
+      "0.5",
+      "--mtp",
+      "/models/strata/mtp/rt",
+      "--max-context",
+      "262144",
+      "--kv",
+      "int8",
+      "--kv-resident",
+      "32768",
+      "--stream-experts",
+      "--vram-reserve-mib",
+      "2048"
+    ],
+    "env": {
+      "SYCL_CACHE_PERSISTENT": "0",
+      "ZES_ENABLE_SYSMAN": "1",
+      "STRATA_VERIFY_DEVICE_PLAN": "1",
+      "STRATA_STAGER_THREADS": "12",
+      "ONEAPI_DEVICE_SELECTOR": "level_zero:*",
+      "STRATA_STAGE_TRIM": "1",
+      "STRATA_VERIFY_NO_HOST": "0",
+      "STRATA_MIRROR_MIB": "12288"
+    },
+    "idle_unload_s": 3600
+  },
+  "measured": {
+    "offline_exit": 0,
+    "needle_exit": 0,
+    "gpus_after": 2,
+    "card_lost_during_run": false
+  },
+  "sha256": {
+    "expert-profile-sycl.bin": "ddddf9b361dd1cb1e68ef8d130759fa15da3b84d74f21d37b28f377493b80bbc",
+    "engine": "305a72eb800277444cd4bb380387db0d89a4c6f74c2eca7f027671423bdb228e",
+    "iq3_xxs_shard1": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+    "iq3_xxs_shard2_ple": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+  },
+  "revision": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF @ ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "strata_commit": "477ac13cbe8e582c20484871ce459d20d82df09d"
+}
