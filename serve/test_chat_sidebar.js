@@ -3,7 +3,9 @@
 //
 // The stub is faithful only where the code under test depends on it: the result of a read is on the request and
 // not on the store; a write the browser refuses fires abort on the transaction; a blocked open never resolves;
-// and a database already at version 1 does not run onupgradeneeded. Requests answer on a later tick, so the code
+// a database already at version 1 does not run onupgradeneeded; a node put in place or appended is a child of the
+// node it went into; and a class selector matches whole class tokens, so a click on a field inside a row reaches
+// the row through the list's handler, as it does on the page. Requests answer on a later tick, so the code
 // cannot be right by answering too early.
 const assert = require("assert");
 const fs = require("fs");
@@ -16,7 +18,7 @@ function makeEl() {
     classList: {add() {}, remove() {}, toggle() {}}, style: {},
     scrollHeight: 0, scrollTop: 0, clientHeight: 0,
     addEventListener(t, f) { (this._l = this._l || {})[t] = f; },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) { this.children.push(c); c._parent = this; return c; },
     querySelectorAll(sel) { return this.children.filter((c) => c.className.includes(sel.slice(1))); },
     // the page reads a node it built with innerHTML; the stub hands back a place to write into
     querySelector(sel) {
@@ -27,8 +29,19 @@ function makeEl() {
     setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; },
     focus() {}, select() {},
     remove() { if (this._parent) this._parent.children = this._parent.children.filter((c) => c !== this); },
-    replaceWith(next) { const p = this._parent; if (p) p.children = p.children.map((c) => (c === this ? next : c)); },
-    closest(sel) { let n = this; while (n) { if (n.className.includes(sel.slice(1))) return n; n = n._parent; } return null; },
+    replaceWith(next) { const p = this._parent; if (p) { p.children = p.children.map((c) => (c === this ? next : c)); next._parent = p; } },
+    // a browser matches a class selector on whole class tokens: "chat-item__input" is not ".chat-item", so a
+    // click on the rename field walks up to its row, the way it does on the page
+    closest(sel) {
+      const cls = /^\.([\w-]+)$/.exec(sel), attr = /^\[([\w-]+)\]$/.exec(sel);
+      let n = this;
+      while (n) {
+        if (cls) { if (n.className.split(/\s+/).includes(cls[1])) return n; }
+        else if (attr) { if (attr[1] in n.dataset || attr[1] in n.attrs) return n; }
+        n = n._parent;
+      }
+      return null;
+    },
   };
   Object.defineProperty(el, "innerHTML", {get: () => el._html || "", set: (v) => { el._html = v; el.children = []; }});
   return el;
@@ -363,6 +376,26 @@ const msg = (text) => ({role: "user", text, time: Date.now()});
   assert.strictEqual(stray.s.chats.length, 2, "nothing was removed");
   assert.ok("a" in stray.records && "b" in stray.records, "both records are still there");
   done.push("delete: a chat the list does not hold removes nothing");
+
+  // 20. nmrugg's report on #1787: a mouse click inside the rename field. The field lives inside the row, so the
+  // click reaches the list's handler; opening the chat there re-renders the list, and the field is taken away
+  // mid-click - the rename ends before the caret is placed.
+  const click = run({}, {"strata.history": "true"}, {
+    a: {id: "a", title: "the one", time: Date.now(), messages: [msg("hi")]}});
+  await wait();
+  const clickRow = click.s.el("sidebar-list").children.find((c) => c.className.split(" ").includes("chat-item"));
+  click.s.renameChat(clickRow, click.s.chats[0]);
+  const clickField = clickRow.children.find((c) => c.className.split(" ").includes("chat-item__input"));
+  assert.ok(clickField, "the row turned into a field");
+  clickField.value = "half-typed name";
+  click.s.el("sidebar-list")._l["click"]({target: clickField});      // a click on the field's own text
+  await wait();
+  assert.ok(click.s.el("sidebar-list").children.includes(clickRow), "the list was not rebuilt: the field is still there");
+  assert.strictEqual(click.records["a"].title, "the one", "the click does not commit a half-typed name");
+  clickField._l["keydown"]({key: "Enter", preventDefault() {}});
+  await wait();
+  assert.strictEqual(click.records["a"].title, "half-typed name", "and the rename still finishes after the click");
+  done.push("rename: a click inside the field leaves the rename open");
 
   console.log(done.map((d) => "ok - " + d).join("\n"));
 })();
