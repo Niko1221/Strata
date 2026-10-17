@@ -4,7 +4,8 @@
     python -m serve.server --engine strata --config strata.json --port 8080   (the real engine, resident)
 
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
-non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
+non-stream), GET /v1/models, GET /models, GET /v1/models/{model id} (one model's details, 404 for an id this server
+does not have), GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
 Image generation (optional, when the config has an "images" section): POST /v1/images/generations (OpenAI's shape,
 plus seed and steps) runs stable-diffusion.cpp's sd-cli for Qwen-Image-2.1-Turbo, one job at a time on the GPU the
 text engine uses (serve/images.py).
@@ -52,7 +53,7 @@ from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -3289,6 +3290,39 @@ class Service:
     def model_names(self) -> list[str]:
         return [self.model, *self.aliases]
 
+    def model_view(self) -> list[dict]:
+        """GET /v1/models (and /models): the models this server answers for, one entry each.
+
+        The text model, then its aliases under their own id, then the image model when the config has one.  A model
+        that is not loaded is listed only when it loads on use (idle unload, or an engine that was unloaded), like
+        llama-server's router; with neither, the list is empty until the engine runs."""
+        loaded = self.loaded()
+        model = {"id": self.model, "object": "model", "status": {"value": "loaded"},
+                 "meta": {"n_ctx": self.reported_ctx()},
+                 "architecture": {"input_modalities": ["text", "image"] if self.vision is not None else ["text"],
+                                  "output_modalities": ["text"]}}
+        if not loaded and (self.idle_unload_s or getattr(self.engine, "unloaded", False)):
+            model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
+            loaded = True
+        if self.aliases:                       # #297: the aliases, and each one listed under its own id
+            model["aliases"] = list(self.aliases)
+        data = [model, *({**model, "id": x, "alias_of": self.model} for x in self.aliases)]
+        data = data if loaded else []
+        if self.images is not None:            # the image model: POST /v1/images/generations
+            data.append({"id": self.images.model, "object": "model", "status": {"value": "loaded"},
+                         "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
+        return data
+
+    def model_detail(self, model_id: str) -> dict | None:
+        """GET /v1/models/{id}: the one entry of `model_id`, as /v1/models lists it, or None when this server has no
+        model by that name.  A client that only wants to know whether a model id is real (Visual Studio's model
+        picker, for instance) gets the same fields back it saw in the list, plus OpenAI's own `created` and
+        `owned_by`, which the list has never carried: an SDK that reads this endpoint validates those two."""
+        entry = next((m for m in self.model_view() if m["id"] == model_id), None)
+        if entry is None:
+            return None
+        return {"created": int(self.started_at), "owned_by": "strata", **entry}
+
     def model_for(self, req) -> str:
         """The name to answer with: the request's own when it is the model's name or an alias (#297), else the model's.
         Other names are still served, as before."""
@@ -5491,22 +5525,22 @@ def make_handler(svc: Service):
                 self._json(200, s)
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
-                    loaded = svc.loaded()
-                    model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
-                             "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
-                                              "output_modalities": ["text"]}}
-                    if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
-                        model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
-                        loaded = True
-                    if svc.aliases:                       # #297: the aliases, and each one listed under its own id
-                        model["aliases"] = list(svc.aliases)
-                    data = [model, *({**model, "id": x, "alias_of": svc.model} for x in svc.aliases)]
-                    data = data if loaded else []
-                    if svc.images is not None:            # the image model: POST /v1/images/generations
-                        data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
-                                     "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
-                    self._json(200, {"object": "list", "data": data})
+                    self._json(200, {"object": "list", "data": svc.model_view()})
+            elif path.startswith("/v1/models/"):
+                # GET /v1/models/{model id}: the one model's details, the same entry /v1/models lists under that id.
+                # A client that only wants to know whether an id is really served here (Visual Studio's model picker,
+                # an IDE's "is this model available?" check) asks for it directly instead of reading the whole list;
+                # an id this server does not have answers 404.  Only the /v1 path: llama.cpp's bare /models has never
+                # carried an id, and the OpenAI clients that do this check all call the versioned one.
+                if self._authorized():
+                    name = unquote(path[len("/v1/models/"):])
+                    detail = svc.model_detail(name) if name else None
+                    if detail is None:
+                        self._json(404, {"error": {"type": "invalid_request_error", "param": "model",
+                                                   "code": "model_not_found",
+                                                   "message": f"the model '{name}' is not served here"}})
+                    else:
+                        self._json(200, detail)
             elif path == "/props":
                 if self._authorized():
                     self._props()
