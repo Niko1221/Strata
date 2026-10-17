@@ -1,4 +1,4 @@
-# 1–4× RTX 3090 scaling on EPYC 7702 — Qwen3.8-Flash-Next UD-IQ4_XS at 262K
+# 1–4× RTX 3090 scaling on EPYC 7702 — UD-IQ4_XS at 262K
 
 Controlled scaling run on one bare-metal host. Each row used a fresh Strata process with the same model and settings; only the GPU list changed. Values are medians from `tools/strata_bench.py --runs 3 --long`; raw JSON contains the full per-request data and ranges.
 
