@@ -1,0 +1,7 @@
+condition,runs,prompt_tokens,reused_tokens,generated_tokens,prompt_tps,decode_tps,draft_accepted,draft_total,note
+prompt-3.7k,1 (summary),3744,not recorded,not recorded,198.8,,,fresh prefill
+decode-story,1 (summary),not recorded,not recorded,not recorded,,10.1,109,211,
+decode-code,1 (summary),not recorded,not recorded,not recorded,,13.8,130,149,87.2pct accepted
+decode-summary,1 (summary),not recorded,not recorded,not recorded,,9.3,,,
+short-prompts,noted as range,10-15,not recorded,not recorded,10-15,,,range noted in memo
+summary-393,1 (summary),393,not recorded,not recorded,55.5,,,boundary as recorded in memo
