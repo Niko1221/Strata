@@ -1,0 +1,42 @@
+{
+  "issue": 1352,
+  "source_commit": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+  "comparison_source": {
+    "repository": "Hardin22/Strata-DualGPU",
+    "commit": "03a5ec955ba152a5f499a18a0f2f2ac192309c28",
+    "status": "not yet built; do not report an upstream-versus-fork comparison without this arm"
+  },
+  "required_devices": 2,
+  "repetitions": 3,
+  "requests_per_prompt": 1,
+  "max_new": 512,
+  "warmup_max_new": 128,
+  "sampling": {"temperature": 0},
+  "prompt_lengths": [6144, 32768],
+  "common_values": {
+    "--layer-split": "auto",
+    "--expert-cache": "auto",
+    "--prefill": "8192",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--max-context": "65536",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--pool-workers": "8",
+    "--prompt-cache": "0",
+    "--conversation-cache-mib": "0",
+    "--vram-reserve-mib": "1024",
+    "--vram-reserve-later-mib": "1024"
+  },
+  "common_switches": ["--resident-experts", "--trim-stage-weights"],
+  "remove_values": ["--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3", "--peer-device", "--batch", "--slots", "--expert-profile-save", "--expert-profile-save-every"],
+  "remove_switches": ["--remote-expert-opt", "--split-skip-if-fits", "--batch-mtp", "--vision"],
+  "environment": {"STRATA_PIPELINE_ADAPT_ASYNC": "1"},
+  "arms": [
+    {"name": "serial", "values": {"--pipeline-windows": "0", "--adapt-async": "0"}},
+    {"name": "async", "values": {"--pipeline-windows": "0", "--adapt-async": "1"}},
+    {"name": "pipeline", "values": {"--pipeline-windows": "2", "--adapt-async": "0"}},
+    {"name": "pipeline-async", "values": {"--pipeline-windows": "2", "--adapt-async": "1"}}
+  ],
+  "interpretation": "Controlled latest-main experiment, not the reporter's exact two-card or 262K configuration. Repeat the complete matrix with reversed device order as a separate run. Keep model files, input IDs, CPU workers, reserves and initial expert profile identical. Check startup logs for effective split, cache sizes and disabled paths; a requested flag alone is not evidence that the path ran. Store raw output IDs and DONE metrics; assess output differences before publishing speed comparisons. Do not run simultaneous performance jobs. No claim about the original twofold gap until the pinned fork is tested under matching conditions."
+}

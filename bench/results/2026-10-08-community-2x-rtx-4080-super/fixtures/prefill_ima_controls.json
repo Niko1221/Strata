@@ -1,0 +1,38 @@
+{
+  "issue": 1468,
+  "source_commit": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+  "required_devices": 2,
+  "repetitions": 1,
+  "requests_per_prompt": 8,
+  "max_new": 32,
+  "warmup_max_new": 32,
+  "sampling": {"temperature": 0},
+  "prompt_lengths": [55296, 114688],
+  "common_values": {
+    "--layer-split": "26",
+    "--expert-cache": "auto",
+    "--spec": "4",
+    "--spec-min-p": "0.70",
+    "--max-context": "262144",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--pool-workers": "8",
+    "--vram-reserve-mib": "690",
+    "--prompt-cache": "0",
+    "--conversation-cache-mib": "0",
+    "--pipeline-windows": "0",
+    "--adapt-async": "0"
+  },
+  "common_switches": ["--trim-stage-weights"],
+  "remove_values": ["--batch", "--slots", "--peer-device", "--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3", "--expert-profile-save", "--expert-profile-save-every"],
+  "remove_switches": ["--remote-expert-opt", "--batch-mtp", "--split-skip-if-fits", "--vision"],
+  "environment": {"STRATA_PREFILL_RING": "1024"},
+  "arms": [
+    {"name": "control-8192", "values": {"--prefill": "8192"}},
+    {"name": "control-16384", "values": {"--prefill": "16384"}},
+    {"name": "large-auto", "values": {"--prefill": "auto:32768"}},
+    {"name": "large-copy-control", "values": {"--prefill": "auto:32768"}, "environment": {"STRATA_GROUP_COPY": "1"}},
+    {"name": "large-step-sync", "values": {"--prefill": "auto:32768"}, "environment": {"STRATA_PF_STEP_SYNC": "1"}}
+  ],
+  "interpretation": "Diagnostic experiment, not a confirmed reproduction. Original report is Windows with two different 16GB laptop GPUs and a specific abliterated IQ3_XXS pack. Use that pack if obtainable; a different pack or Linux changes the reproduction conditions and must be labeled. Verify effective prefill chunk in startup logs: the target arm is inconclusive unless it reaches the reported 19200-20480 range or larger. Each arm keeps one engine alive across requests; stop an arm at the first error, preserve logs, and never count unattempted requests as successful. Fresh prefill is enforced by disabling prompt and conversation caches. Smaller chunk, STRATA_GROUP_COPY and STRATA_PF_STEP_SYNC are diagnostic controls, not fixes. Step synchronization changes scheduling and may hide a race; it logs compute/copy stream errors at existing layer/KV checkpoints, not at every kernel. A copy_i32 error can surface an earlier asynchronous CUDA fault; it does not identify the faulting kernel. No latency comparison is planned."
+}

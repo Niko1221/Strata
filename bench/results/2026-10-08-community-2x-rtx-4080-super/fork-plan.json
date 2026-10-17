@@ -1,0 +1,39 @@
+{
+  "issue": 1352,
+  "source_commit": "03a5ec955ba152a5f499a18a0f2f2ac192309c28",
+  "repository": "Hardin22/Strata-DualGPU",
+  "input_source_commit": "d5ea7133741e67743c0e886bb426c0ce8d69cf6c",
+  "required_devices": 2,
+  "repetitions": 3,
+  "requests_per_prompt": 1,
+  "max_new": 512,
+  "warmup_max_new": 128,
+  "sampling": {"temperature": 0},
+  "prompt_lengths": [6144, 32768],
+  "common_values": {
+    "--layer-split": "auto",
+    "--expert-cache": "auto",
+    "--prefill": "8192",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--max-context": "65536",
+    "--kv": "int8",
+    "--kv-resident": "32768",
+    "--pool-workers": "8",
+    "--prompt-cache": "0",
+    "--conversation-cache-mib": "0",
+    "--vram-reserve-mib": "1024",
+    "--vram-reserve-later-mib": "1024"
+  },
+  "common_switches": ["--resident-experts", "--trim-stage-weights"],
+  "remove_values": ["--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3", "--peer-device", "--batch", "--slots", "--expert-profile-save", "--expert-profile-save-every"],
+  "remove_switches": ["--remote-expert-opt", "--split-skip-if-fits", "--batch-mtp", "--vision"],
+  "environment": {"STRATA_PIPELINE_ADAPT_ASYNC": "1", "STRATA_PIPELINE_RESERVE": "0"},
+  "arms": [
+    {"name": "serial", "values": {"--pipeline-windows": "0", "--adapt-async": "0"}},
+    {"name": "async", "values": {"--pipeline-windows": "0", "--adapt-async": "1"}},
+    {"name": "pipeline", "values": {"--pipeline-windows": "2", "--adapt-async": "0"}},
+    {"name": "pipeline-async", "values": {"--pipeline-windows": "2", "--adapt-async": "1"}}
+  ],
+  "interpretation": "Pinned fork engine comparison, not the reporter's exact hardware or defaults. Reuse the frozen upstream prompt IDs and tokenizer, never retokenize fork source code. STRATA_PIPELINE_RESERVE=0 disables this fork's automatic extra 224/160 MiB pipeline reserves so both engines receive the explicit 1024 MiB reserves. The runner calls StrataEngine directly, bypassing the fork server's automatic GPU ordering and display reserve planner. Check logs for effective GPU order, split points, caches, active pipeline and adaptive tier before comparing; equal CLI flags do not establish equal effective layouts. Test both device orders separately without overlapping performance jobs. Inspect raw output IDs and decode lengths before publishing. An OOM or disabled arm is a failed comparison, not a performance number. No claim about the reported twofold gap before real hardware measurements."
+}
