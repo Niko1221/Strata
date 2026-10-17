@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
-                          StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
+                          StrataEngine, api_key_of, engine_args, forward_of, key_matches, layer_split_value,
+                          prompt_progress,
                           prompt_tokens_seen,
                           request_stats, request_timings, serve, start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
@@ -4863,6 +4864,95 @@ class TelemetryNoDisks(unittest.TestCase):
                 self.assertIsNone(t.sample()["disk_write_mb"])
             finally:
                 t.close()
+
+
+class Forward(unittest.TestCase):
+    """"forward": POSTs to a path answered by another server (an embedding model, a reranker), as it answers."""
+
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+
+        class Side(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path == "/v1/rerank":
+                    self.send_response(400)
+                    data = b'{"error": "no query"}'
+                else:
+                    self.send_response(200)
+                    data = json.dumps({"seen": json.loads(body), "auth": self.headers.get("Authorization")}).encode()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        cls.side = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Side)
+        threading.Thread(target=cls.side.serve_forever, daemon=True).start()
+        side = f"http://127.0.0.1:{cls.side.server_address[1]}"
+        tok = ByteTokenizer()
+        cls.svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        cls.svc.forward = forward_of({"forward": {"/v1/embeddings": side + "/v1/embeddings",
+                                                  "/v1/rerank/": side + "/v1/rerank",
+                                                  "/v1/gone": "http://127.0.0.1:9/"}})
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in (cls.httpd, cls.side):
+            s.shutdown()
+            s.server_close()
+
+    def post(self, path, body, headers=None):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_answers_come_back_as_they_are(self):
+        code, r = self.post("/v1/embeddings", {"model": "qwen3-embedding", "input": ["a"]}, {"Authorization": "Bearer k"})
+        self.assertEqual((code, r["seen"]["input"], r["auth"]), (200, ["a"], None))   # Strata's key is not passed on
+        self.assertEqual(self.post("/v1/rerank", {"query": ""}), (400, {"error": "no query"}))
+        code, r = self.post("/v1/gone", {})
+        self.assertEqual((code, r["error"]["code"]), (502, "forward_failed"))
+        self.assertEqual(self.post("/v1/other", {})[0], 404)                        # not configured: as before
+
+    def test_the_config(self):
+        self.assertEqual(forward_of({}), {})
+        for bad in ({"/v1/chat/completions": "http://x"}, {"/v1/responses": "http://x"}, {"v1/e": "http://x"},
+                    {"/v1/e": "ftp://x"}, ["/v1/e"]):
+            with self.assertRaises(ValueError):
+                forward_of({"forward": bad})
+
+    def test_every_own_route_is_refused(self):
+        """Every path _post answers itself, read from its source (path == "...", path in (...),
+        path.startswith("...")), is refused, so a new route cannot be taken over by a config entry."""
+        import ast
+        tree = ast.parse((ROOT / "serve/server.py").read_text(encoding="utf-8"))
+        post = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_post")
+        exact, prefixes = set(), set()
+        for n in ast.walk(post):
+            if isinstance(n, ast.Compare) and isinstance(n.left, ast.Name) and n.left.id == "path":
+                for c in ast.walk(n.comparators[0]):
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                        exact.add(c.value)
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "startswith"                     and isinstance(n.func.value, ast.Name) and n.func.value.id == "path":
+                prefixes.add(n.args[0].value)
+        prefixes.discard("/v1/")                         # the foreign-page check, not a route
+        self.assertGreaterEqual(len(exact), 12)          # the walk found the routes
+        for p in sorted(exact) + [x + "0" for x in sorted(prefixes)] + sorted(prefixes):
+            with self.subTest(path=p), self.assertRaises(ValueError):
+                forward_of({"forward": {p: "http://127.0.0.1:9000"}})
+        for p in ("/v1/embeddings", "/v1/rerank", "/v1/audio/speech"):
+            self.assertEqual(forward_of({"forward": {p: "http://x"}}), {p: "http://x"})
 
 
 class SilentEngine(unittest.TestCase):
