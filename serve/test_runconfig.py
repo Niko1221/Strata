@@ -148,6 +148,22 @@ class Http(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIs(self.saved()["fit_max_tokens"], True)
 
+    def test_the_container_symlink_is_written_through_2256(self):
+        """#2256 (#1244's layout): the server starts from /opt/strata/strata-<model>.json, a link into the data volume.
+        Saving writes the volume's file and keeps the link."""
+        volume = Path(self.dir.name) / "data-config"
+        volume.mkdir()
+        target = volume / "strata-q2_0.json"
+        target.write_text(json.dumps(CFG, indent=1), encoding="utf-8")
+        self.path.unlink()                                             # setUp's plain file: start from a link
+        self.path.symlink_to(target)
+        with contextlib.redirect_stdout(io.StringIO()):
+            status, v = self.call("POST", {"set": {"sampling.temperature": 0.2}}, {"Origin": f"http://{self.host}"})
+        self.assertEqual(status, 200, v)
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["sampling"]["temperature"], 0.2)
+        self.assertTrue(self.path.is_symlink())                        # the link stayed a link
+        self.assertEqual(json.loads((volume / "strata-q2_0.json.bak").read_text(encoding="utf-8")), CFG)
+
     def test_without_a_run_config(self):
         self.svc.config_path = None
         self.assertEqual(self.call("GET")[0], 404)

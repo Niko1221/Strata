@@ -202,6 +202,25 @@ class BrokenEarlierConfig(unittest.TestCase):
                     setup.write_config(p, {"args": []})
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"args": ["--kv", "int8"]})   # kept whole
 
+    def test_write_config_follows_the_container_symlink_2256(self):
+        """#2256 (#1244's layout): /opt/strata/strata-<model>.json links the config on the data volume; a start that
+        keeps --host / --api-key writes the volume's file, not a copy in place of the link."""
+        with tempfile.TemporaryDirectory() as d:
+            volume = Path(d) / "data" / "config"
+            volume.mkdir(parents=True)
+            target = volume / "strata-iq3_s.json"
+            target.write_text(json.dumps({"args": ["--kv", "int8"]}), encoding="utf-8")
+            link = Path(d) / "strata-iq3_s.json"
+            link.symlink_to(target)
+            setup.write_config(link, {"args": ["--kv", "k8v4"]})
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"args": ["--kv", "k8v4"]})
+            self.assertTrue(link.is_symlink())                         # the link stayed a link
+            gone = Path(d) / "strata-q2_0.json"                        # a link into a folder that is gone
+            gone.symlink_to(Path(d) / "gone" / "strata-q2_0.json")
+            setup.write_config(gone, {"args": []})
+            self.assertEqual(json.loads(gone.read_text(encoding="utf-8")), {"args": []})
+            self.assertFalse(gone.is_symlink())                        # written in its place, as before
+
 
 class LowRamGpus(unittest.TestCase):
     """S2/S3 (#364 #384): one GPU recommended in the low-RAM mode, all of them when asked for."""

@@ -162,8 +162,13 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
 
 
 def save(path: str | Path, cfg: dict) -> Path:
-    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak."""
+    """The config written whole (a temporary file moved over the old one), the earlier one kept as <name>.bak.
+    #2256: a symlink is followed and its target written.  In the container the server starts from
+    /opt/strata/strata-<model>.json, a link into the data volume (#1244); a file moved over the link kept the edit in
+    the image and left the volume's file as it was."""
     path = Path(path)
+    if path.is_symlink():
+        path = path.resolve()
     bak = path.with_name(path.name + ".bak")
     shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")

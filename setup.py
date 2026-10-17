@@ -4512,7 +4512,11 @@ def data_folder(requested: str | None) -> tuple:
 
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
-    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
+    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind.  #2256: a
+    symlink is followed and its target written, as serve/runconfig.save does (the container's /opt/strata config is a
+    link into the data volume, #1244)."""
+    if path.is_symlink() and path.resolve().parent.is_dir():   # a link into a folder that is gone: replaced, as before
+        path = path.resolve()
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     os.replace(tmp, path)
