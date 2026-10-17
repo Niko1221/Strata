@@ -149,6 +149,12 @@ START-HERE.bat --setup --family unsloth --model UD-Q5_K_XL
 For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
 explicit packing conversion and is not an installer menu option.
 
+### Huihui abliterated UD-IQ4_XS
+
+For **huihui-ai's abliterated build in Unsloth's UD-IQ4_XS layout**, see [HUIHUI.md](HUIHUI.md): the same
+packing and speed as Unsloth's UD-IQ4_XS, measured against both OrcaRouter files on a 2x RTX 4090 split. It is
+not an installer menu option.
+
 ## Adding or switching models
 
 You can add another model any time with `SETUP.bat` (the same as `START-HERE.bat --setup`; on Linux
