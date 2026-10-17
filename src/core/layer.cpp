@@ -1227,14 +1227,13 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     // KV streaming: every block the selection names is made resident before anything reads it
     qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
     if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(b.qcur, g.n_head, stream);   // <Hq, Hk> = <q, k>
-    if (g_fast_attn && !native_flash_attn_short && dump == nullptr) {
+    // K16V8 has no gather/native-short variant yet: those paths are diagnostics, so mixed KV always
+    // takes the fused decode attention, which computes the same result.
+    const bool mixed_fused = st.kv_f16k_q8v;
+    if ((g_fast_attn && !native_flash_attn_short && dump == nullptr) || mixed_fused) {
         const strata::kernels::QsaAttnPools pools = qsa_attn_pools(st);
         strata::kernels::qsa_decode_attn_step(b.qcur, pools, b.ids, st.step, cap, s, b.attn_scratch, b.attn, stream);
     } else {
-    if (st.kv_f16k_q8v) {
-        err = v.name("attn") + ": k16v8 needs the fused attention path (the gather path is not implemented)";
-        return false;
-    }
     if (st.kv_hybrid) {
         kv_gather_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, b.ids, st.step, cap, s,
                           b.k_scratch, b.k_scratch, stream);

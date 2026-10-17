@@ -67,13 +67,11 @@ inline KvHostPools kv_hybrid_v_half(const KvHostPools& h) {
 inline KvHostPools kv_f16_k_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_pool = h.k_pool; r.v_pool = h.k_pool;
-    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 inline KvHostPools kv_int8_v_half(const KvHostPools& h) {
     KvHostPools r;
     r.k_q = h.v_q; r.v_q = h.v_q; r.k_scale = h.v_scale; r.v_scale = h.v_scale;
-    r.chunk = h.chunk; r.chunk_host = h.chunk_host; r.chunk_shift = h.chunk_shift;
     return r;
 }
 
