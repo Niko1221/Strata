@@ -192,7 +192,13 @@ function render(m) {
   } else {
     setPill("idle", "Idle");
   }
-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
+  {
+    const q = live.queued > 0 ? `${live.queued} queued` : "";
+    const w = (live.waiting || 0) + (live.admitting || 0);   // the engine control lines: the batch-mode queue
+    const e = w > 0 ? `${w} waiting to read` : "";
+    const badge = [q, e].filter(Boolean).join(" + ");
+    if (badge) setPill("queued", badge);
+  }
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
@@ -242,7 +248,7 @@ function renderTotals(t) {
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
-  const on = live.queued > 0 ? "queued" : live.state;
+  const on = (live.queued > 0 || (live.waiting || 0) + (live.admitting || 0) > 0) ? "queued" : live.state;
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
   const prog = $("state-progress");
   let label = "Waiting for a request", detail = "", pct = 0;
