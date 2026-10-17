@@ -580,6 +580,18 @@ the same worker count and workload. This does not change kernels, phase barriers
 does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
 For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
 
+**One token's CPU gate/up rows (`STRATA_CPU_SINGLE_EXACT`).** On an AVX-2 CPU without AVX-512, an expert that
+serves one token of the window runs ggml-cpu's dot product (the #152 rule above). For IQ3_XXS, IQ3_S and IQ2_S gate/up
+rows the engine now computes that dot's exact bits with its own AVX-2 decode: the same integer sums, the same
+per-block multiply-add and the same final reduction as ggml's AVX2 code, so the output is unchanged
+(`iq_single_parity` compares every row bit for bit, also through the engine's dispatch). Only where ggml-cpu itself
+was built for AVX2 (not a `STRATA_ISA_FLOOR` build) and the CPU has no AVX-512. Measured on a Ryzen 7 3800X (Zen 2)
+with an Arc A770 only (the engine's `pool multi` stats, 8K prompt, 256 tokens, 3 runs each, same output tokens), with
+gate/up and IQ4_NL down rows both exact: gate/up 15.15-15.20 -> 13.97-14.18 ms per round (about -7%), down
+7.49-7.53 -> 7.62-7.72 ms (about +2%, slower, so the down rows stay on ggml's dot), the pool call 30.9-32.1 -> 29.8-30.4
+ms (about -3%). Decode speed did not change measurably at this configuration (23.47-23.77 -> 23.83-23.86 tok/s): the
+pool is about 30 ms of a 110 ms round. `STRATA_CPU_SINGLE_EXACT=0` keeps ggml's dot.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows

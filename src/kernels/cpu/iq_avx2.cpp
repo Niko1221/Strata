@@ -382,6 +382,58 @@ namespace vnni {
 
 bool vnni_on() { return STRATA_AVXVNNI && cpu_avxvnni_ok(); }
 
+// ---- one token's gate/up rows in ggml's own float order (iq256_gu_single_exact).
+// The rows above fold the format's constant into the block scale and reduce with hadd.  ggml's AVX2 single-token
+// dots (ggml-cpu/arch/x86/quants.c: ggml_vec_dot_iq3_xxs_q8_K, _iq3_s_q8_K, _iq2_s_q8_K) multiply by the constant
+// after the reduction and reduce with hsum_float_8.  These kernels keep ggml's order - the same integer sum per lane,
+// the same fmadd per block, the same horizontal tree - so a lone token gets ggml's bits (iq_single_parity checks every
+// row).  The grid and sign decode is the rows' (Fmt32), which is what is faster.
+
+// ggml's hsum_float_8: (lo + hi), movehl, movehdup - not hsum8's hadd tree.
+inline float hsum8_ggml(__m256 v) {
+    __m128 s = _mm_add_ps(_mm256_extractf128_ps(v, 1), _mm256_castps256_ps128(v));
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_movehdup_ps(s));
+    return _mm_cvtss_f32(s);
+}
+
+// row . y for one Q8_K token: ggml's d = x.d * y.d per block, one fmadd per block, K * hsum at the end.
+template <int TY>
+inline float row_dot_single(const uint8_t* row, int nblocks, const block_q8_K* y) {
+    const int pf = prefetch_distance();
+    __m256 accf = _mm256_setzero_ps();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * Fmt32<TY>::bytes;
+        rows_ahead(blk, pf);
+        __m256i acci = _mm256_setzero_si256();
+#if defined(__clang__)
+#pragma clang loop unroll(disable)
+#elif defined(__GNUC__)
+#pragma GCC unroll 1
+#endif
+        for (int j = 0; j < 4; ++j) {
+            for (int half = 0; half < 2; ++half) {
+                __m256i g, sgn, sc;
+                Fmt32<TY>::decode(blk, j, half, g, sgn, sc);
+                const __m256i yv = _mm256_loadu_si256((const __m256i*) (y[i].qs + 64 * j + 32 * half));
+                acci = plain::madd_add(acci, _mm256_maddubs_epi16(g, _mm256_sign_epi8(yv, sgn)), sc);
+            }
+        }
+        accf = _mm256_fmadd_ps(_mm256_set1_ps(h2f(u16(blk)) * y[i].d), _mm256_cvtepi32_ps(acci), accf);
+    }
+    return Fmt32<TY>::K * hsum8_ggml(accf);
+}
+
+template <int TY>
+void gu_single(const uint8_t* blob, size_t row_bytes, size_t up_off, int n, const block_q8_K* y, float* ff,
+               int r0, int r1) {
+    for (int r = r0; r < r1; ++r) {
+        const float g = row_dot_single<TY>(blob + (size_t) r * row_bytes, n / QK_K, y);
+        const float u = row_dot_single<TY>(blob + up_off + (size_t) r * row_bytes, n / QK_K, y);
+        ff[r] = (g / (1.f + std::exp(-g))) * u;
+    }
+}
+
 }  // namespace
 
 // ggml's quantize_row_q8_K_ref (ggml-quants.c), which is also what ggml-cpu runs on x86 (no SIMD version there),
@@ -551,6 +603,17 @@ void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n
 void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out,
                         int r0, int r1) {
     iq4nl256_down_rows_v(vnni_on() ? kIq256Vnni : 0, w, row_bytes, n, hq, nt, out, r0, r1);
+}
+
+void iq256_gu_single_exact(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* act,
+                           float* ff, int r0, int r1) {
+    const block_q8_K* y = static_cast<const block_q8_K*>(act);
+    switch (type) {
+        case 18: gu_single<18>(blob, gu_row, up_off, n, y, ff, r0, r1); break;
+        case 21: gu_single<21>(blob, gu_row, up_off, n, y, ff, r0, r1); break;
+        case 22: gu_single<22>(blob, gu_row, up_off, n, y, ff, r0, r1); break;
+        default: break;
+    }
 }
 
 }  // namespace strata::kernels::cpu
