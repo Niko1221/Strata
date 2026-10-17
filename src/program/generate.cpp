@@ -12912,7 +12912,6 @@ int main(int argc, char** argv) {
                         }
                         break;
                     }
-                }   // resume > 0 (splice-narrowed fresh-prefill skips the restore search)
             }
             // Phase 3a T10: when the splice hook fired and narrowed resume, the chunk loop's
             // read start is `t.read_from` (the splice-narrowed resume = the edit pos E), NOT

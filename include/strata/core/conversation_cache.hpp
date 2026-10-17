@@ -333,7 +333,7 @@ public:
             if (e.cvec != cvec) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > m.tokens) m = {i, n, live, false, n};
+                if (n > m.tokens) m = {i, n, live, serials_[i], false, n};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
@@ -381,7 +381,7 @@ public:
                     std::fprintf(stderr, " e%zu.%s:L=%lld:lcp=%lld", i, live ? "live" : "ck", (long long) L, (long long) p);
                 if (p <= 0 || p >= L) return;                         // 0 LCP or strict (already tried)
                 if (p > pm.tokens || (p == pm.tokens && L > pm.checkpoint_length))
-                    pm = {i, p, live, true, L};
+                    pm = {i, p, live, serials_[i], true, L};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
