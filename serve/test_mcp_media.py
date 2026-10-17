@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
-from serve.mcp import cache_images
+from serve.mcp import cache_images, hub_from_config
 from serve.frontend import ChatTemplate, images_of
 from serve.server import ByteTokenizer, Service, serve
 from serve.test_mcp import ScriptedEngine, call_script
@@ -16,6 +16,33 @@ PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4
 
 def image(data=PNG, mime='image/png'):
     return {'type': 'image', 'mimeType': mime, 'data': base64.b64encode(data).decode()}
+
+class Configuration(unittest.TestCase):
+    def test_documented_switch_reaches_hub_and_tool_result(self):
+        hub = hub_from_config({'mcp_servers': {'fake': {'command': 'unused'}},
+                               'mcp': {'image_results': True}})
+        self.assertTrue(hub.settings['image_results'])
+        server = hub.servers['fake']
+        server.status = 'ready'
+        server.tools = [{'name': 'image', 'inputSchema': {}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            hub.media_dir = Path(tmp)
+            with patch.object(server, 'call', return_value={'content': [image()]}):
+                result = hub.call('fake__image', {})
+            self.assertEqual(len(result['images']), 1)
+            self.assertEqual(result['model_content'][1]['type'], 'image')
+
+    def test_disabled_and_omitted_switch_stay_off(self):
+        for settings in ({}, {'image_results': False}):
+            with self.subTest(settings=settings):
+                hub = hub_from_config({'mcp_servers': {'fake': {'command': 'unused'}}, 'mcp': settings})
+                self.assertFalse(hub.settings['image_results'])
+
+    def test_switch_rejects_non_booleans(self):
+        for value in ('true', 'false', 0, 1, None, [], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(SystemExit, 'expected a boolean'):
+                hub_from_config({'mcp_servers': {'fake': {'command': 'unused'}},
+                                 'mcp': {'image_results': value}})
 
 class Cache(unittest.TestCase):
 
@@ -132,6 +159,40 @@ class HistoryReferences(unittest.TestCase):
                     svc.prepare(message, [], {}, 16)
             self.assertEqual(images_of(message), [str(Path(tmp) / name)])
 
+    def test_mixed_missing_and_valid_pictures_keeps_valid_vision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = cache_images({'content': [image()]}, tmp)[0]
+            source = str(Path(tmp) / media['url'].split('/')[-1])
+            rows = Path(tmp) / 'img.sve'
+            rows.write_bytes(b'rows')
+            class Vision:
+                dir = Path(tmp)
+
+                def encode(self, value):
+                    if value != source:
+                        raise AssertionError('Only the valid cached image may reach the encoder')
+                    return rows, 3
+            tok = ByteTokenizer()
+            svc = Service(ScriptedEngine(tok, ['OK']), tok,
+                          ChatTemplate(Path(__file__).parent / 'chat_template.jinja'), vision=Vision())
+            class Hub:
+                media_dir = tmp
+            svc.mcp = Hub()
+            messages = [{'role': 'tool', 'content': [
+                {'type': 'text', 'text': 'Retain this text.'},
+                {'type': 'image', 'source': 'strata-tool-media:' + '0' * 64 + '.png'},
+                {'type': 'image', 'source': 'strata-tool-media:' + media['url'].split('/')[-1]}]}]
+            try:
+                ids, _, _ = svc.prepare(messages, [], {}, 16)
+                prompt = tok.decode(ids)
+                self.assertIn('Retain this text.', prompt)
+                self.assertIn('[image omitted:', prompt)
+                self.assertEqual(images_of(messages), [source])
+                self.assertEqual(ids.count(tok.encode('<|image_pad|>', parse_special=True)[0]), 3)
+            finally:
+                if svc.embeddings.path:
+                    svc.embeddings.path.unlink(missing_ok=True)
+
     def test_bad_reference_cannot_read_other_files(self):
         tok = ByteTokenizer()
         svc = Service(ScriptedEngine(tok, ['OK']), tok, ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
@@ -144,6 +205,56 @@ class ImageLoop(unittest.TestCase):
     start = fixtures.ToolLoop.start
     post = fixtures.ToolLoop.post
     chunks = staticmethod(fixtures.ToolLoop.chunks)
+
+    def check_stale_history(self, state):
+        self.start('</think>\n\nText reply survives.')
+        with tempfile.TemporaryDirectory() as tmp:
+            self.hub.media_dir = Path(tmp) if state == 'missing' else None
+            if state == 'no_hub':
+                self.svc.mcp = None
+            history = [
+                {'role': 'user', 'content': 'Create a picture'},
+                {'role': 'assistant', 'content': '', 'tool_calls': [
+                    {'id': 'old', 'type': 'function', 'function': {'name': 'fake__echo', 'arguments': '{}'}}]},
+                {'role': 'tool', 'tool_call_id': 'old', 'content': [
+                    {'type': 'text', 'text': 'Keep this original tool text.'},
+                    {'type': 'image_url', 'image_url': {'url': 'strata-tool-media:' + '0' * 64 + '.png'}}]},
+                {'role': 'user', 'content': 'Continue with text only'}]
+            # API clients resend the original unmodified history on every later turn.
+            for turn in range(2):
+                for stream in (False, True):
+                    with self.subTest(state=state, turn=turn, stream=stream):
+                        code, text = self.post({'messages': history}, stream=stream)
+                        self.assertEqual(code, 200, text)
+                        if stream:
+                            answer = ''.join(c['choices'][0]['delta'].get('content', '') for c in self.chunks(text))
+                        else:
+                            answer = json.loads(text)['choices'][0]['message']['content']
+                        self.assertIn('Text reply survives.', answer)
+                        prompt = self.engine.prompt_text(turn * 2 + int(stream))
+                        self.assertIn('Keep this original tool text.', prompt)
+                        self.assertIn('[image omitted:', prompt)
+                        self.assertNotIn('strata-tool-media:', prompt)
+
+    def test_missing_cache_history_continues_across_turns(self):
+        self.check_stale_history('missing')
+
+    def test_disabled_cache_history_continues_across_turns(self):
+        self.check_stale_history('disabled')
+
+    def test_removed_mcp_history_continues_across_turns(self):
+        self.check_stale_history('no_hub')
+
+    def test_malformed_history_still_rejected_over_http(self):
+        self.start('</think>\n\nShould not run.')
+        self.svc.mcp = None
+        for name in ('../../secret.png', 'a' * 64 + '.svg', 'A' * 64 + '.png', 'short.png'):
+            with self.subTest(name=name):
+                code, text = self.post({'messages': [{'role': 'tool', 'content': [
+                    {'type': 'image_url', 'image_url': {'url': 'strata-tool-media:' + name}}]}]}, stream=False)
+                self.assertEqual(code, 400)
+                self.assertIn('invalid tool image reference', text)
+        self.assertEqual(self.engine.prompts, [])
 
     def test_default_stream_has_no_image_fields(self):
         self.start(call_script('fake__echo', text='hello'), '</think>\n\nDone.')

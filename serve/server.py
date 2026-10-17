@@ -3857,12 +3857,18 @@ class Service:
                 source = part.get("source", "") if isinstance(part, dict) else ""
                 if isinstance(part, dict) and part.get("type") == "image" and isinstance(source, str) and source.startswith("strata-tool-media:"):
                     name = source[len("strata-tool-media:"):]
-                    if not re.fullmatch(r"[0-9a-f]{64}\.(png|jpg|webp)", name) or self.mcp is None or self.mcp.media_dir is None:
+                    if not re.fullmatch(r"[0-9a-f]{64}\.(png|jpg|webp)", name):
                         raise ValueError("invalid tool image reference")
-                    image = Path(self.mcp.media_dir) / name
-                    if not image.is_file():
-                        raise ValueError("cached tool image is no longer available")
-                    part["source"] = str(image)
+                    # Clients resend old tool results. A removed cache or disabled feature must not poison
+                    # every later turn; keep the other text and replace only the unavailable picture.
+                    media_dir = self.mcp.media_dir if self.mcp is not None else None
+                    image = Path(media_dir) / name if media_dir is not None else None
+                    if image is None or not image.is_file():
+                        why = "tool image cache is disabled" if image is None else "cached tool image is no longer available"
+                        part.clear()
+                        part.update(type="text", text=f"[image omitted: {why}]")
+                    else:
+                        part["source"] = str(image)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:

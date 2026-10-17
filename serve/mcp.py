@@ -680,11 +680,15 @@ def servers_from(block, where: str) -> dict[str, dict]:
 
 
 def settings_from(cfg: dict) -> dict:
-    """The run config's optional `"mcp"` block: timeout_s, max_result_chars, max_rounds, start_timeout_s."""
+    """The run config's optional `"mcp"` block: timeout_s, max_result_chars, max_rounds, start_timeout_s, image_results."""
     out = {}
     for key, value in (cfg.get("mcp") or {}).items():
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
-        if key in ("timeout_s", "start_timeout_s"):
+        if key == "image_results":
+            if not isinstance(value, bool):
+                raise SystemExit(f"[strata] config mcp.{key}={value!r}: expected a boolean")
+            out[key] = value
+        elif key in ("timeout_s", "start_timeout_s"):
             if not number or value <= 0:
                 raise SystemExit(f"[strata] config mcp.{key}={value!r}: expected a number of seconds > 0")
             out[key] = float(value)
