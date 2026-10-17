@@ -69,6 +69,7 @@ bool supported(int) { return false; }
 bool fits(int, int64_t) { return false; }
 size_t matrix_bytes(int, int64_t, int64_t) { return 0; }
 size_t q8_bytes(int64_t, int64_t) { return 0; }
+void pool_slab(int, void*, size_t) {}
 void quantize(const float*, const int32_t*, void*, int, int64_t, int64_t, int64_t, void*, float*) {}
 bool fp4_activations(int) { return false; }
 void quantize_scatter(const float*, const int32_t*, const int32_t*, void*, int, int64_t, int64_t, int64_t, int, void*) {}
@@ -990,6 +991,11 @@ struct Prefill::Impl {
     // layer split: the next stage's GPU as a stream-only peer (set_stage_helper); its buffers are that stage's own
     // prompt buffers, bound per prompt, and it takes the place of `pp` for a run it helps
     std::unique_ptr<PeerPrefill> help_pp;
+    // THE MMQ SCRATCH'S TAIL (lend_mmq_scratch): the part of the current layout's loan the carve did not take, which
+    // the MMQ pool may allocate its stream-k fixup tiles in.  Re-published at the start of every run (a request that
+    // reuses the layout unchanged still lends it) and withdrawn when the run ends (the loan is given back then).
+    uint8_t* mmq_slab = nullptr;
+    size_t mmq_slab_bytes = 0;
 };
 
 namespace {
@@ -1045,6 +1051,9 @@ void Prefill::reset() {
 void Prefill::release() {
     if (!impl_) return;
     impl_->hand_worker.reset();   // idle here (run drains the chain before it returns); joins its thread
+    mmq::pool_slab(impl_->device, nullptr, 0);   // the layout this slab belonged to is going away
+    impl_->mmq_slab = nullptr;                   // and a run before the next carve publishes nothing
+    impl_->mmq_slab_bytes = 0;
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
     if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
@@ -1231,6 +1240,38 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
 }
 }
 
+// The MMQ kernels' stream-k fixup tiles (llama.cpp's mmq.cuh) come out of this build's ggml_cuda_pool, which
+// cudaMallocs them on whatever VRAM is free at that moment - a few MB on a card the expert cache has filled, at the
+// one moment a prompt is running, and a malloc that fails there aborts the engine mid-read (the Maya checkout saw
+// exactly that at a 16k chunk, local commit bf844d5: 3.4 MB free of 7,707, 1.2 MB wanted).  The part of the loan
+// this layout did not take is provably the prompt's own memory - the carve is a bump, `used` is where it stopped
+// and every byte below it is a named buffer - so the pool may take the tiles from there instead of from the card's
+// leftovers.
+//
+// Three things make it safe, and all three are load-bearing.  (1) It is published per layout, keyed on the tail's
+// ADDRESS: a request whose chunk moves `used` moves the tail, and the pool drops the buffers it cached from the old
+// one.  (2) `Prefill::run` drops it again once the prompt is read - the caller refills the borrowed slots as soon as
+// it returns (a loan is whole slots, so the tail can hold one), and a cached buffer in a refilled slot is silent
+// corruption, not a crash.  (3) The loan is the participant's own expert cache, `cudaMalloc`ed on this device
+// (ExpertCache::open, under core::OnDevice(p.dev)), and this device's kernels already write experts into the carved
+// part of it, so the tail is this card's memory to write - there is nothing to ask the driver.  A tail that is empty
+// (the layout used the whole loan, or spilled past it into owned buffers) publishes nothing, and the pool allocates
+// on the device as it always did.  It is opt-in: STRATA_MMQ_SLAB=1 turns it on, and unset leaves the pool on free
+// VRAM as it always was.
+static void lend_mmq_scratch(int dev, uint8_t** slab, size_t* slab_bytes, const Alloc& o) {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_MMQ_SLAB");
+        return v != nullptr && v[0] != '\0' && std::atoi(v) != 0;
+    }();
+    *slab = nullptr;
+    *slab_bytes = 0;
+    if (on && o.base != nullptr && o.used < o.cap) {
+        *slab = o.base + o.used;
+        *slab_bytes = (size_t) (o.cap - o.used);
+    }
+    mmq::pool_slab(dev, *slab, *slab_bytes);
+}
+
 bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
                    core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
                    void* stream, std::string& err, void* borrow, uint64_t borrow_bytes, bool borrow_spill) {
@@ -1402,6 +1443,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
               std::to_string(o.failed_bytes >> 20) + " MiB)";
         return false;
     }
+    lend_mmq_scratch(m.device, &m.mmq_slab, &m.mmq_slab_bytes, o);
     return true;
 }
 
@@ -1542,6 +1584,7 @@ bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::
               std::to_string(o.failed_bytes >> 20) + " MiB)";
         return false;
     }
+    lend_mmq_scratch(m.device, &m.mmq_slab, &m.mmq_slab_bytes, o);   // the chunk moved the tail: the pool follows it
     return true;
 }
 
@@ -4821,6 +4864,15 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         return ok;
     }
 #endif
+    Impl& m = *impl_;
+    // This prompt's MMQ scratch: the tail of its loan's unused part, or nothing (see lend_mmq_scratch).  A request
+    // that reuses the layout unchanged still lends it (this call), and the withdraw below is a guard, so every exit
+    // takes it with it - a read that failed gives the loan back too.
+    mmq::pool_slab(m.device, m.mmq_slab, m.mmq_slab_bytes);
+    struct SlabEnd {
+        int dev;
+        ~SlabEnd() { mmq::pool_slab(dev, nullptr, 0); }   // the loan goes back: the pool must not hand these out
+    } slab_end{m.device};
     const bool body_ok = run_impl(tokens, n, pos0, err);
 
     std::string drain_err;

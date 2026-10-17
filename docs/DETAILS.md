@@ -2108,6 +2108,24 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
   93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
+- **The prompt path's MMQ scratch (its stream-k fixup tiles) can come out of the loan's unused tail, not out of
+  free VRAM** (opt-in, `STRATA_MMQ_SLAB=1`; off when unset). llama.cpp's mmq.cuh allocates those tiles lazily
+  through `ggml_cuda_pool`, which this build backs with a
+  `cudaMalloc` on whatever is free at that moment - a few MB on a card the expert cache has filled, at the one
+  moment a prompt is running, and a malloc that fails there aborts the engine mid-read instead of failing the
+  request. A layout does not use the whole loan: the carve is a bump, so everything from its stop to the loan's end
+  is the prompt's own memory, provably (a loan is whole cache slots and the top one is only partly needed). The
+  pool takes the tiles from there, in size classes (a power of two, 128 KiB floor: MMQ's J search picks a different
+  J per launch, so a cache keyed on the exact size holds one buffer per J - 32 buffers, 31.5 MiB on a 579-token
+  chunk - the Maya checkout's measurement on its rig - where a class bounds the pool to a few MB). It is the Maya
+  checkout's (`project-maya`) local commit `bf844d5`, which hit it at a 16,384-token chunk on a
+  5060 (3.4 MB free of 7,707.7, 1.2 MB wanted) and measured the slab costing 42-47 more lent experts per part and no
+  change to the chunk arithmetic - its numbers on its live split (5060/5060/3060/3060). **The check here** is the start's
+  `strata prefill mmq: CUDA%d the scratch pool takes a new N MiB buffer` line (it prints for a buffer of 4 MiB or
+  more): with `STRATA_MMQ_SLAB=1` and a loan that has a tail it should not appear at all, and a prompt should read
+  to completion as before. Unset, the scratch stays on free VRAM (the size classes stay - they are what bounds the
+  pool), and a layout that uses its whole loan, or that spilled into owned buffers, publishes no tail - the pool
+  then allocates as it always did.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.
 
