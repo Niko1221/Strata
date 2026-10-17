@@ -875,6 +875,129 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 
 
+class ParamForms:
+    """recover (#2451): parameter tags the model writes next to the template's form, read as `<parameter=NAME>` before
+    OutputParser sees the text - inside a `<function=...>` ... `</function>`, and only where a parameter opens (after
+    the function's tag or a `</parameter>`), so a value that shows these forms (a file documenting them, #210) is kept:
+
+        <parameter name="NAME">  <parameter name='NAME'>  <parameter name=NAME>   -> <parameter=NAME>
+        <parameter>{"a": 1, "b": "x"}</parameter>                                 -> one <parameter=K> per key
+
+    Seen on Coder IQ1_M with a coding agent's 21 tools (#2451): 19 of 35 broken Bash calls in one session carried the
+    whole command in one of these forms and reached the client with empty arguments, because parse_tool_call reads
+    only `<parameter=NAME>`.  A tag split across deltas is held back until it is complete, like the parser's own.
+    (From mbaaku's patch in #2451.)"""
+
+    NAMED = re.compile(r"""<parameter\s+name\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)'|([^\s"'<>]+))\s*>""")
+    BARE = "<parameter>"
+    BARE_MAX = 65536             # the most of a nameless parameter held while waiting for its </parameter>
+    TAG_MAX = 512                # the most of a `<parameter name=...` held while waiting for its `>`
+
+    def __init__(self):
+        self.buf = ""
+        self.inside = False      # between a <function=...> and its </function>
+        self.at = False          # "name": in the <function=NAME> tag; True: where a parameter opens (only whitespace
+        #                          since the tag or a </parameter>); False: inside a value, where nothing is rewritten
+        self.rewritten = 0
+
+    def push(self, delta: str) -> str:
+        self.buf += delta
+        return self._drain(final=False)
+
+    def flush(self) -> str:
+        return self._drain(final=True)
+
+    @staticmethod
+    def _value(v) -> str:
+        return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+
+    def _drain(self, final: bool) -> str:
+        out = []
+        while self.buf:
+            if not self.inside:
+                i = self.buf.find(FUNC_START)
+                if i < 0:
+                    keep = 0
+                    if not final:        # the end may be the start of a `<function=`
+                        keep = next((n for n in range(min(len(FUNC_START) - 1, len(self.buf)), 0, -1)
+                                     if FUNC_START.startswith(self.buf[-n:])), 0)
+                    out.append(self.buf[:len(self.buf) - keep])
+                    self.buf = self.buf[len(self.buf) - keep:]
+                    break
+                out.append(self.buf[:i + len(FUNC_START)])
+                self.buf = self.buf[i + len(FUNC_START):]
+                self.inside, self.at = True, "name"
+                continue
+            if self.at == "name":            # the rest of the <function=NAME> tag
+                j = self.buf.find(">")
+                if j < 0:
+                    out.append(self.buf)
+                    self.buf = ""
+                    break
+                out.append(self.buf[:j + 1])
+                self.buf = self.buf[j + 1:]
+                self.at = True
+                continue
+            i = self.buf.find("<")
+            text = self.buf if i < 0 else self.buf[:i]
+            if text.strip():
+                self.at = False              # a value (or prose): the forms are not read inside it
+            out.append(text)
+            self.buf = self.buf[len(text):]
+            if i < 0:
+                break
+            if self.at is True and self.buf.startswith(FUNC_END):   # inside a value it is the value's text (#210)
+                out.append(FUNC_END)
+                self.buf = self.buf[len(FUNC_END):]
+                self.inside = False
+                continue
+            if self.buf.startswith(PARAM_END):
+                out.append(PARAM_END)
+                self.buf = self.buf[len(PARAM_END):]
+                self.at = True
+                continue
+            if self.at is True:              # where a parameter opens: after <function=NAME> or a </parameter>
+                m = self.NAMED.match(self.buf)
+                if m:
+                    out.append(PARAM_START + next(g for g in m.groups() if g is not None).strip() + ">")
+                    self.buf = self.buf[m.end():]
+                    self.rewritten += 1
+                    self.at = False
+                    continue
+                if self.buf.startswith(PARAM_START):
+                    out.append(PARAM_START)
+                    self.buf = self.buf[len(PARAM_START):]
+                    self.at = False
+                    continue
+                if self.buf.startswith(self.BARE):
+                    close = self.buf.find(PARAM_END)
+                    if close < 0 and not final and len(self.buf) < self.BARE_MAX:
+                        break                # wait for the whole nameless parameter
+                    obj = None
+                    if close >= 0:
+                        try:
+                            obj = json.loads(self.buf[len(self.BARE):close])
+                        except ValueError:
+                            obj = None
+                    if isinstance(obj, dict) and obj:
+                        out.append("".join(f"<parameter={k}>\n{self._value(v)}\n</parameter>\n" for k, v in obj.items()))
+                        self.buf = self.buf[close + len(PARAM_END):].lstrip("\n")
+                        self.rewritten += 1
+                        continue
+                    out.append(self.BARE)
+                    self.buf = self.buf[len(self.BARE):]
+                    self.at = False
+                    continue
+            tags = (PARAM_END,) + ((FUNC_END, self.BARE, PARAM_START, "<parameter ") if self.at is True else ())
+            if not final and ">" not in self.buf and (any(t.startswith(self.buf) for t in tags) or (
+                    self.at is True and self.buf.startswith("<parameter ") and len(self.buf) < self.TAG_MAX)):
+                break                        # an unfinished tag that may still become one of the above
+            out.append("<")
+            self.buf = self.buf[1:]
+            self.at = False
+        return "".join(out)
+
+
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
@@ -903,6 +1026,8 @@ class OutputParser:
         self.recover = recover
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
+        self.param_forms = ParamForms() if recover and self.schemas else None   # #2451
+        self.params_rewritten = 0    # recover: parameter tags read as <parameter=NAME> (ParamForms)
         self._reset_scan()
 
     def _ok_at(self, p: int) -> bool:
@@ -1188,6 +1313,10 @@ class OutputParser:
         return best
 
     def feed(self, delta: str) -> list[Event]:
+        if self.param_forms is not None:                # recover: other parameter forms (#2451)
+            delta = self.param_forms.push(delta)
+            if not delta:
+                return []
         self.buf += delta
         out: list[Event] = []
         while True:
@@ -1415,6 +1544,12 @@ class OutputParser:
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
         out = []
+        if self.param_forms is not None:                # what ParamForms still holds goes through the parser first
+            forms, self.param_forms = self.param_forms, None
+            tail = forms.flush()
+            self.params_rewritten = forms.rewritten
+            if tail:
+                out += self.feed(tail)
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
         if self.state == "call" and self.bare and function_end(self.buf) >= 0:
