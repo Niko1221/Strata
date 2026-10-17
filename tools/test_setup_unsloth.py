@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import sys
 import tempfile
 import types
@@ -113,6 +114,34 @@ class Sha256(unittest.TestCase):
         self.assertIn("6,000 bytes, not 6,001", out)
         self.assertTrue(self.f.exists())
 
+    def test_skip_takes_another_build_as_it_is(self):
+        """--skip-gguf-sha256: another build of the model (Huihui's abliterated shard) matches neither the pinned size
+        nor the pinned hash, and is kept rather than deleted."""
+        code, out = quiet(setup.verify_sha256, self.f, 6001, "0" * 64, True)
+        self.assertIsNone(code, out)
+        self.assertIn("--skip-gguf-sha256", out)
+        self.assertIn("6,000 bytes on disk", out)
+        self.assertTrue(self.f.exists())
+        self.assertIn("sha256 skipped (6,000 bytes)", self.f.with_name(self.f.name + ".done").read_text())
+
+    def test_skip_does_not_hash(self):
+        with mock.patch("hashlib.sha256", side_effect=AssertionError("hashed")):
+            code, out = quiet(setup.verify_sha256, self.f, 6000, self.sha, True)
+        self.assertIsNone(code, out)
+
+    def test_skip_still_trusts_a_mark_that_holds_the_pinned_hash(self):
+        setup.mark(self.f, f"sha256 {self.sha}")
+        code, out = quiet(setup.verify_sha256, self.f, 6000, self.sha, True)
+        self.assertIsNone(code, out)
+        self.assertNotIn("--skip-gguf-sha256", out)                 # already checked: nothing to say
+
+    def test_the_engine_variable_does_not_reach_the_model_files(self):
+        """STRATA_SKIP_SHA256 is check_engine_digest's switch: the GGUF check still fails with it set."""
+        with mock.patch.dict(os.environ, {"STRATA_SKIP_SHA256": "1"}):
+            code, out = quiet(setup.verify_sha256, self.f, 6000, "0" * 64)
+        self.assertEqual(code, 1, out)
+        self.assertIn("wrong SHA-256", out)
+
 
 class Config(unittest.TestCase):
     def test_choices_from_config(self):
@@ -193,7 +222,8 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),
-            mock.patch.object(setup, "verify_sha256", lambda s, size, sha: self.verified.append((s.name, size, sha))),
+            mock.patch.object(setup, "verify_sha256",
+                              lambda s, size, sha, skip=False: self.verified.append((s.name, size, sha, skip))),
             mock.patch.object(setup, "run", fake_run),
             mock.patch.object(setup, "refresh_draft_vocab", lambda *a, **k: None),
             mock.patch.object(setup, "write_run_script", lambda tag, cfg, port, *_: self.t / f"start-{tag}.bat"),
@@ -223,7 +253,8 @@ class Main(Base):
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/"
         self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_SHARDS])   # no image encoder
         self.assertEqual([v[0] for v in self.verified], list(setup.UNSLOTH_SHARDS))
-        self.assertEqual([v[1:] for v in self.verified], list(setup.UNSLOTH_SHARDS.values()))
+        self.assertEqual([v[1:3] for v in self.verified], list(setup.UNSLOTH_SHARDS.values()))
+        self.assertFalse(any(v[3] for v in self.verified))                      # checked, as always
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertEqual(len(packs), 1, self.runs)
         self.assertIn("--compat-bf16", packs[0])
@@ -238,6 +269,14 @@ class Main(Base):
         self.assertEqual(args[args.index("--max-context") + 1], "8192")
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
         self.assertNotIn("vision", cfg)
+
+    def test_skip_gguf_sha256_reaches_every_model_file(self):
+        """--skip-gguf-sha256 (another build of the model, e.g. Huihui's abliterated shards): every pinned model file
+        is verified with the check skipped, so its own size and hash are accepted."""
+        code, out, cfg = self.main(["--context", "8192", "--skip-gguf-sha256"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual([v[0] for v in self.verified], list(setup.UNSLOTH_SHARDS))
+        self.assertTrue(all(v[3] for v in self.verified), self.verified)
 
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
@@ -473,7 +512,7 @@ class IQ4XS(Base):
         self.assertNotIn("is EXPERIMENTAL", out)                               # (the menu still lists UD-Q4_K_XL)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-IQ4_XS/"
         self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_IQ4_XS_SHARDS])
-        self.assertEqual(self.verified, [(n, *v) for n, v in setup.UNSLOTH_IQ4_XS_SHARDS.items()])
+        self.assertEqual(self.verified, [(n, *v, False) for n, v in setup.UNSLOTH_IQ4_XS_SHARDS.items()])
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertEqual(len(packs), 1, self.runs)
         self.assertIn("--compat-bf16", packs[0])

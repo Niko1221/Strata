@@ -69,6 +69,13 @@ that request on any setting.
 **Setup says the engine does not match GitHub's checksum.**
 Setup checks the downloaded ready-made engine against the SHA-256 GitHub publishes. On a mismatch the file is corrupt or was changed on the way, so setup deletes it and stops; run setup again to download it afresh. If GitHub gives no checksum (offline, rate limited, your own mirror), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` skips the check, only if you insist.
 
+**Setup says a model file has the wrong SHA-256, or the wrong size.**
+Every model file setup downloads is checked against the size and SHA-256 pinned in `setup.py`. A file the repository
+changed after that pin, or a build of the same model (an abliterated or re-quantized GGUF), fails the check and is
+deleted, so setup downloads it again. `--skip-gguf-sha256` takes the model files as they are instead: the file is still
+checked for being a whole GGUF, and its finish mark says the hash was skipped, so a run without the flag hashes it
+again. The two switches are separate: `STRATA_SKIP_SHA256=1` is the engine's, `--skip-gguf-sha256` the model files'.
+
 ## While it answers
 
 **It's very slow and the disk light keeps blinking.**

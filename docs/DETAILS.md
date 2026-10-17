@@ -542,6 +542,8 @@ START-HERE.bat --setup                          install another model, or change
 SETUP.bat                                       the same (double-click it)
 START-HERE.bat --model IQ2_XS --context 32768 --vision yes --yes     no questions
 START-HERE.bat --gguf-dir D:\models\IQ2_XS       use GGUF files you already have
+START-HERE.bat --skip-gguf-sha256               accept a model file that is not the build setup.py pins (an
+                                                abliterated or re-quantized GGUF); the engine is still checked
 START-HERE.bat --data-dir E:\Strata-data         keep the model files somewhere else
 START-HERE.bat --port 8081                      another port
 START-HERE.bat --gpu 1                          another GPU (numbered as nvidia-smi; setup picks the one with the most VRAM)
