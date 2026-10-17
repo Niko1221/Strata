@@ -466,6 +466,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `prevent_sleep` | off | Windows only: keeps the PC awake while a request runs or waits (`SetThreadExecutionState`). On Linux and macOS one startup line says it does nothing. |
 | `sampling` | the model card | Defaults for requests that leave sampling fields out, for example `{"temperature": 1.0, "top_p": 0.95, "top_k": 20}`. |
 | `aliases` | none | Extra model names listed in `/v1/models`, like llama-server's `--alias`. Any other name is still served. |
+| `pricing` | none | Rates reported in `/v1/models` and `/models` for clients to estimate costs. See [Model pricing for clients](#model-pricing-for-clients). |
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
 | `engine_silence_s` | `300` | Ends the engine after this many seconds without a line during a request (`0` = wait forever). While a prompt is read, each chunk may take three times the previous one's time. |
 | `parallel` | `1` | Up to N requests decoded together in batch slots ([BATCHING.md](BATCHING.md)). |
@@ -475,6 +476,31 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `host`, `api_key`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
+
+### Model pricing for clients
+
+An optional top-level `"pricing"` object in `strata-<model>.json` is reported unchanged in `/v1/models` and `/models`,
+including alias entries. Clients such as Hermes can use these operator-supplied rates to estimate session costs.
+Add the block to the run config and restart the server:
+
+```json
+"pricing": {
+  "prompt": "0.00000015",
+  "completion": "0.00000047",
+  "input_cache_read": "0.000000016",
+  "input_cache_write": "0.0000002",
+  "request": "0"
+}
+```
+
+These are example accounting rates, not measured costs of running Strata. The names and units follow
+[OpenRouter's pricing object](https://openrouter.ai/docs/guides/overview/models): USD per input token (`prompt`),
+output token (`completion`), cached input token (`input_cache_read`), or cache-write token (`input_cache_write`).
+`request` is USD per API request. Each rate is optional and accepts a finite, nonnegative number or decimal
+string; zero means free. `cache_read` and `cache_write` are also accepted for clients that use those names.
+Invalid known rates stop startup with a config error; unknown fields are preserved for client extensions.
+Missing rates stay absent. An omitted block, `null`, or `{}` leaves the model listing unchanged, so existing
+configs need no edits. Strata only advertises the rates; clients calculate estimates from their token usage.
 
 ### Streaming and tool calls
 
