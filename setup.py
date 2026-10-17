@@ -3844,6 +3844,14 @@ def cuda_apt_repo(osr):
     return repo if repo in ("ubuntu2204", "ubuntu2404", "debian12", "debian13") else None
 
 
+def cuda_fedora_repo(osr):
+    """The NVIDIA CUDA RPM repo for the supported x86_64 Fedora release, or None otherwise."""
+    version = osr.get("VERSION_ID", "").strip('"')
+    if osr.get("ID", "") != "fedora" or version != "44" or platform.machine() != "x86_64":
+        return None
+    return "fedora44"
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
@@ -3867,7 +3875,7 @@ def install_build_tools(gpu, yes):
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
     if not have_cc:
-        missing.append("Visual Studio 2022 Build Tools (C++)" if WIN else "the C++ compiler (build-essential)")
+        missing.append("Visual Studio 2022 Build Tools (C++)" if WIN else "the C++ compiler")
     if nvcc is None or cuda_v < need_cuda:
         missing.append("the NVIDIA CUDA Toolkit 13.0")
     if not missing:
@@ -3894,33 +3902,55 @@ def install_build_tools(gpu, yes):
         vcvars = find_vcvars(cuda_v)
     else:
         apt = shutil.which("apt-get")
-        if apt is None:
-            fail("missing: " + " and ".join(missing) + " (the automatic install is only done on Ubuntu/Debian)",
+        dnf = shutil.which("dnf")
+        osr = {}
+        if dnf and apt is None:
+            osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
+        fedora_repo = cuda_fedora_repo(osr) if dnf else None
+        if apt is None and fedora_repo is None:
+            fail("missing: " + " and ".join(missing) + " (automatic install is supported on Ubuntu 22.04 / 24.04, "
+                 "Debian 12 / 13 and Fedora 44 x86_64)",
                  "install them with your distribution's packages (Arch: pacman -S base-devel cuda; nvcc is found on "
                  "PATH, in /usr/local/cuda* and in /opt/cuda*), then run it again")
         if not have_cc:
-            run(["sudo", "apt-get", "install", "-y", "build-essential"])
-        if nvcc is None or cuda_v < need_cuda:
-            osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
-            repo = cuda_apt_repo(osr)
-            if repo is None:
-                fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
-                     "install it from https://developer.nvidia.com/cuda-downloads and run it again")
-            deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
-                     deb, "CUDA repository key")
-            run(["sudo", "dpkg", "-i", str(deb)])
-            run(["sudo", "apt-get", "update"])
-            if repo.startswith("ubuntu"):                  # as before: 13.0, and a failed install stops setup here
-                run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
+            if apt:
+                run(["sudo", "apt-get", "install", "-y", "build-essential"])
             else:
-                # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has
-                for minor in range(10):
-                    if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
-                        break
+                run(["sudo", "dnf", "install", "-y", "gcc-c++"])
+        if nvcc is None or cuda_v < need_cuda:
+            if apt:
+                repo = cuda_apt_repo(osr)
+                if repo is None:
+                    fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
+                         "install it from https://developer.nvidia.com/cuda-downloads and run it again")
+                deb = Path("/tmp/cuda-keyring.deb")
+                download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
+                         deb, "CUDA repository key")
+                run(["sudo", "dpkg", "-i", str(deb)])
+                run(["sudo", "apt-get", "update"])
+                if repo.startswith("ubuntu"):              # as before: 13.0, and a failed install stops setup here
+                    run(["sudo", "apt-get", "install", "-y", "cuda-toolkit-13-0"])
                 else:
-                    fail(f"no cuda-toolkit-13-x package could be installed from NVIDIA's {repo} repository",
-                         "install the CUDA Toolkit 13 from https://developer.nvidia.com/cuda-downloads and run it again")
+                    # Debian 13's CUDA repo carries no 13.0 package: take the oldest 13.x minor it has
+                    for minor in range(10):
+                        if run(["sudo", "apt-get", "install", "-y", f"cuda-toolkit-13-{minor}"], check=False).returncode == 0:
+                            break
+                    else:
+                        fail(f"no cuda-toolkit-13-x package could be installed from NVIDIA's {repo} repository",
+                             "install the CUDA Toolkit 13 from https://developer.nvidia.com/cuda-downloads and run it again")
+            else:
+                repo_url = f"https://developer.download.nvidia.com/compute/cuda/repos/{fedora_repo}/x86_64/cuda-{fedora_repo}.repo"
+                repo_file = Path("/etc/yum.repos.d") / f"cuda-{fedora_repo}.repo"
+                if not repo_file.exists():
+                    # Fedora 41+ uses DNF5's `addrepo`; older Fedora uses DNF4's `--add-repo`.
+                    if "dnf5" in out(["dnf", "--version"]).lower():
+                        run(["sudo", "dnf", "config-manager", "addrepo", f"--from-repofile={repo_url}"])
+                    else:
+                        run(["sudo", "dnf", "config-manager", "--add-repo", repo_url])
+                # The unversioned package can resolve to an installed CUDA 12.9 metapackage. Refresh DNF's metadata,
+                # then install the versioned 13.4 toolkit (13.4.3 on Fedora 44); this package leaves the driver alone.
+                run(["sudo", "dnf", "clean", "all"])
+                run(["sudo", "dnf", "install", "-y", "cuda-toolkit-13-4"])
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
     if (WIN and find_vcvars(cuda_v) is None) or (not WIN and shutil.which("g++") is None):
         fail("the C++ build tools did not install", "install them by hand (README.md) and run it again")

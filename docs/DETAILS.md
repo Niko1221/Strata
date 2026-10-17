@@ -618,15 +618,17 @@ slowly, the engine prints a hint under its `loaded ... GiB at ...` line naming t
 ./setup.sh
 ```
 
-The same questions, the same automatic install (it uses `sudo apt` for Python and, only if it has to compile,
-for the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
+The same questions, the same automatic install (it uses `sudo apt`/`dnf` for Python and installs the build tools on
+Ubuntu/Debian or Fedora 44 x86_64 if it has to compile), and the same start: `http://127.0.0.1:8080`. Later runs of
+`./setup.sh` (or `./run-<model>.sh`)
 start the model directly. Options as on Windows (`./setup.sh --setup`, `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`).
 Terminal chat: `.venv/bin/python chat.py`.
 
 - **Updating:** `git pull`, then `./setup.sh`: it compiles the engine again when its source changed (a minute or
   two for the changed files). If that compile fails, it says so and starts the engine you had.
-- **Other distributions** (Arch, Fedora, ...): install the C++ compiler and the CUDA Toolkit 13 with your package
-  manager first (Arch: `sudo pacman -S base-devel cuda`); setup finds `nvcc` on PATH, in `/usr/local/cuda*` and in
+- **Fedora 44 x86_64:** if setup has to compile the engine, it adds NVIDIA's CUDA DNF repository, refreshes DNF's
+  metadata and installs `cuda-toolkit-13-4`. Other distributions (including other Fedora releases) need the C++ compiler and CUDA Toolkit 13
+  installed first (Arch: `sudo pacman -S base-devel cuda`); setup finds `nvcc` on PATH, in `/usr/local/cuda*` and in
   `/opt/cuda*`, and does the rest.
 - **WSL** works (Ubuntu 24.04 tested), with one limit: the NVIDIA driver pins only about 1 GB of RAM there, so KV
   streaming (`--kv-resident`) is off and the KV cache stays in VRAM, and the experts are copied to the GPU from
