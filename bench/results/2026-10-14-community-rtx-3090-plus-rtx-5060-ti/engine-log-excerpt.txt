@@ -1,0 +1,7 @@
+[strata] loading the experts into RAM (tens of GB) and locking part of them for the GPU.
+         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] almost ready ...
+[strata] filling the GPU's expert cache (7265 experts, 16.38 GiB of VRAM) ...
+ready: http://127.0.0.1:8092/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 200192 tokens)
+  strata generate: this CPU has no AVX-512: the expert kernels run on AVX2
