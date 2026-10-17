@@ -592,9 +592,11 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         std::vector<std::string> names;
         for (const auto& kv : f_.tensors) {
             const gguf::Tensor& x = kv.second;
-            // BF16 (when the Q8_0 read is on) and, whatever the setting, the Gyro file's Q6_K / IQ4_NL ones: the decode window's
-            // hyper-connection kernels read BF16 or Q8_0 only
-            const bool conv = (x.type == ref::BF16 && hc_q8_) || x.type == ref::Q6_K || x.type == ref::IQ4_NL;
+            // BF16 (when the Q8_0 read is on) and every other quantized format (Q6_K, IQ3_S, IQ4_NL, ... the
+            // uncensored fine-tunes' files, and Gyro's) are quantized once to Q8_0 here, the same treatment the
+            // BF16 ones get; Q8_0 and F32 (inject rows) are read by the file's own kernels.
+            const bool conv = (x.type == ref::BF16 && hc_q8_) ||
+                              (x.type != ref::BF16 && x.type != ref::Q8_0 && x.type != ref::F32);
             if (!conv || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
             uint64_t ne = 1;
             for (uint64_t d : x.shape) ne *= d;
