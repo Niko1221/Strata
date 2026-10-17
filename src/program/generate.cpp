@@ -75,10 +75,12 @@
 #include "strata/program/split_ring.hpp"
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
+#include "strata/program/slot_checkpoints.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/program/batch_groups.hpp"
+#include "strata/program/pipeline_rows.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
@@ -1724,7 +1726,7 @@ public:
     }
 private:
     static void clear_marks(ConvCheckpoint& c) {
-        c.ids.clear(); c.imgs.clear(); c.used = 0; c.pinned = false;
+        c.ids.clear(); c.imgs.clear(); c.used = 0; c.pinned = false; c.branch = false;
         for (ConvCheckpoint& part : c.stage_parts) clear_marks(part);
     }
     bool on_;
@@ -10436,6 +10438,9 @@ int main(int argc, char** argv) {
                                  (long long) (later_reserve + 768 - sf_mib));
             }
         }
+        const char* active_rows_env = std::getenv("STRATA_PIPELINE_ACTIVE_ROWS");
+        const bool pipeline_active_rows = o.batch > 0 && o.batch_groups > 1 && !stages.empty() &&
+                                          active_rows_env != nullptr && std::strcmp(active_rows_env, "1") == 0;
         // what the server's Monitor tab shows (servers before 0.1.8 skip unknown lines until READY)
         {
             size_t free_b = 0, total_b = 0;
@@ -10482,7 +10487,10 @@ int main(int argc, char** argv) {
                         strata::prefill::Prefill::pipe_setting(),
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
-                                       " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
+                                       " batch_groups=" + std::to_string(o.batch_groups) +
+                                       (pipeline_active_rows ? " slot_padding_safe=1 slot_park=1 turn_token=" +
+                                                                   std::to_string(o.turn_token) : std::string())).c_str()
+                                    : "");
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
         // a flag nobody will raise - end the engine with where it was, so the server starts it again instead of the
@@ -10819,6 +10827,74 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // STRATA_SLOT_CHECKPOINTS=N (unset: 1 as before): how many of the main session's checkpoints of the
+        // conversation it takes (BADM) or keeps (park=B) a slot keeps - the deepest, then the deepest others.  Apart
+        // from it, STRATA_BRANCH_CHECKPOINT: the slot keeps the deepest branch checkpoint whatever N is, counted in N
+        // (slot_checkpoint_picks: N 1, the turn and the branch one; N 2, two, the second the branch one or else the
+        // next deepest).  A client that rewrites the end of its history (Claude Code's safety classifier inserts each
+        // query's tool calls before the closing text of its transcript) branches before the deepest, the turn
+        // checkpoint, and the branch one is then what its next query continues from - kept only in the main session
+        // otherwise, which drops it at the next request of another conversation.
+        static const int slot_checkpoints = [] {
+            const char* v = std::getenv("STRATA_SLOT_CHECKPOINTS");
+            return v != nullptr && v[0] != '\0' ? std::max(1, std::atoi(v)) : 1;
+        }();
+        static const bool slot_keeps_branch = [] {
+            const char* v = std::getenv("STRATA_BRANCH_CHECKPOINT");
+            return v != nullptr && std::atoll(v) > 0;
+        }();
+        // a slot may hold more than the one checkpoint it held before: the paths that keep, give back, report several
+        static const bool slot_multi = slot_checkpoints > 1 || slot_keeps_branch;
+        // `move` (STRATA_SLOT_CKPT_MOVE, an admission): they move into the slot instead of being copied - not the
+        // chain's root (its first, which every conversation of the client shares) or a pinned prefix.  The main session
+        // would drop them at the next request of another conversation, and while it still holds their tokens it
+        // restores one from the slot as from its own chain (lent_slot).  The copies go into dropped checkpoints'
+        // storage with STRATA_CKPT_POOL.  Returns how many moved
+        auto keep_slot_checkpoints = [&](int b, bool move = false) -> size_t {
+            BSlot& sl = bs[(size_t) b];
+            size_t bytes = 0;
+            std::string at;
+            std::vector<size_t> moving;   // places in `checks`, moved after the copies (an erase shifts the rest)
+            for (const ConvCheckpoint* c : strata::program::slot_checkpoint_picks(checks, sl.ids,
+                                                                                  (size_t) slot_checkpoints,
+                                                                                  slot_keeps_branch)) {
+                bytes += c->bytes();
+                at += (at.empty() ? "" : " ") + std::to_string(c->ids.size());
+                const size_t i = (size_t) (c - checks.data());
+                if (move && i > 0 && !c->pinned) {
+                    moving.push_back(i);
+                } else if (ckpt_pool.on()) {
+                    ConvCheckpoint k = ckpt_pool.take();
+                    k = *c;
+                    sl.checks.push_back(std::move(k));
+                } else {
+                    sl.checks.push_back(*c);
+                }
+            }
+            std::sort(moving.begin(), moving.end(), [](size_t x, size_t y) { return x > y; });
+            for (const size_t i : moving) {
+                sl.checks.push_back(std::move(checks[i]));
+                checks.erase(checks.begin() + (std::ptrdiff_t) i);
+            }
+            std::stable_sort(sl.checks.begin(), sl.checks.end(), [](const ConvCheckpoint& x, const ConvCheckpoint& y) {
+                return x.ids.size() < y.ids.size();
+            });
+            if (slot_multi)
+                std::fprintf(stderr, "strata batch: slot %d keeps %zu checkpoint%s (at %s; %.1f MiB)%s\n", b,
+                             sl.checks.size(), sl.checks.size() == 1 ? "" : "s", at.empty() ? "-" : at.c_str(),
+                             bytes / 1048576.0, moving.empty() ? "" : moving.size() == 1 ? ", 1 moved" : ", all moved");
+            return moving.size();
+        };
+        // ... and then says where they are: `BCHECKS <slot> <tokens held> <checkpoint lengths...>` after the slot's
+        // conversation changed (BADM, PARKED, a read that gave way), for the server's placement hint only (what a
+        // slot's checkpoints still cover of a prompt that is no continuation of it); the engine decides the reuse
+        auto say_checks = [&](int b) {
+            if (!slot_multi) return;
+            const BSlot& sl = bs[(size_t) b];
+            std::string at;
+            for (const ConvCheckpoint& c : sl.checks) at += " " + std::to_string(c.ids.size());
+            std::printf("BCHECKS %d %zu%s\n", b, sl.ids.size(), at.c_str());
+        };
         // slot b's sessions -> the main ones (the reverse of copy_to_slot): a request that continues the
         // conversation an idle slot holds reads on from there.  Every stage, the same calls.
         // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
@@ -11111,7 +11187,8 @@ int main(int argc, char** argv) {
             int32_t tok[strata::kernels::kVerifyMaxT] = {};
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int64_t since = 0;              ///< tick it started waiting (fairness)
-            int S = 0;                      ///< slots in its window: up to its last active one (idle ones cost rows)
+            int rows[strata::kernels::kVerifyMaxT] = {};  ///< packed slot IDs, immutable while in flight
+            int S = 0;                      ///< legacy span, or packed active-row count
         };
         std::vector<PGroup> pg((size_t) (piped ? o.batch_groups : 0));
         std::vector<int> stage_group((size_t) n_pipe, -1);
@@ -11154,14 +11231,15 @@ int main(int argc, char** argv) {
                 // the last stage: the group's picks
                 const int32_t* outb = vk.batch_out();
                 for (int t = 0; t < G.S; ++t) {
-                    BSlot& sl = bs[(size_t) (gi * GS + t)];
+                    const int slot = pipeline_active_rows ? G.rows[t] : gi * GS + t;
+                    BSlot& sl = bs[(size_t) slot];
                     if (!sl.active) continue;
                     if (vk.nonfinite_in(t)) {   // #879: the slot ends, nothing emitted
                         std::fprintf(stderr, "strata batch: non-finite logits (#879) in slot %d at position %lld: it "
                                              "ends (BDONE nonfinite) and the next request reads its prompt from token 0\n",
-                                     gi * GS + t, (long long) sl.p);
+                                     slot, (long long) sl.p);
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
-                        std::printf("BDONE %d %lld nonfinite %.1f\n", gi * GS + t, (long long) sl.produced, ms);
+                        std::printf("BDONE %d %lld nonfinite %.1f\n", slot, (long long) sl.produced, ms);
                         sl.active = false;
                         sl.cached = false;
                         sl.checks.clear();
@@ -11169,7 +11247,7 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     const int32_t y = outb[t];
-                    std::printf("BT %d %d\n", gi * GS + t, (int) y);
+                    std::printf("BT %d %d\n", slot, (int) y);
                     ++sl.produced;
                     ++bt_rows;
                     ++pipe_rows;
@@ -11179,7 +11257,7 @@ int main(int argc, char** argv) {
                     sl.ids.push_back(sl.x);
                     if (fin != nullptr) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
-                        std::printf("BDONE %d %lld %s %.1f\n", gi * GS + t, (long long) sl.produced, fin, ms);
+                        std::printf("BDONE %d %lld %s %.1f\n", slot, (long long) sl.produced, fin, ms);
                         sl.active = false;
                         // a pipelined slot is a cache again (#857: a request left alone in its slot goes back to the solo path with its
                         // drafts): its state is final once its last window has left the last stage.  A later group window whose pad
@@ -11218,13 +11296,17 @@ int main(int argc, char** argv) {
                     if (pick < 0) continue;
                     rr = pick + 1;
                     PGroup& G = pg[(size_t) pick];
-                    G.S = 0;
-                    for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) G.S = t + 1;
-                    for (int t = 0; t < G.S; ++t) {
-                        BSlot& sl = bs[(size_t) (pick * GS + t)];
-                        G.tok[t] = sl.active ? sl.x : 0;
-                        G.pos[t] = sl.active ? sl.p : 0;
-                        if (!sl.active) sl.cached = false;   // its pad row writes its state
+                    if (pipeline_active_rows) {
+                        G.S = strata::program::pipeline_rows::pack(bs, pick * GS, GS, G.rows, G.tok, G.pos);
+                    } else {
+                        G.S = 0;
+                        for (int t = 0; t < GS; ++t) if (bs[(size_t) (pick * GS + t)].active) G.S = t + 1;
+                        for (int t = 0; t < G.S; ++t) {
+                            BSlot& sl = bs[(size_t) (pick * GS + t)];
+                            G.tok[t] = sl.active ? sl.x : 0;
+                            G.pos[t] = sl.active ? sl.p : 0;
+                            if (!sl.active) sl.cached = false;   // its pad row writes its state
+                        }
                     }
                     G.inflight = true;
                     G.stage = 0;
@@ -11239,7 +11321,10 @@ int main(int argc, char** argv) {
                 }
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
-                if (!stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err)) {
+                const bool launched = pipeline_active_rows
+                    ? stage_verifier(k).batch_launch_rows(pick * GS, G.S, G.rows, G.tok, G.pos, err)
+                    : stage_verifier(k).batch_launch(pick * GS, G.S, G.tok, G.pos, err);
+                if (!launched) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
                 }
@@ -11645,6 +11730,10 @@ int main(int argc, char** argv) {
             // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
             // branch it leaves: N queries cost one prefix, not N.  Absent = as before.
             int64_t req_pin = 0;
+            // STRATA_PIPELINE_ACTIVE_ROWS=1: park=B - when this request replaces the main session with another
+            // conversation, first copy the outgoing one into idle batch slot B (chosen by the server), so a short side
+            // request between two turns of a long solo conversation does not cost that conversation its cache
+            int req_park = -1;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -11671,6 +11760,7 @@ int main(int argc, char** argv) {
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
+                    else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -11947,6 +12037,7 @@ int main(int argc, char** argv) {
             // active slot's checkpoints too (its windows write its cells from p on, so the ones below a checkpoint still
             // hold its prompt; the groups have finished before a request is read)
             int slot_source = -1;
+            int observed_slot_source = -1;
             int64_t slot_tokens = 0;
             bool resumed_from0 = false;   // a prompt read parked in a slot (BYIELD) that had started at token 0
             // --prefill-pipe: the plan of the segment a read goes on in (a BYIELD park, a periodic checkpoint), and
@@ -12009,6 +12100,29 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
+            // STRATA_BRANCH_CHECKPOINT (the read cuts below): how far this prompt runs along a conversation the engine
+            // holds - the main session's or a slot's - before it leaves it.  Measured here, before the park and the
+            // restore change what they hold.
+            static const int64_t branch_margin = [] {
+                const char* v = std::getenv("STRATA_BRANCH_CHECKPOINT");
+                return v != nullptr ? std::max<int64_t>(0, std::atoll(v)) : (int64_t) 0;
+            }();
+            int64_t branch_shared = 0;
+            int branch_from = -2;   // the slot it leaves, -1: the main session's conversation
+            if (branch_margin > 0 && o.prompt_cache > 0 && req_imgs.empty()) {
+                auto leaves = [&](const std::vector<int32_t>& held, int from) {
+                    const int64_t c = strata::program::shared_prefix(ids, held);
+                    if (c < (int64_t) held.size() && c > branch_shared) {
+                        branch_shared = c;
+                        branch_from = from;
+                    }
+                };
+                if (live_ok && live_imgs.empty() && cvec_cached == want_cvec) leaves(live, -1);
+                for (int b = 0; b < (int) bs.size(); ++b) {
+                    const BSlot& sl = bs[(size_t) b];
+                    if ((sl.cached || sl.active) && !sl.img && sl.cvec == want_cvec) leaves(sl.ids, b);
+                }
+            }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
@@ -12066,6 +12180,49 @@ int main(int argc, char** argv) {
                 resume == req_pin && live_ok)
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == resume && c.pinned) pin_sibling = true;
+            // park=B (see req_park).  Only when this prompt is another conversation: it does not share what the main
+            // session holds up to its last turn (the last <|im_start|>, where its latest reply begins - a next turn
+            // without that reply's thinking, or the reply regenerated, still shares it).  Never into the slot this
+            // request restores from or runs in.
+            int64_t park_turn = (int64_t) live.size();
+            if (o.turn_token >= 0)
+                for (int64_t i = (int64_t) live.size() - 1; i > 0; --i)
+                    if (live[(size_t) i] == o.turn_token) { park_turn = i; break; }
+            const bool other_conversation = (int64_t) ids.size() < park_turn ||
+                !std::equal(live.begin(), live.begin() + park_turn, ids.begin());
+            if (pipeline_active_rows && req_park >= 0 && req_park < (int) bs.size() && !bs[(size_t) req_park].active &&
+                req_park != admit_slot && req_park != slot_source && live_ok && !live.empty() &&
+                other_conversation && (!from_live || incoming || slot_source >= 0) && !pin_sibling) {
+                const auto t0 = Clock::now();
+                BSlot& sl = bs[(size_t) req_park];
+                if (copy_to_slot(req_park, live, err)) {
+                    sl = BSlot{};
+                    sl.cached = true;
+                    sl.ids = live;
+                    sl.cvec = cvec_cached;
+                    sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone
+                    if (!sl.img) keep_slot_checkpoints(req_park);
+                    std::fprintf(stderr, "strata batch: slot %d keeps the previous conversation (%zu tokens, copied in "
+                                         "%.1f ms)\n", req_park, live.size(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                    std::printf("PARKED %d %zu\n", req_park, sl.img ? (size_t) 0 : live.size());
+                    if (!sl.img) say_checks(req_park);
+                } else {
+                    std::fprintf(stderr, "strata batch: parking into slot %d failed (%s)\n", req_park, err.c_str());
+                    err.clear();
+                    sl.cached = false;   // its sessions may be half written
+                    sl.checks.clear();
+                    std::printf("PARKED %d 0\n", req_park);
+                }
+                std::fflush(stdout);
+            } else if (req_park >= 0) {
+                std::fprintf(stderr, "strata batch: park=%d not used (rows=%d live_ok=%d live=%zu turn=%lld other=%d "
+                                     "resume=%lld from_live=%d source=%d admit=%d active=%d)\n", req_park,
+                             pipeline_active_rows ? 1 : 0, live_ok ? 1 : 0, live.size(), (long long) park_turn,
+                             other_conversation ? 1 : 0, (long long) resume,
+                             from_live ? 1 : 0, slot_source, admit_slot,
+                             req_park < (int) bs.size() && bs[(size_t) req_park].active ? 1 : 0);
+            }
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
@@ -12130,6 +12287,14 @@ int main(int argc, char** argv) {
                     }
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
+                        // STRATA_SLOT_CHECKPOINTS: the slot's shallower checkpoints of the same conversation come
+                        // along (oldest first, for the LRU): a later query that branches before this one finds them
+                        if (slot_multi)
+                            for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks)
+                                if (c.ids.size() < live.size() && std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                    checks.push_back(c);
+                                    checks.back().used = ++check_clock;
+                                }
                         if (slot_ckpt_move_env() && admit_slot == slot_source) {
                             // STRATA_SLOT_CKPT_MOVE: the slot this request continues in drops its checkpoints at the
                             // admission, so this one moves (and moves on into the slot then: moved_in)
@@ -12145,9 +12310,44 @@ int main(int argc, char** argv) {
                         checks.back().used = ++check_clock;
                     } else {
                         live = bs[(size_t) slot_source].ids;
+                        // its checkpoints of this conversation come back with it: moved into the slot at its admission
+                        // (STRATA_SLOT_CKPT_MOVE), they are the chain's only ones, and the admission below keeps them
+                        // again - a later turn that rewrites the end of this one (its thinking dropped) resumes there
+                        const bool move = slot_ckpt_move_env() || admit_slot == slot_source;
+                        if (checks.empty() && (move || slot_multi)) {
+                            std::vector<ConvCheckpoint>& sc = bs[(size_t) slot_source].checks;
+                            std::vector<ConvCheckpoint> rest;
+                            for (ConvCheckpoint& c : sc) {
+                                if (c.ids.size() > live.size() ||
+                                    !std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                    rest.push_back(std::move(c));
+                                    continue;
+                                }
+                                if (move) {
+                                    checks.push_back(std::move(c));
+                                } else if (ckpt_pool.on()) {
+                                    ConvCheckpoint k = ckpt_pool.take();
+                                    k = c;
+                                    checks.push_back(std::move(k));
+                                    rest.push_back(std::move(c));
+                                } else {
+                                    checks.push_back(c);
+                                    rest.push_back(std::move(c));
+                                }
+                                checks.back().used = ++check_clock;
+                            }
+                            sc = std::move(rest);
+                            if (!checks.empty()) {
+                                std::fprintf(stderr, "strata batch: slot %d gave back %zu checkpoint%s with it (%s)\n",
+                                             slot_source, checks.size(), checks.size() == 1 ? "" : "s",
+                                             move ? "moved" : "copied");
+                                if (move) say_checks(slot_source);
+                            }
+                        }
                     }
                     live_imgs.clear();
                     resume = slot_tokens;
+                    observed_slot_source = slot_source;
                     from_live = true;
                     std::fprintf(stderr, "strata batch: slot %d gave back %lld tokens of this conversation (%s) in "
                                  "%.1f ms\n", slot_source, (long long) slot_tokens,
@@ -12247,6 +12447,12 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+            }
+            // Optional protocol metadata, emitted only after a successful restore.
+            // It describes the source, never a batch execution-slot reservation.
+            if (pipeline_active_rows) {
+                std::printf("CACHE_SOURCE %d %lld\n", observed_slot_source, (long long) resume);
+                std::fflush(stdout);
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
@@ -12841,6 +13047,7 @@ int main(int argc, char** argv) {
                                 sl.checks.push_back(c);
                         yielded_at = q;
                         yielded_slot = ys;
+                        say_checks(ys);
                         std::fprintf(stderr, "strata batch: the prompt read gives way at %lld of %lld tokens; slot %d "
                                              "holds it (copied in %.1f ms)\n", (long long) q, (long long) n, ys,
                                      std::chrono::duration<double, std::milli>(Clock::now() - ty).count());
@@ -13353,11 +13560,28 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: pin=%lld: the cache has no checkpoint there to pin (it resumed from "
                                  "%lld)\n", (long long) req_pin, (long long) read_from);
             }
-            std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
-            if (pin_at >= 0) {
-                cuts.push_back(pin_at);
-                std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
+            // STRATA_BRANCH_CHECKPOINT=<margin> (opt-in): one more place the prompt is read to and checkpointed -
+            // where it leaves a conversation the engine holds (branch_shared above), when that is at least <margin>
+            // tokens past where the read starts and before the turn boundary.  A client that rewrites the end of its
+            // history every time (Claude Code's safety classifier inserts each query's tool calls before the closing
+            // text of its transcript) leaves the last query a few dozen tokens before its end: its turn checkpoint is
+            // past that point, so each query read its whole transcript (2026-10-16: 42-74K tokens, 15-27 s).  With a
+            // checkpoint at the point it left, the next query - which leaves this one later - reads only the rest.
+            const int64_t branch_at = req_ckpt ? strata::program::branch_checkpoint_boundary(branch_shared, read_from,
+                                                                                            turn_at, n, branch_margin)
+                                               : -1;
+            if (branch_at >= 0) {
+                char from_txt[32];
+                std::snprintf(from_txt, sizeof(from_txt), branch_from >= 0 ? "slot %d's" : "the main session's",
+                              branch_from);
+                std::fprintf(stderr, "strata serve: branch checkpoint at %lld: the prompt leaves %s conversation there "
+                                     "(read from %lld)\n", (long long) branch_at, from_txt, (long long) read_from);
             }
+            std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
+            if (pin_at >= 0) cuts.push_back(pin_at);
+            if (branch_at >= 0) cuts.push_back(branch_at);
+            if (pin_at >= 0 || branch_at >= 0)
+                std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
             int64_t at = read_from;
             // STRATA_ADMIT_MERGE_FIRST: the last part, when it goes through the windows, leaves its last tokens (up to
             // max_t with the last prompt token) to the first window, which starts at merge_at (-1: the first window
@@ -13440,11 +13664,15 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
-                if ((to == turn_at || to == root_at || to == message_at || to == pin_at) &&
-                    !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at)) {   // the tail kind leaves first
+                if ((to == turn_at || to == root_at || to == message_at || to == pin_at || to == branch_at) &&
+                    !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at &&
+                                                to != branch_at)) {   // the tail kind leaves first
                     std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
                     return 1;
                 }
+                if (to == branch_at)   // marked: a slot that takes this conversation keeps it (slot_checkpoint_picks)
+                    for (ConvCheckpoint& k : checks)
+                        if ((int64_t) k.ids.size() == branch_at) k.branch = true;
                 if (to == pin_at && !pin_checkpoint(pin_at))
                     std::fprintf(stderr, "strata serve: pin=%lld: its checkpoint was not kept\n", (long long) pin_at);
                 if (trace && to == message_at)
@@ -14683,13 +14911,17 @@ int main(int argc, char** argv) {
                             }
                     // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
                     // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
-                    const bool move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
-                                           !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
+                    const bool move_best = !slot_multi && slot_ckpt_move_env() && best != nullptr &&
+                                           !best_lent && !sl.img && !best->pinned &&
+                                           ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
                                             (int64_t) best->ids.size() == moved_in);
                     const auto tc3 = Clock::now();
+                    bool moved = move_best;
                     if (move_best) {
                         sl.checks.push_back(std::move(checks[best_at]));
                         checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
+                    } else if (slot_multi) {
+                        if (!sl.img) moved = keep_slot_checkpoints(admit_slot, slot_ckpt_move_env()) > 0;
                     } else if (best != nullptr && !sl.img) {
                         if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
                             ConvCheckpoint c = ckpt_pool.take();
@@ -14714,10 +14946,11 @@ int main(int argc, char** argv) {
                                      req_times.read_ms, req_times.windows_ms, req_times.ckpts, ck, req_times.sync_ms,
                                      req_times.save_ms, req_times.evict_ms,
                                      prompt_ms - req_times.read_ms - req_times.windows_ms - ck, decode_ms, span(tc0, tc1),
-                                     span(tc1, tc2), span(tc3, tc4), move_best ? " (moved)" : "");
+                                     span(tc1, tc2), span(tc3, tc4), moved ? " (moved)" : "");
                     }
                 }
                 std::printf("BADM %d %d\n", admit_slot, cont ? 1 : 0);
+                if (cont && !bs[(size_t) admit_slot].img) say_checks(admit_slot);
                 if (trace && piped && cont) {
                     rows_wait = "the admission";
                     rows_wait_t = Clock::now();

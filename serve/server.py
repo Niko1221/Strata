@@ -62,6 +62,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
+from serve import slot_policy  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -794,6 +795,10 @@ class StrataEngine:
                  env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
         self.session_save_reclaim = '--session-save-reclaim' in args
+        # Opt-in Python scheduling only; preserved by restart() through spawn's environment.
+        self.slot_cache_trace = (env if env is not None else os.environ).get("STRATA_CACHE_TRACE") == "1"
+        self.slot_cache_affinity = (env if env is not None else os.environ).get("STRATA_SLOT_CACHE_AFFINITY") == "1"
+        self.slot_policy_settings = slot_policy.configure(env if env is not None else os.environ)
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
@@ -937,10 +942,11 @@ class StrataEngine:
         self.slot_group = [b // gs if gs else 0 for b in range(self.batch)]   # each slot's pipeline group
         self.slot_groups = groups
         # pipelined groups (the engine says how many it runs: INFO batch_groups; older engines: the args).  A pipelined
-        # group's window spans its slots up to its last busy one, and the engine keeps no pipelined slot as a
-        # conversation cache - see pick_slot
+        # group's window spans its slots up to its last busy one. Finished slots can retain a conversation,
+        # but later padding rows can invalidate it; the engine validates reuse independently - see pick_slot.
         groups_run = int(self.info.get("batch_groups") or groups)
         self.slot_gs = gs if groups > 1 and groups_run > 1 else 0
+        self.slot_padding_safe = self.info.get("slot_padding_safe") in (1, "1")
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
         self.slot_busy = [False] * self.batch
         # #1603: who owns a busy flag.  slot_claims: slots a request of this server picked or reserved and has not
@@ -953,6 +959,23 @@ class StrataEngine:
         # the slot that has its start (the engine checks it again); when the slot was last used
         self.slot_held: list[list[int]] = [[] for _ in range(self.batch)]
         self.slot_used = [0.0] * self.batch
+        # engine BCHECKS (STRATA_SLOT_CHECKPOINTS > 1 or STRATA_BRANCH_CHECKPOINT): the lengths of each slot's
+        # checkpoints, for the placement hint
+        self.slot_checks: list[tuple[int, ...]] = [() for _ in range(self.batch)]
+        # park=: what the engine's main (solo) session holds, as far as this server knows, and slots claimed for a
+        # park= copy of it until the engine says PARKED
+        self.main_held: list[int] = []
+        self.main_peer = None
+        self.main_used = 0.0    # last actual use; a park copies this age instead of refreshing it
+        self._park_claims: set[int] = set()
+        self.slot_cache_peer = [None] * self.batch
+        self._cache_expiry_seen = [None] * self.batch
+        self._cache_events = collections.deque(maxlen=96)
+        self._cache_event_lock = threading.Lock()
+        self.slot_cache_valid = [False] * self.batch
+        self._slot_native_active = [False] * self.batch
+        self._slot_steps = [0] * self.batch
+        self._slot_valid_until = [{} for _ in range(self.batch)]
         self.slot_live: list[dict | None] = [None] * self.batch   # /metrics: the request in each slot
         # #1012: the admission state belongs to the server, not to one engine process.  restart() runs this again
         # while requests still wait on it (they hold these very objects), so it is made once and kept: new ones
@@ -977,6 +1000,12 @@ class StrataEngine:
         slot_q = self.slot_q
         line = None
         for line in proc.stdout:
+            if line.startswith("BCHECKS "):            # information only: never a control or slot line
+                if self.proc is proc:
+                    self._observe_checks(line)
+                continue
+            if self.proc is proc and self.slot_cache_affinity and line.startswith(("BT ", "BDONE ", "BADM ")):
+                self._observe_cache_line(line)
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
                 # release_gpu_waits invalidates the verifier, even if the native
@@ -1003,6 +1032,79 @@ class StrataEngine:
         lines.put(None)
         for q in slot_q:
             q.put(None)
+
+    def cache_event(self, kind, **fields):
+        """Bounded metadata only; never record prompt contents or credentials."""
+        tl = getattr(self, "_tl", None)
+        if kind not in ("expired", "padding_invalidated"):
+            for key in ("request_key", "peer_ip"):
+                value = getattr(tl, key, None)
+                if value is not None: fields.setdefault(key, value)
+        lock = self.__dict__.setdefault("_cache_event_lock", threading.Lock())
+        with lock:
+            events = self.__dict__.setdefault("_cache_events", collections.deque(maxlen=96))
+            events.append({"time": time.time(), "kind": kind, **fields})
+
+    def cache_events_view(self):
+        lock = self.__dict__.setdefault("_cache_event_lock", threading.Lock())
+        with lock:
+            return list(getattr(self, "_cache_events", ()))[::-1]
+
+    def _observe_cache_line(self, line: str) -> None:
+        """Remember observed padding invalidation without treating held tokens as native truth.
+
+        The lower row's BDONE precedes the higher row's BT in that SAME window. Allow
+        that BT; a later higher-row window pads over the now-idle lower cache.
+        """
+        gs = getattr(self, "slot_gs", 0)
+        if not gs:
+            return
+        f = line.split()
+        try:
+            b = int(f[1])
+            if not 0 <= b < self.batch:
+                return
+            with self.slot_cv:
+                if f[0] == "BADM":
+                    self._slot_native_active[b] = f[2] == "1"
+                    self.slot_cache_valid[b] = False
+                elif f[0] == "BDONE":
+                    self._slot_native_active[b] = False
+                    self.slot_cache_valid[b] = f[3] != "nonfinite"
+                    self._slot_valid_until[b] = {x: self._slot_steps[x] + int(self._slot_native_active[x])
+                                                for x in range(b + 1, b - b % gs + gs)}
+                    self.slot_used[b] = time.time()
+                elif f[0] == "BT":
+                    self._slot_native_active[b] = True
+                    self._slot_steps[b] += 1
+                    for x in ([] if self.slot_padding_safe else range(b - b % gs, b)):
+                        if (not self._slot_native_active[x] and self.slot_cache_valid[x] and
+                                self._slot_steps[b] > self._slot_valid_until[x].get(b, 0)):
+                            self.slot_cache_valid[x] = False
+                            self.cache_event("padding_invalidated", slot=x, by_slot=b)
+                self.slot_cv.notify_all()
+        except (IndexError, ValueError):
+            return
+
+    def _observe_checks(self, line: str) -> None:
+        """BCHECKS <slot> <tokens held> <checkpoint lengths...>: where the engine's checkpoints of what <slot> now
+        holds are.  Only the placement hint reads them; the engine checks the tokens again when it reuses one."""
+        f = line.split()
+        try:
+            b, held, at = int(f[1]), int(f[2]), sorted(int(x) for x in f[3:])
+        except (IndexError, ValueError):
+            return
+        checks = getattr(self, "slot_checks", None)
+        if checks is not None and 0 <= b < len(checks):
+            with self.slot_cv:
+                checks[b] = tuple(p for p in at if 0 < p < held)
+
+    def _forget_checks(self, b) -> None:
+        """The engine is about to overwrite slot b (an admission, a park, a read giving way into it): its reported
+        checkpoints no longer describe it until its next BCHECKS."""
+        checks = getattr(self, "slot_checks", None)
+        if checks is not None and b is not None and 0 <= b < len(checks):
+            checks[b] = ()
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -1280,6 +1382,11 @@ class StrataEngine:
                     self._send("STOP")
                     stopped = True
                 yield False                              # a token is pending (not a heartbeat)
+            elif line.startswith("RESUME "):
+                reused = int(line.split()[1])
+                self.reused = reused
+                if self._ctl_mode == "solo": self.solo_cache_reused_tokens = reused
+                self.cache_event("resume", reused_tokens=reused, path=self._ctl_mode)
             elif line.startswith("PP "):
                 f = line.split()
                 if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -1295,6 +1402,22 @@ class StrataEngine:
             elif line.startswith("DONE"):
                 self._parse_done(line)
                 self._last_done = line
+            elif line.startswith("PARKED "):
+                f = line.split()
+                if len(f) == 3 and f[1].isdigit() and f[2].isdigit():
+                    self._on_parked(int(f[1]), int(f[2]))
+            elif line.startswith("CACHE_SOURCE "):
+                f = line.split()
+                if len(f) == 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
+                    source, reused = int(f[1]), int(f[2])
+                    source_tl = self.__dict__.setdefault("_tl", threading.local())
+                    source_tl.cache_source_slot = source if source >= 0 else None
+                    source_tl.cache_source_kind = "slot" if source >= 0 else "main_or_checkpoint"
+                    if self._ctl_mode == "solo":
+                        self.solo_cache_source_slot = source if source >= 0 else None
+                        self.solo_cache_reused_tokens = reused if source >= 0 else None
+                    self.cache_event("cache_source", slot=source if source >= 0 else None,
+                                     reused_tokens=reused, path=self._ctl_mode)
             elif line.startswith("BADM "):
                 f = line.split()
                 self._ctl_result = ("badm", len(f) >= 3 and f[2] == "1")
@@ -1373,6 +1496,7 @@ class StrataEngine:
         except EngineDied:
             pass
         q, busy, held = self.slot_q[slot], self.slot_busy, self.slot_held   # this process's: restart() replaces them
+        used, affinity = self.slot_used, self.slot_cache_affinity
         releasing = self.slot_releasing
         releasing.add(slot)
 
@@ -1398,6 +1522,8 @@ class StrataEngine:
                     break
             held[slot] = tail[:-1] if stream and tail else []
             with self.slot_cv:
+                if affinity:
+                    used[slot] = time.time()             # TTL begins when the request actually finishes
                 busy[slot] = False
                 releasing.discard(slot)
                 self.slot_cv.notify_all()
@@ -1447,6 +1573,11 @@ class StrataEngine:
                   "(issue #1603); freed, the waiting request goes on", flush=True)
             self.slot_cv.notify_all()
         return freed
+
+    def _solo_ended(self):
+        """/metrics: no request on the solo path now (its key and cache source would otherwise stay until the next one)."""
+        self.solo_peer_ip = self.solo_request_key = None
+        self.solo_cache_source_slot = self.solo_cache_reused_tokens = None
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
@@ -1548,6 +1679,18 @@ class StrataEngine:
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
+        tl = self.__dict__.setdefault("_tl", threading.local())
+        request_key = getattr(tl, "api_request_key", None) or f"{self.gen}:{time.monotonic_ns()}"
+        tl.request_key = request_key
+        if not getattr(tl, "api_request_key", None):
+            tl.cache_debug = None
+        if getattr(self, "slot_cache_trace", False) and getattr(tl, "cache_debug", None) is None:
+            from serve.cache_trace import snapshot
+            with self.slot_cv:
+                tl.cache_debug = snapshot(ids, self.slot_held, self.slot_busy,
+                    getattr(self, "slot_cache_valid", [True] * self.batch), self.slot_used, time.time())
+            self.cache_event("request_start", prompt_tokens=len(ids), cache_debug=tl.cache_debug)
+        peer_ip = getattr(self.__dict__.setdefault("_tl", threading.local()), "peer_ip", None)
         reused0 = None      # the first read's reused tokens: a continued leg's count includes this request's own output
         carry = {}          # #1869: the figures of the legs that ended in a hand-back to the solo path (the final DONE adds to them)
         ok = yield from self._take_control(cancel, len(prompt), new=True)
@@ -1560,6 +1703,15 @@ class StrataEngine:
         stop_sent = False
         yields, solo_again, refused = 0, 0, 0
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
+        slot_plan = None    # this request's own placement plan (slot_last_plan is shared: another request's pick can follow)
+        park_slot = None    # a slot claimed for the engine park= copy of the main session
+        solo_leg = None     # (prompt, len(out)) of a solo leg in flight - what the main session will hold
+
+        def choose_slot():
+            nonlocal slot_plan
+            chosen = self.pick_slot(prompt)
+            slot_plan = getattr(self, "slot_last_plan", None)   # (the caller holds slot_cv)
+            return chosen
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
@@ -1570,10 +1722,21 @@ class StrataEngine:
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
-                    head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
+                    if park_slot is not None:
+                        self._release_park(park_slot)
+                        park_slot = None
+                    park = self._claim_park(prompt)
+                    if park:
+                        park_slot = int(park.split("=")[1])
+                    head = f"GENI {left}{keys}{park} {embeddings}" if embeddings else f"GEN {left}{keys}{park}"
+                    solo_leg = (list(prompt), len(out))
+                    self.solo_cache_source_slot = None
+                    self.solo_cache_reused_tokens = None
+                    self.solo_request_key = request_key
                     self._last_done = None                  # (#879: this request's DONE decides below)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     phase = "solo"
+                    self.solo_peer_ip = peer_ip
                     self._ctl_mode, self._ctl_result, self._yielded = "solo", None, None
                     self._ctl_erred = False
                     def others():
@@ -1581,14 +1744,16 @@ class StrataEngine:
                             return self.waiting > 0
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
-                        nonlocal reserved
+                        nonlocal reserved, slot_plan
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
                                 self._shorter_waiting(len(prompt))):
                             with self.slot_cv:          # the slot the part read will wait in
                                 reserved = self.pick_slot(prompt)
+                                slot_plan = getattr(self, "slot_last_plan", None)
                                 if reserved is not None:
                                     self.slot_busy[reserved] = True
                                     self.slot_claims.add(reserved)
+                                    self._forget_checks(reserved)
                             if reserved is not None:
                                 self._send(f"BYIELD {reserved}")
                     for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way):
@@ -1599,11 +1764,19 @@ class StrataEngine:
                         if x is None:                       # a heartbeat (False: a token, flushed above)
                             give_way()
                             yield None
+                    self._solo_ended()
                     phase = "none"                          # its DONE is read
                     while pending:
                         t = pending.pop(0)
                         out.append(t)
                         yield t
+                    if park_slot is not None:               # no PARKED line: the engine kept nothing there
+                        self._release_park(park_slot)
+                        park_slot = None
+                    # the main session now holds this leg's conversation (a read that gave way did not finish)
+                    self.main_held = [] if self._yielded is not None else solo_leg[0] + out[solo_leg[1]:]
+                    self.main_used = time.time()
+                    self.main_peer, solo_leg = peer_ip, None
                     if self._done_finish() == "nonfinite":    # #879 (never promoted to a slot)
                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
                     if self._yielded is not None and reserved is not None and self._yielded[0] == reserved:
@@ -1633,7 +1806,7 @@ class StrataEngine:
                         # long, short at 0.25 s steps under parallel: 2 (ENGINE_REVIEW finding 1, reproduced in 0.1.41).
                         while True:
                             with self.slot_cv:
-                                slot = self.pick_slot(prompt)
+                                slot = choose_slot()
                                 if slot is not None:
                                     self.slot_busy[slot] = True
                                     self.slot_claims.add(slot)
@@ -1648,7 +1821,7 @@ class StrataEngine:
                                 self.ctl.release()
                                 holding = False
                             with self.slot_cv:
-                                if self.pick_slot(prompt) is None:
+                                if choose_slot() is None:
                                     if (ENGINE_STALL_S or 0) > 0 and time.monotonic() - admit_since >= ENGINE_STALL_S:
                                         # the stall check of #1317 only watches a request on the control lines; one
                                         # waiting here is covered by looking for a slot nobody owns, and by saying so
@@ -1659,7 +1832,7 @@ class StrataEngine:
                                                   f"for a free slot (busy: {busy}, in use: {sorted(self.slot_claims)}, "
                                                   f"ending: {sorted(self.slot_releasing)}) (issue #1603)", flush=True)
                                     self._reap_orphan_slots()
-                                if self.pick_slot(prompt) is None:
+                                if choose_slot() is None:
                                     self.slot_cv.wait(timeout=1.0)
                             if cancel.is_set():
                                 return
@@ -1682,11 +1855,32 @@ class StrataEngine:
                         holding, born = True, self.gen                  # (the engine it now has the control lines of)
                     while not self.slot_q[slot].empty():
                         self.slot_q[slot].get_nowait()
-                    head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
+                    if park_slot is not None:
+                        self._release_park(park_slot)
+                        park_slot = None
+                    park = self._claim_park(prompt, exclude=(slot,))
+                    if park:
+                        park_slot = int(park.split("=")[1])
+                    head = (f"BGENI {slot} {left}{keys}{park} {embeddings}" if embeddings
+                            else f"BGEN {slot} {left}{keys}{park}")
+                    self.main_held = []                     # the admission reads on the main session
                     live = {"slot": slot, "state": "reading", "prompt_tokens": len(prompt), "generated": 0,
-                            "started": time.time(), "first_token": None}
+                            "started": time.time(), "first_token": None, "peer_ip": peer_ip, "request_key": request_key}
+                    if hasattr(self, "slot_cache_peer"):
+                        self.slot_cache_peer[slot] = peer_ip
+                    plan = slot_plan if self.slot_cache_affinity else None
+                    if plan is not None:
+                        live.update(cache_match_hint=plan.reused_hint, cache_source_hint=plan.source_hint,
+                                    placement_reason=plan.reason)
+                    self.cache_event("allocation", slot=slot, peer_ip=peer_ip,
+                                     reason=getattr(plan, "reason", "upstream"),
+                                     source_hint=getattr(plan, "source_hint", None),
+                                     matched_tokens_hint=getattr(plan, "reused_hint", None))
+                    tl.executed_slot = slot
+                    tl.cache_match_hint = getattr(plan, "reused_hint", None)
                     self.slot_live[slot] = live
                     self._last_done = None                  # (#879: this admission's DONE decides below)
+                    self._forget_checks(slot)
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
                     phase = "admit"
@@ -1728,7 +1922,18 @@ class StrataEngine:
                         self._park_slot(slot)
                         slot = None
                         continue
-                    cont = bool(self._ctl_result and self._ctl_result[1])
+                    if self._last_done is not None:
+                        admission = self.last or {}
+                        live.update(cache_reused_tokens=admission.get("reused"),
+                                    cache_read_tokens=admission.get("prompt_read"))
+                        self.cache_event("admission", slot=slot, peer_ip=peer_ip,
+                                         reused_tokens=admission.get("reused"),
+                                         read_tokens=admission.get("prompt_read"))
+                    if park_slot is not None:               # no PARKED line: the engine kept nothing there
+                        self._release_park(park_slot)
+                        park_slot = None
+                    self.main_held = []                     # the main session read this admission, which
+                    cont = bool(self._ctl_result and self._ctl_result[1])   # lives on in its slot
                     phase = "slot" if cont else "none"
                     while pending:
                         t = pending.pop(0)
@@ -1827,7 +2032,16 @@ class StrataEngine:
                 self.last = {**self.last, "reused": reused0}
             if carry and isinstance(self.last, dict):
                 self.last = add_carry(carry, self.last)
+            if park_slot is not None:
+                self._release_park(park_slot)
+            if solo_leg is not None:
+                # the consumer stopped mid-leg (usually right after the last token): the main session holds
+                # the leg all the same; a read that gave way (YIELDED) went into its slot instead
+                self.main_held = [] if self._yielded is not None else solo_leg[0] + out[solo_leg[1]:]
+                self.main_used = time.time()
+                self.main_peer = peer_ip
             if holding:
+                self._solo_ended()
                 self.ctl.release()
             if admit_wait:
                 with self.slot_cv:
@@ -1859,17 +2073,87 @@ class StrataEngine:
                         self.slot_cv.notify_all()
 
     slot_groups = 1         # --batch-groups (set when the engine starts)
+    slot_padding_safe = False  # only native INFO capability enables padding-safe policy
+    slot_cache_affinity = False   # STRATA_SLOT_CACHE_AFFINITY=1: preserve cached histories in pipelined groups
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
     TURN_ID = 248045        # <|im_start|>: the engine's default --turn-token (its turn checkpoint sits at the last one)
+
+
+    def _claim_park(self, prompt, exclude=()) -> str:
+        """With engine INFO slot_park=1: when `prompt` is another conversation than the one the main session holds,
+        claim an idle slot to keep that one in (engine key park=B).  Returns the key text, or ""."""
+        if not (self.slot_cache_affinity and getattr(self, "slot_gs", 0) and self.slot_padding_safe and
+                (self.info or {}).get("slot_park") in (1, "1")):
+            return ""
+        main = getattr(self, "main_held", None) or []
+        # the same conversation shares the main session's history up to its last turn (the last <|im_start|>, where its
+        # latest reply begins): a next turn without that reply's thinking, or the reply regenerated (as the engine checks)
+        try:
+            turn_token = int((self.info or {}).get("turn_token", -1))
+        except (TypeError, ValueError):
+            turn_token = -1
+        turn = next((i for i in range(len(main) - 1, 0, -1) if main[i] == turn_token), len(main))
+        if prompt[:turn] == main[:turn]:
+            return ""          # nothing held, or the same conversation: nothing to keep
+        now = time.time()
+        main_used = getattr(self, "main_used", 0.0)
+        value = slot_policy.stale_retention(len(main), max(0.0, now - main_used))
+        if value <= 0 or value < slot_policy.PARK_MIN_VALUE:
+            self.cache_event("park_skip", reason="main_low_value", held_tokens=len(main), value=value)
+            return ""          # an unused main history need not be copied into a slot just to be reclaimed
+        with self.slot_cv:
+            b = slot_policy.park_destination(main, self.slot_busy, self.slot_held, self.slot_used, self.slot_order,
+                                             self.slot_gs, now, getattr(self, "slot_cache_valid", None),
+                                             self.slot_padding_safe, exclude, main_value=value)
+            if b is not None:
+                self.slot_busy[b] = True
+                self.slot_claims.add(b)
+                self._park_claims.add(b)
+                self._forget_checks(b)
+                self._park_main, self._park_peer = list(main), getattr(self, "main_peer", None)
+                self._park_used = main_used
+        # outside slot_cv: cache_event takes its own lock
+        self.cache_event("park_claim" if b is not None else "park_skip", slot=b, held_tokens=len(main))
+        return f" park={b}" if b is not None else ""
+
+    def _release_park(self, b) -> None:
+        with self.slot_cv:
+            if b in self._park_claims:
+                self._park_claims.discard(b)
+                self.slot_busy[b] = False
+                self.slot_claims.discard(b)
+                self.slot_cv.notify_all()
+
+    def _on_parked(self, b: int, n: int) -> None:
+        """PARKED <slot> <tokens>: the engine copied the main session's conversation (its first <tokens>) into <slot>
+        (0: the copy failed and the slot holds nothing usable)."""
+        main = getattr(self, "_park_main", None) or []
+        with self.slot_cv:
+            if 0 <= b < self.batch:
+                self.slot_held[b] = list(main[:n]) if n > 0 else []   # the engine may hold a few more tail tokens
+                self.slot_used[b] = getattr(self, "_park_used", 0.0)
+                if hasattr(self, "slot_cache_valid"):
+                    self.slot_cache_valid[b] = n > 0
+                if hasattr(self, "slot_cache_peer"):
+                    self.slot_cache_peer[b] = getattr(self, "_park_peer", None)
+        self.cache_event("parked", slot=b, held_tokens=n)
+        self._release_park(b)
 
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
         prompt (the engine then reads only the rest), else an empty one, else the one used longest ago - so the
         conversations other slots hold stay for their next turns.  None: every slot is busy."""
+        gs = getattr(self, "slot_gs", 0)
+        if gs and self.slot_cache_affinity:
+            self.slot_last_plan = slot_policy.place(prompt, self.slot_busy, self.slot_held, self.slot_used,
+                self.slot_order, gs, time.time(), valid=getattr(self, "slot_cache_valid", None),
+                prefill_rate=getattr(self, "prefill_tok_s_mean", None), padding_safe=self.slot_padding_safe,
+                checks=getattr(self, "slot_checks", None))
+            return self.slot_last_plan.slot
+
         free = [b for b in self.slot_order if not self.slot_busy[b]]
         if not free:
             return None
-        gs = getattr(self, "slot_gs", 0)
         if gs > 1:
             # pipelined groups of several slots: the engine keeps no idle slot below a busy one as a conversation cache
             # (its pad row writes the slot), so nothing is worth keeping free for a next turn.  A group's window spans
@@ -1910,13 +2194,41 @@ class StrataEngine:
     def slots_view(self) -> list[dict]:
         """/metrics: each batch slot - idle (with the tokens it holds for a next turn), reading or decoding."""
         now, view = time.time(), []
+        superseded = set()
+        if self.slot_cache_affinity and getattr(self, "slot_gs", 0):
+            superseded = slot_policy.superseded_slots(self.slot_held, self.slot_busy, getattr(
+                self, "slot_cache_valid", [True] * self.batch))
         for b in range(self.batch):
             r = self.slot_live[b]
             if r is None:
-                view.append({"slot": b, "state": "idle", "held_tokens": len(self.slot_held[b])})
+                row = {"slot": b, "state": "idle", "held_tokens": len(self.slot_held[b])}
+                if getattr(self, "slot_checks", None):
+                    row["checkpoint_tokens"] = list(self.slot_checks[b])
+                if self.slot_cache_affinity and getattr(self, "slot_gs", 0):
+                    validity = getattr(self, "slot_cache_valid", [True] * self.batch)[b]
+                    c = slot_policy.cache_state(len(self.slot_held[b]), self.slot_used[b], now,
+                                                validity and b not in superseded)
+                    row["cache_superseded"] = b in superseded
+                    row.update(cache_expired=c["expired"], cache_ttl_s=round(c["ttl_s"], 3),
+                               cache_age_s=round(c["age_s"], 3), cache_valid_hint=c["valid"],
+                               cache_retention_score=round(c["retention"], 6),
+                               cache_overwrite_score=round(c["overwrite_score"], 6))
+                if hasattr(self, "slot_cache_peer"):
+                    row["cache_peer_ip"] = self.slot_cache_peer[b]
+                if row.get("cache_expired") and row["held_tokens"]:
+                    seen = self.__dict__.setdefault("_cache_expiry_seen", [None] * self.batch)
+                    signature = (self.slot_used[b], row["held_tokens"])
+                    with self.slot_cv:
+                        if seen[b] != signature:
+                            seen[b] = signature
+                            self.cache_event("expired", slot=b, held_tokens=row["held_tokens"],
+                                             eligible_at=self.slot_used[b] + row["cache_ttl_s"])
+                view.append(row)
                 continue
             ft = r.get("first_token")
-            view.append({"slot": b, "state": r["state"], "prompt_tokens": r["prompt_tokens"],
+            view.append({**{k: r[k] for k in ("request_key", "peer_ip", "cache_reused_tokens", "cache_read_tokens",
+                         "cache_match_hint", "cache_source_hint", "placement_reason") if k in r},
+                         "slot": b, "state": r["state"], "prompt_tokens": r["prompt_tokens"],
                          "generated": r["generated"], "elapsed_s": round(now - r["started"], 1),
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
         return view
@@ -3763,6 +4075,7 @@ class Service:
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
                 "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
+        live["peer_ip"] = s.get("peer_ip") if s.get("busy") else None
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
         par = int(getattr(self.engine, "batch", 0) or 0)
@@ -3772,13 +4085,21 @@ class Service:
             slots = self.engine.slots_view() if hasattr(self.engine, "slots_view") else []
             # the requests in flight that are not in a slot: the one alone on the solo path, or waiting their turn
             in_slots = sum(1 for x in slots if x["state"] != "idle")
-            live.update(parallel=par, running=running, slots=slots, outside_slots=max(0, running - in_slots),
+            live.update(solo_peer_ip=getattr(self.engine, "solo_peer_ip", None),
+                        solo_cache_source_slot=getattr(self.engine, "solo_cache_source_slot", None),
+                        solo_cache_reused_tokens=getattr(self.engine, "solo_cache_reused_tokens", None),
+                        solo_request_key=getattr(self.engine, "solo_request_key", None),
+                        parallel=par, running=running, slots=slots, outside_slots=max(0, running - in_slots),
                         waiting=int(getattr(self.engine, "waiting", 0) or 0),
                         admitting=int(getattr(self.engine, "admitting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
+        if hasattr(self.engine, "cache_events_view"):
+            live["cache_events"] = self.engine.cache_events_view()
+        if getattr(self.engine, "slot_cache_affinity", False):   # the slot policy tunables in force
+            live["slot_policy"] = slot_policy.settings()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
@@ -4258,6 +4579,16 @@ class Service:
         # so the generated reasoning must not become this request's cached input (#615).
         segments = []
         trace = getattr(self.request_trace, "record", None)
+        peer_ip = getattr(self.request_trace, "peer_ip", None)
+        api_request_key = f"req-{time.time_ns():x}"
+        if isinstance(self.engine, StrataEngine):
+            context = self.engine.__dict__.setdefault("_tl", threading.local())
+            context.peer_ip = peer_ip
+            context.api_request_key = api_request_key
+            context.cache_debug = None
+            context.executed_slot = None
+            context.cache_source_slot = None
+            context.cache_match_hint = None
         waiting = time.perf_counter()
         # #465: with "parallel" (the engine's batch slots) requests run at once: each keeps its own status and rate
         # window (self.status says busy while any runs); one at a time they are self.status / self.rate, as before
@@ -4320,7 +4651,7 @@ class Service:
                     with self.status_lock:
                         if par:
                             self.status["queued"] -= 1
-                        st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                        st.update(busy=True, peer_ip=peer_ip, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                   max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
                         if par:
@@ -4571,7 +4902,12 @@ class Service:
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
-                                "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
+                                "request_key": api_request_key,
+                                "slot": getattr(getattr(self.engine, "_tl", None), "executed_slot", None),
+                                "cache_source_slot": getattr(getattr(self.engine, "_tl", None), "cache_source_slot", None),
+                                "cache_match_hint": getattr(getattr(self.engine, "_tl", None), "cache_match_hint", None),
+                                "cache_debug": getattr(getattr(self.engine, "_tl", None), "cache_debug", None),
+                                "peer_ip": peer_ip, "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
@@ -5626,6 +5962,7 @@ def make_handler(svc: Service):
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                    svc.request_trace.peer_ip = self.client_address[0]
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -5689,6 +6026,7 @@ def make_handler(svc: Service):
                 self._note(outcome="disconnected")
                 raise                                        # as before #332: the server's own handling
             finally:
+                svc.request_trace.peer_ip = None
                 svc.drop_embeddings()                        # the images' file of a request that never got to run()
                 if self.watch_done is not None:
                     self.watch_done.set()

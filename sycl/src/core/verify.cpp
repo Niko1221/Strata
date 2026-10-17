@@ -3364,12 +3364,16 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-bool Verifier::batch_launch(int base, int S, const int32_t *tokens,
-                            const int64_t *pos, std::string &err) try {
-    const OnDevice on_device(device_);
-    if (b_running_) { err = "verify: batch_launch while this stage is busy"; return false; }
+bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_t* pos, std::string& err) {
     int rows[8] = {};
     for (int t = 0; t < S && t < 8; ++t) rows[t] = base + t;
+    return batch_launch_rows(base, S, rows, tokens, pos, err);
+}
+
+bool Verifier::batch_launch_rows(int base, int S, const int* rows, const int32_t* tokens,
+                                 const int64_t* pos, std::string& err) try {
+    const OnDevice on_device(device_);
+    if (b_running_) { err = "verify: batch_launch while this stage is busy"; return false; }
     if (!stage_batch(rows, S, base, tokens, pos, err)) return false;
     dpct::err0 le = DPCT_CHECK_ERROR(
         (cs_)->ext_oneapi_graph(*exec_bm_[bkey(rows, S, base)]));
