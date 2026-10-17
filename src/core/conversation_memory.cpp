@@ -17,6 +17,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>      // host_statistics64, host_page_size
+#include <sys/sysctl.h>     // sysctlbyname("hw.memsize")
 #endif
 
 namespace strata::core {
@@ -286,6 +289,19 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
+#elif defined(__APPLE__)
+    // macOS: free + inactive + purgeable pages, the rule expert_source.cpp's macOS branch uses. Without a reading here the
+    // guard refused parking and session save/restore on every Mac.
+    vm_statistics64_data_t vs{};
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    vm_size_t page_bytes = 0;
+    uint64_t total = 0;
+    size_t len = sizeof total;
+    if (host_page_size(mach_host_self(), &page_bytes) != KERN_SUCCESS ||
+        host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &count) != KERN_SUCCESS ||
+        sysctlbyname("hw.memsize", &total, &len, nullptr, 0) != 0) return {};
+    const uint64_t avail = ((uint64_t) vs.free_count + vs.inactive_count + vs.purgeable_count) * (uint64_t) page_bytes;
+    return combine(avail, total, CgroupScan{}, memory_limit_bytes());
 #else
     return {};
 #endif
