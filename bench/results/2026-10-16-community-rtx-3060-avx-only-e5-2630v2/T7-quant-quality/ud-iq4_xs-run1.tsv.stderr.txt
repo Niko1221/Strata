@@ -1,0 +1,53 @@
+strata generate: memory guard: limit 251.8 GiB (source: meminfo), current 5.4 GiB, reclaimable cache credited 0.0 GiB; available 246.4 GiB (MemAvailable 246.4 GiB), floor 2560 MiB
+strata generate: EXPERIMENTAL older-CPU build (ggml-cpu for avx): this CPU has no AVX2, so the CPU's experts run on ggml-cpu's kernels - expect it to be slow
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX1 128-bit (iq_avx1, the older-CPU build) (multi-token for the i-quant gate/up rows)
+strata generate: native pack: <WORKDIR>/experiments/03_run/Strata-data/packs/unsloth-ud-iq4_xs experts (largest blob 3.48 MB), token embedding Q8_0 in mapped host memory (644 MiB, 1.5 s)
+strata generate: 216 MiB of weights loaded from <WORKDIR>/experiments/03_run/Strata-data/packs/unsloth-ud-iq4_xs in 0.4 s (495 canonical tensors skipped: served natively)
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 499 native projection matrices, 3619.14 MiB of weights, in 4.6 s
+strata generate: PLE direct read probe: 22416 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile <WORKDIR>/experiments/03_run/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of <WORKDIR>/models/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+strata mtp: draft layer loaded, 792 MiB of VRAM (experts 675, dense 111), files read in 0.91 s (864 MiB/s)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.6 s
+strata generate: GPU 0: NVIDIA GeForce RTX 3060, compute capability 8.6
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 28383 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 55.43 GiB at 1.57 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: 5 pool workers on logical processors 7,8,9,10,11, the host thread on 6 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 18 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 1 of 1 slots from the profile in 0.0 s (1537 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 5 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.44.1)
+strata generate: token graph hit path: 1 resident experts, decided on the device
+strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 4 tokens, 75.6 MiB of device buffers
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+strata serve: 4710 MiB of VRAM free with everything loaded
+strata verify: capturing the 4-token window (4710 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata verify: capturing the 3-token window (4786 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata verify: capturing the 1-token window (4772 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 118833 ms (8.4 tok/s), 1 generated in 165 ms (6.1 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 118442 ms (8.4 tok/s), 1 generated in 145 ms (6.9 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 114696 ms (8.7 tok/s), 1 generated in 145 ms (6.9 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 117570 ms (8.5 tok/s), 1 generated in 148 ms (6.7 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 119399 ms (8.4 tok/s), 1 generated in 148 ms (6.7 tok/s), drafts accepted 0 of 0, 0 checkpoints
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
