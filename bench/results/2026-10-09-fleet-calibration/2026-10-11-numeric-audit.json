@@ -1,0 +1,145 @@
+{
+  "complete": true,
+  "scope": "Recomputed historical confirmation medians and gains; no new hardware measurements",
+  "records": [
+    {
+      "file": "p4x3.json",
+      "default": 26.81920087162403,
+      "candidate": 29.356451538920233,
+      "gain_pct": 9.460575202972322,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 29.055021409842233,
+          "observations": 2
+        },
+        "1/80/0.97": {
+          "median": 28.8380730196814,
+          "observations": 2
+        },
+        "1/160/0.97": {
+          "median": 28.656411263736143,
+          "observations": 2
+        }
+      }
+    },
+    {
+      "file": "rtx3070.json",
+      "default": 10.946720259984607,
+      "candidate": 11.159157483609988,
+      "gain_pct": 1.9406472311340517,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 11.726994585665517,
+          "observations": 2
+        },
+        "1/80/0.97": {
+          "median": 11.909190933890168,
+          "observations": 2
+        },
+        "1/160/0.97": {
+          "median": 12.176030798727805,
+          "observations": 2
+        }
+      }
+    },
+    {
+      "file": "rtx4090.json",
+      "default": 54.6448087431694,
+      "candidate": 75.81590949475805,
+      "gain_pct": 38.74311437540723,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 34.989206578597475,
+          "observations": 2
+        },
+        "1/80/0.97": {
+          "median": 40.338795302100195,
+          "observations": 2
+        },
+        "1/160/0.97": {
+          "median": 39.62441552610933,
+          "observations": 2
+        }
+      }
+    },
+    {
+      "file": "rtxpro6000-before.json",
+      "default": 174.50579413769597,
+      "candidate": 181.3031161473088,
+      "gain_pct": 3.8951841359773587,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 177.3999331187788,
+          "observations": 2
+        }
+      }
+    },
+    {
+      "file": "rtxpro6000.json",
+      "default": 231.88405797101447,
+      "candidate": 240.64673810866708,
+      "gain_pct": 3.778905809362687,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 236.14447188023348,
+          "observations": 2
+        },
+        "1/80/0.97": {
+          "median": 236.21235137735795,
+          "observations": 2
+        },
+        "1/160/0.97": {
+          "median": 235.98368785151507,
+          "observations": 2
+        }
+      }
+    },
+    {
+      "file": "rx5500xt.json",
+      "default": 16.487196661342676,
+      "candidate": 17.368649587494573,
+      "gain_pct": 5.346287451150689,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 8.334699348204976,
+          "observations": 2
+        },
+        "1/80/0.97": {
+          "median": 10.217252686859247,
+          "observations": 2
+        },
+        "1/160/0.97": {
+          "median": 10.119883551528822,
+          "observations": 2
+        }
+      }
+    },
+    {
+      "file": "rx7900xtx.json",
+      "default": 59.10056330224396,
+      "candidate": 62.0094952039531,
+      "gain_pct": 4.922003681813791,
+      "confirm_rounds": 3,
+      "adaptive": {
+        "default": {
+          "median": 59.72374562795778,
+          "observations": 2
+        },
+        "1/80/0.97": {
+          "median": 69.05345137406684,
+          "observations": 2
+        },
+        "1/160/0.97": {
+          "median": 69.2231608803651,
+          "observations": 2
+        }
+      }
+    }
+  ]
+}

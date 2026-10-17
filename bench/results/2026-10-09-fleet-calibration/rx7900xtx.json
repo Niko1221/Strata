@@ -1,0 +1,237 @@
+{
+  "label": "RX 7900 XTX",
+  "quantization": "IQ3_S",
+  "configuration": {
+    "backend": "hip",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "exe": "$ENGINE",
+    "cwd": "$SOURCE",
+    "tokenizer": "$TOKENIZER",
+    "log": "$LOG",
+    "args": [
+      "--pack",
+      "$PACK",
+      "--native",
+      "$MODEL_SHARD_1",
+      "--ple-gguf",
+      "$MODEL_SHARD_2",
+      "--expert-profile",
+      "$EXPERT_PROFILE",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--spec",
+      "4",
+      "--spec-min-p",
+      "0.5",
+      "--mtp",
+      "$MTP",
+      "--max-context",
+      "262144",
+      "--kv",
+      "int8",
+      "--kv-resident",
+      "32768"
+    ],
+    "env": {
+      "STRATA_HIPBLASLT_TUNING": "$HIPBLASLT_TABLE",
+      "STRATA_PREFILL_LAYER_CACHE": "0",
+      "STRATA_PREFILL_ROOFLINE": "0"
+    }
+  },
+  "candidate_configuration": {
+    "backend": "hip",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "exe": "$ENGINE",
+    "cwd": "$SOURCE",
+    "tokenizer": "$TOKENIZER",
+    "log": "$LOG",
+    "args": [
+      "--pack",
+      "$PACK",
+      "--native",
+      "$MODEL_SHARD_1",
+      "--ple-gguf",
+      "$MODEL_SHARD_2",
+      "--expert-profile",
+      "$EXPERT_PROFILE",
+      "--expert-cache",
+      "auto",
+      "--prefill",
+      "auto",
+      "--spec",
+      "4",
+      "--mtp",
+      "$MTP",
+      "--max-context",
+      "262144",
+      "--kv",
+      "int8",
+      "--kv-resident",
+      "32768",
+      "--pcie-frac",
+      "0.35",
+      "--spec-min-p",
+      "0.70",
+      "--adapt-every",
+      "1",
+      "--adapt-swaps",
+      "160",
+      "--adapt-decay",
+      "0.97"
+    ],
+    "env": {
+      "STRATA_HIPBLASLT_TUNING": "$HIPBLASLT_TABLE",
+      "STRATA_PREFILL_LAYER_CACHE": "0",
+      "STRATA_PREFILL_ROOFLINE": "0"
+    }
+  },
+  "calibration": {
+    "settings": {
+      "--pcie-frac": "0.35",
+      "--spec-min-p": "0.70",
+      "--adapt-every": "1",
+      "--adapt-swaps": "160",
+      "--adapt-decay": "0.97"
+    },
+    "report": {
+      "default": {
+        "pcie_frac": 0.38,
+        "spec_min_p": 0.5,
+        "pool_workers": 7
+      },
+      "pcie_sweep": {
+        "0.0": [
+          57.46094451427546,
+          56.10835926883794,
+          59.62918103046679
+        ],
+        "0.2": [
+          57.764339546008394,
+          58.52231163130944,
+          57.51258087706686
+        ],
+        "0.35": [
+          59.57922174641593,
+          60.110829341598574,
+          60.03189194259451
+        ],
+        "0.38": [
+          60.093896713615024,
+          57.90021260234316,
+          58.95357406042742
+        ],
+        "0.55": [
+          54.22809693272326,
+          54.15926208005416,
+          55.77099037078995
+        ],
+        "0.75": [
+          51.36848864274821,
+          51.15293929584782,
+          50.66096730784454
+        ],
+        "0.9": [
+          48.98021658439521,
+          50.25914873566828,
+          48.84191246613501
+        ],
+        "1.0": [
+          44.368955596381156,
+          43.66663255210998,
+          44.20347411679387
+        ]
+      },
+      "min_p_sweep": {
+        "0.3": [
+          56.39014934578615,
+          57.32969050924889,
+          59.86063695459009
+        ],
+        "0.5": [
+          60.79027355623101,
+          58.57855475721935,
+          60.98432512268331
+        ],
+        "0.7": [
+          63.388302877234686,
+          61.75221922037823,
+          62.51831591286509
+        ]
+      },
+      "confirm": {
+        "0.38/0.5": [
+          58.43681519357195,
+          59.10056330224396,
+          59.615295049136044
+        ],
+        "0.35/0.7": [
+          63.09148264984227,
+          62.0094952039531,
+          61.701614846951074
+        ]
+      },
+      "workers": {
+        "7": [
+          60.61467064450443,
+          59.964396139792
+        ],
+        "5": [
+          58.46350598337444,
+          59.36369539003804
+        ],
+        "4": [
+          55.72000696500088,
+          57.14030623632873
+        ],
+        "2": [
+          45.77804799542219,
+          47.58187427976656
+        ]
+      },
+      "adapt": {
+        "default": [
+          61.4889452003795,
+          57.95854605553606
+        ],
+        "1/80/0.97": [
+          70.24379536006805,
+          67.86310738806564
+        ],
+        "1/160/0.97": [
+          70.07299270072993,
+          68.37332906000026
+        ]
+      },
+      "seconds": 999,
+      "tok_s": 69.2
+    },
+    "started": 1791565711.4493172,
+    "finished": 1791566712.4159715,
+    "exe_sha256": "fc6e6119eb0af264866c0636c3192a6259313ad41fc61d06c466979ce9b7fc57"
+  },
+  "pcie_draft_comparison": {
+    "default": 59.10056330224396,
+    "candidate": 62.0094952039531,
+    "gain_pct": 4.922003681813791,
+    "candidate_key": "0.35/0.7"
+  },
+  "generated_token_count_note": "Up to 128 or 512; actual counts and decode milliseconds are in timing-lines.txt.",
+  "candidate_status": "selected by the tuner; no independent full-configuration check",
+  "hardware": {
+    "cpu": "AMD Ryzen 7 2700 Eight-Core Processor",
+    "ram_gib": 60.7176399230957,
+    "os": "Ubuntu 26.04.1 LTS",
+    "storage_inventory": [
+      "sda     SATA SSD                                  0 953.9G",
+      "nvme0n1 Seagate FireCuda 520 SSD ZP1000GM30002    0 931.5G"
+    ],
+    "gpu_inventory": {},
+    "profile": {
+      "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+      "bytes": 196632
+    },
+    "inventory_note": "Inventory after the original sweep; current PCIe generation can be downclocked at idle. Historical binary identity comes from calibration.exe_sha256."
+  }
+}
