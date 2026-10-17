@@ -272,6 +272,58 @@ GPU nor the RAM budget holds (only pages - the experts computed are the same; `S
 is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) (72 GiB of experts) on a 64 GB PC: 7-8.5 tokens/s at N = 40 on an
 RTX 5070, against ~3 tokens/s before these changes.
 
+**A cap on the arena as a share of RAM (opt-in, `"arena_budget"` in `strata-<model>.json`).** The engine sizes the
+arena from what the machine has free at start, which is the wrong size on a PC that is also used for something else. A
+64 GB machine with a 68 GB IQ2_XS model asked for 33.02 GiB of arena and said so:
+
+```
+WARNING: the expert arena needs 33.02 GiB of RAM but 26.21 GiB is available (6.81 GiB short): the load may swap or be stopped by the OS
+```
+
+and from there the load swapped, `cudaHostRegister` of the whole arena failed, the large pages were refused (error 1450)
+and the run fell back to 4 KB pages - measured on an RTX 4090 with 63.7 GiB of RAM, engine 0.1.44.1. A **fixed** number
+is the wrong shape for a fix: 28 GiB is generous on a 32 GB PC, wasteful on a 128 GB one, and wrong again the moment the
+PC is used for something else. So the key is a share of physical RAM and the GiB are computed at every start from the
+RAM that PC actually has:
+
+```json
+"arena_budget": 0.45
+```
+```json
+"arena_budget": {"share": 0.45, "min_gib": 6, "headroom_gib": 8}
+```
+```json
+"arena_budget": "auto"
+```
+
+| key | default | range | what it is |
+|---|---|---|---|
+| the whole key | `"auto"` (an absent key is the same) | `"auto"`, `true`, a number, or an object | `"auto"`/absent: no cap, the engine sizes the arena itself |
+| `share` | `0.45` (also what `true` means) | `0.10`-`0.85` | the share of physical RAM the arena may take |
+| `min_gib` | `6` | `>= 1` | the floor: below it the arena stops paying for itself |
+| `headroom_gib` | `8` | `>= 0` | the RAM the rest of the PC keeps |
+
+The cap is `clamp(share x total RAM, min_gib, total RAM - headroom_gib)`, rounded **down** to whole GiB, so it follows
+the hardware up and down: `0.45` is 7 GiB on a 16 GB PC, 14 on 32 GB, 28 on 64 GB and 57 on 128 GB. The two ends are
+what a scenario moves - a PC that also runs a modelling or 3D app wants a smaller share or a larger `headroom_gib`, one
+that runs only the model wants more. `min_gib` never beats `headroom_gib`: on a PC too small for both, the cap is
+skipped rather than made impossible.
+
+**How it takes effect.** The server computes the GiB at start and passes it as the engine's own `--resident-budget-gib N`,
+which implies `--mmap-experts` - a different expert path from the default pinned arena, which is why this is opt-in and
+why an absent key leaves the engine's arguments **byte-identical**. A `--resident-budget-gib` already written into the
+config's `"args"` is never overridden: the number written by hand wins. The config is read at start, so a change is used
+from the next start of the model; nothing else in the file is touched. The server prints the arithmetic it did, once:
+
+```
+[strata] arena_budget: 0.45 x 63.7 GiB of RAM = 28 GiB for the expert arena -> --resident-budget-gib 28; the rest of the PC keeps 35.7 GiB
+```
+
+A value out of range, of the wrong type or with an unknown key is said once and then ignored, with the engine sizing the
+arena as before: a typo never stops a start. The arithmetic is `serve/arena_budget.py`, its tests are
+`python -m unittest serve.test_arena_budget` (they run without a GPU or a model), and the existing
+`warn_budget_over_ram` still reports a share that ends up larger than the RAM this PC has free.
+
 **Switches added in 0.1.40 (all off unless noted; none changes the default output):**
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
