@@ -58,6 +58,16 @@ Install what it names (links are printed), then run it again. Everything already
   Use CUDA 12.8 or 13.x instead. Setup takes the newest toolkit it finds; `STRATA_NVCC=/usr/local/cuda-12.8/bin/nvcc
   ./setup.sh` makes it use that one (only that one).
 
+**Windows: "the Visual Studio C++ build tools were not found" (the engine or the image encoder does not build).**
+Setup asks `vswhere` for the compiler. With a CUDA toolkit it asks for Visual Studio 2019 or 2022, because CUDA
+13.0-13.2 refuse a newer one; Visual Studio 2026 (its version 18) is taken only with CUDA 13.3 or newer (#985).
+With no CUDA toolkit setup asks for no version at all, since the CPU image encoder is built by any MSVC (#881) - a
+setup that asked for the CUDA range here found no compiler on a PC whose only C++ tools are Visual Studio 2026. An
+install without the VC tools of "Desktop development with C++" is not found either. Install what it names, or name
+the file yourself in the environment before running setup:
+`STRATA_VCVARS="C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"`. Setup
+uses that file only when it exists, so a typed path that is wrong is answered as no tools at all.
+
 **The first start takes minutes.**
 It is reading 34-55 GB into RAM; the second start is faster while the files are in the OS cache. Started from Task
 Scheduler, it can be 24x slower: see [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
