@@ -353,7 +353,7 @@ int main(int argc, char** argv) {
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");
     std::mt19937 rng(316);
-    for (int gu : {16, 17, 18, 21, 22, 23, 29, 42, 12, 13,
+    for (int gu : {16, 17, 18, 20, 21, 22, 23, 29, 42, 12, 13,
 #ifdef STRATA_Q6K_EXPERTS
                    14,
 #endif

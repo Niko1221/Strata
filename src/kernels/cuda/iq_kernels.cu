@@ -841,9 +841,9 @@ STRATA_TQP_FMT(149)
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
 #ifdef STRATA_Q6K_EXPERTS   // opt-in build (-DSTRATA_Q6K_EXPERTS=ON): one more instance per kernel, loaded at start
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
 #else
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
 #endif
 // Q5_K / Q6_K downs: Qwen3.6-35B-A3B (FF 512, whole 256-blocks per row); Flash-Next's FF 640 never selects them
 #ifdef STRATA_Q6K_EXPERTS
@@ -3380,6 +3380,16 @@ int d_qk(int t) {
 #define STRATA_QK(T) case T: return Fmt<T>::qk;
         STRATA_D_FMTS(STRATA_QK)
 #undef STRATA_QK
+        default: return 0;
+    }
+}
+// work items per block of a gate/up format (Fmt::ipb; 0 = not a gate/up format): row_dot_80_sub16 needs
+// (n_embd / qk) * ipb == 80
+int gu_ipb(int t) {
+    switch (t) {
+#define STRATA_IPB(T) case T: return Fmt<T>::ipb;
+        STRATA_GU_FMTS(STRATA_IPB)
+#undef STRATA_IPB
         default: return 0;
     }
 }
