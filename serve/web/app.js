@@ -101,6 +101,15 @@ let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
+    if (health.max_context && !store.get("ws")) {        // first use: defaults scaled to this model's context
+      const c = health.max_context;
+      const tier = c >= 200000 ? {max: 8, readmax: 3, plimchars: 5000}
+                 : c >= 100000 ? {max: 6, readmax: 2, plimchars: 5000}
+                 : c >= 48000  ? {max: 5, readmax: 2, plimchars: 4000}
+                 : c >= 24000  ? {max: 4, readmax: 1, plimchars: 4000}
+                 :               {max: 4, readmax: 1, plimchars: 3000};
+      ws = {...ws, ...tier};
+    }
     $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
                                           : "Attach a text file (or drop it here)";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it — unless Web search is on: the search query then goes out to the engine.`;
@@ -575,7 +584,7 @@ if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
-const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, on: false};
+const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, on: false};
 const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper"};
 let ws = {...WS_DEFAULTS, ...store.get("ws", {})};   // Web search: the composer's globe and the drawer's section
 
@@ -711,7 +720,7 @@ function updateAssistant(el, m, streaming) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
       src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}Sources${esc(ename)}:</span>` +
-        m.sources.map((s, k) => `<a class="st-source" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.url)}">[${k + 1}] ${esc(s.title || s.url)}</a>`).join(" | ");
+        m.sources.map((s, k) => `<a class="st-source" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="${esc(s.url)}">[${k + 1}] ${esc(s.title || s.url)}${s.content ? ' <span class="st-source__read">read</span>' : ""}</a>`).join(" | ");
     } else if (m.sourcesNote) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
@@ -824,7 +833,9 @@ async function send() {
     try {
       const sr = await fetch("search", {method: "POST", headers: headers(true), signal: controller.signal,
                                        body: JSON.stringify({query: text, engine: ws.engine, url: ws.url,
-                                                            api_key: ws.key, max_results: +ws.max || 6})});
+                                                            api_key: ws.key, max_results: +ws.max || 6,
+                                                            read_pages: ws.read !== false, read_max: +ws.readmax || 2,
+                                                            page_limit: ws.plim !== false, page_chars: +ws.plimchars || 5000})});
       const sj = await sr.json().catch(() => ({}));
       if (sr.ok && sj.results && sj.results.length) { sources = sj.results; sourceEngine = ws.engine; }
       else { sourcesNote = (sj.error && sj.error.message) || "no results"; toast("warn", "Web search found nothing", sourcesNote, 6000); }
@@ -848,7 +859,7 @@ async function send() {
   if (sources) {                                  // the model reads the results; the answer shows them as sources
     m.sources = sources;
     m.sourceEngine = sourceEngine;
-    const ctx = sources.map((s, k) => `[${k + 1}] ${s.title}\nURL: ${s.url}\n${s.snippet}`).join("\n\n");
+    const ctx = sources.map((s, k) => `[${k + 1}] ${s.title}\nURL: ${s.url}\n${s.snippet}${s.content ? `\n\nFull page text:\n${s.content}` : ""}`).join("\n\n");
     body.messages.push({role: "system", content:
       `Web search results for the question above, fetched just now:\n\n${ctx}\n\n` +
       `Answer with these results where they are relevant, cite the sources by their [n] number, and say when your answer goes beyond them.`});
@@ -1068,6 +1079,10 @@ function loadDrawer(s = settings) {
   $("s-ws-url").value = ws.url;
   $("s-ws-key").value = ws.key;
   $("s-ws-max").value = ws.max;
+  $("s-ws-read").setAttribute("aria-checked", String(ws.read !== false));
+  $("s-ws-readmax").value = ws.readmax || 2;
+  $("s-ws-plim").setAttribute("aria-checked", String(ws.plim !== false));
+  $("s-ws-plim-chars").value = ws.plimchars || 5000;
   paintWsRows();
   outputs();
 }
@@ -1125,9 +1140,19 @@ function paintWsRows() {
   $("ws-url-row").hidden = e !== "searxng";
   $("ws-key-row").hidden = e === "searxng" || e === "duckduckgo";
   $("o-ws-max").textContent = `${$("s-ws-max").value || 6} pages go to the model`;
+  const readOn = $("s-ws-read").getAttribute("aria-checked") === "true";
+  $("ws-readmax-row").hidden = !readOn;
+  $("o-ws-readmax").textContent = readOn ? `${$("s-ws-readmax").value || 2} fetched in full` : "snippets only";
+  const limOn = $("s-ws-plim").getAttribute("aria-checked") === "true";
+  $("ws-plim-row").hidden = !limOn;
+  $("o-ws-plim").textContent = limOn ? `${$("s-ws-plim-chars").value || 5000} per page` : "whole pages, capped by model context";
 }
 $("s-ws-engine").onchange = paintWsRows;
 $("s-ws-max").oninput = paintWsRows;
+$("s-ws-read").onclick = () => {$("s-ws-read").setAttribute("aria-checked", String($("s-ws-read").getAttribute("aria-checked") !== "true")); paintWsRows();};
+$("s-ws-readmax").oninput = paintWsRows;
+$("s-ws-plim").onclick = () => {$("s-ws-plim").setAttribute("aria-checked", String($("s-ws-plim").getAttribute("aria-checked") !== "true")); paintWsRows();};
+$("s-ws-plim-chars").oninput = paintWsRows;
 $("s-reset").onclick = () => {
   ws = {...WS_DEFAULTS}; store.set("ws", ws); paintWebsearch();   // reset also the web search: DuckDuckGo, no key, off
   loadDrawer(DEFAULTS);                                           // loadDrawer fills the ws fields from ws
@@ -1142,6 +1167,10 @@ $("s-apply").onclick = async () => {
   store.set("sampling", settings);
   ws = {engine: $("s-ws-engine").value, url: $("s-ws-url").value.trim() || WS_DEFAULTS.url,
         key: $("s-ws-key").value.trim(), max: Math.max(1, Math.min(20, +$("s-ws-max").value || 6)),
+        read: $("s-ws-read").getAttribute("aria-checked") === "true",
+        readmax: Math.max(1, Math.min(5, +$("s-ws-readmax").value || 2)),
+        plim: $("s-ws-plim").getAttribute("aria-checked") === "true",
+        plimchars: Math.max(1000, Math.min(100000, +$("s-ws-plim-chars").value || 5000)),
         on: $("s-ws").getAttribute("aria-checked") === "true"};
   store.set("ws", ws);
   paintWebsearch();
