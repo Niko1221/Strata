@@ -1,0 +1,124 @@
+{
+  "model": "IQ2_XS",
+  "passed": 29,
+  "total": 29,
+  "checks": [
+    {
+      "name": "timeout-valid-None",
+      "passed": true
+    },
+    {
+      "name": "timeout-valid-''",
+      "passed": true
+    },
+    {
+      "name": "timeout-valid-'  '",
+      "passed": true
+    },
+    {
+      "name": "timeout-valid-0",
+      "passed": true
+    },
+    {
+      "name": "timeout-valid-12",
+      "passed": true
+    },
+    {
+      "name": "timeout-valid-' 007 '",
+      "passed": true
+    },
+    {
+      "name": "timeout-default",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-True",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-False",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-1.5",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid--1",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-'-1'",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-'+2'",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-'2.0'",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-'\uff11\uff12'",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-[]",
+      "passed": true
+    },
+    {
+      "name": "timeout-invalid-{}",
+      "passed": true
+    },
+    {
+      "name": "cache-capacity-0",
+      "passed": true
+    },
+    {
+      "name": "cache-capacity--1",
+      "passed": true
+    },
+    {
+      "name": "cache-capacity-True",
+      "passed": true
+    },
+    {
+      "name": "cache-capacity-1.5",
+      "passed": true
+    },
+    {
+      "name": "cache-capacity-'2'",
+      "passed": true
+    },
+    {
+      "name": "cache_promote",
+      "passed": true
+    },
+    {
+      "name": "cache_update",
+      "passed": true
+    },
+    {
+      "name": "cache_falsy",
+      "passed": true
+    },
+    {
+      "name": "cache_one",
+      "passed": true
+    },
+    {
+      "name": "records-first-generator-identity",
+      "passed": true
+    },
+    {
+      "name": "records-missing-none-mutation",
+      "passed": true
+    },
+    {
+      "name": "records-empty",
+      "passed": true
+    }
+  ],
+  "scope": "One Claude Code repair task across three algorithm modules; deterministic contract checks, not a broad coding benchmark."
+}
