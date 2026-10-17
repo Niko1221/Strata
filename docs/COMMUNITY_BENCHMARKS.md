@@ -66,6 +66,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-15: 2x RTX 3090 24 GB (layer split, PCIe 3.0 x16), 2x Xeon Platinum 8163 (48c/96t), 160 GiB RAM](../bench/results/2026-10-15-community-2x-rtx-3090-ud-q4-k-xl/README.md):
+  Strata 0.1.44.1 source build with `--no-ple-prefetch` ([#2281](https://github.com/Niko1221/Strata/issues/2281)), unsloth UD-Q4_K_XL at 262,144 tokens, run against the already-running production server (`--url`, nothing restarted); decode 84.9 tok/s, prompt 741/1440/1521 tok/s at 4K/16K/32K, TTFT 0.39/5.46/11.20/21.12 s, agent-session cache hit 68.7 % at 93.1 tok/s decode. Same-day functional checks (OpenAI, Anthropic, a control token quoted as literal text, an 8K prompt) passed. One configuration in production, not a controlled comparison; the 4K end is the weak spot and `--no-ple-prefetch` is load-bearing on Linux.
 
 ## Run the benchmark
 

@@ -1,0 +1,41 @@
+[strata] 2026-10-15 08:20:50 engine started: /opt/strata-01441/engine/strata --serve --pack /models/strata-data/packs/unsloth-ud-q4_k_xl --native /models/strata-data/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile /opt/strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /models/strata-data/mtp/rt --max-context 262144 --kv k8v4 --kv-resident 32768 --ple-io ram --no-ple-prefetch --layer-split auto
+strata generate: memory guard: limit 160.0 GiB (source: meminfo), current 0.4 GiB, reclaimable cache credited 0.0 GiB; available 159.6 GiB (MemAvailable 159.6 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: PCIe probe: 7.9 GB/s host->device (best of 7.9 7.9 7.9 7.9) -> pcie_frac 0.22 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /models/strata-data/packs/unsloth-ud-q4_k_xl experts (largest blob 3.99 MB), token embedding Q8_0 in mapped host memory (644 MiB, 2.0 s)
+strata generate: 1416 MiB of weights loaded from /models/strata-data/packs/unsloth-ud-q4_k_xl in 0.9 s (303 canonical tensors skipped: served natively)
+strata generate: 301 native projection matrices, 2975.00 MiB of weights, in 5.0 s
+strata generate: PLE table locked in RAM (--ple-io ram) in 2.2 s
+strata generate: layer split: CUDA1 PCIe probe 7.9 GB/s (best of 7.9 7.9 7.9 7.9) -> pcie_frac 0.22
+strata generate: layer split: CUDA1 holds its weights; 18.87 GiB free (its session follows the split search)
+strata generate: profile /opt/strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: layer split auto: CUDA0 82 SMs at 1.70 GHz -> 0.52 ms per layer, 18.19 GiB free before its session carve
+strata generate: layer split auto: CUDA1 82 SMs at 1.70 GHz -> 0.52 ms per layer, 17.12 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 7.9 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 7.9 GB/s -> miss cost x1.00
+strata generate: layer split auto: K=24 - predicted 29.1 ms per decode window; the caches hold 11774 of 24576 profiled pairs (~97.9% of the routed mass), best of 46 placements
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of /models/strata-data/models/unsloth-UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf
+strata generate: layer split: CUDA1 holds its weights, session [24, 48) and the head; 17.77 GiB free
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 1.13 s (694 MiB/s)
+strata generate: GPU 0: NVIDIA GeForce RTX 3090, compute capability 8.6
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 36727 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 71.73 GiB at 3.32 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 72 (automatic), participating threads: 24
+strata generate: 23 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 48 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache auto: 18.26 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 4725 slots
+strata generate: expert cache 6015 slots, 17.57 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 6015 of 6015 slots from the profile in 1.6 s (11727 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 16.81 GiB free of 23.61, room for experts 16.03 GiB
+strata generate: layer split: CUDA1 runs layers 24-47, expert cache 5494 slots (16.03 GiB), 5494 of its 12288 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-23
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: R4 hit path ON - resident experts are computed on the GPU
