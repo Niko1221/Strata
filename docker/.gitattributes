@@ -1,0 +1,8 @@
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.nginx text eol=lf
+docker-compose.yml text eol=lf
+.dockerignore text eol=lf
+manager/Dockerfile text eol=lf
+manager/app.py text eol=lf
+*.md text eol=lf

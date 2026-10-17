@@ -1,0 +1,5 @@
+# nginx: the single external entry point (TLS + API key/session auth + forwarding)
+FROM docker.1ms.run/library/nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/strata.conf
+RUN rm /etc/nginx/conf.d/default.conf
+EXPOSE 38888

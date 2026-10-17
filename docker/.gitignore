@@ -1,0 +1,20 @@
+# Certificates and keys (generated locally, never committed)
+certs/*.key
+certs/*.crt
+certs/*.pem
+!certs/.gitkeep
+
+# Local configuration
+.env
+
+# Build artifacts
+__pycache__/
+*.pyc
+manager/static/*.map
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+.build-context/
