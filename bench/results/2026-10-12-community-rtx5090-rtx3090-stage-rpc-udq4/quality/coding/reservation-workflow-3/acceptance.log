@@ -1,0 +1,202 @@
+TAP version 13
+# Subtest: empty
+ok 1 - empty
+  ---
+  duration_ms: 1.298721
+  type: 'test'
+  ...
+# Subtest: exact stock
+ok 2 - exact stock
+  ---
+  duration_ms: 0.158391
+  type: 'test'
+  ...
+# Subtest: duplicates stock added
+ok 3 - duplicates stock added
+  ---
+  duration_ms: 0.13713
+  type: 'test'
+  ...
+# Subtest: trim stock and requests
+ok 4 - trim stock and requests
+  ---
+  duration_ms: 0.18332
+  type: 'test'
+  ...
+# Subtest: trim duplicate stock
+ok 5 - trim duplicate stock
+  ---
+  duration_ms: 0.15391
+  type: 'test'
+  ...
+# Subtest: unknown sku
+ok 6 - unknown sku
+  ---
+  duration_ms: 0.16839
+  type: 'test'
+  ...
+# Subtest: insufficient consumes nothing
+ok 7 - insufficient consumes nothing
+  ---
+  duration_ms: 0.199989
+  type: 'test'
+  ...
+# Subtest: first duplicate request wins
+ok 8 - first duplicate request wins
+  ---
+  duration_ms: 0.11208
+  type: 'test'
+  ...
+# Subtest: trim request IDs before dedup
+ok 9 - trim request IDs before dedup
+  ---
+  duration_ms: 0.259272
+  type: 'test'
+  ...
+# Subtest: rejected first duplicate still wins
+ok 10 - rejected first duplicate still wins
+  ---
+  duration_ms: 0.29302
+  type: 'test'
+  ...
+# Subtest: case sensitive SKUs
+ok 11 - case sensitive SKUs
+  ---
+  duration_ms: 0.13651
+  type: 'test'
+  ...
+# Subtest: sorted remaining keys
+ok 12 - sorted remaining keys
+  ---
+  duration_ms: 0.08787
+  type: 'test'
+  ...
+# Subtest: preserve order
+ok 13 - preserve order
+  ---
+  duration_ms: 0.097961
+  type: 'test'
+  ...
+# Subtest: zero stock retained
+ok 14 - zero stock retained
+  ---
+  duration_ms: 0.07846
+  type: 'test'
+  ...
+# Subtest: frozen inputs
+ok 15 - frozen inputs
+  ---
+  duration_ms: 0.10234
+  type: 'test'
+  ...
+# Subtest: inputs unchanged
+ok 16 - inputs unchanged
+  ---
+  duration_ms: 0.1857
+  type: 'test'
+  ...
+# Subtest: invalid stock {"sku":"","units":1}
+ok 17 - invalid stock {"sku":"","units":1}
+  ---
+  duration_ms: 0.25866
+  type: 'test'
+  ...
+# Subtest: invalid stock {"sku":" ","units":1}
+ok 18 - invalid stock {"sku":" ","units":1}
+  ---
+  duration_ms: 0.0627
+  type: 'test'
+  ...
+# Subtest: invalid stock {"sku":"a","units":-1}
+ok 19 - invalid stock {"sku":"a","units":-1}
+  ---
+  duration_ms: 0.05423
+  type: 'test'
+  ...
+# Subtest: invalid stock {"sku":"a","units":1.5}
+ok 20 - invalid stock {"sku":"a","units":1.5}
+  ---
+  duration_ms: 0.046361
+  type: 'test'
+  ...
+# Subtest: invalid stock {"sku":"a","units":null}
+ok 21 - invalid stock {"sku":"a","units":null}
+  ---
+  duration_ms: 0.04649
+  type: 'test'
+  ...
+# Subtest: invalid stock {"sku":"a","units":null}
+ok 22 - invalid stock {"sku":"a","units":null}
+  ---
+  duration_ms: 0.04659
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"","sku":"a","quantity":1}
+ok 23 - invalid request {"id":"","sku":"a","quantity":1}
+  ---
+  duration_ms: 0.08428
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":" ","sku":"a","quantity":1}
+ok 24 - invalid request {"id":" ","sku":"a","quantity":1}
+  ---
+  duration_ms: 0.07174
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":"","quantity":1}
+ok 25 - invalid request {"id":"x","sku":"","quantity":1}
+  ---
+  duration_ms: 0.05524
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":" ","quantity":1}
+ok 26 - invalid request {"id":"x","sku":" ","quantity":1}
+  ---
+  duration_ms: 0.05232
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":"a","quantity":0}
+ok 27 - invalid request {"id":"x","sku":"a","quantity":0}
+  ---
+  duration_ms: 0.0617
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":"a","quantity":-1}
+ok 28 - invalid request {"id":"x","sku":"a","quantity":-1}
+  ---
+  duration_ms: 0.05413
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":"a","quantity":1.5}
+ok 29 - invalid request {"id":"x","sku":"a","quantity":1.5}
+  ---
+  duration_ms: 0.04832
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":"a","quantity":null}
+ok 30 - invalid request {"id":"x","sku":"a","quantity":null}
+  ---
+  duration_ms: 0.04733
+  type: 'test'
+  ...
+# Subtest: invalid request {"id":"x","sku":"a","quantity":null}
+ok 31 - invalid request {"id":"x","sku":"a","quantity":null}
+  ---
+  duration_ms: 0.10888
+  type: 'test'
+  ...
+# Subtest: invalid duplicate rejected
+ok 32 - invalid duplicate rejected
+  ---
+  duration_ms: 0.08624
+  type: 'test'
+  ...
+1..32
+# tests 32
+# suites 0
+# pass 32
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 92.598905

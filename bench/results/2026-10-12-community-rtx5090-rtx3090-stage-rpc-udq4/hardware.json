@@ -1,0 +1,58 @@
+{
+  "coordinator": {
+    "cpu_model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "visible_logical_cpus": 32,
+    "guest_ram_bytes": 45689458688,
+    "gpu_model": "NVIDIA GeForce RTX 5090",
+    "gpu_memory_total_bytes": 34190917632,
+    "layers": [
+      24,
+      47
+    ],
+    "gpu_snapshot_csv": "NVIDIA GeForce RTX 5090, 32607, 31547, 656, 1, 16, 600.00, 615.71.09",
+    "gpu_snapshot_columns": [
+      "name",
+      "total_MiB",
+      "used_MiB",
+      "free_MiB",
+      "current_PCIe_generation",
+      "current_PCIe_width",
+      "power_limit_W",
+      "driver_version"
+    ],
+    "os_kernel": "Linux 7.0.0-38-generic",
+    "cuda_compiler": "13.3.73",
+    "storage": {
+      "guest_visible": "ext4 on a virtual block device",
+      "performance": "not measured"
+    }
+  },
+  "worker": {
+    "cpu_model": "AMD Ryzen 9 5900X 12-Core Processor",
+    "visible_logical_cpus": 24,
+    "guest_ram_bytes": 105395945472,
+    "gpu_model": "NVIDIA GeForce RTX 3090",
+    "gpu_memory_total_bytes": 25769803776,
+    "layers": [
+      0,
+      23
+    ],
+    "gpu_snapshot_csv": "NVIDIA GeForce RTX 3090, 24576, 21240, 2878, 1, 16, 420.00, 580.178.04",
+    "gpu_snapshot_columns": [
+      "name",
+      "total_MiB",
+      "used_MiB",
+      "free_MiB",
+      "current_PCIe_generation",
+      "current_PCIe_width",
+      "power_limit_W",
+      "driver_version"
+    ],
+    "os_kernel": "Linux 7.0.0-38-generic",
+    "cuda_compiler": "13.3.73",
+    "storage": {
+      "guest_visible": "ext4 on a virtual block device",
+      "performance": "not measured"
+    }
+  }
+}

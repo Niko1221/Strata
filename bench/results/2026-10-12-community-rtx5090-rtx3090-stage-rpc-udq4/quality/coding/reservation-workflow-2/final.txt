@@ -1,0 +1,9 @@
+Done — the suite passes on the first run, no repair rounds were needed.
+
+**Result: 32 passed, 0 failed.** Note on the runner: `node --test acceptance.test.ts` on Node v22.23.2 reports the file as a single aggregate test (`pass 1 / fail 0`), so I also ran `node acceptance.test.ts` directly, which lists every test individually: 32 `ok`, 0 `not ok`. A failing internal test would make both invocations exit non-zero.
+
+**Changed files** (only the three allowed sources; tests, AGENTS.md, and config untouched):
+
+- [stock.ts](<project>/stock.ts) — added `validateStock` (SKU must be a string, nonempty after trimming; units must be a nonnegative integer, so NaN/Infinity/1.5/-1 all throw `RangeError`). `buildStock` now trims SKUs and combines duplicates by summing units, keeping case sensitivity.
+- [requests.ts](<project>/requests.ts) — added `validateRequests` (ID/SKU nonempty after trimming, quantity a positive integer). `uniqueRequests` validates every record (so an invalid later duplicate still throws, per the "invalid duplicate rejected" test), then dedupes by trimmed ID with first-occurrence-wins, returning trimmed copies so inputs are never mutated.
+- [allocate.ts](<project>/allocate.ts) — `reserve` now validates all stock and all requests *before* any allocation, then processes deduped requests in original order: unknown SKU → `unknown-sku` (and consumes nothing), insufficient quantity → `insufficient-stock` with no partial consumption, full-quantity acceptance decrements stock. `remaining` includes every (trimmed) stock SKU including zeros, keys sorted by code-point order. Works with frozen inputs since everything operates on copies.

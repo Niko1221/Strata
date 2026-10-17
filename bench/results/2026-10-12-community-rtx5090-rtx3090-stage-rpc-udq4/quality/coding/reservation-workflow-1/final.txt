@@ -1,0 +1,11 @@
+All tests pass on the first run — no repair rounds needed.
+
+**Results:** `node --test acceptance.test.ts` exits 0 with 0 failures (Node reports the file as 1 top-level test, pass 1 / fail 0). Running the file directly to see per-test detail gives **32 passed, 0 failed**, covering trimming, duplicate-stock summation, first-wins request dedup, unknown-sku vs insufficient-stock, zero-consumption on rejection, key sorting, order preservation, input immutability, and all `RangeError` validation cases.
+
+**Changes** (only the three permitted source files; [acceptance.test.ts](<project>/acceptance.test.ts) and config untouched):
+
+- [stock.ts](<project>/stock.ts) — `buildStock` now validates every record before returning: SKU must be a string that stays nonempty after trimming, units a nonnegative integer (`Number.isInteger` rejects `NaN`, `Infinity`, and fractions), each violation raising `RangeError`. Valid records are keyed by the trimmed SKU and duplicate SKUs accumulate units instead of overwriting. It also exports the shared `requireTrimmedNonemptyString` / `requireNonnegativeInteger` helpers.
+- [requests.ts](<project>/requests.ts) — `uniqueRequests` first normalizes and validates *all* records (trimmed nonempty id and sku, positive-integer quantity via `requirePositiveInteger`), then dedupes on the trimmed ID keeping the first occurrence. Validating the whole list up front is what makes a later invalid duplicate, such as `r('x','a',0)`, raise `RangeError` rather than being silently dropped.
+- [allocate.ts](<project>/allocate.ts) — `reserve` validates through `buildStock` and `uniqueRequests` before any consumption, distinguishes a missing SKU (`unknown-sku`) from an inadequate balance (`insufficient-stock`) using `Map.get() === undefined` so an unknown SKU never gains a `remaining` key, and only writes back the balance on acceptance so rejections consume nothing. Output keys are sorted by code-point comparison before `Object.fromEntries`, and inputs are only read, never written.
+
+The exported `Stock`, `Request`, `buildStock`, and `uniqueRequests` names are preserved; `reserve` gains an explicit `ReserveResult` return type, which is structural and identical to the inferred shape.

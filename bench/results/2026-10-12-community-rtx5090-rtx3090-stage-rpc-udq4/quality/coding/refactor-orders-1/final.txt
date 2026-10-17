@@ -1,0 +1,11 @@
+Done — all tests pass on the first run, no repair rounds needed.
+
+**Result:** `node --test acceptance.test.ts` → pass, 0 fail. The file contains 24 individual tests (verified by running `node acceptance.test.ts` directly: 24 pass / 0 fail); the `--test` runner aggregates them under the one file-level result.
+
+Changes, within the allowed scope (orders.ts, validation.ts, aggregation.ts only):
+
+- [validation.ts](<project>/validation.ts) — new. Exports `validateOrders`: rejects a non-array with `RangeError('orders')`, rejects records with a blank/non-string customer, non-integer or negative `priceCents`, non-integer or non-positive `quantity`, or a non-boolean `cancelled` (including cancelled records) with `RangeError('order')`. Returns new records with trimmed customer names; input is never mutated.
+- [aggregation.ts](<project>/aggregation.ts) — new. Exports `aggregateOrders`: takes validated records, skips cancelled ones, groups by customer, sums `priceCents*quantity` and quantities, and returns summaries sorted by customer in code-point order. Builds new summary objects, so frozen inputs are fine.
+- [orders.ts](<project>/orders.ts:8) — keeps the exported `Order`/`Summary` types and `summarizeOrders` signature; the body is now just `aggregateOrders(validateOrders(orders))`. Both helpers use `import type` from orders.ts, so there's no runtime import cycle.
+
+Behavior, error type, and immutability are preserved because the validation and aggregation logic was moved verbatim from the original implementation. Tests, AGENTS.md, and config were untouched.

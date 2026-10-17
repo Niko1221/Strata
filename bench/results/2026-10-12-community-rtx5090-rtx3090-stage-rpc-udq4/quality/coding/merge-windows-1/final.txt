@@ -1,0 +1,19 @@
+Done — all acceptance tests pass on the first run, so no repair rounds were used.
+
+**Results**
+- `node --test acceptance.test.ts` → 1 file pass, 0 fail (Node's runner counts the file as one item in this isolated mode).
+- `node --test-reporter=spec acceptance.test.ts` (same file, per-test view) → **25 passed, 0 failed**.
+
+**Changed file:** [windows.ts](<project>/windows.ts) only. Tests, AGENTS.md, and config untouched; no network, installs, or delegation.
+
+**What was wrong and how it's fixed**
+
+The original implementation had five defects, each now addressed:
+
+- It called `windows.sort(...)`, mutating the caller's array (and crashing on a frozen one). It now sorts a shallow copy, so the input array and its objects are never touched, and every returned window is a fresh object.
+- It merged only on `w.start < last.end`, so touching endpoints (`[1,3]`,`[3,5]`) stayed split and `gap` was ignored entirely. The merge condition is now `window.start - last.end <= gap`, which covers overlap, touching, and gaps up to `gap`.
+- It set `last.end = w.end` unconditionally, so a contained window could shrink the merged range (`[1,10],[2,3]` → `[1,3]`). It now takes `Math.max(last.end, window.end)`.
+- It never validated anything. `gap` is now checked first — finite and nonnegative, including for empty input — and each window's `start`/`end` must be finite numbers with `start <= end`; every violation throws `RangeError`.
+- Sort tie-breaking is now start-then-end, so equal starts keep the wider window first (matching the `same start` expectation).
+
+The exported `Window` type and `mergeWindows` signature (`gap = 0`) are unchanged.
