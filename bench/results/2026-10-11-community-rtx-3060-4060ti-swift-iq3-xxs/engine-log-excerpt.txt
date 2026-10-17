@@ -1,0 +1,6 @@
+[strata] layer split across GPUs [0, 1] (21)
+[strata] loading the experts the GPU does not hold into RAM (of about 40 GB) and locking part of them for the GPU.
+         Please wait and don't close this window; the browser opens when it is ready.
+[strata] filling the GPU's expert cache (5874 experts, 8.36 GiB of VRAM) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:9050/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 100000 tokens, images on)
