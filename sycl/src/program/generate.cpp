@@ -2241,9 +2241,19 @@ int main(int argc, char **argv) try {
                 }
             } catch (...) { return false; }
         }();
+        // Not on an integrated GPU either (the Arc 140T, Xe-LPG+, 2026-10-06): its "VRAM" is the system RAM, so the
+        // experts the cache cannot hold are mirrored in host memory the GPU reads and borrowing saves nothing - and
+        // there a prompt that borrowed decoded only token 0 after it (all expert activations NaN from the 2nd chunk;
+        // likely the Alchemist GEMM bug above). Its own buffers: the reference output at a 96K context.
+        static const bool igpu = [] {
+            try { return dpct::get_current_device().get_info<sycl::info::device::host_unified_memory>(); }
+            catch (...) { return false; }
+        }();
         if (!multi_gpu && alchemist) {
             o.no_prefill_borrow = true;
             if (o.prefill_auto && o.prefill_chunk > 2048) o.prefill_chunk = o.prefill_auto_max = 2048;
+        } else if (!multi_gpu && igpu) {
+            o.no_prefill_borrow = true;
         } else {
             o.no_prefill_borrow = o.max_context <= 32768;
         }

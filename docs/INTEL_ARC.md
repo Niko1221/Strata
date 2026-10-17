@@ -49,8 +49,8 @@ Full flags, per-request timings and engine logs are in the report linked in the 
   The HIP build is not affected (the option is off by default).
 
 **Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, the Alchemist
-A-series, integrated Arc GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and
-images (not wired on Intel).
+A-series, integrated Arc GPUs other than the Arc 140T on Linux (the B390 / Panther Lake on Windows in #515; the 140T:
+[INTEL.md](INTEL.md), "Integrated Arc"), and images (not wired on Intel).
 
 ## What you need
 
