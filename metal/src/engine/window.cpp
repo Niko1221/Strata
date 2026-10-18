@@ -16,6 +16,7 @@
 #include "resource_path.h"
 #include "ref_quant.h"
 #include "arena_budget.h"
+#include "host_memory.h"
 #include "stream.h"
 #include "../../tests/coop_probe.h"
 
@@ -1172,6 +1173,34 @@ ProcMem proc_mem() {
     }
     return r;
 }
+// The engine's memory as arena_budget.h's rules read it, for the streaming arena: the RAM,
+// the Metal working set, the Metal buffers (less `model_bytes`, a resident pack's wrapped file pages), what the process
+// holds, macOS's file-cache floor, what macOS can give now (host_memory_now) and the overrides from the environment.
+ArenaMem sample_arena_mem(const mtl::Context& cx, double model_bytes) {
+    ArenaMem am;
+    double avail = 0, phys = 0;
+    const bool vm_ok = host_memory_now(avail, phys);
+    if (!vm_ok) {
+        uint64_t p = 0;
+        size_t len = sizeof p;
+        sysctlbyname("hw.memsize", &p, &len, nullptr, 0);
+        phys = (double) p;
+    }
+    am.phys = phys;
+    am.working_set = (double) cx.recommended_working_set();
+    am.allocated = std::max(0.0, (double) cx.allocated() - model_bytes);
+    am.proc_footprint = proc_mem().footprint;   // everything the process holds, not only the Metal buffers
+    {   // the file cache macOS keeps before it compresses anonymous memory (a 4-byte count of pages, read into a zeroed 8)
+        unsigned long long pages = 0;
+        size_t pl = sizeof pages;
+        if (sysctlbyname("vm.vm_page_filecache_min", &pages, &pl, nullptr, 0) == 0) am.filecache_min = (double) pages * (double) vm_page_size;
+    }
+    am.available = vm_ok ? avail : am.phys - footprint_base(am) - model_bytes;
+    if (const char* e = std::getenv("STRATA_METAL_KEEP_FREE_GB")) am.keep_gb = std::atof(e);
+    if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) am.arena_gb = std::atof(e);
+    if (const char* e = std::getenv("STRATA_METAL_LEAVE_SHARE")) am.leave_share = std::atof(e);   // for measuring; the default is kLeaveShare
+    return am;
+}
 void stream_atexit() {
     if (g_stream_window) g_stream_window->stream_report(stderr);
 }
@@ -1182,9 +1211,6 @@ void stream_atexit() {
 // froze with an 89 GB arena and 7 GB left beside a 50 GB n-gram table read through the file cache; arena_budget.h);
 // STRATA_METAL_ARENA_GB sets it.
 bool Window::stream_arena(std::string& err) {
-    uint64_t phys = 0;
-    size_t len = sizeof phys;
-    sysctlbyname("hw.memsize", &phys, &len, nullptr, 0);
     const double gb = 1e9;
     if (!(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS") && std::string(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS")) == "1")) {
         const uint64_t g = strata::gpu::purge_device_allocations(32u << 20);
@@ -1192,35 +1218,16 @@ bool Window::stream_arena(std::string& err) {
                              "Metal window)\n", g / 1e9);
     }
     const double used = (double) cx_->allocated();
-    // what macOS gives now without paging anything out (arena_avail: free, purgeable, the clean file cache; not other
-    // programs' inactive memory, freed only by compressing or swapping it)
+    ArenaMem am = sample_arena_mem(*cx_, 0.0);   // arena_budget.h: the rule, testable
+    const double phys = am.phys;
+    const ProcMem pm0{am.proc_footprint, proc_mem().rss};
+    // what macOS gives now without paging anything out (host_memory.h), asked again before the arena is filled
     auto avail_now = [&]() -> double {
-        vm_statistics64_data_t vs;
-        mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
-        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt) == KERN_SUCCESS) {
-            const double pg = (double) vm_page_size;
-            return arena_avail(vs.free_count * pg, vs.purgeable_count * pg, vs.inactive_count * pg, vs.speculative_count * pg,
-                               vs.external_page_count * pg);
-        }
-        return (double) phys - (double) cx_->allocated();
+        double a = 0, p = 0;
+        return host_memory_now(a, p) ? a : phys - footprint_base(am);
     };
-    ArenaMem am;   // arena_budget.h: the rule, testable
-    am.phys = (double) phys;
-    am.working_set = (double) cx_->recommended_working_set();
-    am.allocated = used;
-    const ProcMem pm0 = proc_mem();   // everything the process holds, not only the Metal buffers (the old 67% rule missed it)
-    am.proc_footprint = pm0.footprint;
-    {   // the file cache macOS keeps before it compresses anonymous memory (a 4-byte count of pages, read into a zeroed 8)
-        unsigned long long pages = 0;
-        size_t pl = sizeof pages;
-        if (sysctlbyname("vm.vm_page_filecache_min", &pages, &pl, nullptr, 0) == 0) am.filecache_min = (double) pages * (double) vm_page_size;
-    }
-    am.available = avail_now();
     if (ss_ && ss_->ple.table && ss_->ple.table->mode() == strata::kernels::PleIo::Mmap)
         am.ple_mapped = (double) ss_->ple.table->rows() * 192.0;   // a row is at most 192 bytes (Q8_0 + its scale)
-    if (const char* e = std::getenv("STRATA_METAL_KEEP_FREE_GB")) am.keep_gb = std::atof(e);
-    if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) am.arena_gb = std::atof(e);
-    if (const char* e = std::getenv("STRATA_METAL_LEAVE_SHARE")) am.leave_share = std::atof(e);   // for measuring; the default is kLeaveShare
     const double keep = arena_keep(am);
     const double avail = am.available;
     double budget = arena_budget(am);
