@@ -489,16 +489,81 @@ open 的那一步只过滤 `ranked`，不裁剪 `hi`，所以只要最后一个 
 失败，而“多传一个 flag 就起不来”比“那张卡这轮不干活”更糟。层数 ≥ helper 数时（正常情形，
 含本模型的 40/3 = 13/13/14）走不到这条分支：`stripes.size()` 恰好等于 `devices`，那行 stderr 不打印。
 
-### 还没验的（下一阶段必须跑）
+### 验证结果（2026-10-18 远程实测，三项通过）
 
-本轮**没有构建**（远程机被另一条测量占用，禁碰）。下一阶段必须验证：
+编译通过（只有 5 个既有无害警告）。实测（`/home/Strata/bin/strata-q36`，`--no-warmup --n 32`）：
 
-1. `nvcc` 编译通过。新增 `struct HelperStripe` 和 `helper_layer_stripes()`；用到的 `<array>`
-   `<vector>` `<algorithm>`（`std::min`）都已在 `q36_engine.cu:41-64` 的 include 里。
-2. 只开 device2：`--expert-cache-device2 auto` 单独能起来（以前启动即退出），stderr 出
-   `helper CUDA2: ... experts of layers [0, 40)`。
-3. d1 + d2 的 stderr 与改动前**逐字节相同**（`[0,20)` / `[20,40)` 不变）。
-4. 无 helper flag 的默认路径 stderr 逐字节相同：`open_helpers` 里未动的那行
-   `if (devices == 0) return true;` 就返回了，新代码全部在它之后。
-5. 只开 device3（`--expert-cache-device3 auto`）同样能起来，`[0, 40)`。
-6. 正确性：helper 组与单卡输出逐位一致（沿用既有验收标准）。
+| 配置 | stderr | rc | 结论 |
+|---|---|---|---|
+| 默认（无 helper flag） | 无 helper 行、无 ZEROCOPY 提示 | 0 | 32 token 与既有基线**逐位相同** |
+| `--expert-cache-device1 auto` | `helper CUDA1: 4627 experts of layers [0, 40), 7.20 GiB` | 0 | 正常 |
+| **`--expert-cache-device2 auto`** | `helper CUDA2: 4627 experts of layers [0, 40), 7.20 GiB` | 0 | **修前不可能启动** |
+| `device1 + device2` | `[0, 20)` / `[20, 40)`，各 4627 专家 | 0 | gen 行与基线一致 |
+
+`device1+device3`、`device2+device3`、三张全开**无法在本机实测**：只有 CUDA 0/1/2 三个设备，
+`--expert-cache-device3` 指向不存在的 CUDA3。这三组由本地复现的 7 种组合算术证明（连续、不重叠、
+覆盖 [0,40)、无空 stripe、设备号 r 保留），并额外验了 n_layers=41（旧代码越界写的那个情形）、
+2 层配 3 helper、0 层。
+
+### 顺带加的防线：n_embd 必须能被 32 整除
+
+`RemoteExperts::open()` 把 q8_1 激活缓冲算成 `cap * (n_embd/32) * 36`，并把 `n_embd` 当块数
+传给 `quantize_q8_1_rows`。行宽不是 32 的倍数会在尺寸表达式里被截断、静默少分配。那个模块与
+Flash-Next 共享（它的 2560 永远整除），所以由传不同几何的引擎来检查：`open_helpers` 开头加了
+`g.n_embd % 32 != 0` 就报错退出。现有两个几何（2560 / 2048）都通过，两条路径行为不变。
+
+---
+
+## 2026-10-18 MTP 静默低接受率：根因是 MTP 头被量化成 Q4_0，不是引擎问题
+
+### 先排除的两个解释（读代码定的，不必再花运行次数）
+
+- **不是"serve 模式那个门"**：上游 issue #3008 说 serve 下 `--mtp N` 单独用无效，要 `--batch ≥ 2`
+  + `--batch-mtp`。那是 serve 模式（`E.bmtp`，`q36_engine.cu:4684`）。我们跑的是 generate 模式。
+- **不是"非 greedy 把 MTP 关了"**：generate 模式的 `Sampling` 默认 `temperature = 0`、`present = 0`
+  （`:3597`），`needs_logits()`（`:3600`）返回 false，门是**开着**的。
+
+**所以 4/27 = 15% 是真实接受率。** 接受判定是逐位精确比对：`while (a < D && hpin[2+a] == drafts[a]) ++a;`。
+
+### 根因：MTP 块的 11 个计算张量全是 Q4_0
+
+直接读 GGUF 张量表（`blk.40`，20 个张量）：
+
+| 张量 | 类型 | 形状 |
+|---|---|---|
+| attn_q / attn_k / attn_v / attn_output | **Q4_0** | [2048,8192] / [2048,512] / [2048,512] / [4096,2048] |
+| ffn_gate_exps / ffn_up_exps / ffn_down_exps | **Q4_0** | [2048,512,256] / [2048,512,256] / [512,2048,256] |
+| ffn_{gate,up,down}_shexp | **Q4_0** | — |
+| nextn.eh_proj | **Q4_0** | [4096,2048] |
+| 各 norm、ffn_gate_inp | F32 | 小张量 |
+
+主干层的格式分布（753 张量）是 `IQ4_XS ×263`、`Q8_0 ×94`、`Q5_K ×10`、`Q6_K ×5`、F32（多为 norm）。
+**MTP 头明显比主干粗**，而且 Q4_0 是每 32 值一个 FP16 scale 的朴素 4 位，无二级量化、无格点编码。
+
+上游 issue #3008 测的是 `Qwen3.6-35B-A3B-UD-Q4_K_XL`——Q4_K 带超级块二级 scale，同宽度精度
+显著高于 Q4_0。**15% 与 91% 的差距来自模型文件的 MTP 头量化，不是参数用法，也不是引擎缺陷。**
+
+### 对 100 tok/s 的结论（算术，不是估计）
+
+单步上限约 56 tok/s（主卡 17.8 ms/token；把 helper 路径完全重叠也得同一个数）。
+100 tok/s = 10.0 ms/token，所以必须每步产出 > 1.76 个 token。
+
+| 接受率 a | 草稿数 D | 每步 token = (1−a^(D+1))/(1−a) | 够 1.76 吗 |
+|---|---|---|---|
+| 0.91 | 1 | 1.91 | ✓（上游的数字） |
+| 0.15 | 1 | 1.15 | ✗ |
+| 0.15 | 5 | 1.71 | ✗，且验证窗口 T=6 让每步更贵 |
+
+**在本模型（Q4_0 MTP 头）上 100 tok/s 不可达。** 低接受率下加大 D 无济于事：每步成本随
+T = D+1 线性涨，收益只有 1 + a + a² + … 收敛到 1/(1−a)。
+
+要 100 tok/s 需要接受率 ≥ 0.8 且 D ≥ 1，即换一个 MTP 头量化为 Q4_K 或更高的模型文件。
+这不是引擎侧能改出来的。
+
+### 没测的
+
+- `--mtp 2/3/4/5` 的接受率（远程在 22:36 内存耗尽，sshd 无响应，需第二天重启）。脚本已备好：
+  `.run/mtp_sweep.sh`，远程恢复后 `bash /home/Strata/.run/mtp_sweep.sh <prompt-ids>` 一次跑完
+  N=0..5，每轮之间强制等机器空闲（engines=0 且 available ≥ 28 GiB），并用
+  `systemd-run --scope -p MemoryMax=24G` 把引擎关在 24 GiB 内，避免再把 sshd 拖死。
+- 换 Q4_K 的 MTP 头是否真能提高接受率（本机只有这一个模型文件）。
