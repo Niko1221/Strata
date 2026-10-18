@@ -212,9 +212,11 @@ function renderConvCache(c) {
   $("cc-bars").hidden = !c.enabled;
   if (c.enabled) {
     $("cc-slots-text").textContent = `${fmt(c.parked)} / ${fmt(c.slots)}`;
+    $("cc-slots-bar").hidden = c.parked == null;
     $("cc-slots-bar").style.width = pct(c.parked, c.slots);
     const budget = c.budget_mib * 1048576;
     $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
+    $("cc-mem-bar").hidden = c.bytes == null;
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
   }
   $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
