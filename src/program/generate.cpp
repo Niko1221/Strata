@@ -4671,7 +4671,14 @@ int main(int argc, char** argv) {
         if (pio.mode == strata::kernels::PleIo::Direct && !o.ple_io_explicit) {
             const strata::kernels::PleIoOptions direct_pio = pio;
             const char* auto_ram = std::getenv("STRATA_PLE_AUTO_RAM");
+#if defined(STRATA_GPU_METAL)
+            // (the Mac: the macOS RAM reading is there for the memory guard (parking, session files); this policy was
+            // measured on the PC, so on the Metal engine it stays off, as in a build that cannot read the RAM)
+            (void) auto_ram;
+            const bool allowed = false;
+#else
             const bool allowed = strata::core::ple_auto_ram_allowed(auto_ram, strata::qwen_defaults_026());
+#endif
             const uint64_t need = ple_table.table_bytes();
             const auto available = strata::core::available_host_bytes();
             uint64_t experts_ram = 0;   // every routed expert's blob, the arena the engine copies into RAM at start
