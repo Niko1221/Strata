@@ -18,11 +18,14 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         // and does nothing (measured: with and without it identical, 0.0 to +0.1%).
         // STRATA_GDN_CONVL2 is AMD-only on purpose: it is not bitwise on CUDA 13.3 sm_120 (#1522), and this table is never
         // consulted by a CUDA build.
+        // STRATA_HIP_WMMA is the RDNA4 int8-KV prompt-attention matrix-core path. It is faster on gfx1200/gfx1201,
+        // but changes the default FP32 path's last bits (same FP32-level accuracy); keep it gfx12-only and user-overridable.
         const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
         if (off12 != nullptr && off12[0] == '0') return t;
         t = {
             {"STRATA_GDN_HEAD", "1"},
             {"STRATA_GDN_PP", "2"},
+            {"STRATA_HIP_WMMA", "1"},   // RDNA4 Q8 prompt attention; measured faster, last bits differ from FP32 default
             {"STRATA_GDN_CONVL2", "1"},
             {"STRATA_GDN_NOY", "1"},
             {"STRATA_CVEC_FUSE", "1"},
@@ -72,7 +75,7 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch) {
     }
     if (!set.empty()) {
         const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);
-        std::fprintf(stderr, "strata: %s: %zu exact speed switches on by default (%s=0 turns "
+        std::fprintf(stderr, "strata: %s: %zu architecture-specific speed switches on by default (%s=0 turns "
                              "them off; a switch you set is kept): ",
                      g12 ? "gfx12 (RDNA4)" : "gfx1151 (Strix Halo)", set.size(),
                      g12 ? "STRATA_GFX12_DEFAULTS" : "STRATA_GFX1151_DEFAULTS");
