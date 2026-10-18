@@ -4378,6 +4378,25 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
                      "through pinned host rows\n", device, (long long) E.helpers[(size_t) r].resident(),
                      (long long) lo, (long long) hi, E.helpers[(size_t) r].gib());
     }
+    // STRATA_REMOTE_ZEROCOPY: by default RemoteExperts tries to map its pinned staging buffers into the helper's
+    // address space (src/core/remote_experts.cpp:236-239) so the helper can read input from, and write compact
+    // rows into, host memory without an explicit copy.  Mapping can fail (cudaHostGetDevicePointer), in which
+    // case that module already falls back to the copy path - this hint only speaks when the variable has not been
+    // set to 0.  The mapped path only pays off when host-mapped access from the helper is cheap; on a box with
+    // no usable peer path between the primary and the helpers it is slower than a copy, and
+    // STRATA_REMOTE_ZEROCOPY=0 - an existing, supported path - is then the faster one.  Nothing probes that here:
+    // cudaDeviceCanAccessPeer can report success on a topology where the real mapped access is still slow, so the
+    // hint states the condition and leaves the call to whoever knows the box.  Printed only when at least one
+    // helper was opened (no helper flags: byte-identical stderr), once, and not when the variable already says 0 -
+    // the same parse that module uses for the env side of the decision, mirrored rather than reaching into its
+    // private state.
+    {
+        const char* zc = std::getenv("STRATA_REMOTE_ZEROCOPY");
+        if (!(zc != nullptr && zc[0] == '0'))
+            std::fprintf(stderr, "strata-q36: helpers default to mapped host memory when the mapping succeeds: if "
+                         "this box has no usable peer path between CUDA0 and the helper GPUs, set "
+                         "STRATA_REMOTE_ZEROCOPY=0 - copying to device memory is then faster\n");
+    }
     // the layer -> helper map (the MTP block's layer, if any, stays local: its window is one draft step)
     E.helper_of_layer.assign((size_t) g.n_layers, -1);
     {
