@@ -4385,6 +4385,15 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     const auto& g = m.g;
     const int devices = (want[0] > 0 ? 1 : 0) + (want[1] > 0 ? 1 : 0) + (want[2] > 0 ? 1 : 0);
     if (devices == 0) return true;
+    // RemoteExperts::open() sizes a helper's q8_1 activation buffer as cap * (n_embd / 32) * 36 and hands n_embd
+    // to quantize_q8_1_rows, which reads it as a block count - so a width that is not a multiple of 32 would
+    // truncate here and under-allocate there, silently.  That module's own range check does not test this (it is
+    // shared with Flash-Next, whose 2560 is always exact), so the engine that passes a different geometry checks it.
+    if (g.n_embd <= 0 || g.n_embd % 32 != 0) {
+        err = "helper experts: n_embd " + std::to_string(g.n_embd) +
+              " is not a multiple of 32 (the helper's q8_1 activation blocks are 32 values wide)";
+        return false;
+    }
     // the per-layer table, from each layer's own layout (never a model-level guess): gu_type / d_type / n_embd /
     // n_ff are read per layer, so a model whose layers differ is sized per layer too.  The helper layout table
     // covers the MAIN layers only: the MTP block's experts stay on the primary (its window is one draft step,
