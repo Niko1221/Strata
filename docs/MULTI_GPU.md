@@ -134,6 +134,15 @@ cache at 3072 MiB, the engine answered a request in 1.1 s.  With the cache whole
 true` and `false` give the same cache (20 091 slots, 33 037 MiB) and 106.6 vs 106.4 tok/s (512-token greedy decode,
 `"parallel": 2`) - the segments cost nothing while nothing is handed away.
 
+The same split on the IQ3_S build with the native pack, `"parallel": 2`, one request at a time (`tools/serve_load.py`,
+256 tokens per answer, greedy, median of 3 rounds, the same requests in every arm, the arms run in the order named):
+asking GPU 1 to keep 8000 MiB free took its cache from 14 848 to 7 680 MiB (7 259 -> 3 742 slots) and left its decode
+where it was (88.9 against 89.9 tok/s, the arms' spreads overlap); doing both cards at once (GPU 0 15 872 -> 8 704
+MiB as well) read 5 % lower (85.7), which is inside the swing this tool shows at one request, so call it unseparated.
+`{"reserve_mib": null}` put both caches back to the slot counts they started with (8 613 and 7 259); the calls took
+55 ms to shrink and about 1.1 s to grow back.  The first arm is the coldest and the
+last the warmest, so read the first two as upper bounds on what handing that much away costs on this box.
+
 **Sizing the reserve for a CUDA program on the other card (measured on 2x RTX 3090, driver 595.71.05).** A second
 CUDA client costs 305 MiB before it allocates anything: `torch.cuda.init()` and its first tensor took the card from
 23505 to 23810 MiB used.  It fails in `cuDevicePrimaryCtxRetain` with CUDA_ERROR_OUT_OF_MEMORY at 80 MiB free and
