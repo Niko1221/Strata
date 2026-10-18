@@ -1,5 +1,6 @@
 // Vendored from mx-llama.cpp (github.com/mxxm-t/mx-llama.cpp, MIT) ggml/src/ggml-cuda/q8_repack/repack-kernels.cuh at c4d12e2c;
-// only the include paths are changed (Strata compiles against ggml-cuda of llama.cpp 3cf0325).
+// changes: the include paths (Strata compiles against ggml-cuda of llama.cpp 3cf0325), and the GEMM's split-scale sum
+// in MMQ's q8_0_16 order for a trait with split_mmq16 (Strata's IQ2_S, repack-iq3.cuh).
 // Device kernels and helpers for the Q8_0 repacked-weight path (AMD GCN only). MMV
 // and GEMM are templated on HAS_IDS so dense and MoE host paths share identical device
 // code. All __global__ kernels and __device__ functions use
@@ -10,6 +11,13 @@
 #include "mmq.cuh"
 #include "unary.cuh"
 #include "repack-common.cuh"
+
+#include <type_traits>
+
+// Strata: a trait's split_mmq16 (default false) - its per-16 halves summed as dx * (d_lo * lo + d_hi * hi)
+template <ggml_type T, typename = void> struct rp_split_mmq16 : std::false_type {};
+template <ggml_type T>
+struct rp_split_mmq16<T, std::void_t<decltype(rp_traits<T>::split_mmq16)>> : std::bool_constant<rp_traits<T>::split_mmq16> {};
 
 struct repack_tile_meta {
     uint32_t expert;
@@ -833,7 +841,12 @@ static __device__ void mmq_gemm_repacked_impl(
                             hi = ggml_cuda_dp4a((int) whi_c.y, xq32[n][5], hi);
                             hi = ggml_cuda_dp4a((int) whi_c.z, xq32[n][6], hi);
                             hi = ggml_cuda_dp4a((int) whi_c.w, xq32[n][7], hi);
-                            if constexpr (rp_traits<WT>::split_scales) {
+                            if constexpr (rp_split_mmq16<WT>::value) {
+                                // vec_dot_q8_0_16_q8_1_impl's statements
+                                float sf = dlo * (float) lo;
+                                sf += dhi * (float) hi;
+                                acc[r][n] += dx[n] * sf;
+                            } else if constexpr (rp_traits<WT>::split_scales) {
                                 // Per-16-value scales (Q6_K): each half gets its own.
                                 acc[r][n] += dlo * dx[n] * (float) lo + dhi * dx[n] * (float) hi;
                             } else {

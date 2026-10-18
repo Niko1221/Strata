@@ -231,11 +231,123 @@ bool check_gather(std::mt19937& rng) {
     return ok;
 }
 
+// `rp_expert_bench types [R ...]`: llama.cpp's MMQ per weight type at one group's gate/up and down shapes (the GSQ-RCO
+// IQ3_S file's expert formats against IQ4_NL and Q8_0), and the repacked GEMM where it has the type.  Random blocks
+// with a small f16 d at each block's start (every type here keeps d first).  Time only.
+void time_types(int R, std::mt19937& rng) {
+    constexpr int E = 16;
+    const int T = E * R;
+    struct Ty { const char* name; int type, qk; bool rp; };
+    const Ty tys[] = {{"IQ3_XXS", 18, 256, true}, {"IQ2_S", 22, 256, true}, {"IQ3_S", 21, 256, true},
+                      {"IQ4_NL", kIq4nl, 32, true}, {"Q8_0", 8, 32, true}};
+    for (const Case& c : {Case{"gate/up", 1280, 2560}, Case{"down", 2560, 640}}) {
+        std::vector<float> x((size_t) T * c.cols);
+        std::normal_distribution<float> nd(0.f, 1.f);
+        for (auto& v : x) v = nd(rng);
+        float* dx; void* dq; float* dst; int32_t *dids, *db;
+        ck(cudaMalloc(&dx, x.size() * 4), "x"); ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
+        ck(cudaMalloc(&dq, mmq::q8_bytes(T, c.cols)), "xq");
+        ck(cudaMalloc(&dst, (size_t) T * c.rows * 4), "dst");
+        ck(cudaMalloc(&dids, (size_t) T * 4), "ids"); ck(cudaMalloc(&db, (E + 1) * 4), "bounds");
+        std::vector<int32_t> bounds(E + 1);
+        for (int e = 0; e <= E; ++e) bounds[e] = e * R;
+        ck(cudaMemcpy(db, bounds.data(), (E + 1) * 4, cudaMemcpyHostToDevice), "bounds");
+        mmq::iota(dids, T, nullptr);
+        for (const Ty& t : tys) {
+            if (c.cols % t.qk) continue;
+            const size_t per = mmq::matrix_bytes(t.type, c.rows, c.cols);
+            const size_t bb = mmq::matrix_bytes(t.type, 1, t.qk);
+            std::vector<uint8_t> w((size_t) E * per + 4096);
+            std::uniform_int_distribution<int> byte(0, 255);
+            for (auto& b : w) b = (uint8_t) byte(rng);
+            for (size_t i = 0; i < (size_t) E * per / bb; ++i) {
+                const uint16_t d = 0x2000 + (uint16_t) byte(rng);
+                std::memcpy(w.data() + i * bb, &d, 2);
+            }
+            std::fill(w.end() - 4096, w.end(), 0);
+            uint8_t* dw;
+            ck(cudaMalloc(&dw, w.size()), "w"); ck(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
+            mmq::quantize(dx, nullptr, dq, t.type, c.cols, c.cols, T, nullptr);
+            mmq::Product p;
+            p.w = dw; p.type = t.type; p.w_rows = c.rows; p.w_cols = c.cols; p.expert_bytes = per; p.n = E;
+            p.xq = dq; p.bounds = db; p.ids = dids; p.total_rows = T; p.max_rows = R; p.dst = dst; p.ld_dst = c.rows;
+            mmq::Context mctx;
+            const float t_mmq = median_ms(25, [&] { mctx.run(p, nullptr); });
+            const double gb = (double) E * per / 1e9;
+            std::printf("  R %4d  %-8s %-8s mmq %7.3f ms (%5.0f GB/s of weights)", R, c.name, t.name, t_mmq, gb / (t_mmq / 1e3));
+            if (t.rp && (rp::dense_supported(t.type, c.rows, c.cols) || rp::supported(t.type, c.rows, c.cols))) {
+                const size_t rper = rp::matrix_bytes(t.type, c.rows, c.cols);
+                uint8_t* drw;
+                float* dst2;
+                ck(cudaMalloc(&drw, (size_t) E * rper), "rw");
+                ck(cudaMalloc(&dst2, (size_t) T * c.rows * 4), "dst2");
+                const float t_rep = median_ms(5, [&] { rp::repack(t.type, dw, per, drw, rper, c.rows, c.cols, E, nullptr); });
+                mmq::Product q = p;
+                q.w = drw; q.expert_bytes = rper; q.dst = dst2;
+                rp::Context rctx;
+                mctx.run(p, nullptr);
+                rctx.run(q, nullptr);
+                std::vector<float> ha((size_t) T * c.rows), hb(ha.size());
+                ck(cudaMemcpy(ha.data(), dst, ha.size() * 4, cudaMemcpyDeviceToHost), "a");
+                ck(cudaMemcpy(hb.data(), dst2, hb.size() * 4, cudaMemcpyDeviceToHost), "b");
+                size_t diff = 0;
+                double amax = 0, dmax = 0;
+                for (size_t i = 0; i < ha.size(); ++i) {
+                    diff += std::memcmp(&ha[i], &hb[i], 4) != 0;
+                    amax = std::max(amax, (double) std::fabs(ha[i]));
+                    dmax = std::max(dmax, std::fabs((double) ha[i] - hb[i]));
+                }
+                const float t_rp = median_ms(25, [&] { rctx.run(q, nullptr); });
+                const float t_set = median_ms(5, [&] { cudaMemsetAsync(drw, 0, (size_t) E * rper, nullptr); });
+                if (c.rows == 1280 && t.type != kIq4nl && t.type != 8) {   // the prompt path's gate/up gather: blob = [gate | up]
+                    mmq::GatherGroup gg;
+                    for (int e = 0; e < E; ++e) gg.blob[e] = dw + (size_t) e * per;
+                    gg.first = 0; gg.n = E;
+                    uint8_t* dgw;
+                    ck(cudaMalloc(&dgw, (size_t) E * rper), "gw");
+                    const float t_g = median_ms(5, [&] { rp::gather_group_gu(gg, t.type, per / 2, c.cols, c.rows / 2, dgw, rper, nullptr); });
+                    rp::repack(t.type, dw, per, drw, rper, c.rows, c.cols, E, nullptr);
+                    std::vector<uint8_t> ga((size_t) E * rper), gb2(ga.size());
+                    ck(cudaMemcpy(ga.data(), drw, ga.size(), cudaMemcpyDeviceToHost), "ga");
+                    ck(cudaMemcpy(gb2.data(), dgw, gb2.size(), cudaMemcpyDeviceToHost), "gb");
+                    size_t gd = 0;   // the row padding is not written by either
+                    const size_t rs = (size_t) c.cols + (c.cols % 128 == 0 ? 16 : 0);
+                    for (size_t i = 0; i < ga.size(); ++i) {
+                        const size_t o = i % rper;
+                        if (o < (size_t) c.rows * rs && o % rs >= (size_t) c.cols) continue;
+                        gd += ga[i] != gb2[i];
+                    }
+                    std::printf("  [gather %.3f ms, %s]", t_g, gd ? "DIFFERS from repack" : "= repack");
+                    cudaFree(dgw);
+                }
+                std::printf("  [memset of %.0f MB %.3f ms]", (double) E * rper / 1e6, t_set);
+                std::printf("  rp %7.3f ms (%+4.0f%%)  expand %6.3f ms  %s", t_rp, 100.0 * (t_mmq / t_rp - 1.0), t_rep,
+                            diff ? "" : "bitwise");
+                if (diff) std::printf("%zu of %zu differ, max|rp-mmq|/max|mmq| %.2e", diff, ha.size(), dmax / std::max(amax, 1e-30));
+                cudaFree(drw);
+                cudaFree(dst2);
+            }
+            std::printf("\n");
+            cudaFree(dw);
+        }
+        cudaFree(dx); cudaFree(dq); cudaFree(dst); cudaFree(dids); cudaFree(db);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (!rp::built()) {
         std::printf("rp_expert_bench: this build has no repacked GEMM (gfx906 only)\n");
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "types") == 0) {
+        std::mt19937 rng(7);
+        std::vector<int> Rs;
+        for (int i = 2; i < argc; ++i) Rs.push_back(std::atoi(argv[i]));
+        if (Rs.empty()) Rs = {80, 160};
+        std::printf("rp_expert_bench types: 16 experts a launch, medians of 25\n");
+        for (int R : Rs) time_types(R, rng);
         return 0;
     }
     std::vector<int> Rs;
