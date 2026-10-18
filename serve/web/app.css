@@ -92,6 +92,14 @@ main { flex: 1; min-height: 0; display: flex; }
 .slot-row .slot-state { font: 12px var(--st-font-mono); color: var(--st-ink-muted); white-space: nowrap; }
 .slot-row[data-s="reading"] .slot-state, .slot-row[data-s="decoding"] .slot-state, .slot-row[data-s="generating"] .slot-state { color: var(--st-ink); }
 .slot-extra { font-size: var(--st-fs-sm); color: var(--st-ink-muted); margin-top: var(--st-s-1); }
+/* batch-slot dots: one per slot on the head row, right-aligned, fixed height (#465 follow-up) */
+.slot-dots { margin-left: auto; display: inline-flex; align-items: center; gap: var(--st-s-2); }
+.slot-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--st-ink-muted); opacity: .45;
+            transition: background var(--st-dur) var(--st-ease), opacity var(--st-dur) var(--st-ease); }
+.slot-dot[data-s="reading"] { background: var(--st-info); opacity: 1; animation: blink 1.2s steps(2) infinite; }
+.slot-dot[data-s="generating"] { background: var(--st-accent); opacity: 1; animation: blink 1.2s steps(2) infinite; }
+.slot-dot[data-s="queued"] { background: var(--st-warn); opacity: 1; }
+.slot-dot[data-s="error"] { background: var(--st-danger); opacity: 1; }
 .state-card__head { display: flex; align-items: center; gap: var(--st-s-4); flex-wrap: wrap; }
 .badges { display: flex; gap: var(--st-s-2); flex-wrap: wrap; }
 .badges .st-badge { opacity: .38; transition: opacity var(--st-dur); }

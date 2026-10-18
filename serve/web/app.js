@@ -285,13 +285,27 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       return `<div class="slot-row" data-s="${st}"><span class="slot-name">slot ${s.slot}</span>` +
              `<div class="slot-bar"><div style="width:${bar}%"></div></div><span class="slot-state">${info}</span></div>`;
     }).join("");
-    const extras = [];
-    if (extra > 0) extras.push(`${fmt(extra)} on the solo path`);
-    if (live.waiting) extras.push(`${fmt(live.waiting)} waiting for a slot`);
-    if (live.queued) extras.push(`${fmt(live.queued)} queued`);
-    if (extras.length) html += `<div class="slot-extra">${extras.join(" · ")}</div>`;
     grid.innerHTML = html;
   } else grid.hidden = true;
+
+  // one dot per batch slot on the head row (right-aligned, no text): the page height never changes
+  // when requests come and go; hovering a dot shows what that slot is doing. The dot count follows
+  // the engine's slot count (live.slots, i.e. --batch / parallel), never --spec.
+  const dots = $("slot-dots");
+  if (slots.length) {
+    const notes = [];
+    if (extra > 0) notes.push(`${fmt(extra)} on the solo path`);
+    if (live.waiting) notes.push(`${fmt(live.waiting)} waiting for a slot`);
+    if (live.queued) notes.push(`${fmt(live.queued)} queued`);
+    dots.hidden = false;
+    dots.innerHTML = slots.map((s) => {
+      const st = s.state === "decoding" ? "generating" : s.state;
+      const tip = s.state === "reading" ? `slot ${s.slot}: reading ${fmt(s.prompt_tokens)} tok`
+        : s.state === "decoding" ? `slot ${s.slot}: ${fmt(s.generated)} tok, ${s.tok_s != null ? fmt(s.tok_s, 1) : "–"} t/s`
+        : s.held_tokens ? `slot ${s.slot}: idle, holds ${fmt(s.held_tokens)}` : `slot ${s.slot}: idle`;
+      return `<span class="slot-dot" data-s="${st}" title="${tip}"></span>`;
+    }).join("") + (notes.length ? `<span class="slot-dot" data-s="queued" title="${notes.join(" · ")}"></span>` : "");
+  } else dots.hidden = true;
 
   // the eight cards
   const speed = live.state === "generating" ? live.tok_s : last ? last.decode_tok_s : null;
