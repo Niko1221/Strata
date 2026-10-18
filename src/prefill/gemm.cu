@@ -1300,7 +1300,7 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
     // STRATA_DENSE_RP=1: an IQ4_NL weight repacked once into rp_w_ for mx's repacked GEMM (the same products as MMQ,
     // bitwise); ~0.1 ms of a ~9 ms 4096-token product, and no resident copy
     namespace rp = strata::prefill::rp;
-    const bool use_rp = rp::dense_enabled() && rp::supported(type, N, K);
+    const bool use_rp = rp::dense_enabled() && rp::dense_supported(type, N, K);
     size_t rp_bytes = 0;
     if (use_rp) {
         rp_bytes = rp::matrix_bytes(type, N, K);
@@ -1317,9 +1317,9 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
         }
         if (!rp_ctx_) {
             rp_ctx_ = new rp::Context();
-            std::fprintf(stderr, "prefill gemm: dense IQ4_NL through the repacked GEMM (STRATA_DENSE_RP=1)\n");
+            std::fprintf(stderr, "prefill gemm: dense projections through the repacked GEMM (STRATA_DENSE_RP=1)\n");
         }
-        rp::repack_iq4nl(W, mmq::matrix_bytes(type, N, K), rp_w_, rp_bytes, N, K, 1, stream_);
+        rp::repack(type, W, mmq::matrix_bytes(type, N, K), rp_w_, rp_bytes, N, K, 1, stream_);
     }
 
     for (int64_t r0 = 0; r0 < T; r0 += R) {

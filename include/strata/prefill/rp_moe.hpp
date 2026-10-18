@@ -16,14 +16,23 @@ namespace strata::prefill::rp {
 bool built();
 /// STRATA_PF_RP=1 and built(): the prompt path's IQ4_NL products take the repacked GEMM.
 bool enabled();
-/// STRATA_DENSE_RP=1 and built(): under STRATA_DENSE_MMQ=1, a dense IQ4_NL projection takes the repacked GEMM (its
-/// weight repacked into a scratch per call, Gemm::native_mmq) instead of llama.cpp's MMQ.  The same products, bitwise.
+/// STRATA_DENSE_RP=1 and built(): under STRATA_DENSE_MMQ=1, a dense projection of a dense_supported type takes the repacked GEMM (its
+/// weight repacked into a scratch per call, Gemm::native_mmq) instead of llama.cpp's MMQ.  IQ4_NL / Q8_0: the same
+/// products, bitwise; the K-quants sum in another order (the same error against an FP64 reference).
 bool dense_enabled();
 /// STRATA_PF_RP=1 or 2: the group buffers are sized for repacked slots (2: sized so, products still MMQ - the A/B
 /// that separates the GEMM from the memory plan's change).
 bool sized();
 /// The repacked GEMM covers this ggml type and shape (IQ4_NL; cols a multiple of 128, rows of 64).
 bool supported(int ggml_type, int64_t w_rows, int64_t w_cols);
+/// The repacked GEMM covers this type as a dense projection (Gemm::native_mmq, STRATA_DENSE_RP=1): IQ4_NL and Q8_0
+/// (cols a multiple of 128), Q6_K and Q5_K (cols a multiple of 256; Q4_K stays on MMQ, faster there); rows a multiple of 64.  The expert path
+/// takes `supported` (IQ4_NL only: its gather writes that layout alone).
+bool dense_supported(int ggml_type, int64_t w_rows, int64_t w_cols);
+/// `n` GGUF matrices of [rows, cols] of a dense_supported type (`src_stride` bytes apart) into the repacked layout
+/// `dst_stride` apart: mx-llama.cpp's device repack kernels (src/prefill/rp/repack-convert.cuh).
+void repack(int ggml_type, const void* src, size_t src_stride, void* dst, size_t dst_stride, int64_t rows, int64_t cols,
+            int n, void* stream);
 /// Bytes of one [rows, cols] matrix in the repacked layout (mx's repack_gcn_nbytes; a little over the GGUF size:
 /// rows whose nibble bytes are a multiple of 128 get 16 bytes of de-alias padding).
 size_t matrix_bytes(int ggml_type, int64_t rows, int64_t cols);
