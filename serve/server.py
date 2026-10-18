@@ -3112,6 +3112,7 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.report_dropped_tool_calls = False        # #211 (opt-in): a whole answer names the cut calls it left out
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -4926,7 +4927,7 @@ def _is_json(text: str) -> bool:
         return False
 
 
-def openai_collect(chunks) -> dict:
+def openai_collect(chunks, report_dropped: bool = False) -> dict:
     content, reasoning, by_index, last, mcp = [], [], {}, None, []
     for c in chunks:
         if c is None:                              # a heartbeat
@@ -4944,8 +4945,9 @@ def openai_collect(chunks) -> dict:
             cur["function"]["name"] += fn.get("name") or ""
             cur["function"]["arguments"] += fn.get("arguments") or ""
         last = c
-    calls = [by_index[i] for i in sorted(by_index)]
+    calls, dropped = [by_index[i] for i in sorted(by_index)], []
     if last["choices"][0]["finish_reason"] != "tool_calls":
+        dropped = [c for c in calls if not _is_json(c["function"]["arguments"])]
         calls = [c for c in calls if _is_json(c["function"]["arguments"])]   # a call the output ended inside (#211)
     msg = {"role": "assistant", "content": "".join(content) or None}
     if "".join(reasoning):
@@ -4954,6 +4956,9 @@ def openai_collect(chunks) -> dict:
         msg["tool_calls"] = calls
     if mcp:
         msg["strata_mcp"] = mcp
+    if dropped and report_dropped:                 # so a client can tell "lost a call" from "finished" (#211, opt-in)
+        msg["strata_dropped_tool_calls"] = [{"name": c["function"]["name"], "arguments_chars": len(c["function"]["arguments"])}
+                                            for c in dropped]
     out = {"id": last["id"], "object": "chat.completion", "created": last["created"], "model": last["model"],
            "choices": [{"index": 0, "message": msg, "finish_reason": last["choices"][0]["finish_reason"]}],
            "usage": last["usage"]}
@@ -5966,7 +5971,7 @@ def make_handler(svc: Service):
                 chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
-                return self._json(200, openai_collect(chunks))
+                return self._json(200, openai_collect(chunks, report_dropped=svc.report_dropped_tool_calls))
             self._sse()
             try:
                 for c in chunks:
@@ -6952,6 +6957,7 @@ def main() -> int:
         svc.model_arch = cfg.get("arch") or "qwen4exp"
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    svc.report_dropped_tool_calls = cfg.get("report_dropped_tool_calls") is True    # #211: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)

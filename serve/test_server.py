@@ -1280,6 +1280,25 @@ class UnfinishedToolCall(unittest.TestCase):
                 self.assertEqual([c["id"] for c in msg["tool_calls"]], want)
         msg = openai_collect([chunk({"tool_calls": [cut]}), chunk({}, "stop")])["choices"][0]["message"]
         self.assertNotIn("tool_calls", msg)
+        self.assertNotIn("strata_dropped_tool_calls", msg)          # off by default: the answer is as before
+
+    def test_collect_names_the_dropped_calls_when_asked(self):
+        """"report_dropped_tool_calls": true in the config: the whole answer says which cut calls it left out."""
+        from serve.server import openai_collect
+
+        def chunk(delta, finish=None):
+            return {"id": "c", "created": 1, "model": "m", "usage": {},
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        whole = {"index": 0, "id": "a", "type": "function", "function": {"name": "f", "arguments": '{"x": 1}'}}
+        cut = {"index": 1, "id": "b", "type": "function", "function": {"name": "g", "arguments": '{"y": "ha'}}
+        for finish, want in (("stop", [{"name": "g", "arguments_chars": 9}]),
+                             ("length", [{"name": "g", "arguments_chars": 9}]), ("tool_calls", None)):
+            with self.subTest(finish=finish):
+                msg = openai_collect([chunk({"tool_calls": [whole]}), chunk({"tool_calls": [cut]}), chunk({}, finish)],
+                                     report_dropped=True)["choices"][0]["message"]
+                self.assertEqual(msg.get("strata_dropped_tool_calls"), want)
+        msg = openai_collect([chunk({"tool_calls": [whole]}), chunk({}, "stop")], report_dropped=True)
+        self.assertNotIn("strata_dropped_tool_calls", msg["choices"][0]["message"])
 
     def test_a_whole_call(self):
         whole = {"path": "notes.txt", "content": "all of it"}

@@ -924,6 +924,11 @@ print(r.choices[0].message.content)
   second call's parameters merge into the first). Anything else in those forms stays the text it is. Measured on
   1,462 agent turns (Qwen3.8 under Claude Code, from signalnine/q27's drift corpus): 98.3% read as intended with it,
   92.9% without. Off by default, so what a client gets back is unchanged unless you turn it on.
+- **Tool calls the output ended inside (#211, opt-in report).** A whole (non-streamed) OpenAI answer that ends in the
+  middle of a tool call leaves that call out, since many SDKs run any call present. `"report_dropped_tool_calls": true`
+  in `strata-<model>.json` adds `strata_dropped_tool_calls` to the message: the name and the length (in characters) of
+  the arguments of each call left out, so a client can tell an answer that lost a call from one that finished. Off by
+  default.
 - **opencode's environment block in the user turn (opt-in).** opencode writes an `<env>` block (working directory,
   today's date) near the start of its system message, ahead of ~40K characters of instructions and tool definitions that
   are the same in every session. The prefix cache only reuses a prompt's start, so every new folder and every new day
