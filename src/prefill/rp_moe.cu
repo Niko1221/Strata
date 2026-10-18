@@ -10,6 +10,7 @@
 #include "rp/repack-kernels.cuh"
 #include "rp/repack-convert.cuh"
 #include "rp/repack-iq4xs.cuh"
+#include "rp/repack-iq3.cuh"
 #endif
 
 namespace strata::prefill::rp {
@@ -94,6 +95,40 @@ __global__ void gather_group_iq4nl_kernel(GroupBlobs gb, int first, int64_t up_o
     }
 }
 
+// The gate/up part of a group gather for a codebook type (rp/repack-iq3.cuh): blockIdx.y = expert (from `first`), one
+// thread per 32-value sub-block of its gate rows (from +0) and up rows (from +up_off).
+template <ggml_type T>
+__global__ void gather_group_iq3_kernel(GroupBlobs gb, int first, int64_t up_off, int64_t n_embd, int64_t n_ff,
+                                        uint8_t* __restrict__ gu_dst, size_t gu_stride) {
+    const int q = first + (int) blockIdx.y;
+    const uint8_t* blob = gb.blob[q];
+    // 32-bit index math (see repack_iq3_kernel)
+    const uint32_t n_sub = (uint32_t) (n_embd / 32), rows = (uint32_t) (2 * n_ff), total = rows * n_sub,
+                   qs_str = (uint32_t) repack_qs_stride(n_embd), nf = (uint32_t) n_ff;
+    const size_t row_bytes = (size_t) (n_sub / 8) * rp_iq3_block_bytes<T>();
+    uint8_t* m = gu_dst + (size_t) q * gu_stride;
+    // the codebook in LDS (rp_iq3_grid_lds); staging the GGUF bytes or the int8 rows through LDS as well measured slower
+    // (rp_expert_bench types: 0.18-0.29 against 0.14 ms a 16-expert group)
+    const auto* grid = rp_iq3_grid_lds<T>();
+    for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < total; i += gridDim.x * blockDim.x) {
+        const uint32_t row = i / n_sub, sb = i - row * n_sub;
+        const uint8_t* src = row < nf ? blob + row * row_bytes : blob + up_off + (row - nf) * row_bytes;
+        rp_iq3_put<T>(src + (sb / 8) * rp_iq3_block_bytes<T>(), (int) (sb % 8), m, rows, qs_str, n_sub, row, sb, grid);
+    }
+}
+
+static_assert(rp_split_mmq16<GGML_TYPE_IQ2_S>::value && !rp_split_mmq16<GGML_TYPE_Q6_K>::value);
+
+bool is_iq3(int t) { return t == GGML_TYPE_IQ3_XXS || t == GGML_TYPE_IQ3_S || t == GGML_TYPE_IQ2_S; }
+
+// STRATA_PF_RP_IQ3 under STRATA_PF_RP=1: which codebook gate/up take the repacked GEMM - unset: IQ3_XXS and IQ3_S, 0:
+// none (the A/B of that part alone), 2: IQ2_S too (rp_expert_bench types, 16 experts at R 80: its GEMM +14% against
+// MMQ, less than the expansion's cost; IQ3_XXS +36%, IQ3_S +51%)
+bool iq3_on(int t) {
+    static const int m = [] { const char* v = std::getenv("STRATA_PF_RP_IQ3"); return v ? std::atoi(v) : 1; }();
+    return m != 0 && (t != GGML_TYPE_IQ2_S || m == 2);
+}
+
 __global__ void iota_kernel(int32_t* dst, int64_t n) {
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
         dst[i] = (int32_t) i;
@@ -133,7 +168,9 @@ bool dense_enabled() {
 }
 
 bool supported(int t, int64_t w_rows, int64_t w_cols) {
-    return t == GGML_TYPE_IQ4_NL && w_cols % 128 == 0 && w_rows % MMQ_RP_Q8_BM == 0;
+    if (w_rows % MMQ_RP_Q8_BM != 0) return false;
+    if (t == GGML_TYPE_IQ4_NL) return w_cols % 128 == 0;
+    return is_iq3(t) && iq3_on(t) && w_cols % 256 == 0;
 }
 
 bool dense_supported(int t, int64_t w_rows, int64_t w_cols) {
@@ -149,6 +186,7 @@ bool dense_supported(int t, int64_t w_rows, int64_t w_cols) {
 
 size_t matrix_bytes(int t, int64_t rows, int64_t cols) {
     if (t == GGML_TYPE_IQ4_XS) return rp_iq4xs_nbytes(cols, rows);   // Strata's extension (rp/repack-iq4xs.cuh)
+    if (is_iq3(t)) return rp_iq3_nbytes((ggml_type) t, cols, rows);  // and rp/repack-iq3.cuh
     return repack_gcn_nbytes((ggml_type) t, cols, rows);
 }
 
@@ -159,10 +197,13 @@ void repack(int t, const void* src_v, size_t src_stride, void* dst_v, size_t dst
     const uint8_t* src = (const uint8_t*) src_v;
     uint8_t* dst = (uint8_t*) dst_v;
     const int64_t n_blocks = ne0 / 32,
-                  qs_str = t == GGML_TYPE_IQ4_XS ? repack_qs_stride(ne0 / 2) : repack_qs_row_stride((ggml_type) t, ne0);
+                  qs_str = t == GGML_TYPE_IQ4_XS ? repack_qs_stride(ne0 / 2)
+                         : is_iq3(t)            ? repack_qs_stride(ne0)
+                                                : repack_qs_row_stride((ggml_type) t, ne0);
     const int64_t n_out = (int64_t) n * ne1 * n_blocks;
     const int block = 256, grid = (int) std::min<int64_t>((n_out + block - 1) / block, 65535);
     const int64_t ss = (int64_t) src_stride, ds = (int64_t) dst_stride;
+    const dim3 iq3_grid((unsigned) std::min<int64_t>((ne1 * n_blocks + block - 1) / block, 1024), (unsigned) n);
     switch (t) {
         case GGML_TYPE_Q8_0:
             repack_q8_0_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, ne1 * qs_str, ss, ds, n_out);
@@ -186,6 +227,18 @@ void repack(int t, const void* src_v, size_t src_stride, void* dst_v, size_t dst
         } break;
         case GGML_TYPE_IQ4_XS:
             repack_iq4xs_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, ne1 * qs_str, ss, ds, n_out);
+            break;
+        case GGML_TYPE_IQ3_XXS:
+            repack_iq3_kernel<GGML_TYPE_IQ3_XXS><<<iq3_grid, block, 0, s>>>(src, dst, (uint32_t) ne1, (uint32_t) n_blocks,
+                                                                        (uint32_t) qs_str, src_stride, dst_stride);
+            break;
+        case GGML_TYPE_IQ3_S:
+            repack_iq3_kernel<GGML_TYPE_IQ3_S><<<iq3_grid, block, 0, s>>>(src, dst, (uint32_t) ne1, (uint32_t) n_blocks,
+                                                                        (uint32_t) qs_str, src_stride, dst_stride);
+            break;
+        case GGML_TYPE_IQ2_S:
+            repack_iq3_kernel<GGML_TYPE_IQ2_S><<<iq3_grid, block, 0, s>>>(src, dst, (uint32_t) ne1, (uint32_t) n_blocks,
+                                                                        (uint32_t) qs_str, src_stride, dst_stride);
             break;
         default:
             std::fprintf(stderr, "prefill rp: no repack for type %d\n", t);
@@ -218,6 +271,50 @@ void gather_group_iq4nl(const mmq::GatherGroup& g, size_t up_off, size_t down_of
     ck(cudaGetLastError(), "gather_group_iq4nl");
 }
 
+void gather_group_gu(const mmq::GatherGroup& g, int gu_type, size_t up_off, int64_t n_embd, int64_t n_ff, void* gu_dst,
+                     size_t gu_stride, void* stream) {
+    if (g.first < 0 || g.n <= g.first || g.n > mmq::kGatherGroupMax) return;
+    if (gu_type == GGML_TYPE_IQ4_NL) {
+        gather_group_iq4nl(g, up_off, 0, n_embd, n_ff, gu_dst, gu_stride, nullptr, 0, stream);
+        return;
+    }
+    GroupBlobs gb{};
+    for (int q = g.first; q < g.n; ++q) gb.blob[q] = g.blob[q];
+    const int64_t total = 2 * n_ff * (n_embd / 32);
+    // blocks per expert: IQ2_S's 8 KB codebook copy per block wants fewer, longer-running blocks (64: 0.14 against
+    // 0.19 ms at 1024); the 1-2 KB ones do best with one pass a block
+    const int64_t gx_max = gu_type == GGML_TYPE_IQ2_S ? 64 : 1024;
+    const dim3 grid((unsigned) std::min<int64_t>((total + 255) / 256, gx_max), (unsigned) (g.n - g.first));
+    const cudaStream_t s = (cudaStream_t) stream;
+    switch (gu_type) {
+        case GGML_TYPE_IQ3_XXS:
+            gather_group_iq3_kernel<GGML_TYPE_IQ3_XXS><<<grid, 256, 0, s>>>(gb, g.first, (int64_t) up_off, n_embd, n_ff,
+                                                                            (uint8_t*) gu_dst, gu_stride);
+            break;
+        case GGML_TYPE_IQ3_S:
+            gather_group_iq3_kernel<GGML_TYPE_IQ3_S><<<grid, 256, 0, s>>>(gb, g.first, (int64_t) up_off, n_embd, n_ff,
+                                                                          (uint8_t*) gu_dst, gu_stride);
+            break;
+        case GGML_TYPE_IQ2_S:
+            gather_group_iq3_kernel<GGML_TYPE_IQ2_S><<<grid, 256, 0, s>>>(gb, g.first, (int64_t) up_off, n_embd, n_ff,
+                                                                          (uint8_t*) gu_dst, gu_stride);
+            break;
+        default:
+            std::fprintf(stderr, "prefill rp: no gate/up gather for type %d\n", gu_type);
+            std::exit(1);
+    }
+    ck(cudaGetLastError(), "gather_group_gu");
+}
+
+void gather_group(const mmq::GatherGroup& g, int gu_type, size_t up_off, size_t down_off, int64_t n_embd, int64_t n_ff,
+                  void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream) {
+    if (gu_dst && gu_type != GGML_TYPE_IQ4_NL) {   // a codebook gate/up: its own gather, the down (if any) IQ4_NL's
+        gather_group_gu(g, gu_type, up_off, n_embd, n_ff, gu_dst, gu_stride, stream);
+        gu_dst = nullptr;
+    }
+    gather_group_iq4nl(g, up_off, down_off, n_embd, n_ff, gu_dst, gu_stride, d_dst, d_stride, stream);
+}
+
 Context::~Context() {
     if (iota_) cudaFree(iota_);
     if (tables_) cudaFree(tables_);
@@ -225,7 +322,7 @@ Context::~Context() {
 
 void Context::run(const mmq::Product& p, void* stream) {
     const cudaStream_t s = (cudaStream_t) stream;
-    if (!dense_supported(p.type, p.w_rows, p.w_cols)) {
+    if (!dense_supported(p.type, p.w_rows, p.w_cols) && !supported(p.type, p.w_rows, p.w_cols)) {
         std::fprintf(stderr, "prefill rp: type %d [%lld x %lld] is not covered\n", p.type, (long long) p.w_rows,
                      (long long) p.w_cols);
         std::exit(1);
@@ -274,6 +371,9 @@ void Context::run(const mmq::Product& p, void* stream) {
         case GGML_TYPE_Q6_K: launch(std::integral_constant<ggml_type, GGML_TYPE_Q6_K>{}); break;
         case GGML_TYPE_Q4_K: launch(std::integral_constant<ggml_type, GGML_TYPE_Q4_K>{}); break;
         case GGML_TYPE_IQ4_XS: launch(std::integral_constant<ggml_type, GGML_TYPE_IQ4_XS>{}); break;
+        case GGML_TYPE_IQ3_XXS: launch(std::integral_constant<ggml_type, GGML_TYPE_IQ3_XXS>{}); break;
+        case GGML_TYPE_IQ3_S: launch(std::integral_constant<ggml_type, GGML_TYPE_IQ3_S>{}); break;
+        case GGML_TYPE_IQ2_S: launch(std::integral_constant<ggml_type, GGML_TYPE_IQ2_S>{}); break;
         default: launch(std::integral_constant<ggml_type, GGML_TYPE_Q5_K>{}); break;
     }
     ck(cudaGetLastError(), "rp gemm");
@@ -292,6 +392,8 @@ void repack_iq4nl_rows(const void*, void*, int64_t, int64_t, int64_t, int64_t, v
 bool dense_supported(int, int64_t, int64_t) { return false; }
 void repack(int, const void*, size_t, void*, size_t, int64_t, int64_t, int, void*) {}
 void gather_group_iq4nl(const mmq::GatherGroup&, size_t, size_t, int64_t, int64_t, void*, size_t, void*, size_t, void*) {}
+void gather_group_gu(const mmq::GatherGroup&, int, size_t, int64_t, int64_t, void*, size_t, void*) {}
+void gather_group(const mmq::GatherGroup&, int, size_t, size_t, int64_t, int64_t, void*, size_t, void*, size_t, void*) {}
 Context::~Context() {}
 void Context::run(const mmq::Product&, void*) {}
 
