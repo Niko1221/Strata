@@ -4,6 +4,7 @@
 #include <hip/hip_fp16.h>
 
 #include "wmma_gemm.h"
+#include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 
 #include <algorithm>
@@ -69,7 +70,7 @@ struct DeviceBuffer {
 };
 
 uint16_t encode(float value, bool bf16) {
-    if (bf16) return hip_bfloat16(value).data;
+    if (bf16) return strata::kernels::bf16_from_f32(value);
     const __half half = __float2half_rn(value);
     return static_cast<__half_raw>(half).x;
 }
@@ -474,8 +475,8 @@ int main() {
                                (double) decode(w[(size_t) n * c.ldw + k], false);
                     }
                     const double delta = std::abs((double) got_y[(size_t) t * c.ldy + n] - sum);
-                    pf_max_abs = std::max(pf_max_abs, delta);
-                    if (delta > 0.0) {
+                    pf_max_abs = std::isfinite(delta) ? std::max(pf_max_abs, delta) : delta;
+                    if (!std::isfinite(delta) || delta > 0.0) {
                         failure_count++;
                         std::fprintf(stderr, "FAIL: strata_pf_gemm_f16_ld mismatch T=%ld N=%ld K=%ld at (%ld,%ld) delta=%g\n",
                                      c.T, c.N, c.K, t, n, delta);
@@ -483,7 +484,7 @@ int main() {
                 }
             }
             passed_count++;
-            global_max_abs = std::max(global_max_abs, pf_max_abs);
+            global_max_abs = std::isfinite(pf_max_abs) ? std::max(global_max_abs, pf_max_abs) : pf_max_abs;
             std::printf("  strata_pf_gemm_f16_ld T=%3ld N=%4ld K=%2ld beta=%.1f max_abs=%.9g %s\n",
                         c.T, c.N, c.K, c.beta, pf_max_abs, (failure_count == 0) ? "PASS" : "FAIL");
         }
@@ -524,8 +525,8 @@ int main() {
                     }
                     const float got = (n < nd) ? got_lo[(size_t) t * nd + n] : got_inj[(size_t) t * ni + (n - nd)];
                     const double delta = std::abs((double) got - sum);
-                    hcd_max_abs = std::max(hcd_max_abs, delta);
-                    if (delta > 0.0) {
+                    hcd_max_abs = std::isfinite(delta) ? std::max(hcd_max_abs, delta) : delta;
+                    if (!std::isfinite(delta) || delta > 0.0) {
                         failure_count++;
                         std::fprintf(stderr, "FAIL: strata_pf_hcdown_bf16 mismatch T=%ld at (%ld,%ld) delta=%g\n",
                                      T, t, n, delta);
@@ -533,7 +534,7 @@ int main() {
                 }
             }
             passed_count++;
-            global_max_abs = std::max(global_max_abs, hcd_max_abs);
+            global_max_abs = std::isfinite(hcd_max_abs) ? std::max(global_max_abs, hcd_max_abs) : hcd_max_abs;
             std::printf("  strata_pf_hcdown_bf16 T=%3ld nd=%ld ni=%ld K=%ld max_abs=%.9g %s\n",
                         T, nd, ni, K, hcd_max_abs, (failure_count == 0) ? "PASS" : "FAIL");
         }
@@ -570,8 +571,8 @@ int main() {
                         sum += (double) decode(x[(size_t) t * ldx + k], true) * (double) decode(wrow[k], true);
                     }
                     const double delta = std::abs((double) got_y[(size_t) t * N + n] - sum);
-                    hx_max_abs = std::max(hx_max_abs, delta);
-                    if (delta > 0.0) {
+                    hx_max_abs = std::isfinite(delta) ? std::max(hx_max_abs, delta) : delta;
+                    if (!std::isfinite(delta) || delta > 0.0) {
                         failure_count++;
                         std::fprintf(stderr, "FAIL: strata_pf_hcdown_exact_bf16 mismatch T=%ld at (%ld,%ld) delta=%g\n",
                                      T, t, n, delta);
@@ -579,7 +580,7 @@ int main() {
                 }
             }
             passed_count++;
-            global_max_abs = std::max(global_max_abs, hx_max_abs);
+            global_max_abs = std::isfinite(hx_max_abs) ? std::max(global_max_abs, hx_max_abs) : hx_max_abs;
             std::printf("  strata_pf_hcdown_exact_bf16 T=%3ld N=%ld K=%ld max_abs=%.9g %s\n",
                         T, N, K, hx_max_abs, (failure_count == 0) ? "PASS" : "FAIL");
         }
