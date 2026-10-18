@@ -3360,6 +3360,36 @@ struct Engine {
                      ms_since(t0) / 1000.0, mtp_d > 0 ? ", a speculative step" : "");
     }
 
+    /// --mtp-calibrate (opt-in): forget a throwaway pass's RECURRENT state, so the answer that follows starts from
+    /// the prompt again, and nothing else.
+    ///
+    /// What it deliberately does NOT touch is the hybrid placement: the probe's steps counted routing and moved
+    /// slots exactly as the answer's own steps would, and the answer re-routes the same traffic, so its slot table
+    /// has to continue from where the probe left it.  Clearing the routing scores instead starves rebalance() - the
+    /// next run cannot rank anything, so it places nothing, and a different expert in a slot is a different
+    /// arithmetic and therefore a different token stream.  Measured on 192.168.1.98 with --mtp 1 --mtp-calibrate 8:
+    /// clearing the scores gave 31 slot replacements where the plain reference makes 1640, and an answer that shared
+    /// only its first 9 tokens with the reference.  Leaving them alone reproduces the reference token for token.
+    ///
+    /// The counters cleared are the ones the report prints for a request (the probe's are not part of one), exactly
+    /// as warmup() does for its own throw-away passes.
+    void discard_pass() {
+        hy_cpu = hy_gpu = hy_swaps = 0;
+        hy_helper = 0;
+        hy_cpu_ms = 0;
+        row_ids.clear();
+        reset();
+    }
+
+    /// --mtp-calibrate: put the hybrid routing table back to where it was before a throwaway pass.  The scores a
+    /// probe counted are not the answer's, and rebalance() ranks on them, so leaving them in place would move the
+    /// answer's slots differently from a plain run's - and a different expert in a slot is a different arithmetic
+    /// and a different token stream.
+    void clear_route_counts() {
+        for (Hy& H : hy) std::fill(H.score.begin(), H.score.end(), 0.0);
+        row_ids.clear();
+    }
+
     int greedy() {
         CK(cudaMemcpyAsync(hpin + 2, pick, 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
@@ -4507,6 +4537,9 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
 int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full, emb_file, kv_opt;
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
+    // --mtp-calibrate N (opt-in): measure the acceptance of the first N speculative steps and, below the
+    // measured breakeven, finish the answer as plain decode steps.  0 = off, and off is the whole default path.
+    int mtp_calib = 0;
     double expert_vram = -1.0;
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
@@ -4546,6 +4579,7 @@ int strata::qwen35::run(int argc, char** argv) {
             else std::fprintf(stderr, "strata-q36: ignoring --mtp %s (this family's MTP is the GGUF's own block: --mtp N "
                                       "drafts)\n", v.c_str());
         }
+        else if (a == "--mtp-calibrate") mtp_calib = std::atoi(next().c_str());
         else if (a == "--draft-vocab") draft_vocab = std::atoi(next().c_str());   // the MTP drafts pick among the first N token ids
         else if (a == "--vision") vision = true;                                  // pictures (GENI): the encoder is strata-vision's
         else if (a == "--batch" || a == "--slots") batch = std::atoi(next().c_str());   // sessions decoding together
@@ -4609,6 +4643,14 @@ int strata::qwen35::run(int argc, char** argv) {
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
+    if (mtp_calib < 0 || mtp_calib > 64) {
+        std::fprintf(stderr, "strata-q36: --mtp-calibrate takes 0 .. 64 probe steps\n");
+        return 2;
+    }
+    if (mtp_calib > 0 && mtp_d == 0) {   // it only has meaning once something is being speculated
+        std::fprintf(stderr, "strata-q36: --mtp-calibrate needs --mtp N (the drafts it measures): ignored\n");
+        mtp_calib = 0;
+    }
     if (chunk < 0 || chunk > 4096 || ctx < 256) { std::fprintf(stderr, "strata-q36: bad --chunk / --max-context\n"); return 2; }
     Model m;
     std::string err;
@@ -4741,6 +4783,76 @@ int strata::qwen35::run(int argc, char** argv) {
         std::fprintf(stderr, "strata-q36: %zu picture(s), %zu rows, text after them at cell + %d\n", ir.imgs.size(),
                      ir.rows.size() / (size_t) m.g.n_embd, (int) ir.delta);
     }
+    // --mtp-calibrate (opt-in).  THE WHOLE PROBE IS OUT OF BAND AND RUNS BEFORE THE PROMPT IS EVER READ, so the
+    // answer reads the prompt exactly once and starts from exactly the state a plain run starts from.
+    //
+    // It reads the prompt, times a few speculative steps and one plain step, picks the faster path, and discards
+    // everything it touched.  What "everything" has to cover is not obvious, and each omission changes the answer
+    // (all three measured on 192.168.1.98 with --mtp 1 --mtp-calibrate 8, against the no-drafts reference):
+    //   * the recurrent (GDN) state and pos - discard_pass(), which is reset()
+    //   * the routing counts the probe's steps fed to rebalance() - clear_route_counts(): left in, they make the
+    //     answer swap 18 slots where a plain run swaps 1640, and it diverges at token 10
+    //   * the slots themselves - `warming` for the length of the probe, because a slot swap is a device copy the
+    //     engine cannot undo, and a different expert in a slot is a different arithmetic and a different token
+    // The KV cache needs no clearing: the answer's prompt read rewrites those cells.
+    //
+    // Why the answer cannot simply switch mid-flight instead: a verify window commits its rows through commit(a+1)
+    // (spec_step) while a plain step commits through process(1), and those are different kernels for the recurrent
+    // state, so the two paths are not bit-comparable and a handover diverges.  Measured: switching mid-answer gave
+    // 9 identical tokens and a different 10th; timing a plain step inside the answer gave 13 identical and a
+    // different 14th (acceptance 100% -> 96%).  Speculation has to preserve the text, so it does not.
+    //
+    // The economics, on this run's own timings.  A D=1 step costs S ms and yields (1 + a) tokens; a plain one
+    // costs P ms and yields 1.  Speculation wins iff (1 + a)/S > 1/P, i.e. iff a > S/P - 1 =: a*.
+    //
+    // One known imprecision: the probe's FIRST step of a shape can pay its CUDA-graph capture
+    // (graph_run instantiates on first use), so S - and therefore a* - is a slight over-estimate on a cold run.
+    // The decision is unaffected by that on the prompts measured here, because the two are far apart on the
+    // acceptance axis: p_easy gives a = 1.00 and p_story gives a = 0.25, while a* lands in [0.5, 1.0] either way.
+    // A prompt whose acceptance sits inside that band is the only one the estimate can misjudge; running the
+    // probe with --warmup (the graph is then already captured) removes the bias.
+    bool speculating = true;
+    double plain_ms = 0.0, spec_ms = 0.0, a_meas = 1.0, a_star = 0.0;
+    if (mtp_calib > 0) {
+        E.discard_pass();
+        E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
+        std::vector<int32_t> pfix, pdrafts;
+        int32_t ppicks[16];
+        long long acc = 0;
+        double spec_sum = 0.0;
+        int pnx = E.greedy();
+        E.warming = true;   // the probe is not a request: no slot swaps, as in warmup()'s throw-away passes
+        for (int i = 0; i < mtp_calib; ++i) {
+            const auto ts = Clock::now();
+            const int a = E.spec_step(pnx, pfix, E.mtp_d, pdrafts, ppicks);
+            spec_sum += ms_since(ts);
+            acc += a;
+            pfix.assign(pdrafts.begin(), pdrafts.begin() + a);
+            pnx = ppicks[a];
+        }
+        E.warming = false;
+        // the plain cost, one step, on this run's own machine
+        E.discard_pass();
+        E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
+        const int32_t timing_token = E.greedy();
+        E.warming = true;   // one step can cross a rebalance boundary; keep the placement as it is
+        const auto tp = Clock::now();
+        E.process(&timing_token, 1, [](int64_t) {});
+        plain_ms = ms_since(tp);
+        E.warming = false;
+        spec_ms = spec_sum / (double) mtp_calib;
+        a_meas = E.mtp_d > 0 ? (double) acc / ((double) mtp_calib * E.mtp_d) : 0.0;
+        a_star = plain_ms > 0.0 ? spec_ms / plain_ms - 1.0 : 1.0;
+        speculating = a_meas > a_star;
+        std::fprintf(stderr, "strata-q36: --mtp-calibrate %d probe step%s: acceptance %.0f%% (%lld of %d "
+                     "offered), speculative step %.1f ms, plain step %.1f ms, breakeven %.0f%% -> %s\n",
+                     mtp_calib, mtp_calib == 1 ? "" : "s", 100.0 * a_meas, acc, mtp_calib * E.mtp_d,
+                     spec_ms, plain_ms, 100.0 * a_star,
+                     speculating ? "drafts are faster, this answer reads with them"
+                                 : "drafts are slower, this answer reads as plain decode");
+        E.discard_pass();   // nothing of the probe remains; the answer's own prompt read follows
+        E.clear_route_counts();
+    }
     const auto t0 = Clock::now();
     E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
     const double pp_ms = ms_since(t0);
@@ -4750,7 +4862,7 @@ int strata::qwen35::run(int argc, char** argv) {
         std::vector<int32_t> fix, drafts;
         int32_t picks[16];
         int nx = E.greedy();
-        while ((int) gen.size() < n_gen) {
+        while (speculating && (int) gen.size() < n_gen) {
             gen.push_back(nx);
             if ((int) gen.size() >= n_gen) break;
             const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
@@ -4760,17 +4872,25 @@ int strata::qwen35::run(int argc, char** argv) {
             for (int i = 0; i < a && (int) gen.size() < n_gen; ++i) gen.push_back(drafts[(size_t) i]);
             nx = picks[a];
         }
+        // the plain path, one token per step, from the same fresh prompt.  Same push-then-step convention as the
+        // speculative loop above: the token the prompt's greedy() already produced is emitted first, not after.
+        for (; !speculating && (int) gen.size() < n_gen;) {
+            gen.push_back(nx);
+            if ((int) gen.size() >= n_gen) break;
+            E.process(&nx, 1, [](int64_t) {});
+            nx = E.greedy();
+        }
         gen.resize((size_t) n_gen);
         std::printf("gen:");
         for (int t : gen) std::printf(" %d", t);
         std::printf("\n");
         std::fprintf(stderr, "strata-q36: prompt %zu tokens in %.1f ms, %zu generated in %.1f ms (%.1f tok/s), MTP %d drafts: "
-                     "%lld of %lld accepted (%.0f%%)\n", prompt.size(), pp_ms, gen.size(), ms_since(t1),
+                     "%lld of %lld accepted (%.0f%%)%s\n", prompt.size(), pp_ms, gen.size(), ms_since(t1),
                      gen.size() / (ms_since(t1) / 1000.0), E.mtp_d, accepted, offered,
-                     offered ? 100.0 * accepted / offered : 0.0);
+                     offered ? 100.0 * accepted / offered : 0.0,
+                     mtp_calib > 0 ? (speculating ? ", drafts kept by the probe" : ", drafts dropped by the probe") : "");
         return 0;
-    }
-    for (int i = 0; i < n_gen; ++i) {
+    }    for (int i = 0; i < n_gen; ++i) {
         const int a = E.greedy();
         gen.push_back(a);
         if (ff) {

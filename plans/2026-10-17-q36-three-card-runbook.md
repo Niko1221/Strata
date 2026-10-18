@@ -913,3 +913,81 @@ D=1 → 52.5 tok/s，D=7 → 71.4 tok/s。
    本轮同样没有构建（只读）。要依赖它之前，需要 `touch src/qwen35/q36_engine.cu && make strata-q36`
    实打实编一次。改动本身是 `:4389` 上一个两目整数比较，但"历史里没编过 + 文档里说做完了"
    正是这个分支以前踩过的坑。
+
+## 2026-10-19 MTP 标定定稿：最快 53.3 tok/s，100 tok/s 在这个硬件上不可达（结论用测量钉死）
+
+本轮把 `--mtp-calibrate N`（`src/qwen35/q36_engine.cu`，opt-in，默认 0 = 原路径逐位不变）部署上
+192.168.1.98 做了最终测量。一条 SSH 一个引擎进程，每个 run 前 `pgrep -c` = 0，全部 run 产生非空
+输出。二进制就是带着未提交改动的本地树编出来的（远端 md5 一致：`0a8819d0…`），源 md5 `23ad4046…`
+与本地 HEAD+diff 相同，所以这些数直接适用于将要提交的代码。
+
+### 判定（先给结论）
+
+**没有任何配置打印出 100 tok/s。** 最快实测：**53.3 tok/s**（第二次 52.8），条件是
+`STRATA_REMOTE_ZEROCOPY=0 STRATA_Q36_HELPER_ASYNC=1` 两卡 helper、`--mtp 1 --mtp-calibrate 8`、
+prompt 为可预测的 p_even（even-list）、`--n 64`、greedy。100 tok/s 需要 10.0 ms/token；一个投机步
+（D=1）实测 40.4 ms 出 2 个 token（100% 接受）= 20.2 ms/token ≈ 50 tok/s，所以这条路的上限就是
+~50，与接受率无关——接受率已经是 100% 了。
+
+### 实测表（本轮，逐 run）
+
+| cell | 配置 | 结果 |
+|---|---|---|
+| MTP0 r1 | 两 helper，ZC=0+async，`--bench-tg 128`，无 MTP | tg128 40.1/40.0/40.8 tok/s（中位 40.1，对上记录值 40.8） |
+| MTP0 r2 | 同上，第二轮 | 40.5/40.7/40.7 tok/s |
+| DEF1 r1 | 默认路径（无 env、无 helper），`--bench-tg 128` | 19.8/21.0/24.2（中位 24.2，对上记录值 24.3） |
+| DEF1 r2 | 同上 | 20.5/23.8/24.2 |
+| MTP1 r1 | p_even，`--mtp 1 --mtp-calibrate 8 --n 64` | 标定：acceptance 100%（8/8），spec 40.4 ms vs plain 22.8 ms，breakeven 77% → 保留草稿；答案 32/32 接受，**53.3 tok/s** |
+| MTP1 r2 | 同上 | spec 40.6 / plain 22.9，breakeven 77% → 保留；32/32，**52.8 tok/s**，gen 行 md5 与 r1 逐位相同（`cc1f956e…`） |
+| MTP3 r1 | p_story（不可预测），同样 `--mtp 1 --mtp-calibrate 8` | 标定：acceptance 25%（2/8），spec 38.3 vs plain 18.9，breakeven 103% → **丢弃草稿**；纯解 44.2 tok/s |
+| MTP3 r2 | 同上 | 25%（2/8），breakeven 98% → 丢弃；44.1 tok/s，gen md5 同 r1（`2636a913…`） |
+
+标定器在两个端点上都判对了：100% 保留（+30% 相对基准 40.7），25% 丢弃（纯解 44.2，仍比
+强制 `--mtp 1` 不解定快 14%）。
+
+### 四配置 `--n 32` 逐位一致性门（必须过）
+
+PA/PB/PC/PD 四个配置（A 无 helper、B 一 P104、C 两 P104、D C+`--kv int8`）的 gen 行 md5
+全部 = `e6844a66cfb981aa4dd557d64be6f3a5`，逐位一致。另加 P32M：同一 C 配置带上
+`--mtp 0 --mtp-calibrate 0`，md5 相同——新标志在默认值下是纯 no-op。
+
+### 100 tok/s 为什么不可达（数字，不是形容词）
+
+- 一个验证步（D=1）= 40.4 ms 墙钟，出至多 2 token → **20.2 ms/token = 49.5 tok/s 封顶**，
+  与接受率无关（接受率已经 100% 测出来了）。
+- 100 tok/s = 10.0 ms/token。要达成：投机步压到 ≤20 ms（实测 40.4，差 2 倍），或者一个
+  步出 ≥4 token（D+1=2 封顶），都不成立。
+- 验证步 40 ms 的构成（前几轮测量）：primary bubble（route_sync + helper_finish）8.7–9.9
+  ms/token、CPU pool ~3 ms/token（两 helper 下 7122 entries/1.23 s ÷ 128 ≈ 3.1 ms/step，
+  对上上面混合行打印的 1224–1261 ms）、greedy() 1.97 ms/token、attn+MoE 设备段。把
+  bubble 全消掉也只剩 ~84–93 tok/s，仍不过 100。
+- 纯单卡路径 DEF1 实测 24.2 tok/s：它的 41.3 ms/token 里 30 ms 是 66928 条 CPU pool
+  entries 阻塞主机——"17.8 ms 单卡地板"从来不存在，那个数字在这台机器上任何配置都没出现过。
+- 换更深的 N（D=3/4）不能解锁 100 tok/s：草稿 3、4 在测过的所有 prompt 上接受 0 个
+  （nextn 块只训了一步），D>1 每一步都更慢，见 2026-10-19 上节。
+
+### 负结果（别重测）
+
+- `--cpu-threads 4/6/8/10/16`、`STRATA_Q36_CHUNK=512`、helper-async 单独扫：都没有超过
+  推荐配置。
+- 接受率是 **prompt 属性，不是引擎属性**：`--tokens 1` 单 token prompt N=1 只有 15%
+  （4/27，27 次提议的样本还太小），p_even 94–100%。15 vs 91 的差距就是 prompt，
+  不是 Q4_0 头部量化、不是 N、不是 serve 门、不是 `--force`。
+- MTP3 的 MTP 行在 stderr 里出现两次是本机 grep（两条 pattern 命中同一行）的显示假象，
+  不是引擎行为；引擎只打印一次。
+
+### 没测的（明说）
+
+- 接受率落在 (50%, 100%) 中间的 prompt 在**冷启动**标定下可能被高估（首个形状步付
+  CUDA graph 捕获，把 spec_ms 抬高 → breakeven 偏高）。用 `--warmup` 跑标定可消除；
+  本轮两个端点（100% / 25%）离 [0.5, 1.0] 带都足够远，判定不受影响。
+- 只有一个模型文件（Ornith-1.5 IQ4_XS）在这台机器上；"换更精的 MTP 头量化会不会提接受率"
+  无法在此验证（且现在看已不重要：可预测 prompt 接受率已到 100%）。
+- CUPTI 在这三张卡（GP100/GP104）上不可用，40 ms 验证步是引擎自身墙钟，没有 kernel 级分解。
+
+### 本轮代码
+
+`--mtp-calibrate`（+125/−5，`src/qwen35/q36_engine.cu`）随本节提交：opt-in、默认 0、
+默认路径逐位不变（P32M 门已验证）。`discard_pass()`（:3373）与 `clear_route_counts()`
+（:3385）是它配套的递归态/路由计数复位；标定探针在 prompt 首次读取之前完成，
+答案从与纯跑完全相同的初态出发（五个正确性修正是靠与无草稿参考逐位 md5 比对找出来的）。
