@@ -107,35 +107,58 @@ int test_argmax(std::mt19937& rng, cudaStream_t s) {
 int test_mapped_multi(std::mt19937& rng, cudaStream_t s) {
     using namespace strata::kernels;
     int bad = 0;
-    const int64_t words[7] = {5, 40, 160, 2, 51200, 4, 16};
+    // 7-copy round layout + non-multiple-of-4 large copy (1025 words) + 4B-aligned non-16B-aligned large copy (1028 words)
+    const int64_t words[7] = {5, 40, 1025, 1028, 51200, 4, 16};
+    const int64_t off[7]   = {0,  0,    0,    1,     0, 0,  0};   // entry 3 is +1 word (+4 B) offset -> 4B-aligned, not 16B
     int32_t* h_src[7] = {};
     int32_t* d_src[7] = {};
     int32_t* d_ref[7] = {};
     int32_t* d_out[7] = {};
     MappedCopy mc[7] = {};
     for (int i = 0; i < 7; ++i) {
-        check(cudaHostAlloc((void**) &h_src[i], (size_t) words[i] * 4, cudaHostAllocMapped), "cudaHostAlloc");
+        const size_t alloc_w = (size_t) (words[i] + off[i]);
+        check(cudaHostAlloc((void**) &h_src[i], alloc_w * 4, cudaHostAllocMapped), "cudaHostAlloc");
         check(cudaHostGetDevicePointer((void**) &d_src[i], h_src[i], 0), "cudaHostGetDevicePointer");
-        for (int64_t j = 0; j < words[i]; ++j) h_src[i][j] = (int32_t) rng();
-        d_ref[i] = dev<int32_t>((size_t) words[i]);
-        d_out[i] = dev<int32_t>((size_t) words[i]);
-        check(cudaMemset(d_ref[i], 0, (size_t) words[i] * 4), "memset");
-        check(cudaMemset(d_out[i], 0, (size_t) words[i] * 4), "memset");
-        if (words[i] > 1024) copy_from_mapped((float*) d_ref[i], (const float*) d_src[i], words[i], s);
-        else copy_i32_from_mapped(d_ref[i], d_src[i], words[i], s);
-        mc[i] = {d_out[i], d_src[i], words[i]};
+        for (size_t j = 0; j < alloc_w; ++j) h_src[i][j] = (int32_t) rng();
+        d_ref[i] = dev<int32_t>(alloc_w);
+        d_out[i] = dev<int32_t>(alloc_w);
+        check(cudaMemset(d_ref[i], 0, alloc_w * 4), "memset");
+        if (words[i] > 1024 && (words[i] & 3) == 0 && off[i] == 0)
+            copy_from_mapped((float*) (d_ref[i] + off[i]), (const float*) (d_src[i] + off[i]), words[i], s);
+        else
+            copy_i32_from_mapped(d_ref[i] + off[i], d_src[i] + off[i], words[i], s);
+        mc[i] = {d_out[i] + off[i], d_src[i] + off[i], words[i]};
     }
-    copy_from_mapped_multi(mc, 7, s);
-    check(cudaStreamSynchronize(s), "mapped_multi");
+    const char* prev = std::getenv("STRATA_MTP_MULTI_COPY");
+    const std::string saved = prev ? prev : "";
+    for (const char* mode : {"1", "0"}) {
+#if defined(_WIN32)
+        _putenv_s("STRATA_MTP_MULTI_COPY", mode);
+#else
+        setenv("STRATA_MTP_MULTI_COPY", mode, 1);
+#endif
+        for (int i = 0; i < 7; ++i) check(cudaMemsetAsync(d_out[i], 0x5a, (size_t) (words[i] + off[i]) * 4, s), "poison");
+        copy_from_mapped_multi(mc, 7, s);
+        check(cudaStreamSynchronize(s), "mapped_multi");
+        for (int i = 0; i < 7; ++i) {
+            const std::vector<int32_t> r = down(d_ref[i] + off[i], (size_t) words[i]);
+            const std::vector<int32_t> o = down(d_out[i] + off[i], (size_t) words[i]);
+            if (r != o) ++bad;
+        }
+    }
+#if defined(_WIN32)
+    _putenv_s("STRATA_MTP_MULTI_COPY", prev ? saved.c_str() : "");
+#else
+    if (prev) setenv("STRATA_MTP_MULTI_COPY", saved.c_str(), 1);
+    else unsetenv("STRATA_MTP_MULTI_COPY");
+#endif
     for (int i = 0; i < 7; ++i) {
-        const std::vector<int32_t> r = down(d_ref[i], (size_t) words[i]);
-        const std::vector<int32_t> o = down(d_out[i], (size_t) words[i]);
-        if (r != o) ++bad;
         (void) cudaFreeHost(h_src[i]);
         (void) cudaFree(d_ref[i]);
         (void) cudaFree(d_out[i]);
     }
-    std::printf("copy_from_mapped_multi: %s\n", bad ? "MISMATCH" : "bitwise equal to individual mapped copies (7-copy round layout)");
+    std::printf("copy_from_mapped_multi: %s\n",
+                bad ? "MISMATCH" : "bitwise equal to individual mapped copies (multi=1 and fallback=0, aligned + 1025w + 4B-aligned)");
     return bad;
 }
 
