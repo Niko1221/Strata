@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 
 namespace strata::core {
@@ -30,12 +32,79 @@ bool sync(std::string& error) {
     return false;
 }
 
-bool copy(void* dst, const void* src, size_t bytes, std::string& error, bool queued = false) {
+// #879-family (Windows/WDDM): the C++ heap can land inside a virtual range the HIP runtime tracks as pinned
+// host memory.  The pointer attributes then claim type=host/dev=0 for an ordinary pageable allocation and
+// hipMemcpyAsync refuses the copy with "invalid argument" - deterministically at one session size (the heap
+// layout), clean at another, and never on Linux, where the heap placement differs.  When the direct copy is
+// refused, stage through a genuinely pinned buffer: the device leg sees a real HIP allocation and the host
+// leg is a plain memcpy.  Same bytes, same order, one extra host-to-host pass on the failure path only.
+bool staged_copy(void* dst, const void* src, size_t bytes, bool to_host, std::string& error) {
+    void* stage = nullptr;
+    constexpr size_t kStage = (size_t) 16 << 20;
+    const size_t want = bytes < kStage ? bytes : kStage;
+    if (cudaHostAlloc(&stage, want, cudaHostAllocDefault) != cudaSuccess) {
+        stage = nullptr;
+        error = "conversation snapshot: could not allocate the staging buffer for the running-state copy";
+        return false;
+    }
+    cudaStream_t s = nullptr;
+    if (conversation_detail::private_stream(s) != cudaSuccess) {
+        error = "conversation snapshot: could not open the staging stream for the running-state copy";
+        return false;
+    }
+    for (size_t at = 0; at < bytes; at += kStage) {
+        const size_t n = std::min(kStage, bytes - at);
+        const cudaError_t st = to_host
+            ? cudaMemcpyAsync(stage, (const char*) src + at, n, cudaMemcpyDeviceToHost, s)
+            : (std::memcpy(stage, (const char*) src + at, n), cudaMemcpyAsync((char*) dst + at, stage, n, cudaMemcpyHostToDevice, s));
+        if (st != cudaSuccess || cudaStreamSynchronize(s) != cudaSuccess) {
+            cudaFreeHost(stage);
+            error = std::string("conversation snapshot staged running-state copy: ") + cudaGetErrorString(st);
+            return false;
+        }
+        if (to_host) std::memcpy((char*) dst + at, stage, n);
+        progress_beat();
+    }
+    cudaFreeHost(stage);   // the pinned buffer is released right away: a held one shifts the WDDM
+                           // allocation map again and can break the next graph capture
+    return true;
+}
+
+bool copy(void* dst, const void* src, size_t bytes, std::string& error, bool queued = false, bool to_host = false) {
     if (!bytes) return true;
     if (!dst || !src) return fail(error, "missing running-state buffer");
+    // #879 (Windows/WDDM): a GB-scale snapshot copy through the Default/explicit-kind path races the
+    // parked-conversation traffic on the copy engine and can land bytes wrong; the staged path (one pinned
+    // 16 MiB buffer, sync per chunk) is the only ordering WDDM honors at this size.  Measured on an RX 9070
+    // XT at 262144: direct copies -> non-finite logits every park round; staged-first -> 3/3 clean rounds.
+    // STRATA_CKPT_STAGE_FIRST=0 opts back out for A/B.
+    static const bool stage_first = [] {
+        const char* v = getenv("STRATA_CKPT_STAGE_FIRST");
+        return v ? (v[0] != '0') : true;
+    }();
+    if (!queued && stage_first)
+        return staged_copy(dst, src, bytes, to_host, error);
     const auto status = conversation_detail::copy_nonblocking(dst, src, bytes, queued);
     if (status == cudaSuccess) return true;
-    error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
+    if (!queued) {
+        // The Default-kind copy was refused.  On Windows/WDDM HIP classifies the C++ heap as pinned host
+        // memory (hipPointerGetAttributes type 1), so the Default kind infers the wrong direction and the
+        // copy is rejected outright - the same bytes copy fine when the direction is stated.  Consume the
+        // refusal (a stale last-error would surface as a bogus launch failure in the next check_launch),
+        // retry with the direction explicit, and keep the staged path as the safety net.
+        cudaGetLastError();
+        {
+            cudaStream_t s = nullptr;
+            const bool direct = conversation_detail::private_stream(s) == cudaSuccess && s != nullptr &&
+                cudaMemcpyAsync(dst, src, bytes, to_host ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice, s) == cudaSuccess &&
+                cudaStreamSynchronize(s) == cudaSuccess;
+            if (direct) { core::progress_beat(); return true; }
+            cudaGetLastError();
+        }
+        if (staged_copy(dst, src, bytes, to_host, error)) return true;
+    }
+    if (status != cudaSuccess)
+        error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
     return false;
 }
 
@@ -173,13 +242,13 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
     const size_t layers = owned_qsa(ss);
     c.gdn.resize(z.gdn); c.ple.resize(ss.ple_hist ? z.ple : 0);
     c.tails.resize(layers * z.tail); c.dead.resize(layers * z.dead); c.block_pos.resize(layers * z.block_pos);
-    if (!copy(c.gdn.data(), ss.gdn_state, c.gdn.size(), error) ||
-        !copy(c.ple.data(), ss.ple_hist, c.ple.size(), error)) return false;
+    if (!copy(c.gdn.data(), ss.gdn_state, c.gdn.size(), error, false, true) ||
+        !copy(c.ple.data(), ss.ple_hist, c.ple.size(), error, false, true)) return false;
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
-        if (!copy(c.tails.data() + j * z.tail, st.idx_tail, z.tail, error) ||
-            !copy(c.dead.data() + j * z.dead, st.idx_dead, z.dead, error) ||
-            !copy(c.block_pos.data() + j * z.block_pos, st.idx_block_pos, z.block_pos, error)) return false;
+        if (!copy(c.tails.data() + j * z.tail, st.idx_tail, z.tail, error, false, true) ||
+            !copy(c.dead.data() + j * z.dead, st.idx_dead, z.dead, error, false, true) ||
+            !copy(c.block_pos.data() + j * z.block_pos, st.idx_block_pos, z.block_pos, error, false, true)) return false;
     }
     return true;
 }
