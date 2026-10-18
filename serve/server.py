@@ -742,7 +742,7 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
-    READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
+    READ_MAX = 1 << 20                                  # read in MiB chunks without skipping unread events
 
     def __init__(self):
         self.key, self.pos = None, 0
@@ -759,21 +759,8 @@ class ConvCacheLog:
         if self.key != (path, start):                   # another start of the engine: its cache starts empty
             self.key, self.pos = (path, start), start
             self.reset()
-        try:
-            size = os.path.getsize(path)
-            if size < self.pos:                         # the log was emptied or replaced
-                self.pos = 0
-            if size - self.pos > self.READ_MAX:
-                self.pos = size - self.READ_MAX
-            with open(path, "rb") as f:
-                f.seek(self.pos)
-                data = f.read(size - self.pos)
-        except OSError:
-            return dict(self.state)
-        end = data.rfind(b"\n") + 1                     # whole lines only: the rest is read next time
-        self.pos += end
         now = time.time()
-        for line in data[:end].decode("utf-8", "replace").splitlines():
+        for line in self._lines(path):
             if "conversation cache:" not in line:
                 continue
             m = self.EVENT.search(line)
@@ -790,6 +777,33 @@ class ConvCacheLog:
             if m:
                 self.state["parked"] = int(m.group(1))
         return dict(self.state)
+
+    def _lines(self, path):
+        """Read through a captured EOF; only complete lines advance the committed byte cursor."""
+        try:
+            size = os.path.getsize(path)
+            if size < self.pos:                         # the log was emptied or replaced
+                self.pos = 0
+            with open(path, "rb") as f:
+                f.seek(self.pos)
+                pos, parts = self.pos, []
+                while pos < size:
+                    data = f.read(min(self.READ_MAX, size - pos))
+                    if not data:                       # the log may have been truncated since getsize()
+                        break
+                    pos += len(data)
+                    end = data.rfind(b"\n") + 1
+                    if not end:
+                        parts.append(data)
+                        continue
+                    parts.append(data[:end])
+                    complete = b"".join(parts)
+                    self.pos = pos - len(data) + end    # exclude the trailing incomplete line
+                    yield from complete.decode("utf-8", "replace").splitlines()
+                    parts = [data[end:]] if end < len(data) else []
+                # A final partial line remains uncommitted and is read again after the writer completes it.
+        except OSError:
+            return
 
 
 def conversation_slots(engine) -> int | None:
