@@ -1002,8 +1002,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(shared_expert_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(shared_expert_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME shared_expert_parity COMMAND shared_expert_parity --selftest)
-  # the split / batched verify-window kernels (from eddoursul's fork), bitwise vs the kernels they replace; CUDA only
-  if(STRATA_ENABLE_CUDA)
+  # the split / batched verify-window kernels (from eddoursul's fork), bitwise vs the kernels they replace
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(verify_parity src/kernels/verify_parity.cpp)
     target_include_directories(verify_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(verify_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
