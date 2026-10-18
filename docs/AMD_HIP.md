@@ -665,6 +665,22 @@ ninja -C build-906 strata
 container with `--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --ulimit memlock=-1`; on some boards
 `HSA_OVERRIDE_GFX_VERSION=9.0.6` is needed for the runtime to accept the card.
 
+**With a system ROCm 6.x.** The last 6.x line (6.3.x tested at `/opt/rocm-6.3.3`) still ships the gfx906 libraries,
+so the build works on the system install without the image. This path was checked on this checkout: the full engine
+(`cmake --build build-gfx906 --target strata -j16`) builds and links cleanly with `-Wall -Wextra` (the build has
+`STRATA_WERROR=OFF`; a `-Werror` build is not verified), a 31.7 MB `strata` binary; no run measurements were
+taken on this machine. It needs the pinned llama.cpp in
+`third_party/llama.cpp` and the HIP compiler's path:
+
+```sh
+cmake -S . -B build-gfx906 -DCMAKE_BUILD_TYPE=Release -DSTRATA_HIP_GFX906=ON \
+  -DCMAKE_HIP_ARCHITECTURES=gfx906 -DSTRATA_BUILD_TESTS=OFF -DGGML_CCACHE=OFF \
+  -DSTRATA_GGML_DIR=third_party/llama.cpp \
+  -DCMAKE_HIP_COMPILER=/opt/rocm-6.3.3/lib/llvm/bin/clang++
+cmake --build build-gfx906 --target strata -j$(nproc)
+```
+
+
 **What differs from the CUDA build** (all under `STRATA_HIP_GFX906`; each A/B switch restores the CUDA layout):
 
 | | gfx906 | switch |
