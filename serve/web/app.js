@@ -188,21 +188,90 @@ async function poll() {
 function setPill(state, text) {
   $("pill").dataset.state = state === "error" ? "queued" : state;
   $("pill-text").textContent = text;
+  $("pill-globe").hidden = state !== "searching";   // searching is the one client-side phase: globe instead of dot
+}
+
+// Web search runs before the engine ever sees the turn: the pill would read Idle while a search is already
+// running. The client carries its own pill phases, and the metrics render() deliberately does not override them.
+let searchPhase = null;      // {kind: "framing"|"search"|"failed", engine, t0, timer}
+let searchBubble = null;     // {el} assistant bubble carrying the search status line
+let liveQueued = 0;          // what the last metrics poll saw the engine queue hold (another turn can be running)
+let lastLive = null;         // last known engine state, so the pill can repaint truthfully outside poll ticks
+function setSearchPhase(kind, engine) {
+  if (searchPhase) clearInterval(searchPhase.timer);
+  searchPhase = {kind, engine: engine || "", t0: performance.now()};
+  $("pill").setAttribute("aria-live", "off");   // a seconds counter rewriting the pill 4x/s would spam screen readers; the chat's status line carries the phases instead
+  paintSearchPill();
+  searchPhase.timer = setInterval(paintSearchPill, 250);
+  if (kind === "failed") setTimeout(() => { if (searchPhase && searchPhase.kind === "failed") endSearchPhase(); }, 2500);
+}
+function paintSearchPill() {
+  if (!searchPhase) return;
+  const hint = liveQueued > 0 ? ` · ${liveQueued} queued` : "";   // the engine serving someone else while we search is real info
+  if (searchPhase.kind === "framing") return setPill("searching", `Framing query${hint}`);
+  if (searchPhase.kind === "failed") return setPill("error", "Search failed");
+  const eng = ENGINE_NAMES[searchPhase.engine] || searchPhase.engine || "web";
+  const secs = ((performance.now() - searchPhase.t0) / 1000).toFixed(1);
+  setPill("searching", `${ws.read !== false ? "Searching web + reading pages" : "Searching web"} · ${eng} · ${secs} s${hint}`);
+}
+function endSearchPhase() {
+  if (searchPhase) clearInterval(searchPhase.timer);
+  searchPhase = null;
+  clearSearchBubble(true);
+  $("pill").setAttribute("aria-live", "polite");
+  paintPill();   // repaint from the last known engine state: never a blind "Idle" over real engine work
+}
+// One function owns the pill - the 1s poll and the 250ms search timer used to write it independently and
+// the pill oscillated whenever the engine was busy with someone else's turn. Priority: an active search
+// phase (the engine label during framing would only be this feature's own optimizer call speaking),
+// then engine state, then a bare queue count, then idle. A queue count is always appended as a hint.
+function paintPill() {
+  const qhint = liveQueued > 0 ? ` · ${liveQueued} queued` : "";
+  if (searchPhase) return paintSearchPill();
+  const live = lastLive || {};
+  if (live.state === "reading") {
+    const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
+    setPill("reading", (pct != null ? `Reading prompt · ${pct}%` : "Reading prompt") + qhint);
+  } else if (live.state === "generating") {
+    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s` + qhint);
+  } else if (liveQueued > 0) {
+    setPill("queued", `${liveQueued} queued`);   // engine busy for work this window did not start (agents, other tabs)
+  } else {
+    setPill("idle", "Idle");
+  }
+}
+function setSearchBubble(el, text) {   // the line sits exactly where "Thinking…" sits - globe instead of thought icon
+  const det = el.querySelector("details.think");
+  if (!det) return;
+  searchBubble = {el};
+  det.hidden = false;
+  const use = det.querySelector("summary use");
+  if (use) use.setAttribute("href", `${SPRITE}#i-globe`);
+  const title = el.querySelector(".think-title");
+  if (title) title.textContent = text;
+}
+function clearSearchBubble(hide) {
+  if (!searchBubble) return;
+  const el = searchBubble.el;
+  searchBubble = null;
+  const det = el.querySelector("details.think");
+  if (!det) return;
+  const use = det.querySelector("summary use");
+  if (use) use.setAttribute("href", `${SPRITE}#i-thinking`);
+  const body = det.querySelector(".thinking");
+  const title = el.querySelector(".think-title");
+  if (hide && body && !body.textContent) {   // hide only if no thoughts ever arrived
+    det.hidden = true;
+    if (title) title.textContent = "";
+  }
 }
 
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
-  // the header pill
-  if (live.state === "reading") {
-    const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
-    setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
-  } else if (live.state === "generating") {
-    setPill("generating", `Generating · ${fmt(live.tok_s, 1)} tok/s`);
-  } else {
-    setPill("idle", "Idle");
-  }
-  if (live.queued > 0) setPill("queued", `${live.queued} queued`);
+  lastLive = live;
+  liveQueued = live.queued || 0;
+  paintPill();   // the single pill priority table (see paintPill): the search timer and the poll can no longer fight
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
   if (tab === "about") renderAbout(eng, hw, st);
@@ -585,9 +654,25 @@ if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
-const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, reader: "off", on: false};
+const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, reader: "off", on: false, optimize: true};
 const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper"};
 let ws = {...WS_DEFAULTS, ...store.get("ws", {})};   // Web search: the composer's globe and the drawer's section
+// "Optimize search query": pull the actual search question out of the message first (local model,
+// reasoning off, greedy, one short call). Any error -> the original text: search never breaks on this.
+async function optimizeQuery(text, signal) {
+  if (!health || !health.model) return text;
+  try {
+    const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), signal,
+      body: JSON.stringify({model: health.model, stream: false, temperature: 0, max_tokens: 100, reasoning_effort: "none",
+        messages: [{role: "system", content: "Extract the core web search query from the user's message. Keep the query in the same language the user wrote in. Fix obvious typos. Return only the query string, nothing else."},
+                   {role: "user", content: text.slice(0, 4000)}]})});
+    if (!r.ok) return text;
+    const j = await r.json().catch(() => ({}));
+    let q = ((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "").trim();
+    q = q.split("\n")[0].replace(/^(search\s+)?query\s*[:\-]\s*/i, "").replace(/^["'\u300c]+|["'\u300d]+$/g, "").trim();
+    return (q.length >= 3 && q.length <= 400) ? q : text;   // empty or rambling: keep the raw wording
+  } catch (e) { return text; }   // abort, network or model hiccup: the raw wording is always a valid fallback
+}
 
 function saveChat() {
   store.set("chat", messages.map((m) => ({...m, images: (m.images || []).map((i) => ({name: i.name})),
@@ -720,7 +805,7 @@ function updateAssistant(el, m, streaming) {
     if (m.sources && m.sources.length) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
-      src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}Sources${esc(ename)}:</span>` +
+      src.innerHTML = `<span class="st-sources__label">${icon("globe", "st-icon st-icon--sm")}Sources${esc(ename)}${m.refined ? esc(` \u00b7 searched: "${m.refined}"`) : ""}:</span>` +
         m.sources.map((s, k) => {
           const badge = s.read_via === "jina" ? ' <span class="st-source__read">read via Jina</span>' : s.content ? ' <span class="st-source__read">read</span>' : "";
           const inner = `[${k + 1}] ${esc(s.title || s.url)}${badge}`;
@@ -733,7 +818,7 @@ function updateAssistant(el, m, streaming) {
     } else if (m.sourcesNote) {
       src.hidden = false;
       const ename = m.sourceEngine ? ` (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine})` : "";
-      src.innerHTML = `<span class="st-sources__label st-sources__label--warn">${icon("warning", "st-icon st-icon--sm")}Sources${esc(ename)}: ${esc(m.sourcesNote)}</span>`;
+      src.innerHTML = `<span class="st-sources__label st-sources__label--warn">${icon("warning", "st-icon st-icon--sm")}Sources${esc(ename)}${m.refined ? esc(` \u00b7 searched: "${m.refined}"`) : ""}: ${esc(m.sourcesNote)}</span>`;
     } else { src.hidden = true; src.innerHTML = ""; }
   }
   el.querySelector(".meta-text").textContent = m.meta || (streaming ? "" : m.stopped ? "Stopped" : "");
@@ -839,9 +924,18 @@ async function send() {
 
   let sources = null, sourceEngine = "", sourcesNote = "";
   if (ws.on && text) {
+    let q = text;
+    if (ws.optimize !== false) {         // pill + status line while the local model distills the question
+      setSearchPhase("framing");
+      setSearchBubble(el, "Framing your query…");
+      q = await optimizeQuery(text, controller.signal);
+    }
+    if (q !== text) m.refined = q;   // transparency: the Sources line will show what was actually searched
+    setSearchPhase("search", ws.engine);
+    setSearchBubble(el, `Searching web · ${ENGINE_NAMES[ws.engine] || ws.engine}${ws.read !== false ? " · reading pages" : ""}`);
     try {
       const sr = await fetch("search", {method: "POST", headers: headers(true), signal: controller.signal,
-                                       body: JSON.stringify({query: text, engine: ws.engine, url: ws.url,
+                                       body: JSON.stringify({query: q, engine: ws.engine, url: ws.url,
                                                             api_key: ws.key, max_results: +ws.max || 6,
                                                             read_pages: ws.read !== false, read_max: +ws.readmax || 2,
                                                             page_limit: ws.plim !== false, page_chars: +ws.plimchars || 5000,
@@ -854,8 +948,10 @@ async function send() {
       }
       else { sourcesNote = (sj.error && sj.error.message) || "no results"; toast("warn", "Web search found nothing", sourcesNote, 6000); }
     } catch (e) {
-      if (e.name !== "AbortError") { sourcesNote = e.message || String(e); toast("error", "Web search failed", sourcesNote, 6000); }
+      if (e.name !== "AbortError") { sourcesNote = e.message || String(e); toast("error", "Web search failed", sourcesNote, 6000); setSearchPhase("failed"); }
     }
+    if (searchPhase && searchPhase.kind !== "failed") endSearchPhase();
+    else clearSearchBubble(true);
   }
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
@@ -917,13 +1013,13 @@ async function send() {
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
-          if (!firstAt) firstAt = performance.now();
+          if (!firstAt) { firstAt = performance.now(); clearSearchBubble(false); }   // globe line hands over to "Thinking…"
           if (!thinkStart) thinkStart = performance.now();
           if (lastTool && m.reasoning && lastTool.rat === m.reasoning.length) m.reasoning += "\n\n";
           m.reasoning += d.reasoning_content;
         }
         if (d.content) {
-          if (!firstAt) firstAt = performance.now();
+          if (!firstAt) { firstAt = performance.now(); clearSearchBubble(true); }
           if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
           m.text += d.content;
@@ -948,6 +1044,7 @@ async function send() {
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
   if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  if (searchPhase) endSearchPhase();   // safety net: no search phase outlives the turn
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
@@ -979,9 +1076,9 @@ $("export-btn").onclick = () => {
     `<details><summary>Tool ${t.server ? `${t.server} / ` : ""}${t.tool || t.name}${t.ok ? "" : " (error)"}</summary>\n\n` +
     `\`\`\`json\n${JSON.stringify(t.arguments || {}, null, 2)}\n\`\`\`\n\n\`\`\`\n${t.result}\n\`\`\`\n\n</details>\n\n`).join("");
   const srcs = (m) => (m.sources && m.sources.length)
-    ? `\n\nSources (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search"}):\n\n` +
+    ? `\n\nSources (${(ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search") + (m.refined ? `, searched: "${m.refined.replace(/[\u0000-\u001f"`]/g, " ")}"` : "")}):\n\n` +
       m.sources.map((s, k) => `[${k + 1}] [${s.title || s.url}](${s.url})`).join(" | ") + (m.sourcesNote ? `\n\nWarning: ${m.sourcesNote}` : "")
-    : (m.sourcesNote ? `\n\nSources (${ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search"}): ${m.sourcesNote}` : "");
+    : (m.sourcesNote ? `\n\nSources (${(ENGINE_NAMES[m.sourceEngine] || m.sourceEngine || "web search") + (m.refined ? `, searched: "${m.refined.replace(/[\u0000-\u001f"`]/g, " ")}"` : "")}): ${m.sourcesNote}` : "");
   const md = messages.map((m) => m.role === "user" ? `## You\n\n${m.text}\n` :
     `## ${health.model}\n\n${m.reasoning ? `<details><summary>Thinking</summary>\n\n${m.reasoning}\n\n</details>\n\n` : ""}${tools(m)}${m.text || m.error || ""}${srcs(m)}\n`).join("\n");
   const a = document.createElement("a");
@@ -1089,6 +1186,7 @@ function loadDrawer(s = settings) {
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   $("s-ws").setAttribute("aria-checked", String(ws.on));
+  $("s-ws-opt").setAttribute("aria-checked", String(ws.optimize !== false));
   $("s-ws-engine").value = ws.engine;
   $("s-ws-url").value = ws.url;
   $("s-ws-key").value = ws.key;
@@ -1149,25 +1247,37 @@ $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
 $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
-$("s-ws").onclick = () => $("s-ws").setAttribute("aria-checked", String($("s-ws").getAttribute("aria-checked") !== "true"));
+$("s-ws").onclick = () => {$("s-ws").setAttribute("aria-checked", String($("s-ws").getAttribute("aria-checked") !== "true")); paintWsRows();};
 function paintWsRows() {
   const e = $("s-ws-engine").value;
-  $("ws-url-row").hidden = e !== "searxng";
-  $("ws-key-row").hidden = e === "searxng" || e === "duckduckgo";
+  // every search-specific control hangs on the search switch itself: search off = the whole section collapses
+  const on = $("s-ws").getAttribute("aria-checked") === "true";
+  const optOn = $("s-ws-opt").getAttribute("aria-checked") === "true";
+  $("ws-opt-row").hidden = !on;
+  $("ws-opt-note").textContent = optOn
+    ? "Refines your question into a focused search query before searching (uses the local model)"
+    : "Searches the exact wording as typed";
+  $("ws-engine-row").hidden = !on;
+  $("ws-url-row").hidden = !on || e !== "searxng";
+  $("ws-key-row").hidden = !on || e === "searxng" || e === "duckduckgo";
+  $("ws-max-row").hidden = !on;
   $("o-ws-max").textContent = `${$("s-ws-max").value || 6} pages go to the model`;
   const readOn = $("s-ws-read").getAttribute("aria-checked") === "true";
-  $("ws-readmax-row").hidden = !readOn;
+  $("ws-read-row").hidden = !on;
+  $("ws-readmax-row").hidden = !on || !readOn;
   $("o-ws-readmax").textContent = readOn ? `${$("s-ws-readmax").value || 2} fetched in full` : "snippets only";
   const limOn = $("s-ws-plim").getAttribute("aria-checked") === "true";
-  $("ws-plim-row").hidden = !limOn;
+  $("ws-page-limit-row").hidden = !on;
+  $("ws-plim-row").hidden = !on || !limOn;
   $("o-ws-plim").textContent = limOn ? `${$("s-ws-plim-chars").value || 5000} per page` : "whole pages, capped by model context";
-  $("ws-reader-row").hidden = !readOn;
+  $("ws-reader-row").hidden = !on || !readOn;
   const rd = $("s-ws-reader").value || "off";
   $("o-ws-jina").textContent = rd === "off" ? "no third party" : rd === "fallback" ? "Jina only on failure" : "Jina for every page";
-  $("ws-jina-note").hidden = rd === "off" || !readOn;
+  $("ws-jina-note").hidden = !on || rd === "off" || !readOn;
 }
 $("s-ws-engine").onchange = paintWsRows;
 $("s-ws-max").oninput = paintWsRows;
+$("s-ws-opt").onclick = () => {$("s-ws-opt").setAttribute("aria-checked", String($("s-ws-opt").getAttribute("aria-checked") !== "true")); paintWsRows();};
 $("s-ws-read").onclick = () => {$("s-ws-read").setAttribute("aria-checked", String($("s-ws-read").getAttribute("aria-checked") !== "true")); paintWsRows();};
 $("s-ws-readmax").oninput = paintWsRows;
 $("s-ws-plim").onclick = () => {$("s-ws-plim").setAttribute("aria-checked", String($("s-ws-plim").getAttribute("aria-checked") !== "true")); paintWsRows();};
@@ -1193,7 +1303,8 @@ $("s-apply").onclick = async () => {
         plim: $("s-ws-plim").getAttribute("aria-checked") === "true",
         plimchars: Math.max(1000, Math.min(100000, +$("s-ws-plim-chars").value || 5000)),
         reader: $("s-ws-reader").value || "off",
-        on: $("s-ws").getAttribute("aria-checked") === "true"};
+        on: $("s-ws").getAttribute("aria-checked") === "true",
+        optimize: $("s-ws-opt").getAttribute("aria-checked") === "true"};
   store.set("ws", ws);
   paintWebsearch();
   if (ws.on && !wasOn) announceWsOn();   // only on the off->on flip, not on every save

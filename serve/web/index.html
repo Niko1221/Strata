@@ -32,7 +32,7 @@
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
-    <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
+    <span class="st-pill__dot"></span><svg class="st-icon st-pill__globe" id="pill-globe" hidden aria-hidden="true"><use href="web/sprite.svg#i-globe"/></svg><span id="pill-text">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
     <svg class="st-icon"><use id="theme-icon" href="web/sprite.svg#i-moon"/></svg></button>
 </header>
@@ -216,7 +216,12 @@
   <div class="st-drawer__head"><span class="card-title">Chat Settings</span>
     <button class="st-btn st-btn--icon" id="drawer-close" title="Close" aria-label="Close">
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
+  <div class="drawer-actions st-drawer__actions">
+    <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
+    <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>
+  </div>
   <div class="st-drawer__body">
+    <div class="drawer-section">Sampling</div>
     <div class="st-field">
       <label class="st-label" for="s-thinking">Thinking <output id="o-thinking"></output></label>
       <div class="seg" id="s-thinking" role="radiogroup" aria-label="Thinking">
@@ -259,7 +264,9 @@
     <div class="drawer-section">Web search</div>
     <div class="toggle-row"><span>Web search<br><span class="muted small">look the question up before answering; the composer's globe switches it too</span></span>
       <button class="st-toggle" id="s-ws" role="switch" aria-checked="false" aria-label="Web search"></button></div>
-    <div class="st-field">
+    <div class="toggle-row" id="ws-opt-row"><span>Optimize search query<br><span class="muted small" id="ws-opt-note">Refines your question into a focused search query before searching (uses the local model)</span></span>
+      <button class="st-toggle" id="s-ws-opt" role="switch" aria-checked="true" aria-label="Optimize search query"></button></div>
+    <div class="st-field" id="ws-engine-row">
       <label class="st-label" for="s-ws-engine">Search engine</label>
       <select class="st-input" id="s-ws-engine">
         <option value="duckduckgo">DuckDuckGo (anonymous &ndash; no key needed)</option>
@@ -277,11 +284,11 @@
       <label class="st-label" for="s-ws-key">API key <output>kept in this browser only</output></label>
       <input class="st-input" id="s-ws-key" type="password" placeholder="the engine's API key">
     </div>
-    <div class="st-field">
+    <div class="st-field" id="ws-max-row">
       <label class="st-label" for="s-ws-max">Max results <output id="o-ws-max"></output></label>
       <input class="st-input" id="s-ws-max" type="number" min="1" max="20" step="1">
     </div>
-    <div class="toggle-row"><span>Read result pages<br><span class="muted small">fetches the top pages in full, not just the snippets</span></span>
+    <div class="toggle-row" id="ws-read-row"><span>Read result pages<br><span class="muted small">fetches the top pages in full, not just the snippets</span></span>
       <button class="st-toggle" id="s-ws-read" role="switch" aria-checked="true" aria-label="Read result pages"></button></div>
     <div class="st-field" id="ws-readmax-row">
       <label class="st-label" for="s-ws-readmax">Pages to read <output id="o-ws-readmax"></output></label>
@@ -296,15 +303,11 @@
             </select>
           </div>
           <p class="muted small" id="ws-jina-note" hidden>Privacy: with the Jina reader the page URLs go through r.jina.ai - a third party sees which pages are read.</p>
-    <div class="toggle-row"><span>Limit page text<br><span class="muted small">off = whole pages go in; the server still caps the total at the model's context</span></span>
+    <div class="toggle-row" id="ws-page-limit-row"><span>Limit page text<br><span class="muted small">off = whole pages go in; the server still caps the total at the model's context</span></span>
       <button class="st-toggle" id="s-ws-plim" role="switch" aria-checked="true" aria-label="Limit page text"></button></div>
     <div class="st-field" id="ws-plim-row">
       <label class="st-label" for="s-ws-plim-chars">Max characters per page <output id="o-ws-plim"></output></label>
       <input class="st-input" id="s-ws-plim-chars" type="number" min="1000" max="100000" step="500">
-    </div>
-    <div class="drawer-actions">
-      <button class="st-btn st-btn--secondary" id="s-reset" type="button">Reset</button>
-      <button class="st-btn st-btn--primary" id="s-apply" type="button">Apply</button>
     </div>
   </div>
 </aside>
