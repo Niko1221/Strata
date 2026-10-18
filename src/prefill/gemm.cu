@@ -1,7 +1,12 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
-#if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
+// Gemm::native_mmq (opt-in STRATA_DENSE_MMQ=1): the dense projections through llama.cpp's int8 MMQ.  The wave32 HIP
+// build has it with STRATA_PREFILL_MMQ; the gfx906 build always compiles the MMQ sources (strata_mmq).
+#if (defined(STRATA_PREFILL_MMQ) || defined(STRATA_HIP_GFX906)) && defined(__HIPCC__)
+#define STRATA_GEMM_DENSE_MMQ 1
+#endif
+#if defined(STRATA_GEMM_DENSE_MMQ)
 #include "strata/prefill/moe_mmq.hpp"
 #endif
 
@@ -643,6 +648,7 @@ Gemm::~Gemm() {
         if (e) (void) cudaEventDestroy((cudaEvent_t) e);
     if (side_stream_) (void) cudaStreamDestroy((cudaStream_t) side_stream_);
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
+#if defined(STRATA_GEMM_DENSE_MMQ)
     delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
     if (mmq_buf_) cudaFree(mmq_buf_);
 #endif
@@ -1247,7 +1253,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 
-#if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
+#if defined(STRATA_GEMM_DENSE_MMQ)
 bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int64_t T, int64_t N, int64_t K,
                       int64_t ldy) {
     namespace mmq = strata::prefill::mmq;
@@ -1256,7 +1262,7 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
         const char* e = std::getenv("STRATA_DENSE_MMQ");
         return e && e[0] == '1';
     }();
-    if (!enabled || mmq_failed_ || !mmq::built() || !mmq::fits(type, N)) return false;
+    if (!enabled || !dense_mmq_on_ || mmq_failed_ || !mmq::built() || !mmq::fits(type, N)) return false;
     // K must be a multiple of 256: llama.cpp's MMQ loads the weights in 256-value K chunks, and the
     // chunk past a partial row reads past the row (the next row's bytes - or, for the last weight
     // row, bytes past the tensor, which no caller guarantees to be zeros). The MoE path is safe
@@ -1389,7 +1395,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
                              "copied unpadded (no device memory)\n", (long long) ldx, (long long) K);
         std::exit(1);
     }
-#if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
+#if defined(STRATA_GEMM_DENSE_MMQ)
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
 #endif
     if (N * K > scratch_elems_) {

@@ -2705,9 +2705,29 @@ ColdTrace g_cold;
 bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                  std::string& err, int64_t ldy = 0, int64_t ldx = 0) {
     if (!w->native_data) { err = "prefill: " + name + " has no native GGUF blocks (run with --native)"; return false; }
+    // STRATA_DENSE_MMQ_SKIP=a,b,...: projections whose name holds one of these stay on the FP16 path under
+    // STRATA_DENSE_MMQ=1.  Default attn_k.,attn_v.: the K/V the decode reads, written from int8-rounded activations,
+    // cost the MTP drafts' acceptance (32K, IQ3_S: 72.7% -> 69.2%, decode -6%); on FP16 it is back (72.7%) for ~0.4%
+    // of the prompt gain, and the prompt logits' KL to the FP16 path halves.  STRATA_DENSE_MMQ_SKIP= (empty): none.
+    static const std::vector<std::string> skip = [] {
+        std::vector<std::string> v;
+        const char* e = std::getenv("STRATA_DENSE_MMQ_SKIP");
+        if (!e) return std::vector<std::string>{"attn_k.", "attn_v."};
+        if (e)
+            for (std::string s = e; !s.empty();) {
+                const size_t c = s.find(',');
+                if (c != 0) v.push_back(s.substr(0, c));
+                s = c == std::string::npos ? std::string() : s.substr(c + 1);
+            }
+        return v;
+    }();
+    bool off = false;
+    for (const auto& k : skip) off = off || name.find(k) != std::string::npos;
+    if (off) gm.set_dense_mmq(false);
     const bool ct = g_cold.begin();
     gm.native(X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy, 0.0f, ldx);
     if (ct) g_cold.end("native", name, T, w->ne1, w->ne0);
+    if (off) gm.set_dense_mmq(true);
     return true;
 }
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
