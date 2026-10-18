@@ -9,6 +9,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
+#include "strata/core/spec_proposal.hpp"
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -2644,7 +2645,22 @@ bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
+    const bool measure = spec_measure_;
+    // Clear this borrow and propagated stage borrows on every exit.
+    struct ProposalBorrow {
+        Verifier* verifier;
+        bool active;
+        ~ProposalBorrow() { if (active) verifier->set_spec_q(nullptr, 0); }
+    } proposal_borrow{this, measure};
+    if (measure && (T < 1 || T > strata::kernels::kVerifyMaxT ||
+                    spec_nq_ < 0 || spec_nq_ > T || (spec_nq_ > 0 && spec_q_ == nullptr))) {
+        err = "verify: proposal row count/pointer is invalid"; return false;
+    }
+    if (measure && (!head_sampling_ || sampling_.greedy || sampling_.temperature <= 0.0f)) {
+        err = "verify: proposal requires sampled head"; return false;
+    }
 #if defined(STRATA_GPU_METAL)
+    if (measure) { err = "verify: proposal unsupported on Metal"; return false; }
     (void) pool;
     (void) user;
     return strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err);
@@ -2932,7 +2948,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         sp.counter = (uint64_t) pos0;
         // STRATA_SPEC_PROB: the drafter's q lists for this window, judged by rejection sampling (spec_prob.hpp)
         bool judged = false;
-        if (sampled && spec_q_ != nullptr && spec_nq_ > 0 && T > 1 && T <= kVerifyMaxT) {
+        if (sampled && (measure || (spec_q_ != nullptr && spec_nq_ > 0 && T > 1)) && T <= kVerifyMaxT) {
             if (d_spec_ == nullptr &&
                 cudaMalloc((void**) &d_spec_, (size_t) kVerifyMaxT * (1 + strata::core::kSpecQStride) * sizeof(int32_t)) !=
                     cudaSuccess) {
@@ -2940,24 +2956,39 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 d_spec_ = nullptr;
             }
             if (d_spec_ != nullptr) {
-                const int nq = std::min(spec_nq_, T - 1);
+                const int nq = measure ? spec_nq_ : std::min(spec_nq_, T - 1);
                 int32_t* d_q = d_spec_ + kVerifyMaxT;
-                if (cudaMemcpyAsync(d_spec_, tokens + 1, (size_t) (T - 1) * sizeof(int32_t), cudaMemcpyHostToDevice, cs_) ==
-                        cudaSuccess &&
-                    cudaMemcpyAsync(d_q, spec_q_, (size_t) nq * strata::core::kSpecQStride * sizeof(int32_t),
-                                    cudaMemcpyHostToDevice, cs_) == cudaSuccess)
-                    judged = sample_tokens_spec(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, d_spec_, d_q, nq,
-                                                m_out_, cs_);
+                if ((T == 1 || cudaMemcpyAsync(d_spec_, tokens + 1, (size_t) (T - 1) * sizeof(int32_t), cudaMemcpyHostToDevice, cs_) ==
+                        cudaSuccess) &&
+                    (nq == 0 || cudaMemcpyAsync(d_q, spec_q_, (size_t) nq * strata::core::kSpecQStride * sizeof(int32_t),
+                                               cudaMemcpyHostToDevice, cs_) == cudaSuccess))
+                    judged = measure
+                        ? sample_tokens_proposal(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp,
+                                                 d_spec_, d_q, nq, m_out_, cs_)
+                        : sample_tokens_spec(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp,
+                                             d_spec_, d_q, nq, m_out_, cs_);
             }
         }
         spec_q_ = nullptr;
         spec_nq_ = 0;
+        if (measure && !judged) {
+            (void) cudaStreamSynchronize(cs_);
+            err = "verify: proposal sampler unavailable or allocation/copy/launch failed";
+            return false;
+        }
         if (judged) ++spec_windows;
         else sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {   // m_out_ is the mapped h_out_: synced, it is readable
             err = "verify: the head sampling failed";
             return false;
         }
+    }
+    if (measure) {
+        for (int t = 0; t < T; ++t)
+            if (((volatile int32_t*) h_out_)[t] == strata::core::proposal::kProposalSamplerErrorToken) {
+                err = "verify: invalid proposal candidate or zero NULL residual";
+                return false;
+            }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
     note_nonfinite(T, nullptr);

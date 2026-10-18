@@ -153,8 +153,20 @@ public:
     void set_spec_q(const int32_t* q, int n_q) {
         spec_q_ = q;
         spec_nq_ = n_q;
+        spec_measure_ = false;
         if (next_) next_->set_spec_q(q, n_q);
     }
+    /// Borrow immutable gated measure rows for the next run only. nq==T denotes
+    /// a NULL tail, nq<T a plain bonus. Errors never fall back to ordinary p.
+    /// nq == 0 accepts a null pointer: point-only rows and a plain bonus (T1: plain p).
+    /// Keep the host rows alive and unchanged until run returns.
+    void set_spec_proposal(const int32_t* q, int n_q) {
+        spec_q_ = q;
+        spec_nq_ = n_q;
+        spec_measure_ = true;
+        if (next_) next_->set_spec_proposal(q, n_q);
+    }
+
     /// Counters of the rejection path (windows judged, drafts kept / offered over its rows with a q list).
     int64_t spec_windows = 0;
 
@@ -441,6 +453,7 @@ private:
     const int32_t* hist_d_ = nullptr;   ///< penalty-history row (set_history); null = no penalties apply
     const int32_t* spec_q_ = nullptr;   ///< set_spec_q: the drafter's q rows for the next window (host)
     int spec_nq_ = 0;
+    bool spec_measure_ = false;   ///< explicit per-call measure borrow
     int32_t* d_spec_ = nullptr;          ///< device: kVerifyMaxT draft ids, then kVerifyMaxT q rows
     int hist_len_ = 0;
     bool head_sampling_ = true;          ///< set_head_sampling

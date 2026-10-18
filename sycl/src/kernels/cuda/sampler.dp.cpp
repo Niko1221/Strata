@@ -1774,4 +1774,10 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
     coupled_check("coupled_draft merge");
 }
 
+// No ordinary-p fallback for an explicit gated measure.
+bool sample_tokens_proposal(const float*, int, int, const int*, int,
+                            const SamplerParams&, const int32_t*, const int32_t*, int, int*, void*) {
+    return false;
+}
+
 }  // namespace strata::kernels

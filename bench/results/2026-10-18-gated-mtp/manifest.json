@@ -1,0 +1,1607 @@
+{
+  "schema": "augmented-random100-v1",
+  "status": "complete",
+  "master_seed": 2026101802591,
+  "binary_sha256": {
+    "U": "92957550cac688f0a27f43247887180b75433a121a5a9612cd924b24bc0236df",
+    "A": "d62fcd5fab7e4384288f5733d78adb40cb634d5f67720c9620bec1a7ffd70760"
+  },
+  "config_sha256": {
+    "U": "37dc04b9b4fa95be11ea135cc4bf62bc64a909d22bf5ab7f0c67b5c8123ee9d1",
+    "A": "17e9b1ca57a2768a1603e8ca53dd7ca0187c6e992e9afc3fbcf278003dd7097a"
+  },
+  "A_overrides": {
+    "STRATA_SPEC_PROB_GATE": "pick"
+  },
+  "sampling": {
+    "top_k": 20,
+    "top_p": 0.95,
+    "min_p": 0.05
+  },
+  "fixture_archive_sha256": "79cc679980d451e49180765ecb80fa05e6746eb7e4209684910244bd423af6ec",
+  "fixtures": [
+    {
+      "name": "english",
+      "ids": [
+        248045,
+        846,
+        198,
+        7734,
+        264,
+        11346,
+        20856,
+        314,
+        506,
+        3140,
+        220,
+        17,
+        15,
+        15,
+        15,
+        4105,
+        883,
+        4779,
+        6044,
+        303,
+        449,
+        211342,
+        45157,
+        20340,
+        8404,
+        17830,
+        15089,
+        42903,
+        3421,
+        13,
+        79091,
+        81726,
+        51790,
+        11,
+        6009,
+        20791,
+        11,
+        829,
+        7320,
+        11,
+        16401,
+        11,
+        81347,
+        11,
+        321,
+        279,
+        6355,
+        61782,
+        440,
+        13769,
+        9989,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ]
+    },
+    {
+      "name": "source",
+      "ids": [
+        248045,
+        8678,
+        198,
+        24342,
+        286,
+        4879,
+        369,
+        716,
+        310,
+        830,
+        11553,
+        13,
+        5044,
+        1683,
+        15060,
+        1472,
+        279,
+        3274,
+        11,
+        9307,
+        1328,
+        30800,
+        11,
+        2814,
+        47675,
+        25605,
+        11,
+        321,
+        60445,
+        55404,
+        11,
+        27224,
+        11,
+        321,
+        30246,
+        303,
+        279,
+        1534,
+        4087,
+        13,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        3710,
+        369,
+        220,
+        16,
+        22,
+        348,
+        220,
+        17,
+        18,
+        478,
+        220,
+        16,
+        19,
+        19,
+        593,
+        220,
+        16,
+        17,
+        30,
+        6712,
+        279,
+        7123,
+        25899,
+        13,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13,
+        7860,
+        28,
+        19,
+        15,
+        18,
+        13,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13,
+        7860,
+        283,
+        220,
+        19,
+        15,
+        18,
+        13,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13,
+        7860,
+        28,
+        19,
+        15,
+        18,
+        13,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13,
+        7860,
+        283,
+        220,
+        19,
+        15,
+        18,
+        13,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13,
+        7860,
+        28,
+        19,
+        15,
+        18,
+        13,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13,
+        7860,
+        283,
+        220,
+        19,
+        15,
+        18,
+        13,
+        198,
+        1596,
+        1144,
+        4087,
+        4145,
+        33633,
+        13,
+        14235,
+        1534,
+        9522,
+        7123,
+        13,
+        21902,
+        220,
+        16,
+        22,
+        9,
+        17,
+        18,
+        28,
+        18,
+        24,
+        16,
+        13,
+        220,
+        16,
+        19,
+        19,
+        14,
+        16,
+        17,
+        28,
+        16,
+        17,
+        13
+      ]
+    }
+  ],
+  "blocks": [
+    {
+      "block": 0,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 6714357532638544733,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 8720923856341635658,
+          "limit": 67,
+          "group_id": "g000"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 1021567863247010021,
+          "limit": 64,
+          "group_id": "g001"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 8075399806907520320,
+          "limit": 67,
+          "group_id": "g002"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 3693420120208156015,
+          "limit": 64,
+          "group_id": "g003"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 677385660859108724,
+          "limit": 67,
+          "group_id": "g004"
+        }
+      ]
+    },
+    {
+      "block": 1,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 53573012874250422,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 1430040684317287314,
+          "limit": 64,
+          "group_id": "g005"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 1931917903111659950,
+          "limit": 64,
+          "group_id": "g006"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8408953160202994368,
+          "limit": 64,
+          "group_id": "g007"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 2038933380837488841,
+          "limit": 67,
+          "group_id": "g008"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 6317421607986069479,
+          "limit": 67,
+          "group_id": "g009"
+        }
+      ]
+    },
+    {
+      "block": 2,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 4037051574439400925,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 2177014697488871183,
+          "limit": 67,
+          "group_id": "g010"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 3448478505582534498,
+          "limit": 67,
+          "group_id": "g011"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 4560921703476652776,
+          "limit": 64,
+          "group_id": "g012"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 779627082609749792,
+          "limit": 64,
+          "group_id": "g013"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 1640044268448431012,
+          "limit": 64,
+          "group_id": "g014"
+        }
+      ]
+    },
+    {
+      "block": 3,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 4523010565293247253,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 8537801571816923891,
+          "limit": 64,
+          "group_id": "g015"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 7242108437847682801,
+          "limit": 67,
+          "group_id": "g016"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 197398515074552755,
+          "limit": 64,
+          "group_id": "g017"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 5254405913876541695,
+          "limit": 67,
+          "group_id": "g018"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 1402843913638788815,
+          "limit": 64,
+          "group_id": "g019"
+        }
+      ]
+    },
+    {
+      "block": 4,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 7938494909983361687,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 5499875590455033436,
+          "limit": 64,
+          "group_id": "g020"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 559483831667216262,
+          "limit": 64,
+          "group_id": "g021"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 2981571317003368070,
+          "limit": 67,
+          "group_id": "g022"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8194466278311668848,
+          "limit": 64,
+          "group_id": "g023"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 3364386889448968779,
+          "limit": 67,
+          "group_id": "g024"
+        }
+      ]
+    },
+    {
+      "block": 5,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 4106301705732554738,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 8595625152465146167,
+          "limit": 67,
+          "group_id": "g025"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 8619326149796860364,
+          "limit": 67,
+          "group_id": "g026"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 3960222539854508987,
+          "limit": 64,
+          "group_id": "g027"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 8519418319652824198,
+          "limit": 67,
+          "group_id": "g028"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 87533875694327955,
+          "limit": 64,
+          "group_id": "g029"
+        }
+      ]
+    },
+    {
+      "block": 6,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 3648358254820193977,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 698642994803927022,
+          "limit": 67,
+          "group_id": "g030"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 4655063109516538145,
+          "limit": 64,
+          "group_id": "g031"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 149919902937739212,
+          "limit": 67,
+          "group_id": "g032"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 1415556733400250114,
+          "limit": 64,
+          "group_id": "g033"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 375032409354141059,
+          "limit": 67,
+          "group_id": "g034"
+        }
+      ]
+    },
+    {
+      "block": 7,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 4840677042406367131,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 168695437715590392,
+          "limit": 67,
+          "group_id": "g035"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 2412741639367848364,
+          "limit": 67,
+          "group_id": "g036"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8368287410656125846,
+          "limit": 64,
+          "group_id": "g037"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 7149450145300054413,
+          "limit": 64,
+          "group_id": "g038"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 3476036812200201159,
+          "limit": 64,
+          "group_id": "g039"
+        }
+      ]
+    },
+    {
+      "block": 8,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 467954756783670366,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 5195890385814317388,
+          "limit": 64,
+          "group_id": "g040"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 1636383539756542745,
+          "limit": 67,
+          "group_id": "g041"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 2683348181244207548,
+          "limit": 67,
+          "group_id": "g042"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 7394415422160356884,
+          "limit": 64,
+          "group_id": "g043"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 5723211241974579006,
+          "limit": 67,
+          "group_id": "g044"
+        }
+      ]
+    },
+    {
+      "block": 9,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 8680684031330901641,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 3039841843310994264,
+          "limit": 67,
+          "group_id": "g045"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 592697959800118786,
+          "limit": 67,
+          "group_id": "g046"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 3702645625291792862,
+          "limit": 64,
+          "group_id": "g047"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 8427446179763858946,
+          "limit": 64,
+          "group_id": "g048"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 1767088891239804188,
+          "limit": 67,
+          "group_id": "g049"
+        }
+      ]
+    },
+    {
+      "block": 10,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 6238503143195508096,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8041612034918292304,
+          "limit": 64,
+          "group_id": "g050"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 3974940886237362869,
+          "limit": 67,
+          "group_id": "g051"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 4013042163982493013,
+          "limit": 67,
+          "group_id": "g052"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 224516744802881280,
+          "limit": 64,
+          "group_id": "g053"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 2492063458746668232,
+          "limit": 64,
+          "group_id": "g054"
+        }
+      ]
+    },
+    {
+      "block": 11,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 1370012114995833999,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 2458832478678897504,
+          "limit": 67,
+          "group_id": "g055"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 9170040201183961601,
+          "limit": 67,
+          "group_id": "g056"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 2519811567378058648,
+          "limit": 67,
+          "group_id": "g057"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 5366057533509755742,
+          "limit": 64,
+          "group_id": "g058"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 1450603395353564330,
+          "limit": 64,
+          "group_id": "g059"
+        }
+      ]
+    },
+    {
+      "block": 12,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 3443646261488794774,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 4396160397875859024,
+          "limit": 67,
+          "group_id": "g060"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 2208171196033731518,
+          "limit": 64,
+          "group_id": "g061"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 7496467309806572258,
+          "limit": 67,
+          "group_id": "g062"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 7375214399448617372,
+          "limit": 67,
+          "group_id": "g063"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 6478310765915955579,
+          "limit": 64,
+          "group_id": "g064"
+        }
+      ]
+    },
+    {
+      "block": 13,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 6089371997426636636,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 6681652702553390722,
+          "limit": 67,
+          "group_id": "g065"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 4909347058457914419,
+          "limit": 64,
+          "group_id": "g066"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 7539474328050060939,
+          "limit": 64,
+          "group_id": "g067"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 8016415421147889047,
+          "limit": 67,
+          "group_id": "g068"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 4078585286493927432,
+          "limit": 64,
+          "group_id": "g069"
+        }
+      ]
+    },
+    {
+      "block": 14,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 5327627150020385208,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 1162850176886374945,
+          "limit": 67,
+          "group_id": "g070"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 4856784195712602129,
+          "limit": 64,
+          "group_id": "g071"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 439599105028145360,
+          "limit": 64,
+          "group_id": "g072"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 3256188150520738187,
+          "limit": 67,
+          "group_id": "g073"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 4846145604135617914,
+          "limit": 67,
+          "group_id": "g074"
+        }
+      ]
+    },
+    {
+      "block": 15,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 3860150027127445342,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 9119435692725221825,
+          "limit": 67,
+          "group_id": "g075"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 4095753617706604353,
+          "limit": 67,
+          "group_id": "g076"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8988197447204619263,
+          "limit": 64,
+          "group_id": "g077"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 4260027133641225082,
+          "limit": 64,
+          "group_id": "g078"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 1425182060421536343,
+          "limit": 67,
+          "group_id": "g079"
+        }
+      ]
+    },
+    {
+      "block": 16,
+      "order": [
+        "A",
+        "U"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 9083985173446900301,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 6673301788958727587,
+          "limit": 67,
+          "group_id": "g080"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 3332044983134667659,
+          "limit": 67,
+          "group_id": "g081"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 6400860367132928173,
+          "limit": 64,
+          "group_id": "g082"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 2756745880944490508,
+          "limit": 67,
+          "group_id": "g083"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 4289437234546428165,
+          "limit": 64,
+          "group_id": "g084"
+        }
+      ]
+    },
+    {
+      "block": 17,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 66560782475509812,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 9155103031695417604,
+          "limit": 67,
+          "group_id": "g085"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 7709356175749742752,
+          "limit": 64,
+          "group_id": "g086"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8828143900876983854,
+          "limit": 64,
+          "group_id": "g087"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 6369766534341833349,
+          "limit": 67,
+          "group_id": "g088"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 5027308714682110332,
+          "limit": 64,
+          "group_id": "g089"
+        }
+      ]
+    },
+    {
+      "block": 18,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 3398560711853902582,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 3639527281127398184,
+          "limit": 64,
+          "group_id": "g090"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 9066927345564019277,
+          "limit": 67,
+          "group_id": "g091"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 4688518555469023613,
+          "limit": 67,
+          "group_id": "g092"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 8845071023920876999,
+          "limit": 64,
+          "group_id": "g093"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 222409655716230061,
+          "limit": 64,
+          "group_id": "g094"
+        }
+      ]
+    },
+    {
+      "block": 19,
+      "order": [
+        "U",
+        "A"
+      ],
+      "warmup": {
+        "workload": "warmup",
+        "fixture": "english",
+        "temperature": 0.6,
+        "seed": 47043872977919312,
+        "limit": 16,
+        "group_id": null
+      },
+      "requests": [
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 1.0,
+          "seed": 2523885897231791558,
+          "limit": 67,
+          "group_id": "g095"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 4653590214485986508,
+          "limit": 64,
+          "group_id": "g096"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 0.6,
+          "seed": 6809061226179029071,
+          "limit": 64,
+          "group_id": "g097"
+        },
+        {
+          "workload": "english",
+          "fixture": "english",
+          "temperature": 1.0,
+          "seed": 6196903856378622357,
+          "limit": 64,
+          "group_id": "g098"
+        },
+        {
+          "workload": "source",
+          "fixture": "source",
+          "temperature": 0.6,
+          "seed": 8214312280458682781,
+          "limit": 67,
+          "group_id": "g099"
+        }
+      ]
+    }
+  ],
+  "paired_groups": 100,
+  "measured_generations": 200,
+  "warmup_generations": 40,
+  "engine_starts": 40,
+  "total_budget_seconds": 1800,
+  "request_budget_seconds": 40,
+  "primary": "All completed valid A/U decode-throughput ratios, including short EOS; preserve all raw pairs and invalid-ratio records",
+  "secondary": "Both arms reach the same predeclared cap: English64 or repeat67; report eligible N",
+  "stopping": "No outcome-based stop. Stop for structural/protocol/identity fault, numerical engine failure, interruption or predeclared timeout/budget only.",
+  "independence": "100 request pairs clustered in 20 paired engine blocks; identical input schedule is not identical generated history, policy state or residency.",
+  "sampling_method": "Python random.Random(master_seed) used once; complete schedule and all seeds stored here. Runtime never regenerates schedule."
+}

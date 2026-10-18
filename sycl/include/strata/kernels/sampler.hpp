@@ -84,4 +84,9 @@ inline void penalty_rows(const int32_t* tail, int64_t n_tail, const int32_t* win
     }
 }
 
+// Gated proposal verification is not implemented by the SYCL backend.
+bool sample_tokens_proposal(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
+                            const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
+                            void* stream);
+
 }  // namespace strata::kernels

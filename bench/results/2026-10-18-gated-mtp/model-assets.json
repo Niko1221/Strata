@@ -1,0 +1,108 @@
+{
+  "files": [
+    {
+      "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+      "bytes": 29608446496,
+      "sha256": "e11083ba855e7666b48ea3f2db6a9c3a20c18751a012cc24f948de91b7087fad",
+      "roles": [
+        "native-main-shard"
+      ]
+    },
+    {
+      "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+      "roles": [
+        "ple-shard"
+      ]
+    },
+    {
+      "name": "dense.bin",
+      "bytes": 116099072,
+      "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+      "roles": [
+        "mtp-directory-including-draft-vocabulary"
+      ]
+    },
+    {
+      "name": "dense.txt",
+      "bytes": 1880,
+      "sha256": "8773c81ebb0986e37fe94a8a9933e87be48b1fabc6889a0106bcdab179d1c2ac",
+      "roles": [
+        "mtp-directory-including-draft-vocabulary"
+      ]
+    },
+    {
+      "name": "draft_vocab.bin",
+      "bytes": 425196,
+      "sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91",
+      "roles": [
+        "mtp-directory-including-draft-vocabulary"
+      ]
+    },
+    {
+      "name": "experts.bin",
+      "bytes": 707788800,
+      "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f",
+      "roles": [
+        "mtp-directory-including-draft-vocabulary"
+      ]
+    },
+    {
+      "name": "conversions.json",
+      "bytes": 322,
+      "sha256": "f7f29b579988e96d73b99023048745bc3cf0f900840dbae1c067f1667601750d",
+      "roles": [
+        "pack-directory-conservative-inventory"
+      ]
+    },
+    {
+      "name": "dense.bin",
+      "bytes": 1475120640,
+      "sha256": "99853263806e25450074fc9945f1e955b175bea05aa171ceeb6b5837bf6a1d9d",
+      "roles": [
+        "pack-directory-conservative-inventory"
+      ]
+    },
+    {
+      "name": "experts.bin",
+      "bytes": 25146163200,
+      "sha256": "e72025811e52f0a7fa24a5e0ce4b8d5a8ca91865ae4b8389c6292de8338ca983",
+      "roles": [
+        "pack-directory-conservative-inventory"
+      ]
+    },
+    {
+      "name": "experts.bin.src.json",
+      "bytes": 388,
+      "sha256": "8ceeefa4a7dca4eee138be29a89da7be9638c69336d3f60653816ffd7d41ab9e",
+      "roles": [
+        "pack-directory-conservative-inventory"
+      ]
+    },
+    {
+      "name": "index.txt",
+      "bytes": 93633,
+      "sha256": "2cb3352786bcae81ea4d933eee6b2d5db45774069320c924a6dea48eb65a3cd3",
+      "roles": [
+        "pack-directory-conservative-inventory"
+      ]
+    },
+    {
+      "name": "native_experts.txt",
+      "bytes": 3269,
+      "sha256": "9ace1b92e1fe12595de469409e69dd52c8d5418c7981c405d9a51aa9d574dd3b",
+      "roles": [
+        "pack-directory-conservative-inventory"
+      ]
+    },
+    {
+      "name": "expert-profile-coder.bin",
+      "bytes": 98328,
+      "sha256": "a514661124d5305effe9c1bcecff7dc069af398b2b19ff9d11628a2cad0a8915",
+      "roles": [
+        "expert-placement-profile"
+      ]
+    }
+  ]
+}

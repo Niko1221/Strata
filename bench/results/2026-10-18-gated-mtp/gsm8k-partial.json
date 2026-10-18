@@ -1,0 +1,38 @@
+{
+  "complete": false,
+  "planned": 1319,
+  "recorded": 304,
+  "unrecorded": 1015,
+  "temperature": 0.6,
+  "seed_group": 2591001,
+  "max_output_tokens": 8192,
+  "sampling": {
+    "top_k": 20,
+    "top_p": 0.95,
+    "min_p": 0.05
+  },
+  "candidate_binary_sha256": "d62fcd5fab7e4384288f5733d78adb40cb634d5f67720c9620bec1a7ffd70760",
+  "original_binary_sha256": "92957550cac688f0a27f43247887180b75433a121a5a9612cd924b24bc0236df",
+  "completed_subset": {
+    "A": {
+      "correct": 300,
+      "incorrect": 3,
+      "truncated": 1
+    },
+    "U": {
+      "correct": 300,
+      "incorrect": 4
+    }
+  },
+  "scorer_sha256": "7c60694c1956be07965ac555964aac555827f6ea931c68601ce3f49ff9afbab7",
+  "stop": {
+    "before_question_index": 304,
+    "reason": "Windows commit pressure reduced the RAM expert arena at the next engine startup",
+    "expected_arena_mib": [
+      10238,
+      10240
+    ],
+    "actual_arena_mib": 6698
+  },
+  "baseline_timing": "Historical U timing is not a contemporaneous speed comparison"
+}
