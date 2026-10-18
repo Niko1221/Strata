@@ -239,6 +239,24 @@ The Coder on an RTX 5080 + RTX 3090 (Ryzen 9 9950X3D), 32K context; details in
   expert, the per-layer GPU time decides.
 - **Correctness:** one GPU is byte-identical to 0.1.20, and the hand-off itself is bit-exact.
 
+**Two PCIe V100-class cards on a DDR3L host, with the single-card control** (0.1.44.1, the
+same suite and the same day on both arms, n=2 per arm; details in
+`bench/results/2026-10-18-community-2x-pcie-v100-ddr3l/`): 2x Tesla PG500-216 32 GB
+(1,132 GB/s) on PCIe 3.0 x16, TCC, dual E5-2696 v3, 128 GB DDR3L-1600, Windows 10,
+Flash-Next IQ3_XXS (262K) and Unsloth UD-IQ4_XS (131K), split auto = K=24:
+
+| | 4.3K-doc decode, 1x | 2x | 2x + `--pipeline-windows 2` | H1 probe 1x -> 2x | 4.3K prefill 1x -> 2x |
+|---|---:|---:|---:|---:|---:|
+| IQ3_XXS | 77.0 | 108.6 (1.41x) | **129.0 (1.67x)** | 78.3 -> 101.2 | 1,113 -> 1,091 |
+| UD-IQ4_XS | 40.0 | 79.1 (**1.98x**) | - | 44.6 -> 80.9 | 546 -> 804 (1.47x) |
+
+The split takes the caches to 100% (XXS) / 99.8% of the routed mass (UD), so decode gains the
+most where the single card was the most host-bound: the UD tier, whose 4-bit experts are the
+biggest per-token host traffic, roughly doubles on this DDR3L box. With the caches full the
+`--pcie-frac` sweep is flat from 0 to 1 and the pool-workers sensitivity the single-card UD tier
+had (20%) disappears; `--pipeline-windows 2` adds another 15-19% on top of the split (an H1
+prompt read drops to 21 ms). Peak 62/60 C at the 250 W limits.
+
 **Which cards and in what order:**
 - Put the fastest card first; auto gives it as many layers as its cache allows.
 - Leave out a much slower card when two already hold the model. An RTX 2080 Ti as a third card made the 5080 +

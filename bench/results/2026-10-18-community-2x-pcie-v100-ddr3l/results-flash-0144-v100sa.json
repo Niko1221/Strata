@@ -1,0 +1,51 @@
+[
+ {
+  "tag": "short",
+  "prompt_tok": 66,
+  "out_tok": 191,
+  "decode_tps": 67.3,
+  "prompt_tps": 107.2,
+  "prompt_ms": 615.9,
+  "draft": [
+   89,
+   100
+  ]
+ },
+ {
+  "tag": "long",
+  "prompt_tok": 83,
+  "out_tok": 3926,
+  "decode_tps": 70.5,
+  "prompt_tps": 120.2,
+  "prompt_ms": 690.6,
+  "draft": [
+   1781,
+   2362
+  ]
+ },
+ {
+  "tag": "L1-4k-doc",
+  "prompt_tok": 4340,
+  "out_tok": 716,
+  "decode_tps": 75.5,
+  "prompt_tps": 1087.6,
+  "prompt_ms": 3990.3,
+  "draft": [
+   471,
+   517
+  ]
+ },
+ {
+  "tag": "H1-cap4000",
+  "prompt_tok": 86,
+  "out_tok": 4302,
+  "decode_tps": 77.2,
+  "prompt_tps": 73.4,
+  "prompt_ms": 1172.1,
+  "draft": [
+   2418,
+   2767
+  ],
+  "h1_has_8090": true
+ }
+]
