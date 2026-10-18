@@ -17,6 +17,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(STRATA_GPU_METAL)
+namespace strata::metal_engine {   // metal/src/engine/host_memory.h: the engine's one reading of the free memory
+bool host_memory_now(double& available, double& phys);
+}  // namespace strata::metal_engine
 #endif
 
 namespace strata::core {
@@ -286,6 +290,14 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
+#elif defined(STRATA_GPU_METAL)
+    // macOS (the Metal engine): no /proc/meminfo.  The engine's own reading (host_memory.h), the rule its streaming
+    // arena uses: free and purgeable pages and the clean file cache, not other programs' inactive anonymous memory;
+    // hw.memsize is the total.  No cgroups.
+    double avail = 0, phys = 0;
+    if (!strata::metal_engine::host_memory_now(avail, phys) || phys <= 0) return {};
+    const uint64_t total = (uint64_t) phys;
+    return combine(std::min((uint64_t) std::max(0.0, avail), total), total, CgroupScan{}, memory_limit_bytes());
 #else
     return {};
 #endif
