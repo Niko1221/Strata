@@ -673,12 +673,14 @@ the shrink. Without the flag nothing changes (the same answers as without it).
 `--vram-reserve-mib` before verification. `STRATA_PREFILL_MTP_LOAN=1` additionally loads the MTP routed experts and
 draft head after the first prompt; `STRATA_PREFILL_HEAD_LOAN=1` also delays the native output head and verifier.
 `STRATA_PREFILL_RETAIN_STARTUP_CHUNK=1` retains the chunk fitted at startup for that first prompt instead of laying
-it out again, and later turns grow only what fits around the now-loaded decode weights. Every switch is off unless it
-is exactly requested in the config's `env` object. The MTP switch requires `--mtp` and `--spec 2` or higher; the head
-switch requires `--native` (or `--native-head-gguf`). The engine refuses this mode with batch slots, pipeline
-windows, a layer split, helper GPU caches, `--peer-device`, HIP, a segment below 64 MiB, or without `--serve` and
-`--vram-elastic`. The resize is best effort, like `POST /v1/vram`: segment granularity and the minimum prompt-cache
-floor can leave less free VRAM than the requested reserve; compare the logged free MiB with the reserve.
+it out again. `STRATA_PREFILL_REPEAT_LOAN=1` releases and restores those decode-only resources around later prompts
+whose unread tail is at least 1,024 tokens; `STRATA_PREFILL_REPEAT_MIN_TOKENS` changes that threshold (minimum 256).
+Every switch is off unless it is exactly requested in the config's `env` object. The MTP switch requires `--mtp` and
+`--spec 2` or higher; the head switch requires `--native` (or `--native-head-gguf`). The engine refuses this mode with
+batch slots, pipeline windows, a layer split, helper GPU caches, `--peer-device`, `--prefill-head-alias`, HIP, a
+segment below 64 MiB, or without `--serve` and `--vram-elastic`. The resize is best effort, like `POST /v1/vram`:
+segment granularity and the minimum prompt-cache floor can leave less free VRAM than the requested reserve; compare
+the logged free MiB with the reserve.
 
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.
