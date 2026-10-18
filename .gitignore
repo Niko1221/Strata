@@ -65,6 +65,7 @@ build-vision-cuda12.bat
 
 # local Windows HIP packaging output
 dist-hip/
+gap/.server
 
 # Terminal / Desktop split: local venvs, build output and archives never enter git
 .terminal-venv/

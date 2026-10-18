@@ -1,6 +1,7 @@
 #!/bin/bash
-# measure.sh <arms-file>: the gap window when the Strata server is the agent's own model (server must stay off).
-# Stops the running Strata server, frees its RAM, runs the arms with gap.sh (server untouched), restarts the server.
+# measure.sh <arms-file>: the gap window when the Strata server is the agent's own model (the other local
+# serve process must stay off). Stops the running Strata server, frees its RAM, runs the arms with gap.sh
+# (that other server untouched), restarts the server.
 # Foreground is best - progress streams to your terminal, and Ctrl-C or a closed terminal still restarts the server:
 #   ./gap/measure.sh gap/arms-round13.txt 2>&1 | tee /tmp/round13.log
 # Detached instead: nohup ./gap/measure.sh gap/arms-round13.txt > /tmp/round13.log 2>&1 &   then:  tail -f /tmp/round13.log
@@ -46,7 +47,7 @@ restart_server() {
   echo "SERVER NOT RESTORED after 300s - check $OUT/server-restore.log" >&2
 }
 
-pgrep -x server >/dev/null && echo "WARNING: server is running; it steals RAM the arena needs - stop it first" >&2
+srv=$(cat "$FORK/gap/.server" 2>/dev/null); [[ -n ${srv:-} ]] && pgrep -x "$srv" >/dev/null && echo "WARNING: $srv is running; it steals RAM the arena needs - stop it first" >&2
 stop_server
 GAP_NO_SERVER=1 "$FORK/gap/gap.sh" "$ARMS" 2>&1 | tee "$OUT/arms.log"
 restart_server
