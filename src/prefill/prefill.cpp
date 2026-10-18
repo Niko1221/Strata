@@ -2941,7 +2941,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 pt.mark(kPfHc, cs);
                 const bool can_upmix = wu->q8_scale == nullptr && hc_upmix() &&
                                        T >= std::max(pf_switch_min_t(), hc_upmix_min_t()) && !gr_unfused() &&
-                                       !m.lo16_lo && !m.mixed_bf_lo && wu->kind == core::WeightKind::Bf16InF32 &&
+                                       !m.f16_io && !m.lo16_lo && !m.mixed_bf_lo && wu->kind == core::WeightKind::Bf16InF32 &&
                                        (wu->data != nullptr || wu->hc_q8 != nullptr) && wu->ne0 == LR && wu->ne1 == D;
                 static int upmix_checks = [] { const char* e = std::getenv("STRATA_HC_UPMIX_CHECK"); return e ? std::atoi(e) : 0; }();
                 const uint8_t* wu_q8_raw = (can_upmix && !wu->data && wu->hc_q8) ? (const uint8_t*) wu->hc_q8 : nullptr;
@@ -3000,6 +3000,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         cudaMemcpyAsync(ref.data(), m.mixed, ref.size() * 4, cudaMemcpyDeviceToHost, m.cs);
                         upmixed = gr_upmix(m.lo16, wu_q8_raw ? nullptr : (const uint16_t*) wu->data, m.R, m.grs,
                                            (const float*) wn->data, m.mixed, m.mixed_bf, m.mixed_h, T, m.cs, wu_q8_raw);
+                        if (!upmixed && wu_q8_raw != nullptr && wu->data != nullptr) {
+                            upmixed = gr_upmix(m.lo16, (const uint16_t*) wu->data, m.R, m.grs,
+                                               (const float*) wn->data, m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
+                        }
                         cudaMemcpyAsync(got.data(), m.mixed, got.size() * 4, cudaMemcpyDeviceToHost, m.cs);
                         cudaStreamSynchronize(m.cs);
                         double e2 = 0, r2 = 0, emax = 0;
@@ -3024,8 +3028,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             return false;
                         }
                         wu = &wu_q8;
+                        if (can_upmix && wu_q8_raw != nullptr) {
+                            upmixed = gr_upmix(m.lo16, (const uint16_t*) wu->data, m.R, m.grs,
+                                               (const float*) wn->data, m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
+                        }
                     }
-                    if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+                    if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
                 }
                 if (!hcd && !bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
                 if (upmixed) {
