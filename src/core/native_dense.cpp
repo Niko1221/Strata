@@ -179,13 +179,19 @@ struct Upload {
     uint64_t bytes;
 };
 
-/// STRATA_DENSE_UPLOAD_THREADS: the threads that copy the matrices to the GPU (default 8; 1 = one synchronous
-/// cudaMemcpy per matrix straight from the mapping, the order before).  On Windows the mapping is not read ahead
+/// STRATA_DENSE_UPLOAD_THREADS: the threads that copy the matrices to the GPU (1 = one synchronous cudaMemcpy per
+/// matrix straight from the mapping, the order before).  Default 8 on Windows, where the mapping is not read ahead
 /// (advise_willneed is a no-op there), so one thread took its page faults one at a time: 2019 MiB in 2.2 s on an
-/// RTX 3090 + PCIe 5 NVMe.
+/// RTX 3090 + PCIe 5 NVMe.  Default 1 elsewhere: the mapping is read ahead there, and on Linux with 4 GPUs the
+/// threads made the start slower (103 s -> 122 s cold, measured by blange48 on #2673).
 int dense_upload_threads() {
     const char* v = std::getenv("STRATA_DENSE_UPLOAD_THREADS");
-    const int n = v != nullptr && *v ? std::atoi(v) : 8;
+#if defined(_WIN32)
+    const int fallback = 8;
+#else
+    const int fallback = 1;
+#endif
+    const int n = v != nullptr && *v ? std::atoi(v) : fallback;
     return std::clamp(n, 1, 32);
 }
 
