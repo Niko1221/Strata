@@ -1452,6 +1452,17 @@ if(STRATA_NATIVE_EXPERTS)
     add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   else()
     include(FetchContent)
+    # the populate-then-add_subdirectory form is deliberate: the checkout's ggml/ subdirectory goes into
+    # ${CMAKE_BINARY_DIR}/ggml, the same binary dir the STRATA_GGML_DIR branch above uses, so a ggml from a
+    # checkout and a fetched one build in one place.  FetchContent_MakeAvailable() is not a drop-in here: it adds
+    # the subdirectory with its own binary dir, and EXCLUDE_FROM_ALL in FetchContent_Declare is only honoured from
+    # CMake 3.28 - on the 3.24 floor this project supports that would change the target graph.
+    # CMake 3.30 deprecated the single-name FetchContent_Populate() (policy CMP0169); CMake 4.4 warns on every
+    # configure while the policy is unset.  Pin the old behavior, guarded so CMake < 3.30 (no such policy) still
+    # configures.  Guarded by tools/test_fetchcontent_policy.py.
+    if(POLICY CMP0169)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
     FetchContent_Declare(strata_llamacpp
       GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
       GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
