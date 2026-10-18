@@ -1185,7 +1185,7 @@ unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 struct DevInfo {
     bool done = false, ok = false;
     bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
-    bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
+    bool t75 = false;   // Turing (sm_75): codebook and plain formats (ASTAGES_DEV=2, WW=2 for IQ2_S/XS)
     int sms = 0, occ = 1;
 };
 std::mutex g_mu;
@@ -1218,6 +1218,13 @@ template <int T, bool GU, int WW> bool setup_ww(int& occ) {
     return true;
 }
 template <int T, bool GU> bool setup_one(int& occ) { return setup_ww<T, GU, 4>(occ) && setup_ww<T, GU, 2>(occ); }
+template <int T, bool GU> bool setup_one_turing(int& occ) {
+    if constexpr (T == T_IQ2_S || T == T_IQ2_XS) {
+        return setup_ww<T, GU, 2>(occ);
+    } else {
+        return setup_ww<T, GU, 4>(occ) && setup_ww<T, GU, 2>(occ);
+    }
+}
 #endif
 
 #if defined(__HIPCC__)
@@ -1291,13 +1298,21 @@ const DevInfo& dev_info() {
     major = strata::cc_major_of(major);   // STRATA_EMULATE_CC counts (tests)
     minor = strata::cc_minor_of(minor);
     cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
-    // Turing (sm_75): the same kernels with plain copies and m8n8k16 MMAs, opt-in (STRATA_PF_FUSED_SM75=1)
-    static const bool sm75 = [] { const char* v = std::getenv("STRATA_PF_FUSED_SM75"); return v != nullptr && v[0] == '1'; }();
+    // Turing (sm_75): the same kernels with plain copies and m8n8k16 MMAs, opt-in (STRATA_PF_FUSED=1 or STRATA_PF_FUSED_SM75=1)
+    static const bool sm75 = [] {
+        const char* v = std::getenv("STRATA_PF_FUSED_SM75");
+        const char* f = std::getenv("STRATA_PF_FUSED");
+        return (v != nullptr && v[0] == '1') || (f != nullptr && f[0] == '1');
+    }();
     if (major < 8 && !(major == 7 && minor == 5 && sm75)) return d;
     int occ = 1 << 20;
-    if (major < 8) {   // Turing: the canonical Q2_0 pack's kernels (the codebook formats' do not fit 64 KB at 4 warps a row)
+    if (major < 8) {   // Turing (sm_75): codebooks fit 64 KB at 2 warps a row (IQ2_S, IQ2_XS) or both 2 and 4 warps (IQ3_S, IQ3_XXS, IQ2_XXS, IQ4_XS)
         d.t75 = true;
-        d.ok = setup_one<T_Q2_0, true>(occ) && setup_one<T_Q2_0, false>(occ);
+        d.ok = setup_one_turing<T_IQ2_XXS, true>(occ) && setup_one_turing<T_IQ2_XS, true>(occ) &&
+               setup_one_turing<T_IQ2_S, true>(occ) && setup_one_turing<T_IQ3_XXS, true>(occ) &&
+               setup_one_turing<T_IQ3_S, true>(occ) && setup_one_turing<T_IQ4_XS, true>(occ) &&
+               setup_one_turing<T_Q2_0, true>(occ) && setup_one_turing<T_Q2_0, false>(occ) &&
+               setup_one_turing<T_IQ4_NL, false>(occ);
         d.occ = d.ok ? occ : 1;
         cudaGetLastError();
         return d;
@@ -1403,7 +1418,6 @@ bool native_supported(int gu_type, int d_type) {
     if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
-    if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;
     if (env < 0) return d.w12;
     return requested() || d.w12;
 }
@@ -1501,7 +1515,8 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         return;
     }
 #endif
-    const int ww = pick_ww(n, n_expert);
+    int ww = pick_ww(n, n_expert);
+    if (d.t75 && (g.gu_type == T_IQ2_S || g.gu_type == T_IQ2_XS)) ww = 2;
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
