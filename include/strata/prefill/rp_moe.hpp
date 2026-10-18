@@ -48,7 +48,8 @@ void repack_iq4nl_rows(const void* src, void* dst, int64_t rows, int64_t cols, i
 /// The gather for a group whose gate/up and down are both IQ4_NL: experts [g.first, g.n) from their blobs (gate at
 /// +0, up at +up_off, down at +down_off, GGUF rows) into repacked [2*n_ff, n_embd] gate/up matrices `gu_stride` bytes
 /// apart at gu_dst (gate rows, then up rows) and repacked [n_embd, n_ff] down matrices `d_stride` apart at d_dst.  One
-/// launch; slot q of the group buffers is expert q.
+/// launch; slot q of the group buffers is expert q.  gu_dst or d_dst null: that part is skipped (a layer where only
+/// one of the two is IQ4_NL gathers the other as GGUF blocks).
 void gather_group_iq4nl(const mmq::GatherGroup& g, size_t up_off, size_t down_off, int64_t n_embd, int64_t n_ff,
                         void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream);
 
