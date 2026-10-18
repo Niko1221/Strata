@@ -103,20 +103,19 @@ block and `kVerifyMaxT - 1`. In Strata terms `--spec T` stays the **window size*
 
 ### Greedy and sampled requests
 
-DFlash runs for both `temperature = 0` and `temperature > 0`. Its proposals remain
-argmax tokens. The verifier applies the target's own sampler, including temperature,
-top-k, top-p, min-p and per-row penalty history, and keeps only the consecutive
-proposals equal to those target picks. At the first disagreement it emits the
-target pick and discards the remaining speculative rows. With all proposals
-accepted it also emits the target's final-row pick.
+DFlash proposes greedy tokens only. For `temperature > 0`, the server uses
+target-only decoding with the request's own sampler, filters, penalties and seed.
+It still records draft context for a later greedy continuation and its in-memory
+conversation cache. Sampled CLI runs select target-only decoding before loading
+the drafter. No sampled speedup is claimed.
 
-This preserves the target sampling distribution: every emitted token is drawn
-from the target conditioned on the already emitted prefix. The draw uses
-Philox(seed, absolute position), so rejected speculative rows do not advance an
-RNG state. A smaller draft vocabulary affects proposals only; target sampling
-still uses the full target head. DFlash does not use MTP's coupled-draft or
-probabilistic-rejection modes. Those modes require a separate draft sampling
-implementation and are not needed for exact-match acceptance.
+Exact-match acceptance preserves the target distribution in exact arithmetic.
+In the engine, speculative target windows can round differently from a series
+of one-row windows. The 128-token sampled gate exposed output changes, so sampled
+speculation is disabled until it passes. The review report includes a target-logit
+comparison and a control with draft computation enabled but its acceptance gate
+closed. A smaller draft vocabulary only affects greedy proposals; the verifier
+always uses the target's full head.
 
 CLI sampling follows Strata's existing convention: pass `--seed N` to select
 sampling, together with `--temperature F`; `--greedy` selects argmax decoding.
@@ -124,7 +123,7 @@ The server honors each request's sampling parameters. `--mtp` and `--dflash`
 remain mutually exclusive.
 
 The GPU integration gate exercises the native server protocol and CLI, positive
-temperatures, top-k/top-p/min-p, penalties, rejection, repeated seeds and greedy
+temperatures, top-k/top-p/min-p, penalties, sampled fallback, repeated seeds and greedy
 regression. It pins expert residency and uses `STRATA_IQ_MT_MIN=1` to compare
 tokens under consistent CPU/GPU arithmetic:
 
@@ -136,8 +135,12 @@ python tools/dflash_sampling.py --config strata-iq3_xxs.json \
 The supplied fixture must pass token equality against target-only decoding.
 This does not establish byte equality for every workload: adaptive expert
 placement and different verify widths can introduce floating-point differences.
+With partial expert residency, the default route-tail skip also depends on the
+whole verification window and can change which experts are computed. The review
+report distinguishes this from Niko's all-experts-resident case.
 
-Sampling measurement (2026-10-09, RTX 4070 Ti SUPER 16 GB, Ryzen 5900X,
+Historical sampling measurement, before the target-only restriction described above
+was applied (2026-10-09, RTX 4070 Ti SUPER 16 GB, Ryzen 5900X,
 128 GB RAM, Linux/CUDA 13.4): IQ3_XXS target, Q4_0 DFlash, temperature 0.7,
 seed 8675309, eight serial HTTP requests, up to 512 generated tokens each.
 Aggregate decode throughput was 74.30 tok/s with DFlash, 61.72 with the previous
@@ -172,9 +175,14 @@ The selected drafter is passed to the server. New DFlash installations default
 to `temperature: 0`; setup retains existing saved sampling settings. Clients
 can request sampling by setting a positive temperature. Subsequent starts use
 the saved choice.
-DFlash currently supports one GPU and serial requests. The server rereads the
-full prompt for each request because target-only snapshots do not contain the
-DFlash pools. Elastic target KV growth is disabled with DFlash. Setup uses
+DFlash currently supports one GPU and serial requests. Prompt checkpoints and
+live continuation reuse the committed draft context prefix. Parked conversations
+include all five FP16 draft K/V pools, charged to the conversation-cache RAM
+budget and admission check. The final decode window also appends its committed
+context, including when generation stops at the token limit or EOS. On a rewind,
+later draft cells are overwritten before use. DFlash takes parked conversations
+whole rather than borrowing a donor's prefix. Disk SAVE/RESTORE is refused because
+the disk schema does not store the draft pools. Elastic target KV growth is disabled with DFlash. Setup uses
 `--dflash-window 0`, preserving the full configured context. On CUDA, with one
 GPU and a profiled RAM-backed expert cache, the drafter's FP16 K/V and attention
 scratch start at 8192 cells and grow as requests use more positions. The expert
@@ -225,8 +233,8 @@ This branch's CUDA and Linux HIP engines are built from source for DFlash;
 released engines may lack its server and quantization support. Windows HIP needs
 a compatible build via `--prebuilt`. Setup checks support before writing the
 configuration. Quantized drafter weights are experimental; the target still
-verifies every proposal. Validation on IQ3_XXS is recorded in
-[the setup test results](../bench/results/2026-10-08-dflash-setup/REPORT.md).
+verifies every proposal. Current validation and unresolved review requirements
+are recorded in [the review report](../bench/results/2026-10-17-dflash-review/REPORT.md).
 
 ## Strata integration
 
@@ -243,8 +251,9 @@ The five draft FP16 K/V pools use 10 KiB per position (5 layers × 2 K/V
 arrays × 2 heads × 256 values × 2 bytes). DFlash does not allocate the target's
 sparse-indexer history. The attention scratch grows with the mapped capacity.
 Weights, mapped pools and scratch are loaded before the expert cache is sized.
-The target's embedding and output head are shared. The [performance check](../bench/results/2026-10-09-dflash-performance/REPORT.md)
-records the measured startup footprint and generation speed for the setup path.
+The target's embedding and output head are shared. The
+[review report](../bench/results/2026-10-17-dflash-review/REPORT.md) records the
+available performance evidence and its limits.
 
 Feature-capture gate (commit 2): `STRATA_DFLASH_TAPS=<file>` makes a target-only run append one
 record per prompt chunk and per verify window with the five boundaries' contracted residuals
@@ -348,18 +357,22 @@ respectively. The event capture is excluded from throughput measurements.
 Q4 changed the generated code continuation and reduced its acceptance in a
 single code run. Q8 and Q4 both changed the chat continuation. These heads are
 experiments, remain opt-in, and have not passed a general greedy-output gate.
-See `bench/results/2026-10-08-dflash-opt/REPORT.md` for commands, cache capacity,
-conditional acceptance, common-prefix evidence and limitations.
+The historical experiment's detailed report was not included in this branch;
+these numbers are not a reproducible performance gate for the current build.
 
 For diagnostic evidence, `STRATA_DF_EVENTS=1` records individual GPU section
 and CPU enqueue times. Their sum is not decode wall time. `STRATA_DF_CYCLES=PATH`
 writes proposal IDs, verifier IDs, accepted prefix, anchor position and correction
 per cycle. `STRATA_DF_TARGET_PROBE=POSITION` prints the verifier's top two logits
-at a requested absolute input position, before any benchmark follow override.
+at a kept absolute input position in either CLI or server, with Off, MTP or DFlash.
+`STRATA_DF_TARGET_PROBE_FILE=PATH` also saves that row as raw F32 logits.
 These diagnostics are disabled by default. Parity captures also contain full
 head logits, quantized activations and argmax IDs; check these with
 `tools/dflash_head_parity.py --head HEAD.gguf --dir PARITY_DIRECTORY`.
 
-The [2026-10-09 review](../bench/results/2026-10-09-dflash-review/REPORT.md) records
-follow-up correctness fixes, repeated performance measurements on the same target,
-and the remaining generation bottleneck.
+Run `tools/dflash_sampling.py` against an existing configuration to check target
+token parity and request reset, and `tools/dflash_cache.py` for live continuation,
+checkpoint rewind and conversation parking. Both require a GPU and model files;
+neither downloads weights. A passing fixture does not establish exactness on
+other prompts. The unresolved divergence reported in review must not be described
+as a near tie without comparing the target logits at the first differing position.

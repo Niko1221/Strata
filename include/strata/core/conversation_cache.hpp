@@ -163,6 +163,8 @@ struct SavedConversation {
     ConversationCheckpoint live;
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
+    // In-memory DFlash context, separate from the target/MTP disk-session schema.
+    std::vector<ConversationKv> dflash_kv;
     bool cvec = true;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
@@ -175,7 +177,8 @@ struct SavedConversation {
 
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
-                   kv.capacity() * sizeof(ConversationKv);
+                   kv.capacity() * sizeof(ConversationKv) + dflash_kv.capacity() * sizeof(ConversationKv);
+        for (const auto& k : dflash_kv) n += k.bytes();
         for (const auto& s : stage_images) n += s.bytes();
         for (const auto& c : checkpoints) n += c.bytes();
         for (const auto& k : kv) n += k.bytes();

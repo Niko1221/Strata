@@ -19,6 +19,7 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/core/vmm.hpp"
+#include "strata/core/conversation_snapshot.hpp"
 
 #include <cuda_runtime.h>
 
@@ -275,6 +276,45 @@ void owned_elastic_regression(const ModelGeometry& g) {
     cudaFree(o.arena);
     qsa_set_kv_resident(0); qsa_set_kv_q4(false);
 }
+void conversation_regression(const ModelGeometry& g) {
+    // Five distinct FP16 pools, a partial last page, then another conversation.
+    // A rewind must recover the saved prefix in every layer without an indexer.
+    std::vector<Owned> layers(5);
+    std::vector<ConversationKv> saved(5);
+    std::string err;
+    for (size_t i = 0; i < layers.size(); ++i) {
+        auto& o = layers[i];
+        check(o.init(g, 128), "conversation pool init");
+        const size_t bytes = 68 * g.n_head_kv * g.head_dim * sizeof(uint16_t);
+        std::vector<uint16_t> data(bytes / 2, (uint16_t) (0x3000 + i));
+        cudaMemcpy(o.st.k_pool, data.data(), bytes, cudaMemcpyHostToDevice);
+        cudaMemcpy(o.st.v_pool, data.data(), bytes, cudaMemcpyHostToDevice);
+        size_t estimate = 0;
+        check(conversation_kv_capture_bytes({}, o.st, g, 65, false, estimate, err), "draft cache estimate");
+        check(conversation_kv_save(saved[i], o.st, g, 65, false, err), "draft cache save");
+        check(saved[i].bytes() <= estimate, "draft cache accounting");
+        check(saved[i].pooled.bytes() == 0, "draft cache has no indexer");
+        cudaMemset(o.st.k_pool, 0, bytes);
+        cudaMemset(o.st.v_pool, 0, bytes);
+    }
+    for (size_t i = 0; i < layers.size(); ++i) {
+        auto& o = layers[i];
+        check(conversation_kv_validate(saved[i], o.st, g, 65, false, err), "draft cache validate");
+        auto invalid = g;
+        invalid.head_dim /= 2;
+        check(!conversation_kv_validate(saved[i], o.st, invalid, 65, false, err), "foreign draft cache rejected");
+        check(conversation_kv_restore(saved[i], o.st, g, 65, false, err), "draft cache restore");
+        uint64_t hash = 0;
+        check(conversation_kv_verify(saved[i], o.st, g, 65, false, hash, err), "draft cache exact readback");
+        std::vector<uint16_t> data(64 * g.n_head_kv * g.head_dim);
+        cudaMemcpy(data.data(), o.st.k_pool, data.size() * 2, cudaMemcpyDeviceToHost);
+        bool same = true;
+        for (auto x : data) same = same && x == (uint16_t) (0x3000 + i);
+        check(same, "draft cache layers remain distinct on rewind");
+        cudaFreeHost(o.st.host_step); cudaFreeHost(o.st.host_pos);
+        cudaFree(o.arena);
+    }
+}
 }  // namespace
 
 int main() {
@@ -286,6 +326,7 @@ int main() {
     const int64_t max_cells = 4096;
     batch_and_attention_regression(g);
     owned_elastic_regression(g);
+    conversation_regression(g);
 
     std::fprintf(stderr, "dbg: section 1 (owned+append)\n");
     {   // 1+2: one owned state, ownership + append/readback across page boundaries

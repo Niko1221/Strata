@@ -1,0 +1,34 @@
+{
+  "target": {
+    "tokens": [
+      7145,
+      281,
+      3944,
+      16,
+      553,
+      271,
+      248068,
+      271
+    ],
+    "decode_ms": 182.2,
+    "accepted": 0,
+    "offered": 0,
+    "done": "DONE 8 24 230.9 182.2 length 0 0 0 952 2960 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+  },
+  "df": {
+    "tokens": [
+      7145,
+      281,
+      3944,
+      16,
+      553,
+      271,
+      248068,
+      271
+    ],
+    "decode_ms": 187.8,
+    "accepted": 0,
+    "offered": 0,
+    "done": "DONE 8 24 229.2 187.8 length 0 0 0 952 2960 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+  }
+}

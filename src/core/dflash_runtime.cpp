@@ -56,7 +56,9 @@ void parity_dump_u16_as_f32(const char* dir, const char* name, const void* dev, 
     for (int64_t i = 0; i < n; ++i) {
         // TRUE fp16 -> f32 (re-bias the exponent): the bits<<16 shift is the BF16 widening and
         // turns every dumped pool into plausible-looking nonsense
-        const __half h = __ushort_as_half(host[(size_t) i]);
+        __half h;
+        static_assert(sizeof h == sizeof host[0]);
+        std::memcpy(static_cast<void*>(&h), &host[(size_t) i], sizeof h);
         wide[(size_t) i] = __half2float(h);
     }
     char path[600];
