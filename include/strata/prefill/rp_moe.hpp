@@ -26,7 +26,8 @@ bool sized();
 /// The repacked GEMM covers this ggml type and shape (IQ4_NL; cols a multiple of 128, rows of 64).
 bool supported(int ggml_type, int64_t w_rows, int64_t w_cols);
 /// The repacked GEMM covers this type as a dense projection (Gemm::native_mmq, STRATA_DENSE_RP=1): IQ4_NL and Q8_0
-/// (cols a multiple of 128), Q6_K and Q5_K (cols a multiple of 256; Q4_K stays on MMQ, faster there); rows a multiple of 64.  The expert path
+/// (cols a multiple of 128), Q6_K, Q5_K and IQ4_XS (cols a multiple of 256; IQ4_XS is Strata's own layout,
+/// rp/repack-iq4xs.cuh; Q4_K stays on MMQ, faster there); rows a multiple of 64.  The expert path
 /// takes `supported` (IQ4_NL only: its gather writes that layout alone).
 bool dense_supported(int ggml_type, int64_t w_rows, int64_t w_cols);
 /// `n` GGUF matrices of [rows, cols] of a dense_supported type (`src_stride` bytes apart) into the repacked layout

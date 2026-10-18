@@ -9,6 +9,7 @@
 #if defined(STRATA_HIP_GFX906)
 #include "rp/repack-kernels.cuh"
 #include "rp/repack-convert.cuh"
+#include "rp/repack-iq4xs.cuh"
 #endif
 
 namespace strata::prefill::rp {
@@ -141,12 +142,15 @@ bool dense_supported(int t, int64_t w_rows, int64_t w_cols) {
         case GGML_TYPE_IQ4_NL: case GGML_TYPE_Q8_0: return w_cols % 128 == 0;
         // Q4_K is left to llama.cpp's MMQ: dense_mmq_bench (T 4096, [6144 -> 2560]) measured the repacked GEMM 4% slower
         // (9.11 against 8.73 ms); Q6_K +19-26% and Q5_K +6% faster than MMQ
-        case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_K: return w_cols % 256 == 0;
+        case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_K: case GGML_TYPE_IQ4_XS: return w_cols % 256 == 0;
         default: return false;
     }
 }
 
-size_t matrix_bytes(int t, int64_t rows, int64_t cols) { return repack_gcn_nbytes((ggml_type) t, cols, rows); }
+size_t matrix_bytes(int t, int64_t rows, int64_t cols) {
+    if (t == GGML_TYPE_IQ4_XS) return rp_iq4xs_nbytes(cols, rows);   // Strata's extension (rp/repack-iq4xs.cuh)
+    return repack_gcn_nbytes((ggml_type) t, cols, rows);
+}
 
 void repack(int t, const void* src_v, size_t src_stride, void* dst_v, size_t dst_stride, int64_t ne1, int64_t ne0, int n,
             void* stream) {
@@ -154,7 +158,8 @@ void repack(int t, const void* src_v, size_t src_stride, void* dst_v, size_t dst
     const cudaStream_t s = (cudaStream_t) stream;
     const uint8_t* src = (const uint8_t*) src_v;
     uint8_t* dst = (uint8_t*) dst_v;
-    const int64_t n_blocks = ne0 / 32, qs_str = repack_qs_row_stride((ggml_type) t, ne0);
+    const int64_t n_blocks = ne0 / 32,
+                  qs_str = t == GGML_TYPE_IQ4_XS ? repack_qs_stride(ne0 / 2) : repack_qs_row_stride((ggml_type) t, ne0);
     const int64_t n_out = (int64_t) n * ne1 * n_blocks;
     const int block = 256, grid = (int) std::min<int64_t>((n_out + block - 1) / block, 65535);
     const int64_t ss = (int64_t) src_stride, ds = (int64_t) dst_stride;
@@ -179,6 +184,9 @@ void repack(int t, const void* src_v, size_t src_stride, void* dst_v, size_t dst
                           doff = soff + ne1 * nsb * 12;
             repack_q5k_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, hoff, soff, doff, nsb, ss, ds, n_out);
         } break;
+        case GGML_TYPE_IQ4_XS:
+            repack_iq4xs_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, ne1 * qs_str, ss, ds, n_out);
+            break;
         default:
             std::fprintf(stderr, "prefill rp: no repack for type %d\n", t);
             std::exit(1);
@@ -265,6 +273,7 @@ void Context::run(const mmq::Product& p, void* stream) {
         case GGML_TYPE_Q8_0: launch(std::integral_constant<ggml_type, GGML_TYPE_Q8_0>{}); break;
         case GGML_TYPE_Q6_K: launch(std::integral_constant<ggml_type, GGML_TYPE_Q6_K>{}); break;
         case GGML_TYPE_Q4_K: launch(std::integral_constant<ggml_type, GGML_TYPE_Q4_K>{}); break;
+        case GGML_TYPE_IQ4_XS: launch(std::integral_constant<ggml_type, GGML_TYPE_IQ4_XS>{}); break;
         default: launch(std::integral_constant<ggml_type, GGML_TYPE_Q5_K>{}); break;
     }
     ck(cudaGetLastError(), "rp gemm");

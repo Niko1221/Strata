@@ -1,5 +1,7 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
+#include <map>
+#include <string>
 #include "strata/kernels/dequant_bf16.hpp"
 // Gemm::native_mmq (opt-in STRATA_DENSE_MMQ=1): the dense projections through llama.cpp's int8 MMQ.  The wave32 HIP
 // build has it with STRATA_PREFILL_MMQ; the gfx906 build always compiles the MMQ sources (strata_mmq).
@@ -1292,6 +1294,10 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
         mmq::iota((int32_t*) ((uint8_t*) mmq_buf_ + ident_off), kRows, stream_);
         std::fprintf(stderr, "prefill gemm: dense MMQ on (STRATA_DENSE_MMQ=1)\n");
     }
+    // STRATA_DENSE_MMQ_PROFILE=1 (debug): each call timed (events + a sync), summed per type and shape
+    static const bool prof = std::getenv("STRATA_DENSE_MMQ_PROFILE") != nullptr;
+    cudaEvent_t pe0 = nullptr, pe1 = nullptr;
+    if (prof) { cudaEventCreate(&pe0); cudaEventCreate(&pe1); cudaEventRecord(pe0, (cudaStream_t) stream_); }
     void* xq = mmq_buf_;
     const int32_t* ident = (const int32_t*) ((uint8_t*) mmq_buf_ + ident_off);
     int32_t* bounds = (int32_t*) ((uint8_t*) mmq_buf_ + bounds_off);
@@ -1348,6 +1354,26 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
         } else {
             ctx->run(p, stream_);
         }
+    }
+    if (prof) {
+        cudaEventRecord(pe1, (cudaStream_t) stream_);
+        cudaEventSynchronize(pe1);
+        float ms = 0.0f;
+        cudaEventElapsedTime(&ms, pe0, pe1);
+        cudaEventDestroy(pe0);
+        cudaEventDestroy(pe1);
+        struct Acc { double ms = 0; long n = 0; int64_t rows = 0; };
+        static std::map<std::string, Acc> acc;
+        static long calls = 0;
+        char key[96];
+        std::snprintf(key, sizeof key, "type %d [%lld -> %lld]%s", type, (long long) K, (long long) N,
+                      strata::prefill::rp::dense_enabled() && strata::prefill::rp::dense_supported(type, N, K) ? " rp" : "");
+        Acc& a = acc[key];
+        a.ms += ms; ++a.n; a.rows += T;
+        if (++calls % 400 == 0)
+            for (const auto& [k, v] : acc)
+                std::fprintf(stderr, "dense mmq profile: %-34s %6ld calls, %7lld rows/call, %8.3f ms/call, %9.1f ms\n",
+                             k.c_str(), v.n, (long long) (v.rows / v.n), v.ms / v.n, v.ms);
     }
     return true;
 }
