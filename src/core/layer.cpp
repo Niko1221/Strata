@@ -740,6 +740,17 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
     p.pooled_rows = max_cells / s.idx_block + 2;
+#if defined(STRATA_GPU_METAL)
+    // THE METAL DECODE WINDOW KEEPS ITS OWN K/V AND INDEXER per QSA layer (metal/src/engine/window.cpp), sized by
+    // the same max cells; the session's pools are never read or written there.  On Metal a session buffer is one
+    // shared MTLBuffer in the residency set, resident in full whether touched or not (measured: 6.0 GiB of K/V pools at
+    // 262K), so its QSA states carry no K/V pools and no pooled indexer keys.  `n_slots == 0` makes every
+    // conversation-snapshot copy refuse the state (conversation_snapshot.cpp `valid`) instead of reading them.
+    (void) ring_cells;
+    p.slots = 0;
+    p.pooled_rows = 0;
+    return p;
+#endif
     if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
     // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
     static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
@@ -811,6 +822,11 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
     const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
     st.kv_elastic = -1;
+#if defined(STRATA_GPU_METAL)
+    if (p.slots == 0) {
+        // no pools (kv_plan): the pool pointers stay null rather than aliasing the page table that follows
+    } else
+#endif
     if (g_kv_elastic && p.mode == 0) {
         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
         const uint64_t slot_rows = (uint64_t) s.n_head_kv * s.page_size;
@@ -881,6 +897,9 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.idx_dead = c.take<float>((uint64_t) s.idx_dim);
     st.idx_pooled_rows = p.pooled_rows;
     st.idx_pooled = c.take<float>((uint64_t) p.pooled_rows * s.idx_dim);
+#if defined(STRATA_GPU_METAL)
+    if (p.pooled_rows == 0) st.idx_pooled = nullptr;   // none on Metal (kv_plan), not an alias of block_pos
+#endif
     st.idx_block_pos = c.take<int32_t>(1);
     if (share_rope != nullptr) {
         st.cos_tab = share_rope->cos_tab;
