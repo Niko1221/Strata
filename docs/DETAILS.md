@@ -1226,7 +1226,7 @@ is a cap, not a recommendation for every machine.
 numbers, sampled each time it is asked and not a reservation (other writers can take the
 room afterwards):
 
-1. `MemAvailable` (Windows: `GlobalMemoryStatusEx`'s available physical memory).
+1. `MemAvailable` (Windows: `GlobalMemoryStatusEx`'s available physical memory; macOS: the Metal engine's one reading of free memory, also used for its streaming arena - free and purgeable pages and the clean file cache from `host_statistics64`, not other programs' inactive anonymous memory).
 2. The room under each memory limit of the engine's own cgroup and of every ancestor
    visible under `/sys/fs/cgroup` (the group named in `/proc/self/cgroup`, or the deepest
    part of that path this mount shows): cgroup v2 `memory.max` and `memory.high`, each
@@ -1395,7 +1395,9 @@ layer's gate/up/down GGUF as `native_experts.txt` names it, also one outside the
 other files in those folders, and not the path, so a moved model folder still matches. A
 change in the middle of a file that keeps its size is not seen: do not change model files while their sessions are
 kept. The config fingerprint covers the engine version string (another version is refused; two builds of the same version
-are not told apart - there is no build hash), CUDA or HIP,
+are not told apart - there is no build hash), CUDA, HIP or Metal (on Metal with the decode window's layout: the bytes
+per cell of each K/V part and the running state's sizes, so two builds of one version with different layouts are told
+apart; each K/V layer also carries the window's format key),
 `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the resolved rope configuration (type,
 base, factor, freq scale, original context, the YaRN knobs - the cached K is post-RoPE), the loaded control vector (a
 digest of the tables uploaded: every file's content times its exact scale, the mode, the layer range and the
@@ -1420,7 +1422,7 @@ state; the server reports `500` and starts it again. A restore does not park the
 `--layer-split`, `--peer-device`, `--batch` (the config's `"parallel"`, #465; the server answers `501`) or
 `--prompt-cache 0` (the RAM conversation cache need not be on). On Linux the file
 moves with `O_DIRECT` in 16 MiB blocks when the filesystem takes it (buffered I/O otherwise, or with
-`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. The engine has been run on Linux/CUDA only. An earlier
+`STRATA_SESSION_BUFFERED=1`); on Windows with buffered I/O. The engine has been run on Linux/CUDA and on macOS/Metal ([MAC.md](MAC.md)). An earlier
 revision's CPU file-I/O test passed as a 32-bit Windows executable under Wine; the current code has not been built
 for Windows, and the Windows engine, HIP and AMD cards have not been run.
 
