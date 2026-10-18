@@ -28,8 +28,11 @@ time.sleep(120)
 
 
 def running(pid: int) -> bool:
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-    return str(pid) in out
+    # tasklist writes in the console's OEM code page (cp850 on a Western European Windows): its table frame
+    # bytes are not valid UTF-8, so text=True raises in the reader thread and leaves stdout None (#2331)
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True,
+                         encoding="oem", errors="replace").stdout
+    return str(pid) in (out or "")
 
 
 @unittest.skipUnless(os.name == "nt", "job objects are Windows-only")
