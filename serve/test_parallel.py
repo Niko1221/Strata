@@ -383,15 +383,33 @@ class ParallelService(unittest.TestCase):
         self.assertEqual(self.engine.slot_busy, [False, False])
 
     def test_bgen_refused_for_good_is_a_retryable_503_and_frees_the_slots(self):
-        """#1994: when the engine keeps refusing, the answer is a 503 (retryable), never a 400, and no slot stays busy."""
+        """#1994: a final admission refusal is a retryable 503, keeps an error row, but is not a completed request."""
         self.start(2)
         self.engine.SLOT_PARK_S = 0.05
         out = self._two_at_once("BUSYALL hello")
         self.assertEqual(out["b"][0], "http", out["b"])
         self.assertEqual(out["b"][1], 503, out["b"])
+        self.assertEqual(out["b"][3].get("Retry-After"), "5", out["b"])
+        history = list(self.svc.history)
+        refused = next(row for row in history if row["output_tokens"] == 0)
+        completed = next(row for row in history if row["output_tokens"] > 0)
+        self.assertEqual((refused["finish"], refused["prompt_tokens"], refused["prompt_read"]), ("error", 0, None))
+        self.assertEqual(self.svc.totals["requests"], 1)
+        self.assertEqual(self.svc.totals["prompt_tokens"], completed["prompt_tokens"])
+        self.assertEqual(self.svc.latencies.snapshot()["e2e"][2], 1)
+        self.assertEqual(self.get("/metrics")["totals"]["requests"], 1)
+        req = urllib.request.Request(self.base + "/metrics", headers={"Accept": "text/plain"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            samples = {line.split("{", 1)[0]: float(line.rsplit(" ", 1)[1])
+                       for line in r.read().decode().splitlines() if line and not line.startswith("#")}
+        self.assertEqual(samples["vllm:request_success_total"], 1)
+        self.assertEqual(samples["vllm:prompt_tokens_total"], completed["prompt_tokens"])
+        self.assertEqual(samples["vllm:e2e_request_latency_seconds_count"], 1)
         time.sleep(0.5)
         self.assertEqual(self.engine.slot_busy, [False, False])
         self.assertEqual(self.chat("fine again")["choices"][0]["message"]["content"], "ok, done.")
+        self.assertEqual(self.svc.totals["requests"], 2)  # a later admitted request is still counted normally
+        self.assertEqual(self.svc.latencies.snapshot()["e2e"][2], 2)
 
     def test_engine_reports_fewer_slots(self):
         self.start(4, fit=2)

@@ -4248,6 +4248,7 @@ class Service:
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
+        admission_rejected = False                       # #1994: BGEN refused before any prompt was admitted
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
         if emb and img_keys:
@@ -4549,6 +4550,14 @@ class Service:
                               f"{run_len} times in a row: ended as \"length\" (repeat_stop_tokens in "
                               "strata-<model>.json; 0 turns this off). If a new request with a short prompt does the "
                               "same, restart the server and report it (#606)", flush=True)
+                except GpuBusy:
+                    # A batch engine can exhaust its BGEN retries before it has admitted this request.  Keep an error
+                    # row for the monitor, but do not make it look like a completed generation.  A later continuation
+                    # can have settled native work already, so it keeps the existing accounting.
+                    if not segments and n == 0:
+                        admission_rejected = True
+                        finish = "error"
+                    raise
                 except GeneratorExit:                   # the client disconnected mid-stream
                     finish = "disconnect"
                     raise
@@ -4567,7 +4576,7 @@ class Service:
                             routed = (last.get("lookups") or 0) + (last.get("offloaded") or 0)
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
-                            seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            seen = 0 if admission_rejected else prompt_tokens_seen(len(ids), last)
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
@@ -4586,22 +4595,23 @@ class Service:
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
                                 "drafts_accepted": last.get("drafts_accepted")})
-                            t = self.totals
-                            t["requests"] += 1
-                            t["prompt_tokens"] += seen
-                            t["reused"] += last.get("reused") or 0
-                            t["output_tokens"] += n
-                            t["prompt_ms"] += last.get("prompt_ms") or 0.0
-                            t["decode_ms"] += last.get("decode_ms") or 0.0
-                            t["drafts_offered"] += last.get("drafts_offered") or 0
-                            t["drafts_accepted"] += last.get("drafts_accepted") or 0
-                            ft0 = st.get("first_token")             # this request's own (#465: one per request)
-                            self.latencies.observe(ft0 - started if ft0 else None, n,
-                                                   (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
-                            fresh = getattr(self.engine, "last", None)
-                            if fresh is not None and fresh is not before:      # the engine's clock for THIS request
-                                timings = request_timings(seen, n, last)
-                                self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                            if not admission_rejected:
+                                t = self.totals
+                                t["requests"] += 1
+                                t["prompt_tokens"] += seen
+                                t["reused"] += last.get("reused") or 0
+                                t["output_tokens"] += n
+                                t["prompt_ms"] += last.get("prompt_ms") or 0.0
+                                t["decode_ms"] += last.get("decode_ms") or 0.0
+                                t["drafts_offered"] += last.get("drafts_offered") or 0
+                                t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                                ft0 = st.get("first_token")         # this request's own (#465: one per request)
+                                self.latencies.observe(ft0 - started if ft0 else None, n,
+                                                       (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
+                                fresh = getattr(self.engine, "last", None)
+                                if fresh is not None and fresh is not before:  # engine clock for THIS request
+                                    timings = request_timings(seen, n, last)
+                                    self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
                             el = now - st.get("started", now)
