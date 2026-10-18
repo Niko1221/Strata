@@ -1964,6 +1964,21 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
         const char* v = std::getenv("STRATA_PF_PEER_SUMS");
         pp->sums = v == nullptr || std::atoi(v) != 0;
     }
+    // STRATA_PF_PEER_SUMS_P2P=1 (EXPERIMENT): sums mode on the P2P route. The forward direction
+    // keeps P2P (this layer's activations, the peer's routing table and group bounds); only the way
+    // BACK changes: instead of the peer's rows in FP32 over the P2P link - measured 5.5 GB/s here,
+    // 12-44 GB per chunk on a wide prompt - the peer adds its rows into one weighted sum per token
+    // and sends that through mapped host memory in FP16 (T x N, 40 MB per layer). Measured on this
+    // box (two PCIe GPUs, the P2P link slower than PCIe to RAM): P2P with rows 1383 tok/s, the host
+    // route with sums 2683, this route 2259 - correct (the long recall gate passes, 0 non-finite
+    // logits) but slower than the plain host route, so it stays opt-in. On boxes where P2P beats
+    // PCIe (NVLink, newer boards) it should win: the forward keeps the fast link and the return
+    // carries only T x N FP16 instead of R x N FP32 rows. Needs the compact path, whose non-compact
+    // twin always copies its rows back over P2P as well.
+    else if (pp->p2p && pp->compact && [] {
+        const char* v = std::getenv("STRATA_PF_PEER_SUMS_P2P"); return v != nullptr && std::atoi(v) != 0; }()) {
+        pp->sums = true;
+    }
     if (pp->sums) {
         const char* v = std::getenv("STRATA_PF_PEER_F16");
         pp->f16 = (v == nullptr || std::atoi(v) != 0) && N % 8 == 0;
@@ -2023,6 +2038,29 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
                   std::to_string(((size_t) pp->cap_rows * N * 4 + (size_t) m.T_max * N * 4) >> 20) + " MiB) do not fit in RAM";
             return false;
         }
+    } else if (ok && pp->p2p && pp->sums) {   // STRATA_PF_PEER_SUMS_P2P: only the sums' mapped buffers
+        auto host = [&](auto*& ptr, size_t& cap, size_t n) {
+            if (cudaHostAlloc((void**) &ptr, n * sizeof(*ptr), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess) {
+                cudaGetLastError();
+                ptr = nullptr;
+                ok = false;
+                return;
+            }
+            cap = n;
+        };
+        size_t w_cap = 0, sum_cap = 0, pair_cap = 0, sum16_cap = 0, adds_cap = 0;
+        host(pp->host_w, w_cap, (size_t) m.T_max * K);
+        if (ok && pp->f16) host(pp->host_sum16, sum16_cap, (size_t) m.T_max * N);
+        else if (ok) host(pp->host_sum, sum_cap, (size_t) m.T_max * N);
+        if (ok) host(pp->host_pair, pair_cap, (size_t) pp->cap_rows);
+        if (ok && pp->gather) host(pp->host_adds, adds_cap, pp->adds_cap);
+        if (!ok) {
+            cudaSetDevice(prev);
+            err = "prefill peer: the sums route's pinned buffers (" +
+                  std::to_string(((size_t) m.T_max * N * (pp->f16 ? 2 : 4) + (size_t) m.T_max * K * 4) >> 20) +
+                  " MiB) do not fit in RAM";
+            return false;
+        }
     }
     size_t fb = 0, tb = 0;
     cudaMemGetInfo(&fb, &tb);
@@ -2030,9 +2068,12 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     if (!ok) { err = "prefill peer: the peer's buffers do not fit (raise --peer-reserve-mib or lower --peer-prefill-rows)"; return false; }
     std::fprintf(stderr, "strata prefill: peer GPU %d computes its experts' rows of each prompt chunk (up to %lld rows per "
                          "layer%s%s); %zu MiB left free on it\n", pp->dev, (long long) pp->cap_rows,
-                 pp->p2p ? "" : (pp->sums ? (pp->f16 ? ", no P2P: through mapped host memory in FP16, one weighted sum per token back"
-                                                     : ", no P2P: through mapped host memory, one weighted sum per token back")
-                                          : ", no P2P: through mapped host memory"),
+                 pp->p2p ? (pp->sums ? (pp->f16 ? ", forward over P2P, one weighted sum per token back through mapped host memory in FP16"
+                                                : ", forward over P2P, one weighted sum per token back through mapped host memory")
+                                     : "")
+                         : (pp->sums ? (pp->f16 ? ", no P2P: through mapped host memory in FP16, one weighted sum per token back"
+                                                 : ", no P2P: through mapped host memory, one weighted sum per token back")
+                                      : ", no P2P: through mapped host memory"),
                  pp->compact ? (pp->ps_frac > 0.0 ? (", compact group buffers, streams " + std::to_string((int) (pp->ps_frac * 100 + 0.5)) +
                                                     "% of the primary's streamed experts through a " + std::to_string(pp->RP) + "-slot ring").c_str()
                                                  : ", compact group buffers") : "", fb >> 20);
