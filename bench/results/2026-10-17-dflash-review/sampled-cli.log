@@ -1,0 +1,52 @@
+dflash: sampled CLI requests use target-only decoding
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: rope scaling yarn, factor 2 (freq_scale 0.5, base 1e+07, mscale 1.069315), --max-context 512 against a trained context of 262144
+strata generate: note: the context is within the trained 262144 - no position needs the extension, and the resolved scaling still applies to every angle
+strata generate: note: the YaRN magnitude correction scales cos and sin by 1.069315 at every position
+strata generate: native pack: /home/jakub/workspace/deepseek-harness/harnes_workspace/Strata-data/packs/iq3_xxs experts (largest blob 2.33 MB), token embedding IQ3_S in mapped host memory (260 MiB, 0.4 s)
+strata generate: 1466 MiB of weights loaded from /home/jakub/workspace/deepseek-harness/harnes_workspace/Strata-data/packs/iq3_xxs in 0.2 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 1781.11 MiB of weights, in 0.3 s
+strata generate: PLE direct read probe: 66047 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /home/jakub/workspace/deepseek-harness/harnes_workspace/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of /home/jakub/workspace/deepseek-harness/harnes_workspace/Strata-data/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
+strata generate: experimental native Q5_K head, 437043200 bytes, in 0.1 s
+strata generate: GPU 0: NVIDIA GeForce RTX 4070 Ti SUPER, compute capability 8.9
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 20464 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested
+strata generate: loaded 39.97 GiB at 7.89 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 36 (automatic), participating threads: 12
+strata generate: 11 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 12 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache 4675 slots, 7.59 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 4675 of 4675 slots from the profile in 0.4 s (22871 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+strata generate: sampling temperature=0.7 top_k=40 top_p=0.9 seed=3456
+strata generate: token graph hit path: 4675 resident experts, decided on the device
+strata generate: prompt path borrows 199 cache slots (0.32 GiB)
+strata generate: 199 lent slots refilled in 13.7 ms
+strata generate: prefill 23 tokens in 1 chunks, 404.3 ms (56.9 tok/s); experts streamed 3015 (3015 by DMA, host 6.8 ms), resident 673, on the CPU 0 (share 0.00); PLE 0.1 ms
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 8 tokens, 80.5 MiB of device buffers
+strata verify: capturing the 1-token window (3256 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata verify: capturing the 8-token window (3242 MiB of VRAM free)
+strata verify: captured the 8-token window (upload no error, sync no error)
+strata generate: position 87, 64 tokens, 64 rounds
+strata generate: position 151, 128 tokens, 128 rounds
+speculation              128 rounds of 8, drafts accepted 0 of 889 (0.000), 1.00 tokens per round
+accepted per round       0:128 1:0 2:0 3:0 4:0 5:0 6:0 7:0
+verify window            wait for rings 17.424  pool 56.391  host 0.584  commit 0.011 ms/round; CPU experts 22.27 distinct / 58.20 routed per layer
+pool multi               gate/up 36.037  quantize 0.688  down 18.471 ms/round; 34.0 GB/s over the rows phases; CPU pool call 55.820 ms/round
+dispatch                 plan 0.203  activation quantize 0.305  jobs 0.103  run 55.202 ms/round
+prompt  : 50 3815 2923 539 2923 13 6558 281 2007 8 283 220 18 87 61 17 471 220 22 87 478 220 17 13
+output  : 7145 281 3944 18 553 271 1206 14989 279 709 281 2007 8 283 220 18 87 61 17 471 220 22 87 478 220 17 506 830 283 471 18 11 26782 471 18 364 1396 2774 314 830 303 279 7258 13 271 8046 220 16 25 19892 279 9057 4496 13 198 3944 18 28803 17 283 220 24 198 18 7 24 8 283 220 17 22 271 8046 220 17 25 19892 279 13094 4496 13 198 12 22 3944 18 8 283 220 17 16 271 8046 220 18 25 45247 660 3665 13 198 69 3944 18 8 283 220 17 22 478 220 17 16 478 220 17 271 8046 220 19 25 2604 279 2663 13 198 17 22
+decode                   128 tokens in 9682.7 ms  ->  13.22 tok/s
+prefill                  23 tokens in 418.0 ms  ->  55.02 tok/s  (time to first token 1152.6 ms)

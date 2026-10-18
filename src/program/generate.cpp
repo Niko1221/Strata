@@ -1529,6 +1529,36 @@ static bool tap_dump_record(int source, int64_t pos0, int T, int n_taps, const v
     return std::fwrite(wide.data(), sizeof(float), wide.size(), g_tap_dump) == wide.size();
 }
 
+// Works with Off, MTP and DFlash, in both CLI and server. Capture the target's
+// logits of the kept prefix before commit, excluding rejected speculative rows.
+static bool dflash_target_probe(strata::core::Verifier& ver, int64_t pos, int rows, std::string& err) {
+    static const char* env = std::getenv("STRATA_DF_TARGET_PROBE");
+    static const int64_t wanted = env ? std::atoll(env) : -1;
+    if (!env || wanted < pos || wanted - pos >= rows) return true;
+    std::vector<float> logits((size_t) ver.vocab());
+    if (!ver.copy_logits((int) (wanted - pos), logits.data())) {
+        err = "target probe: copying logits failed";
+        return false;
+    }
+    int best = 0, second = 1;
+    if (logits[second] > logits[best]) std::swap(best, second);
+    for (int i = 2; i < ver.vocab(); ++i) {
+        if (logits[i] > logits[best]) { second = best; best = i; }
+        else if (logits[i] > logits[second]) second = i;
+    }
+    std::fprintf(stderr, "dflash target probe: pos=%lld window_pos=%lld row=%lld top1=%d score=%.9g top2=%d score=%.9g margin=%.9g\n",
+                 (long long) wanted, (long long) pos, (long long) (wanted - pos),
+                 best, logits[best], second, logits[second], logits[best] - logits[second]);
+    if (const char* path = std::getenv("STRATA_DF_TARGET_PROBE_FILE")) {
+        FILE* f = std::fopen(path, "wb");
+        if (!f) { err = "target probe: opening logits file failed"; return false; }
+        const bool written = std::fwrite(logits.data(), sizeof(float), logits.size(), f) == logits.size();
+        const bool closed = std::fclose(f) == 0;
+        if (!written || !closed) { err = "target probe: writing logits failed"; return false; }
+    }
+    return true;
+}
+
 /// #463's A/B: STRATA_ADAPT_NOWAIT=1 lets a verify window start before the adaptive tier's copies have landed (0.1.37)
 bool adapt_nowait() {
     static const bool v = [] { const char* e = std::getenv("STRATA_ADAPT_NOWAIT"); return e && e[0] == '1'; }();
@@ -2748,17 +2778,17 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+    if (!o.dflash.empty() && o.mtp.empty() && !o.serve && !o.greedy && o.temperature > 0.0f) {
+        std::fprintf(stderr, "dflash: sampled CLI requests use target-only decoding\n");
+        o.dflash.clear();
+        o.dflash_head.clear();
+        o.dflash_vocab.clear();
+    }
     if (!o.dflash.empty() && o.serve) {
         if (o.batch > 0 || !o.layer_split.empty()) {
             std::fprintf(stderr, "strata serve: DFlash currently requires one GPU and serial requests\n");
             return 2;
         }
-        // Target-only snapshots do not contain the drafter's five context pools. Rebuild both
-        // contexts for every request until DFlash snapshots are supported.
-        o.prompt_cache = 0;
-        o.conversation_cache_mib = 0;
-        o.conversation_cache_slots = 0;
-        std::fprintf(stderr, "dflash: server uses full prompt reads; target-only prompt snapshots are disabled\n");
     }
 
     strata::core::set_coupled_draft(o.coupled_draft);
@@ -9164,6 +9194,16 @@ int main(int argc, char** argv) {
                 err.clear();
             }
             estimate += stage_estimate;
+            if (has_dflash) {
+                estimate += dflash.kv_states().size() * sizeof(strata::core::ConversationKv);
+                for (const auto& state : dflash.kv_states()) {
+                    size_t bytes = 0;
+                    if (!strata::core::conversation_kv_capture_bytes({}, state, dflash.pool_geometry(),
+                            (int64_t) live.size(), false, bytes, err)) return false;
+                    if (bytes > SIZE_MAX - estimate) { err = "DFlash snapshot size overflow"; return false; }
+                    estimate += bytes;
+                }
+            }
             // A park carrying its own retained K/V replaces memory the cache
             // already held, so capacity is make_room's call - it runs next either
             // way, and put()'s accounting still bounds the budget. The with-reuse
@@ -9214,6 +9254,12 @@ int main(int argc, char** argv) {
                 size_t reused_bytes = 0;
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
                         std::move(reuse), &reused_bytes)) return false;
+                if (has_dflash) {
+                    image.dflash_kv.resize(dflash.kv_states().size());
+                    for (size_t j = 0; j < image.dflash_kv.size(); ++j)
+                        if (!strata::core::conversation_kv_save(image.dflash_kv[j], dflash.kv_states()[j],
+                                dflash.pool_geometry(), (int64_t) live.size(), false, err)) return false;
+                }
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
@@ -11644,6 +11690,7 @@ int main(int argc, char** argv) {
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
                 if (path.empty()) { refuse("missing path"); continue; }
+                if (has_dflash) { refuse("DFlash supports in-memory conversation caching; disk sessions are not supported"); continue; }
                 if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
@@ -11970,12 +12017,14 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
-            // DFlash proposes point masses (argmax tokens). The verifier samples the target with
-            // this request's chain and position-keyed RNG; exact-match acceptance is valid at any
-            // temperature. No draft distribution is passed to the rejection sampler.
-            const bool req_dflash = has_dflash;
-            df_request = req_dflash;
-            if (req_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n - 8)) {
+            // Speculative target windows failed the seeded-output parity gate.
+            // Keep sampling target-only while that discrepancy is investigated.
+            // Still maintain draft context for a later greedy continuation.
+            const bool req_dflash = has_dflash && req_temperature <= 0.0f;
+            df_request = has_dflash;
+            if (has_dflash && !req_dflash)
+                std::fprintf(stderr, "dflash: sampled request uses target-only decoding\n");
+            if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n - 8)) {
                 std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
                             (long long) dflash.capacity());
                 continue;
@@ -12130,7 +12179,7 @@ int main(int argc, char** argv) {
                              std::chrono::duration<double, std::milli>(Clock::now() - head_t0).count());
             }
             auto kv_quiesce = adapt_quiesce;
-            if (kvg.on && (!has_dflash || req_dflash)) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
+            if (kvg.on) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
 
                 // a failed growth may leave the tier half-changed: the engine stops (as for any CUDA failure)
                 if (!kvg_ensure(n + 256, kv_quiesce)) {
@@ -12277,7 +12326,7 @@ int main(int argc, char** argv) {
             // own next turn (ConversationCache::borrows).  Everything else is taken whole, as before.
             // (a layer split restores whole stage images only, so it never borrows; a batch slot that holds a longer
             // start of this prompt wins as before)
-            bool borrow = stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
+            bool borrow = !has_dflash && stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
                           conversations.borrows(parked);
             if (parked.tokens > std::max(resume, slot_tokens) && !borrow)
                 incoming.emplace(conversations.take(parked.index));
@@ -12315,6 +12364,13 @@ int main(int argc, char** argv) {
                     borrow = false;
                     err.clear();
                 }
+            }
+            if (incoming && has_dflash) {
+                bool valid = incoming->dflash_kv.size() == dflash.kv_states().size();
+                for (size_t j = 0; valid && j < incoming->dflash_kv.size(); ++j)
+                    valid = strata::core::conversation_kv_validate(incoming->dflash_kv[j], dflash.kv_states()[j],
+                        dflash.pool_geometry(), (int64_t) incoming->live.ids.size(), false, err);
+                if (!valid) { incoming.reset(); err.clear(); }
             }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
@@ -12451,6 +12507,15 @@ int main(int argc, char** argv) {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
+                if (has_dflash) {
+                    for (size_t j = 0; j < incoming->dflash_kv.size(); ++j)
+                        if (!strata::core::conversation_kv_restore(incoming->dflash_kv[j], dflash.kv_states()[j],
+                                dflash.pool_geometry(), (int64_t) incoming->live.ids.size(), false, err)) {
+                            std::printf("ERR restoring DFlash conversation: %s\n", err.c_str());
+                            return 1;
+                        }
+                    if (!dflash.idle(err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
                         use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
@@ -12823,7 +12888,7 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
-                    if (req_dflash && !dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), q, T, e))
+                    if (has_dflash && !dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), q, T, e))
                         return false;
                     q += T;
                     pp_reached = q;   // #471
@@ -14585,7 +14650,7 @@ int main(int argc, char** argv) {
                                cudaMemcpyHostToDevice);
                 }
                 // the elastic K/V: the window's cells and the drafter's beyond them
-                if (kvg.on && (!has_dflash || req_dflash) && p + T + 64 > kvg.cells &&
+                if (kvg.on && p + T + 64 > kvg.cells &&
                     !kvg_ensure(p + T + 64, adapt_quiesce)) {
 
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
@@ -14618,6 +14683,20 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                if (has_dflash && !merged) {
+                    // Do not cache accepted rows whose outputs were never emitted.
+                    // The last emitted token remains the next request's unconsumed anchor.
+                    a = (int) std::min<int64_t>(a, max_new - produced_n - 1);
+                    for (int i = 0; i < a; ++i)
+                        if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end()) {
+                            a = i;
+                            break;
+                        }
+                }
+                if (!dflash_target_probe(ver, p, a + 1, err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)
@@ -14678,11 +14757,12 @@ int main(int argc, char** argv) {
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
                 bool drafted = !use_mtp || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
-                if (req_dflash && !eos && produced_n < max_new) {
+                if (has_dflash) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     // The next proposal waits on this same stream. Keep an explicit wait when
                     // there is no proposal or the ungated policy needs the completed context time.
-                    const bool sync_context = df_auto || p + a + 1 + req_dflash_k + 1 > o.max_context;
+                    const bool sync_context = !req_dflash || df_auto || eos || produced_n >= max_new ||
+                                              p + a + 1 + req_dflash_k + 1 > o.max_context;
                     drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err,
                                                     sync_context);
                     const auto ctx_done = Clock::now();
@@ -14694,7 +14774,7 @@ int main(int argc, char** argv) {
                     df_pending_k = df_auto ? df_policy.choose() : req_dflash_k;
                     // Finish near the context limit with target-only windows rather than
                     // proposing a block which the next verification window cannot fit.
-                    dflash_ready = drafted && df_pending_k > 0 &&
+                    dflash_ready = req_dflash && drafted && !eos && produced_n < max_new && df_pending_k > 0 &&
                                    p + a + 1 + df_pending_k + 1 <= o.max_context;
                     const bool proposed = dflash_ready;
                     if (dflash_ready)
@@ -15619,8 +15699,6 @@ int main(int argc, char** argv) {
         // --spec-follow: the run ends with the continuation
         const int64_t max_new = follow.empty() ? o.max_new : std::min<int64_t>(o.max_new, (int64_t) follow.size());
         int64_t follow_differ = 0, follow_emitted = 0;
-        const char* df_probe_env = use_dflash ? std::getenv("STRATA_DF_TARGET_PROBE") : nullptr;
-        const int64_t df_probe_pos = df_probe_env ? std::atoll(df_probe_env) : -1;
         // Optional cycle evidence for prefix-survival analysis. No I/O when disabled.
         const char* df_trace_path = use_dflash ? std::getenv("STRATA_DF_CYCLES") : nullptr;
         const auto close_trace = [](FILE* f) { std::fclose(f); };
@@ -16008,23 +16086,6 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
-            if (df_probe_env && p <= df_probe_pos && df_probe_pos < p + T) {
-                std::vector<float> probe((size_t) n_vocab);
-                const int row = (int) (df_probe_pos - p);
-                if (!ver.copy_logits(row, probe.data())) {
-                    std::fprintf(stderr, "strata generate: target probe copy failed\n");
-                    return 1;
-                }
-                int best = 0, second = 1;
-                if (probe[second] > probe[best]) std::swap(best, second);
-                for (int i = 2; i < n_vocab; ++i) {
-                    if (probe[i] > probe[best]) { second = best; best = i; }
-                    else if (probe[i] > probe[second]) second = i;
-                }
-                std::fprintf(stderr, "dflash target probe: pos=%lld window_pos=%lld row=%d top1=%d score=%.9g top2=%d score=%.9g margin=%.9g\n",
-                             (long long) df_probe_pos, (long long) p, row, best, probe[best], second, probe[second],
-                             probe[best] - probe[second]);
-            }
             // STRATA_DFLASH_TAPS: the window's tap rows [0, T) go to the fixture file before the commit
             if (g_tap_dump != nullptr && ver.n_taps() > 0) {
                 g_tap_stride_bytes = (size_t) ver.tap_stride() * 4;
@@ -16059,6 +16120,10 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            if (!dflash_target_probe(ver, p, a + 1, err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
             if (df_trace) {
                 std::fprintf(df_trace.get(), "{\"anchor_pos\":%lld,\"K\":%d,\"L\":%d,\"bootstrap\":%s,\"correction\":%d,\"emitted\":%lld,\"draft\":[",
                              (long long) p, T - 1, a, first_window ? "true" : "false", outv[(size_t) a],

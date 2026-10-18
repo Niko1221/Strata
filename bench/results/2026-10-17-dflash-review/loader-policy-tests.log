@@ -1,0 +1,30 @@
+refused DFlash2 disabled by default  dflash2: rebuild with -DSTRATA_ENABLE_DFLASH2=ON (experimental runtime)
+refused wrong architecture           dflash: general.architecture is 'qwen3', a DFlash artifact declares 'dflash'
+refused missing block_size           dflash: missing metadata key dflash.block_size in /tmp/strata_dflash_load_test/nokey.gguf
+refused dflash.embedding_length      dflash: invalid integer metadata dflash.embedding_length
+refused dflash.embedding_length      dflash: invalid integer metadata dflash.embedding_length
+refused dflash.embedding_length      dflash: empty tap list or geometry products exceed the supported integer range
+refused dflash.attention.key_length  dflash: invalid integer metadata dflash.attention.key_length
+refused dflash.attention.causal      dflash: invalid boolean metadata dflash.attention.causal
+refused dflash.attention.key_length  dflash: attention.key_length must be positive when present
+refused dflash.rope.frequency_base   dflash: rope.frequency_base must be a finite positive number
+refused floating tap indices         dflash: target_layers must contain non-negative int32 layer indices
+refused missing tensor               dflash: missing required tensor 'layers.0.self_attn.q_proj' (looked for 'blk.0.attn_q.weight', 'layers.0.self_attn.q_proj.weight', in /tmp/strata_dflash_load_test/missing.gguf)
+refused wrong shape                  dflash: tensor 'blk.0.attn_q.weight' has shape [32,40], expected [32,32] for 'layers.0.self_attn.q_proj'
+refused quantized norm               dflash: tensor 'enc.output_norm.weight' is Q4_0; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused quantized norm               dflash: tensor 'enc.output_norm.weight' is Q5_0; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused quantized norm               dflash: tensor 'enc.output_norm.weight' is Q8_0; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused F32 tensor                   dflash: tensor 'blk.0.ffn_norm.weight' is F32; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused taps not increasing          dflash: target_layers must be strictly increasing and non-negative, got [1, ..., 0]
+refused taps not increasing          dflash: target_layers must be strictly increasing and non-negative, got [0, ..., 1]
+refused no target_layers             dflash: missing dflash.target_layers (the taps this drafter was trained against)
+refused 1+N layout                   dflash: this artifact declares the generic 1+N fill-in layout (dflash.sample_from_anchor=false); this implementation supports only the DeepSpec anchor layout (query_zero_predicts_next)
+refused causal attention             dflash: this artifact declares causal block attention; the DeepSpec drafter is trained non-causal (dflash.attention.causal=false)
+refused DSpark markov head           dflash: this artifact carries DSpark extras (Markov head / confidence gate); this implementation supports plain DeepSpec DFlash only
+refused DFlash2 selector             dflash2: rebuild with -DSTRATA_ENABLE_DFLASH2=ON (experimental runtime)
+refused own embedding                dflash: the artifact ships its own 'token_embd.weight'; the DeepSpec drafter strips both and binds them from the target at load
+refused unknown tensor               dflash: unknown tensor 'something.else.weight' in the artifact
+refused block_size 0                 dflash: implausible geometry (hidden=32 layers=2 heads=4/1 head_dim=8 intermediate=16 vocab=64 block_size=0)
+refused truncated                    dflash: tensor 'blk.1.ffn_down.weight' lies outside its file's data section
+dflash_load_test: ok
+dflash_policy_test: ok

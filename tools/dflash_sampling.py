@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""GPU integration gate for DFlash's sampled exact-match acceptance.
+"""GPU integration gate for DFlash's sampled target-only fallback.
 
 No downloads. Supply an existing DFlash run configuration and a directory outside
 the checkout for logs. Uses the native serve protocol and CLI, fixed expert
 residency, and the same target/sampler seed on each side. This checks real draft
-execution, rejected rows, request reset, penalties, filters and greedy regression.
+execution on greedy requests, request reset, penalties, filters and greedy regression.
 
     python tools/dflash_sampling.py --config strata-iq3_xxs.json \
         --engine build/strata --baseline /path/to/previous/strata --output /tmp/df-sampling
@@ -101,7 +101,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--engine", required=True, type=Path)
-    ap.add_argument("--baseline", type=Path, help="previous engine, for byte-identical greedy regression")
+    ap.add_argument("--baseline", type=Path, help="previous engine, for DFlash-off greedy byte equality")
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--tokens", default="50,3815,2923,539,2923,13,6558,281,2007,8,283,220,18,87,61,17,471,220,22,87,478,220,17,13")
     ap.add_argument("--count", type=int, default=64)
@@ -128,7 +128,7 @@ def main() -> None:
                        ("--lookup-chain", "0"), ("--prompt-cache", "0")):
         replace(args, key, value)
     target_args = args.copy()
-    for key in ("--dflash", "--dflash-block", "--dflash-window", "--dflash-vocab", "--dflash-head", "--dflash-mask"):
+    for key in ("--dflash", "--dflash-block", "--dflash-window", "--dflash-vocab", "--dflash-head", "--dflash-mask-token"):
         replace(target_args, key, None)
     cwd = Path(cfg.get("cwd", root)).resolve()
     env = dict(os.environ, STRATA_IQ_MT_MIN="1", STRATA_PREFILL_CPU_SHARE="0",
@@ -137,13 +137,14 @@ def main() -> None:
         ("greedy", "temperature=0 seed=1234"),
         ("cold", "temperature=0.3 seed=1234 top_k=20 top_p=0.95"),
         ("filtered", "temperature=0.7 seed=3456 top_k=40 top_p=0.9 min_p=0.05"),
+        ("seed7", "temperature=0.7 seed=7 top_k=40 top_p=0.9 min_p=0.05"),
         ("penalties", "temperature=1.2 seed=5678 top_k=64 top_p=1 min_p=0.02 penalty_last_n=64 penalty_repeat=1.1 penalty_freq=0.2 penalty_present=0.3"),
         ("greedy_again", "temperature=0 seed=1234"),
         ("filtered_repeat", "temperature=0.7 seed=3456 top_k=40 top_p=0.9 min_p=0.05"),
     ]
     results = {}
     for name, binary, arm_args in [("target", a.engine, target_args), ("dflash", a.engine, args)] + (
-            [("previous", a.baseline, args)] if a.baseline else []):
+            [("previous", a.baseline, target_args)] if a.baseline else []):
         engine = Engine(binary.resolve(), arm_args, cwd, env, out / f"{name}-engine.txt")
         try:
             records = {}
@@ -158,7 +159,10 @@ def main() -> None:
                 assert "error" not in record, record
                 assert len(record["tokens"]) == a.count, (label, record)
                 if name == "dflash":
-                    assert record["offered"] > 0, "DFlash was silently bypassed"
+                    if label.startswith("greedy"):
+                        assert record["offered"] > 0, "DFlash was silently bypassed"
+                    else:
+                        assert record["offered"] == 0, "sampled request bypassed the target-only fallback"
                 records[label] = record
                 print(name, label, "accepted/offered", record["accepted"], record["offered"], flush=True)
             results[name] = records
@@ -172,11 +176,12 @@ def main() -> None:
         assert results[name]["filtered"]["tokens"] == results[name]["filtered_repeat"]["tokens"], name
     if a.baseline:
         for label in ("greedy", "greedy_again"):
-            assert results["previous"][label]["tokens"] == results["dflash"][label]["tokens"], f"greedy regression: {label}"
-    # The CLI used to reject DFlash sampling at startup; check its actual decode path too.
+            assert results["previous"][label]["tokens"] == results["target"][label]["tokens"], f"DFlash-off regression: {label}"
+    # The CLI must select the same target-only fallback before loading the drafter.
     cli_sampling = ["--tokens", ",".join(map(str, ids)), "--max-new", str(a.count),
                     "--seed", "3456", "--temperature", "0.7", "--top-k", "40", "--top-p", "0.9"]
     trace = out / "cli-cycles.jsonl"
+    trace.unlink(missing_ok=True)
     with (out / "cli.txt").open("w") as log:
         subprocess.run([str(a.engine.resolve()), *args, *cli_sampling], cwd=cwd,
                        env=dict(env, STRATA_DF_CYCLES=str(trace)), stdout=log, stderr=log,
@@ -189,10 +194,9 @@ def main() -> None:
         return [int(t) for t in line.split(":", 1)[1].split()]
     cli_tokens = cli_output(out / "cli.txt")
     assert len(cli_tokens) == a.count and cli_tokens == cli_output(out / "cli-target.txt"), "CLI sampled target parity"
-    cycles = [json.loads(line) for line in trace.read_text().splitlines()]
-    assert any(c["K"] > 0 for c in cycles), "CLI did not use DFlash"
-    assert any(c["L"] < c["K"] for c in cycles), "fixture did not exercise rejection"
-    print("DFlash sampling, target token parity, request reset and greedy regression: PASS")
+    assert "sampled CLI requests use target-only decoding" in (out / "cli.txt").read_text()
+    assert not trace.exists() or not trace.read_text().strip(), "sampled CLI ran the drafter"
+    print("DFlash sampled fallback, target token parity, request reset and greedy regression: PASS")
 
 
 if __name__ == "__main__":

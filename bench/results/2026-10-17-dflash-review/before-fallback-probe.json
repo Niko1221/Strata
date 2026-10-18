@@ -1,0 +1,50 @@
+{
+  "target": {
+    "tokens": [
+      7145,
+      281,
+      3944,
+      16,
+      553,
+      271,
+      248068,
+      271
+    ],
+    "decode_ms": 180.9,
+    "accepted": 0,
+    "offered": 0,
+    "done": "DONE 8 24 230.4 180.9 length 0 0 0 952 2960 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+  },
+  "df": {
+    "tokens": [
+      7145,
+      281,
+      3944,
+      17,
+      553,
+      271,
+      248068,
+      271
+    ],
+    "decode_ms": 359.1,
+    "accepted": 1,
+    "offered": 24,
+    "done": "DONE 8 24 232.8 359.1 length 1 24 0 3626 12686 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+  },
+  "df-split": {
+    "tokens": [
+      7145,
+      281,
+      3944,
+      17,
+      553,
+      271,
+      248068,
+      271
+    ],
+    "decode_ms": 327.2,
+    "accepted": 1,
+    "offered": 24,
+    "done": "DONE 8 24 235.2 327.2 length 1 24 0 3707 12255 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+  }
+}

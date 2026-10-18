@@ -173,6 +173,7 @@ public:
     cudaStream_t stream() const { return cs_; }
     /// The drafter's per-layer K/V states (read-only: STRATA_STATE_HASH hashes them like MTP's).
     const std::vector<QsaState>& kv_states() const { return st_; }
+    const ModelGeometry& pool_geometry() const { return pool_g_; }
     int device() const { return device_; }
     bool idle(std::string& err) {
         if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
