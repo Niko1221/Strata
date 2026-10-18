@@ -429,7 +429,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
             std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
             for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; }
             for (int rep = 0; rep < 3 && !qbad; ++rep) {
-                check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison");
+                check(cudaMemsetAsync(d_q, 0xff, qbytes, stream), "qfuse poison");
                 bool wrote = false;
                 cudaGraph_t qg = nullptr;
                 cudaGraphExec_t qx = nullptr;
@@ -485,8 +485,8 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                 for (int ts = 0; ts < 2; ++ts) {
                     set_ts(ts ? "1" : "0");
                     check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "q8 R");
-                    check(cudaMemsetAsync(d_inj_out, 0x5a, (size_t) T * HC * sizeof(float), stream), "q8 inj poison");
-                    check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "q8 qimg poison");
+                    check(cudaMemsetAsync(d_inj_out, 0xff, (size_t) T * HC * sizeof(float), stream), "q8 inj poison");
+                    check(cudaMemsetAsync(d_q, 0xff, qbytes, stream), "q8 qimg poison");
                     std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
                     for (int t = 0; t < tt; ++t) {
                         qa[t].q8_down = d_qd;
