@@ -1409,7 +1409,10 @@ bool native_supported(int gu_type, int d_type) {
     // path equal to MMQ's within noise, 96 prompts each); STRATA_PF_FUSED=0 turns it off, =1 keeps the opt-in for every covered format
     static const int env = [] {
         const char* v = std::getenv("STRATA_PF_FUSED");
-        return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0);
+        const char* s = std::getenv("STRATA_PF_FUSED_SM75");
+        if (v != nullptr && v[0] != '\0') return v[0] == '1' ? 1 : 0;
+        if (s != nullptr && s[0] != '\0') return s[0] == '1' ? 1 : 0;
+        return -1;
     }();
     if (off || env == 0 || !gu_covered(gu_type)) return false;
 #if !defined(__HIPCC__)
@@ -1419,7 +1422,7 @@ bool native_supported(int gu_type, int d_type) {
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
     if (env < 0) return d.w12;
-    return requested() || d.w12;
+    return requested() || d.t75 || d.w12;
 }
 
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream) {
