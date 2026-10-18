@@ -91,7 +91,7 @@ __device__ __forceinline__ int sel_warp_sum_i32(int d) {
 }
 
 __device__ __forceinline__ float rows_dot4(const float4 k4, const float4 q4, int h) {
-#if defined(__HIPCC__)
+#if defined(__HIPCC__) && (defined(__gfx1200__) || defined(__gfx1201__))
     const float ab = (h & 1) ? __builtin_fmaf(k4.x, q4.x, k4.y * q4.y)
                              : __builtin_fmaf(k4.y, q4.y, k4.x * q4.x);
     return __builtin_fmaf(k4.w, q4.w, __builtin_fmaf(k4.z, q4.z, ab));
