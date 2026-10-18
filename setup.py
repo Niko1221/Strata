@@ -2096,6 +2096,9 @@ def cuda_lib_dirs(toolkit=13):
 # their owners; the RX 6800 / 6900 series (gfx1030, #311) and the RX 6700 XT (gfx1031, #524) run but are unvalidated.  There is no ready-made AMD engine: ROCm comes from AMD's TheRock Python wheels into .venv (no sudo;
 # a system ROCm 7 in /opt/rocm is used when it has hipcc and hipBLAS) and the engine is compiled here for the cards.
 # No images yet.
+# The Instinct MI50 / MI60 / Radeon VII (gfx906, CDNA1) also run: they need a system ROCm 6.x (the TheRock wheels do
+# not ship gfx906, and the wheel path is 7.x-only), so setup lists the card but does not drive the build: the engine
+# is built by hand per docs/ROCm_6_3_3.md (system ROCm at /opt/rocm-6.x, -DSTRATA_HIP_GFX906=ON).
 ROCM_INDEXES = {"gfx1100": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",   # TheRock's wheels per GPU family
                 "gfx1101": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",
                 "gfx1102": "https://rocm.nightlies.amd.com/v2/gfx110X-dgpu/",
@@ -2128,7 +2131,7 @@ GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
 # build one with `STRATA_HIP_ARCHS=gfx1150 tools\hip\build_windows.bat` and start setup with `--prebuilt dist\`.
 # Unset: unchanged.
 GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
-AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") \
+AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151", "gfx906") \
             + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
 # The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
 # STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
@@ -2162,11 +2165,13 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
              # integrated Radeons of other Ryzen families: named so they are not taken for Strix Halo (not supported)
              "gfx1150": "AMD Radeon 890M / 880M (Ryzen AI 300, Strix Point, gfx1150)",
              "gfx1152": "AMD Radeon 860M / 840M (Ryzen AI 300, Krackan Point, gfx1152)",
-             "gfx1103": "AMD Radeon 780M / 760M / 740M (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103)"}
+             "gfx1103": "AMD Radeon 780M / 760M / 740M (Ryzen 7040 / 8040, Phoenix / Hawk Point, gfx1103)",
+             "gfx906": "AMD Instinct MI50 / MI60 / Radeon VII (gfx906)"}
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
              "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030) and RX 6700 XT "
              "(gfx1031, #524), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
-             "gfx1151: experimental, docs/STRIX_HALO.md)")
+                          "gfx1151: experimental, docs/STRIX_HALO.md), and the Instinct MI50 / MI60 / Radeon VII (gfx906, "
+             "system ROCm 6.x and a build by hand, docs/ROCm_6_3_3.md)")
 
 
 def rocm_index(arch):
@@ -2998,6 +3003,12 @@ def rocm_root(archs):
         else:                                          # #446: a runtime-only ROCm (no -dev packages): cmake would fail
             warn(f"the ROCm in {sysroot} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
                  ".venv instead (or install them, e.g. AMD's amdrocm-core-dev package for your ROCm and card)")
+    # gfx906 (Instinct MI50 / MI60 / Radeon VII) has no TheRock wheels: it needs a system ROCm 6.x and a build
+    # by hand (docs/ROCm_6_3_3.md).  Fail with that instruction instead of a KeyError from the wheel-index lookup.
+    if not set(archs) <= set(ROCM_INDEXES):
+        missing = [a for a in archs if a not in ROCM_INDEXES]
+        fail(f"no ready-made ROCm wheels for {', '.join(missing)}: this card needs a system ROCm 6.x and the engine "
+             "built by hand", "install a system ROCm 6.x (e.g. /opt/rocm-6.3.3) and follow docs/ROCm_6_3_3.md")
     indexes = list(dict.fromkeys(rocm_index(a) for a in archs))
     if len(indexes) > 1:                               # TheRock's wheels hold one GPU family's libraries
         fail(f"cards of two GPU families ({', '.join(archs)}) need a system ROCm 7 (in /opt/rocm): AMD's Python "
