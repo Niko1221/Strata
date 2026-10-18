@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 #include <vector>
@@ -152,6 +153,8 @@ void run_case(const Case& c, int64_t T, std::mt19937& rng) {
     // (b) MMQ: one "expert" of T rows
     const bool mmq_ok = mmq::supported(c.t) && mmq::fits(c.t, N);
     float t_q = 0, t_mmq = 0, t_rp = 0;
+    std::vector<float> y_mmq;
+    size_t rp_diff = 0;
     double e_mmq = -1, e_rp = -1;
     mmq::Product p;
     p.w = dw; p.type = c.t; p.w_rows = N; p.w_cols = K; p.expert_bytes = wbytes; p.n = 1;
@@ -162,20 +165,22 @@ void run_case(const Case& c, int64_t T, std::mt19937& rng) {
         mctx.run(p, s);
         fetch();
         e_mmq = rel_err(y, ref, rows, N);
+        y_mmq = y;
         t_q = median_ms(15, [&] { mmq::quantize(dx, nullptr, dq, c.t, K, K, T, s); });
         t_mmq = median_ms(15, [&] { mctx.run(p, s); });
     }
     // (c) the repacked GEMM
     rp::Context rctx;
-    if (mmq_ok && rp::built() && rp::supported(c.t, N, K)) {
+    if (mmq_ok && rp::built() && rp::dense_supported(c.t, N, K)) {
         const size_t rb = rp::matrix_bytes(c.t, N, K);
         ck(cudaMalloc(&drw, rb), "rw");
-        rp::repack_iq4nl(dw, wbytes, drw, rb, N, K, 1, s);
+        rp::repack(c.t, dw, wbytes, drw, rb, N, K, 1, s);
         mmq::Product q = p;
         q.w = drw; q.expert_bytes = rb;
         rctx.run(q, s);
         fetch();
         e_rp = rel_err(y, ref, rows, N);
+        for (size_t i = 0; i < y.size(); ++i) rp_diff += std::memcmp(&y[i], &y_mmq[i], 4) != 0;
         t_rp = median_ms(15, [&] { rctx.run(q, s); });
     }
     const double gf = 2.0 * T * N * K / 1e9;
@@ -187,8 +192,8 @@ void run_case(const Case& c, int64_t T, std::mt19937& rng) {
     else
         std::printf(" | mmq: not covered");
     if (e_rp >= 0)
-        std::printf(" | rp %7.3f + q ms (%5.1f TOPS, err %.1e) %+4.0f%%", t_rp, gf / t_rp, e_rp,
-                    100.0 * (t_f16 / (t_rp + t_q) - 1.0));
+        std::printf(" | rp %7.3f + q ms (%5.1f TOPS, err %.1e) %+4.0f%%, vs mmq: %s", t_rp, gf / t_rp, e_rp,
+                    100.0 * (t_f16 / (t_rp + t_q) - 1.0), rp_diff ? "DIFFERS" : "bitwise");
     std::printf(" | weight quant err %.1e\n", e_wq);
     for (void* v : {(void*) dw, (void*) dx, (void*) dx16, (void*) dy, dq, (void*) dids, (void*) db, (void*) drw})
         if (v) cudaFree(v);

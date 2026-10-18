@@ -4,9 +4,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <type_traits>
 
 #if defined(STRATA_HIP_GFX906)
 #include "rp/repack-kernels.cuh"
+#include "rp/repack-convert.cuh"
 #endif
 
 namespace strata::prefill::rp {
@@ -24,7 +26,7 @@ void ck(cudaError_t e, const char* what) {
 
 // One thread per 32-value block: its 16 nibble bytes to the de-aliased nibble row, its f16 d to the scale plane
 // (mx's repack_iq4nl_kernel, plus rows [row0, row0 + nrows) of a matrix and the row padding zeroed).
-__global__ void repack_iq4nl_kernel(const uint8_t* __restrict__ src, size_t src_stride, uint8_t* __restrict__ dst,
+__global__ void repack_iq4nl_rows_kernel(const uint8_t* __restrict__ src, size_t src_stride, uint8_t* __restrict__ dst,
                                     size_t dst_stride, int64_t rows, int64_t nb, int64_t qs_str, int64_t row0,
                                     int64_t nrows, int64_t total) {
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (int64_t) gridDim.x * blockDim.x) {
@@ -101,7 +103,7 @@ void launch_repack(const void* src, size_t src_stride, void* dst, size_t dst_str
     if (total <= 0) return;
     const int64_t qs_str = repack_qs_row_stride(GGML_TYPE_IQ4_NL, cols);
     const unsigned grid = (unsigned) std::min<int64_t>((total + 255) / 256, 4096);
-    repack_iq4nl_kernel<<<grid, 256, 0, s>>>((const uint8_t*) src, src_stride, (uint8_t*) dst, dst_stride, rows, nb,
+    repack_iq4nl_rows_kernel<<<grid, 256, 0, s>>>((const uint8_t*) src, src_stride, (uint8_t*) dst, dst_stride, rows, nb,
                                              qs_str, row0, nrows, total);
     ck(cudaGetLastError(), "repack_iq4nl");
 }
@@ -132,7 +134,56 @@ bool supported(int t, int64_t w_rows, int64_t w_cols) {
     return t == GGML_TYPE_IQ4_NL && w_cols % 128 == 0 && w_rows % MMQ_RP_Q8_BM == 0;
 }
 
+bool dense_supported(int t, int64_t w_rows, int64_t w_cols) {
+    if (w_rows % MMQ_RP_Q8_BM != 0) return false;
+    switch (t) {
+        case GGML_TYPE_IQ4_NL: case GGML_TYPE_Q8_0: return w_cols % 128 == 0;
+        // Q4_K is left to llama.cpp's MMQ: dense_mmq_bench (T 4096, [6144 -> 2560]) measured the repacked GEMM 4% slower
+        // (9.11 against 8.73 ms); Q6_K +19-26% and Q5_K +6% faster than MMQ
+        case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_K: return w_cols % 256 == 0;
+        default: return false;
+    }
+}
+
 size_t matrix_bytes(int t, int64_t rows, int64_t cols) { return repack_gcn_nbytes((ggml_type) t, cols, rows); }
+
+void repack(int t, const void* src_v, size_t src_stride, void* dst_v, size_t dst_stride, int64_t ne1, int64_t ne0, int n,
+            void* stream) {
+    // mx-llama.cpp's set_tensor launch (buffer.cu), with ne2 = n matrices
+    const cudaStream_t s = (cudaStream_t) stream;
+    const uint8_t* src = (const uint8_t*) src_v;
+    uint8_t* dst = (uint8_t*) dst_v;
+    const int64_t n_blocks = ne0 / 32, qs_str = repack_qs_row_stride((ggml_type) t, ne0);
+    const int64_t n_out = (int64_t) n * ne1 * n_blocks;
+    const int block = 256, grid = (int) std::min<int64_t>((n_out + block - 1) / block, 65535);
+    const int64_t ss = (int64_t) src_stride, ds = (int64_t) dst_stride;
+    switch (t) {
+        case GGML_TYPE_Q8_0:
+            repack_q8_0_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, ne1 * qs_str, ss, ds, n_out);
+            break;
+        case GGML_TYPE_IQ4_NL:
+            ::repack_iq4nl_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, ne1 * qs_str, ss, ds, n_out);
+            break;
+        case GGML_TYPE_Q6_K: {
+            const int64_t nds = (n_blocks + 7) / 8, hoff = ne1 * qs_str, soff = hoff + ne1 * n_blocks * 8,
+                          doff = soff + ne1 * n_blocks * 2;
+            repack_q6k_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, hoff, soff, doff, nds, ss, ds, n_out);
+        } break;
+        case GGML_TYPE_Q4_K: {
+            const int64_t nsb = (n_blocks + 7) / 8, soff = ne1 * qs_str, doff = soff + ne1 * nsb * 12;
+            repack_q4k_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, soff, doff, nsb, ss, ds, n_out);
+        } break;
+        case GGML_TYPE_Q5_K: {
+            const int64_t nsb = (n_blocks + 7) / 8, hoff = ne1 * qs_str, soff = hoff + ne1 * n_blocks * 4,
+                          doff = soff + ne1 * nsb * 12;
+            repack_q5k_kernel<<<grid, block, 0, s>>>(src, dst, ne1, n_blocks, qs_str, hoff, soff, doff, nsb, ss, ds, n_out);
+        } break;
+        default:
+            std::fprintf(stderr, "prefill rp: no repack for type %d\n", t);
+            std::exit(1);
+    }
+    ck(cudaGetLastError(), "repack");
+}
 
 void repack_iq4nl(const void* src, size_t src_stride, void* dst, size_t dst_stride, int64_t rows, int64_t cols, int n,
                   void* stream) {
@@ -164,7 +215,7 @@ Context::~Context() {
 
 void Context::run(const mmq::Product& p, void* stream) {
     const cudaStream_t s = (cudaStream_t) stream;
-    if (!supported(p.type, p.w_rows, p.w_cols)) {
+    if (!dense_supported(p.type, p.w_rows, p.w_cols)) {
         std::fprintf(stderr, "prefill rp: type %d [%lld x %lld] is not covered\n", p.type, (long long) p.w_rows,
                      (long long) p.w_cols);
         std::exit(1);
@@ -191,18 +242,28 @@ void Context::run(const mmq::Product& p, void* stream) {
     const dim3 grid((unsigned) ((p.w_rows + MMQ_RP_Q8_BM - 1) / MMQ_RP_Q8_BM), (unsigned) max_tiles, 1);
     const uint8_t* w = (const uint8_t*) p.w;
     const block_q8_1* xq = (const block_q8_1*) p.xq;
-    if (bw == 32) {
-        repack_tile_off<32><<<1, 1, 0, s>>>(p.bounds, tile_off, tile_meta, p.n);
-        mmq_gemm_repacked_w32<true, 1, MMQ_RP_Q8_NROW_LANES * 2, GGML_TYPE_IQ4_NL>
-            <<<grid, dim3(32, MMQ_RP_Q8_NROW_LANES * 2), 0, s>>>(
-                w, xq, p.dst, (uint32_t) p.w_cols, (uint32_t) p.w_rows, (uint32_t) p.total_rows, ids_src1, p.ids,
-                p.bounds, tile_off, tile_meta, (uint32_t) p.n, p.expert_bytes, (uint32_t) p.ld_dst);
-    } else {
-        repack_tile_off<64 * MMQ_RP_Q8_TN><<<1, 1, 0, s>>>(p.bounds, tile_off, tile_meta, p.n);
-        mmq_gemm_repacked<true, MMQ_RP_Q8_TN, MMQ_RP_Q8_NROW_LANES, GGML_TYPE_IQ4_NL>
-            <<<grid, dim3(64, MMQ_RP_Q8_NROW_LANES), 0, s>>>(
-                w, xq, p.dst, (uint32_t) p.w_cols, (uint32_t) p.w_rows, (uint32_t) p.total_rows, ids_src1, p.ids,
-                p.bounds, tile_off, tile_meta, (uint32_t) p.n, p.expert_bytes, (uint32_t) p.ld_dst);
+    auto launch = [&](auto wt) {
+        constexpr ggml_type WT = decltype(wt)::value;
+        if (bw == 32) {
+            repack_tile_off<32><<<1, 1, 0, s>>>(p.bounds, tile_off, tile_meta, p.n);
+            mmq_gemm_repacked_w32<true, 1, MMQ_RP_Q8_NROW_LANES * 2, WT>
+                <<<grid, dim3(32, MMQ_RP_Q8_NROW_LANES * 2), 0, s>>>(
+                    w, xq, p.dst, (uint32_t) p.w_cols, (uint32_t) p.w_rows, (uint32_t) p.total_rows, ids_src1, p.ids,
+                    p.bounds, tile_off, tile_meta, (uint32_t) p.n, p.expert_bytes, (uint32_t) p.ld_dst);
+        } else {
+            repack_tile_off<64 * MMQ_RP_Q8_TN><<<1, 1, 0, s>>>(p.bounds, tile_off, tile_meta, p.n);
+            mmq_gemm_repacked<true, MMQ_RP_Q8_TN, MMQ_RP_Q8_NROW_LANES, WT>
+                <<<grid, dim3(64, MMQ_RP_Q8_NROW_LANES), 0, s>>>(
+                    w, xq, p.dst, (uint32_t) p.w_cols, (uint32_t) p.w_rows, (uint32_t) p.total_rows, ids_src1, p.ids,
+                    p.bounds, tile_off, tile_meta, (uint32_t) p.n, p.expert_bytes, (uint32_t) p.ld_dst);
+        }
+    };
+    switch (p.type) {
+        case GGML_TYPE_IQ4_NL: launch(std::integral_constant<ggml_type, GGML_TYPE_IQ4_NL>{}); break;
+        case GGML_TYPE_Q8_0: launch(std::integral_constant<ggml_type, GGML_TYPE_Q8_0>{}); break;
+        case GGML_TYPE_Q6_K: launch(std::integral_constant<ggml_type, GGML_TYPE_Q6_K>{}); break;
+        case GGML_TYPE_Q4_K: launch(std::integral_constant<ggml_type, GGML_TYPE_Q4_K>{}); break;
+        default: launch(std::integral_constant<ggml_type, GGML_TYPE_Q5_K>{}); break;
     }
     ck(cudaGetLastError(), "rp gemm");
 }
@@ -217,6 +278,8 @@ bool supported(int, int64_t, int64_t) { return false; }
 size_t matrix_bytes(int, int64_t, int64_t) { return 0; }
 void repack_iq4nl(const void*, size_t, void*, size_t, int64_t, int64_t, int, void*) {}
 void repack_iq4nl_rows(const void*, void*, int64_t, int64_t, int64_t, int64_t, void*) {}
+bool dense_supported(int, int64_t, int64_t) { return false; }
+void repack(int, const void*, size_t, void*, size_t, int64_t, int64_t, int, void*) {}
 void gather_group_iq4nl(const mmq::GatherGroup&, size_t, size_t, int64_t, int64_t, void*, size_t, void*, size_t, void*) {}
 Context::~Context() {}
 void Context::run(const mmq::Product&, void*) {}
