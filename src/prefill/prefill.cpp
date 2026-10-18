@@ -1385,10 +1385,9 @@ const MmqPlan& mmq_plan() {
             p.any = true;
             p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
             p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
-            if (rp::sized() && rp::supported(gt, 1280, N) && rp::supported(dt, N, 640)) {   // its group slots, repacked
+            if (rp::sized() && rp::supported(gt, 1280, N))   // its group slots, repacked (each product on its own)
                 p.gu_max = std::max(p.gu_max, rp::matrix_bytes(gt, 1280, N));
-                p.d_max = std::max(p.d_max, rp::matrix_bytes(dt, N, 640));
-            }
+            if (rp::sized() && rp::supported(dt, N, 640)) p.d_max = std::max(p.d_max, rp::matrix_bytes(dt, N, 640));
         }
         // STRATA_MMQ_DIRECT=1: a native layer's resident experts are read in place when the pointer-table MMQ covers
         // both products, gate/up reads nothing past its matrix, the down over-read fits the slot guard, and the blob
@@ -5197,14 +5196,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // group's pointer tables give MMQ each expert's own address (group position q), the others are
                         // gathered at compact positions c = 0..ns-1 of the group buffers, as before (same bytes)
                         const bool direct = use_mmq && lay.native && m.cache && mmq_plan().direct[(size_t) l] && !wmma_l;
-                        // STRATA_PF_RP=1 (gfx906, rp_moe.hpp): a layer whose gate/up and down are both IQ4_NL takes
-                        // mx-llama.cpp's repacked GEMM; its group slots hold the repacked layout (written by the gather,
-                        // slot_gu / slot_d bytes apart), the resident experts stay GGUF.  The main path only: the peer
-                        // paths above keep MMQ, and so does a direct layer (CUDA's pointer tables; none on gfx906).
-                        const bool rp_main = use_mmq && lay.native && !direct && !lay.fmt[(size_t) l].tail_off &&
-                                             rp::enabled() && rp::supported(mmq_gt, 1280, N) && rp::supported(mmq_dt, N, 640);
-                        const size_t slot_gu = rp_main ? rp::matrix_bytes(mmq_gt, 1280, N) : mmq_gub;
-                        const size_t slot_d = rp_main ? rp::matrix_bytes(mmq_dt, N, 640) : mmq_db;
+                        // STRATA_PF_RP=1 (gfx906, rp_moe.hpp): an IQ4_NL gate/up (rp_gu) or down (rp_d) product takes
+                        // mx-llama.cpp's repacked GEMM, each on its own (the GSQ-RCO IQ3_S file: IQ4_NL downs under
+                        // IQ3_XXS / IQ2_S / IQ3_S gate/up); its group slots hold the repacked layout (written by the
+                        // gather, slot_gu / slot_d bytes apart), the other product's stay GGUF for MMQ, and the resident
+                        // experts stay GGUF.  The main path only: the peer paths above keep MMQ, and so does a direct
+                        // layer (CUDA's pointer tables; none on gfx906).
+                        const bool rp_ok = use_mmq && lay.native && !direct && !lay.fmt[(size_t) l].tail_off && rp::enabled();
+                        const bool rp_gu = rp_ok && rp::supported(mmq_gt, 1280, N);
+                        const bool rp_d = rp_ok && rp::supported(mmq_dt, N, 640);
+                        const bool rp_main = rp_gu || rp_d;
+                        const size_t slot_gu = rp_gu ? rp::matrix_bytes(mmq_gt, 1280, N) : mmq_gub;
+                        const size_t slot_d = rp_d ? rp::matrix_bytes(mmq_dt, N, 640) : mmq_db;
                         static const bool rp_check = std::getenv("STRATA_PF_RP_CHECK") != nullptr;
                         if (rp_main && rp_check && !m.rpc_gu) {
                             cudaMalloc((void**) &m.rpc_gu, MMQ_GROUP * mmq_gub + MMQ_TAIL);
@@ -5256,9 +5259,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     mmq::gather_native(gg.blob[i], gg.blob[i] + f.up_off, mmq_gub / 2, gg.blob[i] + f.down_off, mmq_db,
                                                        m.rpc_gu + i * mmq_gub, m.rpc_d + i * mmq_db, m.cs, nullptr, nullptr,
                                                        i + 1 == gg.n ? zero : 0);
-                            if (rp_main)
-                                rp::gather_group_iq4nl(gg, f.up_off, f.down_off, N, 640, m.grp_gu, slot_gu, m.grp_d, slot_d, m.cs);
-                            else if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
+                            if (rp_main) {
+                                // the GGUF part (if any) through the plain group gather, then the repacked part(s)
+                                if (!rp_gu || !rp_d) {
+                                    const size_t ga = rp_gu ? 0 : mmq_gub / 2, gd = rp_d ? 0 : mmq_db;
+                                    if (!mmq::gather_native_group(gg, f.up_off, ga, f.down_off, gd, m.grp_gu, slot_gu, m.grp_d,
+                                                                  slot_d, m.cs, 0, nullptr, zero))
+                                        for (int i = gg.first; i < gg.n; ++i)
+                                            mmq::gather_native(gg.blob[i], gg.blob[i] + f.up_off, ga, gg.blob[i] + f.down_off, gd,
+                                                               m.grp_gu + i * slot_gu, m.grp_d + i * slot_d, m.cs, nullptr,
+                                                               nullptr, i + 1 == gg.n ? zero : 0);
+                                }
+                                rp::gather_group_iq4nl(gg, f.up_off, f.down_off, N, 640, rp_gu ? m.grp_gu : nullptr, slot_gu,
+                                                       rp_d ? m.grp_d : nullptr, slot_d, m.cs);
+                            } else if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
                                                           m.grp_d, mmq_db, m.cs, f.tail_off,
                                                           f.tail_off ? m.grp_tail : nullptr, zero)) {
                                 for (int i = gg.first; i < gg.n; ++i) {   // not 16-byte aligned: one at a time
@@ -5343,7 +5357,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     one.blob[q] = blob_dev;
                                     one.first = (int) q;
                                     one.n = (int) q + 1;
-                                    rp::gather_group_iq4nl(one, f.up_off, f.down_off, N, 640, m.grp_gu, slot_gu, m.grp_d, slot_d, m.cs);
+                                    if (!rp_gu || !rp_d)
+                                        mmq::gather_native(blob_dev, blob_dev + f.up_off, rp_gu ? 0 : mmq_gub / 2, blob_dev + f.down_off,
+                                                           rp_d ? 0 : mmq_db, m.grp_gu + q * slot_gu, m.grp_d + q * slot_d, m.cs,
+                                                           nullptr, nullptr, last_of_group ? MMQ_TAIL : 0);
+                                    rp::gather_group_iq4nl(one, f.up_off, f.down_off, N, 640, rp_gu ? m.grp_gu : nullptr, slot_gu,
+                                                           rp_d ? m.grp_d : nullptr, slot_d, m.cs);
                                     if (rp_check)
                                         mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off, mmq_db,
                                                            m.rpc_gu + q * mmq_gub, m.rpc_d + q * mmq_db, m.cs, nullptr, nullptr,
@@ -5411,9 +5430,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 gu.y_scale = mmq::fp4_activations(mmq_gt) ? m.Xscale : nullptr;
                                 if (direct) gu.tab = &tgu;
                                 if (rp_main && !m.rp_ctx) m.rp_ctx = std::make_unique<rp::Context>();
-                                if (rp_main) m.rp_ctx->run(gu, m.cs);
+                                if (rp_gu) m.rp_ctx->run(gu, m.cs);
                                 else m.mmq_ctx->run(gu, m.cs);
-                                if (rp_main && rp_check) {
+                                if (rp_gu && rp_check) {
                                     if ((size_t) (nr * 1280) > m.rpc_out_cap) {
                                         if (m.rpc_out) cudaFree(m.rpc_out);
                                         m.rpc_out_cap = (size_t) (nr * N) > (size_t) (nr * 1280) ? (size_t) (nr * N) : (size_t) (nr * 1280);
@@ -5440,9 +5459,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 dn.ld_dst = N;
                                 dn.y_scale = mmq::fp4_activations(mmq_dt) ? m.Hscale : nullptr;
                                 if (direct) dn.tab = &td;
-                                if (rp_main) m.rp_ctx->run(dn, m.cs);
+                                if (rp_d) m.rp_ctx->run(dn, m.cs);
                                 else m.mmq_ctx->run(dn, m.cs);
-                                if (rp_main && rp_check) {
+                                if (rp_d && rp_check) {
                                     if ((size_t) (nr * N) > m.rpc_out_cap) {
                                         if (m.rpc_out) cudaFree(m.rpc_out);
                                         m.rpc_out_cap = (size_t) (nr * N);

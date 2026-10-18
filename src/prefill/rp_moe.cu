@@ -61,7 +61,8 @@ __global__ void gather_group_iq4nl_kernel(GroupBlobs gb, int first, int64_t up_o
     const int q = first + (int) blockIdx.y;
     const uint8_t* blob = gb.blob[q];
     const int64_t nb_gu = n_embd / 32, nb_d = n_ff / 32;
-    const int64_t n_gu = 2 * n_ff * nb_gu, total = n_gu + n_embd * nb_d;
+    // a part whose destination is null is not written (the caller gathers it as GGUF blocks for MMQ)
+    const int64_t n_gu = gu_dst ? 2 * n_ff * nb_gu : 0, total = n_gu + (d_dst ? n_embd * nb_d : 0);
     const int64_t qs_gu = repack_qs_row_stride(GGML_TYPE_IQ4_NL, n_embd), qs_d = repack_qs_row_stride(GGML_TYPE_IQ4_NL, n_ff);
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < total; i += (int64_t) gridDim.x * blockDim.x) {
         const uint8_t* sb;
@@ -200,7 +201,8 @@ void gather_group_iq4nl(const mmq::GatherGroup& g, size_t up_off, size_t down_of
     if (g.first < 0 || g.n <= g.first || g.n > mmq::kGatherGroupMax) return;
     GroupBlobs gb{};
     for (int q = g.first; q < g.n; ++q) gb.blob[q] = g.blob[q];
-    const int64_t total = 2 * n_ff * (n_embd / 32) + n_embd * (n_ff / 32);
+    const int64_t total = (gu_dst ? 2 * n_ff * (n_embd / 32) : 0) + (d_dst ? n_embd * (n_ff / 32) : 0);
+    if (total == 0) return;
     const unsigned gx = (unsigned) std::min<int64_t>((total + 255) / 256, 1024);
     gather_group_iq4nl_kernel<<<dim3(gx, (unsigned) (g.n - g.first)), 256, 0, (cudaStream_t) stream>>>(
         gb, g.first, (int64_t) up_off, (int64_t) down_off, n_embd, n_ff, (uint8_t*) gu_dst, gu_stride, (uint8_t*) d_dst,
