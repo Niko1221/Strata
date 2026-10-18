@@ -162,7 +162,7 @@ __device__ __forceinline__ void mmvq_sync_lds() {
     defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__))
     __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
 #else
-    mmvq_sync_lds();
+    __syncthreads();
 #endif
 }
 
