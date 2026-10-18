@@ -6,6 +6,12 @@
 #include <array>
 #include <limits>
 
+#if defined(STRATA_GPU_METAL)
+namespace strata::metal_engine {   // metal/src/engine/window.cpp: the running state's sizes in a checkpoint
+bool window_checkpoint_sizes(size_t z[4], int64_t& cells, std::string& err);
+}  // namespace strata::metal_engine
+#endif
+
 namespace strata::core {
 namespace {
 using conversation_detail::add;
@@ -53,8 +59,32 @@ bool image_keys(const std::vector<ConversationImageKey>& images, size_t tokens) 
     return true;
 }
 
+#if defined(STRATA_GPU_METAL)
+// On Metal a checkpoint holds the decode window's running state (Window::checkpoint_save): the whole GDN state, the
+// PLE history and per QSA layer the indexer tail and dead rows, no block positions.  `z` gets those sizes (tail and
+// dead per QSA layer, as the CUDA sizes are); `cells` is the window's.
+bool metal_state_sizes(const SessionState& ss, ConversationStateSizes& z, int64_t& cells, std::string& error) {
+    size_t w[4] = {};
+    if (!strata::metal_engine::window_checkpoint_sizes(w, cells, error)) return false;
+    const size_t layers = owned_qsa(ss);
+    if (!layers || w[2] % layers || w[3] % layers) return fail(error, "the decode window's QSA layers are not the session's");
+    z = {};
+    z.gdn = w[0]; z.ple = w[1]; z.tail = w[2] / layers; z.dead = w[3] / layers; z.block_pos = 0;
+    return true;
+}
+#endif
+
 bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t tokens,
                         ConversationStateSizes& z, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    // the running state and the K/V are the decode window's (the session's QSA states hold neither: layer.cpp kv_plan)
+    (void) g;
+    int64_t cells = 0;
+    if (!metal_state_sizes(ss, z, cells, error)) return false;
+    if (ss.max_cells < 0 || tokens > (uint64_t) ss.max_cells || tokens > (uint64_t) cells)
+        return fail(error, "invalid session running-state targets");
+    return true;
+#endif
     if (!conversation_session_sizes(g, ss, z, error)) return false;
     if (ss.max_cells < 0 || tokens > (uint64_t) ss.max_cells || (z.gdn && !ss.gdn_state) ||
         (owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
@@ -145,6 +175,12 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
     const size_t layers = owned_qsa(ss);
+#if defined(STRATA_GPU_METAL)
+    if (c.gdn.size() != z.gdn || c.ple.size() != z.ple || c.tails.size() != layers * z.tail ||
+        c.dead.size() != layers * z.dead || !c.block_pos.empty() || !image_keys(c.imgs, c.ids.size()))
+        return fail(error, "invalid checkpoint running-state payload");
+    return true;
+#endif
     if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
         c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
         c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
@@ -352,6 +388,29 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
                                       const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
     ConversationStateSizes z;
+#if defined(STRATA_GPU_METAL)
+    {   // the decode window's running state and K/V: every K/V layer, the draft's too, up to the session's cells
+        int64_t window_cells = 0;
+        if (!metal_state_sizes(ss, z, window_cells, error)) return false;
+        if (ss.max_cells < 0) return fail(error, "invalid session cells");
+        const uint64_t tokens = std::min<uint64_t>({max_tokens, (uint64_t) ss.max_cells, (uint64_t) window_cells});
+        const size_t layers = owned_qsa(ss);
+        if (!layers || !ss.qsa_states) return fail(error, "invalid session running-state targets");
+        SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
+        l.max_tokens = tokens;
+        l.max_checkpoints = max_checkpoints;
+        l.max_kv_layers = layers + 1;
+        l.geometry = geometry_key(g);
+        l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
+        l.max_state_bytes = {z.gdn, z.ple, layers * z.tail, layers * z.dead, 0};
+        l.max_kv_bytes.assign(layers + 1, {});
+        for (size_t j = 0; j < layers; ++j)
+            if (!conversation_kv_part_sizes(owned(ss, j), g, (int64_t) tokens, true, l.max_kv_bytes[j], error)) return false;
+        if (!conversation_kv_part_sizes(draft, g, (int64_t) tokens, false, l.max_kv_bytes.back(), error)) return false;
+        limits = std::move(l);
+        return true;
+    }
+#endif
     if (!conversation_session_sizes(g, ss, z, error)) return false;
     if (ss.max_cells < 0) return fail(error, "invalid session cells");
     const uint64_t tokens = std::min<uint64_t>(max_tokens, (uint64_t) ss.max_cells);

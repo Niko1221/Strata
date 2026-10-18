@@ -120,7 +120,8 @@ const int32_t* g_mrope_dev = nullptr;
 // keys are sized from the context; alloc can run for more than one instance (batch slots, later).  The MTP draft
 // layer's caches (mkq_ ...) are the window's, in the same per-cell layout.
 struct SlotState {
-    // ---- the parts' sizes in bytes, in one place (alloc, the checkpoints and reset use them)
+    // ---- the parts' sizes in bytes, in one place (alloc, parts, the checkpoints, the drafter's caches and the
+    // session files' layout key use them)
     static constexpr size_t kGdnState = 4 * 128 * 48 * 128;   // per GDN layer: fp32 recurrence, 48 heads x 128 x 128
     static constexpr size_t kConvHist = 4 * 10240 * 3;        // per GDN layer, each half: fp32 conv history, 3 taps
     // the fp32 PLE history, 9 rows x 10240
@@ -161,6 +162,39 @@ struct SlotState {
             }
         }
     }
+    // The conversation's window state for its first `upto` tokens as byte ranges, fn(void* ptr, size_t bytes), in a
+    // fixed order (two states of one window walk the same sizes): the running state (per GDN layer the recurrence and
+    // the committed conv-history half `hp`, the PLE history, per QSA layer the indexer tail and dead rows), then per QSA
+    // layer the positional part of cells [0, upto) (the int8 K/V, their scales, the pooled keys of the blocks up to
+    // there).  The cells past `upto` are rewritten before anything reads them.  A host image (parking, session
+    // files) is the ranges one after the other.  (The PLE token window, ple_prev, is the session's: the caller's.)
+    template <class F> void parts(int hp, int64_t upto, F&& fn) const {
+        for (size_t i = 0; i < gst.size(); ++i) {
+            fn(gst[i].ptr, kGdnState);
+            fn(ghist[hp][i].ptr, kConvHist);
+        }
+        fn(pleHist.ptr, kPleHist);
+        for (size_t j = 0; j < tail.size(); ++j) {
+            fn(tail[j].ptr, kTail);
+            fn(dead[j].ptr, kDead);
+        }
+        for (size_t j = 0; j < kq.size(); ++j) layer_cells(j, upto, fn);
+    }
+    // QSA layer j's part of cells [0, upto), in parts()' order: the int8 K, V, their fp16 scales (cell-major, so the
+    // first `upto` cells are the leading bytes), the pooled keys of the blocks up to there (with the moving spare row)
+    template <class F> void layer_cells(size_t j, int64_t upto, F&& fn) const {
+        cells_of(kq[j], vq[j], ksc[j], vsc[j], pooled[j], n_cells, upto, fn);
+    }
+    // the same walk over any QSA cache of this layout (the MTP draft layer's too)
+    template <class F> static void cells_of(const mtl::Buffer& k, const mtl::Buffer& v, const mtl::Buffer& ks,
+                                            const mtl::Buffer& vs, const mtl::Buffer& pool, int cells, int64_t upto,
+                                            F&& fn) {
+        fn(k.ptr, (size_t) upto * kKvCell);
+        fn(v.ptr, (size_t) upto * kKvCell);
+        fn(ks.ptr, (size_t) upto * kScaleCell);
+        fn(vs.ptr, (size_t) upto * kScaleCell);
+        fn(pool.ptr, (size_t) std::min<int64_t>(pooled_rows(cells), upto / kBlockCells + 1) * kPooledRow);
+    }
 };
 
 class Window {
@@ -180,6 +214,14 @@ public:
     bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
     void reset();   // a new sequence (session_zero): the running state zeroed
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
+    // ---- conversation snapshots (parking, session files): the solo conversation's K/V, layer by
+    // layer, as the cells [0, upto) of its 5 parts (k, v, k_scale, v_scale, pooled; SlotState::layer_cells).  A layer
+    // is a QSA state of the solo session (`index`, by its address: QSA layer j of slot_) or the MTP draft layer.
+    bool kv_layer(const strata::core::QsaState* st, bool index, int64_t upto, void* ptr[5], size_t bytes[5],
+                  std::string& err) const;
+    // the running state's sizes in a checkpoint (checkpoint_save): gdn, ple, tails, dead
+    void checkpoint_sizes(size_t z[4]) const;
+    int64_t cells() const { return max_cells_; }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
     bool mtp_load(const std::string& gguf, int max_t, std::string& err);
     bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
@@ -1549,6 +1591,36 @@ bool Window::commit(int n_keep, std::string& err) {
 }
 
 
+bool Window::kv_layer(const strata::core::QsaState* st, bool index, int64_t upto, void* ptr[5], size_t bytes[5],
+                      std::string& err) const {
+    if (upto < 0 || upto > max_cells_) { err = "metal window: the snapshot's K/V runs past the context"; return false; }
+    int k = 0;
+    auto take = [&](void* p, size_t n) { ptr[k] = p; bytes[k] = n; ++k; };
+    if (!index) {   // the draft layer (its K/V is the window's: one drafter, the solo conversation's); none: empty
+        if (!mtp_on_ || mkq_.empty()) {
+            for (int i = 0; i < 5; ++i) { ptr[i] = nullptr; bytes[i] = 0; }
+            return true;
+        }
+        SlotState::cells_of(mkq_[0], mvq_[0], mksc_[0], mvsc_[0], mpooled_[0], (int) max_cells_, upto, take);
+        return true;
+    }
+    const strata::core::SessionState& ss = *ss_;
+    for (int64_t j = 0; ss.qsa_states != nullptr && j < ss.qsa_alloc && (size_t) j < slot_.kq.size(); ++j)
+        if (st == &ss.qsa_states[ss.qsa_ord0 + j]) {
+            slot_.layer_cells((size_t) j, upto, take);
+            return true;
+        }
+    err = "metal window: a snapshot's K/V layer that is not the solo conversation's";
+    return false;
+}
+
+void Window::checkpoint_sizes(size_t z[4]) const {
+    z[0] = slot_.gst.size() * (SlotState::kGdnState + SlotState::kConvHist);
+    z[1] = SlotState::kPleHist;
+    z[2] = slot_.tail.size() * SlotState::kTail;
+    z[3] = slot_.dead.size() * SlotState::kDead;
+}
+
 // ================================================================================================ the MTP draft layer
 bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err) {
     (void) max_t;
@@ -1604,15 +1676,17 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         }
     }
     auto A = [&](size_t bytes) { return cx_->alloc(bytes); };
-    const int MAXC = (int) max_cells_, MB = MAXC / 4 + 2;
+    const int MAXC = (int) max_cells_;
     mR_ = A(4 * MAXT * HC * N); memb_ = A(4 * MAXT * N); men_ = A(4 * MAXT * N); me2_ = A(4 * MAXT * N);
     mhn_ = A(4 * MAXT * HC * N); mh2_ = A(4 * HC * MAXT * N); midx_ = A(4 * MAXT * 640); mbo_ = A(4 * MAXT * N);
     minj_[0] = A(4 * MAXT * HC); minj_[1] = A(4 * MAXT * HC); mqids_ = A(4 * MAXT * 2051); mlm_ = A(4 * (size_t) n_vocab_);
     auto act = [&](int n) { Act x; x.n = n; x.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return x; };
     XEn_ = act(N); XHn_ = act(N);
-    mkq_.push_back(A((size_t) MAXC * 2 * 256)); mvq_.push_back(A((size_t) MAXC * 2 * 256));
-    mksc_.push_back(A(2 * (size_t) MAXC * 2 * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-    mtail_.push_back(A(4 * 4 * 128)); mdead_.push_back(A(4 * 128)); mpooled_.push_back(A(4 * (size_t) MB * 128));
+    // the draft layer's cache, in SlotState's per-cell layout (SlotState::cells_of walks it for the snapshots)
+    mkq_.push_back(A((size_t) MAXC * SlotState::kKvCell)); mvq_.push_back(A((size_t) MAXC * SlotState::kKvCell));
+    mksc_.push_back(A((size_t) MAXC * SlotState::kScaleCell)); mvsc_.push_back(A((size_t) MAXC * SlotState::kScaleCell));
+    mtail_.push_back(A(SlotState::kTail)); mdead_.push_back(A(SlotState::kDead));
+    mpooled_.push_back(A((size_t) SlotState::pooled_rows(MAXC) * SlotState::kPooledRow));
     {
         std::string vp;
         // the subset setup put beside the draft layer (--draft-vocab: <mtp>/rt/draft_vocab.bin, as CUDA reads it),
@@ -2570,6 +2644,22 @@ bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, st
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
     return g_the_window->checkpoint_restore(c, err);
 }
+// conversation snapshots (src/core/conversation_snapshot.cpp / conversation_state.cpp under STRATA_GPU_METAL).
+// The layout key of a snapshot's K/V layer from this window ("MW", v1): per cell 2 KV heads x 256 int8 K and V, 2 x 4
+// fp16 scales each, no pages (page size 1, cells = tokens); one fp32 pooled key of 128 per 4 cells (+ the spare row).
+// A K/V layer of another format (CUDA's, or a later window layout) is not this window's and is refused.
+int window_kv_format() { return 0x4D570001; }
+bool window_kv_layer(const strata::core::QsaState* st, bool index, int64_t upto, void* ptr[5], size_t bytes[5],
+                     std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    return g_the_window->kv_layer(st, index, upto, ptr, bytes, err);
+}
+bool window_checkpoint_sizes(size_t z[4], int64_t& cells, std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    g_the_window->checkpoint_sizes(z);
+    cells = g_the_window->cells();
+    return true;
+}
 bool window_commit(void* w, int n_keep, std::string& err) {
     const double t0 = now_ms();
     const bool ok = ((Window*) w)->commit(n_keep, err);
@@ -2602,6 +2692,7 @@ bool mtp_load(const std::string& rt_dir, int max_t, std::string& err) {
     g_mtp_max_t = max_t;
     return true;
 }
+const std::string& mtp_gguf_path() { return g_mtp_path; }
 bool mtp_load_pending(Window* w, std::string& err) {
     return g_mtp_path.empty() || w->mtp_load(g_mtp_path, g_mtp_max_t, err);
 }
