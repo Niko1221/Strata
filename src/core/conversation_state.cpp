@@ -49,6 +49,7 @@ bool staged_copy(void* dst, const void* src, size_t bytes, bool to_host, std::st
     }
     cudaStream_t s = nullptr;
     if (conversation_detail::private_stream(s) != cudaSuccess) {
+        cudaFreeHost(stage);
         error = "conversation snapshot: could not open the staging stream for the running-state copy";
         return false;
     }
@@ -57,9 +58,11 @@ bool staged_copy(void* dst, const void* src, size_t bytes, bool to_host, std::st
         const cudaError_t st = to_host
             ? cudaMemcpyAsync(stage, (const char*) src + at, n, cudaMemcpyDeviceToHost, s)
             : (std::memcpy(stage, (const char*) src + at, n), cudaMemcpyAsync((char*) dst + at, stage, n, cudaMemcpyHostToDevice, s));
-        if (st != cudaSuccess || cudaStreamSynchronize(s) != cudaSuccess) {
+        const cudaError_t sync = st == cudaSuccess ? cudaStreamSynchronize(s) : cudaSuccess;
+        if (st != cudaSuccess || sync != cudaSuccess) {
             cudaFreeHost(stage);
-            error = std::string("conversation snapshot staged running-state copy: ") + cudaGetErrorString(st);
+            error = std::string("conversation snapshot staged running-state copy: ") +
+                    cudaGetErrorString(st == cudaSuccess ? sync : st);
             return false;
         }
         if (to_host) std::memcpy((char*) dst + at, stage, n);
@@ -102,9 +105,9 @@ bool copy(void* dst, const void* src, size_t bytes, std::string& error, bool que
             cudaGetLastError();
         }
         if (staged_copy(dst, src, bytes, to_host, error)) return true;
+        return false;   // keep the staging error: the earlier direct-copy status is the less useful one
     }
-    if (status != cudaSuccess)
-        error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
+    error = std::string("conversation snapshot running-state copy: ") + cudaGetErrorString(status);
     return false;
 }
 
