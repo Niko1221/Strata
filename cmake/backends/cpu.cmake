@@ -324,6 +324,10 @@ macro(strata_cpu_native_experts)
   # MODEL-UPDATE: the pool's expert rows per format on T threads against the RAM bandwidth (a benchmark, no test)
   add_executable(kq_cpu_bench src/kernels/cpu/kq_cpu_bench.cpp)
   target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
+  # ggml-cpu's dot product per weight format, one row at a time, with a checksum of the results: the STRATA_GGML_PDEP
+  # measurement (a benchmark, no test; tools/bench_ggml_pdep.py builds it with and without pdep and compares)
+  add_executable(ggml_dot_bench src/kernels/cpu/ggml_dot_bench.cpp)
+  target_link_libraries(ggml_dot_bench PRIVATE strata_kernels_cpu)
   # round 0216: a hash per (pair, token count, row range) of the pool's native expert calls, to compare a change switched off and on
   add_executable(cpu_dispatch_dump src/kernels/cpu/cpu_dispatch_dump.cpp)
   target_link_libraries(cpu_dispatch_dump PRIVATE strata_kernels_cpu)
