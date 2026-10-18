@@ -1,0 +1,32 @@
+{
+ "run": "headline suite (window 3 of 4, see README appendix C)",
+ "captured_from": "detached orchestrator machine-facts at run end; earlier-window facts from session logs",
+ "run_window_local": "2026-10-18 09:24:53-09:45:00 CDT (suite 09:29:43-09:44:45; warm-up from 09:26:53)",
+ "run_window_utc": ["2026-10-18T14:24:53Z", "2026-10-18T14:45:00Z"],
+ "elapsed_s": 1207.2,
+ "suite_rc": 0,
+ "strata_commit": "477ac13cbe8e582c20484871ce459d20d82df09d",
+ "engine_version": "0.1.45",
+ "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+ "context": 131072,
+ "hc_q8": ["STRATA_HC_Q8=1"],
+ "ple_sidecar": "<home>/Strata-data/ple/ple-fp8.gguf",
+ "engine_cmdline": "<home>/Strata/engine/strata --serve --pack <home>/Strata-data/packs/unsloth-ud-iq4_xs --native <home>/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --ple-gguf <home>/Strata-data/ple/ple-fp8.gguf --expert-profile <home>/Strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp <home>/Strata-data/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --resident-budget-gib 36 --vision --pcie-frac 0.35 --spec-min-p 0.50 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97 --prompt-cache-spread --adapt-async 1 --conversation-cache-mib 2048 --conversation-cache-slots 2 --conversation-cache-min-free-mib 4096 --conversation-cache-min-tokens 8192 --conversation-cache-park-gain 4096 --expert-profile-save <home>/Strata/data/expert-profile.bin",
+ "engine_started_local": "Sun Oct 18 09:23:15 2026 (system rebooted ~09:20; suite started 6.5 min after boot)",
+ "gpu_now": "driver 595.104.02, power.limit 360.00 W, power.draw at end 47.00 W, PCIe gen4 x16",
+ "storage": "nvme0n1p3 on CT4000T705SSD3 (rotational 0)",
+ "cpu": "AMD Ryzen 9 9950X 16-Core Processor (32 threads)",
+ "ram_gib": 60.2,
+ "warm_4k_probes_tps": [583, 644],
+ "warm_32k_probes_tps": [1236, 1284],
+ "memory_run": {"memavail_min_mib": 9246, "swapfree_min_mib": 11333, "pswpout_delta_gib": 73.8, "worst_60s_swapout_gib": 7.0},
+ "contention": {"samples_2s": 489, "util_min": 0, "util_max": 100, "temp_max_c": 63, "clock_throttle_samples": 0},
+ "agent_traffic_during_suite": "none (host agent idle; orchestrator gated on GPU <5% before warm-up; logs attached in staging: gpu.log, mem.log)",
+ "needles": "6/6, run 08:46-09:00 same morning same build; see needles.json",
+ "discarded_windows": [
+  {"when_local": "07:18/07:30/07:53", "why": "back-to-back early suites with live agent traffic; superseded", "kept": false},
+  {"when_local": "08:16-08:46", "why": "reclaim storm ~109 GiB swapout crushed prefill (4K 377 / 16K 691 / 32K 313); needle arm of this window is kept", "kept": false},
+  {"when_local": "10:01-10:21", "why": "second suite in a degraded cache state after agent traffic crossed its warm-up; kept as reproducibility lower bound in README appendix C", "kept": "appendix only"}
+ ],
+ "reproducibility_suite": {"window_local": "10:01-10:21", "suite_s": 1190, "pswpout_delta_gib": 91.5, "chat_decode": 68.2, "agent_decode": 68.8, "cache_hit_pct": 68.8, "prompt_4k": 323.3, "prompt_16k": 440.5, "prompt_32k": 474.7}
+}
