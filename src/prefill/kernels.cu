@@ -1632,8 +1632,18 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
 // (FP32), each product a 16 x 16 x 16 WMMA: k, q, T, P, D and the state as an operand are rounded to FP16 (relative
 // 2^-11), so the output differs from the FP32 kernels by more than their rounding (tests/hip/gdn_chunked.cpp holds it
 // to the bounds of its Error::ok).  The norm and the z gate run in the scan.
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
-#define STRATA_GDN_WMMA 1   // device pass with the gfx11 WMMA intrinsic (the list of gfx_arch_is_gfx11_wmma)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#define STRATA_GDN_WMMA_GFX11 1   // device pass with the gfx11 WMMA intrinsic (the list of gfx_arch_is_gfx11_wmma)
+#elif defined(__gfx1200__) || defined(__gfx1201__)
+#define STRATA_GDN_WMMA_GFX12 1   // device pass with the gfx12 WMMA intrinsic (the list of gfx_arch_is_gfx12_wmma)
+#endif
+#if defined(STRATA_GDN_WMMA_GFX11) || defined(STRATA_GDN_WMMA_GFX12)
+#define STRATA_GDN_WMMA 1
+#endif
+#if defined(STRATA_GDN_WMMA_GFX12)
+#define GW_ROW(v, hi) (8 * (hi) + (v))
+#else
+#define GW_ROW(v, hi) (2 * (v) + (hi))
 #endif
 constexpr int GW_CK = 16;          // tokens per chunk (a WMMA tile)
 constexpr int GW_NW = S / 16;      // the scan's waves per block: one per 16 value columns
@@ -1647,26 +1657,40 @@ typedef _Float16 gw_h2 __attribute__((ext_vector_type(2)));
 typedef float gw_f8 __attribute__((ext_vector_type(8)));
 typedef float gw_f4 __attribute__((ext_vector_type(4)));   // (HIP's float4 copies through memcpy, which kept a staged
                                                            // copy in scratch: a store that waits for the load)
-__device__ __forceinline__ gw_f8 gw_mma(gw_h16 a, gw_h16 b, gw_f8 c) {
-#if defined(STRATA_GDN_WMMA)
+#if defined(STRATA_GDN_WMMA_GFX12)
+using gw_frag = gw_h8;
+#else
+using gw_frag = gw_h16;
+#endif
+__device__ __forceinline__ gw_f8 gw_mma(gw_frag a, gw_frag b, gw_f8 c) {
+#if defined(STRATA_GDN_WMMA_GFX11)
     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#elif defined(STRATA_GDN_WMMA_GFX12)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
 #else
     (void) a; (void) b; (void) c;
-    __builtin_trap();   // not a gfx11 device pass: the runtime gate never launches it
+    __builtin_trap();   // not a gfx11/gfx12 device pass: the runtime gate never launches it
 #endif
 }
-// An accumulator tile (lane l: rows 2v + (l >> 4) for v = 0..7, column l & 15) as a B operand (lane l: column l & 15,
-// rows 0..15, both halves of the wave alike): pairs of rows rounded to FP16 and packed, the other half's pairs fetched
-// across (permlanex16), then interleaved by a byte permute whose selector depends on the lane's half (gw_sel).
+// An accumulator tile (gfx11 lane l: rows 2v + (l >> 4) for v = 0..7; gfx12 lane l: rows 8(l >> 4) + v) as a B operand
+// (gfx11: column l & 15, rows 0..15 replicated in both half-waves via permlanex16 + byte permute; gfx12: column l & 15,
+// rows 8(l >> 4) + v, identical layout to the accumulator so no cross-lane permute is needed).
 struct GwSel { unsigned even, odd; };
 __device__ __forceinline__ GwSel gw_sel(int hi) { return hi ? GwSel{0x01000504u, 0x03020706u} : GwSel{0x05040100u, 0x07060302u}; }
-__device__ __forceinline__ gw_h16 gw_acc_to_b(gw_f8 x, GwSel ps) {
+__device__ __forceinline__ gw_frag gw_acc_to_b(gw_f8 x, GwSel ps) {
+#if defined(STRATA_GDN_WMMA_GFX12)
+    (void) ps;
+    gw_h8 b;
+#pragma unroll
+    for (int v = 0; v < 8; ++v) b[v] = (_Float16) x[v];
+    return b;
+#else
     unsigned wd[8];
 #pragma unroll
     for (int m = 0; m < 4; ++m) {
         const gw_h2 p = {(_Float16) x[2 * m], (_Float16) x[2 * m + 1]};
         const unsigned own = __builtin_bit_cast(unsigned, p);
-#if defined(STRATA_GDN_WMMA)
+#if defined(STRATA_GDN_WMMA_GFX11)
         const unsigned other = __builtin_amdgcn_permlanex16(own, own, 0x76543210u, 0xfedcba98u, false, false);
 #else
         const unsigned other = own;
@@ -1675,25 +1699,36 @@ __device__ __forceinline__ gw_h16 gw_acc_to_b(gw_f8 x, GwSel ps) {
         wd[2 * m + 1] = __builtin_amdgcn_perm(other, own, ps.odd);
     }
     return __builtin_bit_cast(gw_h16, wd);
+#endif
 }
-__device__ __forceinline__ gw_h16 gw_ld(const _Float16* p) {   // 32 bytes of LDS, 16-byte aligned
+__device__ __forceinline__ gw_frag gw_ld(const _Float16* p, int hi) {   // 32 bytes (gfx11) or 16 bytes at p + 8 * hi (gfx12)
+#if defined(STRATA_GDN_WMMA_GFX12)
+    const uint4 a = *reinterpret_cast<const uint4*>(p + 8 * hi);
+    return __builtin_bit_cast(gw_h8, a);
+#else
+    (void) hi;
     const uint4 a = *reinterpret_cast<const uint4*>(p), b = *reinterpret_cast<const uint4*>(p + 8);
     const uint4 ab[2] = {a, b};
     return __builtin_bit_cast(gw_h16, ab);
-}
-// The wave's own LDS writes complete (read back across its lanes).  A gfx11 instruction: gfx12 device passes never run these kernels.
-__device__ __forceinline__ void gw_lds_wait() {
-#if defined(STRATA_GDN_WMMA)
-    __asm__ volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
 #endif
 }
-// A barrier over LDS only.  __syncthreads() is a workgroup fence over all memory, which on gfx11 also waits for every
+// The wave's own LDS writes complete (read back across its lanes).
+__device__ __forceinline__ void gw_lds_wait() {
+#if defined(STRATA_GDN_WMMA_GFX11)
+    __asm__ volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+#elif defined(STRATA_GDN_WMMA_GFX12)
+    __asm__ volatile("s_wait_dscnt 0x0" ::: "memory");
+#endif
+}
+// A barrier over LDS only.  __syncthreads() is a workgroup fence over all memory, which on gfx11/gfx12 also waits for every
 // global load in flight: the scan's loads of the next chunk would have to land before each barrier.
 __device__ __forceinline__ void gw_lds_barrier() {
-#if defined(STRATA_GDN_WMMA)
+#if defined(STRATA_GDN_WMMA_GFX11)
     __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#elif defined(STRATA_GDN_WMMA_GFX12)
+    __asm__ volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
 #else
-    __syncthreads();   // the gfx11-only instruction must not reach a gfx12 device pass
+    __syncthreads();
 #endif
 }
 
@@ -1707,17 +1742,24 @@ __global__ void __launch_bounds__(32 * GW_VPK) gdn_wmma_prep_kernel(const float*
     const int qh = blockIdx.x, ch = blockIdx.y, w = threadIdx.x >> 5, l = threadIdx.x & 31, c = l & 15, hi = l >> 4;
     const int vh = qh + w * HK;
     const int64_t t0 = (int64_t) ch * GW_CK;
-    gw_f8 kk = {}, qk = {};   // k_t.k_i and q_t.k_i (lane: column i = c, rows t = 2v + hi)
+    gw_f8 kk = {}, qk = {};   // k_t.k_i and q_t.k_i (lane: column i = c, rows t = GW_ROW(v, hi))
     {
         const bool ok = t0 + c < T;   // past the end: zero rows
         const float* ht = h + (ok ? t0 + c : 0) * C;
 #pragma unroll
         for (int j = 0; j < S / 16; ++j) {
-            gw_h16 ka, qa;
+            gw_frag ka, qa;
+#if defined(STRATA_GDN_WMMA_GFX12)
+            constexpr int kVec4s = 2;
+            const int k_off = 16 * j + 8 * hi;
+#else
+            constexpr int kVec4s = 4;
+            const int k_off = 16 * j;
+#endif
 #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                const gw_f4 k4 = *reinterpret_cast<const gw_f4*>(ht + HK * S + qh * S + 16 * j + 4 * i);
-                const gw_f4 q4 = *reinterpret_cast<const gw_f4*>(ht + qh * S + 16 * j + 4 * i);
+            for (int i = 0; i < kVec4s; ++i) {
+                const gw_f4 k4 = *reinterpret_cast<const gw_f4*>(ht + HK * S + qh * S + k_off + 4 * i);
+                const gw_f4 q4 = *reinterpret_cast<const gw_f4*>(ht + qh * S + k_off + 4 * i);
 #pragma unroll
                 for (int e = 0; e < 4; ++e) {
                     ka[4 * i + e] = (_Float16) (ok ? k4[e] : 0.0f);
@@ -1743,7 +1785,7 @@ __global__ void __launch_bounds__(32 * GW_VPK) gdn_wmma_prep_kernel(const float*
     _Float16* out = tp + ((int64_t) ch * HV + vh) * (2 * GW_CK * GW_CK);
 #pragma unroll
     for (int v = 0; v < 8; ++v) {
-        const int t = 2 * v + hi;
+        const int t = GW_ROW(v, hi);
         sa[w][t * GW_CK + c] = c < t ? sb[w][t] * __expf(sg[w][t] - sg[w][c]) * kk[v] : 0.0f;
         out[GW_CK * GW_CK + t * GW_CK + c] = (_Float16) (c <= t ? __expf(sg[w][t] - sg[w][c]) * qk[v] : 0.0f);
     }
@@ -1821,11 +1863,11 @@ __global__ void __launch_bounds__(GW_NW * 32) gdn_wmma_scan_kernel(float* __rest
     const int st = threadIdx.x >> 4, sr = (threadIdx.x & 15) * 8;    // this thread's staging slice
     const size_t rs = (size_t) HV * S;
     const GwSel ps = gw_sel(hi);
-    gw_f8 s[S / 16];   // the state: rows 16j + 2v + hi, column col
+    gw_f8 s[S / 16];   // the state: rows 16j + GW_ROW(v, hi), column col
 #pragma unroll
     for (int j = 0; j < S / 16; ++j)
 #pragma unroll
-        for (int v = 0; v < 8; ++v) s[j][v] = state[(size_t) (16 * j + 2 * v + hi) * rs + (size_t) vh * S + col];
+        for (int v = 0; v < 8; ++v) s[j][v] = state[(size_t) (16 * j + GW_ROW(v, hi)) * rs + (size_t) vh * S + col];
     if (threadIdx.x < S) sgam[threadIdx.x] = gamma[threadIdx.x];
     const float out_scale = rsqrtf((float) S);
     GwChunk cur;
@@ -1880,42 +1922,42 @@ __global__ void __launch_bounds__(GW_NW * 32) gdn_wmma_scan_kernel(float* __rest
         gw_f8 x = {}, qs = {};   // K S0 and Q S0, this wave's columns
 #pragma unroll
         for (int j = 0; j < S / 16; ++j) {
-            const gw_h16 b = gw_acc_to_b(s[j], ps);
-            x = gw_mma(gw_ld(sk + c * GW_KP + 16 * j), b, x);
-            qs = gw_mma(gw_ld(sq + c * GW_KP + 16 * j), b, qs);
+            const gw_frag b = gw_acc_to_b(s[j], ps);
+            x = gw_mma(gw_ld(sk + c * GW_KP + 16 * j, hi), b, x);
+            qs = gw_mma(gw_ld(sq + c * GW_KP + 16 * j, hi), b, qs);
         }
         gw_f8 y;
 #pragma unroll
         for (int v = 0; v < 8; ++v) {
-            const int t = 2 * v + hi;
+            const int t = GW_ROW(v, hi);
             y[v] = sb[t] * (sv[t * S + col] - __expf(sg[t]) * x[v]);
         }
-        const gw_f8 d = gw_mma(gw_ld(st_ + c * GW_CK), gw_acc_to_b(y, ps), gw_f8{});
+        const gw_f8 d = gw_mma(gw_ld(st_ + c * GW_CK, hi), gw_acc_to_b(y, ps), gw_f8{});
         gw_f8 o;
 #pragma unroll
-        for (int v = 0; v < 8; ++v) o[v] = __expf(sg[2 * v + hi]) * qs[v];
-        o = gw_mma(gw_ld(sp_ + c * GW_CK), gw_acc_to_b(d, ps), o);
+        for (int v = 0; v < 8; ++v) o[v] = __expf(sg[GW_ROW(v, hi)]) * qs[v];
+        o = gw_mma(gw_ld(sp_ + c * GW_CK, hi), gw_acc_to_b(d, ps), o);
 #pragma unroll
         for (int v = 0; v < 8; ++v) {   // the wave's 16 columns of o^2 per token, then the 8 waves' through LDS
             o[v] *= out_scale;
             float p = o[v] * o[v];
 #pragma unroll
             for (int m = 1; m < 16; m <<= 1) p += __shfl_xor(p, m);
-            if (c == 0) sn[(2 * v + hi) * GW_NW + w] = p;
+            if (c == 0) sn[GW_ROW(v, hi) * GW_NW + w] = p;
         }
         const float gl = sg[GW_CK - 1];
         gw_f8 dd;
 #pragma unroll
-        for (int v = 0; v < 8; ++v) dd[v] = __expf(gl - sg[2 * v + hi]) * d[v];
-        const gw_h16 db = gw_acc_to_b(dd, ps);
+        for (int v = 0; v < 8; ++v) dd[v] = __expf(gl - sg[GW_ROW(v, hi)]) * d[v];
+        const gw_frag db = gw_acc_to_b(dd, ps);
         const float eg = __expf(gl);
 #pragma unroll
-        for (int j = 0; j < S / 16; ++j) s[j] = gw_mma(gw_ld(skt + (16 * j + c) * GW_CK), db, s[j] * eg);
+        for (int j = 0; j < S / 16; ++j) s[j] = gw_mma(gw_ld(skt + (16 * j + c) * GW_CK, hi), db, s[j] * eg);
         gw_lds_barrier();   // (2) the sums of o^2
         const float g_col = sgam[col];
 #pragma unroll
         for (int v = 0; v < 8; ++v) {
-            const int t = 2 * v + hi;
+            const int t = GW_ROW(v, hi);
             const gw_f4 n0 = *reinterpret_cast<const gw_f4*>(&sn[t * GW_NW]), n1 = *reinterpret_cast<const gw_f4*>(&sn[t * GW_NW + 4]);
             const float ss = n0[0] + n0[1] + n0[2] + n0[3] + n1[0] + n1[1] + n1[2] + n1[3];
             so[t * S + col] = o[v] * rsqrtf(ss * (1.0f / S) + eps) * g_col;
@@ -1928,26 +1970,28 @@ __global__ void __launch_bounds__(GW_NW * 32) gdn_wmma_scan_kernel(float* __rest
 #pragma unroll
     for (int j = 0; j < S / 16; ++j)
 #pragma unroll
-        for (int v = 0; v < 8; ++v) state[(size_t) (16 * j + 2 * v + hi) * rs + (size_t) vh * S + col] = s[j][v];
+        for (int v = 0; v < 8; ++v) state[(size_t) (16 * j + GW_ROW(v, hi)) * rs + (size_t) vh * S + col] = s[j][v];
 }
-// The opt-in chunked recurrence on gfx11 (STRATA_GDN_CHUNKED=1): false (nothing launched) on another part.  y, the
+#undef GW_ROW
+// The opt-in chunked recurrence on gfx11 / gfx12 (STRATA_GDN_CHUNKED=1): false (nothing launched) on another part.  y, the
 // FP32 scratch of the other kernels (T x 6144 floats), holds T and P (1 KB per chunk and value head: T x 3 KB).
 bool gdn_rec_wmma(float* state, const float* h, const float* gate, const float* beta, const float* z, const float* gamma,
                   float eps, float* y, uint16_t* y16, int64_t T, cudaStream_t s, int64_t ld16) {
     if (T < kGdnWmmaMin || ld16 % 8 != 0) return false;   // the rows are stored 16 bytes at a time
     // A layer-split worker can change devices: a process-wide answer for the first card can launch a trapping
-    // gfx11 kernel on a later gfx12 card.  Cache only the current thread's last device, as properties are not cheap.
+    // WMMA kernel on an unsupported card.  Cache only the current thread's last device, as properties are not cheap.
     static thread_local int last_device = -1;
-    static thread_local bool gfx11 = false;
+    static thread_local bool wmma = false;
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess) return false;
     if (dev != last_device) {
         cudaDeviceProp p{};
         if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
-        gfx11 = strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName);
+        wmma = strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName) ||
+               strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName);
         last_device = dev;
     }
-    if (!gfx11) return false;
+    if (!wmma) return false;
     const int64_t nch = (T + GW_CK - 1) / GW_CK;
     _Float16* tp = reinterpret_cast<_Float16*>(y);
     gdn_wmma_prep_kernel<<<dim3(HK, (unsigned) nch), 32 * GW_VPK, 0, s>>>(h, gate, beta, tp, T);
