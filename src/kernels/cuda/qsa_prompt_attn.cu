@@ -1844,7 +1844,7 @@ bool launch70(const float*, const QsaAttnPools&, const int32_t*, const int32_t*,
 #endif  // !__HIPCC__ && STRATA_EXPERIMENTAL_SM60
 
 #if defined(__HIPCC__)
-// ---- S6: the int8-KV prompt attention on matrix cores (gfx12 default; STRATA_HIP_WMMA=1 opt-in on gfx11). The design of
+// ---- S6: the int8-KV prompt attention on RDNA4 matrix cores (opt-in: STRATA_HIP_WMMA=1, gfx12 only). The design of
 // the v2 kernel above with gfx12's v_wmma_f32_16x16x16_f16 (wave32) in place of m16n8k16: wave w owns dims
 // [64w, 64w+64) (int8 scale group w) for q.k and p.v; q and p are split into FP16 hi + lo parts, the int8 codes enter
 // exactly as FP16, the scales are applied in FP32 and the four groups' q.k partials are added in a fixed order.
@@ -2214,8 +2214,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #endif
 }
 
-// gfx12 (RDNA4) defaults on via arch_defaults; gfx11 (RDNA3 / RDNA3.5) remains opt-in pending runtime measurements.
-// The output differs from the FP32 fallback's in its last bits.
+// gfx12 (RDNA4) and gfx11 (RDNA3 / RDNA3.5), only on request: the output differs from the default kernel's in its
+// last bits
 bool hip_wmma_usable() {
     static const bool want = [] {
         const char* e = std::getenv("STRATA_HIP_WMMA");
@@ -2356,7 +2356,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     }
 #if defined(__HIPCC__)
     // the tensor-core kernels are compiled out on AMD (its major version is not a CUDA sm); RDNA4 has its own int8-KV
-    // matrix-core kernel (enabled by the gfx12 arch default, or explicit STRATA_HIP_WMMA=1); everything else keeps the old kernel
+    // matrix-core kernel, opt-in (STRATA_HIP_WMMA=1); everything else keeps the old kernel
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&

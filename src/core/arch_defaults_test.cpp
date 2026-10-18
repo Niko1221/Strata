@@ -33,7 +33,7 @@ int main() {
     CHECK(arch_default_env("gfx11510").empty());   // not a prefix match
     CHECK(arch_default_env("").empty());
     CHECK(arch_default_env(nullptr).empty());
-    // gfx1151, plain and with its feature suffix: no RDNA4-only WMMA path.
+    // gfx1151, plain and with its feature suffix: the table, and no bit-changing switch in it
     for (const char* a : {"gfx1151", "gfx1151:sramecc-:xnack-"}) {
         const auto t = arch_default_env(a);
         CHECK(t.size() >= 10);
@@ -44,33 +44,33 @@ int main() {
                 CHECK(kv.first != bits);
         }
     }
-    // gfx12: its five existing prompt defaults plus the faster Q8 WMMA prompt attention path.
+    // gfx12: the five prompt switches only, no decode switch, no bit-changing one
     unset("STRATA_GFX12_DEFAULTS");
-    unset("STRATA_HIP_WMMA");
     for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
         const auto t = arch_default_env(a);
-        CHECK(t.size() == 6);
-        bool wmma = false;
+        CHECK(t.size() == 5);
         for (const auto& kv : t) {
-            if (kv.first == "STRATA_HIP_WMMA") { wmma = true; CHECK(kv.second == "1"); }
             CHECK(kv.first != "STRATA_HCD_EXACT");
             CHECK(kv.first != "STRATA_Q8_PACKED" && kv.first != "STRATA_SH_STREAM" && kv.first != "STRATA_PF_GEMM" &&
                   kv.first != "STRATA_PF_FUSED");
+            // STRATA_HIP_WMMA changes the bits vs the FP32 reference: it stays opt-in, never a default
+            CHECK(kv.first != "STRATA_HIP_WMMA");
         }
-        CHECK(wmma);
     }
     CHECK(arch_default_env("gfx12010").empty());
     put("STRATA_GFX12_DEFAULTS", "0");
     CHECK(arch_default_env("gfx1201").empty());
     unset("STRATA_GFX12_DEFAULTS");
-    // the RDNA4-only WMMA switch is applied on gfx12; an explicit user value wins.
-    unset("STRATA_HIP_WMMA");
-    const auto gfx12_set = apply_arch_defaults("gfx1201");
-    CHECK(std::getenv("STRATA_HIP_WMMA") != nullptr && std::string(std::getenv("STRATA_HIP_WMMA")) == "1");
-    CHECK(gfx12_set.size() == 6);
-    put("STRATA_HIP_WMMA", "0");
+    // STRATA_HIP_WMMA is opt-in on gfx12 too: apply_arch_defaults leaves it unset, and an explicit value is preserved.
+    // Every gfx12 table entry is cleared first so the count below does not depend on the caller's environment.
+    for (const char* k : {"STRATA_GFX12_DEFAULTS", "STRATA_HIP_WMMA", "STRATA_GDN_HEAD", "STRATA_GDN_PP", "STRATA_GDN_CONVL2",
+                          "STRATA_GDN_NOY", "STRATA_CVEC_FUSE"})
+        unset(k);
+    CHECK(apply_arch_defaults("gfx1201").size() == 5);
+    CHECK(std::getenv("STRATA_HIP_WMMA") == nullptr);
+    put("STRATA_HIP_WMMA", "1");
     CHECK(apply_arch_defaults("gfx1201").empty());
-    CHECK(std::string(std::getenv("STRATA_HIP_WMMA")) == "0");
+    CHECK(std::string(std::getenv("STRATA_HIP_WMMA")) == "1");
     unset("STRATA_HIP_WMMA");
     // a user's setting wins, whatever it is; the rest are set
     put("STRATA_TSUM", "0");

@@ -2639,8 +2639,8 @@ int main(int argc, char** argv) {
         }
     }
 #if defined(STRATA_USE_HIP)
-    {   // Apply architecture-scoped defaults before any engine code reads its switches; gfx12 enables its measured-faster
-        // Q8 WMMA prompt path (last-bit output changes vs FP32), while gfx1151 keeps its exact-only defaults. User settings win.
+    {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
+        // any engine code reads its switches (they are read at first use), and the user's own settings are kept
         cudaDeviceProp ad{};
         if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) strata::core::apply_arch_defaults(ad.gcnArchName);
         else (void) cudaGetLastError();
@@ -5329,12 +5329,13 @@ int main(int argc, char** argv) {
         const char* name = named && p.name[0] ? p.name : "(an unnamed GPU)";
 #if defined(STRATA_USE_HIP)
         std::fprintf(stderr, "strata generate: GPU %d: %s (%s)\n", dev, name, named ? p.gcnArchName : "?");
-        // If gfx12 defaults are explicitly disabled, explain the faster Q8 prompt path and its last-bit difference.
-        // Normal gfx12 generation already has STRATA_HIP_WMMA=1 from arch_defaults; a user's explicit value wins.
+        // A hint only, never an action: on RDNA4 with an int8 KV the opt-in matrix-core prompt attention reads prompts
+        // about 30% faster (R9700, PR #1318), but its output differs from the default kernel's in the last bits, so it
+        // stays the user's choice.  Silent when the variable is set to anything (STRATA_HIP_WMMA=0 included).
         if (named && o.kv == "int8" && std::strncmp(p.gcnArchName, "gfx12", 5) == 0 && std::getenv("STRATA_HIP_WMMA") == nullptr)
-            std::fprintf(stderr, "strata generate: hint: STRATA_HIP_WMMA=1 uses the faster gfx12 matrix-core prompt attention "
-                                 "(--kv int8); gfx12 enables it by default unless STRATA_GFX12_DEFAULTS=0. Its output differs "
-                                 "from the FP32 fallback in the last bits. Nothing was enabled in this run.\n");
+            std::fprintf(stderr, "strata generate: hint: STRATA_HIP_WMMA=1 reads prompts about 30%% faster on this card with "
+                                 "--kv int8 (prompt attention on the matrix cores); it is off by default because the output "
+                                 "bits change (last-place rounding). Nothing was enabled.\n");
 #if defined(_WIN32)
         // #468 #461: which HIP runtime was loaded - the bundled one beside the exe, or an AMD driver's System32 copy
         if (HMODULE h = GetModuleHandleA("amdhip64_7.dll")) {
