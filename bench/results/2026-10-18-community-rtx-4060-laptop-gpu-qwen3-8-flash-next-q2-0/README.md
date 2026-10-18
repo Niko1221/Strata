@@ -71,8 +71,24 @@ time only). The commit above, `45af0dac`, is that local merge, so it is not an u
 `CMakeLists.txt` encoding on a Windows whose ANSI code page is not UTF-8); those are filed as a separate
 pull request and neither touches a measurement.
 
-**Not tested.** 128K prompts (8 GiB of VRAM; the configured 131,072-token context was exercised only up to
-16K), `--clients` concurrency, vision, a layer split, a long soak, and any non-Windows host.
+**Not tested in the suite.** Long prompts above 16K (`tools/strata_bench.py` runs 4K and 16K), `--clients`
+concurrency, vision, a layer split, a long soak, and any non-Windows host.
+
+**Long context is exercised in daily use, though.** This install also runs an agent client against the
+same Q2_0 server, and its engine log (ten days, 1,932 requests, thinking on and the agent client's own
+sampling, so not the suite's protocol) goes far past 16K:
+
+- the longest prompt carried **113,621 tokens** (112,781 reused from the conversation cache + 840 read)
+  at 99.5 prompt tok/s, and generated 3,175 tokens at 24.5 tok/s decode
+- 88 requests with a 64K-120K prompt: prompt median 47.0 tok/s, decode median 24.0 tok/s
+- 27 requests above 96K: decode median 23.9 tok/s - no decay against the 21.2 tok/s median of the 1,072
+  requests above 32K
+- the longest single generation was 64,879 tokens (from a 649-token prompt) at 16.2 tok/s
+
+So with 8 GiB of VRAM and 31.7 GiB of RAM the context is not what limits this machine: the KV cache keeps
+20,480 of 131,072 cells per QSA layer in VRAM with about 0.84 GiB of it in pinned RAM, and the
+conversation cache reuses most of a long prompt. What does limit decode is how much of the expert set fits
+in RAM when the server starts - see the previous paragraph.
 
 **One observation outside the suite.** Decode here is very sensitive to how much of the expert set fits in
 RAM when the server starts, because the rest is read from the model files during decode. Same machine,
