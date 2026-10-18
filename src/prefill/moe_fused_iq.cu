@@ -1185,8 +1185,9 @@ unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 struct DevInfo {
     bool done = false, ok = false;
     bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
-    bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
+    bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): only specializations successfully set up below are eligible
     int sms = 0, occ = 1;
+    bool t75_gu[64] = {}, t75_d[64] = {};
 };
 std::mutex g_mu;
 DevInfo g_dev[32];
@@ -1218,6 +1219,12 @@ template <int T, bool GU, int WW> bool setup_ww(int& occ) {
     return true;
 }
 template <int T, bool GU> bool setup_one(int& occ) { return setup_ww<T, GU, 4>(occ) && setup_ww<T, GU, 2>(occ); }
+template <int T, bool GU> bool setup_t75(DevInfo& d) {
+    int occ2 = 1 << 20;
+    const bool ok = setup_ww<T, GU, 2>(occ2);
+    if (ok) d.occ = std::min(d.occ, occ2);
+    return ok;
+}
 #endif
 
 #if defined(__HIPCC__)
@@ -1295,10 +1302,22 @@ const DevInfo& dev_info() {
     static const bool sm75 = [] { const char* v = std::getenv("STRATA_PF_FUSED_SM75"); return v != nullptr && v[0] == '1'; }();
     if (major < 8 && !(major == 7 && minor == 5 && sm75)) return d;
     int occ = 1 << 20;
-    if (major < 8) {   // Turing: the canonical Q2_0 pack's kernels (the codebook formats' do not fit 64 KB at 4 warps a row)
+    if (major < 8) {   // Turing: native IQ uses the 128-row shape; qualified 64-row specializations are optional
         d.t75 = true;
-        d.ok = setup_one<T_Q2_0, true>(occ) && setup_one<T_Q2_0, false>(occ);
-        d.occ = d.ok ? occ : 1;
+        d.occ = 1 << 20;
+        d.t75_gu[T_Q2_0] = setup_one<T_Q2_0, true>(d.occ);
+        d.t75_d[T_Q2_0] = setup_one<T_Q2_0, false>(d.occ);
+        d.t75_gu[T_IQ2_XXS] = setup_t75<T_IQ2_XXS, true>(d);
+        d.t75_gu[T_IQ2_XS] = setup_t75<T_IQ2_XS, true>(d);
+        d.t75_gu[T_IQ2_S] = setup_t75<T_IQ2_S, true>(d);
+        d.t75_gu[T_IQ3_XXS] = setup_t75<T_IQ3_XXS, true>(d);
+        d.t75_gu[T_IQ3_S] = setup_t75<T_IQ3_S, true>(d);
+        d.t75_gu[T_IQ4_XS] = setup_t75<T_IQ4_XS, true>(d);
+        d.t75_d[T_IQ4_NL] = setup_t75<T_IQ4_NL, false>(d);
+        // The already-qualified Q2_0 pair remains the device-level admission gate. Native IQ pairs are admitted
+        // independently below, so a specialization that does not fit cannot disable Q2_0 or another IQ format.
+        d.ok = d.t75_gu[T_Q2_0] && d.t75_d[T_Q2_0];
+        if (!d.ok) d.occ = 1;
         cudaGetLastError();
         return d;
     }
@@ -1403,7 +1422,8 @@ bool native_supported(int gu_type, int d_type) {
     if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
-    if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;
+    if (d.t75 && (gu_type < 0 || gu_type >= 64 || d_type < 0 || d_type >= 64 ||
+                  !d.t75_gu[gu_type] || !d.t75_d[d_type])) return false;
     if (env < 0) return d.w12;
     return requested() || d.w12;
 }
@@ -1419,7 +1439,9 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
                     const int32_t* src, void* ha, float* dm, void* stream) {
     if (b.e1 <= b.e0 || n <= 0) return;
     const DevInfo& d = dev_info();
-    if (!d.ok || !gu_covered(g.gu_type) || !d_covered_on(g.d_type, d)) {
+    if (!d.ok || !gu_covered(g.gu_type) || !d_covered_on(g.d_type, d) ||
+        (d.t75 && (g.gu_type < 0 || g.gu_type >= 64 || g.d_type < 0 || g.d_type >= 64 ||
+                   !d.t75_gu[g.gu_type] || !d.t75_d[g.d_type]))) {
         std::fprintf(stderr, "prefill fused experts (native): types %d / %d are not covered here\n", g.gu_type, g.d_type);
         std::exit(1);
     }
@@ -1501,23 +1523,27 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         return;
     }
 #endif
-    const int ww = pick_ww(n, n_expert);
+    int ww_gu = pick_ww(n, n_expert), ww_d = ww_gu;
+    if (d.t75 && g.gu_type != T_Q2_0) {
+        ww_gu = 2;
+        ww_d = 2;
+    }
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww)), (int64_t) d.sms * d.occ);
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww)), (int64_t) d.sms * d.occ);
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww_gu)), (int64_t) d.sms * d.occ);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww_d)), (int64_t) d.sms * d.occ);
     switch (g.gu_type) {
-        case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
-        case T_IQ2_XS: launch<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
-        case T_IQ2_S: launch<T_IQ2_S, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
-        case T_IQ3_XXS: launch<T_IQ3_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
-        case T_IQ3_S: launch<T_IQ3_S, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
-        case T_Q2_0: launch<T_Q2_0, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
-        default: launch<T_IQ4_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_XS: launch<T_IQ2_XS, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_S: launch<T_IQ2_S, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ3_XXS: launch<T_IQ3_XXS, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ3_S: launch<T_IQ3_S, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_Q2_0: launch<T_Q2_0, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        default: launch<T_IQ4_XS, true>(ww_gu, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
     }
-    if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
-    else launch<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
+    if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(ww_d, g_d, b, g, tb, ha, src, nullptr, dm, s);
+    else launch<T_IQ4_NL, false>(ww_d, g_d, b, g, tb, ha, src, nullptr, dm, s);
     ck(cudaGetLastError(), "experts_native");
 }
 
