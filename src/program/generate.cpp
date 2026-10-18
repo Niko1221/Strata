@@ -12877,6 +12877,9 @@ int main(int argc, char** argv) {
                     strata::program::ConcurrentReadSetup s;
                     s.prefill_help = env_on("STRATA_PREFILL_HELP");
                     s.split_mtp_batch = env_on("STRATA_SPLIT_MTP_BATCH");
+                    // STRATA_PIPED_CONCURRENT_SMB=1 (opt-in): the batched draft K/V's MMQ pool is grown before each
+                    // read (Prefill::reserve_draft_kv, below), so the two can run together
+                    s.split_mtp_batch_reserved = env_on("STRATA_PIPED_CONCURRENT_SMB");
                     s.fs_slots = env_on("STRATA_FS_SLOTS");
                     s.pcie_dma = o.pcie_mode == "dma";
                     // (--remote-expert-opt works only through a helper cache, so without one it does not count)
@@ -12899,6 +12902,26 @@ int main(int argc, char** argv) {
                     if (!sp.reserve_uploads(C))
                         std::fprintf(stderr, "strata batch: the prompt path's pinned upload slots could not be "
                                              "reserved (they grow at first use)\n");
+                    // STRATA_SPLIT_MTP_BATCH with STRATA_PIPED_CONCURRENT_SMB=1: draft_kv runs on the drafter's stage
+                    // (as in on_chunk) from the read's thread; its MMQ context and fixup pool exist before the read
+                    static const bool conc_smb = [] {
+                        const char* a = std::getenv("STRATA_SPLIT_MTP_BATCH");
+                        const char* b = std::getenv("STRATA_PIPED_CONCURRENT_SMB");
+                        return a != nullptr && std::atoi(a) != 0 && b != nullptr && std::atoi(b) != 0;
+                    }();
+                    if (conc_smb && use_mtp) {
+                        strata::prefill::Prefill& dsp = multi_gpu ? stages.back()->sp : sp;
+                        static bool said = false;
+                        if (!dsp.reserve_draft_kv())
+                            std::fprintf(stderr, "strata batch: the batched draft K/V's MMQ pool could not be grown "
+                                                 "before the read (STRATA_PIPED_CONCURRENT_SMB)\n");
+                        else if (!said) {
+                            said = true;
+                            std::fprintf(stderr, "strata batch: STRATA_PIPED_CONCURRENT_SMB=1: the batched draft K/V "
+                                                 "(STRATA_SPLIT_MTP_BATCH) runs beside the concurrent read; its MMQ pool "
+                                                 "is grown before each read\n");
+                        }
+                    }
                     // where the read's thread and the doorbell thread run: on Linux a thread inherits its creator's
                     // CPUs, and the host thread is pinned to the one core the pool leaves it, so both would share that
                     // core with the host thread that pumps the windows - every window then waits its turn there for

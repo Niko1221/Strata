@@ -57,6 +57,18 @@ int main() {
         for (size_t j = i; j < std::size(each); ++j) s.*each[j] = true;
         CHECK(same(concurrent_read_off(s), named[i]));
     }
+    // STRATA_PIPED_CONCURRENT_SMB: the batched draft K/V is no reason once its pool is reserved; alone it does nothing
+    {
+        ConcurrentReadSetup s;
+        s.split_mtp_batch = true;
+        s.split_mtp_batch_reserved = true;
+        CHECK(concurrent_read_off(s) == nullptr);
+        ConcurrentReadSetup r;
+        r.split_mtp_batch_reserved = true;
+        CHECK(concurrent_read_off(r) == nullptr);
+        r.prefill_help = true;
+        CHECK(same(concurrent_read_off(r), "STRATA_PREFILL_HELP"));
+    }
     // piped_read_piece (#1906): off -> one run; whole chunks, at least one, at most 32
     CHECK(piped_read_piece(0, 8192) == 0);
     CHECK(piped_read_piece(-5, 8192) == 0);

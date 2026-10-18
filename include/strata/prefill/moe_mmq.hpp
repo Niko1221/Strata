@@ -91,6 +91,10 @@ public:
     Context(const Context&) = delete;
     Context& operator=(const Context&) = delete;
     void run(const Product& p, void* stream);
+    /// Grows the scratch pool to `bytes` once and gives it back (llama.cpp's MMQ takes its stream-k fixup from that
+    /// pool): a later run that needs at most that much allocates nothing.  For a thread that must not allocate
+    /// (STRATA_PIPED_CONCURRENT); a device whose MMQ configs use no stream-k never takes from the pool.
+    void reserve_fixup(size_t bytes);
 
 private:
     void* ctx_ = nullptr;

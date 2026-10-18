@@ -4810,6 +4810,21 @@ bool Prefill::reserve_uploads(int64_t T) {
     return ok;
 }
 
+bool Prefill::reserve_draft_kv() {
+    if (impl_ == nullptr) return false;
+    Impl& m = *impl_;
+    const core::OnDevice on_device(m.device);
+    if (!mmq::built()) return true;   // (draft_kv then runs FP16 GEMMs: no MMQ, no pool)
+    if (!m.mmq_ctx) m.mmq_ctx = std::make_unique<mmq::Context>();
+    int nsm = 0;
+    if (cudaDeviceGetAttribute(&nsm, cudaDevAttrMultiProcessorCount, m.device) != cudaSuccess || nsm <= 0) {
+        cudaGetLastError();
+        return false;
+    }
+    m.mmq_ctx->reserve_fixup((size_t) nsm * 128 * 128 * sizeof(float));
+    return cudaGetLastError() == cudaSuccess;
+}
+
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
 #if defined(STRATA_GPU_METAL)
     {

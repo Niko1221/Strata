@@ -31,6 +31,8 @@ inline int64_t batch_read_piece(bool batch, bool piped, bool layer_split, bool b
 struct ConcurrentReadSetup {
     bool prefill_help = false;      ///< STRATA_PREFILL_HELP: the idle stage's help allocates on the read's thread
     bool split_mtp_batch = false;   ///< STRATA_SPLIT_MTP_BATCH: the batched draft K/V frees there (a free waits)
+    bool split_mtp_batch_reserved = false;   ///< ... unless its MMQ pool is grown before the read
+                                             ///< (STRATA_PIPED_CONCURRENT_SMB=1, Prefill::reserve_draft_kv)
     bool fs_slots = false;          ///< STRATA_FS_SLOTS (Foresight swap space): serving a doorbell makes a CUDA call
     bool pcie_dma = false;          ///< --pcie-mode dma: the same (its copies)
     bool helper_caches = false;     ///< --expert-cache-device1..3 (and --remote-expert-opt on them), a prompt source of
@@ -43,7 +45,7 @@ struct ConcurrentReadSetup {
 /// Why the concurrent read stays off with `s` (the first reason, for the log line), or nullptr when it can run.
 inline const char* concurrent_read_off(const ConcurrentReadSetup& s) {
     if (s.prefill_help) return "STRATA_PREFILL_HELP";
-    if (s.split_mtp_batch) return "STRATA_SPLIT_MTP_BATCH";
+    if (s.split_mtp_batch && !s.split_mtp_batch_reserved) return "STRATA_SPLIT_MTP_BATCH";
     if (s.fs_slots) return "STRATA_FS_SLOTS";
     if (s.pcie_dma) return "--pcie-mode dma";
     if (s.helper_caches) return "the helper caches (--expert-cache-device1..3)";

@@ -198,6 +198,10 @@ public:
     /// thread takes the driver's lock).  Before the run, with nothing of this path in flight.  False: a slot could
     /// not be had (it then grows at first use, as before).
     bool reserve_uploads(int64_t T);
+    /// STRATA_SPLIT_MTP_BATCH beside STRATA_PIPED_CONCURRENT: the batched draft K/V (draft_kv) runs Q8_0 MMQ on the
+    /// read's thread; this creates its MMQ context and grows the stream-k fixup pool to its bound first (the largest
+    /// fixup: one I x J tile per SM, I, J <= 128), so that thread allocates nothing.  False when it could not.
+    bool reserve_draft_kv();
 
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.

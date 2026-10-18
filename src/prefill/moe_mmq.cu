@@ -401,6 +401,12 @@ Context::Context() {
 }
 Context::~Context() { delete (ggml_backend_cuda_context*) ctx_; }
 
+void Context::reserve_fixup(size_t bytes) {
+    if (bytes == 0) return;
+    auto& ctx = *(ggml_backend_cuda_context*) ctx_;   // (the caller has made the context's device current)
+    ggml_cuda_pool_alloc<char> grown(ctx.pool(), bytes);   // back in the pool at the end of this scope
+}
+
 void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
     const ggml_type t = (ggml_type) p.type;
