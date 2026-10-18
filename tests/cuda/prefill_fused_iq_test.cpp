@@ -646,9 +646,11 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         _putenv_s("STRATA_PF_FUSED", "1");
         _putenv_s("STRATA_PF_FUSED_SM75", "1");
+        _putenv_s("STRATA_PF_FUSED_NATIVE_SM75", "1");
 #else
         setenv("STRATA_PF_FUSED", "1", 1);
         setenv("STRATA_PF_FUSED_SM75", "1", 1);
+        setenv("STRATA_PF_FUSED_NATIVE_SM75", "1", 1);
         setenv("STRATA_PF_FUSED_KQ", "1", 1);   // (the HIP build's Q4_K / Q5_K / Q5_1 / Q8_0 pairs)
 #endif
         int n = 0;

@@ -28,7 +28,7 @@ argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previo
 IQ3 packs about even; on HIP they run on gfx11 and on gfx1200 / gfx1201, see AMD_HIP.md); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
 below are 0.1.26's.
 
-On an sm_75 GPU, `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1` also enables the native fused path for covered IQ expert
+On an sm_75 GPU, `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1 STRATA_PF_FUSED_NATIVE_SM75=1` also enables the native fused path for covered IQ expert
 pairs with the qualified 128-row work shape. Unsupported layers keep MMQ. The setting is manual and affects sm_75
 prompt experts only.
 

@@ -1183,6 +1183,17 @@ native_f16_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
 
 unsigned blocks(int64_t n, int per) { return (unsigned) ((n + per - 1) / per); }
 
+// The Q2_0 Turing fused path predates the native-IQ extension. Keep native IQ
+// behind its own explicit A/B switch so enabling the existing SM75 path does
+// not change which IQ layers are dispatched.
+bool sm75_native_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PF_FUSED_NATIVE_SM75");
+        return v != nullptr && v[0] == '1';
+    }();
+    return on;
+}
+
 // per device: whether every kernel here runs (sm_80+, device code in this build, fits), and their occupancy
 struct DevInfo {
     bool done = false, ok = false;
@@ -1311,13 +1322,15 @@ const DevInfo& dev_info() {
         d.occ = 1 << 20;
         d.t75_gu[T_Q2_0] = setup_one<T_Q2_0, true>(d.occ);
         d.t75_d[T_Q2_0] = setup_one<T_Q2_0, false>(d.occ);
-        d.t75_gu[T_IQ2_XXS] = setup_t75<T_IQ2_XXS, true>(d);
-        d.t75_gu[T_IQ2_XS] = setup_t75<T_IQ2_XS, true>(d);
-        d.t75_gu[T_IQ2_S] = setup_t75<T_IQ2_S, true>(d);
-        d.t75_gu[T_IQ3_XXS] = setup_t75<T_IQ3_XXS, true>(d);
-        d.t75_gu[T_IQ3_S] = setup_t75<T_IQ3_S, true>(d);
-        d.t75_gu[T_IQ4_XS] = setup_t75<T_IQ4_XS, true>(d);
-        d.t75_d[T_IQ4_NL] = setup_t75<T_IQ4_NL, false>(d);
+        if (sm75_native_on()) {
+            d.t75_gu[T_IQ2_XXS] = setup_t75<T_IQ2_XXS, true>(d);
+            d.t75_gu[T_IQ2_XS] = setup_t75<T_IQ2_XS, true>(d);
+            d.t75_gu[T_IQ2_S] = setup_t75<T_IQ2_S, true>(d);
+            d.t75_gu[T_IQ3_XXS] = setup_t75<T_IQ3_XXS, true>(d);
+            d.t75_gu[T_IQ3_S] = setup_t75<T_IQ3_S, true>(d);
+            d.t75_gu[T_IQ4_XS] = setup_t75<T_IQ4_XS, true>(d);
+            d.t75_d[T_IQ4_NL] = setup_t75<T_IQ4_NL, false>(d);
+        }
         // The already-qualified Q2_0 pair remains the device-level admission gate. Native IQ pairs are admitted
         // independently below, so a specialization that does not fit cannot disable Q2_0 or another IQ format.
         d.ok = d.t75_gu[T_Q2_0] && d.t75_d[T_Q2_0];
@@ -1442,6 +1455,7 @@ bool native_supported(int gu_type, int d_type) {
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
     if (d.t75 && (gu_type < 0 || gu_type >= 64 || d_type < 0 || d_type >= 64 ||
+                  (gu_type != T_Q2_0 && !sm75_native_on()) ||
                   !d.t75_gu[gu_type] || !d.t75_d[d_type])) return false;
     if (env < 0) return d.w12;
     return requested() || d.w12;
