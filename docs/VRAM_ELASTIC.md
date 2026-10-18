@@ -29,8 +29,7 @@ the MTP and head loans) repeats that release on later prompts whose unread porti
 decode graphs because they contain the released device addresses, then reloads the head and MTP resources before
 generation. It is intentionally manual and rejects batch/shared drafters. These are manual switches: `--vram-elastic`
 alone never activates them. The engine refuses them with batch slots, pipeline windows, a layer split, helper GPU
-caches, `--peer-device`, HIP, or a segment below 64 MiB. See [DETAILS.md](DETAILS.md#speed-measured) for the measured
-RTX 2080 configuration.
+caches, `--peer-device`, `--prefill-head-alias`, HIP, or a segment below 64 MiB.
 
 The repeat arm retries a prompt-resource carve in smaller 256-token steps if allocator-page overhead makes the selected
 borrowed region slightly short. On small cards, a smaller manual `--vram-segment-mib` (for example 128 instead of the
