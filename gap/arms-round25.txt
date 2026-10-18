@@ -1,0 +1,16 @@
+# round 25: the device-flag cut handshake in the engine (STRATA_METAL_CUT=flag). dispatch_lat says the
+# flag handshake costs 91 us/cut at 48 cuts and 46 at 96 vs 230-400 us/cut for the MTLSharedEvent pair
+# (flag rows, same session: seg ind nop 323 us/cut). Engine-side that is ~12-15 ms off every 48-cut
+# window: decode 84.9 ms -> ~72 expected, ~20.3 -> ~23-24 tok/s. Routing, ids_ and the tokens MUST be
+# byte-identical between the flag and seg arms - compare the outputs in gap/results/<stamp>/, and any
+# mismatch is a bug to report, not a cost. Interleaved seg/flag/seg/flag/seg/flag so drift hits both.
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round25.txt 2>&1 | tee /tmp/round25.log
+# ~10-11 min server-down (6 arms). Read: per-arm decode tok/s, window ms and the PROFILE line's
+# busy/idle + handshake accounting; a flag arm that HANGS (spin never released) = propagation bug, note it.
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_seg|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+D_flag|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_CUT=flag|t357.txt|128|40960|
+D_seg2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+D_flag2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_CUT=flag|t357.txt|128|40960|
+D_seg3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+D_flag3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_CUT=flag|t357.txt|128|40960|

@@ -1,0 +1,19 @@
+# round 18: where do stream windows' 36-55 ms of GPU idle live? Round 17: STREAM=0 window T2 = 49.0-49.1 ms
+# GPU (KS_p kprof busy sum 49.1 = span: zero gaps), decode 26.5-27.9 tok/s, prefill 1.9-3.2 s; STREAM=1 anchors
+# 84.6-104.2 ms, 15.6-19.6. Real decode SSD reads are only ~66 MB/window (the 680 MB line was a stats bug:
+# bytes_read_ never reset - fixed here, decode line now reports decode-only MB + "GB more read before").
+# Host wait_ms/window is tiny, so the stall is GPU-side: candidates are (a) per-layer cut handshake (wait for
+# expert bytes at 7.3 GB/s ~ 0.75 ms/layer = the whole gap) or (b) structure (events/segments). STREAM_FAKE=1
+# keeps (b) but removes (a) entirely (missing experts point at slot 0, nothing read; WRONG answers, timing only).
+# If F_p ~ 49-55: reads at cuts is the wall -> attack: overlap reads deeper ahead of the cut, more I/O threads,
+# bigger arena hit set. If F_p ~ 85: the gap is structural even with zero I/O -> instrument seg busy.
+# O_p tests the I/O-thread count for real. S_p re-anchors the STREAM=0 world mid-run.
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round18.txt 2>&1 | tee /tmp/round18.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+F_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_STREAM_FAKE=1|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+O_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_IO_THREADS=12|t357.txt|128|40960|
+D_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+S_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_STREAM=0|t357.txt|128|40960|
+D_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

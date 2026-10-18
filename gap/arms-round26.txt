@@ -1,0 +1,13 @@
+# round 26: default confirmation for the device-flag cut handshake (now the default; STRATA_METAL_CUT=event
+# opts back). Round 25 (gap/results/1018-1534, 3x3 interleaved): flag 29.75-30.49 tok/s vs event 19.46-20.30,
+# window T=2 87.8 -> 56.0 ms at identical misses (8.6/window), and all six output lines md5'd byte-identical.
+# This is the release-check sandwich like round 22: 3 arms on the new default (no env), 2 explicit-event
+# anchors around them. Read: the three default arms MUST land ~29.5-31 tok/s with the md5, the two event arms
+# ~19.5-20.5 with the same md5; arena 33.00 GB everywhere. ~9 min server-down.
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round26.txt 2>&1 | tee /tmp/round26.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_def|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+D_event|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_CUT=event|t357.txt|128|40960|
+D_def2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+D_event2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_CUT=event|t357.txt|128|40960|
+D_def3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

@@ -1,0 +1,13 @@
+# round 15: the barrier-serialization question, probed safely. Round 14: stripping ALL barriers raced the MTP
+# draft pick (host reads it as a table index) and faulted; the gate now keeps barriers through the draft round
+# and before indirect dispatches. If N_p's GPU ms per T2 window drops toward the warm kprof sum (~49 ms), the
+# barriers are serializing the window. Round 14 also settled: HC bytes are NOT the limiter (H_p GPU 88.5 vs
+# D_p 88.7 with HC at BF16), and cache-512 cannot run on this machine (the 32 MB give-back purge eats the R4
+# device tier; KEEP_HOST_WEIGHTS breaks the 44.7 GB arena budget). A_p checks what ADAPT_OVERLAP does to the
+# window (round 13 measured it -5% decode).
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round15.txt 2>&1 | tee /tmp/round15.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+N_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_NOBARRIER=1|t357.txt|128|40960|
+A_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_ADAPT_OVERLAP=1|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

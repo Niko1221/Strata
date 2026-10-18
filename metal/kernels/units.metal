@@ -319,3 +319,22 @@ static inline float unit_combine(thread const float* q, float4 sc, thread const 
     }
     return sc.x * (s0 + s1) + sc.y * (s2 + s3) - (sc.z * xsum[0] + sc.w * xsum[1]);
 }
+
+// the cut handshake of Context::run_graph_flag (mtl_rt.mm, STRATA_METAL_CUT=flag): cut_seq marks on a device
+// counter that the GPU ran past another cut (its dispatches sit behind the window's own barriers, so the host
+// reading ids_/plan_ after seeing the count sees the data too); cut_spin waits until the host's plain store
+// overtakes this spin's ordinal (the seen counter, incremented in GPU dispatch order, gives each spin its
+// number without a per-cut constant).  The MTLSharedEvent pair these replace costs 230-400 us/cut on the M1
+// Max (dispatch_lat seg rows, gap/results/1018-1434): the store->spin propagation here measured ~90 us.
+kernel void cut_seq(device atomic_int& seq [[buffer(0)]], uint tid [[thread_position_in_grid]]) {
+    if (tid == 0) atomic_fetch_add_explicit(&seq, 1, memory_order_release, mem_flags::mem_device);
+}
+
+kernel void cut_spin(device atomic_int& rel [[buffer(0)]], device atomic_int& seen [[buffer(1)]],
+                     uint tid [[thread_position_in_grid]]) {
+    if (tid == 0) {
+        const int want = atomic_fetch_add_explicit(&seen, 1, memory_order_relaxed, mem_flags::mem_device) + 1;
+        while (atomic_load_explicit(&rel, memory_order_acquire, mem_flags::mem_device) < want) {}
+    }
+    threadgroup_barrier(mem_flags::mem_none);
+}

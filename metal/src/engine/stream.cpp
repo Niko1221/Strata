@@ -150,11 +150,14 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     split_ = std::max(1, std::min(8, env_int("STRATA_METAL_READ_SPLIT", 1)));
     // The read-ahead's depth and where its experts wait in the LRU, measured on the M4 (notes-mac-ssd.md, 3 interleaved
     // pairs each): Q2_0 (1.38 MB experts) top 10 at the LRU front 12.2 tok/s vs top 6 at the tail 11.3; the IQ3_XXS
-    // mix (1.75 MB, the SSD is the limit) top 6 at the tail 8.06 vs top 10 at the front 7.43.
+    // mix (1.75 MB, the SSD is the limit) top 6 at the tail 8.06 vs top 10 at the front 7.43.  On the M1 Max the tail
+    // depth 12 beat 6, 9 interleaved arms with the arena pinned (gap/results/1018-1318): decode misses 15.9 -> 8.6
+    // per window, T2 window GPU 88.8 -> 83.0 ms mean, decode 19.03 -> 20.34 tok/s (+6.9%), at +63 MB read per window
+    // (the extra read-aheads overlap the GPU); 24 was worse (235 aheads/window collide with the urgent reads).
     uint64_t eb = 0;
     for (const auto& x : lay_) eb += x.gs + x.us + x.ds;
     const bool big = (double) eb / NL > 1.5e6;
-    pre_k_ = env_int("STRATA_METAL_PREFETCH", big ? 6 : 10);
+    pre_k_ = env_int("STRATA_METAL_PREFETCH", big ? 12 : 10);
     pre_k2_ = env_int("STRATA_METAL_PREFETCH2", 0);
     prefetch_ = pre_k_ > 0;
     pre_mru_ = env_int("STRATA_METAL_PREFETCH_MRU", big ? 0 : 1) != 0;
@@ -617,7 +620,10 @@ void ExpertStream::ahead(int ln, int T, const float* pred, int K) {
 void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const float* pred, const float* pred2) {
     const double t0 = now_ms();
     const bool prompt = T > 8;   // a prompt chunk (the GEMM path): nearly every expert of the layer is used
-    if (l == 0) { if (prompt) ++p_chunks_; else ++windows_; }
+    if (l == 0) {
+        if (prompt) ++p_chunks_;
+        else if (++windows_ == 1) { bytes_pre_ = bytes_read_.load(); reads_pre_ = reads_.load(); }   // the decode line counts decode only
+    }
     ++stamp_;                    // the slots this layer uses are pinned until the next handshake
     bool used[NE] = {};
     int want[NE];
@@ -791,15 +797,6 @@ void ExpertStream::hold_region(bool hold) {
     }
 }
 
-void ExpertStream::reset_stats() {
-    lookups_ = hits_ = pre_hits_ = late_ = misses_ = pre_issued_ = pre_cancel_ = windows_ = 0;
-    p_lookups_ = p_hits_ = p_pre_ = p_misses_ = p_streamed_ = p_chunks_ = 0;
-    p_wait_ms_ = p_host_ms_ = 0;
-    bytes_read_ = 0;
-    reads_ = 0;
-    wait_ms_ = host_ms_ = 0;
-}
-
 void ExpertStream::report(FILE* f) const {
     if (!ready()) return;
     if (p_chunks_)
@@ -813,12 +810,12 @@ void ExpertStream::report(FILE* f) const {
     std::fprintf(f,
                  "expert stream            %llu windows: %llu distinct lookups (%.1f per window), hits %.4f, read-ahead hits "
                  "%.4f (%llu of them late), misses %.4f (%.1f per window); read-aheads %llu (%.1f per window, %llu dropped); %.1f MB "
-                 "read per window (%llu reads); host %.2f ms per window, of it waiting %.2f ms\n",
+                 "read per window (%llu reads), %.1f GB more read before the first window; host %.2f ms per window, of it waiting %.2f ms\n",
                  (unsigned long long) windows_, (unsigned long long) lookups_, lookups_ / w,
                  hits_ / std::max(1.0, (double) lookups_), pre_hits_ / std::max(1.0, (double) lookups_),
                  (unsigned long long) late_, misses_ / std::max(1.0, (double) lookups_), misses_ / w,
                  (unsigned long long) pre_issued_, pre_issued_ / w, (unsigned long long) pre_cancel_,
-                 (bytes_read_.load() - 0) / 1e6 / w, (unsigned long long) reads_.load(), host_ms_ / w, wait_ms_ / w);
+                 (bytes_read_.load() - bytes_pre_) / 1e6 / w, (unsigned long long) (reads_.load() - reads_pre_), bytes_pre_ / 1e9, host_ms_ / w, wait_ms_ / w);
 }
 
 }  // namespace strata::metal_engine

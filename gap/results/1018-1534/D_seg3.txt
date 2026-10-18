@@ -1,0 +1,70 @@
+strata generate: PCIe probe failed -> pcie_frac default 0.55
+strata generate: this CPU has no AVX-512: the expert kernels run on ggml-cpu vec_dot (no AVX2: the older-CPU build) (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /Users/pc/src/Strata-data/packs/iq3_xxs experts (largest blob 2.33 MB), token embedding IQ3_S in mapped host memory (260 MiB, 0.1 s)
+strata generate: 1466 MiB of weights loaded from /Users/pc/src/Strata-data/packs/iq3_xxs in 0.4 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 1781.11 MiB of weights, in 0.4 s
+strata generate: PLE direct read probe: 97442 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /Users/pc/src/Strata-fork/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of /Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
+strata generate: experimental native Q5_K head, 437043200 bytes, in 0.1 s
+strata generate: GPU 0: Apple M1 Max, compute capability 0.0
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: CPU pool tasks/phase: 30 (automatic), participating threads: 10
+strata generate: 9 pool workers on logical processors 1,2,3,4,5,6,7,8,9, the host thread on 0 (draining too) (--host-core first)
+strata aux cpus: not available on this system
+strata generate: expert cache 84 slots, 0.14 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: the profile fill asks for 256 pairs ahead (STRATA_FILL_AHEAD)
+strata generate: pre-filled 84 of 84 slots from the profile in 0.0 s (5095 MB/s); slot 0 verified
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 9 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45-metal)
+strata generate: sampling greedy
+strata generate: token graph hit path: 84 resident experts, decided on the device
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata generate: prompt chunk auto: 512 tokens
+strata generate: prompt path allocates its own buffers (no cache slots to borrow)
+strata metal stream: experts read from /Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf.experts (one request per expert)
+strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): 290 matrices, 680 MB, made in 150 ms
+strata metal stream: 789 dense tensors read into memory (2.84 GB, 0.3 s; 290 left out)
+strata metal: decode window on Apple M1 Max: /Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf streamed from the SSD (experts) (47.0 GB), 41088 cells, PLE on, ready in 548 ms
+strata metal: MTP draft round in one command buffer (embedding type 21 on the GPU: max |GPU - host| 0 over 8 rows)
+strata metal: MTP draft layer from /Users/pc/src/Strata-data/mtp/mtp-q2_0.gguf (0.89 GB, 9 norms folded), draft head over 106299 tokens
+strata metal stream: 3.33 GB of the host code's device weight copies given back (unused by the Metal window)
+strata metal stream: 5.51 GB allocated before the arena (the process holds 10.98 GB, 9.43 GB resident); RAM 68.7 GB (52.9 GB available, 10.3 GB kept for macOS), GPU working set 61.9 GB
+strata metal stream: planned resident footprint 44.5 GB = arena 33.0 + 11.0 held before it + 0.5 reserved for the n-gram table; cap 44.7 GB = the lesser of the GPU working set 61.9 GB and the RAM 68.7 GB less 24.1 GB left to macOS and its file cache
+strata metal stream: expert arena 33.00 GB, 17723 slots in 3 size classes, 17723 experts read from the profile's top (24576 ranked) in 3.3 s (9.31 GB/s); 6 I/O threads, read-ahead top 12; 4 buffers
+strata metal stream: 33.0 GB of the arena wired (mlock) in 1137 ms; macOS cannot compress it while the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)
+strata metal stream: 4.49 GB of the arena (2949 slots) hold a prompt's buffers while it runs
+strata metal: prompts on the matrix units in chunks of 4096 (experts v2, QSA v1, matmul2d layout other; 4.49 GB of buffers, in the expert arena while a prompt runs)
+strata metal stream: resident footprint after the fill: the process holds 40.7 GB (42.4 GB resident), planned 44.5 GB, cap 44.7 GB
+strata generate: prefill 356 tokens in 1 chunks, 6918.0 ms (51.5 tok/s); experts streamed 0 (0 by DMA, host 0.0 ms), resident 0, on the CPU 0 (share 0.00); PLE 0.0 ms
+strata generate: position 472, 116 tokens, 64 rounds
+speculation              71 rounds of 2, drafts accepted 58 of 70 (0.829), 1.82 tokens per round
+accepted per round       0:13 1:58
+verify window            wait for rings 0.000  pool 0.000  host 0.000  commit 0.000 ms/round; CPU experts 0.00 distinct / 0.00 routed per layer
+pool multi               gate/up 0.000  quantize 0.000  down 0.000 ms/round; 0.0 GB/s over the rows phases; CPU pool call 0.000 ms/round
+dispatch                 plan 0.000  activation quantize 0.000  jobs 0.000  run 0.000 ms/round
+adaptive tier            0 experts swapped into the VRAM tier (every 4 rounds, 0.005 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 0.0 MB read from the files (0.00 MB/round, 0.0 ms/round of reading, 0.00 GB/s per reading thread) (the GGUF in place); prompt copies 0.0 MB
+routing prefetch         0 experts warmed, 0 of the file tier's 0 blob reads had been warmed (0.0%); predictor 0.0 ms/round on its thread, 0 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 141/256 of the misses)
+mtp                      3.353 ms/round drafting (70 rounds), MTP prompt 0.0 ms, 0 MiB of VRAM
+expert stream prompts    1 chunks: 9133 distinct lookups (190.3 per layer), in the arena 0.5587, streamed ahead 0.4367, missed 0.0046; 10662 streamed in; host 252.0 ms per chunk, of it waiting 227.2 ms
+expert stream            71 windows: 54991 distinct lookups (774.5 per window), hits 0.9685, read-ahead hits 0.0204 (163 of them late), misses 0.0111 (8.6 per window); read-aheads 5052 (71.2 per window, 1956 dropped); 121.0 MB read per window (5531 reads), 45.8 GB more read before the first window; host 6.18 ms per window, of it waiting 4.54 ms
+stream windows T=1     1 (decode): 122.13 ms each (GPU incl. the host's turns 113.98 ms)
+stream windows T=2     70 (decode): 86.44 ms each (GPU incl. the host's turns 84.66 ms)
+strata metal profile: window T1       1 x  122.136 ms: host before 1.093, run_graph 115.828 (GPU 113.982, so encode/submit/wait 1.846), patch+finish 5.216
+strata metal profile: window T2      70 x  86.438 ms: host before 0.514, run_graph 85.859 (GPU 84.660, so encode/submit/wait 1.199), patch+finish 0.064
+strata metal profile: commit         71 x  0.021 ms: host before 0.000, run_graph 0.000 (GPU 0.000, so encode/submit/wait 0.000), patch+finish 0.000
+strata metal profile: draft          70 x  3.353 ms: host before 0.000, run_graph 0.000 (GPU 0.000, so encode/submit/wait 0.000), patch+finish 0.000
+prompt  : 49245 98795 184334 17405 42365 64265 71793 38348 142125 218754 59158 209418 107355 204837 110577 229053 42742 176011 12304 91927 85271 10573 127841 158309 31540 77395 119865 175753 110199 197013 25205 92765 56774 207080 24296 100206 188194 164864 171831 96910 149078 11602 228012 232467 150235 216956 85017 116329 21551 110661 34278 80303 1767 30033 144886 18872 100280 1037 180893 111405 1887 197126 36814 150320 221006 78139 182153 15187 204172 39520 47139 34954 59755 137959 155506 141248 42685 59000 63218 146178 44620 73745 84841 47256 196373 124152 204308 106085 123589 109027 218492 127793 135450 136710 27524 171737 108778 107929 16568 24255 163759 203470 11707 79981 30640 130357 64211 35810 24924 201391 225020 217540 160784 11851 141901 201867 136696 189732 61000 155768 19322 6912 157322 92836 157070 37362 48393 23337 50252 239246 201833 198473 131670 195580 117700 126188 108749 74803 226849 127520 134245 183625 106144 114647 196711 60386 81979 138250 200605 96662 233812 199347 161386 76813 226244 4602 70305 150549 38975 34856 168339 76949 39858 7185 195391 196340 217523 69695 164272 108051 196206 43038 149520 148401 152721 12503 127788 9452 17362 202932 25352 157340 1118 141085 82701 181921 139144 174567 145350 82739 138848 43925 127679 21866 73270 169257 128594 125565 90771 162266 188441 134209 88252 123184 30009 88502 120861 191502 152774 209954 39312 113213 126106 80815 97366 169422 119374 139361 181901 13246 129468 60922 13587 13567 212179 238197 50957 206502 21113 166830 43894 227669 148224 28489 215013 49613 73489 158056 87704 82276 177478 50449 120236 235279 185389 7874 216788 196387 85909 181418 38203 220161 51138 213208 68686 210170 82723 41896 29557 200242 4638 153135 179103 142657 185919 3833 14896 178586 1139 14978 98888 79656 25688 146133 126261 61751 207666 35103 169860 149484 115227 142888 206628 97655 41769 115329 7436 69075 38637 157872 110431 18683 136937 76795 206479 227549 196427 144644 152175 89429 214621 57716 124970 18859 10172 32698 136945 80409 194976 137569 104211 194931 47093 64832 168912 171564 8700 150627 83776 50368 132539 238442 80042 194800 225884 112459 28298 221469 122813 163092 66160 237287 77554 34216 171932 134896 218470 112985 210677 155392 71154 157391 117994 164511 176424 72195 86639 132553 107007 15106 191798 183939 225184 60723 75477 162193 115136
+output  : 271 248046 198 248045 74455 198 248068 198 760 1156 682 3106 264 1876 421 7701 310 381 264 4055 4281 314 4105 11 5587 11 321 33358 494 1599 2086 15005 318 21874 11 8193 11 25548 11 32988 11 8260 11 10452 11 15659 11 46862 11 56839 11 22992 11 54871 11 30931 11 40790 11 14712 11 5753 11 8323 11 14382 11 42524 11 24448 7705 11 174862 5864 11 4831 5946 9238 440 15019 3665 11 6529 4874 11 321 4055 5587 13 271 1919 3070 914 4833 310 381 264 53916 3296 466 1622 13 1049 5686 1040 25 198 16 13 357 4055 886 314 1414 198 17 13 76475 264 1228 310 1436 1204 353 5707 310 74681 634
+decode                   128 tokens in 6409.9 ms  ->  19.97 tok/s
+prefill                  356 tokens in 6918.0 ms  ->  51.46 tok/s  (time to first token 7709.9 ms)
+arm-start fc_min_pages 577964 free_pages 2660061

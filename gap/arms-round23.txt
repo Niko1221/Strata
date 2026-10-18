@@ -1,0 +1,14 @@
+# round 23: attribute the fixed ~28 ms/window cut tax. dispatch_lat now has seg rows: MTLSharedEvent
+# signal -> host spin -> at_cut -> store -> GPU release, 1189 tiny dispatches split at 1/12/48/96 cuts,
+# nop vs peek host turn. Under server (13:5x) the crossing+encoder-boundary came out ~140-190 us/cut
+# but the rows were noise-dominated; on the idle box we get the clean number and the slope in cuts.
+# Engine law so far: window GPU = busy 48.6 + 0.8 ms/miss (wait_ms, accounted) + ~600 us/cut UNaccounted.
+# If nop-48 wall - run_graph-every-1 baseline (~6.3 ms) over 48 is still ~200 us, the other ~400 us/cut
+# is the engine's at_cut host work or DVFS ramp between segments, not the events -> next probe differs.
+# One D_p engine arm anchors the same session. ~2 min server down.
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round23.txt 2>&1 | tee /tmp/round23.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+HD_bench|/Users/pc/src/Strata-fork/build-metal/dispatch_lat||t357.txt|0|40960|
+HD_bench2|/Users/pc/src/Strata-fork/build-metal/dispatch_lat||t357.txt|0|40960|
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+HD_bench3|/Users/pc/src/Strata-fork/build-metal/dispatch_lat||t357.txt|0|40960|
