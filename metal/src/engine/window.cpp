@@ -113,6 +113,55 @@ const float* const* g_embd_rows = nullptr;
 const int32_t* g_mrope_host = nullptr;
 const int32_t* g_mrope_dev = nullptr;
 
+// One conversation's state in the decode window: per GDN layer (l % 4 != 3) the recurrence and the
+// conv history (two halves: the window's hp_ says which holds the committed one), per QSA layer (l % 4 == 3) the int8
+// K/V and their scales, the indexer's pooled keys, tail block and dead rows, and the PLE history.  The K/V and pooled
+// keys are sized from the context; alloc can run for more than one instance (batch slots, later).  The MTP draft
+// layer's caches (mkq_ ...) are the window's, in the same per-cell layout.
+struct SlotState {
+    // ---- the parts' sizes in bytes, in one place (alloc, the checkpoints and reset use them)
+    static constexpr size_t kGdnState = 4 * 128 * 48 * 128;   // per GDN layer: fp32 recurrence, 48 heads x 128 x 128
+    static constexpr size_t kConvHist = 4 * 10240 * 3;        // per GDN layer, each half: fp32 conv history, 3 taps
+    // the fp32 PLE history, 9 rows x 10240
+    static constexpr size_t kPleHist = 4 * (size_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM;
+    static constexpr size_t kTail = 4 * 4 * 128;              // per QSA layer: the indexer's tail block (4 fp32 keys)
+    static constexpr size_t kDead = 4 * 128;                  // per QSA layer: the tail block's fp32 pooled key
+    static constexpr size_t kKvCell = 2 * 256;                // per cell: int8 K (V the same), 2 KV heads x 256
+    static constexpr size_t kScaleCell = 2 * 2 * 4;           // per cell: the K scales (V the same)
+    static constexpr size_t kPooledRow = 4 * 128;             // per block of kBlockCells cells: the fp32 pooled key
+    static constexpr int kBlockCells = 4;
+    static constexpr size_t kGdnLayers = 36, kQsaLayers = 12;
+    // the pooled-key rows of a window of `cells` (one per block, the moving spare row and one more)
+    static int pooled_rows(int cells) { return cells / kBlockCells + 2; }
+
+    std::vector<mtl::Buffer> gst, ghist[2];                          // 36 GDN layers
+    std::vector<mtl::Buffer> kq, vq, ksc, vsc, tail, dead, pooled;   // 12 QSA layers
+    mtl::Buffer pleHist;
+    int n_cells = 0;
+    // the window's cell count for a context of max_cells tokens (the K/V rows, the RoPE and M-RoPE tables)
+    static int cells_for(int64_t max_cells) { return (int) std::max<int64_t>(4096, (max_cells + 64) / 4 * 4 + 64); }
+    // the buffers for a window of `cells` = cells_for(the slot's context) (zeroed: a new sequence)
+    void alloc(mtl::Context& cx, int cells) {
+        n_cells = cells;
+        pleHist = cx.alloc(kPleHist);
+        for (int l = 0; l < 48; ++l) {
+            if (l % 4 != 3) {
+                gst.push_back(cx.alloc(kGdnState));
+                ghist[0].push_back(cx.alloc(kConvHist));
+                ghist[1].push_back(cx.alloc(kConvHist));
+            } else {
+                kq.push_back(cx.alloc((size_t) cells * kKvCell));
+                vq.push_back(cx.alloc((size_t) cells * kKvCell));
+                ksc.push_back(cx.alloc((size_t) cells * kScaleCell));
+                vsc.push_back(cx.alloc((size_t) cells * kScaleCell));
+                tail.push_back(cx.alloc(kTail));
+                dead.push_back(cx.alloc(kDead));
+                pooled.push_back(cx.alloc((size_t) pooled_rows(cells) * kPooledRow));
+            }
+        }
+    }
+};
+
 class Window {
 public:
     bool init(const strata::core::ModelGeometry& g, strata::core::SessionState& ss, const std::string& shard1, int max_t,
@@ -226,11 +275,11 @@ private:
     // buffers
     mtl::Buffer R_, bo_, inj_[2], xn_, lo_, qkv_, z_, al_, be_, yg_, logits_, ids_, wts_, plan_, h_, ye_, gsh_, ush_,
         ysh_, sg_, qfull_, kcur_, vcur_, iqr_, ikr_, qcur_, qidx_, scores_, qids_, part_, cs_, lm_, apv_, api_, tokout_,
-        emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_, keyn_, qn_, gated_, normW_, pleHist_;
+        emb_, pkey_, pval_, qkvL_, alL_, beL_, zL_, ydump_, keyn_, qn_, gated_, normW_;
     Act XA_, XF_, XY_, XQ_, XH_, XE_;
     int cur_inj_ = 0;
-    // state
-    std::vector<mtl::Buffer> gst_, ghist_[2], kq_, vq_, ksc_, vsc_, tail_, dead_, pooled_;
+    // state: the conversation's (slot 0, the only one bound; the window's hp_ picks the committed conv history half)
+    SlotState slot_;
     int hp_ = 0;                     // which of the two history buffers holds the committed conv history (all layers)
     // commit(n) of a window of several tokens: the GDN fold of the kept prefix waits for the next window and runs at
     // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
@@ -465,7 +514,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
     lple_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
 
-    const int MAXC = (int) std::max<int64_t>(4096, (max_cells + 64) / 4 * 4 + 64), MB = MAXC / 4 + 2;
+    const int MAXC = SlotState::cells_for(max_cells), MB = MAXC / 4 + 2;
     max_cells_ = MAXC;
     auto A = [&](size_t bytes) { return cx_->alloc(bytes); };
     R_ = A(4 * MAXT * HC * N); bo_ = A(4 * MAXT * N); inj_[0] = A(4 * MAXT * HC); inj_[1] = A(4 * MAXT * HC);
@@ -484,7 +533,6 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     zL_ = A(4 * (size_t) 36 * MAXT * 6144); ydump_ = A(4 * MAXT * 6144);
     keyn_ = A(4 * MAXT * 10240); qn_ = A(4 * MAXT * 10240); gated_ = A(4 * MAXT * 10240); normW_ = A(4 * MAXT * 10240);
     mrope_ = A(12 * (size_t) (MAXC + 16));
-    pleHist_ = A(4 * 9 * 10240);
     auto act = [&](int n) { Act a; a.n = n; a.b = A(4 * ((size_t) 4 * MAXT * n + (size_t) MAXT * n / 16)); return a; };
     XA_ = act(N); XF_ = act(N); XY_ = act(6144); XQ_ = act(6144); XH_ = act(NFF); XE_ = act(N);
     // RoPE: cos/sin [pos][32] for the first 64 dims, NEOX pairs (i, i + 32), in double as build_rope_table
@@ -497,21 +545,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         }
     for (int t = 0; t < MAXT; ++t)
         for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
-    for (int l = 0; l < 48; ++l) {
-        if (l % 4 != 3) {
-            gst_.push_back(A(4 * 128 * 48 * 128));
-            ghist_[0].push_back(A(4 * 10240 * 3));
-            ghist_[1].push_back(A(4 * 10240 * 3));
-        } else {
-            kq_.push_back(A((size_t) MAXC * 2 * 256));
-            vq_.push_back(A((size_t) MAXC * 2 * 256));
-            ksc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            vsc_.push_back(A(2 * (size_t) MAXC * 2 * 4));
-            tail_.push_back(A(4 * 4 * 128));
-            dead_.push_back(A(4 * 128));
-            pooled_.push_back(A(4 * (size_t) MB * 128));
-        }
-    }
+    slot_.alloc(*cx_, MAXC);
     // ---- the HC read in Q8_0 (the owner's default on Metal, as STRATA_HC_Q8 on gfx12): the BF16 down / up / inject
     // matrices quantized once at load (ggml's q8_0 rule, ref_quant), read by gr_down_q8 / gr_up_q8
     {
@@ -698,12 +732,12 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, ntok), "gdn_step#" + std::to_string(ntok));
         const int hp = hp_;
-        d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+        d.args = {mtl::Arg::B(slot_.gst[(size_t) gi]), mtl::Arg::B(slot_.ghist[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
                   mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
                   mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset),
                   mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, T(b + "ssm_a").offset),
                   mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset), mtl::Arg::B(fuse_ ? XY_.b : yg_), mtl::Arg::V(a),
-                  mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
+                  mtl::Arg::B(slot_.ghist[1 - hp][(size_t) gi])};
         d.grid[0] = 48;
         d.tg[0] = 512;
         push(ds, d);
@@ -727,9 +761,9 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         d.args = {mtl::Arg::B(qfull_), mtl::Arg::B(kcur_), mtl::Arg::B(vcur_), mtl::Arg::B(iqr_), mtl::Arg::B(ikr_),
                   mtl::Arg::B(W_, T(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, T(b + "attn_k_norm.weight").offset),
                   mtl::Arg::B(W_, T(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, T(b + "indexer.k_norm.weight").offset),
-                  mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(kq_[(size_t) qi]),
-                  mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
-                  mtl::Arg::B(tail_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]),
+                  mtl::Arg::B(cs_), mtl::Arg::B(qcur_), mtl::Arg::B(qidx_), mtl::Arg::B(slot_.kq[(size_t) qi]),
+                  mtl::Arg::B(slot_.vq[(size_t) qi]), mtl::Arg::B(slot_.ksc[(size_t) qi]), mtl::Arg::B(slot_.vsc[(size_t) qi]),
+                  mtl::Arg::B(slot_.tail[(size_t) qi]), mtl::Arg::B(slot_.dead[(size_t) qi]), mtl::Arg::B(slot_.pooled[(size_t) qi]),
                   mtl::Arg::V(a), mtl::Arg::B(mrope_)};
         d.grid[0] = 33;
         d.grid[1] = ntok;
@@ -738,7 +772,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         if (rec_) rec_->push_back({(int) ds.size() - 1, 0});
         mtl::Dispatch s;
         s.p = P(lqsa_, "qsa_score", {}, "qsa_score");
-        s.args = {mtl::Arg::B(qidx_), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(scores_),
+        s.args = {mtl::Arg::B(qidx_), mtl::Arg::B(slot_.pooled[(size_t) qi]), mtl::Arg::B(slot_.dead[(size_t) qi]), mtl::Arg::B(scores_),
                   mtl::Arg::V(a)};
         s.grid[0] = (uint32_t) (((pos0 + ntok) / 4 + 1 + 7) / 8);
         s.grid[1] = ntok;
@@ -759,8 +793,8 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         }
         mtl::Dispatch at;
         at.p = P(lqsa_, "qsa_attn", {}, "qsa_attn");
-        at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
-                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(qids_), mtl::Arg::B(part_), mtl::Arg::V(a)};
+        at.args = {mtl::Arg::B(qcur_), mtl::Arg::B(slot_.kq[(size_t) qi]), mtl::Arg::B(slot_.vq[(size_t) qi]), mtl::Arg::B(slot_.ksc[(size_t) qi]),
+                   mtl::Arg::B(slot_.vsc[(size_t) qi]), mtl::Arg::B(qids_), mtl::Arg::B(part_), mtl::Arg::V(a)};
         at.grid[0] = 33;
         at.grid[1] = 2;
         at.grid[2] = ntok;
@@ -1082,7 +1116,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         g3.grid[0] = HC; g3.grid[1] = Tn; g3.tg[0] = 256;
         push(ds, g3);
         g4.p = P(lple_, "ple_conv_add", {}, "ple_conv_add");
-        g4.args = {mtl::Arg::B(pleHist_), mtl::Arg::B(normW_), kw_arg(),
+        g4.args = {mtl::Arg::B(slot_.pleHist), mtl::Arg::B(normW_), kw_arg(),
                    mtl::Arg::B(gated_), mtl::Arg::B(R_), mtl::Arg::V(pa)};
         g4.grid[0] = HC * N / 256; g4.grid[1] = Tn; g4.tg[0] = 256;
         push(ds, g4);
@@ -1382,11 +1416,11 @@ void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
         GdnArgs a{16, 48, 10240, 1u, eps_, 0};
         mtl::Dispatch d;
         d.p = P(lgdn_, "gdn_step", mtl::Constants().i(2, n_keep), "gdn_step#" + std::to_string(n_keep));
-        d.args = {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
+        d.args = {mtl::Arg::B(slot_.gst[(size_t) gi]), mtl::Arg::B(slot_.ghist[hp][(size_t) gi]), mtl::Arg::B(qkvL_, o_qkv),
                   mtl::Arg::B(alL_, o_ab), mtl::Arg::B(beL_, o_ab), mtl::Arg::B(zL_, o_z),
                   mtl::Arg::B(W_, T(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W_, T(b + "ssm_dt.bias").offset),
                   mtl::Arg::B(W_, T(b + "ssm_a").offset), mtl::Arg::B(W_, T(b + "ssm_norm.weight").offset),
-                  mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(ghist_[1 - hp][(size_t) gi])};
+                  mtl::Arg::B(ydump_), mtl::Arg::V(a), mtl::Arg::B(slot_.ghist[1 - hp][(size_t) gi])};
         d.grid[0] = 48;
         d.tg[0] = 512;
         nb_ = true;   // the layers' folds are independent of each other
@@ -1404,18 +1438,18 @@ bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::strin
         cx_->run_graph(ds);
         pend_fold_ = 0;
     }
-    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
-    c.gdn.resize(gst_.size() * (gs + hs));
-    for (size_t i = 0; i < gst_.size(); ++i) {
-        std::memcpy(c.gdn.data() + i * (gs + hs), gst_[i].ptr, gs);
-        std::memcpy(c.gdn.data() + i * (gs + hs) + gs, ghist_[hp_][i].ptr, hs);
+    const size_t gs = SlotState::kGdnState, hs = SlotState::kConvHist, ts = SlotState::kTail, dsz = SlotState::kDead;
+    c.gdn.resize(slot_.gst.size() * (gs + hs));
+    for (size_t i = 0; i < slot_.gst.size(); ++i) {
+        std::memcpy(c.gdn.data() + i * (gs + hs), slot_.gst[i].ptr, gs);
+        std::memcpy(c.gdn.data() + i * (gs + hs) + gs, slot_.ghist[hp_][i].ptr, hs);
     }
-    c.ple.assign((const uint8_t*) pleHist_.ptr, (const uint8_t*) pleHist_.ptr + 4 * 9 * 10240);
-    c.tails.resize(tail_.size() * ts);
-    c.dead.resize(dead_.size() * dsz);
-    for (size_t j = 0; j < tail_.size(); ++j) {
-        std::memcpy(c.tails.data() + j * ts, tail_[j].ptr, ts);
-        std::memcpy(c.dead.data() + j * dsz, dead_[j].ptr, dsz);
+    c.ple.assign((const uint8_t*) slot_.pleHist.ptr, (const uint8_t*) slot_.pleHist.ptr + SlotState::kPleHist);
+    c.tails.resize(slot_.tail.size() * ts);
+    c.dead.resize(slot_.dead.size() * dsz);
+    for (size_t j = 0; j < slot_.tail.size(); ++j) {
+        std::memcpy(c.tails.data() + j * ts, slot_.tail[j].ptr, ts);
+        std::memcpy(c.dead.data() + j * dsz, slot_.dead[j].ptr, dsz);
     }
     c.block_pos.clear();
     return true;
@@ -1425,39 +1459,39 @@ void Window::reset() {
     pend_fold_ = 0;
     last_T_ = 0;
     auto zero = [](const mtl::Buffer& b, size_t n) { std::memset(b.ptr, 0, n); };
-    for (size_t i = 0; i < gst_.size(); ++i) {
-        zero(gst_[i], 4 * 128 * 48 * 128);
-        zero(ghist_[0][i], 4 * 10240 * 3);
-        zero(ghist_[1][i], 4 * 10240 * 3);
+    for (size_t i = 0; i < slot_.gst.size(); ++i) {
+        zero(slot_.gst[i], SlotState::kGdnState);
+        zero(slot_.ghist[0][i], SlotState::kConvHist);
+        zero(slot_.ghist[1][i], SlotState::kConvHist);
     }
-    zero(pleHist_, 4 * 9 * 10240);
-    for (size_t j = 0; j < tail_.size(); ++j) {
-        zero(tail_[j], 4 * 4 * 128);
-        zero(dead_[j], 4 * 128);
+    zero(slot_.pleHist, SlotState::kPleHist);
+    for (size_t j = 0; j < slot_.tail.size(); ++j) {
+        zero(slot_.tail[j], SlotState::kTail);
+        zero(slot_.dead[j], SlotState::kDead);
     }
     for (size_t j = 0; j < mtail_.size(); ++j) {
-        zero(mtail_[j], 4 * 4 * 128);
-        zero(mdead_[j], 4 * 128);
+        zero(mtail_[j], SlotState::kTail);
+        zero(mdead_[j], SlotState::kDead);
     }
 }
 
 bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
-    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
-    if (c.gdn.size() != gst_.size() * (gs + hs) || c.ple.size() != (size_t) 4 * 9 * 10240 ||
-        c.tails.size() != tail_.size() * ts || c.dead.size() != dead_.size() * dsz) {
+    const size_t gs = SlotState::kGdnState, hs = SlotState::kConvHist, ts = SlotState::kTail, dsz = SlotState::kDead;
+    if (c.gdn.size() != slot_.gst.size() * (gs + hs) || c.ple.size() != SlotState::kPleHist ||
+        c.tails.size() != slot_.tail.size() * ts || c.dead.size() != slot_.dead.size() * dsz) {
         err = "metal window: the checkpoint is not this engine's (sizes differ)";
         return false;
     }
     pend_fold_ = 0;   // the restored state replaces whatever was pending
     last_T_ = 0;
-    for (size_t i = 0; i < gst_.size(); ++i) {
-        std::memcpy(gst_[i].ptr, c.gdn.data() + i * (gs + hs), gs);
-        std::memcpy(ghist_[hp_][i].ptr, c.gdn.data() + i * (gs + hs) + gs, hs);
+    for (size_t i = 0; i < slot_.gst.size(); ++i) {
+        std::memcpy(slot_.gst[i].ptr, c.gdn.data() + i * (gs + hs), gs);
+        std::memcpy(slot_.ghist[hp_][i].ptr, c.gdn.data() + i * (gs + hs) + gs, hs);
     }
-    std::memcpy(pleHist_.ptr, c.ple.data(), c.ple.size());
-    for (size_t j = 0; j < tail_.size(); ++j) {
-        std::memcpy(tail_[j].ptr, c.tails.data() + j * ts, ts);
-        std::memcpy(dead_[j].ptr, c.dead.data() + j * dsz, dsz);
+    std::memcpy(slot_.pleHist.ptr, c.ple.data(), c.ple.size());
+    for (size_t j = 0; j < slot_.tail.size(); ++j) {
+        std::memcpy(slot_.tail[j].ptr, c.tails.data() + j * ts, ts);
+        std::memcpy(slot_.dead[j].ptr, c.dead.data() + j * dsz, dsz);
     }
     return true;
 }
@@ -1496,7 +1530,7 @@ bool Window::commit(int n_keep, std::string& err) {
         if (ple_on_) {
             const float* norm = normW_.as<float>() + (size_t) t * NG_HC_DIM;
             for (int c = 0; c < NG_HC_DIM; ++c) {
-                float* col = pleHist_.as<float>() + (size_t) c * NG_HIST;
+                float* col = slot_.pleHist.as<float>() + (size_t) c * NG_HIST;
                 for (int r = 0; r + 1 < NG_HIST; ++r) col[r] = col[r + 1];
                 col[NG_HIST - 1] = norm[c];
             }
@@ -2247,12 +2281,12 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             gemm(p.mixh, p.Wbe, p.be, T, 48, N);
             PgGdnP ga{(uint32_t) T, 16, 48, 10240, eps_, 0};
             D(PP(p.lgdn, "gdn_pre"),
-              {mtl::Arg::B(p.qkv), mtl::Arg::B(ghist_[hp_][(size_t) gi]), mtl::Arg::B(W_, TN(b + "ssm_conv1d.weight").offset),
+              {mtl::Arg::B(p.qkv), mtl::Arg::B(slot_.ghist[hp_][(size_t) gi]), mtl::Arg::B(W_, TN(b + "ssm_conv1d.weight").offset),
                mtl::Arg::B(p.al), mtl::Arg::B(p.be), mtl::Arg::B(W_, TN(b + "ssm_dt.bias").offset), mtl::Arg::B(W_, TN(b + "ssm_a").offset),
                mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb), mtl::Arg::B(p.gkq),
-               mtl::Arg::B(ghist_[1 - hp_][(size_t) gi]), mtl::Arg::V(ga)}, 16 + 24, T, 256);
+               mtl::Arg::B(slot_.ghist[1 - hp_][(size_t) gi]), mtl::Arg::V(ga)}, 16 + 24, T, 256);
             D(PP(p.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0), "gdn_scanr_4"),
-              {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb),
+              {mtl::Arg::B(slot_.gst[(size_t) gi]), mtl::Arg::B(p.gqn), mtl::Arg::B(p.gkn), mtl::Arg::B(p.gvc), mtl::Arg::B(p.ggb),
                mtl::Arg::B(p.gkq), mtl::Arg::B(p.go), mtl::Arg::V(ga)}, 48 * 4, 1, 32 * 4);
             D(PP(p.lgdn, "gdn_post"), {mtl::Arg::B(p.go), mtl::Arg::B(p.z), mtl::Arg::B(W_, TN(b + "ssm_norm.weight").offset),
                                        mtl::Arg::B(p.ygh), mtl::Arg::B(p.yg), mtl::Arg::V(ga)}, 48, T, 128);
@@ -2275,11 +2309,11 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
               {mtl::Arg::B(p.qfull), mtl::Arg::B(p.kcur), mtl::Arg::B(p.vcur), mtl::Arg::B(p.iqr), mtl::Arg::B(p.ikr),
                mtl::Arg::B(W_, TN(b + "attn_q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "attn_k_norm.weight").offset),
                mtl::Arg::B(W_, TN(b + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, TN(b + "indexer.k_norm.weight").offset),
-               mtl::Arg::B(cs_), mtl::Arg::B(p.qcur), mtl::Arg::B(p.qidx), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
-               mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(tail_[(size_t) qi]),
-               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a), mtl::Arg::B(mrope_)}, 33, T, 256);
+               mtl::Arg::B(cs_), mtl::Arg::B(p.qcur), mtl::Arg::B(p.qidx), mtl::Arg::B(slot_.kq[(size_t) qi]), mtl::Arg::B(slot_.vq[(size_t) qi]),
+               mtl::Arg::B(slot_.ksc[(size_t) qi]), mtl::Arg::B(slot_.vsc[(size_t) qi]), mtl::Arg::B(slot_.tail[(size_t) qi]),
+               mtl::Arg::B(slot_.dead[(size_t) qi]), mtl::Arg::B(slot_.pooled[(size_t) qi]), mtl::Arg::V(a), mtl::Arg::B(mrope_)}, 33, T, 256);
             if (pos0 + T > 2051)
-                D(PP(p.lqsa, "qsa_score_mm"), {mtl::Arg::B(p.qidx), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]),
+                D(PP(p.lqsa, "qsa_score_mm"), {mtl::Arg::B(p.qidx), mtl::Arg::B(slot_.pooled[(size_t) qi]), mtl::Arg::B(slot_.dead[(size_t) qi]),
                                                mtl::Arg::B(p.scores), mtl::Arg::V(a)},
                   (uint32_t) (((pos0 + T) / 4 + 1 + 63) / 64), (T + 15) / 16, 128);
             D(PP(p.lqsa, "qsa_topk"), {mtl::Arg::B(p.scores), mtl::Arg::B(p.qids), mtl::Arg::V(a)}, T, 1, 1024);
@@ -2287,16 +2321,16 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
                 const uint32_t nq = (uint32_t) T * 24 * 256;
                 D(PP(p.lqsa, "qsa_q_f16"), {mtl::Arg::B(p.qcur), mtl::Arg::B(p.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
                 D(PP(p.lqsa, "qsa_flash", mtl::Constants().b(7, p.k4), "qsa_flash"),
-                  {mtl::Arg::B(p.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
-                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(p.qids), mtl::Arg::B(p.qfull), mtl::Arg::B(p.xqh), mtl::Arg::V(a)},
+                  {mtl::Arg::B(p.qcurh), mtl::Arg::B(slot_.kq[(size_t) qi]), mtl::Arg::B(slot_.vq[(size_t) qi]), mtl::Arg::B(slot_.ksc[(size_t) qi]),
+                   mtl::Arg::B(slot_.vsc[(size_t) qi]), mtl::Arg::B(p.qids), mtl::Arg::B(p.qfull), mtl::Arg::B(p.xqh), mtl::Arg::V(a)},
                   2, T, 128);
             } else {
                 // v1 attention + merge in slices of QS rows (the partials of a slice only)
                 for (int t0 = 0; t0 < T; t0 += p.QS) {
                     const int ns = std::min(p.QS, T - t0);
                     QsaArgs as{(uint32_t) (pos0 + t0), 0, (uint32_t) max_cells_, (uint32_t) ns, eps_};
-                    D(PP(p.lqsa, "qsa_attn"), {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(kq_[(size_t) qi]),
-                                               mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]),
+                    D(PP(p.lqsa, "qsa_attn"), {mtl::Arg::B(p.qcur, (size_t) t0 * 24 * 256 * 4), mtl::Arg::B(slot_.kq[(size_t) qi]),
+                                               mtl::Arg::B(slot_.vq[(size_t) qi]), mtl::Arg::B(slot_.ksc[(size_t) qi]), mtl::Arg::B(slot_.vsc[(size_t) qi]),
                                                mtl::Arg::B(p.qids, (size_t) t0 * 2051 * 4), mtl::Arg::B(p.part), mtl::Arg::V(as)},
                       33, 2, 256, (uint32_t) ns);
                     D(PP(p.lqsa, "qsa_merge"), {mtl::Arg::B(p.part), mtl::Arg::B(p.qfull, (size_t) t0 * 12288 * 4),
@@ -2423,7 +2457,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
               {mtl::Arg::B(p.keyn), mtl::Arg::B(p.qn), mtl::Arg::B(p.pval), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
                mtl::Arg::B(p.gated), mtl::Arg::B(p.normW), mtl::Arg::V(pl)}, HC, T, 256);
             D(P(lple_, "ple_conv_add", {}, "ple_conv_add"),
-              {mtl::Arg::B(pleHist_), mtl::Arg::B(p.normW), kw_arg(), mtl::Arg::B(p.gated),
+              {mtl::Arg::B(slot_.pleHist), mtl::Arg::B(p.normW), kw_arg(), mtl::Arg::B(p.gated),
                mtl::Arg::B(p.R), mtl::Arg::V(pl)}, HC * N / 256, T, 256);
         }
     }
@@ -2451,7 +2485,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     hp_ = 1 - hp_;
     if (ple_on_) {
         using namespace strata::kernels;
-        float* hist = pleHist_.as<float>();
+        float* hist = slot_.pleHist.as<float>();
         const float* nw = p.normW.as<float>();
         for (int c = 0; c < NG_HC_DIM; ++c) {
             float col[NG_HIST];

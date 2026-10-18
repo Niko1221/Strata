@@ -200,13 +200,13 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             gemm(b.mixh, b.Wbe, b.be, nT, 48, N);
             PcGdnPArgs ga{(uint32_t) nT, 16, 48, 10240, eps_, 0};
             D(P_(b.lgdn, "gdn_pre"),
-              {mtl::Arg::B(b.qkv), mtl::Arg::B(ghist_[hp][(size_t) gi]), mtl::Arg::B(W_, T(bl + "ssm_conv1d.weight").offset),
+              {mtl::Arg::B(b.qkv), mtl::Arg::B(slot_.ghist[hp][(size_t) gi]), mtl::Arg::B(W_, T(bl + "ssm_conv1d.weight").offset),
                mtl::Arg::B(b.al), mtl::Arg::B(b.be), mtl::Arg::B(W_, T(bl + "ssm_dt.bias").offset),
                mtl::Arg::B(W_, T(bl + "ssm_a").offset), mtl::Arg::B(b.gqn), mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc),
-               mtl::Arg::B(b.ggb), mtl::Arg::B(b.gkq), mtl::Arg::B(ghist_[1 - hp][(size_t) gi]), mtl::Arg::V(ga)},
+               mtl::Arg::B(b.ggb), mtl::Arg::B(b.gkq), mtl::Arg::B(slot_.ghist[1 - hp][(size_t) gi]), mtl::Arg::V(ga)},
               16 + 24, nT, 256);
             D(P_(b.lgdn, "gdn_scanr_4", mtl::Constants().i(6, 0)),
-              {mtl::Arg::B(gst_[(size_t) gi]), mtl::Arg::B(b.gqn), mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc), mtl::Arg::B(b.ggb),
+              {mtl::Arg::B(slot_.gst[(size_t) gi]), mtl::Arg::B(b.gqn), mtl::Arg::B(b.gkn), mtl::Arg::B(b.gvc), mtl::Arg::B(b.ggb),
                mtl::Arg::B(b.gkq), mtl::Arg::B(b.go), mtl::Arg::V(ga)},
               48 * 4, 1, 32 * 4);
             D(P_(b.lgdn, "gdn_post"), {mtl::Arg::B(b.go), mtl::Arg::B(b.z), mtl::Arg::B(W_, T(bl + "ssm_norm.weight").offset),
@@ -231,17 +231,17 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
               {mtl::Arg::B(b.qfull), mtl::Arg::B(b.kcur), mtl::Arg::B(b.vcur), mtl::Arg::B(b.iqr), mtl::Arg::B(b.ikr),
                mtl::Arg::B(W_, T(bl + "attn_q_norm.weight").offset), mtl::Arg::B(W_, T(bl + "attn_k_norm.weight").offset),
                mtl::Arg::B(W_, T(bl + "indexer.q_norm.weight").offset), mtl::Arg::B(W_, T(bl + "indexer.k_norm.weight").offset),
-               mtl::Arg::B(cs_), mtl::Arg::B(b.qcur), mtl::Arg::B(b.qidx), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
-               mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(tail_[(size_t) qi]),
-               mtl::Arg::B(dead_[(size_t) qi]), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::V(a), mtl::Arg::B(mrope_)},
+               mtl::Arg::B(cs_), mtl::Arg::B(b.qcur), mtl::Arg::B(b.qidx), mtl::Arg::B(slot_.kq[(size_t) qi]), mtl::Arg::B(slot_.vq[(size_t) qi]),
+               mtl::Arg::B(slot_.ksc[(size_t) qi]), mtl::Arg::B(slot_.vsc[(size_t) qi]), mtl::Arg::B(slot_.tail[(size_t) qi]),
+               mtl::Arg::B(slot_.dead[(size_t) qi]), mtl::Arg::B(slot_.pooled[(size_t) qi]), mtl::Arg::V(a), mtl::Arg::B(mrope_)},
               33, nT, 256);
             if (pos0 + nT > PC_QB) {   // some row's context is past the budget: the indexer selects
                 if (b.k4)
-                    D(P_(b.lqsa, "qsa_score_mm"), {mtl::Arg::B(b.qidx), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]),
+                    D(P_(b.lqsa, "qsa_score_mm"), {mtl::Arg::B(b.qidx), mtl::Arg::B(slot_.pooled[(size_t) qi]), mtl::Arg::B(slot_.dead[(size_t) qi]),
                                                  mtl::Arg::B(b.scores), mtl::Arg::V(a)},
                       (uint32_t) (((pos0 + nT) / 4 + 1 + 63) / 64), (nT + 15) / 16, 128);
                 else
-                    D(P_(b.lqsa, "qsa_score"), {mtl::Arg::B(b.qidx), mtl::Arg::B(pooled_[(size_t) qi]), mtl::Arg::B(dead_[(size_t) qi]),
+                    D(P_(b.lqsa, "qsa_score"), {mtl::Arg::B(b.qidx), mtl::Arg::B(slot_.pooled[(size_t) qi]), mtl::Arg::B(slot_.dead[(size_t) qi]),
                                               mtl::Arg::B(b.scores), mtl::Arg::V(a)},
                       (uint32_t) (((pos0 + nT) / 4 + 1 + 7) / 8), nT, 256);
             }
@@ -250,12 +250,12 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
                 const uint32_t nq = (uint32_t) nT * 24 * 256;
                 D(P_(b.lqsa, "qsa_q_f16"), {mtl::Arg::B(b.qcur), mtl::Arg::B(b.qcurh), mtl::Arg::V(nq)}, (nq + 255) / 256, 1, 256);
                 D(P_(b.lqsa, "qsa_attn_mm", mtl::Constants().b(7, true), "qsa_attn_mm#k4"),
-                  {mtl::Arg::B(b.qcurh), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]), mtl::Arg::B(ksc_[(size_t) qi]),
-                   mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids), mtl::Arg::B(b.part), mtl::Arg::V(a)},
+                  {mtl::Arg::B(b.qcurh), mtl::Arg::B(slot_.kq[(size_t) qi]), mtl::Arg::B(slot_.vq[(size_t) qi]), mtl::Arg::B(slot_.ksc[(size_t) qi]),
+                   mtl::Arg::B(slot_.vsc[(size_t) qi]), mtl::Arg::B(b.qids), mtl::Arg::B(b.part), mtl::Arg::V(a)},
                   PC_QCHUNKS, 2, 32, nT);
             } else {
-                D(P_(b.lqsa, "qsa_attn"), {mtl::Arg::B(b.qcur), mtl::Arg::B(kq_[(size_t) qi]), mtl::Arg::B(vq_[(size_t) qi]),
-                                          mtl::Arg::B(ksc_[(size_t) qi]), mtl::Arg::B(vsc_[(size_t) qi]), mtl::Arg::B(b.qids),
+                D(P_(b.lqsa, "qsa_attn"), {mtl::Arg::B(b.qcur), mtl::Arg::B(slot_.kq[(size_t) qi]), mtl::Arg::B(slot_.vq[(size_t) qi]),
+                                          mtl::Arg::B(slot_.ksc[(size_t) qi]), mtl::Arg::B(slot_.vsc[(size_t) qi]), mtl::Arg::B(b.qids),
                                           mtl::Arg::B(b.part), mtl::Arg::V(a)},
                   PC_QCHUNKS, 2, 256, nT);
             }
@@ -356,7 +356,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
               {mtl::Arg::B(b.keyn), mtl::Arg::B(b.qn), mtl::Arg::B(b.pval), mtl::Arg::B(W_, off("blk.1.ple_norm_conv.weight")),
                mtl::Arg::B(b.gated), mtl::Arg::B(b.normW), mtl::Arg::V(pa2)}, HC, nT, 256);
             D(P(lple_, "ple_conv_add", {}, "ple_conv_add"),
-              {mtl::Arg::B(pleHist_), mtl::Arg::B(b.normW), kw_arg(), mtl::Arg::B(b.gated),
+              {mtl::Arg::B(slot_.pleHist), mtl::Arg::B(b.normW), kw_arg(), mtl::Arg::B(b.gated),
                mtl::Arg::B(b.R), mtl::Arg::V(pa2)}, HC * N / 256, nT, 256);
         }
     }
@@ -373,7 +373,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     if (ple_on_) {
         using namespace strata::kernels;
         const float* nw = b.normW.as<float>();
-        float* hist = pleHist_.as<float>();
+        float* hist = slot_.pleHist.as<float>();
         for (int c = 0; c < NG_HC_DIM; ++c) {
             float* col = hist + (size_t) c * NG_HIST;
             float tmp[NG_HIST * 2];
