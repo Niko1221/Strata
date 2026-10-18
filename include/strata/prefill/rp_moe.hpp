@@ -16,6 +16,9 @@ namespace strata::prefill::rp {
 bool built();
 /// STRATA_PF_RP=1 and built(): the prompt path's IQ4_NL products take the repacked GEMM.
 bool enabled();
+/// STRATA_DENSE_RP=1 and built(): under STRATA_DENSE_MMQ=1, a dense IQ4_NL projection takes the repacked GEMM (its
+/// weight repacked into a scratch per call, Gemm::native_mmq) instead of llama.cpp's MMQ.  The same products, bitwise.
+bool dense_enabled();
 /// STRATA_PF_RP=1 or 2: the group buffers are sized for repacked slots (2: sized so, products still MMQ - the A/B
 /// that separates the GEMM from the memory plan's change).
 bool sized();

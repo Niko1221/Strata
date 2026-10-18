@@ -123,6 +123,10 @@ int rp_mode() {
 }
 bool enabled() { return rp_mode() == 1; }
 bool sized() { return rp_mode() == 1 || rp_mode() == 2; }
+bool dense_enabled() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_DENSE_RP"); return v && v[0] == '1'; }();
+    return on;
+}
 
 bool supported(int t, int64_t w_rows, int64_t w_cols) {
     return t == GGML_TYPE_IQ4_NL && w_cols % 128 == 0 && w_rows % MMQ_RP_Q8_BM == 0;
@@ -208,6 +212,7 @@ void Context::run(const mmq::Product& p, void* stream) {
 bool built() { return false; }
 bool enabled() { return false; }
 bool sized() { return false; }
+bool dense_enabled() { return false; }
 bool supported(int, int64_t, int64_t) { return false; }
 size_t matrix_bytes(int, int64_t, int64_t) { return 0; }
 void repack_iq4nl(const void*, size_t, void*, size_t, int64_t, int64_t, int, void*) {}
