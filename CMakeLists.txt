@@ -1567,9 +1567,15 @@ if(STRATA_NATIVE_EXPERTS)
     set(_strata_mmq ${_strata_gg}/src/ggml-cuda)
     # #136: the Q2_0 pack's prompt experts on Strata's own int8 kernels (moe_fused.cu, opt-in STRATA_PF_FUSED=1; CUDA
     # only: the HIP branch below keeps MMQ, and an sm_75 device or an sm_75-only build reports them unavailable)
-    add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
-                src/prefill/mmq_nvfp4_w4a8.cu
-                src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
+    set(_strata_mmq_srcs src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
+                         src/prefill/mmq_nvfp4_w4a8.cu
+                         src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
+    if(STRATA_HIP_GFX906)
+      # moe_fused_iq.cu's HIP path calls f16kq:: (gufo's gfx11 K-quant kernels) outside the STRATA_PF_F16 opt-in, so
+      # their symbols must resolve here too; f16kq::covers() keeps them undispatched on anything but gfx11.
+      list(APPEND _strata_mmq_srcs src/prefill/moe_f16_kq.cu)
+    endif()
+    add_library(strata_mmq STATIC ${_strata_mmq_srcs})
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1 q6_k, the experts of Unsloth's UD-Q4/Q5/Q6_K_XL (docs/QUANTS.md; the dispatch
     # follows eddoursul/Strata 7706c1b).  MODEL-UPDATE Phase 1: on CUDA they are a library of their own, strata_kq
