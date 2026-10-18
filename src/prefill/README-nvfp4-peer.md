@@ -296,3 +296,26 @@ is never read, and no scale data travels back over PCIe.
   anchor) unchanged.
 - STATUS: **DONE.** NVFP4 + peer-prefill (config C) is numerically correct
   and the fastest measured config. This patch can go into the mainline.
+
+## Companion experiment: sums mode ON the P2P route (`STRATA_PF_PEER_SUMS_P2P=1`)
+
+The same working session also wired sums mode onto the **P2P** route (second
+commit on this branch): forward keeps P2P, only the way BACK changes - the
+peer adds its rows into one weighted sum per token and sends T x N FP16
+through mapped host memory instead of R x N FP32 rows over the P2P link.
+Gate: `pp->p2p && pp->compact` + the env flag; the mapped buffers are the
+sums' own (host_w / host_sum16 / host_pair / host_adds), and the route
+banner gained a "forward over P2P, one weighted sum per token back" line.
+
+Measured on THIS box (two PCIe GPUs, the P2P link at 5.5 GB/s - slower than
+PCIe to RAM): correct (recall gate passes both needles, 0 non-finite logits)
+but **2259 tok/s vs 2683 on the plain host route** - the host route wins
+here, which is also why config C is the deployed default. It stays opt-in
+because the trade flips on boxes where P2P beats PCIe (NVLink bridges,
+newer boards): there the forward keeps the fast link and the return moves
+~4x less data than the FP32 rows. Anyone on such a box: try
+`STRATA_PF_PEER_NVFP4=1 STRATA_PF_PEER_SUMS_P2P=1` (no `STRATA_PEER_NO_P2P`)
+and compare against the plain P2P route - the banner line tells which route
+is live. The non-compact twin is NOT covered (it always copies its rows
+back over P2P as well, so the sums would save nothing).
+
