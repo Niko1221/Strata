@@ -115,6 +115,8 @@ namespace strata::metal_engine {   // metal/src/engine/window.cpp
 void set_model_shard(const char* shard1);
 // session files: the MTP GGUF the window loads (a model input of the fingerprint), empty without --mtp
 const std::string& mtp_gguf_path();
+// session files: the window's K/V and running-state layout (part of the config fingerprint)
+std::string window_layout_key();
 }
 #endif
 
@@ -9217,7 +9219,9 @@ int main(int argc, char** argv) {
 #if defined(STRATA_USE_HIP)
                 c.backend = "hip";
 #elif defined(STRATA_GPU_METAL)
-                c.backend = "metal-window";   // the decode window's running state and K/V (window.cpp)
+                // the decode window's running state and K/V, and their layout (sizes per cell and per part): a build
+                // with another layout writes files this one refuses (the fingerprint differs)
+                c.backend = "metal-window " + strata::metal_engine::window_layout_key();
 #else
                 c.backend = "cuda";
 #endif

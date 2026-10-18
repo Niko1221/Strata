@@ -2649,6 +2649,19 @@ bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, st
 // fp16 scales each, no pages (page size 1, cells = tokens); one fp32 pooled key of 128 per 4 cells (+ the spare row).
 // A K/V layer of another format (CUDA's, or a later window layout) is not this window's and is refused.
 int window_kv_format() { return 0x4D570001; }
+// Session files: the window's layout as text, folded into the file's config fingerprint (generate.cpp): the K/V
+// format key, the bytes per cell of each K/V part (SlotState::cells_of; the draft layer's are the same), the pooled
+// key per block and the running state's parts (SlotState::parts, Window::checkpoint_save).  A build whose layout
+// differs gets another fingerprint, so its files are refused whole instead of read into the wrong places.
+std::string window_layout_key() {
+    char b[256];
+    std::snprintf(b, sizeof b, "kv %08x cell k%zu v%zu ks%zu vs%zu pooled %zu/%d; gdn %zu x (%zu + %zu), ple %zu, qsa %zu x "
+                  "(%zu + %zu)", (unsigned) window_kv_format(), SlotState::kKvCell, SlotState::kKvCell,
+                  SlotState::kScaleCell, SlotState::kScaleCell, SlotState::kPooledRow, SlotState::kBlockCells,
+                  SlotState::kGdnLayers, SlotState::kGdnState, SlotState::kConvHist, SlotState::kPleHist,
+                  SlotState::kQsaLayers, SlotState::kTail, SlotState::kDead);
+    return b;
+}
 bool window_kv_layer(const strata::core::QsaState* st, bool index, int64_t upto, void* ptr[5], size_t bytes[5],
                      std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
