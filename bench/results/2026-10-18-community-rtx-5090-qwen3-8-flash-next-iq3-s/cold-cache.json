@@ -1,0 +1,45 @@
+{
+ "context": 524288,
+ "target_tokens": 523976,
+ "avail_gib": 9.09,
+ "flush": "two short requests with strata_checkpoint false",
+ "full_park_logged": false,
+ "fresh": {
+  "ok": true,
+  "err": null,
+  "ttft_s": 102.832,
+  "prompt_tokens": 511089,
+  "reused_tokens": 0,
+  "generated_tokens": 256,
+  "prompt_tps": 4986.7,
+  "decode_tps": 179.8,
+  "prompt_ms": 102491.1,
+  "decode_ms": 1423.6,
+  "drafts_accepted": 193,
+  "kind": "fresh"
+ },
+ "fresh_events": [
+  {
+   "kind": "parked",
+   "tokens": 906,
+   "parked": 2,
+   "bytes": 490105576,
+   "evictions": 0
+  }
+ ],
+ "resend": {
+  "ok": true,
+  "err": null,
+  "ttft_s": 103.217,
+  "prompt_tokens": 511089,
+  "reused_tokens": 0,
+  "generated_tokens": 256,
+  "prompt_tps": 4960.6,
+  "decode_tps": 235.5,
+  "prompt_ms": 103029.6,
+  "decode_ms": 1086.9,
+  "drafts_accepted": 192,
+  "kind": "reread"
+ },
+ "resend_events": []
+}

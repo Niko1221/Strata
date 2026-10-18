@@ -1,0 +1,23 @@
+{
+ "pcie": {
+  "n": 520,
+  "max_util": 100.0,
+  "max_mem_mib": 31693.0,
+  "busy_gen": 4.0,
+  "busy_width": 16.0,
+  "busy_power_w": 210.7,
+  "power_limit_w": 402.5,
+  "busy_util": 100.0
+ },
+ "nvidia": {
+  "name": "NVIDIA GeForce RTX 5090",
+  "driver": "617.42",
+  "memory_mib": "32607",
+  "power_limit_w": "402.50",
+  "display_active": "Disabled",
+  "pcie_gen_max": "4",
+  "pcie_width_max": "16"
+ },
+ "warnings": [],
+ "matrix_stop": "low RAM"
+}

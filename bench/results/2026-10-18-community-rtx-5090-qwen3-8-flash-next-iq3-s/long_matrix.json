@@ -1,0 +1,2513 @@
+{
+ "schema": "long-matrix-1",
+ "context": 524288,
+ "slots": 2,
+ "gen": 256,
+ "avail_gib_end": 3.42,
+ "stop": "low RAM",
+ "lengths": {
+  "65536": {
+   "target_tokens": 65536,
+   "avail_gib": 3.51,
+   "summary": {
+    "fresh_prompt_tps": {
+     "median": 5834.9,
+     "min": 5753.2,
+     "max": 5841.7,
+     "n": 3
+    },
+    "fresh_decode_tps": {
+     "median": 277.9,
+     "min": 193.4,
+     "max": 283.2,
+     "n": 3
+    },
+    "fresh_ttft_s": {
+     "median": 11.014,
+     "min": 10.991,
+     "max": 11.189,
+     "n": 3
+    },
+    "fresh_prompt_tokens": {
+     "median": 63911,
+     "min": 63902,
+     "max": 63996,
+     "n": 3
+    },
+    "fresh_reused": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    },
+    "fresh_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 3
+    },
+    "fresh_drafts_accepted": {
+     "median": 192,
+     "min": 191,
+     "max": 193,
+     "n": 3
+    },
+    "cached_prompt_tps": {
+     "median": 52.3,
+     "min": 52.0,
+     "max": 52.5,
+     "n": 3
+    },
+    "cached_decode_tps": {
+     "median": 278.9,
+     "min": 253.4,
+     "max": 279.8,
+     "n": 3
+    },
+    "cached_ttft_s": {
+     "median": 0.182,
+     "min": 0.161,
+     "max": 0.194,
+     "n": 3
+    },
+    "cached_prompt_tokens": {
+     "median": 63911,
+     "min": 63902,
+     "max": 63996,
+     "n": 3
+    },
+    "cached_reused": {
+     "median": 63904,
+     "min": 63895,
+     "max": 63989,
+     "n": 3
+    },
+    "cached_n": 3,
+    "resend_kinds": [
+     "cached",
+     "cached",
+     "cached"
+    ],
+    "pair_prompt_tps": {
+     "median": 5253.8,
+     "min": 4719.1,
+     "max": 5786.2,
+     "n": 6
+    },
+    "pair_decode_tps": {
+     "median": 154.5,
+     "min": 32.0,
+     "max": 280.6,
+     "n": 6
+    },
+    "pair_ttft_s": {
+     "median": 18.069,
+     "min": 11.145,
+     "max": 25.111,
+     "n": 6
+    },
+    "pair_wall_s": {
+     "median": 27.023,
+     "min": 26.657,
+     "max": 27.027,
+     "n": 3
+    },
+    "pair_overlap": [
+     "prefill looks serial; decode did not overlap",
+     "prefill looks serial; decode did not overlap",
+     "prefill looks serial; decode did not overlap"
+    ],
+    "pair_prompt_tokens": {
+     "median": 63885.5,
+     "min": 63842,
+     "max": 63933,
+     "n": 6
+    },
+    "pair_reused": {
+     "median": 0.0,
+     "min": 0,
+     "max": 0,
+     "n": 6
+    },
+    "pair_generated": {
+     "median": 256.0,
+     "min": 256,
+     "max": 256,
+     "n": 6
+    },
+    "cached_pair_prompt_tps": {
+     "median": 53.0,
+     "min": 53.0,
+     "max": 53.0,
+     "n": 1
+    },
+    "cached_pair_decode_tps": {
+     "median": 33.5,
+     "min": 33.5,
+     "max": 33.5,
+     "n": 1
+    },
+    "cached_pair_ttft_s": {
+     "median": 0.182,
+     "min": 0.182,
+     "max": 0.182,
+     "n": 1
+    },
+    "cached_pair_prompt_tokens": {
+     "median": 63911,
+     "min": 63911,
+     "max": 63911,
+     "n": 1
+    },
+    "cached_pair_reused": {
+     "median": 63904,
+     "min": 63904,
+     "max": 63904,
+     "n": 1
+    },
+    "cached_pair_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 1
+    },
+    "cached_pair_n": 1,
+    "cached_pair_kinds": [
+     "restored_partial",
+     "cached"
+    ],
+    "cached_pair_overlap": [
+     "prefill looks serial; decode did not overlap"
+    ],
+    "cached_pair_note": ""
+   },
+   "fresh": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 10.991,
+     "total_s": 12.303,
+     "prompt_tokens": 63902,
+     "reused_tokens": 0,
+     "read_tokens": 63902,
+     "generated_tokens": 256,
+     "prompt_tps": 5841.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 193.4,
+     "decode_tps_source": "engine",
+     "prompt_ms": 10939.0,
+     "decode_ms": 1323.5,
+     "drafts_offered": 192,
+     "drafts_accepted": 191,
+     "run": 0,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 906,
+       "parked": 4,
+       "bytes": 2178244488,
+       "evictions": 29
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 11.014,
+     "total_s": 11.928,
+     "prompt_tokens": 63911,
+     "reused_tokens": 0,
+     "read_tokens": 63911,
+     "generated_tokens": 256,
+     "prompt_tps": 5834.9,
+     "prompt_tps_source": "engine",
+     "decode_tps": 277.9,
+     "decode_tps_source": "engine",
+     "prompt_ms": 10953.2,
+     "decode_ms": 921.3,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 1,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 64158,
+       "parked": 4,
+       "bytes": 2294352164,
+       "evictions": 32
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 11.189,
+     "total_s": 12.085,
+     "prompt_tokens": 63996,
+     "reused_tokens": 0,
+     "read_tokens": 63996,
+     "generated_tokens": 256,
+     "prompt_tps": 5753.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 283.2,
+     "decode_tps_source": "engine",
+     "prompt_ms": 11123.5,
+     "decode_ms": 904.0,
+     "drafts_offered": 195,
+     "drafts_accepted": 192,
+     "run": 2,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 64157,
+       "parked": 4,
+       "bytes": 4471998588,
+       "evictions": 39
+      }
+     ],
+     "kind": "fresh"
+    }
+   ],
+   "resend": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.161,
+     "total_s": 1.164,
+     "prompt_tokens": 63902,
+     "reused_tokens": 63895,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 52.5,
+     "prompt_tps_source": "engine",
+     "decode_tps": 253.4,
+     "decode_tps_source": "engine",
+     "prompt_ms": 133.3,
+     "decode_ms": 1010.3,
+     "drafts_offered": 195,
+     "drafts_accepted": 191,
+     "run": 0,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 50,
+       "parked": 4,
+       "bytes": 963894484,
+       "evictions": 31
+      },
+      {
+       "kind": "restored",
+       "tokens": 63895,
+       "parked": 4,
+       "bytes": 1943237692,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.194,
+     "total_s": 1.104,
+     "prompt_tokens": 63911,
+     "reused_tokens": 63904,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 52.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 278.9,
+     "decode_tps_source": "engine",
+     "prompt_ms": 133.9,
+     "decode_ms": 917.8,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 1,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 50,
+       "parked": 4,
+       "bytes": 2281279316,
+       "evictions": 34
+      },
+      {
+       "kind": "restored",
+       "tokens": 63904,
+       "parked": 4,
+       "bytes": 3260805692,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.182,
+     "total_s": 1.089,
+     "prompt_tokens": 63996,
+     "reused_tokens": 63989,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 52.0,
+     "prompt_tps_source": "engine",
+     "decode_tps": 279.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 134.5,
+     "decode_ms": 915.0,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 2,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 50,
+       "parked": 4,
+       "bytes": 3138108708,
+       "evictions": 41
+      },
+      {
+       "kind": "restored",
+       "tokens": 63989,
+       "parked": 4,
+       "bytes": 4118917260,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    }
+   ],
+   "pairs": [
+    {
+     "run": 0,
+     "wall_s": 26.657,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 11.147,
+       "total_s": 19.307,
+       "prompt_tokens": 63842,
+       "reused_tokens": 0,
+       "read_tokens": 63842,
+       "generated_tokens": 256,
+       "prompt_tps": 5786.2,
+       "prompt_tps_source": "engine",
+       "decode_tps": 32.6,
+       "decode_tps_source": "engine",
+       "prompt_ms": 11033.5,
+       "decode_ms": 7863.7,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 26.657,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 24.907,
+       "total_s": 26.656,
+       "prompt_tokens": 63933,
+       "reused_tokens": 0,
+       "read_tokens": 63933,
+       "generated_tokens": 256,
+       "prompt_tps": 4766.0,
+       "prompt_tps_source": "engine",
+       "decode_tps": 280.6,
+       "decode_tps_source": "engine",
+       "prompt_ms": 13414.4,
+       "decode_ms": 912.3,
+       "drafts_offered": 189,
+       "drafts_accepted": 189,
+       "pair_wall_s": 26.657,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 64254,
+       "parked": 4,
+       "bytes": 3143483420,
+       "evictions": 42
+      },
+      {
+       "kind": "parked",
+       "tokens": 63843,
+       "parked": 4,
+       "bytes": 3611560928,
+       "evictions": 43
+      },
+      {
+       "kind": "parked",
+       "tokens": 63933,
+       "parked": 4,
+       "bytes": 4941842516,
+       "evictions": 44
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 1,
+     "wall_s": 27.027,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 25.111,
+       "total_s": 27.025,
+       "prompt_tokens": 63886,
+       "reused_tokens": 0,
+       "read_tokens": 63886,
+       "generated_tokens": 256,
+       "prompt_tps": 4719.1,
+       "prompt_tps_source": "engine",
+       "decode_tps": 277.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 13537.7,
+       "decode_ms": 922.5,
+       "drafts_offered": 192,
+       "drafts_accepted": 188,
+       "pair_wall_s": 27.027,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 11.145,
+       "total_s": 19.513,
+       "prompt_tokens": 63892,
+       "reused_tokens": 0,
+       "read_tokens": 63892,
+       "generated_tokens": 256,
+       "prompt_tps": 5765.5,
+       "prompt_tps_source": "engine",
+       "decode_tps": 32.0,
+       "decode_tps_source": "engine",
+       "prompt_ms": 11081.8,
+       "decode_ms": 7990.3,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 27.027,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 64189,
+       "parked": 4,
+       "bytes": 5803069092,
+       "evictions": 45
+      },
+      {
+       "kind": "parked",
+       "tokens": 63893,
+       "parked": 4,
+       "bytes": 5797572192,
+       "evictions": 46
+      },
+      {
+       "kind": "parked",
+       "tokens": 63886,
+       "parked": 4,
+       "bytes": 5798244156,
+       "evictions": 47
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 2,
+     "wall_s": 27.023,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 11.231,
+       "total_s": 19.469,
+       "prompt_tokens": 63857,
+       "reused_tokens": 0,
+       "read_tokens": 63857,
+       "generated_tokens": 256,
+       "prompt_tps": 5741.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 32.3,
+       "decode_tps_source": "engine",
+       "prompt_ms": 11121.8,
+       "decode_ms": 7917.0,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 27.023,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 25.103,
+       "total_s": 27.022,
+       "prompt_tokens": 63885,
+       "reused_tokens": 0,
+       "read_tokens": 63885,
+       "generated_tokens": 256,
+       "prompt_tps": 4732.0,
+       "prompt_tps_source": "engine",
+       "decode_tps": 276.4,
+       "decode_tps_source": "engine",
+       "prompt_ms": 13500.6,
+       "decode_ms": 926.3,
+       "drafts_offered": 192,
+       "drafts_accepted": 190,
+       "pair_wall_s": 27.023,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 64142,
+       "parked": 4,
+       "bytes": 5328517352,
+       "evictions": 48
+      },
+      {
+       "kind": "parked",
+       "tokens": 63858,
+       "parked": 4,
+       "bytes": 5796350628,
+       "evictions": 49
+      },
+      {
+       "kind": "parked",
+       "tokens": 63885,
+       "parked": 4,
+       "bytes": 5796228456,
+       "evictions": 50
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pairs": [
+    {
+     "wall_s": 15.439,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 13.709,
+       "total_s": 15.437,
+       "prompt_tokens": 63902,
+       "reused_tokens": 0,
+       "read_tokens": 63902,
+       "generated_tokens": 256,
+       "prompt_tps": 4840.9,
+       "prompt_tps_source": "engine",
+       "decode_tps": 276.7,
+       "decode_tps_source": "engine",
+       "prompt_ms": 13200.4,
+       "decode_ms": 925.3,
+       "drafts_offered": 189,
+       "drafts_accepted": 188,
+       "pair_wall_s": 15.439,
+       "kind": "restored_partial"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 0.182,
+       "total_s": 8.104,
+       "prompt_tokens": 63911,
+       "reused_tokens": 63904,
+       "read_tokens": 7,
+       "generated_tokens": 256,
+       "prompt_tps": 53.0,
+       "prompt_tps_source": "engine",
+       "decode_tps": 33.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 132.2,
+       "decode_ms": 7652.3,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 15.439,
+       "kind": "cached"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 52,
+       "parked": 4,
+       "bytes": 947645048,
+       "evictions": 36
+      },
+      {
+       "kind": "restored",
+       "tokens": 63904,
+       "parked": 4,
+       "bytes": 1927171424,
+       "evictions": 0
+      },
+      {
+       "kind": "parked",
+       "tokens": 63912,
+       "parked": 4,
+       "bytes": 2281528768,
+       "evictions": 37
+      },
+      {
+       "kind": "parked",
+       "tokens": 63902,
+       "parked": 4,
+       "bytes": 3611260592,
+       "evictions": 38
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pair_note": ""
+  },
+  "131072": {
+   "target_tokens": 131072,
+   "avail_gib": 3.77,
+   "summary": {
+    "fresh_prompt_tps": {
+     "median": 5748.3,
+     "min": 5673.3,
+     "max": 5749.6,
+     "n": 3
+    },
+    "fresh_decode_tps": {
+     "median": 270.3,
+     "min": 269.8,
+     "max": 276.0,
+     "n": 3
+    },
+    "fresh_ttft_s": {
+     "median": 22.359,
+     "min": 22.356,
+     "max": 22.637,
+     "n": 3
+    },
+    "fresh_prompt_tokens": {
+     "median": 127867,
+     "min": 127844,
+     "max": 127929,
+     "n": 3
+    },
+    "fresh_reused": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    },
+    "fresh_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 3
+    },
+    "fresh_drafts_accepted": {
+     "median": 193,
+     "min": 192,
+     "max": 193,
+     "n": 3
+    },
+    "cached_prompt_tps": {
+     "median": 38.0,
+     "min": 34.9,
+     "max": 39.9,
+     "n": 3
+    },
+    "cached_decode_tps": {
+     "median": 270.0,
+     "min": 262.5,
+     "max": 272.3,
+     "n": 3
+    },
+    "cached_ttft_s": {
+     "median": 0.258,
+     "min": 0.24,
+     "max": 0.271,
+     "n": 3
+    },
+    "cached_prompt_tokens": {
+     "median": 127867,
+     "min": 127844,
+     "max": 127929,
+     "n": 3
+    },
+    "cached_reused": {
+     "median": 127860,
+     "min": 127837,
+     "max": 127922,
+     "n": 3
+    },
+    "cached_n": 3,
+    "resend_kinds": [
+     "cached",
+     "cached",
+     "cached"
+    ],
+    "pair_prompt_tps": {
+     "median": 5403.0,
+     "min": 5118.4,
+     "max": 5754.0,
+     "n": 6
+    },
+    "pair_decode_tps": {
+     "median": 143.75,
+     "min": 31.1,
+     "max": 262.9,
+     "n": 6
+    },
+    "pair_ttft_s": {
+     "median": 35.352,
+     "min": 22.393,
+     "max": 48.35,
+     "n": 6
+    },
+    "pair_wall_s": {
+     "median": 51.115,
+     "min": 50.859,
+     "max": 51.175,
+     "n": 3
+    },
+    "pair_overlap": [
+     "prefill looks serial; decode did not overlap",
+     "prefill looks serial; decode did not overlap",
+     "prefill looks serial; decode did not overlap"
+    ],
+    "pair_prompt_tokens": {
+     "median": 127801.5,
+     "min": 127735,
+     "max": 127865,
+     "n": 6
+    },
+    "pair_reused": {
+     "median": 0.0,
+     "min": 0,
+     "max": 0,
+     "n": 6
+    },
+    "pair_generated": {
+     "median": 256.0,
+     "min": 256,
+     "max": 256,
+     "n": 6
+    },
+    "cached_pair_prompt_tps": {
+     "median": 36.9,
+     "min": 36.9,
+     "max": 36.9,
+     "n": 1
+    },
+    "cached_pair_decode_tps": {
+     "median": 33.1,
+     "min": 33.1,
+     "max": 33.1,
+     "n": 1
+    },
+    "cached_pair_ttft_s": {
+     "median": 0.268,
+     "min": 0.268,
+     "max": 0.268,
+     "n": 1
+    },
+    "cached_pair_prompt_tokens": {
+     "median": 127929,
+     "min": 127929,
+     "max": 127929,
+     "n": 1
+    },
+    "cached_pair_reused": {
+     "median": 127922,
+     "min": 127922,
+     "max": 127922,
+     "n": 1
+    },
+    "cached_pair_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 1
+    },
+    "cached_pair_n": 1,
+    "cached_pair_kinds": [
+     "restored_partial",
+     "cached"
+    ],
+    "cached_pair_overlap": [
+     "prefill looks serial; decode did not overlap"
+    ],
+    "cached_pair_note": ""
+   },
+   "fresh": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 22.356,
+     "total_s": 23.296,
+     "prompt_tokens": 127867,
+     "reused_tokens": 0,
+     "read_tokens": 127867,
+     "generated_tokens": 256,
+     "prompt_tps": 5749.6,
+     "prompt_tps_source": "engine",
+     "decode_tps": 270.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 22239.4,
+     "decode_ms": 947.1,
+     "drafts_offered": 192,
+     "drafts_accepted": 192,
+     "run": 0,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 64143,
+       "parked": 4,
+       "bytes": 5327234704,
+       "evictions": 51
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 22.359,
+     "total_s": 23.3,
+     "prompt_tokens": 127929,
+     "reused_tokens": 0,
+     "read_tokens": 127929,
+     "generated_tokens": 256,
+     "prompt_tps": 5748.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 269.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 22255.1,
+     "decode_ms": 949.0,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 1,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 128125,
+       "parked": 4,
+       "bytes": 4600341724,
+       "evictions": 54
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 22.637,
+     "total_s": 23.552,
+     "prompt_tokens": 127844,
+     "reused_tokens": 0,
+     "read_tokens": 127844,
+     "generated_tokens": 256,
+     "prompt_tps": 5673.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 276.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 22534.4,
+     "decode_ms": 927.7,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 2,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 128125,
+       "parked": 2,
+       "bytes": 4855084864,
+       "evictions": 63
+      }
+     ],
+     "kind": "fresh"
+    }
+   ],
+   "resend": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.271,
+     "total_s": 1.239,
+     "prompt_tokens": 127867,
+     "reused_tokens": 127860,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 34.9,
+     "prompt_tps_source": "engine",
+     "decode_tps": 262.5,
+     "decode_tps_source": "engine",
+     "prompt_ms": 200.8,
+     "decode_ms": 975.3,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 0,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 51,
+       "parked": 4,
+       "bytes": 3137626228,
+       "evictions": 53
+      },
+      {
+       "kind": "restored",
+       "tokens": 127860,
+       "parked": 4,
+       "bytes": 5093317180,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.258,
+     "total_s": 1.198,
+     "prompt_tokens": 127929,
+     "reused_tokens": 127922,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 39.9,
+     "prompt_tps_source": "engine",
+     "decode_tps": 270.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 175.5,
+     "decode_ms": 948.1,
+     "drafts_offered": 195,
+     "drafts_accepted": 193,
+     "run": 1,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 51,
+       "parked": 4,
+       "bytes": 3739848012,
+       "evictions": 56
+      },
+      {
+       "kind": "restored",
+       "tokens": 127922,
+       "parked": 4,
+       "bytes": 5696515860,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.24,
+     "total_s": 1.173,
+     "prompt_tokens": 127844,
+     "reused_tokens": 127837,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 38.0,
+     "prompt_tps_source": "engine",
+     "decode_tps": 272.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 184.4,
+     "decode_ms": 940.1,
+     "drafts_offered": 195,
+     "drafts_accepted": 191,
+     "run": 2,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 51,
+       "parked": 3,
+       "bytes": 2548122728,
+       "evictions": 64
+      },
+      {
+       "kind": "restored",
+       "tokens": 127837,
+       "parked": 3,
+       "bytes": 4503508400,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    }
+   ],
+   "pairs": [
+    {
+     "run": 0,
+     "wall_s": 50.859,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 47.984,
+       "total_s": 50.857,
+       "prompt_tokens": 127745,
+       "reused_tokens": 0,
+       "read_tokens": 127745,
+       "generated_tokens": 256,
+       "prompt_tps": 5137.2,
+       "prompt_tps_source": "engine",
+       "decode_tps": 262.9,
+       "decode_tps_source": "engine",
+       "prompt_ms": 24866.9,
+       "decode_ms": 973.8,
+       "drafts_offered": 189,
+       "drafts_accepted": 189,
+       "pair_wall_s": 50.859,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 22.393,
+       "total_s": 31.166,
+       "prompt_tokens": 127829,
+       "reused_tokens": 0,
+       "read_tokens": 127829,
+       "generated_tokens": 256,
+       "prompt_tps": 5754.0,
+       "prompt_tps_source": "engine",
+       "decode_tps": 31.4,
+       "decode_tps_source": "engine",
+       "prompt_ms": 22215.8,
+       "decode_ms": 8143.1,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 50.859,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 128100,
+       "parked": 4,
+       "bytes": 5332483076,
+       "evictions": 64
+      },
+      {
+       "kind": "parked",
+       "tokens": 127830,
+       "parked": 4,
+       "bytes": 6038362816,
+       "evictions": 65
+      },
+      {
+       "kind": "parked",
+       "tokens": 127745,
+       "parked": 2,
+       "bytes": 5559131948,
+       "evictions": 68
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 1,
+     "wall_s": 51.115,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 48.245,
+       "total_s": 51.112,
+       "prompt_tokens": 127865,
+       "reused_tokens": 0,
+       "read_tokens": 127865,
+       "generated_tokens": 256,
+       "prompt_tps": 5134.9,
+       "prompt_tps_source": "engine",
+       "decode_tps": 261.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 24901.3,
+       "decode_ms": 978.9,
+       "drafts_offered": 192,
+       "drafts_accepted": 190,
+       "pair_wall_s": 51.115,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 22.679,
+       "total_s": 31.462,
+       "prompt_tokens": 127838,
+       "reused_tokens": 0,
+       "read_tokens": 127838,
+       "generated_tokens": 256,
+       "prompt_tps": 5680.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 31.3,
+       "decode_tps_source": "engine",
+       "prompt_ms": 22504.3,
+       "decode_ms": 8187.1,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 51.115,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 128001,
+       "parked": 2,
+       "bytes": 4851358976,
+       "evictions": 69
+      },
+      {
+       "kind": "parked",
+       "tokens": 127839,
+       "parked": 2,
+       "bytes": 4852764012,
+       "evictions": 70
+      },
+      {
+       "kind": "parked",
+       "tokens": 127865,
+       "parked": 2,
+       "bytes": 5561086772,
+       "evictions": 71
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 2,
+     "wall_s": 51.175,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 48.35,
+       "total_s": 51.172,
+       "prompt_tokens": 127735,
+       "reused_tokens": 0,
+       "read_tokens": 127735,
+       "generated_tokens": 256,
+       "prompt_tps": 5118.4,
+       "prompt_tps_source": "engine",
+       "decode_tps": 256.1,
+       "decode_tps_source": "engine",
+       "prompt_ms": 24956.0,
+       "decode_ms": 999.6,
+       "drafts_offered": 189,
+       "drafts_accepted": 189,
+       "pair_wall_s": 51.175,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 22.719,
+       "total_s": 31.559,
+       "prompt_tokens": 127774,
+       "reused_tokens": 0,
+       "read_tokens": 127774,
+       "generated_tokens": 256,
+       "prompt_tps": 5668.8,
+       "prompt_tps_source": "engine",
+       "decode_tps": 31.1,
+       "decode_tps_source": "engine",
+       "prompt_ms": 22540.0,
+       "decode_ms": 8233.7,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 51.175,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 128123,
+       "parked": 2,
+       "bytes": 4855023784,
+       "evictions": 72
+      },
+      {
+       "kind": "parked",
+       "tokens": 127775,
+       "parked": 2,
+       "bytes": 4853618772,
+       "evictions": 73
+      },
+      {
+       "kind": "parked",
+       "tokens": 127735,
+       "parked": 2,
+       "bytes": 5558093476,
+       "evictions": 74
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pairs": [
+    {
+     "wall_s": 27.891,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 25.307,
+       "total_s": 27.889,
+       "prompt_tokens": 127867,
+       "reused_tokens": 0,
+       "read_tokens": 127867,
+       "generated_tokens": 256,
+       "prompt_tps": 5223.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 264.9,
+       "decode_tps_source": "engine",
+       "prompt_ms": 24478.5,
+       "decode_ms": 966.5,
+       "drafts_offered": 192,
+       "drafts_accepted": 190,
+       "pair_wall_s": 27.891,
+       "kind": "restored_partial"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 0.268,
+       "total_s": 8.508,
+       "prompt_tokens": 127929,
+       "reused_tokens": 127922,
+       "read_tokens": 7,
+       "generated_tokens": 256,
+       "prompt_tps": 36.9,
+       "prompt_tps_source": "engine",
+       "decode_tps": 33.1,
+       "decode_tps_source": "engine",
+       "prompt_ms": 189.7,
+       "decode_ms": 7734.5,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 27.891,
+       "kind": "cached"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 53,
+       "parked": 4,
+       "bytes": 947706136,
+       "evictions": 58
+      },
+      {
+       "kind": "restored",
+       "tokens": 127922,
+       "parked": 4,
+       "bytes": 2904373984,
+       "evictions": 0
+      },
+      {
+       "kind": "parked",
+       "tokens": 127930,
+       "parked": 4,
+       "bytes": 3496478248,
+       "evictions": 59
+      },
+      {
+       "kind": "parked",
+       "tokens": 127867,
+       "parked": 4,
+       "bytes": 6040310456,
+       "evictions": 60
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pair_note": ""
+  },
+  "262144": {
+   "target_tokens": 262144,
+   "avail_gib": 7.53,
+   "summary": {
+    "fresh_prompt_tps": {
+     "median": 5438.9,
+     "min": 3624.8,
+     "max": 5467.3,
+     "n": 3
+    },
+    "fresh_decode_tps": {
+     "median": 262.5,
+     "min": 67.5,
+     "max": 264.0,
+     "n": 3
+    },
+    "fresh_ttft_s": {
+     "median": 47.201,
+     "min": 46.96,
+     "max": 113.14,
+     "n": 3
+    },
+    "fresh_prompt_tokens": {
+     "median": 255693,
+     "min": 255674,
+     "max": 255742,
+     "n": 3
+    },
+    "fresh_reused": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    },
+    "fresh_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 3
+    },
+    "fresh_drafts_accepted": {
+     "median": 191,
+     "min": 0,
+     "max": 192,
+     "n": 3
+    },
+    "cached_prompt_tps": {
+     "median": 23.8,
+     "min": 22.4,
+     "max": 25.2,
+     "n": 2
+    },
+    "cached_decode_tps": {
+     "median": 258.65,
+     "min": 256.3,
+     "max": 261.0,
+     "n": 2
+    },
+    "cached_ttft_s": {
+     "median": 0.392,
+     "min": 0.387,
+     "max": 0.397,
+     "n": 2
+    },
+    "cached_prompt_tokens": {
+     "median": 255717.5,
+     "min": 255693,
+     "max": 255742,
+     "n": 2
+    },
+    "cached_reused": {
+     "median": 255710.5,
+     "min": 255686,
+     "max": 255735,
+     "n": 2
+    },
+    "cached_n": 2,
+    "resend_kinds": [
+     "cached",
+     "cached",
+     "reread"
+    ],
+    "pair_prompt_tps": {
+     "median": 4686.75,
+     "min": 3628.6,
+     "max": 5402.5,
+     "n": 6
+    },
+    "pair_decode_tps": {
+     "median": 40.6,
+     "min": 23.8,
+     "max": 72.9,
+     "n": 6
+    },
+    "pair_ttft_s": {
+     "median": 113.01,
+     "min": 60.524,
+     "max": 167.063,
+     "n": 6
+    },
+    "pair_wall_s": {
+     "median": 131.902,
+     "min": 123.795,
+     "max": 174.824,
+     "n": 3
+    },
+    "pair_overlap": [
+     "prefill looks serial; decode did not overlap",
+     "prefill looks serial; decode did not overlap",
+     "prefill looks serial; decode did not overlap"
+    ],
+    "pair_prompt_tokens": {
+     "median": 255646.5,
+     "min": 255474,
+     "max": 255713,
+     "n": 6
+    },
+    "pair_reused": {
+     "median": 0.0,
+     "min": 0,
+     "max": 0,
+     "n": 6
+    },
+    "pair_generated": {
+     "median": 256.0,
+     "min": 256,
+     "max": 256,
+     "n": 6
+    },
+    "cached_pair_prompt_tps": {
+     "median": 24.3,
+     "min": 24.3,
+     "max": 24.3,
+     "n": 1
+    },
+    "cached_pair_decode_tps": {
+     "median": 32.5,
+     "min": 32.5,
+     "max": 32.5,
+     "n": 1
+    },
+    "cached_pair_ttft_s": {
+     "median": 0.385,
+     "min": 0.385,
+     "max": 0.385,
+     "n": 1
+    },
+    "cached_pair_prompt_tokens": {
+     "median": 255742,
+     "min": 255742,
+     "max": 255742,
+     "n": 1
+    },
+    "cached_pair_reused": {
+     "median": 255735,
+     "min": 255735,
+     "max": 255735,
+     "n": 1
+    },
+    "cached_pair_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 1
+    },
+    "cached_pair_n": 1,
+    "cached_pair_kinds": [
+     "restored_partial",
+     "cached"
+    ],
+    "cached_pair_overlap": [
+     "prefill looks serial; decode did not overlap"
+    ],
+    "cached_pair_note": ""
+   },
+   "fresh": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 47.201,
+     "total_s": 48.162,
+     "prompt_tokens": 255693,
+     "reused_tokens": 0,
+     "read_tokens": 255693,
+     "generated_tokens": 256,
+     "prompt_tps": 5438.9,
+     "prompt_tps_source": "engine",
+     "decode_tps": 264.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 47011.9,
+     "decode_ms": 969.7,
+     "drafts_offered": 192,
+     "drafts_accepted": 191,
+     "run": 0,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 127991,
+       "parked": 2,
+       "bytes": 4850992520,
+       "evictions": 75
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 46.96,
+     "total_s": 47.927,
+     "prompt_tokens": 255742,
+     "reused_tokens": 0,
+     "read_tokens": 255742,
+     "generated_tokens": 256,
+     "prompt_tps": 5467.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 262.5,
+     "decode_tps_source": "engine",
+     "prompt_ms": 46776.4,
+     "decode_ms": 975.3,
+     "drafts_offered": 194,
+     "drafts_accepted": 192,
+     "run": 1,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 255949,
+       "parked": 3,
+       "bytes": 5651903120,
+       "evictions": 77
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 113.14,
+     "total_s": 118.439,
+     "prompt_tokens": 255674,
+     "reused_tokens": 0,
+     "read_tokens": 255674,
+     "generated_tokens": 256,
+     "prompt_tps": 3624.8,
+     "prompt_tps_source": "engine",
+     "decode_tps": 67.5,
+     "decode_tps_source": "engine",
+     "prompt_ms": 70535.2,
+     "decode_ms": 3792.3,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 253981,
+       "parked": 1,
+       "bytes": 4708996460,
+       "evictions": 86
+      }
+     ],
+     "kind": "fresh"
+    }
+   ],
+   "resend": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.387,
+     "total_s": 1.36,
+     "prompt_tokens": 255693,
+     "reused_tokens": 255686,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 25.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 261.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 278.3,
+     "decode_ms": 980.7,
+     "drafts_offered": 195,
+     "drafts_accepted": 191,
+     "run": 0,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 51,
+       "parked": 2,
+       "bytes": 473795068,
+       "evictions": 77
+      },
+      {
+       "kind": "restored",
+       "tokens": 255686,
+       "parked": 2,
+       "bytes": 4380600484,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.397,
+     "total_s": 1.389,
+     "prompt_tokens": 255742,
+     "reused_tokens": 255735,
+     "read_tokens": 7,
+     "generated_tokens": 256,
+     "prompt_tps": 22.4,
+     "prompt_tps_source": "engine",
+     "decode_tps": 256.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 312.3,
+     "decode_ms": 999.0,
+     "drafts_offered": 195,
+     "drafts_accepted": 192,
+     "run": 1,
+     "kind": "cached",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 51,
+       "parked": 2,
+       "bytes": 473795068,
+       "evictions": 80
+      },
+      {
+       "kind": "restored",
+       "tokens": 255735,
+       "parked": 2,
+       "bytes": 4381388068,
+       "evictions": 0
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 52.372,
+     "total_s": 62.05,
+     "prompt_tokens": 255674,
+     "reused_tokens": 0,
+     "read_tokens": 255674,
+     "generated_tokens": 256,
+     "prompt_tps": 5138.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 30.6,
+     "decode_tps_source": "engine",
+     "prompt_ms": 49759.4,
+     "decode_ms": 8355.9,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "kind": "reread",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 255542,
+       "parked": 3,
+       "bytes": 4493445784,
+       "evictions": 89
+      },
+      {
+       "kind": "parked",
+       "tokens": 255674,
+       "parked": 1,
+       "bytes": 4734740908,
+       "evictions": 92
+      }
+     ],
+     "park": "parked"
+    }
+   ],
+   "pairs": [
+    {
+     "run": 0,
+     "wall_s": 131.902,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 72.488,
+       "total_s": 77.214,
+       "prompt_tokens": 255540,
+       "reused_tokens": 0,
+       "read_tokens": 255540,
+       "generated_tokens": 256,
+       "prompt_tps": 3651.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 72.9,
+       "decode_tps_source": "engine",
+       "prompt_ms": 69979.6,
+       "decode_ms": 3509.4,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 131.902,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 124.583,
+       "total_s": 131.899,
+       "prompt_tokens": 255656,
+       "reused_tokens": 0,
+       "read_tokens": 255656,
+       "generated_tokens": 256,
+       "prompt_tps": 5402.5,
+       "prompt_tps_source": "engine",
+       "decode_tps": 41.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 47322.0,
+       "decode_ms": 6171.8,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 131.902,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 256990,
+       "parked": 1,
+       "bytes": 4160917348,
+       "evictions": 93
+      },
+      {
+       "kind": "parked",
+       "tokens": 257204,
+       "parked": 1,
+       "bytes": 4045068968,
+       "evictions": 94
+      },
+      {
+       "kind": "parked",
+       "tokens": 255540,
+       "parked": 1,
+       "bytes": 4732670076,
+       "evictions": 95
+      },
+      {
+       "kind": "parked",
+       "tokens": 255656,
+       "parked": 1,
+       "bytes": 4734441628,
+       "evictions": 96
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 1,
+     "wall_s": 123.795,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 60.524,
+       "total_s": 70.454,
+       "prompt_tokens": 255655,
+       "reused_tokens": 0,
+       "read_tokens": 255655,
+       "generated_tokens": 256,
+       "prompt_tps": 4256.7,
+       "prompt_tps_source": "engine",
+       "decode_tps": 29.2,
+       "decode_tps_source": "engine",
+       "prompt_ms": 60059.8,
+       "decode_ms": 8758.2,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 123.795,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 111.791,
+       "total_s": 123.792,
+       "prompt_tokens": 255713,
+       "reused_tokens": 0,
+       "read_tokens": 255713,
+       "generated_tokens": 256,
+       "prompt_tps": 5116.8,
+       "prompt_tps_source": "engine",
+       "decode_tps": 23.8,
+       "decode_tps_source": "engine",
+       "prompt_ms": 49974.9,
+       "decode_ms": 10778.9,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 123.795,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 259206,
+       "parked": 1,
+       "bytes": 4075659888,
+       "evictions": 97
+      },
+      {
+       "kind": "parked",
+       "tokens": 255655,
+       "parked": 1,
+       "bytes": 4734435476,
+       "evictions": 98
+      },
+      {
+       "kind": "parked",
+       "tokens": 255713,
+       "parked": 1,
+       "bytes": 4735351780,
+       "evictions": 99
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 2,
+     "wall_s": 174.824,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 167.063,
+       "total_s": 174.818,
+       "prompt_tokens": 255474,
+       "reused_tokens": 0,
+       "read_tokens": 255474,
+       "generated_tokens": 256,
+       "prompt_tps": 5376.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 39.7,
+       "decode_tps_source": "engine",
+       "prompt_ms": 47515.7,
+       "decode_ms": 6456.4,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 174.824,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 114.228,
+       "total_s": 119.503,
+       "prompt_tokens": 255638,
+       "reused_tokens": 0,
+       "read_tokens": 255638,
+       "generated_tokens": 256,
+       "prompt_tps": 3628.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 64.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 70451.0,
+       "decode_ms": 3969.4,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 174.824,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 262143,
+       "parked": 1,
+       "bytes": 4833615996,
+       "evictions": 100
+      },
+      {
+       "kind": "parked",
+       "tokens": 255638,
+       "parked": 1,
+       "bytes": 4734191116,
+       "evictions": 101
+      },
+      {
+       "kind": "parked",
+       "tokens": 255474,
+       "parked": 1,
+       "bytes": 4731686508,
+       "evictions": 102
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pairs": [
+    {
+     "wall_s": 62.761,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 50.764,
+       "total_s": 62.756,
+       "prompt_tokens": 255693,
+       "reused_tokens": 0,
+       "read_tokens": 255693,
+       "generated_tokens": 256,
+       "prompt_tps": 5210.2,
+       "prompt_tps_source": "engine",
+       "decode_tps": 23.9,
+       "decode_tps_source": "engine",
+       "prompt_ms": 49075.8,
+       "decode_ms": 10699.0,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 62.761,
+       "kind": "restored_partial"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 0.385,
+       "total_s": 9.487,
+       "prompt_tokens": 255742,
+       "reused_tokens": 255735,
+       "read_tokens": 7,
+       "generated_tokens": 256,
+       "prompt_tps": 24.3,
+       "prompt_tps_source": "engine",
+       "decode_tps": 32.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 287.7,
+       "decode_ms": 7886.2,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 62.761,
+       "kind": "cached"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 53,
+       "parked": 4,
+       "bytes": 947706136,
+       "evictions": 80
+      },
+      {
+       "kind": "restored",
+       "tokens": 255735,
+       "parked": 4,
+       "bytes": 4855299136,
+       "evictions": 0
+      },
+      {
+       "kind": "parked",
+       "tokens": 255743,
+       "parked": 4,
+       "bytes": 5450523056,
+       "evictions": 81
+      },
+      {
+       "kind": "parked",
+       "tokens": 255693,
+       "parked": 1,
+       "bytes": 4735046340,
+       "evictions": 85
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pair_note": ""
+  },
+  "full-window": {
+   "target_tokens": 523976,
+   "avail_gib": 3.4,
+   "summary": {
+    "fresh_prompt_tps": {
+     "median": 4769.7,
+     "min": 4747.2,
+     "max": 4828.5,
+     "n": 3
+    },
+    "fresh_decode_tps": {
+     "median": 25.8,
+     "min": 21.2,
+     "max": 39.8,
+     "n": 3
+    },
+    "fresh_ttft_s": {
+     "median": 110.382,
+     "min": 108.374,
+     "max": 152.266,
+     "n": 3
+    },
+    "fresh_prompt_tokens": {
+     "median": 511045,
+     "min": 510839,
+     "max": 511116,
+     "n": 3
+    },
+    "fresh_reused": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    },
+    "fresh_generated": {
+     "median": 256,
+     "min": 256,
+     "max": 256,
+     "n": 3
+    },
+    "fresh_drafts_accepted": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    },
+    "cached_prompt_tps": null,
+    "cached_decode_tps": null,
+    "cached_ttft_s": null,
+    "cached_prompt_tokens": null,
+    "cached_reused": null,
+    "cached_n": 0,
+    "resend_kinds": [
+     "reread",
+     "reread",
+     "reread"
+    ],
+    "pair_prompt_tps": {
+     "median": 4611.3,
+     "min": 4480.6,
+     "max": 4742.0,
+     "n": 2
+    },
+    "pair_decode_tps": {
+     "median": 24.3,
+     "min": 22.1,
+     "max": 26.5,
+     "n": 2
+    },
+    "pair_ttft_s": {
+     "median": 172.063,
+     "min": 116.704,
+     "max": 227.422,
+     "n": 2
+    },
+    "pair_wall_s": {
+     "median": 241.516,
+     "min": 241.516,
+     "max": 241.516,
+     "n": 1
+    },
+    "pair_overlap": [
+     "prefill looks serial; decode did not overlap",
+     null
+    ],
+    "pair_prompt_tokens": {
+     "median": 510925.5,
+     "min": 510890,
+     "max": 510961,
+     "n": 2
+    },
+    "pair_reused": {
+     "median": 0.0,
+     "min": 0,
+     "max": 0,
+     "n": 2
+    },
+    "pair_generated": {
+     "median": 256.0,
+     "min": 256,
+     "max": 256,
+     "n": 2
+    },
+    "cached_pair_prompt_tps": null,
+    "cached_pair_decode_tps": null,
+    "cached_pair_ttft_s": null,
+    "cached_pair_prompt_tokens": null,
+    "cached_pair_reused": null,
+    "cached_pair_generated": null,
+    "cached_pair_n": 0,
+    "cached_pair_kinds": [
+     "reread",
+     "reread"
+    ],
+    "cached_pair_overlap": [
+     "prefill looks serial; decode did not overlap"
+    ],
+    "cached_pair_note": ""
+   },
+   "fresh": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 108.374,
+     "total_s": 117.57,
+     "prompt_tokens": 511045,
+     "reused_tokens": 0,
+     "read_tokens": 511045,
+     "generated_tokens": 256,
+     "prompt_tps": 4828.5,
+     "prompt_tps_source": "engine",
+     "decode_tps": 39.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 105839.3,
+     "decode_ms": 6432.2,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 0,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 264169,
+       "parked": 1,
+       "bytes": 4151451148,
+       "evictions": 103
+      },
+      {
+       "kind": "parked",
+       "tokens": 264418,
+       "parked": 1,
+       "bytes": 4155237616,
+       "evictions": 104
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 110.382,
+     "total_s": 128.505,
+     "prompt_tokens": 511116,
+     "reused_tokens": 0,
+     "read_tokens": 511116,
+     "generated_tokens": 256,
+     "prompt_tps": 4747.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 25.8,
+     "decode_tps_source": "engine",
+     "prompt_ms": 107667.9,
+     "decode_ms": 9913.9,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 1,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 265322,
+       "parked": 1,
+       "bytes": 4288164564,
+       "evictions": 110
+      },
+      {
+       "kind": "parked",
+       "tokens": 265544,
+       "parked": 1,
+       "bytes": 4172405000,
+       "evictions": 111
+      },
+      {
+       "kind": "parked",
+       "tokens": 265887,
+       "parked": 1,
+       "bytes": 4296777980,
+       "evictions": 112
+      }
+     ],
+     "kind": "fresh"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 152.266,
+     "total_s": 166.87,
+     "prompt_tokens": 510839,
+     "reused_tokens": 0,
+     "read_tokens": 510839,
+     "generated_tokens": 256,
+     "prompt_tps": 4769.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 21.2,
+     "decode_tps_source": "engine",
+     "prompt_ms": 107100.2,
+     "decode_ms": 12101.8,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "park": "parked",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 269195,
+       "parked": 1,
+       "bytes": 4941577196,
+       "evictions": 123
+      },
+      {
+       "kind": "parked",
+       "tokens": 510839,
+       "parked": 1,
+       "bytes": 8635805396,
+       "evictions": 124
+      }
+     ],
+     "kind": "fresh"
+    }
+   ],
+   "resend": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 109.964,
+     "total_s": 118.82,
+     "prompt_tokens": 511045,
+     "reused_tokens": 0,
+     "read_tokens": 511045,
+     "generated_tokens": 256,
+     "prompt_tps": 4755.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 41.5,
+     "decode_tps_source": "engine",
+     "prompt_ms": 107460.4,
+     "decode_ms": 6166.0,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 0,
+     "kind": "reread",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 264955,
+       "parked": 3,
+       "bytes": 4637026924,
+       "evictions": 107
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 113.911,
+     "total_s": 122.841,
+     "prompt_tokens": 511116,
+     "reused_tokens": 0,
+     "read_tokens": 511116,
+     "generated_tokens": 256,
+     "prompt_tps": 4593.8,
+     "prompt_tps_source": "engine",
+     "decode_tps": 40.1,
+     "decode_tps_source": "engine",
+     "prompt_ms": 111261.3,
+     "decode_ms": 6392.0,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 1,
+     "kind": "reread",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 266823,
+       "parked": 3,
+       "bytes": 4665547548,
+       "evictions": 115
+      }
+     ],
+     "park": "parked"
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 114.834,
+     "total_s": 127.2,
+     "prompt_tokens": 510839,
+     "reused_tokens": 0,
+     "read_tokens": 510839,
+     "generated_tokens": 256,
+     "prompt_tps": 4554.8,
+     "prompt_tps_source": "engine",
+     "decode_tps": 26.6,
+     "decode_tps_source": "engine",
+     "prompt_ms": 112153.5,
+     "decode_ms": 9639.2,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "kind": "reread",
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 270234,
+       "parked": 4,
+       "bytes": 8961556116,
+       "evictions": 126
+      },
+      {
+       "kind": "parked",
+       "tokens": 510839,
+       "parked": 1,
+       "bytes": 8635805396,
+       "evictions": 130
+      }
+     ],
+     "park": "parked"
+    }
+   ],
+   "pairs": [
+    {
+     "run": 0,
+     "wall_s": 241.516,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 227.422,
+       "total_s": 241.504,
+       "prompt_tokens": 510890,
+       "reused_tokens": 0,
+       "read_tokens": 510890,
+       "generated_tokens": 256,
+       "prompt_tps": 4742.0,
+       "prompt_tps_source": "engine",
+       "decode_tps": 22.1,
+       "decode_tps_source": "engine",
+       "prompt_ms": 107737.8,
+       "decode_ms": 11576.6,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 241.516,
+       "kind": "fresh"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 116.704,
+       "total_s": 129.162,
+       "prompt_tokens": 510961,
+       "reused_tokens": 0,
+       "read_tokens": 510961,
+       "generated_tokens": 256,
+       "prompt_tps": 4480.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 26.5,
+       "decode_tps_source": "engine",
+       "prompt_ms": 114037.3,
+       "decode_ms": 9643.2,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 241.516,
+       "kind": "fresh"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 271579,
+       "parked": 1,
+       "bytes": 4383706204,
+       "evictions": 131
+      },
+      {
+       "kind": "parked",
+       "tokens": 271782,
+       "parked": 2,
+       "bytes": 8651377372,
+       "evictions": 131
+      },
+      {
+       "kind": "parked",
+       "tokens": 510961,
+       "parked": 1,
+       "bytes": 8637699108,
+       "evictions": 133
+      },
+      {
+       "kind": "parked",
+       "tokens": 510890,
+       "parked": 1,
+       "bytes": 8636599532,
+       "evictions": 134
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    },
+    {
+     "run": 1,
+     "error": "skipped: available RAM under 4 GiB"
+    }
+   ],
+   "cached_pairs": [
+    {
+     "wall_s": 245.017,
+     "requests": [
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 232.897,
+       "total_s": 245.004,
+       "prompt_tokens": 511045,
+       "reused_tokens": 0,
+       "read_tokens": 511045,
+       "generated_tokens": 256,
+       "prompt_tps": 4811.6,
+       "prompt_tps_source": "engine",
+       "decode_tps": 25.9,
+       "decode_tps_source": "engine",
+       "prompt_ms": 106210.7,
+       "decode_ms": 9869.9,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 245.017,
+       "kind": "reread"
+      },
+      {
+       "ok": true,
+       "err": null,
+       "ttft_s": 123.707,
+       "total_s": 134.826,
+       "prompt_tokens": 511116,
+       "reused_tokens": 0,
+       "read_tokens": 511116,
+       "generated_tokens": 256,
+       "prompt_tps": 4218.3,
+       "prompt_tps_source": "engine",
+       "decode_tps": 30.8,
+       "decode_tps_source": "engine",
+       "prompt_ms": 121166.2,
+       "decode_ms": 8302.7,
+       "drafts_offered": 0,
+       "drafts_accepted": 0,
+       "pair_wall_s": 245.017,
+       "kind": "reread"
+      }
+     ],
+     "cache_events": [
+      {
+       "kind": "parked",
+       "tokens": 267753,
+       "parked": 3,
+       "bytes": 4679789636,
+       "evictions": 120
+      }
+     ],
+     "overlap": "prefill looks serial; decode did not overlap"
+    }
+   ],
+   "cached_pair_note": ""
+  }
+ }
+}
