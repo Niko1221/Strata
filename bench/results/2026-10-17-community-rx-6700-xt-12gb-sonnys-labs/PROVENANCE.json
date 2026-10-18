@@ -1,0 +1,205 @@
+{
+  "strata_version": "0.1.45",
+  "source_commit": "477ac13cbe8e582c20484871ce459d20d82df09d",
+  "engine_sha256": "661d6e28a2552bad8ff29ad980771e3a69d8f4cd2a8fb3ef9b67446f9a22b0ca",
+  "inference_image": "sha256:28e04eca47e22b9bee47a6a2ec4260bfa25fce525d089b5151e07952cdad3f23",
+  "backend": "HIP gfx1031",
+  "q6k_experts_build_enabled": true,
+  "rocm": "7.13.0a20260515 (TheRock gfx103X-all)",
+  "hardware": {
+    "gpu": "Radeon RX 6700 XT",
+    "vram_capacity_gb": 12,
+    "cpu": "Ryzen 5 3600",
+    "cpu_cores": 6,
+    "cpu_threads": 12,
+    "ram_installed_gb": 32,
+    "ram": "2 x 16 GB Corsair CMK32GX4M2E3200C16 DDR4-3200",
+    "ram_configured_mt_s": 3200,
+    "motherboard": "ASUS TUF GAMING X570-PLUS (WI-FI)",
+    "ssd": "Intel SSDPEKNW010T8 1 TB NVMe",
+    "host_os": "Proxmox VE 9.2.21 / Debian 13, Linux 7.0.14-24-pve",
+    "environment": "LXC guest with isolated Docker inference and scoring",
+    "guest_ram_limit_gib": 28,
+    "inference_ram_limit_gib": 26,
+    "inference_cpu_limit": 9,
+    "benchmark_disk_gib": 400
+  },
+  "models": [
+    {
+      "id": "coder-iq1_m",
+      "label": "Flash-Next Coder IQ1_M",
+      "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
+      "revision": "5348543e0147355ac9cbcb031184a3546350988e",
+      "requested_mtp": 4,
+      "weights": [
+        {
+          "filename": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+          "bytes": 29608446496,
+          "sha256": "e11083ba855e7666b48ea3f2db6a9c3a20c18751a012cc24f948de91b7087fad"
+        },
+        {
+          "filename": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+          "bytes": 28800138432,
+          "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+        }
+      ]
+    },
+    {
+      "id": "qwen36-ud-q4_k_xl",
+      "label": "Qwen3.6 UD-Q4_K_XL",
+      "repository": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+      "requested_mtp": 2,
+      "weights": [
+        {
+          "filename": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+          "bytes": 22853663008,
+          "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"
+        }
+      ]
+    },
+    {
+      "id": "qwen36-ud-q3_k_m-zero-mtp",
+      "label": "Qwen3.6 UD-Q3_K_M (no MTP)",
+      "repository": "unsloth/Qwen3.6-35B-A3B-GGUF",
+      "revision": "a483e9e6cbd595906af30beda3187c2663a1118c",
+      "requested_mtp": 0,
+      "weights": [
+        {
+          "filename": "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf",
+          "size": 16600710112,
+          "sha256": "1b715841683f960bd9a49f008181bd910ee169b78d4cf465b6fde7f4d929ff99"
+        }
+      ],
+      "metadata_compatibility": {
+        "change": {
+          "qwen35moe.nextn_predict_layers": 0
+        },
+        "source_sha256": "1b715841683f960bd9a49f008181bd910ee169b78d4cf465b6fde7f4d929ff99",
+        "compatibility_sha256": "9623429e1b7f55dc741843c3334c1773db9d351a47dd04f55b2ec57932dde9ab",
+        "tensor_data_sha256": "d2651072d67f55aa8f6f7e296263745d39db59426379eb80581e6dd41242da4d",
+        "tensor_data_byte_identical": true,
+        "original_data_offset": 10990048,
+        "compatibility_data_offset": 10990112,
+        "all_other_metadata_equal": true,
+        "tensor_descriptors_equal": true
+      },
+      "runtime_weight_sha256": "9623429e1b7f55dc741843c3334c1773db9d351a47dd04f55b2ec57932dde9ab"
+    },
+    {
+      "id": "qwen36-ud-q4_k_m-mtp",
+      "label": "Qwen3.6 UD-Q4_K_M (MTP file)",
+      "repository": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+      "requested_mtp": 2,
+      "weights": [
+        {
+          "filename": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+          "size": 22663387424,
+          "sha256": "0b21525e972670ed59e1812e170b27c26355381f0656ecc4e25617ece7dac58b"
+        }
+      ]
+    },
+    {
+      "id": "qwen36-ud-q3_k_xl-zero-mtp",
+      "label": "Qwen3.6 UD-Q3_K_XL (no MTP)",
+      "repository": "unsloth/Qwen3.6-35B-A3B-GGUF",
+      "revision": "a483e9e6cbd595906af30beda3187c2663a1118c",
+      "requested_mtp": 0,
+      "weights": [
+        {
+          "filename": "Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf",
+          "size": 16845511648,
+          "sha256": "a832b9689925f1bd335bbe985cdfb06c36bf2cf268f4f8f6eceafa3ceb515617"
+        }
+      ],
+      "metadata_compatibility": {
+        "change": {
+          "qwen35moe.nextn_predict_layers": 0
+        },
+        "source_sha256": "a832b9689925f1bd335bbe985cdfb06c36bf2cf268f4f8f6eceafa3ceb515617",
+        "compatibility_sha256": "79f770b6d56d57d5373520a558874fc4fb3bb442a1bc07c4fc3e7823f9f95455",
+        "tensor_data_sha256": "f79afe0e9ab26272beb34202f018d94c65969f6a3f7fb1ab0879eb02ef254fe9",
+        "tensor_data_byte_identical": true,
+        "original_data_offset": 10990048,
+        "compatibility_data_offset": 10990112,
+        "all_other_metadata_equal": true,
+        "tensor_descriptors_equal": true
+      },
+      "runtime_weight_sha256": "79f770b6d56d57d5373520a558874fc4fb3bb442a1bc07c4fc3e7823f9f95455"
+    }
+  ],
+  "note": "Separate provenance supplement; original official README.md and results.json files are unmodified. The tool reports generic AMD Radeon and no git checkout inside Docker; exact hardware and source pins are provided here. No scorer/custom-suite measurements are included.",
+  "primary_pack_file_hashes": [
+    {
+      "relative_path": "coder-iq1_m/conversions.json",
+      "bytes": 306,
+      "sha256": "c82cdadb5cc2b0678d2cccad07430181e031fc05022c9cf31cec997a8cd35c3c"
+    },
+    {
+      "relative_path": "coder-iq1_m/dense.bin",
+      "bytes": 1475120640,
+      "sha256": "99853263806e25450074fc9945f1e955b175bea05aa171ceeb6b5837bf6a1d9d"
+    },
+    {
+      "relative_path": "coder-iq1_m/experts.bin",
+      "bytes": 25146163200,
+      "sha256": "e72025811e52f0a7fa24a5e0ce4b8d5a8ca91865ae4b8389c6292de8338ca983"
+    },
+    {
+      "relative_path": "coder-iq1_m/experts.bin.src.json",
+      "bytes": 373,
+      "sha256": "22b9e0976d367eb3078037145c66014a9d01d822fec8fedec39f32c8dcac71fe"
+    },
+    {
+      "relative_path": "coder-iq1_m/index.txt",
+      "bytes": 93633,
+      "sha256": "2cb3352786bcae81ea4d933eee6b2d5db45774069320c924a6dea48eb65a3cd3"
+    },
+    {
+      "relative_path": "coder-iq1_m/native_experts.txt",
+      "bytes": 3269,
+      "sha256": "9ace1b92e1fe12595de469409e69dd52c8d5418c7981c405d9a51aa9d574dd3b"
+    },
+    {
+      "relative_path": "coder-iq1_m/tokenizer/merges.txt",
+      "bytes": 3353258,
+      "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332"
+    },
+    {
+      "relative_path": "coder-iq1_m/tokenizer/token_type.json",
+      "bytes": 744960,
+      "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+    },
+    {
+      "relative_path": "coder-iq1_m/tokenizer/tokenizer.json",
+      "bytes": 541,
+      "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf"
+    },
+    {
+      "relative_path": "coder-iq1_m/tokenizer/vocab.json",
+      "bytes": 5737005,
+      "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+    },
+    {
+      "relative_path": "qwen36-ud-q4_k_xl/tokenizer/merges.txt",
+      "bytes": 3353258,
+      "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332"
+    },
+    {
+      "relative_path": "qwen36-ud-q4_k_xl/tokenizer/token_type.json",
+      "bytes": 744960,
+      "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b"
+    },
+    {
+      "relative_path": "qwen36-ud-q4_k_xl/tokenizer/tokenizer.json",
+      "bytes": 541,
+      "sha256": "2297d930613fcea0cbade386046ba7328b3aea97a9e3e4ac4154eb7a6d617665"
+    },
+    {
+      "relative_path": "qwen36-ud-q4_k_xl/tokenizer/vocab.json",
+      "bytes": 5737005,
+      "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4"
+    }
+  ]
+}
