@@ -319,3 +319,32 @@ and compare against the plain P2P route - the banner line tells which route
 is live. The non-compact twin is NOT covered (it always copies its rows
 back over P2P as well, so the sums would save nothing).
 
+## Follow-up: would the GENERATION path want P2P? Measured: no
+
+`STRATA_PEER_NO_P2P=1` is surgical — `p2p()` is read in exactly two places,
+both in this file — so the generation peer tier (`peer_experts.cpp`,
+`STRATA_PEER_DIRECT`, on by default) never uses CUDA peer access at all: its
+input arrives from a pinned host ring (`cudaMemcpyAsync` H2D) and its result
+rows are scattered zero-copy straight back into a pinned host block. Whether
+a hypothetical P2P twin (input read from GPU 0's VRAM, output written to
+GPU 0's VRAM) would beat it was measured with a micro-bench at the real
+geometry (H = 2560 → 10 KB rows; mean over 300 iterations after 30 warm,
+engine running untouched on the same box; source `tools/gen-p2p-bench.cu`,
+outside the repo):
+
+| rows/step | direct host ring (live) | hypothetical P2P route | P2P slower by |
+|---|---|---|---|
+| 1   (10 KB)  | 12.0 µs | 12.7 µs  | already behind at one row |
+| 8   (80 KB)  | 18.3 µs | 30.2 µs  | 1.7× |
+| 32  (320 KB) | 38.1 µs | 91.2 µs  | 2.4× |
+| 80  (800 KB) | 75.7 µs | 212.8 µs | 2.8× |
+| 256 (2.6 MB) | 218 µs  | 659 µs   | 3.0× |
+
+Same physics as the route table above, in miniature: pinned-host DMA runs at
+~14 GB/s with both directions in flight, the BAR1 bridge at 5.5 GB/s. A
+companion 8 MB `cudaMemcpyPeer`-vs-host-staging check under load (median 5.5
+vs 14.0 GB/s) shows the gap is size-independent — the microsecond P2P latency
+edge never pays for the bandwidth loss on this box, at 10 KB or at 84 MB.
+The direct host ring is therefore not only the portable generation path
+(#2666), it is also the fast one here.
+
