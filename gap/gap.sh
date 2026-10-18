@@ -1,7 +1,8 @@
 #!/bin/bash
-# gap.sh <arms-file>: stops server, runs each measurement arm, ALWAYS restores server (trap on any exit).
+# gap.sh <arms-file>: stops the local serve process (binary name in untracked gap/.server), runs each
+# measurement arm, ALWAYS restores it (trap on any exit).
 # arm line: name|binary|extra-env|tokens-file|max-new|ctx|extra-args   (# lines ignored)
-# The window must stay short (<~10 min): server serves this agent's own model while stopped = no inference.
+# The window must stay short (<~10 min): that server hosts this agent's own model while stopped = no inference.
 set -u
 FORK=/Users/pc/src/Strata-fork
 M=/Users/pc/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS
@@ -10,6 +11,9 @@ G2=$M/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf
 PACK=/Users/pc/src/Strata-data/packs/iq3_xxs
 MTP=/Users/pc/src/Strata-data/mtp/rt
 ARMS=${1:?usage: gap.sh arms-file}
+SRV=$(cat "$FORK/gap/.server" 2>/dev/null) || true
+[[ -z ${SRV:-} ]] && { echo "put the local serve binary name in $FORK/gap/.server" >&2; exit 1; }
+SRV_BIN=$(command -v "$SRV") || { echo "serve binary '$SRV' not on PATH" >&2; exit 1; }
 OUT=$FORK/gap/results/$(date +%m%d-%H%M); mkdir -p "$OUT"
 SUM=$OUT/summary.txt
 RESTORED=0
@@ -18,12 +22,12 @@ trap 'restore' EXIT INT TERM
 stop_server() {
   [[ ${GAP_NO_SERVER:-0} == 1 ]] && { echo "server left alone (GAP_NO_SERVER=1)"; return; }
   local pid i
-  pid=$(pgrep -x server | head -1) || true
+  pid=$(pgrep -x "$SRV" | head -1) || true
   [[ -z $pid ]] && { echo "server not running at start"; return; }
-  ps -o command= -p "$pid" | sed 's|^/opt/homebrew/bin/server ||; s|^server ||' > "$OUT/server-argv.txt"
+  ps -o command= -p "$pid" | sed "s|^$SRV_BIN ||; s|^$SRV ||" > "$OUT/server-argv.txt"
   kill "$pid"
-  for i in {1..30}; do pgrep -x server >/dev/null || break; sleep 1; done
-  pgrep -x server >/dev/null && pkill -9 -x server
+  for i in {1..30}; do pgrep -x "$SRV" >/dev/null || break; sleep 1; done
+  pgrep -x "$SRV" >/dev/null && pkill -9 -x "$SRV"
   echo "server stopped $(date +%T)"
 }
 
@@ -31,8 +35,8 @@ restore() {
   local i
   [[ $RESTORED == 1 ]] && return
   [[ ${GAP_NO_SERVER:-0} == 1 ]] && { RESTORED=1; return; }
-  if ! pgrep -x server >/dev/null; then
-    nohup /opt/homebrew/bin/server $(cat "$OUT/server-argv.txt") >"$OUT/server-restore.log" 2>&1 &
+  if ! pgrep -x "$SRV" >/dev/null; then
+    nohup "$SRV_BIN" $(cat "$OUT/server-argv.txt") >"$OUT/server-restore.log" 2>&1 &
   fi
   for i in {1..150}; do
     sleep 2
