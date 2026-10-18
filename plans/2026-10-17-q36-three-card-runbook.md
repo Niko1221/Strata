@@ -238,3 +238,52 @@ true，而 `open_helpers` 不要求 hybrid，所以 helper 能开。
 真正的原因是这条路径本来就有两个捕获期非法调用（`moe_helpers` 自己的流同步，以及
 `RemoteExperts::finish` 对助手流同步），所以它永远不会被图捕获——与本开关无关。
 代码注释已按正确理由改写，否则将来有人加一次真同步就会踩坑。
+
+---
+
+## 2026-10-18 跨层排队方案（wf_1a28aa213c7d）与决定性新测量
+
+### 先看最重要的发现：瓶颈另有其人
+
+Design C 的审计在远程实测发现（我已用三次交错长跑复核）：
+
+- `RemoteExperts` 的 **zero-copy 默认开启**（`src/core/remote_experts.cpp:236-239`）。
+- 但本机 `nvidia-smi topo -p2p r` 显示 P100↔P104 全部 NS/CNS（无 P2P）、`topo -m` 显示 PHB。
+  无 P2P 时，让助手卡通过 PCIe 直接读写主机固定内存比"先拷到显存再算"更慢。
+- **`STRATA_REMOTE_ZEROCOPY=0`**（已有开关，非新代码）：decode 从 25.1-25.3 → **36.1-37.8 tok/s（约 +48%）**。
+  再叠加 `STRATA_Q36_HELPER_ASYNC=1` 达 **40.7 tok/s**。输出与基准逐位相同。
+
+也就是说 56 tok/s 上限的大头可以不写任何新代码就拿到。原计划"池化 helper_out/h_x_ 动所有权"
+排在第二位；不先关 ZC 就去做环形槽，等 optimize 了错的东西。
+
+### 单槽证据（为什么跨层排队需要动所有权）
+
+`begin(L+1)` 在 `finish(L)` 之前调用时的失效链（首个受害者起）：
+1. `h_x_`（`remote_experts.cpp:314`）被 L+1 的 memcpy 覆盖；zero-copy 下 L 的量化核可能还没读
+   `z_x_`（= `h_x_`），L 的 q8 激活就成了 L 和 L+1 行的混合。
+2. `original_row_`（:279）在 `begin()` 顶部清空；`finish(L)` 的散射（:406-407）拿空表，L 的行
+   没人写。
+3. `finish()` 的 `cudaStreamSynchronize(stream_)`（:402）只保证"本窗口"的消费完成。
+
+引擎侧 `helper_out`、`helper_mask`/`d_helper_mask` 也是全局单份，比 per-helper 更紧。
+
+### 三个设计与裁定
+
+- **A 池化暂存 + 设备侧合并**（`STRATA_Q36_HELPER_RING`）：只做环形没用，散射必须搬进设备合并；
+  摸到 `RemoteExperts`（与 Flash-Next 共享），风险最大，约 600-900 行。**备用。**
+- **B 引擎层重叠**：审计证明 L+1 的 `ids`/激活在 L 的 router 之后才存在，"提前取"没有合法时点；
+  逐 parity 切分助手卡只改负载分布不改每层等待。**上限噪声级，弃。**
+- **C 去掉主机往返**：第一个切片零代码（ZC=0 + async 叠加 = 40.7 tok/s，已实测）；
+  设计本体（设备侧分组、新 begin 重载）排在 ZC 关闭复测之后。**胜出。**
+
+### 实施阶段（裁定给出，含止损线）
+
+- **Phase 0（已完成）**：ZC=0 三次交错复测 36.1-37.8，拓扑 NS/CNS，输出逐位相同。
+- **Phase 1**：把 helper 路径的推荐环境写进启动输出（或 runbook），加一条
+  `STRATA_REMOTE_ZEROCOPY=0` 的 stderr 提示行；**不改 `remote_experts.cpp` 默认值**——
+  该文件与 Flash-Next 共享，改默认会动 Flash-Next 行为，禁改。
+- **Phase 2**：`--bench-tg 128` 稳态确认 ZC=0（±async）在长跑下不回吐（≥30 tok/s）。
+- **Phase 3（门槛后）**：若 Phase 2 后 `ms_wait`（ZC=0 + async）< 每助手 3 ms/token，则放弃
+  A 的环形槽——总助手主机时间 < 5 ms/token，环形最多再买 ~10%，不值。
+- **不做清单**：不动 `remote_experts.cpp` 默认值；不做没有设备侧合并的环形；
+  不让合并核读映射内存（无 P2P 时读主机内存是本机慢的根源）；不假设 P2P 可用。
