@@ -413,3 +413,92 @@ IQ4_XS，同样没测过。为一个不存在的质量缺陷建一个三处必�
 2. ~~**int8-KV 单独走一轮 Explain/Fix**~~ ——已测，2026-10-18，见上：在上游的不可区分区间内，
    不修、不建 rotation。验收标准不变（不要挂到 helper 路径上）。
 3. 环形槽（Design A）：止损线已过 Phase 0，暂缓。
+
+## 2026-10-18 helper 分层按"设备序号"而不是"启用设备中的序号"切分（已修，未在本机构建验证）
+
+### 错在哪
+
+`open_helpers()`（`q36_engine.cu`，函数名搜；行号会随同文件其它改动浮动，下同）把主层分给启用的 helper 卡。它拿**设备序号** `r`
+（`want[]` 的下标 0/1/2）当**启用设备中的位置**用（旧代码两处重复，HEAD 版行号：`HEAD:src/qwen35/q36_engine.cu:4380-4381` 开 tier、`HEAD:...:4424-4425`
+建 `helper_of_layer`）：
+
+```
+per_device = n_layers / devices
+lo = r * per_device
+hi = (r + 1 == devices) ? n_layers : lo + per_device
+```
+
+只有"从 device1 起连续开"的组合才恰好正确。`n_layers = 40` 的实际结果（`.tmp_old_behavior.py`
+按 `remote_experts.cpp:150-155`/`:168-184` 的过滤规则逐条模拟）：
+
+| 启用的卡 | devices | 旧 stripe | 结果 |
+|---|---:|---|---|
+| 只有 device1 | 1 | d1 `[0,40)` | 正确 |
+| **只有 device2** | 1 | d2 `[40,80)` | **空** → `open()` 拒绝，启动即退出 |
+| **只有 device3** | 1 | d3 `[80,120)` | **空** → 同上 |
+| d1 + d2 | 2 | `[0,20)` `[20,40)` | 正确（一直实测的就是这组） |
+| **d1 + d3** | 2 | `[0,20)` `[40,60)` | d3 全部越界 → `open()` 拒绝，启动即退出 |
+| **d2 + d3** | 2 | `[20,40)` `[40,60)` | 同上（d2 少了 `[0,20)`） |
+| 三张全开 | 3 | `[0,13)` `[13,26)` `[26,40)` | 正确 |
+
+### n_layers = 40 上是响亮失败
+
+`ranked` 为空或全部被 `pair.first >= layers`（`remote_experts.cpp:168`）滤光，都会让
+`selected` 为空，`RemoteExperts::open()` 直接报错返回（`:151` 的 `ranked.empty()`，`:180-184`
+的 `selected.empty()`），`open_helpers` 随即 `return false`。所以本模型上四种错误组合**全部是
+启动即退出**，不会算出错的 token。`--expert-cache-device2 auto` 单独用就是这么死的。
+
+### 但层数不能被 devices 整除时会静默越界（本轮新发现，同一段算术）
+
+同样是这份算术，`helper_of_layer` 的构建是无检查的下标写：
+`E.helper_of_layer[(size_t) l] = r`（`HEAD:src/qwen35/q36_engine.cu:4426`），而 `l` 可以到 `hi - 1 > n_layers - 1`。
+open 的那一步只过滤 `ranked`，不裁剪 `hi`，所以只要最后一个 stripe **跨过末尾**、且头部还有
+合法层，`open()` 就会成功，然后越界写 `std::vector<int8_t>`（堆破坏），同时中间那截层无人持有
+（分层覆盖出现空洞，主卡把它们当本地算——正确但慢），但 stderr 一句不给。
+
+模拟结论（`n_layers` 不被 devices 整除时出现）：
+
+- `n=41`、d1+d3：d3 的 `[40,60)` 里只有 layer 40 合法 → `open()` 成功 → 往 size=41 的
+  vector 写 layer 41..59（越界），且 layer 20..39 无 helper。
+- `n=39`、d1+d3：`[38,57)` → layer 38 合法 → 同样越界 + 缺 `[19,38)`。
+- `n=48`、d1+d3：`[48,72)` → 起点正好等于层数 → 又是响亮失败。
+
+即"响亮失败"是 `n_layers % devices == 0` 时的运气，不是设计。本模型 40 层（40/1、40/2、40/3
+要么整除要么越界起点恰好落在末尾），所以从来没踩到越界那一条。新代码把这段整个删掉了。
+
+### 已实测的那组没受影响
+
+三卡实测一直是 device1 + device2（`[0,20)` / `[20,40)`），旧算术在这一组上恰好正确。
+所以之前所有 helper 测量（ZC=0 的 36-37 tok/s、`STRATA_Q36_HELPER_ASYNC` 的 40.7 tok/s、
+逐位一致的输出比对）**全部有效，不需要重测**。
+
+### 改法
+
+两处重复的 `per_device` / `lo` / `hi` 合并成一张表：`helper_layer_stripes(want, n_layers)`
+（在 `q36_engine.cu` 里紧邻 `HelperStripe` 的那个函数，行号随同文件其它改动浮动）返回 `HelperStripe{ r, device, lo, hi }`，**按启用设备中的位置**切分，
+`r` 原样保留（`helper_of_layer` 存的是 `r`，`moe_helpers` 拿它直接索引 `E.helpers[r]`）。
+两个调用点都只遍历这张表（`for (const HelperStripe& s : stripes)` 的两处：开 tier、建映射），算术没有第二份，也就不可能再分歧。
+
+不变量（`.tmp_stripe_check.py` 逐条断言，并对全部启用掩码 × n_layers ∈ {1,2,3,4,5,7,40,41,48}
+穷举）：启用设备的 stripe 连续、不重叠、恰好覆盖 `[0, n_layers)`、且没有一个为空。
+
+### 层数少于 helper 数时：后面的卡闲着，不报错
+
+`n = min(n_layers, enabled)`：只开前 `n` 张卡、每张恰好一层，多余的卡**不 open**、
+`helper_count` 也不加，那轮空转（stderr 打一行说明）。理由：空 stripe 会被 `open()` 拒成启动
+失败，而“多传一个 flag 就起不来”比“那张卡这轮不干活”更糟。层数 ≥ helper 数时（正常情形，
+含本模型的 40/3 = 13/13/14）走不到这条分支：`stripes.size()` 恰好等于 `devices`，那行 stderr 不打印。
+
+### 还没验的（下一阶段必须跑）
+
+本轮**没有构建**（远程机被另一条测量占用，禁碰）。下一阶段必须验证：
+
+1. `nvcc` 编译通过。新增 `struct HelperStripe` 和 `helper_layer_stripes()`；用到的 `<array>`
+   `<vector>` `<algorithm>`（`std::min`）都已在 `q36_engine.cu:41-64` 的 include 里。
+2. 只开 device2：`--expert-cache-device2 auto` 单独能起来（以前启动即退出），stderr 出
+   `helper CUDA2: ... experts of layers [0, 40)`。
+3. d1 + d2 的 stderr 与改动前**逐字节相同**（`[0,20)` / `[20,40)` 不变）。
+4. 无 helper flag 的默认路径 stderr 逐字节相同：`open_helpers` 里未动的那行
+   `if (devices == 0) return true;` 就返回了，新代码全部在它之后。
+5. 只开 device3（`--expert-cache-device3 auto`）同样能起来，`[0, 40)`。
+6. 正确性：helper 组与单卡输出逐位一致（沿用既有验收标准）。

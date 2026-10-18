@@ -4317,6 +4317,52 @@ int serve(Engine& E) {
     return sv.run();
 }
 
+/// One helper's share of the main layers.
+///
+/// `r` is the helper's own index in `helpers[]` / `want[]` (0..2, i.e. CUDA r+1) and is what the rest of the
+/// engine keys on - `helper_of_layer` stores it and `moe_helpers` indexes `helpers[r]` with it.  `lo`/`hi` are
+/// this helper's half-open layer interval.
+struct HelperStripe {
+    int r = -1;
+    int device = 0;
+    int64_t lo = 0, hi = 0;
+};
+
+/// The stripes for every enabled helper, in device order.
+///
+/// The split is by each device's POSITION AMONG THE ENABLED DEVICES, not by its own index.  Using the index
+/// directly is the bug this replaced: with only --expert-cache-device2 set, the index is 1, so a 40-layer model
+/// would hand that single helper [40, 80) - an empty window that RemoteExperts::open() rejects, aborting the run
+/// at startup.  Only configurations enabled contiguously from device1 came out right, which is exactly the one
+/// (device1 + device2) that had been measured.
+///
+/// The stripes are contiguous, disjoint, cover every layer exactly once, and none is empty: with more helpers
+/// than layers only the first `n_layers` (in device order) are used and the caller reports the rest as idle,
+/// which is better than refusing to start because a third flag was passed.  The last stripe takes the
+/// remainder, so layers not divisible by the device count still all get an owner.
+///
+/// ONE table, used by both call sites.  They used to derive the same bounds from two duplicated expressions,
+/// and a fix applied to only one of them would leave the cache occupancy disagreeing with the layer -> helper
+/// map - layers computed on a helper the map does not point at, or the reverse.
+inline std::vector<HelperStripe> helper_layer_stripes(const std::array<int, 3>& want, int64_t n_layers) {
+    std::vector<HelperStripe> out;
+    std::vector<int> enabled;
+    for (int r = 0; r < 3; ++r)
+        if (want[(size_t) r] > 0) enabled.push_back(r);
+    const int64_t n = std::min<int64_t>((int64_t) enabled.size(), std::max<int64_t>(0, n_layers));
+    if (n <= 0) return out;
+    const int64_t per = n_layers / n;
+    for (int64_t k = 0; k < n; ++k) {
+        HelperStripe s;
+        s.r = enabled[(size_t) k];
+        s.device = s.r + 1;
+        s.lo = k * per;
+        s.hi = (k + 1 == n) ? n_layers : s.lo + per;
+        out.push_back(s);
+    }
+    return out;
+}
+
 /// The helper expert tiers (--expert-cache-device1..3): publish this model's own per-layer expert geometry as the
 /// process-wide layout, then give each helper device a striped share of the layers' experts.
 ///
@@ -4372,7 +4418,15 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     // one tier per helper device, holding every layer's experts of its stripe
     E.helper_src.set(all, g.n_expert);
     std::vector<uint8_t> claimed((size_t) g.n_layers * (size_t) g.n_expert, 0);
-    const int64_t per_device = g.n_layers / devices;
+    // The layer stripes, built once and used by BOTH loops below: the per-device cache build here and the
+    // layer -> helper map further down.  Keyed by each device's POSITION AMONG THE ENABLED DEVICES, not by its
+    // own index: with --expert-cache-device2 alone the device index is 1, and using it directly would ask that
+    // helper for layers [40, 80) of a 40-layer model - an empty window, which RemoteExperts::open() rejects, so
+    // the run would abort at startup.  Only configurations enabled contiguously from device1 happened to work.
+    const std::vector<HelperStripe> stripes = helper_layer_stripes(want, g.n_layers);
+    if ((int64_t) stripes.size() < devices)   // more helpers than layers: the tail ones stay idle this run
+        std::fprintf(stderr, "strata-q36: %lld helper device(s) idle: %lld layers for %d helpers\n",
+                     (long long) (devices - (int64_t) stripes.size()), (long long) g.n_layers, devices);
     // a primary cache of zero slots: every (layer, expert) is "not on CUDA0", so each helper takes its own stripe.
     // This is deliberately NOT the primary's real cache, so RemoteExperts::open()'s `primary.slot_of(...) < 0`
     // test admits every ranked pair and a helper may hold an expert the primary also has a slot for.  Nothing
@@ -4380,11 +4434,9 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     // ever holds experts the primary has no slot for"; it cannot, with this empty cache.
     strata::core::ExpertCache empty_primary;
     if (!empty_primary.open(1, 1, 1, 4096, err)) { err = "helper: " + err; return false; }
-    for (int r = 0; r < 3; ++r) {
-        if (want[(size_t) r] <= 0) continue;
-        const int device = r + 1;
-        const int64_t lo = (int64_t) r * per_device;
-        const int64_t hi = (r + 1 == devices) ? g.n_layers : lo + per_device;
+    for (const HelperStripe& stripe : stripes) {
+        const int r = stripe.r, device = stripe.device;
+        const int64_t lo = stripe.lo, hi = stripe.hi;
         std::vector<std::pair<int32_t, int32_t>> ranked;
         ranked.reserve((size_t) std::max<int64_t>(0, hi - lo) * (size_t) g.n_expert);
         for (int64_t l = lo; l < hi; ++l)
@@ -4423,15 +4475,8 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     }
     // the layer -> helper map (the MTP block's layer, if any, stays local: its window is one draft step)
     E.helper_of_layer.assign((size_t) g.n_layers, -1);
-    {
-        const int64_t per = g.n_layers / devices;
-        for (int r = 0; r < 3; ++r) {
-            if (want[(size_t) r] <= 0) continue;
-            const int64_t lo = (int64_t) r * per;
-            const int64_t hi = (r + 1 == devices) ? g.n_layers : lo + per;
-            for (int64_t l = lo; l < hi; ++l) E.helper_of_layer[(size_t) l] = (int8_t) r;
-        }
-    }
+    for (const HelperStripe& stripe : stripes)
+        for (int64_t l = stripe.lo; l < stripe.hi; ++l) E.helper_of_layer[(size_t) l] = (int8_t) stripe.r;
     // host staging for the offloaded windows (MAXT tokens: the largest window begin() takes)
     const size_t T = (size_t) strata::kernels::cpu::MAXT;
     CK(cudaHostAlloc((void**) &E.h_helper_ids, T * (size_t) m.top_k * 4, cudaHostAllocDefault));
