@@ -8299,7 +8299,10 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
-        if (peer.valid() && o.peer_prefill_rows != 0) {
+        // STRATA_PF_PEER_NVFP4=1 also lifts the rows==0 skip, so the experiment reaches set_peer
+        const bool peer_pf_off = o.peer_prefill_rows == 0 && [] {
+            const char* v = std::getenv("STRATA_PF_PEER_NVFP4"); return v == nullptr || std::atoi(v) == 0; }();
+        if (peer.valid() && !peer_pf_off) {
             const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
             if (!sp.set_peer(&peer, rows, err)) {
                 std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
