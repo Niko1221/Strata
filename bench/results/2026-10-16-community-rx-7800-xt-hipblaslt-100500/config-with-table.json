@@ -1,0 +1,38 @@
+{
+  "args": [
+    "--pack",
+    "<data-dir>\\packs\\swift-iq3_xxs",
+    "--native",
+    "<data-dir>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<data-dir>\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--expert-profile",
+    "<repo>\\data\\expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<data-dir>\\mtp\\rt",
+    "--max-context",
+    "32768",
+    "--suffix-draft",
+    "0",
+    "--resident-budget-gib",
+    "24"
+  ],
+  "model_name": "swift-1.5-iq3_xxs",
+  "backend": "hip",
+  "env": {
+    "STRATA_RESIDENT_PIN": "0",
+    "STRATA_UNBUFFERED_LOAD": "1",
+    "STRATA_HIPBLASLT_TUNING": "tools\\hip\\gfx1101-hipblaslt-100500.txt",
+    "STRATA_HIPBLASLT_VERBOSE": "1"
+  },
+  "gpu": 1,
+  "parallel": 1
+}
