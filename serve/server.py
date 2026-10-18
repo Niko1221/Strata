@@ -1876,6 +1876,7 @@ class StrataEngine:
             self.cache_event("request_start", prompt_tokens=len(ids), cache_debug=tl.cache_debug)
         peer_ip = getattr(self.__dict__.setdefault("_tl", threading.local()), "peer_ip", None)
         reused0 = None      # the first read's reused tokens: a continued leg's count includes this request's own output
+        first_read = None   # that read's cache source and placement hint, for the record: a continued leg's hint counts it too
         carry = {}          # #1869: the figures of the legs that ended in a hand-back to the solo path (the final DONE adds to them)
         ok = yield from self._take_control(cancel, len(prompt), new=True)
         if not ok:
@@ -1984,6 +1985,8 @@ class StrataEngine:
                             return
                         if reused0 is None:
                             reused0 = (self.last or {}).get("reused")
+                        if first_read is None:
+                            first_read = (getattr(tl, "cache_source_slot", None), getattr(tl, "cache_match_hint", None))
                         carry_leg(carry, self.last)         # #1869: the solo leg's figures; the slot's admission (a copy of
                                                             # the held prefix: prompt_read 1) and BDONE replace them
                         prompt = list(ids) + out            # promoted: it continues in a batch slot from here
@@ -2208,6 +2211,9 @@ class StrataEngine:
                             slot, gen0 = None, None
                             if reused0 is None:
                                 reused0 = (self.last or {}).get("reused")
+                            if first_read is None:
+                                first_read = (getattr(tl, "cache_source_slot", None),
+                                              getattr(tl, "cache_match_hint", None))
                             prompt, left = list(ids) + out, int(max_new) - len(out)
                             solo_again += 1
                             btrace("back to the solo path")
@@ -2238,6 +2244,8 @@ class StrataEngine:
                     bdone_in = True
             if reused0 is not None and isinstance(self.last, dict):
                 self.last = {**self.last, "reused": reused0}
+            if first_read is not None:
+                tl.cache_source_slot, tl.cache_match_hint = first_read
             if carry and isinstance(self.last, dict):
                 self.last = add_carry(carry, self.last)
             if park_slot is not None:
