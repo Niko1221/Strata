@@ -328,7 +328,7 @@ Design C 的审计在远程实测发现（我已用三次交错长跑复核）�
 没槽位的专家，所以每个条目按本地路径的算法算"这个说法**不成立**（open 时传给 `open()` 的
 是 0 槽的 `empty_primary`，那道 guard 恒真），而且更要紧的是：helper 用
 `quantize_q8_1_rows` + `native_expert_grouped`（`remote_experts.cpp:359-360`），无 helper 时
-primary 对同一批专家用的是 ggml-cpu AVX（`q36_engine.cu:2812/2817/2839`）。同一份权重、两种
+primary 对同一批专家用的是 ggml-cpu AVX（`moe_hybrid_cpu` 的 `native_quant_act` + `run_split_multi_native`，`q36_engine.cu:2837/2855`）。同一份权重、两种
 激活量化、两种核，结果自然不同。
 
 **实测（2026-10-18，强制 36 token 提示，token 流被钉死，所以每一处 logit 差异都是算术差异）**
