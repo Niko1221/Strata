@@ -25,6 +25,8 @@
 // per weight block is the natural-looking mistake.
 #pragma once
 
+#include "strata/core/geometry.hpp"
+
 #include <cstdint>
 #include <cstddef>
 
@@ -34,6 +36,8 @@ namespace strata::kernels::cpu {
 inline constexpr int H = 2560;      // n_embd
 inline constexpr int FF = 640;      // expert intermediate width
 inline constexpr int NE = 512;      // routed experts per layer
+static_assert(H == strata::core::kCompiledGeometry.n_embd && FF == strata::core::kCompiledGeometry.n_ff,
+              "the CPU expert path is compiled for core/geometry.hpp");
 inline constexpr int QK = 64;       // QK2_0: weights per fp16 scale
 inline constexpr int QKA = 32;      // QK8_1/QK8_0: ACTIVATION elements per scale
 inline constexpr int BB = 18;       // bytes per 64-weight Q2_0 block: 2 fp16-scale + 16 codes
@@ -189,6 +193,14 @@ void q2_0_gguf_rows_multi_avx2_legacy(const uint8_t* w, size_t row_bytes, int nb
 void q2_0_gguf_rows_multi_avx2_v(bool vnni, const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a,
                                  int nt, float* const* out, int r0, int r1);
 void act_quant_q8_1_avx2(const float* x, int n, ActQ& a);
+/// The same for CPUs with AVX but no AVX2 (src/kernels/cpu/q2_avx1.cpp, the third rung of q2_rows_any /
+/// act_quant_any, issue #1699): same arithmetic, 128-bit integer lanes, mul+add instead of FMA (last bits),
+/// software fp16 conversion.  Called only behind cpu_avx1_ok() && !cpu_avx2_ok().
+void q2_0_gguf_rows_multi_avx1(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                               float* const* out, int r0, int r1);
+void q2_0_gguf_rows_multi_avx1_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt,
+                                      float* const* out, int r0, int r1);
+void act_quant_q8_1_avx1(const float* x, int n, ActQ& a);
 
 void s2_expert_scalar(const uint8_t* blob, const float* x, float* out, bool quant_acts);
 

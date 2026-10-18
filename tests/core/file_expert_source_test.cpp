@@ -1,4 +1,5 @@
 #include "strata/core/expert_source.hpp"
+#include "strata/core/foresight_swap.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
@@ -26,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -291,6 +293,51 @@ void test_resident_lend_region() {
     require(choose_resident_keep_from({}, 0, 0, 0) == 0, "an empty cache");
 }
 
+void test_split_lend_regions() {
+    using namespace strata::core::detail;
+    // two layers, three experts; a layer-0 blob is 5 bytes and a layer-1 blob 3.  The plan under
+    // construction already holds the (0,1) expert (an expert no cache holds); stage 0's region lends
+    // (0,2) and (0,1) from its highest slots, stage 1's lends (1,2), (1,0), (1,1) in that order.
+    const std::vector<uint64_t> blobs{5, 3};
+    const std::vector<std::vector<std::pair<int32_t, int32_t>>> regions = {{{0, 2}, {0, 1}}, {{1, 2}, {1, 0}, {1, 1}}};
+    std::string err;
+    std::vector<uint64_t> offsets;
+    uint64_t bytes = 0;
+
+    // room for everything: (0,1) is already in the copy and is passed over, not counted twice
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 100, regions, err) == 4,
+            "both stage lend regions must be kept");
+    require(bytes == 19 &&
+                offsets == std::vector<uint64_t>{kNoCacheComplement, 0, 5, 13, 16, 10},
+            "the stage lend regions got wrong compact offsets");
+
+    // the cap is the whole copy's: the stage-0 walk fits (0,2) and stage 1 stops at the first pair that
+    // does not fit; that stage's rest stays on the file
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 10, regions, err) == 1, "cap 10 keeps only (0,2)");
+    require(bytes == 10 && offsets[2] == 5 && offsets[3] == kNoCacheComplement && offsets[5] == kNoCacheComplement,
+            "the walk placed experts past the cap");
+
+    // (0,2)'s 5 bytes do not fit in the 4 left: stage 0 keeps nothing, and stage 1's own walk still runs -
+    // its (1,2) fits, its (1,0) stops that stage
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 9, regions, err) == 1,
+            "a stage refused at the cap must not stop the next stage's walk");
+    require(bytes == 8 && offsets[2] == kNoCacheComplement && offsets[5] == 5 && offsets[3] == kNoCacheComplement,
+            "the refused stage's experts entered the copy, or the next stage's did not");
+
+    // a pair outside the geometry is an error, and the plan is left untouched: validate before appending
+    offsets = {kNoCacheComplement, 0, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement, kNoCacheComplement};
+    bytes = 5;
+    require(append_stage_lend_regions(2, 3, blobs, offsets, bytes, 100, {{{0, 2}, {2, 0}}}, err) == -1 &&
+                !err.empty() && bytes == 5 && offsets[2] == kNoCacheComplement,
+            "an out-of-range lend-region pair was accepted, or a rejected walk touched the plan");
+}
+
 void test_resident_exchange() {
     using namespace strata::core;
     using namespace strata::core::detail;
@@ -338,6 +385,18 @@ void test_pin_pacing() {
     require(meminfo_bytes(info, "MemFree") == 1284096ull * 1024, "MemFree was misread");
     require(meminfo_bytes(info, "MemAvailable") == 33463296ull * 1024, "MemAvailable was misread");
     require(meminfo_bytes(info, "Mem") == 0 && meminfo_bytes(info, "Shmem") == 0, "an absent key was not 0");
+    // 0.1.42 (dual-socket report): node 1 full of another model's cache, node 0 empty of it
+    require(numa_pin_free(100 * GiB, {}) == 100 * GiB && numa_pin_free(100 * GiB, {100 * GiB}) == 100 * GiB,
+            "a single-node host's figure changed");
+    require(numa_pin_free(90 * GiB, {88 * GiB, 2 * GiB}) == 4 * GiB, "an emptied node did not lower the figure");
+    require(numa_pin_free(40 * GiB, {20 * GiB, 20 * GiB}) == 40 * GiB, "balanced nodes changed the figure");
+    require(numa_pin_free(10 * GiB, {50 * GiB, 50 * GiB}) == 10 * GiB, "the total must still bound it");
+    require(pin_depends_on_reclaim(numa_pin_free(90 * GiB, {88 * GiB, 2 * GiB}), 26 * GiB, 4 * GiB),
+            "an unbalanced two-node host was not paced");
+    require(page_cache_hint(info).find("drop_caches") != std::string::npos &&
+            page_cache_hint(info).find("STRATA_DROP_CACHE_ON_EXIT") != std::string::npos &&
+            page_cache_hint(info).find("52.0 GiB") != std::string::npos, "the cache hint is incomplete");
+    require(page_cache_hint("MemFree: 100 kB\nCached: 1000 kB\n").empty(), "a small cache was reported");
 }
 
 void test_resident_memory_budget() {
@@ -680,12 +739,182 @@ void test_rotating_source(bool rotate, bool pin) {
     require(!src.has_resident(0, 0) && !src.exchange_rotation(), "reopen retained residency");
 }
 
+// #2134: a Foresight slot copied from an expert's RAM place before an exchange rewrote that place is never served; the
+// experts an exchange moves get no copy between commit_copies and commit_flip; and a dropped slot that a window may
+// still read waits `depth` finished windows before it is refilled.
+void test_foresight_exchange(bool two_phase) {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+#if defined(_WIN32)
+    _putenv_s("STRATA_EXCHANGE_ROTATE", "0");
+#else
+    setenv("STRATA_EXCHANGE_ROTATE", "0", 1);
+#endif
+    TempDirectory dir;
+    std::string err;
+    require(expert_layout_load(dir.path.string(), 1, 5, err), err);
+    const size_t bytes = (size_t) BLOB;
+    std::vector<std::vector<uint8_t>> truth(5, std::vector<uint8_t>(bytes));
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary);
+        for (size_t e = 0; e < truth.size(); ++e) {
+            for (size_t i = 0; i < bytes; ++i) truth[e][i] = (uint8_t) ((i * 131u + e * 37u) ^ (i >> 8));
+            out.write((const char*) truth[e].data(), (std::streamsize) bytes);
+        }
+        require((bool) out, "fixture write failed");
+    }
+    FileExpertSource src;
+    ExpertCache cache;
+    require(src.open(dir.path.string(), 1, 5, err), err);
+    require(cache.open(2, 1, 5, BLOB, err), err);
+    for (int e : {2, 3}) {
+        const int slot = cache.admit(0, e);
+        require(slot >= 0 && cache.fill_slot_blocking(slot, truth[e].data(), err), err);
+    }
+    const std::vector<std::pair<int32_t, int32_t>> rank{{0,0},{0,1},{0,2},{0,3},{0,4}};
+    require(src.pin_cache_complement(cache, err, true, {}, -1, 0, 2 * bytes, &rank), err);
+    require(src.reserve_exchanges(1, err), err);
+    require(src.pinned(0, 0), "expert 0 is not in the pinned RAM copy");
+    int dev = 0;
+    cudaGetDevice(&dev);
+    ForesightSwap fs;
+    require(fs.init(1, 1, 5, {0}, {dev}, err), err);   // one slot, depth 4
+    fs.verify = true;
+    src.set_foresight_swap(&fs);
+    unsigned long long ptr = 0;
+    auto landed = [&](int32_t e) {
+        for (int i = 0; i < 5000; ++i) {
+            if (fs.take(0, e, ptr)) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    };
+    fs.note_miss(&src, 0, 0);                                    // expert 0 -> the slot, from its RAM place
+    require(landed(0) && fs.verify_ok == 1, "the first copy did not land");
+    // the adaptive tier swaps expert 0 into cache slot 0 and evicts expert 2 into the exchange buffer
+    uint8_t* eviction = src.exchange_buffer(0);
+    const uint8_t* prior = src.blob(0, 0);
+    require(cudaMemcpy(eviction, cache.device_slot(0), bytes, cudaMemcpyDeviceToHost) == cudaSuccess, "D2H eviction failed");
+    require(src.stage_exchange(0, 0, 2, 0), "stage rejected");
+    require(cache.fill_slot_blocking(0, prior, err), err);
+    if (two_phase) {
+        src.commit_copies();                                     // 0's place holds 2's bytes from here on
+        const uint64_t c0 = fs.copies;
+        fs.completed.fetch_add(8);
+        fs.note_miss(&src, 0, 2);
+        fs.predict(&src, 0, 0);
+        require(fs.copies == c0, "an expert was copied while its exchange was half done");
+        require(!fs.take(0, 0, ptr), "a slot dropped by commit_copies was served");
+        require(src.commit_flip() == 1, "flip count wrong");
+    } else {
+        require(src.commit_exchanges() == 1, "commit count wrong");
+    }
+    require(fs.dropped == 1, "the exchange did not drop the slot");
+    require(!fs.take(0, 0, ptr), "a slot copied before the exchange was served");
+    if (!two_phase) {   // the slot was served at window 0: no refill before window 0 + depth
+        const uint64_t c0 = fs.copies, b0 = fs.busy;
+        fs.note_miss(&src, 0, 2);
+        require(fs.copies == c0 && fs.busy == b0 + 1, "a dropped slot was refilled while a window may still read it");
+        fs.completed.fetch_add(4);
+    }
+    require(src.has_resident(0, 2) && !src.has_resident(0, 0), "residency wrong");
+    fs.note_miss(&src, 0, 2);                                    // expert 2, now at 0's old place
+    require(landed(2), "the copy after the exchange did not land");
+    std::vector<uint8_t> back(bytes);
+    require(cudaMemcpy(back.data(), (const void*) ptr, bytes, cudaMemcpyDeviceToHost) == cudaSuccess && back == truth[2],
+            "the slot does not hold expert 2's bytes");
+    require(fs.verify_bad == 0 && fs.verify_ok == 2, "verify counted a bad slot");
+    src.set_foresight_swap(nullptr);
+    std::cout << "foresight exchange (" << (two_phase ? "commit_copies + commit_flip" : "commit_exchanges")
+              << "): dropped " << fs.dropped << ", " << fs.report() << ": PASS\n";
+    src.close();
+}
+
+// STRATA_RAM_ADAPT: an expert read from the file takes the RAM place of another of its layer.
+void test_replace_resident(bool pin) {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+#if defined(_WIN32)
+    _putenv_s("STRATA_EXCHANGE_ROTATE", "0");
+#else
+    setenv("STRATA_EXCHANGE_ROTATE", "0", 1);
+#endif
+    TempDirectory dir;
+    std::string err;
+    require(expert_layout_load(dir.path.string(), 1, 5, err), err);
+    const size_t bytes = (size_t)BLOB;
+    std::vector<std::vector<uint8_t>> truth(5, std::vector<uint8_t>(bytes));
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary);
+        for (size_t e = 0; e < truth.size(); ++e) {
+            for (size_t i = 0; i < bytes; ++i) truth[e][i] = (uint8_t)((i * 131u + e * 37u) ^ (i >> 8));
+            out.write((const char*)truth[e].data(), (std::streamsize)bytes);
+        }
+        require((bool)out, "fixture write failed");
+    }
+    FileExpertSource src;
+    ExpertCache cache;
+    require(src.open(dir.path.string(), 1, 5, err), err);
+    require(cache.open(2, 1, 5, BLOB, err), err);
+    for (int e : {2, 3}) {
+        const int slot = cache.admit(0, e);
+        require(slot >= 0 && cache.fill_slot_blocking(slot, truth[e].data(), err), err);
+    }
+    const std::vector<std::pair<int32_t, int32_t>> rank{{0,0},{0,1},{0,2},{0,3},{0,4}};
+    // experts 2 and 3 are in VRAM, the RAM budget holds 0 and 1, expert 4 stays on the file tier
+    require(src.pin_cache_complement(cache, err, pin, {}, -1, 0, 2 * bytes, &rank), err);
+    require(src.reserve_exchanges(1, err), err);
+    require(src.has_resident(0, 0) && src.has_resident(0, 1) && !src.has_resident(0, 4), "fixture residency wrong");
+    std::vector<uint8_t> actual(bytes);
+    auto holds = [&](int e) {
+        const uint8_t* b = src.blob(0, e);
+        return b != nullptr && !std::memcmp(b, truth[(size_t)e].data(), bytes);
+    };
+    require(!src.replace_resident(0, 1, 0), "an expert already in RAM accepted");
+    require(!src.replace_resident(0, 4, 2), "a place the RAM does not hold accepted");
+    require(!src.replace_resident(0, 4, 4) && !src.replace_resident(0, 5, 0) && !src.replace_resident(1, 4, 0),
+            "invalid arguments accepted");
+    require(src.ram_adapts() == 0 && holds(0) && holds(1) && holds(4), "a refused call changed the copy");
+    // a staged exchange owns the tables until it commits
+    require(cudaMemcpy(src.exchange_buffer(0), cache.device_slot(0), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+            "D2H eviction failed");
+    require(src.stage_exchange(0, 0, 2, 0), "stage rejected");
+    require(!src.replace_resident(0, 4, 1), "accepted beside a staged exchange");
+    require(cache.fill_slot_blocking(0, truth[0].data(), err), err);
+    require(src.commit_exchanges() == 1, "commit count wrong");   // RAM: 2 (in 0's place) and 1; VRAM: 0 and 3
+    const uint8_t* place = src.blob(0, 1);
+    require(src.replace_resident(0, 4, 1), "replace rejected");
+    require(src.ram_adapts() == 1 && src.has_resident(0, 4) && !src.has_resident(0, 1), "residency wrong");
+    require(src.blob(0, 4) == place && holds(4), "the incoming expert is not in the outgoing one's place");
+    require(holds(1) && holds(2), "another expert's bytes changed");
+    require(src.copy_blob(0, 1, actual.data()) && actual == truth[1], "the outgoing expert is not read from the file");
+    require(!src.transient(0, 4), "resident became transient");
+    if (pin) {
+        require(src.pinned(0, 4) && src.device_alias(0, 4), "mapping lost");
+        require(cudaMemcpy(actual.data(), src.device_alias(0, 4), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+                "device alias read failed");
+        require(actual == truth[4], "CUDA alias points at the old expert");
+    }
+    // and back, then an exchange with the VRAM tier still works on the moved place
+    require(src.replace_resident(0, 1, 4) && holds(1) && src.blob(0, 1) == place && !src.has_resident(0, 4),
+            "replace back wrong");
+    require(cudaMemcpy(src.exchange_buffer(0), cache.device_slot(1), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+            "D2H eviction failed");
+    require(src.stage_exchange(0, 1, 3, 0), "stage after replace rejected");
+    require(cache.fill_slot_blocking(1, truth[1].data(), err), err);
+    require(src.commit_exchanges() == 1 && src.has_resident(0, 3) && holds(3) && !src.has_resident(0, 1),
+            "exchange after replace wrong");
+    require(src.ram_adapts() == 2, "accounting wrong");
+    std::cout << "replace_resident: pinned=" << pin << " exact_bytes=PASS\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
         test_complement_plan();
         test_resident_lend_region();
+        test_split_lend_regions();
         test_resident_exchange();
         test_resident_memory_budget();
         test_pin_pacing();
@@ -701,6 +930,10 @@ int main(int argc, char** argv) {
             test_rotating_source(false, true);
             test_rotating_source(true, true);
             test_rotating_source(true, false);
+            test_foresight_exchange(false);
+            test_foresight_exchange(true);
+            test_replace_resident(true);
+            test_replace_resident(false);
         }
         std::cout << "file_expert_source_test: PASS\n";
         return 0;

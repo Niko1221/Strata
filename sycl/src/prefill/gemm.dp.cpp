@@ -686,8 +686,68 @@ bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, flo
 #endif
 }
 
+namespace {
+// oneMKL's GEMM reads the last, partial tile of an operand from the wrong place when it lies more than 4 GiB into its
+// allocation (Arc A770, oneMKL 2026.1: a BF16 B placed past 4 GiB of a 10.5 GiB allocation gave its last 21 columns
+// wrong, and none below 4 GiB).  The prompt path borrows the top of the ~10 GiB expert cache for its buffers, so its
+// GEMMs met this and the prompt came out non-finite / garbage.  An operand past 4 GiB is copied into a scratch buffer
+// of the queue's own - a fresh allocation, so at offset 0 - and the GEMM runs on that.  Returns false, so the caller
+// runs the direct GEMM, when neither operand needs staging (the common, correct case).
+uint8_t* gemm_stage(size_t need, sycl::queue& q) {
+    static thread_local uint8_t* p = nullptr;
+    static thread_local size_t cap = 0;
+    if (need > cap) {
+        if (p != nullptr) {
+            q.wait();   // the queue is in-order but asynchronous: a previous staged GEMM may still read p
+            sycl::free(p, q);
+        }
+        p = (uint8_t*) sycl::malloc_device(need, q);
+        cap = p != nullptr ? need : 0;
+    }
+    return p;
+}
+inline bool staged_gemm(sycl::queue& q, void* handle, const uint16_t* W, int lda, const uint16_t* X, int ldb,
+                        dpct::library_data_t dt, int64_t N, int64_t T, int64_t K, float alpha, float beta,
+                        float* Y, int64_t ldy) {
+    // STRATA_SYCL_GEMM_NO_STAGE: the tests' negative control.  0.1.43: not on Battlemage either (the A770 oneMKL bug above did not
+    // show on a B70: 4K and 49K prompts, operands at 18 GiB into the cache arena, first-token logits byte-identical with and
+    // without staging; the 10 MB copy per expert was ~10% of a prompt).  STRATA_SYCL_GEMM_STAGE=1 stages there as before.
+    static const bool no_stage = std::getenv("STRATA_SYCL_GEMM_NO_STAGE") != nullptr ||
+        (strata::intel_gpu_gen(q.get_device()) == strata::IntelGpuGen::Battlemage && !(std::getenv("STRATA_SYCL_GEMM_STAGE") && std::getenv("STRATA_SYCL_GEMM_STAGE")[0] == '1'));
+    constexpr size_t k4G = 4ull << 30;
+    const size_t es = 2;
+    const size_t w_bytes = (size_t) lda * (size_t) N * es;   // W stored K x N, col-major (lda = K)
+    const size_t x_bytes = (size_t) ldb * (size_t) T * es;   // X stored ldb x T
+    const bool far_w = strata::device_offset_end(W, w_bytes) > k4G;
+    const bool far_x = strata::device_offset_end(X, x_bytes) > k4G;
+    if (no_stage || (!far_w && !far_x)) return false;
+    uint8_t* s = gemm_stage(w_bytes + x_bytes, q);
+    if (s == nullptr) {
+        std::fprintf(stderr, "strata: WARNING: a GEMM operand lies past 4 GiB and the %zu MiB staging buffer could not be "
+                             "allocated; the GEMM runs directly and may be wrong on this card\n",
+                     (w_bytes + x_bytes) >> 20);
+        return false;
+    }
+    uint8_t* sw = s;
+    uint8_t* sx = s + w_bytes;
+    if (far_w) q.memcpy(sw, W, w_bytes);
+    if (far_x) q.memcpy(sx, X, x_bytes);
+    const uint16_t* Wu = far_w ? (const uint16_t*) sw : W;
+    const uint16_t* Xu = far_x ? (const uint16_t*) sx : X;
+    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+           (dpct::blas::descriptor_ptr) handle, oneapi::mkl::transpose::trans, oneapi::mkl::transpose::nontrans,
+           (int) N, (int) T, (int) K, &alpha, Wu, dt, lda, Xu, dt, ldb, &beta, Y,
+           dpct::library_data_t::real_float, (int) ldy, dpct::compute_type::f32)),
+       "cublasGemmEx (staged)");
+    return true;
+}
+}  // namespace
+
+// (#2091, CUDA Turing only) no FP16 activation image on this backend
+bool Gemm::bf16_converts_x() const { return false; }
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
-                float beta, int64_t ldx) {
+                float beta, int64_t ldx, bool /*x_f16*/) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     if (ldx <= K) ldx = 0;
@@ -758,6 +818,9 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     }
 #endif
 #endif
+    if (staged_gemm(*strata::q_of(stream_), handle_, W, (int) K, X, (int) (ldx ? ldx : K), dpct::library_data_t::real_bfloat16, N, T, K,
+                    alpha, beta, Y, ldy))
+        return;
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
     ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
@@ -796,6 +859,8 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
         return;
     }
 #endif
+    if (staged_gemm(*strata::q_of(stream_), handle_, W, (int) K, X, (int) K, dpct::library_data_t::real_half, N, T, K, alpha, beta, Y, ldy))
+        return;
     ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
            oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,

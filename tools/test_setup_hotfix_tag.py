@@ -20,10 +20,14 @@ import setup  # noqa: E402
 
 class HotfixTag(unittest.TestCase):
     def test_a_four_part_version_compares_all_four_numbers(self):
-        ver = tuple(int(x) for x in ".".join(map(str, setup.MIN_ENGINE)).split(".")[:4] if x.isdigit())
-        self.assertEqual(ver, setup.MIN_ENGINE)
+        ver = tuple(int(x) for x in "0.1.40.3".split("."))   # a hotfix version has four numbers; MIN_ENGINE may have three
         self.assertEqual(len(ver), 4)
-        self.assertGreaterEqual(ver, setup.MIN_ENGINE)
+        self.assertLess(ver, setup.MIN_ENGINE)                 # an installed hotfix of the older release is replaced
+        self.assertGreaterEqual((0, 1, 45), setup.MIN_ENGINE)   # the minimum itself (or a later hotfix) is accepted
+        self.assertLess((0, 1, 44, 1), setup.MIN_ENGINE)    # the 0.1.44.1 hotfix is replaced
+        self.assertLess((0, 1, 44), setup.MIN_ENGINE)       # the release before is replaced
+        self.assertLess((0, 1, 43, 1), setup.MIN_ENGINE)    # the 0.1.43.1 hotfix is replaced
+        self.assertLess((0, 1, 42, 1), setup.MIN_ENGINE)    # 0.1.42.1 is replaced
         self.assertLess((0, 1, 40), setup.MIN_ENGINE)       # an installed 0.1.40 engine is replaced
 
     def test_the_engine_zips_are_found_for_a_hotfix_tag(self):

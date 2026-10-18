@@ -1,4 +1,5 @@
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -67,14 +69,19 @@ RemoteExperts::~RemoteExperts() { close(); }
 bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
-    if (device < 1 || device >= count) {
+    if (device < 0 || device >= count) {
         err = "CUDA" + std::to_string(device) + " experts: CUDA device is not visible";
+        return false;
+    }
+    if (device == primary_device()) {   // the primary may be any visible ordinal; the helper cannot be it
+        err = "CUDA" + std::to_string(device) + " experts: the helper cannot be the primary device "
+                                                 "(STRATA_PRIMARY_DEVICE)";
         return false;
     }
     // The layer waits for this GPU on the CPU pool's critical path: spin instead of sleeping, whose wake-up
     // costs more than a small expert batch takes (measured: ~0.3 ms per round trip on Windows).  Only possible
     // before the device's context exists, so first thing; STRATA_REMOTE_SPIN=0 keeps the driver's default.
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
     const char* spin = std::getenv("STRATA_REMOTE_SPIN");
     if (!(spin && spin[0] == '0')) cudaInitDevice(device, cudaDeviceScheduleSpin | cudaDeviceMapHost, 0);
     cudaGetLastError();
@@ -93,6 +100,7 @@ void RemoteExperts::close() {
     DeviceScope scope(device_);
     if (scope.ok) {
         if (stream_) cudaStreamSynchronize(stream_);
+        if (read_stream_) cudaStreamSynchronize(read_stream_);
         cache_.close();
         if (d_x_) cudaFree(d_x_);
         if (d_out_) cudaFree(d_out_);
@@ -104,9 +112,11 @@ void RemoteExperts::close() {
         if (h_out_) cudaFreeHost(h_out_);
         if (h_meta_) cudaFreeHost(h_meta_);
         if (stream_) cudaStreamDestroy(stream_);
+        if (read_stream_) cudaStreamDestroy(read_stream_);
     }
     device_ = -1;
     stream_ = nullptr;
+    read_stream_ = nullptr;
     h_x_ = h_out_ = d_x_ = d_out_ = nullptr;
     h_meta_ = d_meta_ = nullptr;
     d_q8_ = nullptr;
@@ -125,8 +135,9 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     close();
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
-    if (device < 1 || device >= count || slots <= 0 || ranked.empty() ||
-        layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts) {
+    if (device < 0 || device >= count || slots <= 0 || ranked.empty() ||
+        layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts ||
+        device == primary_device()) {   // the helper cannot be the primary device (any visible ordinal)
         err = "CUDA" + std::to_string(device) + " experts: need the device, ranked experts and positive slot count";
         return false;
     }
@@ -204,6 +215,10 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         check(cudaMalloc(&d_scratch_, scratch), "scratch", err, device) &&
         check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device);
     if (!allocated) { close(); return false; }
+    if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
+        close();
+        return false;
+    }
     // Zero-copy: the helper reads its input from, and writes its compact rows into, the pinned host buffers
     // directly - two copies fewer per layer, each of which is a PCIe round trip.  STRATA_REMOTE_ZEROCOPY=0 copies.
     const char* zc = std::getenv("STRATA_REMOTE_ZEROCOPY");
@@ -330,7 +345,27 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     DeviceScope scope(device_);
     if (!scope.ok) { err = scope.error(device_); return false; }
     const auto w0 = std::chrono::steady_clock::now();
+    // Spin on the stream like PeerExperts::finish instead of the blocking sync: the layer waits for this helper
+    // on the CPU pool's critical path, and a blocking sync's wake-up costs more than the helper's small batch
+    // takes - on HIP especially, where the CUDA branch's cudaInitDevice(ScheduleSpin) does not exist and the
+    // device keeps its default policy.  STRATA_REMOTE_SPIN=0 keeps the blocking sync (the same switch the CUDA
+    // branch reads).
+#if defined(STRATA_USE_HIP)   // HIP only: the CUDA branch's cudaInitDevice(ScheduleSpin) already makes the sync spin
+    static const bool spin = [] {
+        const char* v = std::getenv("STRATA_REMOTE_SPIN");
+        return !(v != nullptr && v[0] == '0');
+    }();
+    if (spin) {
+        cudaError_t e;
+        while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
+        }
+        if (!check(e, "finish", err, device_)) return false;
+    } else if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) {
+        return false;
+    }
+#else
     if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) return false;
+#endif
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
     if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
     for (size_t i = 0; i < original_row_.size(); ++i)
@@ -338,4 +373,111 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     return true;
 }
 
+bool RemoteExperts::copy_cached_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst,
+                                      size_t n, uint8_t* hit, std::string& err) {
+    std::fill(hit, hit + n, 0);
+    if (device_ < 0 || read_stream_ == nullptr || n == 0) return true;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    DeviceScope scope(device_);
+    if (!scope.ok) { err = scope.error(device_); return false; }
+    std::lock_guard<std::mutex> lock(read_mu_);
+    bool queued = false;
+    for (size_t i = 0; i < n; ++i) {
+        if (dst[i] == nullptr) continue;
+        const int32_t slot = cache_.slot_of(layers[i], experts[i]);
+        if (slot < 0) continue;
+        const size_t bytes = (size_t) lay.blob_bytes(layers[i]);
+        if (!check(cudaMemcpyAsync(dst[i], cache_.device_slot(slot), bytes, cudaMemcpyDeviceToHost, read_stream_),
+                   "cache read", err, device_)) {
+            // Nothing may still be writing a caller's buffer when this returns.  If the drain succeeds, the
+            // hits queued before the failure are complete and the caller may keep them; if it does not,
+            // forget every hit and let the caller refill all of them from its fallback.
+            if (cudaStreamSynchronize(read_stream_) != cudaSuccess) std::fill(hit, hit + n, 0);
+            return false;
+        }
+        hit[i] = 1;
+        queued = true;
+    }
+    if (queued && !check(cudaStreamSynchronize(read_stream_), "cache read wait", err, device_)) {
+        std::fill(hit, hit + n, 0);   // a failed wait means no copied buffer may be trusted
+        return false;
+    }
+    return true;
+}
+
+bool RemotePrefillSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
+    if (dst != nullptr && from_helper(layer, expert)) {
+        const int32_t l = (int32_t) layer, e = (int32_t) expert;
+        uint8_t* d = dst;
+        std::string err;
+        for (RemoteExperts* h : helpers_) {
+            uint8_t got = 0;
+            const bool ok = h->copy_cached_blobs(&l, &e, &d, 1, &got, err);
+            if (got) {
+                helper_blobs_.fetch_add(1, std::memory_order_relaxed);
+                helper_bytes_.fetch_add(strata::kernels::cpu::expert_layout().blob_bytes(layer),
+                                        std::memory_order_relaxed);
+                return true;
+            }
+            if (!ok) break;
+        }
+        warn(err);
+    }
+    return fallback_.copy_blob(layer, expert, dst);
+}
+
+bool RemotePrefillSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    if (helpers_.empty() || n == 0) return fallback_.copy_blobs(layers, experts, dst, n);
+    thread_local std::vector<int32_t> hl, he;
+    thread_local std::vector<uint8_t*> hd;
+    thread_local std::vector<size_t> idx;
+    thread_local std::vector<uint8_t> got;
+    thread_local std::vector<uint8_t> served;
+    thread_local std::vector<int32_t> ml, me;
+    thread_local std::vector<uint8_t*> md;
+    thread_local std::vector<int> which;
+    which.assign(n, -1);
+    served.assign(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        if (dst[i] == nullptr) continue;
+        for (size_t k = 0; k < helpers_.size(); ++k)
+            if (helpers_[k]->holds(layers[i], experts[i])) { which[i] = (int) k; break; }
+    }
+    // One stream batch per helper, so several hits pay one wait; the misses go to the file source in one
+    // call, which keeps its own batched-read merging for them.
+    uint64_t blobs = 0, bytes = 0;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    for (size_t k = 0; k < helpers_.size(); ++k) {
+        hl.clear(); he.clear(); hd.clear(); idx.clear();
+        for (size_t i = 0; i < n; ++i)
+            if (which[i] == (int) k) {
+                hl.push_back(layers[i]); he.push_back(experts[i]); hd.push_back(dst[i]); idx.push_back(i);
+            }
+        if (hl.empty()) continue;
+        got.assign(hl.size(), 0);
+        std::string err;
+        if (!helpers_[k]->copy_cached_blobs(hl.data(), he.data(), hd.data(), hl.size(), got.data(), err)) warn(err);
+        for (size_t j = 0; j < got.size(); ++j)
+            if (got[j]) {
+                served[idx[j]] = 1;
+                ++blobs;
+                bytes += lay.blob_bytes(hl[j]);
+            }
+    }
+    if (blobs != 0) {
+        helper_blobs_.fetch_add(blobs, std::memory_order_relaxed);
+        helper_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    }
+    ml.clear(); me.clear(); md.clear();
+    for (size_t i = 0; i < n; ++i)
+        if (!served[i]) { ml.push_back(layers[i]); me.push_back(experts[i]); md.push_back(dst[i]); }
+    if (ml.empty()) return true;
+    return fallback_.copy_blobs(ml.data(), me.data(), md.data(), ml.size());
+}
+
+void RemotePrefillSource::warn(const std::string& err) {
+    if (err.empty() || warned_.exchange(true)) return;
+    std::fprintf(stderr, "prefill: a helper cache read failed (%s); the file source fills that blob instead\n",
+                 err.c_str());
+}
 } // namespace strata::core

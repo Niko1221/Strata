@@ -99,6 +99,7 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
 struct Setup {
     k::NativeExpertLayout L;
     int T = 0, K = 0, cap = 0, n_blobs = 0;
+    int active_lo = 0, active_hi = 0;
     size_t slot = 0;
     uint8_t* blobs = nullptr;
     uint8_t* xq = nullptr;
@@ -174,6 +175,8 @@ struct Setup {
         }
         if (st.back() > cap) { std::fprintf(stderr, "plan: %d entries > cap %d\n", st.back(), cap); std::exit(2); }
         const int ng = (int) p.size();
+        active_lo = base;
+        active_hi = st.back();
         std::iota(ds.begin(), ds.end(), 0);
         std::shuffle(ds.begin(), ds.end(), rng);                  // scattered rows of `out`
         for (int e = 0; e < cap; ++e) tk_v.push_back(tk(rng));
@@ -197,6 +200,15 @@ struct Setup {
         ck(cudaStreamSynchronize(s), "sync");
         std::vector<uint32_t> o(out_floats);
         ck(cudaMemcpy(o.data(), out, o.size() * 4, cudaMemcpyDeviceToHost), "out");
+        // Fused SwiGLU does not write h or inactive Q8 rows. Compare only the
+        // active Q8_1 bytes, appended after the full output (including padding).
+        const size_t fa = ((size_t) cap * L.n_ff * sizeof(float) + 255) & ~(size_t) 255;
+        const size_t qrow = (size_t) (L.n_ff / 32) * 36;
+        const size_t qb = (size_t) (active_hi - active_lo) * qrow;
+        const size_t old = o.size();
+        o.resize(old + qb / sizeof(uint32_t));
+        if (qb)
+            ck(cudaMemcpy(o.data() + old, scr + 3 * fa + active_lo * qrow, qb, cudaMemcpyDeviceToHost), "active hq");
         return o;
     }
 };
@@ -210,7 +222,7 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
             const int ng = S.plan(groups, base, rng);
             const auto ref = S.result(true, 0, 0x00, s);
             size_t w = 0;
-            for (const uint32_t v : ref) w += v != 0xFFFFFFFFu;
+            for (size_t i = 0; i < S.out_floats; ++i) w += ref[i] != 0xFFFFFFFFu;
             written += w;
             for (const int64_t gy : {(int64_t) 0, (int64_t) 1, (int64_t) 2, (int64_t) 3, (int64_t) 4, (int64_t) S.cap + 3}) {
                 const auto got = S.result(false, gy, (calls & 1) ? 0x7F : 0x00, s);
@@ -218,7 +230,7 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
                 size_t diff = 0;
                 for (size_t i = 0; i < ref.size(); ++i) diff += ref[i] != got[i];
                 if (diff) {
-                    std::printf("  %-8s/%-7s base %d, %d groups, grid_groups %lld: %zu of %zu floats differ  FAIL\n",
+                    std::printf("  %-8s/%-7s base %d, %d groups, grid_groups %lld: %zu of %zu output/Q8 words differ  FAIL\n",
                                 name_of(gu), name_of(dt), base, ng, (long long) gy, diff, ref.size());
                     ++bad;
                 }
@@ -347,6 +359,7 @@ int main(int argc, char** argv) {
 #endif
                    8})        // STRATA_GU_FMTS
         for (int dt : {20, 23, 42, 7, 8}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
+    check(42, 42, 2560, 640, s, rng);
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
     check(21, 23, 2560, 768, s, rng);
     if (do_bench) bench(s, rng);

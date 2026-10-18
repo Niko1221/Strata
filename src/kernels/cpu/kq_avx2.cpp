@@ -145,10 +145,11 @@ void q4k_dot(const block_q4_K* x, int nb, const void* const* act, int nt, float*
 }
 
 // ---- Q5_1 x Q8_1 (ggml_vec_dot_q5_1_q8_1, __AVX2__)
-void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, int nt, float* res) {
-    __m256 acc[MAXT];
-    float summs[MAXT];
-    for (int t = 0; t < nt; ++t) { acc[t] = _mm256_setzero_ps(); summs[t] = 0.0f; }
+template <int NT>
+void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, float* res) {
+    __m256 acc[NT];
+    float summs[NT];
+    for (int t = 0; t < NT; ++t) { acc[t] = _mm256_setzero_ps(); summs[t] = 0.0f; }
     for (int ib = 0; ib < nb; ++ib) {
         const __m256 dx = _mm256_set1_ps(half_at(&x[ib], 0));
         const float xm = half_at(&x[ib], 1);
@@ -156,7 +157,7 @@ void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, int nt, float
         __m256i bxhi = bytes_from_bits_32(x[ib].qh);
         bxhi = _mm256_and_si256(bxhi, _mm256_set1_epi8(0x10));
         qx = _mm256_or_si256(qx, bxhi);
-        for (int t = 0; t < nt; ++t) {
+        for (int t = 0; t < NT; ++t) {
             const block_q8_1* y = (const block_q8_1*) act[t] + ib;
             summs[t] += xm * half_at(y, 1);
             const __m256 dy = _mm256_set1_ps(half_at(y, 0));
@@ -165,18 +166,19 @@ void q5_1_dot(const block_q5_1* x, int nb, const void* const* act, int nt, float
             acc[t] = _mm256_fmadd_ps(q, _mm256_mul_ps(dx, dy), acc[t]);
         }
     }
-    for (int t = 0; t < nt; ++t) res[t] = hsum_float_8(acc[t]) + summs[t];
+    for (int t = 0; t < NT; ++t) res[t] = hsum_float_8(acc[t]) + summs[t];
 }
 
 // ---- Q8_0 x Q8_0 (ggml_vec_dot_q8_0_q8_0, __AVX2__; mul_sum_i8_pairs_float without AVX-VNNI-INT8)
-void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, int nt, float* res) {
-    __m256 acc[MAXT];
-    for (int t = 0; t < nt; ++t) acc[t] = _mm256_setzero_ps();
+template <int NT>
+void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, float* res) {
+    __m256 acc[NT];
+    for (int t = 0; t < NT; ++t) acc[t] = _mm256_setzero_ps();
     for (int ib = 0; ib < nb; ++ib) {
         const float xd = h2f(x[ib].d);
         const __m256i qx = _mm256_loadu_si256((const __m256i*) x[ib].qs);
         const __m256i ax = _mm256_sign_epi8(qx, qx);
-        for (int t = 0; t < nt; ++t) {
+        for (int t = 0; t < NT; ++t) {
             const block_q8_0* y = (const block_q8_0*) act[t] + ib;
             const __m256 d = _mm256_set1_ps(xd * h2f(y->d));
             const __m256i qy = _mm256_loadu_si256((const __m256i*) y->qs);
@@ -185,34 +187,68 @@ void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, int nt, float
             acc[t] = _mm256_fmadd_ps(d, q, acc[t]);
         }
     }
-    for (int t = 0; t < nt; ++t) res[t] = hsum_float_8(acc[t]);
+    for (int t = 0; t < NT; ++t) res[t] = hsum_float_8(acc[t]);
+}
+
+void q5_1_dot_nt(const block_q5_1* x, int nb, const void* const* act, int nt, float* res) {
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int k = nt - t0 < 4 ? nt - t0 : 4;
+        switch (k) {
+            case 1: q5_1_dot<1>(x, nb, act + t0, res + t0); break;
+            case 2: q5_1_dot<2>(x, nb, act + t0, res + t0); break;
+            case 3: q5_1_dot<3>(x, nb, act + t0, res + t0); break;
+            default: q5_1_dot<4>(x, nb, act + t0, res + t0); break;
+        }
+    }
+}
+
+void q8_0_dot_nt(const block_q8_0* x, int nb, const void* const* act, int nt, float* res) {
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int k = nt - t0 < 4 ? nt - t0 : 4;
+        switch (k) {
+            case 1: q8_0_dot<1>(x, nb, act + t0, res + t0); break;
+            case 2: q8_0_dot<2>(x, nb, act + t0, res + t0); break;
+            case 3: q8_0_dot<3>(x, nb, act + t0, res + t0); break;
+            default: q8_0_dot<4>(x, nb, act + t0, res + t0); break;
+        }
+    }
 }
 
 void dot_rows(int type, const uint8_t* row, int n, const void* const* act, int nt, float* res) {
     switch (type) {
         case 12: q4k_dot((const block_q4_K*) row, n / QK_K, act, nt, res); break;
-        case 7: q5_1_dot((const block_q5_1*) row, n / QK5_1, act, nt, res); break;
-        case 8: q8_0_dot((const block_q8_0*) row, n / QK8_0, act, nt, res); break;
+        case 7: q5_1_dot_nt((const block_q5_1*) row, n / QK5_1, act, nt, res); break;
+        case 8: q8_0_dot_nt((const block_q8_0*) row, n / QK8_0, act, nt, res); break;
         default: break;
     }
 }
 
 }  // namespace
 
-bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
-
 void bf16_rows_dot_multi(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out) {
-    // each row is read once for all `nt` (<= 8) tokens: the router (2.6 MB per layer) streams once per prediction
-    for (int r = 0; r < rows; ++r) {
-        const uint16_t* wr = w + (size_t) r * (size_t) cols;
-        __m256 acc[8];
-        for (int t = 0; t < nt; ++t) acc[t] = _mm256_setzero_ps();
-        for (int c = 0; c + 8 <= cols; c += 8) {
-            const __m256 wf = _mm256_castsi256_ps(
-                _mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*) (wr + c))), 16));
-            for (int t = 0; t < nt; ++t) acc[t] = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x + (size_t) t * cols + c), acc[t]);
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int m = nt - t0 < 4 ? nt - t0 : 4;
+        const float* x0 = x + (size_t) t0 * cols;
+        const float* x1 = x0 + cols;
+        const float* x2 = x1 + cols;
+        const float* x3 = x2 + cols;
+        for (int r = 0; r < rows; ++r) {
+            const uint16_t* wr = w + (size_t) r * (size_t) cols;
+            __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps(), a2 = _mm256_setzero_ps(),
+                   a3 = _mm256_setzero_ps();
+            for (int c = 0; c + 8 <= cols; c += 8) {
+                const __m256 wf = _mm256_castsi256_ps(
+                    _mm256_slli_epi32(_mm256_cvtepu16_epi32(_mm_loadu_si128((const __m128i*) (wr + c))), 16));
+                a0 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x0 + c), a0);
+                if (m > 1) a1 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x1 + c), a1);
+                if (m > 2) a2 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x2 + c), a2);
+                if (m > 3) a3 = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x3 + c), a3);
+            }
+            out[(size_t) t0 * rows + r] = hsum_float_8(a0);
+            if (m > 1) out[(size_t) (t0 + 1) * rows + r] = hsum_float_8(a1);
+            if (m > 2) out[(size_t) (t0 + 2) * rows + r] = hsum_float_8(a2);
+            if (m > 3) out[(size_t) (t0 + 3) * rows + r] = hsum_float_8(a3);
         }
-        for (int t = 0; t < nt; ++t) out[(size_t) t * rows + r] = hsum_float_8(acc[t]);   // cols % 8 == 0 (2560)
     }
 }
 

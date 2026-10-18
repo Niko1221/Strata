@@ -99,15 +99,7 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head;
-    s.n_head_kv = g.n_head_kv;
-    s.head_dim = g.head_dim;
-    s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    return s;
-}
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
 
 // 64-bit seek/tell on a `FILE*`: `fseek`/`ftell` take a 32-bit `long` on Windows and would wrap past 2 GiB.
 #if defined(_WIN32)
@@ -742,6 +734,7 @@ bool MtpDrafter::bind(const WeightTable &wt, const NativeHead *head,
             return false;
         }
         dhead_ = shared->dhead_;
+        dhead_type_ = shared->dhead_type_;   // the subset head's type (as src/core/mtp.cpp since #1110): -1 failed every --batch-mtp step
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
         owns_draft_head_ = false;
@@ -766,7 +759,19 @@ bool MtpDrafter::bind(const WeightTable &wt, const NativeHead *head,
             dpct::get_in_order_queue().memcpy(dvocab_, raw.data(), raw.size()).wait();
             dvocab_host_.resize((size_t) n_dvocab_);
             std::memcpy(dvocab_host_.data(), raw.data(), raw.size());
-            strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
+            bool planar_gathered = false;
+            if (head->type() == 14 && strata::kernels::native_q6_k_is_planar(head->weights()) && !q4_head_) {
+                // STRATA_Q6_PLANAR: the LM head is stored as planes; the subset is gathered from them, planar
+                void* pd = strata::kernels::native_q6_k_planar_gather(head->weights(), (int) (row_bytes / 210) * 256, dvocab_,
+                                                                      n_dvocab_, "MTP draft head");
+                if (pd != nullptr) {
+                    sycl::free(dhead_, dpct::get_in_order_queue());
+                    dhead_ = (uint8_t*) pd;
+                    planar_gathered = true;
+                }
+            }
+            if (!planar_gathered)
+                strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
             dpct::get_current_device().queues_wait_and_throw();
             vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
@@ -776,6 +781,10 @@ bool MtpDrafter::bind(const WeightTable &wt, const NativeHead *head,
             if (dhead_type_ == 14 && strata::kernels::native_q6_k_packed_enabled())   // STRATA_Q6_PACKED=1
                 strata::kernels::native_q6_k_pack(dhead_, (int) (row_bytes / 210) * 256, (int) n_dvocab_,
                                                   "MTP draft head");
+            if (!planar_gathered && dhead_type_ == 14 && !q4_head_ && !strata::kernels::native_q6_k_packed_enabled() &&
+                strata::kernels::native_q6_k_planar_enabled())   // STRATA_Q6_PLANAR
+                dhead_ = (uint8_t*) strata::kernels::native_q6_k_planar_adopt(dhead_, (int) (row_bytes / 210) * 256,
+                                                                              (int) n_dvocab_, "MTP draft head");
         }
     }
     if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;

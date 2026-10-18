@@ -61,6 +61,13 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         tg->to_float(blob.data() + f.up_off + r * f.gu_row, U.data() + r * H, H);
     }
     for (int64_t r = 0; r < H; ++r) td->to_float(blob.data() + f.down_off + r * f.d_row, D.data() + r * FF, FF);
+    if (f.tail_off) {   // the blob's scales, as the engine applies them (gate and up as read, down on its output)
+        float tail[4];
+        std::memcpy(tail, blob.data() + f.tail_off, sizeof tail);
+        for (auto& v : G) v *= tail[0];
+        for (auto& v : U) v *= tail[1];
+        for (auto& v : D) v *= tail[2];
+    }
     std::mt19937 rng(11 + seed);
     std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> x((size_t) NT * H);
@@ -92,6 +99,25 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             cpu::native_quant_act(f, x.data() + k * H, act[k].data());
             a[k] = act[k].data();
             ffp[k] = ff[k].data();
+        }
+        if ((f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22) && cpu::cpu_avx2_ok() && !cpu::cpu_avx512_ok()) {
+            const auto dot = ggml_get_type_traits_cpu((ggml_type) f.gu_type)->vec_dot;
+            size_t differ = 0;
+            std::vector<float> exact((size_t) FF);
+            for (int k = 0; k < NT; ++k) {
+                cpu::iq256_gu_rows_exact_one(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a[k],
+                                              exact.data(), 0, (int) FF);
+                for (int r = 0; r < FF; ++r) {
+                    float g = 0.f, u = 0.f;
+                    dot((int) H, &g, 0, blob.data() + (size_t) r * f.gu_row, 0, a[k], 0, 1);
+                    dot((int) H, &u, 0, blob.data() + f.up_off + (size_t) r * f.gu_row, 0, a[k], 0, 1);
+                    const float want = (g / (1.f + std::exp(-g))) * u;
+                    differ += std::memcmp(&want, &exact[(size_t) r], sizeof(float)) != 0;
+                }
+            }
+            std::printf("%s exact singleton: %zu of %lld real gate/up rows differ from ggml\n",
+                        label.c_str(), differ, (long long) (NT * FF));
+            if (differ) ++failures;
         }
         cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
         // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
@@ -404,6 +430,11 @@ std::vector<uint8_t> synthetic_blob(const cpu::NativeFmt& f, int seed) {
     quant(f.gu_type, FF, H, blob.data());
     quant(f.gu_type, FF, H, blob.data() + f.up_off);
     quant(f.d_type, H, FF, blob.data() + f.down_off);
+    if (f.tail_off) {   // NVFP4's {s_gate, s_up, s_down, 0}: non-unit for an NVFP4 projection, 1.0 for another format
+        const bool g4 = f.gu_type == 40, d4 = f.d_type == 40;
+        const float tail[4] = {g4 ? 0.75f : 1.f, g4 ? 1.25f : 1.f, d4 ? 0.5f : 1.f, 0.f};
+        std::memcpy(blob.data() + f.tail_off, tail, sizeof tail);
+    }
     return blob;
 }
 

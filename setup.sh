@@ -29,6 +29,19 @@ if [ ! -x .venv/bin/python ]; then
       fi
     done
   fi
+  # macOS: the system Python is 3.9; a standalone Python 3.12 goes into .python (no sudo, no Homebrew; pinned)
+  if [ -z "$PY" ] && [ "$(uname -s)" = Darwin ]; then
+    if [ ! -x .python/python/bin/python3 ]; then
+      PBS="https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.12.15%2B20261009-aarch64-apple-darwin-install_only.tar.gz"
+      echo "Python 3.10+ is needed; downloading a standalone Python 3.12 into .python (25 MB) ..."
+      mkdir -p .python && curl -fL --retry 3 -o .python/python.tar.gz "$PBS" || { echo "could not download Python"; exit 1; }
+      if [ "$(shasum -a 256 .python/python.tar.gz | cut -d" " -f1)" != "83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8" ]; then
+        rm -f .python/python.tar.gz; echo "the Python download does not match its pinned SHA-256"; exit 1
+      fi
+      tar xzf .python/python.tar.gz -C .python && rm -f .python/python.tar.gz
+    fi
+    PY=.python/python/bin/python3
+  fi
   if [ -z "$PY" ]; then
     echo "Python 3.10+ with venv is needed; installing it (sudo will ask for your password) ..."
     if command -v apt-get >/dev/null 2>&1; then
