@@ -110,6 +110,13 @@ public:
     // missing experts are put in place).  Returns the GPU time in seconds.
     double run_graph_seg(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, void (*at_cut)(void*, int),
                          void* user);
+    // run_graph_seg without stopping the queue: ONE concurrent encoder; seq_d is injected after every cut
+    // (it bumps a device counter the host reads through the shared buffer), spin_d before every segment after
+    // the first (it waits for a plain host store to `rel`).  The host spins on seq, runs at_cut(s), stores
+    // rel = s + 1.  Bench: metal/tests/dispatch_lat times it against the event handshake (230-400 us/cut on
+    // the M1 Max).  seq/rel are the host addresses of those counters.
+    double run_graph_flag(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, const Dispatch& seq_d,
+                          const Dispatch& spin_d, const int* seq, int* rel, void (*at_cut)(void*, int), void* user);
     // One command buffer per `run_cb` call, empty or not: measures commit+wait round trips.
     double run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds = nullptr);
 

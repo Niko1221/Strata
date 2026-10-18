@@ -158,7 +158,13 @@ private:
         return &it->second;
     }
     void push(std::vector<mtl::Dispatch>& ds, mtl::Dispatch d) {
-        d.barrier = !nb_;
+        // timing only (WRONG answers): STRATA_METAL_NOBARRIER=1 drops every memory barrier, measuring what
+        // the barrier serialization costs (dispatches race; the numbers are diagnostics, not results)
+        static const bool nobar = [] {
+            const char* e = std::getenv("STRATA_METAL_NOBARRIER");
+            return e && e[0] == '1';
+        }();
+        d.barrier = (nobar && !in_mtp_ && !d.indirect) ? false : !nb_;
         nb_ = false;
         // timing only (WRONG answers): STRATA_METAL_SKIP=a,b,... runs the dispatches whose pipeline name contains one
         // of the words as empty grids (the marginal cost of a kernel class by leaving it out)
@@ -222,6 +228,8 @@ private:
     int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
+    bool in_mtp_ = false;   // STRATA_METAL_NOBARRIER keeps barriers through the MTP draft round: the host reads the
+                            // draft pick as a table index, so racing it faults the process (round 14's N_p)
     int max_t_ = 1;
     int64_t max_cells_ = 0;
     int64_t n_vocab_ = 0;
@@ -273,11 +281,16 @@ private:
     // ---- SSD streaming (stream.h): the dense weights in W_, the routed experts in the arena
     std::unique_ptr<ExpertStream> st_;
     bool stream_ = false, st_pred_ = false;
+    bool cut_flag_ = true;    // cut handshake: the device-flag spin; STRATA_METAL_CUT=event: the MTLSharedEvent pair
+    mtl::Pipeline psq_, psp_;   // cut_seq/cut_spin (in lib_: units.metal compiles only after quant.metal)
+    mtl::Buffer hbuf_;          // handshake counters [seq, rel, seen], zeroed at every window
+    mtl::Dispatch fseq_, fspin_;
     std::vector<int>* cuts_ = nullptr;
     mtl::Buffer predL_, predL2_;     // 48 x MAXT x 512: layer l + 1's (l + 2's) router logits from layer l's FFN input
     int seg_T_ = 0;
     bool stream_arena(std::string& err);
     double run_ds(Cached& c);
+    double run_hand(const std::vector<mtl::Dispatch>& ds, const std::vector<int>& cuts);
     // prompts on the matrix units (prompt_chunk below)
     struct PromptGemm;
     PromptGemm* pg_ = nullptr;
@@ -624,6 +637,16 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (!st_->load_dense(f_, *cx_, skip, W_, err)) return false;
         const char* e = std::getenv("STRATA_METAL_PREFETCH");
         st_pred_ = !(e && std::atoi(e) <= 0);
+        const char* cf = std::getenv("STRATA_METAL_CUT");   // =event: back to the MTLSharedEvent handshake
+        cut_flag_ = !(cf && std::string(cf) == "event");
+        if (cut_flag_) {
+            hbuf_ = cx_->alloc(12);
+            psq_ = cx_->pipeline(lib_, "cut_seq");
+            psp_ = cx_->pipeline(lib_, "cut_spin");
+            fseq_.p = &psq_; fseq_.args = {mtl::Arg::B(hbuf_, 0)}; fseq_.tg[0] = 32; fseq_.grid[0] = 1;
+            fspin_.p = &psp_; fspin_.args = {mtl::Arg::B(hbuf_, 4), mtl::Arg::B(hbuf_, 8)};
+            fspin_.tg[0] = 32; fspin_.grid[0] = 1;
+        }
         if (st_pred_) predL_ = A(4 * (size_t) 48 * MAXT * 512);
         if (st_pred_ && st_->ahead2() > 0) predL2_ = A(4 * (size_t) 48 * MAXT * 512);
     }
@@ -1086,6 +1109,7 @@ void Window::ple_cpu(int Tn) {
 }
 
 bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
+    in_mtp_ = false;   // this window build may take the NOBARRIER diagnostic
     mtp_src_ = nullptr;
     if (Tn < 1 || Tn > MAXT || (head && Tn > max_t_)) { err = "metal window: window size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal window: the window runs past the context"; return false; }
@@ -1145,7 +1169,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
         {
             static const int kt = std::getenv("STRATA_METAL_KPROF") ? std::atoi(std::getenv("STRATA_METAL_KPROF")) : 0;
             static int seen = 0;
-            if (kt == Tn && head && ++seen == 20 && !stream_) kprof(c.ds, Tn);
+            if (kt == Tn && head && ++seen == 20) kprof(c.ds, Tn);   // stream too: the serial replay reads the last window's smap codes (valid slots); timing only, the run's answers go wrong after it
         }
         tp_rg_ = now_ms() - r0;
         last_n_disp_ = (int) c.ds.size();
@@ -1233,7 +1257,17 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
 
 double Window::run_ds(Cached& c) {
     if (!stream_) return cx_->run_graph(c.ds);
-    return cx_->run_graph_seg(c.ds, c.cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+    return run_hand(c.ds, c.cuts);
+}
+
+// one window's cut handshake: the device-flag spin (default) or the events (STRATA_METAL_CUT=event).  On the
+// M1 Max the flag won 87.77 -> 56.04 ms per T=2 window and 19.97-20.30 -> 29.75-30.49 tok/s with byte-identical
+// outputs (3x3 arms, gap/results/1018-1534); dispatch_lat times the handshake itself at ~90 vs 230-400 us/cut.
+double Window::run_hand(const std::vector<mtl::Dispatch>& ds, const std::vector<int>& cuts) {
+    auto turn = [](void* u, int s) { ((Window*) u)->at_cut(s); };
+    if (!cut_flag_) return cx_->run_graph_seg(ds, cuts, turn, this);
+    std::memset(hbuf_.ptr, 0, 12);   // the counters restart with every window
+    return cx_->run_graph_flag(ds, cuts, fseq_, fspin_, (const int*) hbuf_.ptr, (int*) hbuf_.ptr + 1, turn, this);
 }
 
 namespace {
@@ -1578,6 +1612,7 @@ bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, s
 }
 
 bool Window::commit(int n_keep, std::string& err) {
+    in_mtp_ = false;
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
     if (last_T_ > 1) {
@@ -1996,6 +2031,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
 // the prompt's K/V: cell cell0 + i pairs the main window's final residual row i with the token at cell0 + i + 1
 bool Window::mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
+    in_mtp_ = true;   // the MTP draft round: NOBARRIER leaves these barriers alone
     mrope_sync(cell0, n);
     // every group of MAXT rows in one command buffer: the embedding rows of all of them in mpemb_ (row c + i)
     if ((int64_t) mpemb_rows_ < n) {
@@ -2045,6 +2081,7 @@ bool Window::mtp_draft(int Tn, const int32_t* tokens, int64_t p, int a, int max_
                        float min_p, int* n_drafts, std::string& err) {
     if (!mtp_on_) { err = "metal mtp: not loaded"; return false; }
     (void) Tn;
+    in_mtp_ = true;   // the MTP draft round: NOBARRIER leaves these barriers alone
     mrope_sync(p, a + max_steps + 1);
     int n = 0;
     int32_t tok = tokens[a];
@@ -2287,6 +2324,7 @@ bool Window::prompt_gemm_init(std::string& err) {
 }
 
 bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err) {
+    in_mtp_ = false;
     PromptGemm& p = *pg_;
     p.meta.as<uint32_t>()[2] = p.gu_v3 ? NFF / (32 * 4) : NFF / 64;
     p.meta.as<uint32_t>()[5] = p.dn_v3 ? N / (64 * 2) : N / 64;
@@ -2649,7 +2687,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     if (stream_) {
         seg_T_ = T;
         cut_ids_ = p.ids.as<int32_t>();
-        cx_->run_graph_seg(ds, cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+        run_hand(ds, cuts);
         cut_ids_ = nullptr;
     } else {
         cx_->run_graph(ds);

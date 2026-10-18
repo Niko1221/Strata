@@ -95,6 +95,20 @@ bound. `STRATA_METAL_PROMPT_EXPERTS=v3` must not be used on the M1: it hits the 
 right-input layout is not k-runs-of-4). Needle recall at 130K with a repeated filler: correct at depths 5%, 75% and
 95% (exact code tokens), missed at 25% and 50% within 24 tokens.
 
+Streaming decode (what this box serves: `STRATA_METAL_STREAM=1`, 33 GB arena, `gap/results/1018-*`) got two
+changes on 2026-10-18, both with byte-identical answers (the 128-token t357 output line md5s
+`956dbac3e10818130ee6a82d3327f688` in every arm). Read-ahead depth 12 for big-expert packs (default, was 6;
+`STRATA_METAL_PREFETCH=0` opts out): decode misses 15.9 -> 8.6 per window, window GPU 88.8 -> 83.0 ms,
+19.0 -> 20.3 tok/s, 7 candidate vs 7 anchor arms, +63 MB read per window overlapped behind the GPU. And the cut
+handshake is now a device-flag spin (`cut_seq`/`cut_spin` in `metal/kernels/units.metal`,
+`Context::run_graph_flag`): the MTLSharedEvent pair costs 230-400 us per cut on the M1 Max because the queue
+stops and re-arms around every window's 48 cuts (`dispatch_lat` seg rows); the spin propagates in ~90 us and
+never stops the queue. Window T=2 went 87.8 -> 56.0 ms, against the busy + miss floor of ~55.5 ms, and decode
+19.5-20.3 -> 29.75-30.49 tok/s (3 flag vs 3 event arms interleaved; re-confirmed as the default against the
+opt-out anchors at 29.97-30.49 vs 19.21-19.90, gap/results/1018-1545; `STRATA_METAL_CUT=event` opts back). The
+0.8 ms/miss law held in every arm; `gap/gap.sh` pins `STRATA_METAL_ARENA_GB=33` so the dynamic file-cache floor
+(`sysctl vm.vm_page_filecache_min`) cannot move the arena between arms.
+
 IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
 to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
 with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users

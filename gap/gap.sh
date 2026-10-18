@@ -16,6 +16,7 @@ RESTORED=0
 trap 'restore' EXIT INT TERM
 
 stop_server() {
+  [[ ${GAP_NO_SERVER:-0} == 1 ]] && { echo "server left alone (GAP_NO_SERVER=1)"; return; }
   local pid i
   pid=$(pgrep -x server | head -1) || true
   [[ -z $pid ]] && { echo "server not running at start"; return; }
@@ -29,6 +30,7 @@ stop_server() {
 restore() {
   local i
   [[ $RESTORED == 1 ]] && return
+  [[ ${GAP_NO_SERVER:-0} == 1 ]] && { RESTORED=1; return; }
   if ! pgrep -x server >/dev/null; then
     nohup /opt/homebrew/bin/server $(cat "$OUT/server-argv.txt") >"$OUT/server-restore.log" 2>&1 &
   fi
@@ -43,12 +45,17 @@ restore() {
 run() { # name bin env tok mn ctx extra
   local name=$1 bin=$2 envs=$3 tok=$4 mn=$5 ctx=$6 extra=$7
   echo "=== $name $(date +%T)" | tee -a "$SUM"
-  env STRATA_METAL_STREAM=1 STRATA_METAL_PROMPT_CHUNK=4096 STRATA_METAL_LEAVE_SHARE=0.35 $envs \
-    "$bin" --pack "$PACK" --native "$G1" --ple-gguf "$G2" --expert-profile "$FORK/data/expert-profile.bin" \
-    --expert-cache 64 --prefill auto --spec 2 --suffix-draft 0 --mtp "$MTP" \
-    --max-context "$ctx" --mmap-experts --tokens-file "$FORK/gap/tokens/$tok" --max-new "$mn" $extra \
-    > "$OUT/$name.txt" 2>&1
-  grep -E "prompt chunk pos|prefill +[0-9]|decode +[0-9]" "$OUT/$name.txt" | tail -4 | tee -a "$SUM"
+  local fc=$(sysctl -n vm.vm_page_filecache_min) fpg=$(vm_stat | awk '/Pages free/{gsub(/\./,"",$3); print $3}')
+  if [[ $bin == *dispatch_lat || $bin == *alu_bench ]]; then
+    "$bin" > "$OUT/$name.txt" 2>&1
+  else
+    env STRATA_METAL_STREAM=1 STRATA_METAL_PROMPT_CHUNK=4096 STRATA_METAL_LEAVE_SHARE=0.35 STRATA_METAL_ARENA_GB=33 $envs \
+      "$bin" --pack "$PACK" --native "$G1" --ple-gguf "$G2" --expert-profile "$FORK/data/expert-profile.bin" \
+      --expert-cache 64 --prefill auto --spec 2 --suffix-draft 0 --mtp "$MTP" \
+      --max-context "$ctx" --mmap-experts --tokens-file "$FORK/gap/tokens/$tok" --max-new "$mn" $extra \
+      > "$OUT/$name.txt" 2>&1
+  fi
+  echo "arm-start fc_min_pages $fc free_pages $fpg" >> "$OUT/$name.txt"
 }
 
 stop_server

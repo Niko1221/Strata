@@ -353,6 +353,48 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
     }
 }
 
+double Context::run_graph_flag(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, const Dispatch& seq_d,
+                               const Dispatch& spin_d, const int* seq, int* rel, void (*at_cut)(void*, int),
+                               void* user) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        size_t i = 0;
+        for (size_t s = 0; s <= cuts.size(); ++s) {
+            const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
+            if (s > 0) {   // the gate: this segment's dispatches may not read pre-patch state
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, spin_d);
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            const size_t first = i;
+            for (; i < end; ++i) {
+                if (i > first && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, ds[i]);
+            }
+            if (s < cuts.size()) {   // mark the cut: visible only after this segment's writes
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, seq_d);
+            }
+        }
+        [enc endEncoding];
+        [cb commit];
+        for (size_t s = 0; s < cuts.size(); ++s) {
+            while (*seq < (int) s + 1) {
+                if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
+            }
+            at_cut(user, (int) s);
+            *rel = (int) s + 1;
+        }
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
 double Context::run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_seconds) {
     double gpu = 0;
     const double t0 = now_s();
