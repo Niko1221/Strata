@@ -35,6 +35,7 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 | UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 91 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
 
+- **The engine's own memory grows with the context.** Beside the mapped file, the engine holds its buffers and the decode window's K/V for the whole `--max-context`. Measured on the M5 Max with Qwen3.8-Flash-Next IQ3_S (phys_footprint 5 s after the engine is ready): 7.68 GiB at 64K context and 10.61 GiB at 262K. Before this version the engine also kept an unused second copy of the K/V in the session buffer, resident in full: 9.27 GiB at 64K and 16.99 GiB at 262K.
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
 - **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
 - **A Mac whose memory cannot hold the pack (32-48 GB):** the engine streams the experts from the SSD instead. It decides this by itself when the experts are more than 60% of Metal's share.
