@@ -1,5 +1,8 @@
 """Request inspection through HTTP; no native model or GPU is required."""
 import json
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -205,6 +208,155 @@ class ConversationCacheCard(unittest.TestCase):
     PARK = ("strata serve: conversation cache: parked 5000 tokens in 12.0 ms; parked=1 bytes=104857600 evictions=0 "
             "snapshot_bytes=104857600 reused_kv_bytes=0\n")
     RESTORE = "strata serve: conversation cache: restored 4000 tokens (exact) in 30.0 ms; parked=2 bytes=209715200\n"
+
+    PRESSURE = ("strata serve: conversation cache: skip parking (physical RAM admission; need 2128 MiB plus "
+                "32768 MiB floor, 34449 MiB available, source meminfo; evicted 38, 0 still parked)\n")
+
+    def test_pressure_refusal_clears_empty_cache_without_inventing_eviction_total(self):
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK.replace("parked=1", "parked=38").replace("evictions=0", "evictions=41"),
+                           encoding="utf-8")
+            c = ConvCacheLog()
+            before = c.poll(str(log), 0)
+            with log.open("a", encoding="utf-8") as f:
+                f.write(self.PRESSURE)
+            after = c.poll(str(log), 0)
+            self.assertEqual((after["parked"], after["bytes"]), (0, 0))
+            # The 38 counts only physical-pressure evictions. make_room() can have evicted others first.
+            self.assertIsNone(after["evictions"])
+            for key in ("parks", "restores", "last_event", "last_tokens", "last_at"):
+                self.assertEqual(after[key], before[key], key)
+            self.assertEqual(c.poll(str(log), 0), after)  # polling again must not count the refusal twice
+
+    def test_pressure_survivors_have_unknown_bytes_until_an_authoritative_event(self):
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK + self.PRESSURE.replace("0 still parked", "1 still parked"), encoding="utf-8")
+            c = ConvCacheLog()
+            state = c.poll(str(log), 0)
+            self.assertEqual(state["parked"], 1)
+            self.assertIsNone(state["bytes"])
+            self.assertIsNone(state["evictions"])
+            with log.open("a", encoding="utf-8") as f:
+                f.write(self.RESTORE)
+            state = c.poll(str(log), 0)
+            self.assertEqual((state["parked"], state["bytes"], state["restores"]), (2, 209715200, 1))
+            self.assertIsNone(state["evictions"])  # a restore line does not report that cumulative counter
+            with log.open("a", encoding="utf-8") as f:
+                f.write(self.PARK.replace("evictions=0", "evictions=79"))
+            state = c.poll(str(log), 0)
+            self.assertEqual((state["parked"], state["bytes"], state["evictions"], state["parks"]),
+                             (1, 104857600, 79, 2))
+
+    def test_refusals_without_counts_do_not_keep_stale_occupancy(self):
+        from serve.server import ConvCacheLog
+        refusals = (
+            "skip parking (snapshot 2128 MiB exceeds available budget)",
+            "skip parking (physical RAM admission; need 2128 MiB plus 32768 MiB floor, or telemetry unavailable)",
+            "skip parking (RAM floor after capture: 32768 MiB needed, 31000 MiB available, source meminfo)",
+            "allocation failed; skip parking",
+        )
+        for refusal in refusals:
+            with self.subTest(refusal=refusal), tempfile.TemporaryDirectory() as d:
+                log = Path(d) / "strata.log"
+                log.write_text(self.PARK + "strata serve: conversation cache: " + refusal + "\n", encoding="utf-8")
+                state = ConvCacheLog().poll(str(log), 0)
+                self.assertIsNone(state["parked"])
+                self.assertIsNone(state["bytes"])
+                self.assertIsNone(state["evictions"])
+                self.assertEqual((state["parks"], state["restores"]), (1, 0))
+
+    def test_pressure_refusal_waits_for_a_complete_line_and_resets_on_new_run(self):
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK + self.PRESSURE.rstrip("\n"), encoding="utf-8")
+            c = ConvCacheLog()
+            self.assertEqual(c.poll(str(log), 0)["parked"], 1)
+            with log.open("a", encoding="utf-8") as f:
+                f.write("\n")
+            self.assertEqual(c.poll(str(log), 0)["parked"], 0)
+            state = c.poll(str(log), log.stat().st_size)
+            self.assertEqual((state["parked"], state["bytes"], state["evictions"], state["parks"]), (0, 0, 0, 0))
+
+    def test_minimum_length_skip_preserves_counters_and_reports_its_count(self):
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK + "strata serve: conversation cache: skip parking "
+                           "(100 tokens, below the 4096 minimum; parked=1)\n", encoding="utf-8")
+            state = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((state["parked"], state["parks"], state["evictions"]), (1, 1, 0))
+            self.assertIsNone(state["bytes"])  # the count says nothing about retained K/V bytes
+
+    def test_dropped_copies_do_not_keep_stale_bytes(self):
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK + "strata serve: conversation cache: dropped 1 superseded copy of this "
+                           "conversation; parked=0\n", encoding="utf-8")
+            state = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((state["parked"], state["parks"], state["evictions"]), (0, 1, 0))
+            self.assertIsNone(state["bytes"])  # unlike the pressure gate, this can still hold retained K/V
+
+    def test_metrics_reports_pressure_refusal_and_recovers_on_next_park(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK, encoding="utf-8")
+            tok = ByteTokenizer()
+            engine = MockEngine(tok, "Hello.", max_context=4096)
+            engine.info = {"conversation_cache_mib": 8192, "conversation_cache_slots": 50}
+            engine.log_path, engine.log_start = str(log), 0
+            svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+            httpd = serve(svc, port=0)
+            url = f"http://127.0.0.1:{httpd.server_address[1]}/metrics"
+            def read():
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    return json.loads(response.read())["conversation_cache"]
+            try:
+                self.assertEqual(read()["parked"], 1)
+                with log.open("a", encoding="utf-8") as f:
+                    f.write(self.PRESSURE.replace("evicted 38", "evicted 1"))
+                state = read()
+                self.assertEqual((state["parked"], state["bytes"], state["parks"]), (0, 0, 1))
+                self.assertIsNone(state["evictions"])
+                with log.open("a", encoding="utf-8") as f:
+                    f.write(self.PARK.replace("evictions=0", "evictions=1"))
+                state = read()
+                self.assertEqual((state["parked"], state["bytes"], state["evictions"], state["parks"]),
+                                 (1, 104857600, 1, 2))
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_card_hides_unknown_bars_and_shows_them_again_when_known(self):
+        source = (Path(__file__).parent / "web" / "app.js").read_text(encoding="utf-8")
+        render = source[source.index("function renderConvCache("):source.index("function renderTotals(")]
+        script = ("const elements = {}; const $ = id => elements[id] ||= {style: {}};\n"
+                  "const fmt = n => n == null ? 'unknown' : String(n); const gb = fmt;\n"
+                  "const facts = () => {}; const since = () => '';\n" + render +
+                  "const base = {enabled: true, slots: 50, budget_mib: 1024};\n"
+                  "renderConvCache({...base, parked: null, bytes: null, evictions: null});\n"
+                  "const unknown = JSON.parse(JSON.stringify(elements));\n"
+                  "renderConvCache({...base, parked: 0, bytes: 0, evictions: 0});\n"
+                  "const empty = JSON.parse(JSON.stringify(elements));\n"
+                  "renderConvCache({...base, parked: 25, bytes: 536870912, evictions: 1});\n"
+                  "console.log(JSON.stringify({unknown, empty, known: elements}));")
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        states = json.loads(result.stdout)
+        for key in ("cc-slots-bar", "cc-mem-bar"):
+            self.assertTrue(states["unknown"][key].get("hidden", False))
+            self.assertFalse(states["empty"][key]["hidden"])
+            self.assertEqual(states["empty"][key]["style"]["width"], "0%")
+            self.assertFalse(states["known"][key]["hidden"])
+            self.assertEqual(states["known"][key]["style"]["width"], "50%")
+        self.assertIn("unknown", states["unknown"]["cc-slots-text"]["textContent"])
+        self.assertIn("unknown", states["unknown"]["cc-mem-text"]["textContent"])
 
     def test_the_log(self):
         from serve.server import ConvCacheLog

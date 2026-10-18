@@ -742,6 +742,9 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    PRESSURE_SKIP = re.compile(r"conversation cache: skip parking \(physical RAM admission;.*; "
+                               r"evicted \d+, (\d+) still parked\)")
+    MINIMUM_SKIP = re.compile(r"conversation cache: skip parking \(\d+ tokens, below the \d+ minimum; parked=(\d+)\)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -789,6 +792,24 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
+                self.state["bytes"] = None             # retained K/V can remain even when no entries do
+                continue
+            m = self.MINIMUM_SKIP.search(line)
+            if m:
+                self.state["parked"] = int(m.group(1))
+                self.state["bytes"] = None
+                continue                               # this refusal precedes make_room(): no evictions
+            if ("conversation cache: skip parking (" in line or
+                    "conversation cache: allocation failed; skip parking" in line):
+                # make_room() may have evicted entries before a later refusal, without a park/restore summary.
+                # The pressure line gives the remaining count, but its "evicted N" is only that gate's delta,
+                # not the cumulative total (the budget gate may already have evicted others). Don't guess it.
+                m = self.PRESSURE_SKIP.search(line)
+                remaining = int(m.group(1)) if m else None
+                self.state["parked"] = remaining
+                # The pressure gate runs after take_reuse(), so an empty cache there has no retained K/V.
+                self.state["bytes"] = 0 if remaining == 0 else None
+                self.state["evictions"] = None
         return dict(self.state)
 
 
