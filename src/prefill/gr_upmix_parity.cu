@@ -163,17 +163,27 @@ int check(strata::prefill::Gemm& gm, cudaStream_t st, float* gated, int64_t T, u
         strata::kernels::fused_gr_quantize_q8_0(in.d_wu, d_wu_q8, nb, st);
         strata::kernels::fused_gr_dequant_q8_0(d_wu_q8, d_wu_deq, nb, st);
         Outputs got_deq(T), got_q8(T);
-        strata::prefill::gr_upmix(in.d_lo16, d_wu_deq, in.d_R, in.d_rs, in.d_w, got_deq.mixed, got_deq.bf, got_deq.h, T, st);
-        strata::prefill::gr_upmix(in.d_lo16, nullptr, in.d_R, in.d_rs, in.d_w, got_q8.mixed, got_q8.bf, got_q8.h, T, st, d_wu_q8);
-        (void) cudaStreamSynchronize(st);
+        const bool ok_deq = strata::prefill::gr_upmix(in.d_lo16, d_wu_deq, in.d_R, in.d_rs, in.d_w, got_deq.mixed,
+                                                      got_deq.bf, got_deq.h, T, st);
+        const bool ok_q8 = strata::prefill::gr_upmix(in.d_lo16, nullptr, in.d_R, in.d_rs, in.d_w, got_q8.mixed,
+                                                     got_q8.bf, got_q8.h, T, st, d_wu_q8);
+        if (!ok_deq || !ok_q8 || !ck(cudaStreamSynchronize(st), "run q8")) {
+            (void) cudaFree(d_wu_q8);
+            (void) cudaFree(d_wu_deq);
+            return 1;
+        }
         std::vector<float> m_deq(n), m_q8(n);
         std::vector<uint16_t> bf_deq(n), bf_q8(n), h_deq(n), h_q8(n);
-        (void) cudaMemcpy(m_deq.data(), got_deq.mixed, n * 4, cudaMemcpyDeviceToHost);
-        (void) cudaMemcpy(m_q8.data(), got_q8.mixed, n * 4, cudaMemcpyDeviceToHost);
-        (void) cudaMemcpy(bf_deq.data(), got_deq.bf, n * 2, cudaMemcpyDeviceToHost);
-        (void) cudaMemcpy(bf_q8.data(), got_q8.bf, n * 2, cudaMemcpyDeviceToHost);
-        (void) cudaMemcpy(h_deq.data(), got_deq.h, n * 2, cudaMemcpyDeviceToHost);
-        (void) cudaMemcpy(h_q8.data(), got_q8.h, n * 2, cudaMemcpyDeviceToHost);
+        if (!ck(cudaMemcpy(m_deq.data(), got_deq.mixed, n * 4, cudaMemcpyDeviceToHost), "copy m_deq") ||
+            !ck(cudaMemcpy(m_q8.data(), got_q8.mixed, n * 4, cudaMemcpyDeviceToHost), "copy m_q8") ||
+            !ck(cudaMemcpy(bf_deq.data(), got_deq.bf, n * 2, cudaMemcpyDeviceToHost), "copy bf_deq") ||
+            !ck(cudaMemcpy(bf_q8.data(), got_q8.bf, n * 2, cudaMemcpyDeviceToHost), "copy bf_q8") ||
+            !ck(cudaMemcpy(h_deq.data(), got_deq.h, n * 2, cudaMemcpyDeviceToHost), "copy h_deq") ||
+            !ck(cudaMemcpy(h_q8.data(), got_q8.h, n * 2, cudaMemcpyDeviceToHost), "copy h_q8")) {
+            (void) cudaFree(d_wu_q8);
+            (void) cudaFree(d_wu_deq);
+            return 1;
+        }
         q8_bad = std::memcmp(m_deq.data(), m_q8.data(), n * 4) != 0 ||
                  std::memcmp(bf_deq.data(), bf_q8.data(), n * 2) != 0 ||
                  std::memcmp(h_deq.data(), h_q8.data(), n * 2) != 0;
