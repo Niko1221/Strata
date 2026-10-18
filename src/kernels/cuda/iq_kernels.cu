@@ -3288,15 +3288,20 @@ int env_int_or(const char* name, int dflt) {
 }
 bool expdec_default_gfx12() {
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
-    static const bool g12 = [] {
-        int dev = 0;
-        cudaDeviceProp p;
-        const bool ok = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
+    static int arch[64] = {};   // 0 unknown, 1 gfx12, 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        const bool ok = cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
                         strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
         (void) cudaGetLastError();
-        return ok;
-    }();
-    return g12;
+        arch[dev] = ok ? 1 : 2;
+    }
+    return arch[dev] == 1;
 #else
     return false;
 #endif
@@ -3306,8 +3311,7 @@ int g_expdec = [] {
     return v != nullptr && v[0] != '\0' ? (v[0] != '0' ? 1 : 0) : -1;
 }();
 int expdec_on() {
-    if (g_expdec < 0) g_expdec = expdec_default_gfx12() ? 1 : 0;
-    return g_expdec;
+    return g_expdec < 0 ? (expdec_default_gfx12() ? 1 : 0) : g_expdec;
 }
 int g_expdec_r = env_int_or("STRATA_EXPDEC_R", 1);          // gate/up rows per lane: 1, 2 (bench: R=1 wins on the 2080 Ti)
 int g_expdec_dr = env_int_or("STRATA_EXPDEC_DR", 4);        // down rows per lane: 1, 2, 4 (Q2_0: R=4 wins on both cards)
@@ -3321,8 +3325,7 @@ int g_expdec_down = [] {
     return v != nullptr && v[0] != '\0' ? std::atoi(v) : -1;
 }();
 int expdec_down_on() {
-    if (g_expdec_down < 0) g_expdec_down = expdec_default_gfx12() ? 1 : 0;
-    return g_expdec_down;
+    return g_expdec_down < 0 ? (expdec_default_gfx12() ? 1 : 0) : g_expdec_down;
 }
 int g_expdec_rb = env_int_or("STRATA_EXPDEC_RB", 0);        // gate/up rows per block (0 = auto)
 int g_expdec_drb = env_int_or("STRATA_EXPDEC_DRB", 0);      // down rows per block (0 = auto)
@@ -4267,7 +4270,7 @@ bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
 
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
 
-void native_expert_set_expdec(int on) { g_expdec = on ? 1 : 0; }
+void native_expert_set_expdec(int on) { g_expdec = on < 0 ? -1 : (on ? 1 : 0); }
 int native_expert_expdec() { return expdec_on(); }
 void native_expert_set_expdec_params(const NativeExpertExpdecParams& p) {
     if (p.gu_rows_per_lane > 0) g_expdec_r = p.gu_rows_per_lane;
@@ -4285,7 +4288,7 @@ NativeExpertExpdecParams native_expert_expdec_params() {
     p.down_rows_per_lane = expdec_dr();
     p.gu_min_blocks_per_sm = g_expdec_minb >= 4 ? 4 : 2;
     p.down_iq4_nl = g_expdec_d20 ? 1 : 0;
-    p.down = g_expdec_down > 0 ? 1 : 0;
+    p.down = expdec_down_on() ? 1 : 0;
     p.gu_rows_per_block = g_expdec_rb;
     p.down_rows_per_block = g_expdec_drb;
     p.min_blocks = g_expdec_minblk;
