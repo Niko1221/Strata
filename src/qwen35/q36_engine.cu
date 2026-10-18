@@ -30,6 +30,7 @@
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+#include "strata/kernels/cpu/expert_layout.hpp"
 #endif
 
 #include <cublas_v2.h>
@@ -1254,6 +1255,7 @@ struct Engine {
 #if defined(STRATA_Q36_CPU_POOL)
     std::unique_ptr<strata::kernels::cpu::ExpertPool> pool;
     std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
+    std::vector<strata::kernels::cpu::ActQ> acts_q;   // per token: the ActQ-format activation the Q2_0 kernels read
 #endif
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
@@ -2240,6 +2242,10 @@ struct Engine {
         const int n_ent = T * Kp;
         Hy& H = hy[li];
         const Layer& L = layer_at((int) li);
+        // a native Q2_0 pack: pool mode 5 runs the gate/up rows on the Q2_0 kernels, which read the job's `act`
+        // (the ActQ-format activation), not `nact` - the same special case expert_source.cpp makes for the
+        // Flash-Next pool (issue #2947: q36 left `act` null, so the pool crashed on a null deref)
+        const bool q2 = C::q2_native_kernels(H.fmt.gu_type);
         while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
         }
         const auto t0 = Clock::now();
@@ -2261,7 +2267,8 @@ struct Engine {
             ++n_miss;
             const int t = e / Kp;
             if (!quantized[(size_t) t]) {
-                C::native_quant_act(H.fmt, h_h + (size_t) t * N, acts + (size_t) t * C::kNativeActBytes);
+                if (q2) C::act_quant_any(h_h + (size_t) t * N, N, acts_q[(size_t) t]);
+                else C::native_quant_act(H.fmt, h_h + (size_t) t * N, acts + (size_t) t * C::kNativeActBytes);
                 quantized[(size_t) t] = 1;
             }
             auto it = open.find(x);
@@ -2272,7 +2279,8 @@ struct Engine {
                 it = open.insert_or_assign(x, jobs.size() - 1).first;
             }
             C::ExpertJobMulti& j = jobs[it->second];
-            j.nact[j.nt] = acts + (size_t) t * C::kNativeActBytes;
+            if (q2) j.act[j.nt] = &acts_q[(size_t) t];
+            else j.nact[j.nt] = acts + (size_t) t * C::kNativeActBytes;
             j.out[j.nt] = cpu_out + (size_t) e * N;
             ++j.nt;
         }
@@ -2978,6 +2986,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
     CK(cudaMalloc(&E.d_miss, T * Kp * 4));
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
+    E.acts_q.resize(T);
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (staging) {
         CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
