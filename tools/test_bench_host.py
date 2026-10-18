@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,48 @@ class ServerBase(unittest.TestCase):
     def test_a_hostname_is_left_alone(self):
         self.assertEqual(SB.server_base("bench.local", 8080), "http://bench.local:8080")
 
+
+class _NoProc:
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def wait(self, timeout=None):
+        pass
+
+
+class StartServerPort(unittest.TestCase):
+    """The path that starts its own server names the port it starts it on. 69fe4055 dropped the
+    `port` assignment when it inlined the value into server_base, and the three uses of `port`
+    below it died with a NameError; the bench could no longer start its own server."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        cfg = Path(self.tmp.name) / "strata-test.json"
+        cfg.write_text('{"port": 8123}', encoding="utf-8")
+        self.cfg = str(cfg)
+        self.started = []
+        fakes = {
+            "is_strata": lambda base, key: False,
+            "try_json": lambda *a, **k: None,
+            "wait_ready": lambda base, key, proc, timeout, log=None: False,
+            "start_server": lambda cfg_path, port, gpu, log_path: self.started.append(port) or _NoProc(),
+        }
+        for name, fn in fakes.items():
+            real = getattr(SB, name)
+            setattr(SB, name, fn)
+            self.addCleanup(setattr, SB, name, real)
+
+    def test_the_config_port_reaches_start_server(self):
+        self.assertEqual(SB.main(["--config", self.cfg, "--quiet"]), 1)   # not ready: the stub says so
+        self.assertEqual(self.started, [8123])
+
+    def test_the_port_option_wins(self):
+        self.assertEqual(SB.main(["--config", self.cfg, "--port", "9111", "--quiet"]), 1)
+        self.assertEqual(self.started, [9111])
 
 if __name__ == "__main__":
     unittest.main()
