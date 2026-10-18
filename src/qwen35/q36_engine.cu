@@ -2405,9 +2405,11 @@ struct Engine {
         helper_mask_li = -1;   // set below, when this layer's window actually goes to a helper
         if (hy_rows) {
             // A helper GPU takes the entries it holds in its VRAM cache (MAXT windows only); the local hybrid path
-            // below takes the primary's own slots and the host pool's, neither of which overlaps with the helper's
-            // (open() only admits experts the primary has no slot for).  With no helper this is the plain slots +
-            // host pool split it always was.
+            // below takes the primary's own slots and the host pool's, and no entry is computed twice: the three
+            // buckets are separated at run time by the per-entry mask moe_helpers() writes (the grouping skips the
+            // helper's entries, moe_hybrid_cpu's h_miss skips them too).  With no helper this is the plain slots +
+            // host pool split it always was.  Note this is a split of WORK, not of arithmetic: the helper and the
+            // CPU pool are two different implementations, so their rows differ (see moe_helpers).
             if (helpers_enabled() && helper_layer(li) && T <= strata::kernels::cpu::MAXT && !helper_failed)
                 moe_helpers(li, T);
             moe_hybrid_gpu(L, li, T);
@@ -2644,7 +2646,25 @@ struct Engine {
     /// A helper takes only the (layer, expert) pairs it really holds in its VRAM cache, not the whole layer: a P104
     /// holds about 4630 of a stripe's 10240 experts, and the entries it missed must still be computed by the local
     /// slots and the host pool, or the layer's output is wrong.  This is Qwen3.8 Flash's per-entry split (kind[i] =
-    /// 2 the helper, 0 the primary's own cache, -1 the host pool); open() keeps the three buckets from overlapping.
+    /// 2 the helper, 0 the primary's own cache, -1 the host pool); the buckets are kept apart at RUN time, by the
+    /// per-entry mask - not at open time.  open_helpers() passes an empty_primary cache (0 slots), so
+    /// RemoteExperts::open()'s `primary.slot_of(...) < 0` test is vacuously true and admits any ranked pair; a
+    /// helper may therefore hold an expert the primary also holds a slot for, and what keeps the two off the same
+    /// entry is the mask: the local grouping skips the helper's entries (moe_hybrid_gpu's `skip`) and the CPU pool
+    /// skips them too (moe_hybrid_cpu's h_miss).
+    ///
+    /// The row placement above is exact, but the VALUES are not the local path's arithmetic.  A helper quantizes the
+    /// activation q8_1 and runs native_expert_grouped; config A's primary runs the same grouped kernel for the
+    /// experts it holds and ggml-cpu AVX for the rest.  So enabling a helper moves batch entries between two
+    /// different (each internally consistent) implementations, and the token stream diverges accordingly - measured
+    /// on 192.168.1.98 with a forced 36-token prompt (identical tokens, so every logit difference is arithmetic):
+    /// the per-row RMS logit difference is 1.5e-1 to 3.3e-1 (relative ~5e-2) even where argmax still agrees, about
+    /// 10 orders of magnitude above the ~1.7e-14 an fp32 reassociation of this sum could produce.  Nothing here
+    /// reorders or splits the final combine (k_moe_out accumulates all K rows on the primary in pick order, and
+    /// moe_helpers_wait() lands every helper row before moe_end), so this is a change of implementation, not a
+    /// change of summation.  Forcing it to match would mean running the CPU pool's arithmetic on the helper GPUs,
+    /// i.e. giving up the entire speedup, so it is not done; `--kv int8` is a second, independent instance of the
+    /// same thing (an opt-in lossy cache, which flips argmax at row 4 where top1-top2 = 0.001).
     ///
     /// False (with the reason) means a helper errored: `helper_failed` is set and the mask uploaded all-zero, so
     /// the local paths redo the whole window and rewrite every row.
@@ -4353,7 +4373,11 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
     E.helper_src.set(all, g.n_expert);
     std::vector<uint8_t> claimed((size_t) g.n_layers * (size_t) g.n_expert, 0);
     const int64_t per_device = g.n_layers / devices;
-    // a primary cache of zero slots: every (layer, expert) is "not on CUDA0", so each helper takes its own stripe
+    // a primary cache of zero slots: every (layer, expert) is "not on CUDA0", so each helper takes its own stripe.
+    // This is deliberately NOT the primary's real cache, so RemoteExperts::open()'s `primary.slot_of(...) < 0`
+    // test admits every ranked pair and a helper may hold an expert the primary also has a slot for.  Nothing
+    // breaks - the per-entry mask separates them at run time - but do not read that open() guard as "a helper only
+    // ever holds experts the primary has no slot for"; it cannot, with this empty cache.
     strata::core::ExpertCache empty_primary;
     if (!empty_primary.open(1, 1, 1, 4096, err)) { err = "helper: " + err; return false; }
     for (int r = 0; r < 3; ++r) {
