@@ -82,6 +82,12 @@
 #define cudaGetLastError hipGetLastError
 #define cudaPeekAtLastError hipPeekAtLastError
 #define cudaGetDevice hipGetDevice
+// ROCm 6.x marks the hipError_t type [[nodiscard]], so every unchecked HIP call warns under -Wall -Wextra (and
+// would fail a -Werror build; the gfx906 build is not -Werror, see docs/ROCm_6_3_3.md §6). The warnings are
+// suppressed where the call site discards the return by the VOID wrappers below — a void return carries no
+// nodiscard, so the warning stops there. A wrapper that returns hipError_t does NOT help (the attribute rides on
+// the type it returns); such pass-through wrappers were removed and the names map straight onto their hip*
+// functions. A call site that discards one of those must make that explicit with (void).
 #define cudaSetDevice hipSetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
 #define cudaGetDeviceProperties hipGetDeviceProperties
@@ -97,17 +103,20 @@ inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, in
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaDeviceCanAccessPeer hipDeviceCanAccessPeer
 #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
-#define cudaDeviceDisablePeerAccess hipDeviceDisablePeerAccess
+// peer_experts.cpp disables peer access and then polls cudaGetLastError, so wrap the unchecked call.
+inline void strata_device_disable_peer_access(int d) { (void) hipDeviceDisablePeerAccess(d); }
+#define cudaDeviceDisablePeerAccess strata_device_disable_peer_access
 #define cudaDriverGetVersion hipDriverGetVersion
 #define cudaRuntimeGetVersion hipRuntimeGetVersion
 #define cudaSetDeviceFlags hipSetDeviceFlags
 #define cudaMalloc hipMalloc
-#define cudaFree hipFree
+inline void strata_cuda_free(void* p) { (void) hipFree(p); }
+#define cudaFree strata_cuda_free
 #define cudaMemGetInfo hipMemGetInfo
 #define cudaMemcpy hipMemcpy
-#define cudaMemcpyAsync hipMemcpyAsync
+#define cudaMemcpyAsync hipMemcpyAsync   // hip's stream parameter defaults to 0, as CUDA's does
 #define cudaMemcpyPeerAsync hipMemcpyPeerAsync
-#define cudaMemcpyPeer hipMemcpyPeer
+#define cudaMemcpyPeer hipMemcpyPeer   // its call site checks the result
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
 #define cudaMemset hipMemset
 #define cudaMemsetAsync hipMemsetAsync
@@ -124,13 +133,15 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 }
 #define cudaHostAlloc strata_host_alloc
 #define cudaMallocHost(ptr, size) hipHostMalloc(ptr, size, hipHostMallocDefault)
-#define cudaFreeHost hipHostFree
+inline void strata_free_host(void* p) { (void) hipHostFree(p); }
+#define cudaFreeHost strata_free_host
 #define cudaHostRegister hipHostRegister
 #define cudaHostUnregister hipHostUnregister
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
-#define cudaStreamDestroy hipStreamDestroy
+inline void strata_stream_destroy(hipStream_t s) { (void) hipStreamDestroy(s); }
+#define cudaStreamDestroy strata_stream_destroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamQuery hipStreamQuery
 #define cudaStreamWaitEvent hipStreamWaitEvent
@@ -140,15 +151,18 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaLaunchHostFunc hipLaunchHostFunc
 #define cudaEventCreate hipEventCreate
 #define cudaEventCreateWithFlags hipEventCreateWithFlags
-#define cudaEventDestroy hipEventDestroy
+inline void strata_event_destroy(hipEvent_t e) { (void) hipEventDestroy(e); }
+#define cudaEventDestroy strata_event_destroy
 #define cudaEventRecord hipEventRecord
 #define cudaEventQuery hipEventQuery
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaEventElapsedTime hipEventElapsedTime
 #define cudaGraphLaunch hipGraphLaunch
 #define cudaGraphUpload hipGraphUpload
-#define cudaGraphDestroy hipGraphDestroy
-#define cudaGraphExecDestroy hipGraphExecDestroy
+inline void strata_graph_destroy(hipGraph_t g) { (void) hipGraphDestroy(g); }
+#define cudaGraphDestroy strata_graph_destroy
+inline void strata_graph_exec_destroy(hipGraphExec_t g) { (void) hipGraphExecDestroy(g); }
+#define cudaGraphExecDestroy strata_graph_exec_destroy
 #define cudaGraphGetNodes hipGraphGetNodes
 #define cudaGraphNodeType hipGraphNodeType
 #define cudaGraphNodeGetType hipGraphNodeGetType
