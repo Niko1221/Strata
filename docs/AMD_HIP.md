@@ -459,8 +459,7 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
 ## Community-validated cards
 
 Run by their owners, not on the maintainers' machines; setup accepts them like gfx1100 / gfx1201. setup ships a
-hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with [Tuning table](#tuning-table)
-and compare the prompt speed with and without it).
+hipBLASLt table for gfx1200 (the numbers below); gfx1101 has one for hipBLASLt 1.5.0 only (`gfx1101-hipblaslt-100500.txt`, see [Tuning table](#tuning-table)).
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
   hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
@@ -751,6 +750,15 @@ Shipped tables:
   valid: the engine falls back to hipBLASEx for an id the library rejects, and the test still passes. Run it with
   `STRATA_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
   `tune_hipblaslt` before using this table with a different 1.5.0 build.
+- `gfx1101-hipblaslt-100500.txt`: RX 7800 XT (gfx1101, 16 GB) on Windows 11, calibrated with the hipBLASLt in the
+  0.1.44.1 Windows HIP package (ROCm 10.2.0a20260930, hipBLASLt 1.5.0, version number 100500) through a ctypes port
+  of `tune_hipblaslt` (the Windows package has no tool binary) with the same accuracy gates and a 32 MiB workspace.
+  The 16 dense geometries of the gfx1100 100500 table at T = 1024, 4096, 6144 and 8192, plus `f16 1280 2560 1280` at
+  T = 64 to 8192: 70 rows, 0.81x to 15.9x the speed of plain hipBLAS per GEMM (median 6.45x, geometric mean 5.8x; one small row is slower). On the prebuilt
+  0.1.44.1 engine with only `STRATA_HIPBLASLT_TUNING` changed, Swift 1.5 IQ3_XXS at 32K context read fresh prompts at
+  161.7 -> 184.5, 335.1 -> 510.8 and 404.6 -> 695.2 tok/s at 1K / 8K / 24K tokens (medians of 3), decode unchanged.
+  `fallbacks=0` and the HIP ctest were not checked. Measurements, per-row timings and the script:
+  [bench/results/2026-10-16-community-rx-7800-xt-hipblaslt-100500](../bench/results/2026-10-16-community-rx-7800-xt-hipblaslt-100500/README.md).
 - `gfx1151-hipblaslt-100400.txt`: Radeon 8060S (Ryzen AI Max+ 395, gfx1151, 128 GB; Fedora 44, kernel 7.2.8),
   calibrated with the ROCm 7.14.0a20260608 wheels that setup installs for gfx1151 since 0.1.40.2 (#1267): their
   hipBLASLt is 1.4.0 (version number 100400), so neither `gfx1151-hipblaslt-100401.txt` nor `-100500.txt` applied and
