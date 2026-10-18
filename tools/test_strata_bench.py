@@ -339,6 +339,31 @@ class ReportTests(unittest.TestCase):
     def test_no_server_is_an_error_not_a_crash(self):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
+    def test_a_port_taken_by_something_else_names_the_port(self):
+        """#3096: the message named `port`, which main never defined, so the bench crashed instead of telling
+        the user which port is taken."""
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(B, "is_strata", return_value=False), \
+                mock.patch.object(B, "try_json", return_value={"status": "ok"}), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            cfg = Path(d) / "strata-test.json"
+            cfg.write_text(json.dumps({"host": "127.0.0.1", "port": 8123, "args": []}), encoding="utf-8")
+            self.assertEqual(B.main(["--config", str(cfg), "--quiet"]), 2)
+        self.assertIn("8123", err.getvalue())
+
+    def test_the_server_the_bench_starts_uses_the_configs_port(self):
+        """#3096, the same undefined `port` on the path that starts a server of its own."""
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(B, "is_strata", return_value=False), \
+                mock.patch.object(B, "try_json", return_value=None), \
+                mock.patch.object(B, "start_server", return_value=None) as start, \
+                mock.patch.object(B, "wait_ready", return_value=False), \
+                mock.patch.object(B, "stop_server"), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            cfg = Path(d) / "strata-test.json"
+            cfg.write_text(json.dumps({"host": "127.0.0.1", "port": 8123, "args": []}), encoding="utf-8")
+            self.assertEqual(B.main(["--config", str(cfg)]), 1)
+        self.assertIn("8123", out.getvalue())
+        self.assertEqual(start.call_args.args[1], 8123)
+
 
 if __name__ == "__main__":
     unittest.main()

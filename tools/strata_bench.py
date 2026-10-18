@@ -970,10 +970,11 @@ def main(argv=None) -> int:
             return 2
         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     key = a.api_key or ((cfg or {}).get("api_key") or "")
+    port = a.port or int((cfg or {}).get("port", 8080))
     if a.url:
         base = a.url.rstrip("/")
     else:
-        base = server_base(cfg.get("host"), a.port or int(cfg.get("port", 8080)))
+        base = server_base(cfg.get("host"), port)
     red = redactor(key=key)
     started = False
     try:
