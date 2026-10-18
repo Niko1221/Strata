@@ -100,9 +100,9 @@ option(STRATA_GFX1012_PORTABLE_DOT "Use the portable signed-byte dot control on 
 if(STRATA_GFX1012_PORTABLE_DOT)
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_GFX1012_PORTABLE_DOT=1)
 endif()
-# #313: the RDNA3 WMMA GEMM's intrinsics only compile for gfx11 targets and the host pass does not define
-# __gfx11xx__, so the build supplies the macro for gfx11 configs (the kernels also gate on the device at runtime)
-if(CMAKE_HIP_ARCHITECTURES MATCHES "gfx11")
+# #313: the RDNA3 / RDNA4 WMMA GEMM's intrinsics only compile for gfx11 / gfx12 targets and the host pass does not
+# define __gfx11xx__ / __gfx12xx__, so the build supplies the macro for gfx11/gfx12 configs (the kernels also gate on the device at runtime)
+if(CMAKE_HIP_ARCHITECTURES MATCHES "gfx11|gfx12")
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_WMMA_GFX11=1)
 endif()
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)

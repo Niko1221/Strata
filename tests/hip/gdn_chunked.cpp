@@ -202,7 +202,8 @@ int main(int argc, char** argv) {
     int device = 0;
     cudaDeviceProp props{};
     ck(cudaGetDevice(&device), "device"); ck(cudaGetDeviceProperties(&props, device), "properties");
-    const bool wmma = strata::kernels::gfx_arch_is_gfx11_wmma(props.gcnArchName);
+    const bool wmma = strata::kernels::gfx_arch_is_gfx11_wmma(props.gcnArchName) ||
+                      strata::kernels::gfx_arch_is_gfx12_wmma(props.gcnArchName);
     std::printf("device=%s chunked=%d wmma=%d\n", props.gcnArchName, !off, wmma);
     if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) { bench("chunked"); return 0; }
     if (bench_default) { bench("default"); return 0; }
