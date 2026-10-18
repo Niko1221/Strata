@@ -434,7 +434,47 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                 cudaGraph_t qg = nullptr;
                 cudaGraphExec_t qx = nullptr;
                 if (rep == 0) {
+                    const char* prev_ts0 = std::getenv("STRATA_TSUM");
+                    const std::string saved_ts0 = prev_ts0 ? prev_ts0 : "";
+#if defined(_WIN32)
+                    _putenv_s("STRATA_TSUM", "0");
+#else
+                    setenv("STRATA_TSUM", "0", 1);
+#endif
+                    check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "qfuse ts0 R");
                     wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                    check(cudaStreamSynchronize(stream), "qfuse ts0 sync");
+                    const Snapshot s_ts0 = snapshot();
+                    std::vector<uint8_t> q_ts0((size_t) tt * (N / 32) * 36);
+                    check(cudaMemcpy(q_ts0.data(), d_q, q_ts0.size(), cudaMemcpyDeviceToHost), "qfuse ts0 read");
+#if defined(_WIN32)
+                    _putenv_s("STRATA_TSUM", "1");
+#else
+                    setenv("STRATA_TSUM", "1", 1);
+#endif
+                    check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "qfuse ts1 R");
+                    check(cudaMemsetAsync(d_q, 0xff, qbytes, stream), "qfuse ts1 poison");
+                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream) && wrote;
+                    check(cudaStreamSynchronize(stream), "qfuse ts1 sync");
+                    const Snapshot s_ts1 = snapshot();
+#if defined(_WIN32)
+                    _putenv_s("STRATA_TSUM", prev_ts0 ? saved_ts0.c_str() : "");
+#else
+                    if (prev_ts0) setenv("STRATA_TSUM", saved_ts0.c_str(), 1);
+                    else unsetenv("STRATA_TSUM");
+#endif
+                    if (!v3 && (std::memcmp(s_ts0.r_out.data(), s_ts1.r_out.data(), (size_t) tt * D * 4) != 0 ||
+                                std::memcmp(s_ts0.rs.data(), s_ts1.rs.data(), (size_t) tt * HC * 4) != 0 ||
+                                std::memcmp(s_ts0.inject.data(), s_ts1.inject.data(), (size_t) tt * HC * 4) != 0 ||
+                                std::memcmp(s_ts0.mixed.data(), s_ts1.mixed.data(), (size_t) tt * N * 4) != 0)) {
+                        std::printf("  QFUSE: T=%d: STRATA_TSUM=0 vs 1 outputs differ\n", tt);
+                        ++qbad;
+                    }
+                    check(cudaMemcpy(hq.data(), d_q, q_ts0.size(), cudaMemcpyDeviceToHost), "qfuse ts1 read");
+                    if (!v3 && std::memcmp(q_ts0.data(), hq.data(), q_ts0.size()) != 0) {
+                        std::printf("  QFUSE: T=%d: STRATA_TSUM=0 vs 1 q8_1 bytes differ\n", tt);
+                        ++qbad;
+                    }
                 } else {   // a captured read, replayed (twice: rep 1 and 2 use fresh captures, each replayed twice)
                     check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "qfuse begin");
                     wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
