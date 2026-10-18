@@ -8,6 +8,7 @@
 #endif
 #if defined(STRATA_GEMM_DENSE_MMQ)
 #include "strata/prefill/moe_mmq.hpp"
+#include "strata/prefill/rp_moe.hpp"
 #endif
 
 #ifdef STRATA_USE_HIP
@@ -651,6 +652,8 @@ Gemm::~Gemm() {
 #if defined(STRATA_GEMM_DENSE_MMQ)
     delete static_cast<strata::prefill::mmq::Context*>(mmq_ctx_);
     if (mmq_buf_) cudaFree(mmq_buf_);
+    delete static_cast<strata::prefill::rp::Context*>(rp_ctx_);
+    if (rp_w_) cudaFree(rp_w_);
 #endif
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
@@ -1294,6 +1297,30 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
     int32_t* bounds = (int32_t*) ((uint8_t*) mmq_buf_ + bounds_off);
     float* xf = (float*) scratch_;
     auto* ctx = static_cast<mmq::Context*>(mmq_ctx_);
+    // STRATA_DENSE_RP=1: an IQ4_NL weight repacked once into rp_w_ for mx's repacked GEMM (the same products as MMQ,
+    // bitwise); ~0.1 ms of a ~9 ms 4096-token product, and no resident copy
+    namespace rp = strata::prefill::rp;
+    const bool use_rp = rp::dense_enabled() && rp::supported(type, N, K);
+    size_t rp_bytes = 0;
+    if (use_rp) {
+        rp_bytes = rp::matrix_bytes(type, N, K);
+        if (rp_bytes > rp_w_bytes_) {
+            if (rp_w_) cudaFree(rp_w_);
+            if (cudaMalloc(&rp_w_, rp_bytes) != cudaSuccess) {
+                cudaGetLastError();
+                rp_w_ = nullptr;
+                rp_w_bytes_ = 0;
+                mmq_failed_ = true;
+                return false;
+            }
+            rp_w_bytes_ = rp_bytes;
+        }
+        if (!rp_ctx_) {
+            rp_ctx_ = new rp::Context();
+            std::fprintf(stderr, "prefill gemm: dense IQ4_NL through the repacked GEMM (STRATA_DENSE_RP=1)\n");
+        }
+        rp::repack_iq4nl(W, mmq::matrix_bytes(type, N, K), rp_w_, rp_bytes, N, K, 1, stream_);
+    }
 
     for (int64_t r0 = 0; r0 < T; r0 += R) {
         const int64_t rows = (T - r0 < R) ? T - r0 : R;
@@ -1314,7 +1341,13 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
         p.max_rows = rows;
         p.dst = Y + r0 * ldy;
         p.ld_dst = ldy;
-        ctx->run(p, stream_);
+        if (use_rp) {
+            p.w = rp_w_;
+            p.expert_bytes = rp_bytes;
+            static_cast<rp::Context*>(rp_ctx_)->run(p, stream_);
+        } else {
+            ctx->run(p, stream_);
+        }
     }
     return true;
 }

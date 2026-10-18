@@ -125,6 +125,10 @@ private:
     void* mmq_buf_ = nullptr;
     bool mmq_failed_ = false;
     bool dense_mmq_on_ = true;
+    // STRATA_DENSE_RP=1 (gfx906): the repacked GEMM's context and the per-call repacked weight (grow-only)
+    void* rp_ctx_ = nullptr;
+    void* rp_w_ = nullptr;
+    size_t rp_w_bytes_ = 0;
     /// Y = X . W^T with FP16 out, written into Y's own rows and widened there (no buffer): prompt_f16() only.
     void f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy);
 };
