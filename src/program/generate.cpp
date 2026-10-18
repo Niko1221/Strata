@@ -13303,6 +13303,7 @@ int main(int argc, char** argv) {
                         if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
                         p.first_now = first;
                     }
+#if !defined(STRATA_GPU_METAL)
                     for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
                         for (int64_t ex = 0; ex < g.n_expert; ++ex) {
                             const size_t i = (size_t) (l * g.n_expert + ex);
@@ -13312,6 +13313,11 @@ int main(int argc, char** argv) {
                                 any = true;
                             }
                         }
+#else
+                    // Metal: the window's prompt buffers live in the Metal arena, the Metal window reads no host
+                    // residency table, and the Metal engine gave these device slots back for its arena - the loan
+                    // takes no slots, so nothing is marked, and the read leaves nothing to refill after it.
+#endif
                     p.lent_chunk = want_p;
                 }
                 for (const PfPart& p : pf_parts)
