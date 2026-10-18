@@ -731,17 +731,7 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
             for (int s : region_slots_) ++stolen[(size_t) cls_of(s)];
             bool tight = false;
             for (size_t i = 0; i < cls_.size(); ++i) tight = tight || (cls_[i].n > 0 && cls_[i].n - stolen[i] < NE);
-            if (tight) {
-                const uint64_t sz = (bytes + PAGE - 1) / PAGE * PAGE;
-                void* m = mmap(nullptr, (size_t) sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-                if (m == MAP_FAILED) return nullptr;
-                region_slots_.clear();
-                region_ = (uint8_t*) m;
-                region_bytes_ = 0;   // fresh zero pages; nothing in the arena to empty
-                std::fprintf(stderr, "strata metal stream: the arena is small: the prompt's %.2f GB of buffers are their own "
-                                     "allocation, not a region of its slots\n", bytes / 1e9);
-                return region_;
-            }
+            if (tight) return standalone_region(bytes);
         }
         region_ = lo;
         region_bytes_ = (uint64_t) (end - lo);
@@ -749,7 +739,23 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
                      bytes / 1e9, region_slots_.size());
         return lo;
     }
-    return nullptr;
+    // no chunk is big enough for the prompt's buffers (an arena that shrank at the start, a 24 GB Mac): the fallback
+    // inside the loop above is only reached when a chunk fits, so the buffers get their own allocation here too
+    return standalone_region(bytes);
+}
+
+// The prompt's buffers as their own anonymous allocation (fresh zero pages), when no region of the arena's slots
+// takes them: no slots are held while a prompt runs, and the arena keeps decoding with all of its slots.
+uint8_t* ExpertStream::standalone_region(uint64_t bytes) {
+    const uint64_t sz = (bytes + PAGE - 1) / PAGE * PAGE;
+    void* m = mmap(nullptr, (size_t) sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (m == MAP_FAILED) return nullptr;
+    region_slots_.clear();
+    region_ = (uint8_t*) m;
+    region_bytes_ = 0;   // fresh zero pages; nothing in the arena to empty
+    std::fprintf(stderr, "strata metal stream: the arena is small: the prompt's %.2f GB of buffers are their own "
+                         "allocation, not a region of its slots\n", bytes / 1e9);
+    return region_;
 }
 
 void ExpertStream::hold_region(bool hold) {

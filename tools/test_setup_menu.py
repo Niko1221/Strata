@@ -49,6 +49,20 @@ class Nvfp4Note(unittest.TestCase):
             self.assertIn("runs, but UD-IQ4_XS is faster on this card", line, arch)
             self.assertNotIn("native FP4", line)
 
+    def test_an_avx2_cpu_is_told_its_rows_but_not_refused(self):      # #2347
+        line = setup.family_menu_note("nvfp4", False, {"arch": 120}, avx2=True, avx512=False)
+        self.assertIn("no AVX-512", line)
+        self.assertIn("AVX2", line)
+        self.assertIn("native FP4 on this card", line)               # the card part is unchanged
+        self.assertTrue(setup.nvfp4_cpu_note(True, False))
+
+    def test_an_avx512_cpu_and_a_cpu_without_avx2_get_no_cpu_note(self):
+        self.assertEqual(setup.nvfp4_cpu_note(True, True), "")
+        self.assertEqual(setup.nvfp4_cpu_note(False, False), "")     # the older-CPU build says its own piece
+        line512 = setup.family_menu_note("nvfp4", False, {"arch": 120})
+        self.assertNotIn("AVX", line512)
+        self.assertEqual(line512, setup.family_menu_note("nvfp4", False, {"arch": 120}, avx2=True, avx512=True))
+
     def test_the_line_gives_the_download_and_the_ram_need(self):
         line = setup.family_menu_note("nvfp4", False, {"arch": 120})
         d = setup.MODELS["NVFP4"]
@@ -134,10 +148,10 @@ class UnslothDefaultEnv(unittest.TestCase):
 class EnginePlaceholders(unittest.TestCase):
     def test_every_engine_minimum_is_this_release(self):
         self.assertEqual(setup.NVFP4_ENGINE, (0, 1, 44))
-        self.assertEqual(setup.MIN_ENGINE, (0, 1, 44, 1))
+        self.assertEqual(setup.MIN_ENGINE, (0, 1, 45))
         for m in ("UD-Q5_K_XL", "UD-Q6_K_XL", "NVFP4", "NVFP4-NVIDIA"):
             self.assertEqual(setup.MODELS[m]["engine"], (0, 1, 44), m)
-        self.assertIn("0.1.44", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").split("project(strata VERSION", 1)[1][:12])
+        self.assertIn("0.1.45", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").split("project(strata VERSION", 1)[1][:12])
 
 
 class KqLibrary(unittest.TestCase):
@@ -164,6 +178,30 @@ class KqLibrary(unittest.TestCase):
             (tmp / setup.KQ_LIB).write_bytes(b"new kq")
             setup.install_unpacked(tmp, eng)
             self.assertEqual((eng / setup.KQ_LIB).read_bytes(), b"new kq")
+
+
+class ImageEncoderDefault(unittest.TestCase):
+    """#2406: "images: yes" gets the CPU encoder on an NVIDIA card under 24 GB (the GPU encoder cost 3-5% of text speed on
+    16 GB cards, 35-60% on an RTX 4080 SUPER under Windows); --vision gpu is kept with a note."""
+
+    def test_yes_follows_the_card(self):
+        f = setup.flash_vision_encoder
+        self.assertEqual(f("yes", {"vram_gb": 12.0}), "cpu")
+        self.assertEqual(f("yes", {"vram_gb": 15.9}), "cpu")
+        self.assertEqual(f("yes", {"vram_gb": 24.0}), "gpu")
+        self.assertEqual(f("yes", {"vram_gb": 32.0}), "gpu")
+        self.assertEqual(f("yes", {}), "gpu")                    # unknown VRAM: the old default
+        self.assertEqual(f("cpu", {"vram_gb": 32.0}), "cpu")
+        self.assertEqual(f("none", {"vram_gb": 16.0}), "none")
+
+    def test_gpu_asked_is_kept_with_a_note(self):
+        import contextlib, io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(setup.flash_vision_encoder("gpu", {"vram_gb": 16.0}), "gpu")
+            self.assertEqual(setup.flash_vision_encoder("gpu", {"vram_gb": 32.0}), "gpu")
+        self.assertEqual(out.getvalue().count("kept as you chose"), 1)
+        self.assertIn("#2406", out.getvalue())
 
 
 if __name__ == "__main__":

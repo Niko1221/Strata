@@ -527,8 +527,18 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
     // #1194: the experts read from the files are a skewed set: a cache holding a twentieth of them (at least 1.5 GiB)
     // serves most of the repeats, and beat the unbuffered reads at every room measured (it reads 2 to 7 times less from
     // the drive).  `avail` already has what this process and the cgroup hold taken off, so 1 GiB is left for the rest.
-    const bool keepable = strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes, 1ull << 30, 0.05,
-                                                             3ull << 29);
+    // #1752 (KevinX8): ROCm queues are suspended while the kernel reclaims around the process's HMM-tracked arena
+    // (#1691) on an MI50 (gfx906): the cached reads churn the page cache and reclaim unmaps the arena, so the gfx906
+    // backend keeps the old room >= read_bytes rule.  Other HIP cards (gfx1201 measured: not affected) keep the new
+    // rule; STRATA_FILE_CACHE_OLD_RULE=1 / 0 forces the old rule on / off on any Linux build.
+    bool old_rule = false;
+#if defined(STRATA_HIP_GFX906)
+    old_rule = true;
+#endif
+    if (const char* r = std::getenv("STRATA_FILE_CACHE_OLD_RULE"); r != nullptr && r[0] != '\0') old_rule = r[0] != '0';
+    const bool keepable = old_rule
+        ? strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes)
+        : strata::platform::file_cache_keeps(avail, arena_bytes, read_bytes, 1ull << 30, 0.05, 3ull << 29);
     char msg[256];
     std::snprintf(msg, sizeof msg, "%.1f GiB available, %.1f GiB of it still to be taken by the RAM copy, %.1f GiB "
                   "of experts read from the files: the file cache %s keep the ones that come back",
@@ -2687,6 +2697,7 @@ bool FileExpertSource::pin_cache_complement(
     }
 #endif
     const bool what_fits = budget_bytes == kResidentWhatFits;   // #467: the soft mode's second try
+    int64_t budget_lent = 0, budget_lendable = 0;   // the lend region's slots kept by a budget (below), and its size
     uint64_t budget_physical = 0;   // #403: reuse the memory snapshot a budget was sized from
     uint64_t budget_commit = std::numeric_limits<uint64_t>::max();
     if (budget_bytes > 0) {
@@ -2738,6 +2749,36 @@ bool FileExpertSource::pin_cache_complement(
         std::fprintf(stderr, "FileExpertSource: RAM budget %.2f GiB: %lld of the %.2f GiB of experts the GPU cache does "
                              "not hold, by profile rank; the rest are read from the files\n",
                      (double) budget_bytes / 1073741824.0, (long long) held, (double) bytes / 1073741824.0);
+        // The prompt path's lend region under a budget.  Until now a budget turned the loan off (`lend_from_slot = -1`
+        // below), so every lent slot's expert was read from the pack during every prompt chunk and again when the slot
+        // was refilled after the prompt - even with room left in the budget.  Measured on an RX 6900 XT 16 GB with
+        // --resident-budget-gib 71 and UD-Q4_K_XL: the copy kept all 63.47 GiB of the experts outside the cache, 7.5
+        // GiB of the budget stayed unused, and every agent turn read 0.5-2.6 GB of the 1,231 lent slots' experts (3.6
+        // GiB) from the GGUF (a fresh 17K-token prompt 24 GB).  As the unbudgeted path does, take the lend region's
+        // experts from the last slot down (the order the borrowing takes them) while they fit in what the budget has
+        // left; the ones past it keep the file fallback, and `rank` keeps its precedence (the hottest experts first).
+        if (lend_from_slot >= 0 && lend_from_slot < n_slots && additional_gpu_pairs.empty()) {
+            budget_lendable = n_slots - lend_from_slot;
+            std::vector<size_t> order;   // the pairs in the lend region, highest slot first
+            for (size_t i = 0; i < primary_gpu_pairs.size(); ++i)
+                if (pair_slot[i] >= lend_from_slot && pair_slot[i] < n_slots) order.push_back(i);
+            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return pair_slot[a] > pair_slot[b]; });
+            const uint64_t at0 = at;
+            for (size_t i : order) {
+                const auto& pr = primary_gpu_pairs[i];
+                const size_t idx = (size_t) pr.first * (size_t) n_expert_ + (size_t) pr.second;
+                const uint64_t b = layer_blob_bytes_[(size_t) pr.first];
+                if (b > budget_bytes - at) break;   // a contiguous tail of the region: a short prompt lends only the last few
+                if (ranked[idx] != kNoComplement) continue;
+                ranked[idx] = at;
+                at += b;
+                ++budget_lent;
+            }
+            std::fprintf(stderr, "FileExpertSource: the prompt path's lend region: %lld of its %lld slots keep their experts "
+                                 "in RAM too (%.2f GiB of the budget's remaining %.2f GiB)\n",
+                         (long long) budget_lent, (long long) budget_lendable, (double) (at - at0) / 1073741824.0,
+                         (double) (budget_bytes - at0) / 1073741824.0);
+        }
         offsets.swap(ranked);
         bytes = at;
         lend_from_slot = -1;
@@ -3211,7 +3252,7 @@ bool FileExpertSource::pin_cache_complement(
     complement_partial_ = complement_registered_ && !(paced && partial_pin >= bytes);
     complement_locked_ = locked;
     complement_lock_off_ = lock_off;
-    complement_lent_slots_ = lend ? n_slots - keep_from : 0;
+    complement_lent_slots_ = lend ? n_slots - keep_from : budget_lent;   // a budget keeps its own tail of the region
     complement_lent_slots_ += stage_lent;   // and the split stages' regions: pairs the copy kept of them
     complement_ready_ = true;
     std::fprintf(stderr, "FileExpertSource: %s cache complement ready: resident %.2f GiB, pinned %.2f GiB in %.0f s%s%s\n",
@@ -3219,21 +3260,24 @@ bool FileExpertSource::pin_cache_complement(
                  (double) resident_bytes() / 1073741824.0, (double) pinned_bytes() / 1073741824.0,
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - pin_t0).count(),
                  note.empty() ? "" : "; ", note.c_str());
-    if (lend)
+    const int64_t lendable_all = lend ? n_slots - lend_from_slot : budget_lendable;   // 0: no lend region at all
+    if (lendable_all > 0)
         std::fprintf(stderr, "FileExpertSource: %lld of the prompt path's %lld lendable slots keep their experts in RAM "
-                             "too%s\n", (long long) complement_lent_slots_, (long long) (n_slots - lend_from_slot),
-                     complement_lent_slots_ < n_slots - lend_from_slot
+                             "too%s\n", (long long) (lend ? n_slots - keep_from : budget_lent), (long long) lendable_all,
+                     (lend ? n_slots - keep_from : budget_lent) < lendable_all
                          ? " (the others are read from the file when lent: not enough RAM for them)" : "");
-    if (lend && complement_lent_slots_ < n_slots - lend_from_slot) {
+    if (lendable_all > 0 && (lend ? n_slots - keep_from : budget_lent) < lendable_all) {
         // #1389: below full coverage the uncovered experts are read from the pack during a long prompt (a 74K prompt
         // routes through nearly all experts, so the misses repeat). The reporter measured 18% uncovered = -26% prompt
         // speed on a gfx1100; short prompts barely touch them. A warning, not a refusal.
-        const long long lendable = (long long) (n_slots - lend_from_slot);
-        const long long missing = lendable - (long long) complement_lent_slots_;
+        const long long lendable = (long long) lendable_all;
+        const long long missing = lendable - (long long) (lend ? n_slots - keep_from : budget_lent);
         std::fprintf(stderr, "FileExpertSource: WARNING: %lld of %lld lendable slots (%.0f%%) will read their experts from the pack "
                              "during a long prompt; expect a slower prompt read on 50K+ token prompts (one measurement: 18%% uncovered "
-                             "cost 26%%). Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start) and restart; "
-                             "the line above should read N of N.\n", missing, lendable, 100.0 * (double) missing / (double) std::max<long long>(1, lendable));
+                             "cost 26%%). %s and restart; the line above should read N of N.\n", missing, lendable,
+                     100.0 * (double) missing / (double) std::max<long long>(1, lendable),
+                     lend ? "Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start)"
+                          : "Raise --resident-budget-gib (the lend region comes after the ranked experts)");
     }
     if (!stage_lend_regions_.empty()) {
         int64_t offered = 0;
@@ -3262,7 +3306,7 @@ bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {
     return resident_blob(index) != nullptr;
 }
 
-bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
+bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bounce) {
     err.clear();
     if (n <= xstage_cap_) return true;
     if (!staged_.empty()) { err = "FileExpertSource: exchange buffers are in use"; return false; }
@@ -3284,11 +3328,13 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     }
     const char* rotate_env = std::getenv("STRATA_EXCHANGE_ROTATE");
     const bool requested = rotate_env && std::strcmp(rotate_env, "1") == 0;
-    const bool uniform = std::all_of(layer_blob_bytes_.begin(), layer_blob_bytes_.end(),
-                                    [blob](uint64_t b) { return b == blob; });
-    const bool eligible = requested && uniform && complement_pinned_ && !complement_partial_ &&
+    // layers of several block sizes (a GGUF's mixed i-quants): spares of every size, see ExchangeStorage
+    bounce = std::max<int64_t>(0, std::min(bounce, n));
+    const uint64_t rotate_total = detail::ExchangeStorage::exchange_bytes_needed(layer_blob_bytes_, (size_t) n, (size_t) bounce);
+    const bool eligible = requested && rotate_total != 0 && rotate_total <= std::numeric_limits<size_t>::max() &&
+                          complement_pinned_ && !complement_partial_ &&
                           complement_host_ && complement_device_ && complement_bytes_ > 0;
-    const size_t total = (size_t) n * (size_t) blob;
+    const size_t total = eligible ? (size_t) rotate_total : (size_t) n * (size_t) blob;
     void* p = nullptr;
     if (cudaHostAlloc(&p, total, eligible ? cudaHostAllocMapped : cudaHostAllocDefault) == cudaSuccess && p != nullptr) {
         xstage_pinned_ = true;
@@ -3302,14 +3348,21 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     xstage_cap_ = n;
     xstage_blob_ = blob;
     if (requested) {
-        std::string reason = "requires equal-size expert blocks and a fully mapped/pinned RAM complement";
+        std::string reason = "requires a fully mapped/pinned RAM complement";
         void* device = nullptr;
         if (eligible && xstage_pinned_ && cudaHostGetDevicePointer(&device, p, 0) == cudaSuccess && device) {
             try {
-                if (exchange_storage_.initialize(complement_offsets_, (uint8_t*)complement_host_, complement_device_,
-                        complement_bytes_, xstage_, (const uint8_t*)device, (size_t)n, (size_t)blob, reason)) {
-                    std::fprintf(stderr, "FileExpertSource: exchange buffer rotation enabled: %lld buffers, %llu bytes each; no host commit memcpy\n",
-                                 (long long)n, (unsigned long long)blob);
+                std::vector<uint64_t> sizes(complement_offsets_.size(), 0);
+                for (size_t i = 0; i < sizes.size(); ++i) {
+                    const size_t layer = n_expert_ > 0 ? i / (size_t) n_expert_ : 0;
+                    sizes[i] = layer < layer_blob_bytes_.size() ? layer_blob_bytes_[layer] : 0;
+                }
+                if (exchange_storage_.initialize_sized(complement_offsets_, sizes, (uint8_t*)complement_host_, complement_device_,
+                        complement_bytes_, xstage_, (const uint8_t*)device, (uint64_t)total, (size_t)n, (size_t)bounce, reason)) {
+                    std::fprintf(stderr, "FileExpertSource: exchange buffer rotation enabled: %lld buffers in %zu block sizes "
+                                         "(largest %llu bytes, %.2f GiB page-locked); no host commit memcpy\n",
+                                 (long long)n, exchange_storage_.block_sizes(), (unsigned long long)blob,
+                                 (double)total / 1073741824.0);
                 }
             } catch (const std::bad_alloc&) { reason = "buffer metadata allocation failed"; }
         } else if (eligible) {
@@ -3322,22 +3375,24 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     return true;
 }
 
-uint8_t* FileExpertSource::exchange_buffer(int64_t q) const {
+uint8_t* FileExpertSource::exchange_buffer(int64_t q, int64_t layer) const {
     if (xstage_ == nullptr || q < 0 || q >= xstage_cap_) return nullptr;
-    if (exchange_storage_.active()) return exchange_storage_.spare((size_t)q).host;
+    if (exchange_storage_.active())
+        return layer >= 0 && layer < n_layers_ ? exchange_storage_.spare((size_t)q, (size_t)layer_blob_bytes_[(size_t)layer]).host
+                                             : exchange_storage_.spare((size_t)q).host;
     return xstage_ + (size_t) q * (size_t) xstage_blob_;
 }
 
 bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q) {
     if (out < 0 || out >= n_expert_ || !has_resident(layer, in) || has_resident(layer, out) ||
-        exchange_buffer(q) == nullptr) return false;
+        exchange_buffer(q, layer) == nullptr) return false;
     const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
     const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
     if (override_.empty()) override_.assign((size_t) blobs_, nullptr);
     if (override_[i_out] != nullptr) return false;
     for (const Exchange& x : staged_)
         if (x.in == i_in || x.q == q) return false;
-    override_[i_out] = exchange_buffer(q);
+    override_[i_out] = exchange_buffer(q, layer);
     staged_.push_back({i_in, i_out, q, layer_blob_bytes_[(size_t) layer]});
     return true;
 }
@@ -3397,6 +3452,35 @@ int64_t FileExpertSource::commit_exchanges() {
     staged_.clear();
     exchanges_ += n;
     return n;
+}
+
+bool FileExpertSource::replace_resident(int64_t layer, int64_t in, int64_t out) {
+    if (!complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() || !staged_.empty() ||
+        layer < 0 || layer >= n_layers_ || in < 0 || out < 0 || in >= n_expert_ || out >= n_expert_ || in == out)
+        return false;
+    const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+    const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+    if (i_in >= complement_offsets_.size() || i_out >= complement_offsets_.size()) return false;
+    if (!override_.empty() && (override_[i_in] != nullptr || override_[i_out] != nullptr)) return false;
+    const uint64_t at = complement_offsets_[i_out], bytes = layer_blob_bytes_[(size_t) layer];
+    if (at == kNoComplement || complement_offsets_[i_in] != kNoComplement || at > complement_bytes_ ||
+        bytes > complement_bytes_ - at) return false;
+    // read beside the copy first: a failed read leaves `out` where it was
+    if (ram_adapt_buf_.size() < (size_t) bytes) ram_adapt_buf_.resize((size_t) bytes);
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!copy_from_files(layer, in, ram_adapt_buf_.data())) return false;
+    file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                       std::memory_order_relaxed);
+    file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    // #2134: a Foresight slot may be copying out of `out`'s place right now; it is dropped (never served) before the place is rewritten
+    ForesightSwap* fs = fs_swap_.load(std::memory_order_acquire);
+    if (fs != nullptr) fs->hold(layer, (int32_t) out);
+    std::memcpy((uint8_t*) complement_host_ + (size_t) at, ram_adapt_buf_.data(), (size_t) bytes);
+    const bool moved = detail::exchange_cache_complement(complement_offsets_, i_out, i_in);
+    if (fs != nullptr) fs->unhold(layer, (int32_t) out);
+    if (!moved) return false;
+    ++ram_adapts_;
+    return true;
 }
 
 void FileExpertSource::commit_copies() {
@@ -3459,6 +3543,25 @@ const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
     return blob(layer, expert);
 }
 
+int FileExpertSource::blob_parts(int64_t layer, int64_t expert, BlobPart* out) {
+    // the GGUF mapped in place only (three tensors per expert); the RAM copy, an exchange override, the unbuffered
+    // reads, a closed mapping and the I/O prefetch (STRATA_IO_PREFETCH: it preads the ranges the page cache lacks, which a copy out
+    // of the mapping would fault in one page at a time) keep going through blob(), which knows them
+    if (role_ptr_.empty() || !direct_.empty() || io_pf_ || unmapped_ || base_ == nullptr || layer < 0 || expert < 0 ||
+        layer >= n_layers_ || expert >= n_expert_)
+        return 0;
+    const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+    if (complement_ready_ && (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr))) return 0;
+    Span sp[3];
+    const int ns = spans(layer, expert, sp);
+    for (int i = 0; i < ns; ++i) out[i] = {sp[i].p, sp[i].n, sp[i].at};
+    if (ns > 0) {
+        file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
+        ++reads_;
+    }
+    return ns;
+}
+
 const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
     if (base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return nullptr;
     const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
@@ -3495,7 +3598,7 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
         }
         if (complement_ready_ && result != nullptr) file_reads_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (result != nullptr) ++reads_;
+    if (result != nullptr) reads_.fetch_add(1, std::memory_order_relaxed);
     return result;
 }
 
@@ -3767,8 +3870,9 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 ++d.tail_experts;
             }
         }
-        const bool pcie_ok = d.pcie_num > 0 && d.src->pcie_layer(d.layers);
-        int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
+        // STRATA_PCIE_BALANCE (opt-in, #1548): the count comes from the measured CPU and GPU costs instead of the share
+        const bool pcie_ok = (d.pcie_num > 0 || d.pcie_model.on) && d.src->pcie_layer(d.layers);
+        int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8) : 0;
         // STRATA_PCIE_MIN1 (opt-in): the share rounds to 0 for 1-2 misses per layer, so the PCIe lane idles on the typical
         // decode step; with >= 2 misses give it at least one (the last in routing order).  It only flies if its blob is
         // pinned (the fetch below checks), else it stays a CPU miss exactly as before.  Read once.
@@ -3886,6 +3990,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     bool any_cpu = false;
     for (int64_t i = 0; i < n; ++i)
         if (kind[i] == -1) { any_cpu = true; break; }   // -2: skipped (STRATA_ROUTE_TAIL_SKIP), no work
+    if (d.dres_check != nullptr && any_cpu) {   // STRATA_ADAPT_CHECKRES
+        bool published = false;
+        for (int64_t i = 0; i < n && !published; ++i)
+            published = ids[i] < 0 || ids[i] >= d.n_expert ||
+                        d.dres_check[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] < 0;
+        if (!published) ++d.stale_x;
+    }
     const auto c1 = std::chrono::steady_clock::now();
     if (any_cpu) {
         // #578 --remote-expert-opt: a token whose experts all run on a GPU (CUDA0 or a helper) needs no CPU activation
@@ -3964,6 +4075,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++d.multi_entries;
         }
     const auto c3 = std::chrono::steady_clock::now();
+    if (d.plan != nullptr) d.plan->cpu_jobs = njobs;
     pt("run", njobs);
     if (njobs > 0) {
         if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
@@ -4895,7 +5007,7 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     if (layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
-    ++reads_;
+    reads_.fetch_add(1, std::memory_order_relaxed);
     // Pointer arithmetic into resident memory.  No fault, no copy, no mapping - which is the entire point of
     // this class over `FileExpertSource`.
     return base_ + arena_off(layer, expert);
