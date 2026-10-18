@@ -23,12 +23,14 @@ bool dense_enabled();
 /// STRATA_PF_RP=1 or 2: the group buffers are sized for repacked slots (2: sized so, products still MMQ - the A/B
 /// that separates the GEMM from the memory plan's change).
 bool sized();
-/// The repacked GEMM covers this ggml type and shape (IQ4_NL; cols a multiple of 128, rows of 64).
+/// The expert path's repacked GEMM covers this ggml type and shape: IQ4_NL (cols a multiple of 128), and the codebook
+/// gate/up types IQ3_XXS, IQ3_S, IQ2_S (cols a multiple of 256; their gather decodes them to int8 rows and FP32 scales,
+/// rp/repack-iq3.cuh; IQ2_S only with STRATA_PF_RP_IQ3=2, none with 0); rows a multiple of 64.
 bool supported(int ggml_type, int64_t w_rows, int64_t w_cols);
 /// The repacked GEMM covers this type as a dense projection (Gemm::native_mmq, STRATA_DENSE_RP=1): IQ4_NL and Q8_0
 /// (cols a multiple of 128), Q6_K, Q5_K and IQ4_XS (cols a multiple of 256; IQ4_XS is Strata's own layout,
 /// rp/repack-iq4xs.cuh; Q4_K stays on MMQ, faster there); rows a multiple of 64.  The expert path
-/// takes `supported` (IQ4_NL only: its gather writes that layout alone).
+/// takes `supported`.
 bool dense_supported(int ggml_type, int64_t w_rows, int64_t w_cols);
 /// `n` GGUF matrices of [rows, cols] of a dense_supported type (`src_stride` bytes apart) into the repacked layout
 /// `dst_stride` apart: mx-llama.cpp's device repack kernels (src/prefill/rp/repack-convert.cuh).
@@ -53,6 +55,16 @@ void repack_iq4nl_rows(const void* src, void* dst, int64_t rows, int64_t cols, i
 /// one of the two is IQ4_NL gathers the other as GGUF blocks).
 void gather_group_iq4nl(const mmq::GatherGroup& g, size_t up_off, size_t down_off, int64_t n_embd, int64_t n_ff,
                         void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream);
+
+/// The gate/up part of a group gather alone, for a `supported` gate/up type: experts [g.first, g.n) from their blobs
+/// (gate at +0, up at +up_off) into repacked [2*n_ff, n_embd] matrices `gu_stride` bytes apart at gu_dst.
+void gather_group_gu(const mmq::GatherGroup& g, int gu_type, size_t up_off, int64_t n_embd, int64_t n_ff, void* gu_dst,
+                     size_t gu_stride, void* stream);
+
+/// The group gather for the repacked part(s): gather_group_gu for a codebook gate/up (`gu_type`), then
+/// gather_group_iq4nl for the rest (an IQ4_NL gate/up, the down); a null destination is skipped, as there.
+void gather_group(const mmq::GatherGroup& g, int gu_type, size_t up_off, size_t down_off, int64_t n_embd, int64_t n_ff,
+                  void* gu_dst, size_t gu_stride, void* d_dst, size_t d_stride, void* stream);
 
 /// The repacked GEMM over a group, with mmq::Product's meaning (w / expert_bytes: the repacked matrices; xq, bounds,
 /// ids, total_rows, dst, ld_dst as for mmq::Context::run).  Keeps its small routing scratch (the identity source

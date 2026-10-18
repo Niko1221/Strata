@@ -5196,9 +5196,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // group's pointer tables give MMQ each expert's own address (group position q), the others are
                         // gathered at compact positions c = 0..ns-1 of the group buffers, as before (same bytes)
                         const bool direct = use_mmq && lay.native && m.cache && mmq_plan().direct[(size_t) l] && !wmma_l;
-                        // STRATA_PF_RP=1 (gfx906, rp_moe.hpp): an IQ4_NL gate/up (rp_gu) or down (rp_d) product takes
-                        // mx-llama.cpp's repacked GEMM, each on its own (the GSQ-RCO IQ3_S file: IQ4_NL downs under
-                        // IQ3_XXS / IQ2_S / IQ3_S gate/up); its group slots hold the repacked layout (written by the
+                        // STRATA_PF_RP=1 (gfx906, rp_moe.hpp): a gate/up (rp_gu) or down (rp_d) product of a supported type
+                        // takes mx-llama.cpp's repacked GEMM, each on its own (IQ4_NL; the GSQ-RCO IQ3_S file's IQ3_XXS /
+                        // IQ2_S / IQ3_S gate/up decoded to int8 rows by the gather); its group slots hold the repacked layout (written by the
                         // gather, slot_gu / slot_d bytes apart), the other product's stay GGUF for MMQ, and the resident
                         // experts stay GGUF.  The main path only: the peer paths above keep MMQ, and so does a direct
                         // layer (CUDA's pointer tables; none on gfx906).
@@ -5209,9 +5209,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const size_t slot_gu = rp_gu ? rp::matrix_bytes(mmq_gt, 1280, N) : mmq_gub;
                         const size_t slot_d = rp_d ? rp::matrix_bytes(mmq_dt, N, 640) : mmq_db;
                         static const bool rp_check = std::getenv("STRATA_PF_RP_CHECK") != nullptr;
-                        if (rp_main && rp_check && !m.rpc_gu) {
-                            cudaMalloc((void**) &m.rpc_gu, MMQ_GROUP * mmq_gub + MMQ_TAIL);
-                            cudaMalloc((void**) &m.rpc_d, MMQ_GROUP * mmq_db + MMQ_TAIL);
+                        if (rp_main && rp_check && !m.rpc_gu) {   // the largest slots of any layer (gate/up types vary)
+                            cudaMalloc((void**) &m.rpc_gu, MMQ_GROUP * mmq_plan().gu_max + MMQ_TAIL);
+                            cudaMalloc((void**) &m.rpc_d, MMQ_GROUP * mmq_plan().d_max + MMQ_TAIL);
                         }
                         // compare `nr` rows of `ld` floats: the repacked product's (dev_rp) and MMQ's (dev_mmq)
                         auto rp_compare = [&](const char* what, const float* dev_rp, const float* dev_mmq, int64_t nr_, int64_t ld,
@@ -5270,8 +5270,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                m.grp_gu + i * slot_gu, m.grp_d + i * slot_d, m.cs, nullptr,
                                                                nullptr, i + 1 == gg.n ? zero : 0);
                                 }
-                                rp::gather_group_iq4nl(gg, f.up_off, f.down_off, N, 640, rp_gu ? m.grp_gu : nullptr, slot_gu,
-                                                       rp_d ? m.grp_d : nullptr, slot_d, m.cs);
+                                rp::gather_group(gg, mmq_gt, f.up_off, f.down_off, N, 640, rp_gu ? m.grp_gu : nullptr, slot_gu,
+                                                 rp_d ? m.grp_d : nullptr, slot_d, m.cs);
                             } else if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
                                                           m.grp_d, mmq_db, m.cs, f.tail_off,
                                                           f.tail_off ? m.grp_tail : nullptr, zero)) {
@@ -5361,8 +5361,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         mmq::gather_native(blob_dev, blob_dev + f.up_off, rp_gu ? 0 : mmq_gub / 2, blob_dev + f.down_off,
                                                            rp_d ? 0 : mmq_db, m.grp_gu + q * slot_gu, m.grp_d + q * slot_d, m.cs,
                                                            nullptr, nullptr, last_of_group ? MMQ_TAIL : 0);
-                                    rp::gather_group_iq4nl(one, f.up_off, f.down_off, N, 640, rp_gu ? m.grp_gu : nullptr, slot_gu,
-                                                           rp_d ? m.grp_d : nullptr, slot_d, m.cs);
+                                    rp::gather_group(one, mmq_gt, f.up_off, f.down_off, N, 640, rp_gu ? m.grp_gu : nullptr, slot_gu,
+                                                     rp_d ? m.grp_d : nullptr, slot_d, m.cs);
                                     if (rp_check)
                                         mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off, mmq_db,
                                                            m.rpc_gu + q * mmq_gub, m.rpc_d + q * mmq_db, m.cs, nullptr, nullptr,
