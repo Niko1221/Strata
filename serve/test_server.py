@@ -4322,6 +4322,34 @@ class ForcedToolChoice(unittest.TestCase):
                 offered = "search the web" in self.tok.decode(self.engine.prompts[0])
                 self.assertEqual(offered, extra.get("tool_choice") != "none")   # "none": no tools in the prompt
 
+    def test_a_call_the_request_never_offered_stays_text(self):
+        """#3075: the content state scans for a call without gating on the declared tools, so a request that
+        declared none answers with tool_calls and an empty content. The call is text there, call and all."""
+        call = ("<tool_call>\n<function=get_indicators>\n<parameter=indicator>\nclose_10_ema\n</parameter>\n"
+                "</function>\n</tool_call>")
+
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            for t in (self.tok.encode(CallingEngine.THOUGHT + "</think>\n\n" + call)
+                      + self.tok.encode("<|im_end|>", parse_special=True))[:max_new]:
+                if cancel.is_set():
+                    return
+                yield t
+
+        self.engine.generate = generate
+        for extra in ({"tools": None}, {"tools": []}, {"tool_choice": "none"}):
+            for stream in (False, True):
+                with self.subTest(extra=extra, stream=stream):
+                    code, b = self.openai(**extra, stream=stream)
+                    finish, calls, reasoning = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("stop", []))
+                    self.assertEqual(reasoning, CallingEngine.THOUGHT)
+                    if stream:
+                        answer = "".join(json.loads(line[6:])["choices"][0]["delta"].get("content") or ""
+                                         for line in b.splitlines() if line.startswith("data: {"))
+                    else:
+                        answer = b["choices"][0]["message"].get("content") or ""
+                    self.assertEqual(answer, call)
+
     def test_a_call_cut_by_max_tokens_is_not_a_tool_call(self):
         code, b = self.openai(tool_choice="required", max_tokens=5, **self.NO_THINKING)
         finish, calls, _ = self.call_of(code, b, False)

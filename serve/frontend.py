@@ -1282,7 +1282,7 @@ class OutputParser:
                         self.buf = ""
                         return out
                     self.buf, self.lead = stripped, False
-                i = self.buf.find(CALL_START)
+                i = self.buf.find(CALL_START) if self.schemas else -1      # #3075: a call the request never offered
                 b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
                 if b >= 0 and (i < 0 or b < i):
                     # recover: <function=NAME> alone at the start of a line - the call without its <tool_call>.
