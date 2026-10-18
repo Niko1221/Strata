@@ -64,14 +64,21 @@ namespace {
 namespace K = strata::kernels;
 namespace MMQ = strata::prefill::mmq;
 
-#define CK(x)                                                                                                          \
-    do {                                                                                                               \
-        cudaError_t e_ = (x);                                                                                          \
-        if (e_ != cudaSuccess) {                                                                                       \
-            std::fprintf(stderr, "strata-q36: %s failed: %s (%s:%d)\n", #x, cudaGetErrorString(e_), __FILE__, __LINE__); \
-            std::exit(1);                                                                                              \
-        }                                                                                                              \
-    } while (0)
+/// A failed CUDA/HIP call aborts the engine with the call text and its location.  The check lives in a template
+/// (not in the macro body): in a non-template function `if constexpr` still type-checks the discarded branch, and
+/// the gfx906 compat makes the never-checked HIP calls (cudaFree, the graph destroyers) return void.
+template <class F> void ck_run(F&& f, const char* what, const char* file, int line) {
+    if constexpr (std::is_void_v<decltype(f())>) {
+        f();
+    } else {
+        cudaError_t e_ = f();
+        if (e_ != cudaSuccess) {
+            std::fprintf(stderr, "strata-q36: %s failed: %s (%s:%d)\n", what, cudaGetErrorString(e_), file, line);
+            std::exit(1);
+        }
+    }
+}
+#define CK(x) ck_run([&]() -> decltype(auto) { return (x); }, #x, __FILE__, __LINE__)
 
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
@@ -279,7 +286,12 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
     const int half = n_rot / 2;
     if (i < n_rot) {
         const int p = i < half ? i : i - half;
+#if !defined(__HIPCC__)  /* __ldg does not resolve in this TU under HIP (see docs/ROCm_6_3_3.md §5); the plain
+                            deref is identical on gfx906, so only CUDA gets the read-only-cache hint */
         const int rp = mtab ? __ldg(mtab + (size_t) pos * 3 + p % 3) : pos + dl;
+#else
+        const int rp = mtab ? mtab[(size_t) pos * 3 + p % 3] : pos + dl;
+#endif
         const float theta = (float) rp * powf(base, -2.0f * (float) p / (float) n_rot);
         float sn, cs;
         sincosf(theta, &sn, &cs);
@@ -1654,9 +1666,12 @@ struct Engine {
                     unsigned ds_a, ds_b;
                     std::memcpy(&ds_a, &a[o], 4);
                     std::memcpy(&ds_b, &b[o], 4);
+                    const __half h_dbg = __float2half(t[0]);
+                    unsigned short h_dbg_bits;
+                    std::memcpy(&h_dbg_bits, &h_dbg, sizeof h_dbg_bits);   // __half_as_ushort is device-only on HIP
                     std::fprintf(stderr, "VDEBUG block %zu: ds new %08x old %08x, qs bytes %s, cpu butterfly sum %.9g (half %04x)\n",
                                  blk, ds_a, ds_b, std::memcmp(&a[o + 4], &b[o + 4], 32) == 0 ? "equal" : "DIFFER", (double) t[0],
-                                 (unsigned) __half_as_ushort(__float2half(t[0])));
+                                 (unsigned) h_dbg_bits);
                     break;
                 }
         }
