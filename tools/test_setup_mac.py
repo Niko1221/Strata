@@ -74,6 +74,12 @@ class Recommendation(unittest.TestCase):
         self.assertEqual(rec, "Q2_0")
         self.assertTrue(notes and "stream" in notes[0] and "~14 tok/s" in notes[0])
         self.assertTrue(M.streams("Q2_0", 32) and M.streams("Q2_0", 48) and not M.streams("Q2_0", 64))
+        # Swift sizes are offered on an M5-class mock and never become the default or recommended
+        m5_ram = 128
+        self.assertNotIn("swift", [m.lower() for m in M.RECOMMENDED])
+        for sz in M.SWIFT_MODELS:
+            self.assertFalse(M.streams(sz, m5_ram, "swift"))
+            self.assertNotEqual(rec, sz)
 
     def test_a_bigger_choice_is_kept_with_a_note(self):
         notes = M.model_note("IQ3_XXS", 64)
@@ -110,6 +116,72 @@ class Config(unittest.TestCase):
                               ram_gb=32)
         self.assertNotIn("--mtp", small)
         self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
+        # Swift gets the same Metal defaults as qwen
+        fam = setup.FAMILIES["swift"]
+        swift_pack = Path("/p/packs/swift-iq2_xs")
+        swift_shards = [Path(f"/m/{s}") for s in M.model_shard_names("IQ2_XS", fam)]
+        swift_args = M.engine_args(swift_pack, swift_shards, Path("/d/mtp/rt"), 32768)
+        self.assertEqual(swift_args[swift_args.index("--spec") + 1], "2")
+        self.assertEqual(swift_args[swift_args.index("--expert-cache") + 1], "64")
+        self.assertEqual(swift_args[swift_args.index("--prefill") + 1], "auto")
+        self.assertIn("--mmap-experts", swift_args)
+        self.assertEqual(swift_args[swift_args.index("--expert-profile") + 1],
+                         str(ROOT / "data" / "expert-profile.bin"))
+
+    def test_swift_family_names_the_swift_files(self):
+        fam = setup.FAMILIES["swift"]
+        for size in ("IQ2_XS", "IQ3_XXS", "IQ3_S"):
+            shards = M.model_shard_names(size, fam)
+            self.assertEqual(shards, [f"Swift-Qwen3.8-Flash-Next-GSQ-RCO-{size}-00001-of-00002.gguf",
+                                      f"Swift-Qwen3.8-Flash-Next-GSQ-RCO-{size}-00002-of-00002.gguf"])
+
+    def test_swift_refuses_q2_0(self):
+        with mock.patch.object(setup, "fail", side_effect=SystemExit(1)) as fail:
+            with self.assertRaises(SystemExit):
+                M.main(["--family", "swift", "--model", "Q2_0", "--check"])
+        fail.assert_called_once()
+        msg = fail.call_args[0][0]
+        self.assertIn("#171", msg)
+        self.assertIn("tools/iq_pack.py", msg)
+
+    def test_swift_config_tag_and_paths(self):
+        fam = setup.FAMILIES["swift"]
+        model = "IQ2_XS"
+        tag = fam["tag"] + model
+        self.assertEqual(tag, "swift-IQ2_XS")
+        pack = Path(f"/p/packs/{tag.lower()}")
+        cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", str(pack)], pack,
+                           f"{fam['name']}-{model.lower()}", tag, 8080)
+        self.assertEqual(cfg["backend"], "metal")
+        self.assertEqual(cfg["model_name"], "swift-1.5-iq2_xs")
+        self.assertEqual(cfg["tokenizer"], str(pack / "tokenizer"))
+        self.assertEqual(cfg["log"], str(ROOT / "strata-swift-iq2_xs.log"))
+
+    def test_interactive_menu_swift_lists_only_swift_models_unmeasured(self):
+        swift_said = []
+        with mock.patch("setup.say", side_effect=lambda s="": swift_said.append(s)), \
+             mock.patch("setup.ask", return_value="1"), \
+             mock.patch.object(M, "mac_configs", return_value=[]), \
+             mock.patch.object(M, "mac_info", return_value=M.mac_info(fake_run(M5))), \
+             mock.patch.object(M, "mac_problems", return_value=[]), \
+             mock.patch.object(setup, "free_gb", return_value=500.0), \
+             mock.patch.object(setup, "pip_install"), \
+             mock.patch.object(setup, "get_llama_cpp", return_value=Path("/tmp/llama")), \
+             mock.patch.object(M, "build_engine", return_value=Path("/tmp/exe")), \
+             mock.patch.object(setup, "download"), \
+             mock.patch.object(setup, "check_shards"), \
+             mock.patch.object(setup, "run"), \
+             mock.patch.object(setup, "write_config"), \
+             mock.patch.object(setup, "write_run_script", return_value=Path("/tmp/run.sh")):
+            M.main(["--family", "swift", "--no-start"])
+        swift_lines = [line for line in swift_said if "maps " in line]
+        self.assertEqual(len(swift_lines), 3)
+        self.assertTrue(all("not measured on a Mac" in line for line in swift_lines))
+        self.assertTrue(any("IQ2_XS" in line for line in swift_lines))
+        self.assertTrue(any("IQ3_XXS" in line for line in swift_lines))
+        self.assertTrue(any("IQ3_S" in line for line in swift_lines))
+        self.assertFalse(any("Q2_0" in line for line in swift_lines))
+        self.assertFalse(any("UD-" in line for line in swift_lines))
 
     def test_engine_args_rope_scaling_auto(self):
         args = M.engine_args(Path("/pack"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/rt"), 524288)
@@ -129,6 +201,10 @@ class Config(unittest.TestCase):
 class Vision(unittest.TestCase):
     def test_the_projector_is_pinned_and_the_encoder_builds_with_metal(self):
         self.assertIn("mmproj-Qwen3.8-Flash-Next-BF16.gguf", M.VISION_SHA256)
+        self.assertIn("mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf", M.VISION_SHA256)
+        swift_bytes, swift_sha = M.VISION_SHA256["mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf"]
+        self.assertEqual(swift_bytes, 907543520)
+        self.assertEqual(swift_sha, "cd1140f4abba943ce8d9fa92fed8407e389954d26907efde7b72153c75bd8a60")
         src = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
         self.assertIn('"-DSTRATA_VISION_CUDA=OFF"', src)
         self.assertIn('cfg["args"] += ["--vision"]', src)

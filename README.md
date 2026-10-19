@@ -134,7 +134,7 @@ sizes are faster. Larger sizes are a bit smarter.
   model's SWE-bench Verified score (measured by its authors) and fits 32 GB of RAM. It is weaker outside code,
   including Chinese and other CJK text (#438). For those, take Q2_0, IQ2_XS or IQ3_S, which keep every expert.
 - **[Swift 1.5](docs/MODELS.md#swift-15):** a fine-tune that thinks for a much shorter time before it answers. You
-  get the answer sooner, at about the same quality.
+  get the answer sooner, at about the same quality (Windows, Linux, and Apple Silicon Mac via `--family swift`).
 - **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs):** Unsloth's ~4-bit version, between IQ3_S and
   UD-Q4_K_XL in quality. A 94 GB download. With less than ~80 GB of RAM, Strata reads part of it from the SSD
   while it answers, so it is slower there (an NVMe SSD helps).

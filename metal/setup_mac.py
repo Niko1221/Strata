@@ -43,16 +43,32 @@ MIN_MACOS = (15, 0)        # MTLResidencySet (the engine keeps every buffer resi
 # The Mac's packs.  shard1_gb: the file the GPU maps (resident in unified memory while the model runs); the n-gram
 # table (shard 2, 28.8 GB) is read from the SSD a few rows at a time.  tested: measured on the M5 Max (docs/MAC.md).
 MAC_MODELS = {
-    "Q2_0": {"shard1_gb": 37.6, "tested": True},
-    "IQ3_XXS": {"shard1_gb": 47.0, "tested": True},
-    "IQ3_S": {"shard1_gb": 54.8, "tested": True},
+    "Q2_0": {"shard1_gb": 37.6, "tested": True, "families": ("qwen",)},
+    "IQ2_XS": {"shard1_gb": 39.8, "tested": False, "families": ("swift",)},
+    "IQ3_XXS": {"shard1_gb": 47.0, "tested": True, "families": ("qwen", "swift")},
+    "IQ3_S": {"shard1_gb": 54.8, "tested": True, "families": ("qwen", "swift")},
     # Unsloth's ~4-6-bit files (family "unsloth", 4-6 shards cutting through layers): setup repacks the experts and
     # dense tensors into one GGUF for the GPU (metal/tools/metal_repack.py); shard1_gb is that file, the n-gram
     # table stays in its shard on the SSD
-    "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "shards": 4},
-    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": True, "family": "unsloth", "shards": 6},
-    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": True, "family": "unsloth", "shards": 6},
+    "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "families": ("unsloth",), "shards": 4},
+    "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": True, "family": "unsloth", "families": ("unsloth",), "shards": 6},
+    "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": True, "family": "unsloth", "families": ("unsloth",), "shards": 6},
 }
+
+# Swift 1.5's shard 1 sizes from Hub LFS pointers (ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF):
+# IQ2_XS: 39788473344 bytes (~39.8 GB), IQ3_XXS: 39785790560 bytes (~39.8 GB), IQ3_S: 44900816736 bytes (~44.9 GB).
+# Q2_0 is excluded (#171).
+SWIFT_MODELS = {
+    "IQ2_XS": {"shard1_gb": 39.8, "tested": False},
+    "IQ3_XXS": {"shard1_gb": 39.8, "tested": False},
+    "IQ3_S": {"shard1_gb": 44.9, "tested": False},
+}
+
+
+def model_shard1_gb(model: str, family: str = "qwen") -> float:
+    if family == "swift" and model in SWIFT_MODELS:
+        return SWIFT_MODELS[model]["shard1_gb"]
+    return MAC_MODELS[model]["shard1_gb"]
 # the Unsloth files at setup.py's pinned revision: name -> (bytes, SHA-256), the Hub's LFS pointers (UD-Q4_K_XL's
 # are setup.py's UNSLOTH_SHARDS)
 UD_SHARDS = {
@@ -71,12 +87,14 @@ UD_SHARDS = {
 }
 
 
-def model_shard_names(model: str) -> list[str]:
+def model_shard_names(model: str, fam: dict | None = None) -> list[str]:
     """The model's files in order (shard 1 first)."""
+    if fam is None:
+        fam = S.FAMILIES[MAC_MODELS[model].get("family", "qwen")]
     n = MAC_MODELS[model].get("shards", 2)
-    if MAC_MODELS[model].get("family") == "unsloth":
+    if fam.get("tag") == "unsloth-":
         return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
-    return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
+    return [S.model_file(fam, model, i) for i in range(1, n + 1)]
 
 
 def shard_sha(name: str):
@@ -107,7 +125,9 @@ RESIDENT_LEAVE_SHARE = 0.30
 BIG_MAC_GB = 64.0
 GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are decimal
 CONTEXTS = [8192, 32768, 65536, 131072, 262144, 524288]
-MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
+MAC_ABOUT = {"Q2_0": "2-bit, the fastest",
+             "IQ2_XS": "2-bit i-quant, a little better quality, close in speed",
+             "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
              "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)"}
@@ -172,13 +192,13 @@ def gpu_budget_gb(ram_gb: float) -> float:
     return ws
 
 
-def model_need_gb(model: str) -> float:
-    return MAC_MODELS[model]["shard1_gb"] + OVERHEAD_GB
+def model_need_gb(model: str, family: str = "qwen") -> float:
+    return model_shard1_gb(model, family) + OVERHEAD_GB
 
 
-def streams(model: str, ram_gb: float) -> bool:
+def streams(model: str, ram_gb: float, family: str = "qwen") -> bool:
     """The pack does not fit Metal's share of the memory: the engine streams its experts from the SSD."""
-    return model_need_gb(model) > gpu_budget_gb(ram_gb)
+    return model_need_gb(model, family) > gpu_budget_gb(ram_gb)
 
 
 def recommend_model(ram_gb: float) -> tuple[str, list[str]]:
@@ -200,18 +220,18 @@ def recommend_model(ram_gb: float) -> tuple[str, list[str]]:
                     "draft layer (slower when streaming)"]
 
 
-def model_note(model: str, ram_gb: float) -> list[str]:
+def model_note(model: str, ram_gb: float, family: str = "qwen") -> list[str]:
     """What a chosen pack risks on this Mac (said, never refused)."""
     notes = []
-    if streams(model, ram_gb):
-        notes.append(f"{model} needs ~{model_need_gb(model):.0f} GB of the {gpu_budget_gb(ram_gb):.0f} GB Metal keeps "
+    if streams(model, ram_gb, family):
+        notes.append(f"{model} needs ~{model_need_gb(model, family):.0f} GB of the {gpu_budget_gb(ram_gb):.0f} GB Metal keeps "
                      "resident on this Mac: its experts stream from the SSD (automatic)"
-                     + (f"; measured on a 32 GB M4: {STREAM_MEASURED[model]}" if model in STREAM_MEASURED else
+                     + (f"; measured on a 32 GB M4: {STREAM_MEASURED[model]}" if (family == "qwen" and model in STREAM_MEASURED) else
                         "; not measured streaming"))
     if MAC_MODELS[model].get("missing"):
         notes.append(f"{model} does not run on this Metal engine yet ({MAC_MODELS[model]['missing']} are missing): the "
                      "engine will stop when it loads; kept as you chose (for testing a newer engine)")
-    elif not MAC_MODELS[model]["tested"]:
+    elif family == "swift" or not MAC_MODELS[model]["tested"]:
         notes.append(f"{model} has not been measured on a Mac yet")
     return notes
 
@@ -321,8 +341,12 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
-VISION_SHA256 = {"mmproj-Qwen3.8-Flash-Next-BF16.gguf":
-                 (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")}
+VISION_SHA256 = {
+    "mmproj-Qwen3.8-Flash-Next-BF16.gguf":
+        (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0"),
+    "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf":
+        (907543520, "cd1140f4abba943ce8d9fa92fed8407e389954d26907efde7b72153c75bd8a60"),
+}
 VISION_EXE = ROOT / "build-vision" / "bin" / "strata-vision"
 
 
@@ -489,8 +513,8 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth"], default=None,
-                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL (follows --model)")
+    ap.add_argument("--family", choices=["qwen", "unsloth", "swift"], default=None,
+                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), swift = Swift 1.5, unsloth = Unsloth's UD-*_K_XL (follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"], help="RoPE scaling method")
@@ -522,6 +546,8 @@ def main(argv=None) -> int:
     # with the same unreachable host (#2363).
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
+    if a.family == "swift" and a.model == "Q2_0":
+        S.fail("Swift 1.5's Q2_0 files split one layer's experts across the two shards, which the pack tool (tools/iq_pack.py) cannot prepare yet (#171)")
     S.say("Strata on a Mac (Apple Silicon, Metal)")
     data, elsewhere = S.data_folder(a.data_dir)
     roots = [data, *elsewhere]
@@ -550,17 +576,35 @@ def main(argv=None) -> int:
     rec, notes = recommend_model(info["ram_gb"])
     for n in notes:
         S.warn(n)
+    if a.family == "swift":
+        if a.model and a.model not in SWIFT_MODELS:
+            S.fail(f"{a.model} is not available for Swift 1.5; choose one of: {', '.join(SWIFT_MODELS)}")
+        family = "swift"
+    elif a.model:
+        family = MAC_MODELS[a.model].get("family", "qwen")
+        if a.family and a.family != family:
+            S.warn(f"--family {a.family}: {a.model} is a {family} file; using {family}")
+    else:
+        family = a.family or "qwen"
+
     if a.model:
         model = a.model
+    elif family == "swift":
+        names = list(SWIFT_MODELS)
+        for i, m in enumerate(names, 1):
+            S.say(f"  {i}) {m:8} {MAC_ABOUT[m]}  (maps {model_shard1_gb(m, 'swift'):.0f} GB, not measured on a Mac)"
+                  + ("   <- default" if i == 1 else ""))
+        model = names[int(S.ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
+                                "1", a.yes)) - 1]
     else:
-        names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing")]   # --model offers the others
+        names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing") and m != "IQ2_XS"]   # --model offers the others
         for i, m in enumerate(names, 1):
             S.say(f"  {i}) {m:8} {MAC_ABOUT[m]}  (maps {MAC_MODELS[m]['shard1_gb']:.0f} GB"
                   + ("" if MAC_MODELS[m]["tested"] else ", not measured on a Mac") + ")"
                   + ("  (recommended)" if m in RECOMMENDED else "") + ("   <- default" if m == rec else ""))
         model = names[int(S.ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
                                 str(names.index(rec) + 1), a.yes)) - 1]
-    for n in model_note(model, info["ram_gb"]):
+    for n in model_note(model, info["ram_gb"], family):
         S.warn(n)
     vision = a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
                                           ["y", "n"], "n", a.yes) == "y" else "no")
@@ -568,9 +612,6 @@ def main(argv=None) -> int:
     if ctx > TESTED_CONTEXT:
         S.say(f"  context {ctx}: measured on the Mac up to {TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
     S.ok(f"{model}, context {ctx}")
-    family = MAC_MODELS[model].get("family", "qwen")
-    if a.family and a.family != family:
-        S.warn(f"--family {a.family}: {model} is a {family} file; using {family}")
     fam = S.FAMILIES[family]
     tag = fam["tag"] + model
     need = (0 if a.gguf_dir else S.MODELS[model]["download_gb"]) + 6   # --gguf-dir: the files are there already
@@ -595,7 +636,7 @@ def main(argv=None) -> int:
     S.step(5, f"downloading {fam['title']} {model}")
     models_dir = Path(a.gguf_dir) if a.gguf_dir else models_root / tag
     models_dir.mkdir(parents=True, exist_ok=True)
-    files = [models_dir / n for n in model_shard_names(model)]
+    files = [models_dir / n for n in model_shard_names(model, fam)]
     for s in files:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
@@ -659,7 +700,7 @@ def main(argv=None) -> int:
     prep_lock.unlink(missing_ok=True)
     mtp = (S.find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
-    stream = streams(model, info["ram_gb"])
+    stream = streams(model, info["ram_gb"], family)
     use_mtp = stream_mtp(stream, info["ram_gb"])
     if stream and not use_mtp:
         S.ok("the experts will stream from the SSD: no MTP draft layer (one token per step is faster there); "

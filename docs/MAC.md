@@ -23,6 +23,9 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 | Q2_0 | 37.6 GB | 46 GB | 64 GB |
 | IQ3_XXS | 47.0 GB | 55 GB | 74 GB (where IQ3_S does not fit) |
 | IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
+| Swift 1.5 IQ2_XS (`--family swift`) | 39.8 GB | 48 GB | 64 GB |
+| Swift 1.5 IQ3_XXS (`--family swift`) | 39.8 GB | 48 GB | 64 GB |
+| Swift 1.5 IQ3_S (`--family swift`) | 44.9 GB | 53 GB | 74 GB |
 | UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 91 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
 
@@ -178,7 +181,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
-- **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
+- **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Swift 1.5 is supported via `--family swift --model IQ2_XS|IQ3_XXS|IQ3_S` (two shards, no repack; decode speed and streaming on Mac not measured yet). The Coder release is not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **Engine only from source.** There is no ready-made Mac engine in the release zips.
 
 ## Switches (for testing; all off unless set, the defaults are above)
