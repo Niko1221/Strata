@@ -2533,11 +2533,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
             nsw.q8_1 = sh_fork ? sh_xq_ : xq_;
             nsw.q8_1_il = (sh_fork || !g_mmvq_il()) ? nullptr : xil_;
-            // STRATA_VERIFY_QDEDUP=1 (not with the forked shared-expert stream, which quantizes into its own buffer): the
-            // experts' q8_1 image of xm is made first and the shared expert's gate/up read it (quantize_q8_1_rows and
-            // native_quantize_q8_1 write the same bytes)
-            qdedup = g_qdedup() && !sh_fork && strata::kernels::cpu::expert_layout().native;
+            // STRATA_VERIFY_QDEDUP=1: the experts' q8_1 image of xm is made first and the shared expert's gate/up read
+            // it (quantize_q8_1_rows and native_quantize_q8_1 write the same bytes).  The forked shared-expert
+            // stream is covered too - the image is made on cs, so the fork waits for it on an event before its own
+            // kernels launch (ev_fork_ re-recorded here; ev_join_ stays the join's, recording it twice would break
+            // the join's ordering).  The interleaved MMVQ image (q8_1_il) keeps its own fork exclusion - the fork's
+            // gate/up takes the non-IL x_q8_1 path this covers.
+            qdedup = g_qdedup() && strata::kernels::cpu::expert_layout().native;
             if (qdedup && !q8_ffn) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+            if (qdedup && sh_fork) {
+                cudaEventRecord(ev_fork_, cs);
+                cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
+            }
             if (!shared_expert_native_bf16_enabled()) {
                 if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream);   // contiguous rows
                 else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
