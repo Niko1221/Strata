@@ -710,8 +710,8 @@ class CodexCompactionOverHttp(Server):
 
     def test_a_compaction_too_long_with_the_kept_tools_is_rendered_as_sent(self):
         long = "before\n" * 300                         # a long tool output: the turn fits, its compaction barely
-        plain, code, r = self.compaction({}, long, max_output_tokens=64)
-        self.assertEqual(code, 200, r)
+        plain, code, r_plain = self.compaction({}, long, max_output_tokens=64)
+        self.assertEqual(code, 200, r_plain)
         fits = len(self.engine.last_prompt) + 64 + 8     # the request as sent, its output, CTX_SLACK
         shown, code, r = self.compaction(codex_meta("compaction"), long, max_output_tokens=64)
         self.assertGreater(len(self.engine.last_prompt) + 64 + 8, fits)   # with the kept tools it would not fit
@@ -720,6 +720,23 @@ class CodexCompactionOverHttp(Server):
         self.assertEqual(code, 200, r)                   # as without the kept tools, not a context error
         self.assertEqual(again, plain)
         self.assertEqual(self.parser_tools[-1], None)
+        # the fallback renders the as-sent prompt, so it is a plain request that declared no tools: the calls come
+        # back as text, exactly as they do for the same request without the metadata
+        self.assertEqual([o["type"] for o in r["output"]], ["message"])
+        self.assertEqual("".join(p.get("text") or "" for o in r["output"] for p in o["content"]),
+                         "".join(p.get("text") or "" for o in r_plain["output"] for p in o["content"]))
+
+    def test_with_the_cache_off_a_compaction_is_a_plain_tools_less_request(self):
+        """#924 is opt-in: without it a compaction request is an ordinary request that declared no tools, so its
+        calls stay text like every other one (#3075)."""
+        self.svc.codex_compaction_cache = False
+        prompt, code, r = self.compaction(codex_meta("compaction"))
+        self.assertEqual(code, 200, r)
+        self.assertEqual(self.parser_tools[-1], None)
+        self.assertEqual([o["type"] for o in r["output"]], ["message"])
+        text = "".join(part.get("text") or "" for part in r["output"][0]["content"])
+        self.assertIn("<function=multi_agent_v1.spawn_agent>", text)
+        self.assertIn("<function=apply_patch>", text)
 
 
     def test_a_request_that_fails_leaves_the_kept_tools_as_they_were(self):
