@@ -1,0 +1,36 @@
+test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) ...
+  test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) (failure='none') ... FAIL
+  test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) (failure='ready') ... FAIL
+  test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) (failure='bind') ... FAIL
+
+======================================================================
+FAIL: test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) (failure='none')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 214, in test_main_releases_store_after_stop_and_startup_failure
+    self.assertTrue(again.enabled, failure)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : none
+
+======================================================================
+FAIL: test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) (failure='ready')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 214, in test_main_releases_store_after_stop_and_startup_failure
+    self.assertTrue(again.enabled, failure)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : ready
+
+======================================================================
+FAIL: test_main_releases_store_after_stop_and_startup_failure (serve.test_usage_durability.ServerOwnership.test_main_releases_store_after_stop_and_startup_failure) (failure='bind')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<local-path>", line 214, in test_main_releases_store_after_stop_and_startup_failure
+    self.assertTrue(again.enabled, failure)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : bind
+
+----------------------------------------------------------------------
+Ran 1 test in 0.115s
+
+FAILED (failures=3)

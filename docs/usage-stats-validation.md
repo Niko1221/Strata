@@ -5,6 +5,10 @@ The original commits are retained. The additional work covers persistence, write
 shared sequential profiles, undated imports and a permanent all-time output headline. The Usage card is
 appended at the bottom of Monitor; the existing speed, hardware and cache layout remains first.
 
+## 0.2.0-beta revalidation
+
+See [the beta report](usage-v020/README.md) for the current revision, results and limits. The older measurements below remain historical evidence.
+
 ## Repeat the tests
 
 No model or GPU is required:
