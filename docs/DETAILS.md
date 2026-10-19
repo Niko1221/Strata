@@ -947,11 +947,14 @@ print(r.choices[0].message.content)
   least 25% belong to 12-word passages seen three times, `"stop"` ends the reply there as `"length"` and says so in
   the server window. `"recover"` stops and drains that generation, then goes on once from all its generated token
   ids with the template's low-effort sentence in place of the xhigh one in the first system message (a splice of
-  token ids: the rest of the prompt is not decoded or re-encoded). The task stays the same; no answer or `</think>`
+  token ids: the rest of the prompt is not decoded or re-encoded). When the prompt carries no effort sentence to
+  swap (a low-effort run, or a client that sends none at all), the resume goes on from the same ids with the
+  sampling raise alone. The task stays the same; no answer or `</think>`
   is inserted, and both passes share the original output limit. On recovery only, temperature is raised to at least
   1.0 and presence penalty to at least 1.5; a client's top-p, top-k and seed are never changed. `/metrics` records
   `reasoning_recoveries` and the coverage. This is a policy, not a numerical engine fix or a guarantee of an answer.
-  `"recover"` needs the exact xhigh sentence in the first system message and skips requests with images; re-reading
+  the splice needs the exact xhigh sentence in the first system message (without it the resume is the sampling
+  raise alone) and `"recover"` skips requests with images; re-reading
   the changed prefix costs prompt time. Either mode can mistake repeated useful code or checks for a loop, so keep
   the recorded answer quality alongside the completion rate when testing it.
 - **Changing the effort without re-reading the prompt (opt-in, 0.1.39, #458).** The effort's instruction is the
