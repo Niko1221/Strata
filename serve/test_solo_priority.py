@@ -140,6 +140,16 @@ class Streaming(unittest.TestCase):
             if time.monotonic()>end: self.fail('timed out')
             time.sleep(.002)
 
+    def test_terminal_state_tracks_an_admitted_solo_request(self):
+        seen = []
+        def observe(_):
+            with self.svc.status_lock:
+                seen.extend(row["state"] for row in self.svc.terminal_requests.values())
+        self.run_request(2, on_event=observe)
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {"admitted"})
+        self.assertEqual(self.svc.terminal_requests, {})
+
     def test_queue_deadline_releases_ticket_and_preserves_current_owner(self):
         from serve.server import QueueWaitExpired
         self.svc.queue_timeout_s = .05
