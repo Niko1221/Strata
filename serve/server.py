@@ -2487,6 +2487,8 @@ class Vision:
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
+            if key in self.cache and not self.cache[key][0].is_file():
+                self.cache.pop(key)                    # its file was deleted under us (a temp cleaner): encode again
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
@@ -5685,9 +5687,22 @@ def make_handler(svc: Service):
 
             except ClientGone:                               # #1999: the client left while the request was prepared
                 self._note(outcome="disconnected")
-            except OSError:
+            except (ConnectionError, TimeoutError):
                 self._note(outcome="disconnected")
                 raise                                        # as before #332: the server's own handling
+            except BadBody:
+                raise                                        # do_POST answers it (400/413)
+            except Exception as e:                         # noqa: BLE001 - anything else raised before the answer
+                # (a cached image file deleted under us was a FileNotFoundError): a 500 that names it, with the
+                # traceback in the log, instead of a dropped connection the client can only call ECONNRESET
+                if getattr(self, "answer_started", False):
+                    raise
+                import traceback
+                print(f"[strata] 500 internal error ({type(e).__name__}: {e}):\n" + traceback.format_exc(), flush=True)
+                self._note(error=f"{type(e).__name__}: {e}")
+                message = f"internal server error ({type(e).__name__}: {e})"
+                self._json(500, responses_error_body(message, "server_error") if path == "/v1/responses"
+                           else {"error": {"type": "server_error", "message": message}})
             finally:
                 svc.drop_embeddings()                        # the images' file of a request that never got to run()
                 if self.watch_done is not None:
