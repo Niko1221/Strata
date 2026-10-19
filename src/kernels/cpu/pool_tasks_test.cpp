@@ -14,6 +14,21 @@
 
 namespace cpu = strata::kernels::cpu;
 
+static void put_env(const char* k, const char* v) {
+#if defined(_WIN32)
+    _putenv_s(k, v);
+#else
+    setenv(k, v, 1);
+#endif
+}
+static void unset_env(const char* k) {
+#if defined(_WIN32)
+    _putenv_s(k, "");
+#else
+    unsetenv(k);
+#endif
+}
+
 int main(int argc, char** argv) {
     if (argc != 1 && argc != 4) return 2;
     // its activation quantiser is the AVX one at least (act_quant_any): a CPU without AVX (Westmere) would stop on an illegal instruction
@@ -51,7 +66,7 @@ int main(int argc, char** argv) {
         cpu::native_quant_act(f, x.data(), act[t].data());
         cpu::act_quant_any(x.data(), cpu::H, qact[t]);
     }
-    int checks = 0;
+    int checks = 0, split_checks = 0;
     for (int n : {1, 7, cpu::ExpertPool::kMaxSplitMulti + 1}) {
         std::vector<cpu::ExpertJobMulti> jobs(n);
         std::vector<float> out((size_t) n * cpu::MAXT * cpu::H);
@@ -86,7 +101,38 @@ int main(int argc, char** argv) {
                     ++checks;
                 }
             }
+        // STRATA_NUMA_SPLIT=test: two slices without a real second node (thread j -> slice j % 2), every worker
+        // sleeping between batches (spin 0) so the late-wake path of issue #29 runs constantly
+        put_env("STRATA_NUMA_SPLIT", "test");
+        put_env("STRATA_POOL_SPIN_US", "0");
+        for (bool host : {false, true}) for (int workers : {1, 2, 3, 5})
+            for (int tasks : {0, 1, 41, cpu::ExpertPool::kMaxTasks}) {
+                cpu::ExpertPool pool(workers, false, host, cpu::PoolAffinity::All, tasks);
+                const int slices = workers + (host ? 1 : 0) >= 2 ? 2 : 0;
+                if (pool.numa_slices() != slices || cpu::active_numa_split().on != (slices == 2) ||
+                    (slices == 2 && !cpu::active_numa_split().test)) {
+                    std::fprintf(stderr, "numa-split slices %d, expected %d (workers=%d host=%d)\n",
+                                 pool.numa_slices(), slices, workers, host);
+                    return 1;
+                }
+                for (int repeat = 0; repeat < 2; ++repeat) {
+                    for (const auto& job : jobs) for (int t = 0; t < job.nt; ++t)
+                        std::fill(job.out[t], job.out[t] + cpu::H, std::numeric_limits<float>::quiet_NaN());
+                    pool.run_split_multi_native(f, jobs.data(), n);
+                    if (std::memcmp(ref.data(), out.data(), out.size() * sizeof(float)) != 0) {
+                        std::fprintf(stderr, "numa-split mismatch n=%d workers=%d host=%d tasks=%d repeat=%d\n",
+                                     n, workers, host, tasks, repeat);
+                        return 1;
+                    }
+                    ++split_checks;
+                }
+                pool.diag(stderr);
+            }
+        unset_env("STRATA_NUMA_SPLIT");
+        unset_env("STRATA_POOL_SPIN_US");
+        if (cpu::active_numa_split().on) { std::fprintf(stderr, "numa-split plan outlived its pool\n"); return 1; }
     }
-    std::printf("pool tasks: %d bitwise comparisons passed\n", checks);
+    std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode\n", checks + split_checks,
+                split_checks);
     return 0;
 }
