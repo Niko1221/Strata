@@ -16,6 +16,7 @@
 //      checked the same way - it is computed and required to differ.
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s_gemv.hpp"
 #include "strata/kernels/shared_expert.hpp"
@@ -399,6 +400,45 @@ int main(int argc, char** argv) {
         const bool restored = std::memcmp(got.data(), replay.data(), got.size() * sizeof(float)) == 0;
         std::printf("  restored shared default: %s\n", restored ? "byte-identical" : "FAIL");
         if (!restored) ++bad;
+        // Verify pre-quantized native->x_q8_1 reuse in shared_expert() (skips native_quantize_q8_1 on x_f32 for gate/up)
+        {
+            cudaStream_t nsw_stream = nullptr;
+            check(cudaStreamCreateWithFlags(&nsw_stream, cudaStreamNonBlocking), "nsw stream");
+            const size_t q81_bytes = (size_t) (std::max(n_embd, n_ff) / 32) * 36;
+            const size_t w_gate_bytes = native_mmvq_weight_bytes(8, (int) n_embd, (int) n_ff);
+            const size_t w_down_bytes = native_mmvq_weight_bytes(8, (int) n_ff, (int) n_embd);
+            uint8_t *d_wg = nullptr, *d_wu = nullptr, *d_wd = nullptr, *d_q81 = nullptr, *d_pre_q81 = nullptr;
+            check(cudaMalloc(&d_wg, w_gate_bytes), "nsw wg");
+            check(cudaMalloc(&d_wu, w_gate_bytes), "nsw wu");
+            check(cudaMalloc(&d_wd, w_down_bytes), "nsw wd");
+            check(cudaMalloc(&d_q81, q81_bytes), "nsw q81");
+            check(cudaMalloc(&d_pre_q81, q81_bytes), "nsw pre_q81");
+            std::vector<uint8_t> hwg(w_gate_bytes, 3), hwu(w_gate_bytes, 5), hwd(w_down_bytes, 2);
+            check(cudaMemcpy(d_wg, hwg.data(), w_gate_bytes, cudaMemcpyHostToDevice), "nsw cp wg");
+            check(cudaMemcpy(d_wu, hwu.data(), w_gate_bytes, cudaMemcpyHostToDevice), "nsw cp wu");
+            check(cudaMemcpy(d_wd, hwd.data(), w_down_bytes, cudaMemcpyHostToDevice), "nsw cp wd");
+            NativeSharedWeights nsw{};
+            nsw.gate_type = nsw.up_type = nsw.down_type = 8;
+            nsw.gate_data = d_wg; nsw.up_data = d_wu; nsw.down_data = d_wd;
+            nsw.q8_1 = d_q81;
+            nsw.x_q8_1 = nullptr;
+            std::vector<float> ref_nsw((size_t) n_embd), got_nsw((size_t) n_embd);
+            shared_expert(nullptr, nullptr, d_xb, f, nullptr, nullptr, nullptr, f, nullptr, nullptr, nullptr, f,
+                          nullptr, nullptr, nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, nsw_stream, d_witness, &nsw);
+            check(cudaStreamSynchronize(nsw_stream), "nsw sync 1");
+            check(cudaMemcpy(ref_nsw.data(), d_out, ref_nsw.size() * sizeof(float), cudaMemcpyDeviceToHost), "nsw ref");
+            native_quantize_q8_1(d_witness, d_pre_q81, (int) n_embd, 1, nsw_stream);
+            nsw.x_q8_1 = d_pre_q81;
+            shared_expert(nullptr, nullptr, d_xb, f, nullptr, nullptr, nullptr, f, nullptr, nullptr, nullptr, f,
+                          nullptr, nullptr, nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, nsw_stream, d_witness, &nsw);
+            check(cudaStreamSynchronize(nsw_stream), "nsw sync 2");
+            check(cudaMemcpy(got_nsw.data(), d_out, got_nsw.size() * sizeof(float), cudaMemcpyDeviceToHost), "nsw got");
+            const bool xq_ok = std::memcmp(ref_nsw.data(), got_nsw.data(), ref_nsw.size() * sizeof(float)) == 0;
+            std::printf("  native shared x_q8_1 reuse: %s\n", xq_ok ? "byte-identical" : "FAIL");
+            if (!xq_ok) ++bad;
+            (void) cudaStreamDestroy(nsw_stream);
+            (void) cudaFree(d_wg); (void) cudaFree(d_wu); (void) cudaFree(d_wd); (void) cudaFree(d_q81); (void) cudaFree(d_pre_q81);
+        }
         cudaFree(d_witness);
     }
 

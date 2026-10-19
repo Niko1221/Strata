@@ -645,6 +645,7 @@ __global__ void row_top_prob_kernel(const float* __restrict__ logits, int n_voca
     const float* l = logits + (size_t) t * n_vocab;
     const float m = l[ids[t]];
     float s = 0.0f;
+#pragma unroll 8
     for (int i = threadIdx.x; i < n_vocab; i += blockDim.x) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = s;
@@ -771,10 +772,10 @@ void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* i
     check("row_top_prob");
 }
 
-#if !defined(__HIPCC__)   // warp-32 kernels: an AMD card keeps the one-block row_top_prob and sampler_greedy_kernel
+#if !defined(STRATA_HIP_GFX906)   // wave32 kernels (CUDA and RDNA HIP; wave64 gfx906 keeps the one-block kernels)
 namespace {
 
-constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 8;
+constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 32;
 
 // the larger value, on equality the lower index: sampler_greedy_kernel's order
 __device__ __forceinline__ void arg_take(float ov, int oi, float& bv, int& bi) {
@@ -869,15 +870,14 @@ __global__ void row_top_prob_split_kernel(const float* __restrict__ logits, int 
     const float m = l[ids[row]];
     const int vt = (int) (blockIdx.x * blockDim.x + threadIdx.x);
     float s = 0.0f;
+#pragma unroll 8
     for (int i = vt; i < n_vocab; i += 1024) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) parts[vt >> 5] = s;
     __threadfence();
-    __syncthreads();
-    __shared__ bool last;
-    if (threadIdx.x == 0) last = atomicAdd(&rows[row].counter, 1u) == (unsigned) (gridDim.x - 1);
-    __syncthreads();
-    if (!last || threadIdx.x != 0) return;
+    if (blockDim.x > 32) __syncthreads();
+    if (threadIdx.x != 0) return;
+    if (atomicAdd(&rows[row].counter, 1u) != (unsigned) (gridDim.x - 1)) return;
     __threadfence();
     float tot = 0.0f;
     for (int w = 0; w < 32; ++w) tot += ((volatile const float*) parts)[w];
@@ -944,20 +944,47 @@ void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* fla
 }
 
 bool multi_block_head_ops() {
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
     return false;
 #else
-    static const bool on = [] {
+    static const int env = [] {
         const char* v = std::getenv("STRATA_MULTI_BLOCK_ARGMAX");
-        return v == nullptr || std::atoi(v) != 0;
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
     }();
-    return on;
+    if (env == 0) return false;
+#if defined(__HIPCC__)
+    static int arch[64] = {};   // 0 unknown, 1 wave32, 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && p.warpSize == 32) ? 1 : 2;
+    }
+    return arch[dev] == 1;
+#else
+    return true;
+#endif
 #endif
 }
 
 bool argmax_rows_wanted() {
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
     return false;
+#else
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_ARGMAX_ROWS");
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
+    }();
+    if (env >= 0) return env != 0 && multi_block_head_ops();
+#if defined(__HIPCC__)
+    static int arch[64] = {};   // 0 unknown, 1 wave32 RDNA, 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && p.warpSize == 32) ? 1 : 2;
+    }
+    return arch[dev] == 1 && multi_block_head_ops();
 #else
     // sm_80 to sm_89, and sm_7x with STRATA_ARGMAX_ROWS_SM70=1: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
@@ -971,6 +998,7 @@ bool argmax_rows_wanted() {
         return major == 8;
     }();
     return want && multi_block_head_ops();
+#endif
 #endif
 }
 

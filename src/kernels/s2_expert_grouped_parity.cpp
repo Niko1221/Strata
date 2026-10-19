@@ -424,9 +424,9 @@ void check_all() {
         ck(cudaFreeHost(h_host), "free host blob");
     }
 
-    // ---- 5. moe_group_resident + moe_grouped_s2: the MTP layer (experts resident at base + id * BLOB)
-    {
-        const int T = 5, n = T * K;
+    // ---- 5. moe_group_resident + moe_grouped_s2: the MTP layer (experts resident at base + id * BLOB), T=1 and T=5
+    for (const int T : {1, 5}) {
+        const int n = T * K;
         std::vector<int32_t> ids(n);
         for (int t = 0; t < T; ++t) {   // distinct within a token, shared across tokens
             std::vector<int32_t> pick(fx.nb);
@@ -450,7 +450,8 @@ void check_all() {
         float* d_out = dalloc<float>((size_t) n * H);
         for (int scaled = 1; scaled >= 0; --scaled) {
             Run r;
-            const std::string name = std::string("moe_group_resident + moe_grouped_s2") + (scaled ? " (fp32)" : " (fp16)");
+            const std::string name = std::string("moe_group_resident + moe_grouped_s2 T=") + std::to_string(T) +
+                                     (scaled ? " (fp32)" : " (fp16)");
             twice(name.c_str(), d_out, (size_t) n * H, s, [&] {
                 k::moe_grouped_s2(d_gptr, d_gstart, d_counts, d_edst, d_etok, n, n, d_x, scaled ? d_xs : nullptr, s.p,
                                   d_out, nullptr);
@@ -598,7 +599,8 @@ void bench() {
     // grouped path, verify window: T tokens x 10, routed with `share` = the chance an entry reuses an expert already
     // routed by an earlier token of the window
     struct Shape { int T; double share; const char* what; };
-    for (const Shape sh : {Shape{4, 0.0, "4 tokens, no sharing"}, Shape{4, 0.3, "4 tokens, 30% shared"},
+    for (const Shape sh : {Shape{1, 0.0, "1 token, MTP shape"},
+                           Shape{4, 0.0, "4 tokens, no sharing"}, Shape{4, 0.3, "4 tokens, 30% shared"},
                            Shape{8, 0.3, "8 tokens, 30% shared"}, Shape{8, 1.0, "8 tokens, all shared (ne 8)"}}) {
         const int n = sh.T * K;
         std::vector<unsigned long long> gptr((size_t) SETS * n);
