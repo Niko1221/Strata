@@ -43,6 +43,7 @@ list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_he
 foreach(src ${STRATA_METAL_TESTS})
   get_filename_component(t ${src} NAME_WE)
   add_executable(${t} ${src})
+  target_include_directories(${t} PRIVATE ${STRATA_ROOT}/include)
   target_link_libraries(${t} PRIVATE mtl_rt)
 endforeach()
 

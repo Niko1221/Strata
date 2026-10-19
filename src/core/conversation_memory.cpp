@@ -17,6 +17,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace strata::core {
@@ -286,6 +289,23 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
+#elif defined(__APPLE__)
+    uint64_t phys = 0;
+    size_t len = sizeof phys;
+    if (sysctlbyname("hw.memsize", &phys, &len, nullptr, 0) != 0 || phys == 0) return {};
+    vm_statistics64_data_t vs;
+    mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vs, &cnt) != KERN_SUCCESS) return {};
+    const double pg = (double) vm_page_size;
+    const double free_b = vs.free_count * pg;
+    const double purge_b = vs.purgeable_count * pg;
+    const double inact_b = vs.inactive_count * pg;
+    const double spec_b = vs.speculative_count * pg;
+    const double ext_b = vs.external_page_count * pg;
+    // Page calculation matching arena_avail (metal/src/engine/arena_budget.h:105-107):
+    // free + purgeable + min(inactive + speculative, file_backed)
+    const double avail_b = free_b + purge_b + std::min(inact_b + spec_b, ext_b);
+    return combine((uint64_t) avail_b, phys, CgroupScan{}, memory_limit_bytes());
 #else
     return {};
 #endif

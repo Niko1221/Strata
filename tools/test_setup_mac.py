@@ -111,6 +111,13 @@ class Config(unittest.TestCase):
         self.assertNotIn("--mtp", small)
         self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
 
+    def test_engine_args_rope_scaling_auto(self):
+        args = M.engine_args(Path("/pack"), [Path("/a1.gguf"), Path("/a2.gguf")], Path("/rt"), 524288)
+        self.assertIn("--rope-scaling", args)
+        self.assertEqual(args[args.index("--rope-scaling") + 1], "yarn")
+        self.assertIn("--rope-scale", args)
+        self.assertEqual(args[args.index("--rope-scale") + 1], "2")
+
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
                            "Q2_0", 8080)

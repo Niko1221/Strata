@@ -174,7 +174,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 ## Limits (this version)
 
 - **Images (vision):** `--vision yes` in setup. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal the HIP engine's, and text output is unchanged with vision on. No other tests yet.
-- **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
+- **Context:** measured up to 32K (needles, KL). Setup offers choices up to 262K and 524K (with RoPE YaRN scaling automatically applied for context > 262K); longer context options past 32K are offered but not formally measured on Mac.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
