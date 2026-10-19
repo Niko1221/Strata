@@ -156,3 +156,11 @@ drafting. Full records are in `cache-final/`;
 Large binary tensor/logit dumps and superseded exploratory runs are archived
 outside the checkout; the retained scripts regenerate dumps when required.
 The PR contains text evidence and no model weights or generated executables.
+
+## Subsequent performance rerun
+
+The [fresh MTP comparison](../2026-10-19-dflash2-pr-performance/README.md) uses
+the committed engine source identified above, all supported DFlash2 weight
+formats, prefill 256 and auto expert residency. It retains both MTP reference
+runs, all repetitions, output controls and excluded setup attempts. Engine
+source inputs remain unchanged; this adds supporting measurement evidence.

@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "./bench/results/2026-10-19-dflash2-pr-performance/run.py", line 64, in <module>
+    e = Engine(exe, args, ROOT, env, OUT / f'{tag}.log')
+  File "./tools/dflash_sampling.py", line 59, in __init__
+    while not self.line().startswith("READY"):
+              ~~~~~~~~~^^
+  File "./tools/dflash_sampling.py", line 77, in line
+    raise RuntimeError(f"engine exited ({self.p.poll()}); inspect the engine log")
+RuntimeError: engine exited (None); inspect the engine log

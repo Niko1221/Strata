@@ -121,3 +121,8 @@ results do not establish an overall or cross-hardware speedup.
 [Review evidence](../bench/results/2026-10-19-dflash2-pr/README.md) distinguishes historical
 checks from fresh final-branch validation. No AMD, Intel, Windows, multi-GPU or
 concurrent-request correctness claim is made. DFlash2 remains experimental and opt-in.
+
+A [fresh PR performance rerun](../bench/results/2026-10-19-dflash2-pr-performance/README.md)
+compares BF16/Q8_0/Q5_0/Q4_0 with bracketing MTP runs at prefill 256 and auto
+expert residency. Its settings and output controls are recorded separately from
+the earlier prefill-512 comparison.

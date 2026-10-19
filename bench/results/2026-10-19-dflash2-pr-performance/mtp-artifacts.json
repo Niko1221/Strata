@@ -1,0 +1,22 @@
+[
+  {
+    "path": "Strata-data/mtp/rt/dense.bin",
+    "bytes": 116099072,
+    "sha256": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a"
+  },
+  {
+    "path": "Strata-data/mtp/rt/dense.txt",
+    "bytes": 1851,
+    "sha256": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd"
+  },
+  {
+    "path": "Strata-data/mtp/rt/draft_vocab.bin",
+    "bytes": 425196,
+    "sha256": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91"
+  },
+  {
+    "path": "Strata-data/mtp/rt/experts.bin",
+    "bytes": 707788800,
+    "sha256": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+  }
+]

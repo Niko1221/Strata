@@ -1,0 +1,14 @@
+{
+  "engine_source_commit": "af85f5ce3b4411833b5529361ae18ffdadbdce3f",
+  "base_commit": "e88ee39d1d6be6e3364183af3b39b62a7ed6f211",
+  "executable_sha256": "863dea87997647a1179f483fc8c283c6eb6b4d7cd65dd1f1134ce6ec06f99f46",
+  "os": "Linux 6.12.113+deb13-amd64",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER, 16376 MiB, 610.57.04",
+  "ram_gib": 125.69962692260742,
+  "drafter_hashes_rechecked_after_measurements": true,
+  "prefill": 256,
+  "max_context": 8192,
+  "expert_cache": "auto",
+  "reserve_mib": 512,
+  "all_final_arms_exit_zero": true
+}
