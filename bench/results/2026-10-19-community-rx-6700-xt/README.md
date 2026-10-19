@@ -110,14 +110,16 @@ follow-up-turn tokens reused, about 2 tokens of earlier turns read again), so th
 The turns that re-read about 2,900 tokens of uncached text ran at 207-263 tok/s on the default route and at
 519-552 tok/s with the FP16 route, in the same sessions.
 
-### Matched 11,103-token prompt, the same server session, read twice
+### Matched 11,103-token prompt, the same server session, every read from the log
 
-`scripts/prompt_test.py`, a fixed code-like prompt of 11,103 tokens, 48 tokens out:
+`scripts/prompt_test.py`, a fixed code-like prompt of 11,103 tokens, 48 asked and 37 generated each time:
 
-- default route: 34.4 s and 33.9 s reading (322.4 / 327.6 tok/s), decode 22.0-24.0 tok/s
-- FP16 route: 17.9 s reading (620.9 tok/s) = 1.90x, decode 29.3-31.8 tok/s
-- the second copy of the same text in the same session reuses 11,098 of 11,103 tokens in 102 ms, so the pair is one
-  fresh read per arm and not two independent samples
+- default route, 3 reads: 33.9 s / 32.8 s / 34.4 s reading (327.6 / 338.1 / 322.4 tok/s), the 37 tokens in 1.09 s /
+  1.64 s / 1.68 s (22.0-34.1 tok/s)
+- FP16 route, 1 fresh read: 17.9 s reading (620.9 tok/s) = 1.90x, the 37 tokens in 1.26 s (29.3 tok/s)
+- a 13,023-token prompt on the default route in the same session: 38.6 s (337.6 tok/s)
+- the second copy of the same text reuses 11,098 of 11,103 tokens (5 read) in 102 ms, so the FP16 arm contributes one
+  fresh read: the matched pair is one fresh read per arm, not two independent samples
 
 ### The GEMMs under the prompt path
 

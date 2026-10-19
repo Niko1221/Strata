@@ -41,9 +41,10 @@ every run, so nothing was written into `bench/results/` until the two good arms 
 
 - `scripts/prompt_test.py` - one fixed code-like word-list prompt of about 11-12K tokens through
   `/v1/chat/completions` with `max_tokens`, printing the engine's own prompt and decode rates. Used for the matched
-  11,103-token pair quoted in the README (two runs per route, the same server session, the second run of the same
-  text hits the prefix cache - 11,098 of 11,103 tokens reused - which is why the pair is quoted as "the same prompt
-  read twice" and not as two independent samples). `STRATA_URL` and `STRATA_KEY` come from the environment.
+  11,103-token reads quoted in the README (three reads on the default route and one fresh read on the FP16 route, all
+  in one server session; a re-read of the same text hits the prefix cache - 11,098 of 11,103 tokens reused, 5 read, in
+  102 ms - so the FP16 arm contributes one fresh read and the matched pair is one fresh read per arm, not two
+  independent samples). `STRATA_URL` and `STRATA_KEY` come from the environment.
 - `scripts/rocblas_gemm_probe.cpp` - a `rocblas_gemm_ex` probe at `N = 10240 x T = 1024 x K = 2560` (a shape the
   prompt path uses) in four types, each checked against a CPU reference. Build and run:
 
