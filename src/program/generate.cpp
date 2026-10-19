@@ -14008,17 +14008,35 @@ int main(int argc, char** argv) {
                 vh.cache_base = xcache.device_slot(0);
                 vh.slot_off = xcache.slot_offsets();
                 vh.n_slots = xcache.slots();
+                auto prepare_verifier_reload = [&]() {
+                    ver.set_remote_expert_opt(remote_opt.get());
+                    if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
+                    if (batch_mtp) ver.set_batch_graph_limit(64);
+                };
+                auto finish_verifier_reload = [&]() -> bool {
+                    ver.set_split(o.spec_split);
+                    ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+                    ver.set_sampling(req_sp);
+                    ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
+                    if (!ver.set_logit_bias(req_bias, err)) return false;
+                    drive.d.plan = ver.plan_sink();
+                    if (aov && !ver.set_adapt_gate(&agate)) {
+                        err = "verify: adaptive overlap could not be restored after the prefill loan";
+                        return false;
+                    }
+                    if (drive.d.evict_sync || res_checking)
+                        ver.set_pre_launch([&](cudaStream_t, std::string& e) { return res_sync(res_checking, e); });
+                    return true;
+                };
                 if (native_head_deferred) {
                     std::fprintf(stderr, "strata serve: deferred boundary: loading native output head\n");
+                    prepare_verifier_reload();
                     if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err) ||
-                        !ver.init(wt, g, ss, vh, &native_head, std::max(o.spec, o.batch), err)) {
+                        !ver.init(wt, g, ss, vh, &native_head, std::max(o.spec, o.batch), err) ||
+                        !finish_verifier_reload()) {
                         std::printf("ERR deferred native head load failed: %s\n", err.c_str());
                         return 1;
                     }
-                    // init() deliberately starts a fresh verifier in greedy mode. The request selected its sampling
-                    // parameters before reading the prompt, so restore them after this deferred initialization.
-                    ver.set_sampling(req_sp);
-                    ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
                     native_head_deferred = false;
                 }
                 if (mtp_deferred) {
@@ -14027,28 +14045,25 @@ int main(int argc, char** argv) {
                         std::printf("ERR deferred MTP load failed: %s\n", err.c_str());
                         return 1;
                     }
+                    mtp.set_draft_sampling(req_sp);
                     mtp_deferred = false;
                 }
                 if (repeat_resources_deferred) {
                     std::fprintf(stderr, "strata serve: repeat loan boundary: reloading verifier, native output head "
                                  "and MTP decode resources\n");
-                    ver.set_remote_expert_opt(remote_opt.get());
-                    if (batch_mtp) ver.set_batch_graph_limit(64);
+                    prepare_verifier_reload();
                     if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err) ||
                         !ver.init(wt, g, ss, vh, &native_head,
-                                  batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err)) {
+                                  batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
+                        !finish_verifier_reload()) {
                         std::printf("ERR repeat prefill verifier/head reload failed: %s\n", err.c_str());
                         return 1;
                     }
-                    ver.set_split(o.spec_split);
-                    ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
-                    ver.set_sampling(req_sp);
-                    ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
-                    drive.d.plan = ver.plan_sink();
                     if (!mtp.load_experts(err) || !mtp.bind(wt, &native_head, ver.final_R_all(), err)) {
                         std::printf("ERR repeat prefill decode-resource reload failed: %s\n", err.c_str());
                         return 1;
                     }
+                    mtp.set_draft_sampling(req_sp);
                     repeat_resources_deferred = false;
                 }
             }
