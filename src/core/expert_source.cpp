@@ -695,11 +695,15 @@ struct NumaComplementPlacement {
         }
         double share[2];
         for (int k = 0; k < 2; ++k) share[k] = sampled[k] > 0 ? 100.0 * (double) on_node[k] / (double) sampled[k] : 0.0;
-        std::fprintf(stderr, "FileExpertSource: NUMA placement: node %d %.2f GiB (%.1f %% of its slices), node %d %.2f GiB "
-                             "(%.1f %% of its slices); free before: %s; after the drop: %s; pages taken and page-locked in %.1f s since the placement started\n",
-                     nodes[0], share[0] / 100.0 * (double) slice_bytes[0] / 1073741824.0, share[0], nodes[1],
-                     share[1] / 100.0 * (double) slice_bytes[1] / 1073741824.0, share[1], free_text(free_before).c_str(),
-                     free_text(free_after).c_str(), secs);
+        char what[2][96];   // a slice whose move_pages batches all failed has no share to print
+        for (int k = 0; k < 2; ++k) {
+            if (batches[k] > 0 && failed[k] == batches[k]) std::snprintf(what[k], sizeof what[k], "not verified");
+            else std::snprintf(what[k], sizeof what[k], "%.2f GiB (%.1f %% of its slices)",
+                               share[k] / 100.0 * (double) slice_bytes[k] / 1073741824.0, share[k]);
+        }
+        std::fprintf(stderr, "FileExpertSource: NUMA placement: node %d %s, node %d %s; free before: %s; after the drop: %s; "
+                             "pages taken and page-locked in %.1f s since the placement started\n",
+                     nodes[0], what[0], nodes[1], what[1], free_text(free_before).c_str(), free_text(free_after).c_str(), secs);
         if (got < bytes)
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the paced loop stopped at %.2f of %.2f "
                                  "GiB (%s); the rest is first-touched by unpinned copy threads (memory not placed on its node: the split runs with remote reads)\n",
