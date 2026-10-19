@@ -3,6 +3,7 @@
 // the Metal engine's inline build_rope_table implementation in engine/rope_table.h.
 
 #include "engine/rope_table.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
