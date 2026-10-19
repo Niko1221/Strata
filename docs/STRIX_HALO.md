@@ -92,6 +92,7 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 | `STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY` | the prompt's gated-delta-net recurrence: four lanes per column, two columns per lane, the convolution and the norms fused |
 | `STRATA_HCD_EXACT` | the hyper-connection down projection (N 320, K 10240) in a WMMA kernel that reproduces hipBLASLt solution 1176 / 1177's summation order (`hip_prefill_hcd_exact_parity` checks it bit for bit); it runs only where the table makes hipBLASLt pick one of those two, and says once if it cannot |
 | `STRATA_CVEC_FUSE`, `STRATA_PF_PAD` | a steered layer's write, control vector and next norm in one pass; padded GEMM row strides |
+| `STRATA_TOPK_REG_MIN_BLOCKS=4096` | the prompt's QSA top-k uses the register kernel from 16K cells of context instead of 28K (the original kernel is slower there; the selected cells are identical, `qsa_topk_parity` checks it) |
 | `STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL` | decode layouts and kernels (packed Q8_0 / Q6_K weights, 4-row BF16 GEMV, one-cell-per-thread attention scores) |
 | `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE` | the grouped decode experts (IQ3_S / IQ4_NL), single-butterfly warp sums, fewer launches around the shared expert and the KV append |
 | `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH` | the GDN step over four blocks per head, activation images written by their producers, the PLE key / value projections of a verify window at once |
@@ -123,6 +124,16 @@ tokens on a cached conversation - read in 3.1-6.0 s at 1,024 and 0.9-2.5 s at 12
 replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,024 tokens or more already take; it is not
 under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
 pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
+
+`STRATA_PF_F16=1` (gfx11 only; add it to the list above) runs the covered prompt experts on the F16 matrix cores instead of
+the int8 ones: K-quant gate/up and Q5_1 down (with `STRATA_PF_FUSED_KQ=1`), IQ2 / IQ3 / IQ4_XS gate/up, Q2_0 / IQ4_NL / Q8_0
+down. One layer, 16,384 tokens: Q4_K / Q5_1 85.3 -> 53.5 ms, IQ3_S / IQ4_NL gate/up 11.65 -> 9.87 and down 6.11 -> 4.71 ms.
+It rounds differently from the int8 kernels. First-token KL against a run with no switches, 12 natural-text prompts of
+1.5K-24K tokens (Strata's own docs and sources), top-1 the same in 12 of 12: UD-Q4_K_XL mean 0.0068 (median 0.0021) against
+0.0031 (0.0024) for `STRATA_PF_FUSED=1 STRATA_PF_FUSED_KQ=1` without it; UD-IQ4_XS 0.0085 (0.0036) against 0.0068 (0.0032). One
+1.5K prompt carries most of the Q4_K_XL mean (0.049).
+
+`STRATA_REFILL_PARTS=1` (opt-in, exact; HIP and CUDA, a GGUF read in place) refills the expert-cache slots a prompt borrowed straight from the GGUF mapping (an expert's gate, up and down tensors) instead of through an assembled 4 MB copy per expert: the same bytes in the slot (checked against the assembled blob on 162 slots), 0.1 to 0.3 s less at the end of a prompt; gfx1151, UD-Q4_K_XL and UD-IQ4_XS: a 4K-8K prompt +2.3% to +3.5%, 32K +1.1%. It is not in the table above because only gfx1151 has measured it.
 
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).

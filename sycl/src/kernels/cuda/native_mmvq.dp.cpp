@@ -25,6 +25,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
@@ -1512,6 +1513,19 @@ void native_mmvq_rowwarp_kernel(const typename F::Block* __restrict__ w, const Q
 // is 210 bytes, so its ql/qh runs start 2-byte aligned, and the B70 splits a misaligned vector load into pieces:
 // the wide kernel streamed 145 GB/s that way against 640 GB/s for the same blocks repacked at a 16-byte stride.
 // Both aligned loads stay inside the 210-byte block for the ql and qh runs (last byte read <= block + 207).
+// SYCL port: a 4-int vector load from a 4-byte aligned address (a Q8_1 block is 36 bytes, its qs sit at offset 4): one dword-vector
+// message instead of four scalar loads - the decode kernels issue 8 of these per column and 4-byte step.
+__dpct_inline__ sycl::int4 ld_i4_a4(const int* p) {
+    sycl::int4 v;
+    v.load(0, sycl::address_space_cast<sycl::access::address_space::global_space, sycl::access::decorated::no>(p));
+    return v;
+}
+// Q6_K: per-byte (v - 32) of four 6-bit values (bytes 0..63): no byte can saturate, so this is the saturating char4 subtract's
+// result exactly, in four integer ops (SWAR: no borrow crosses a byte) instead of the per-byte vector builtin.
+__dpct_inline__ int q6_sub32(int x) {
+    const uint32_t u = (uint32_t) x;
+    return (int) (((u | 0x80808080u) - 0x20202020u) ^ (~u & 0x80808080u));
+}
 __dpct_inline__ sycl::int4 load16_a2(const void* p) {
     const uintptr_t a = reinterpret_cast<uintptr_t>(p);
     const sycl::int4* q = reinterpret_cast<const sycl::int4*>(a & ~uintptr_t(15));
@@ -1576,10 +1590,8 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
         for (int j = 0; j < NCOLS; ++j) {
             const Q81Block* xb = x + std::size_t(j) * x_stride + kby + bq8_offset;
             if constexpr (A2) {   // Q8_1 qs sits at offset 4 of a 36-byte block: 4-byte aligned, so four int loads
-                const int* p0 = reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4;
-                const int* p1 = reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4;
-                u0[j] = sycl::int4(p0[0], p0[1], p0[2], p0[3]);
-                u1[j] = sycl::int4(p1[0], p1[1], p1[2], p1[3]);
+                u0[j] = ld_i4_a4(reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4);
+                u1[j] = ld_i4_a4(reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4);
             } else {
                 u0[j] = reinterpret_cast<const sycl::int4*>(xb[0].qs)[u_int4];
                 u1[j] = reinterpret_cast<const sycl::int4*>(xb[2].qs)[u_int4];
@@ -1593,8 +1605,8 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
             int vi0[4], vi1[4];
 #pragma unroll
             for (int p = 0; p < 4; ++p) {
-                vi0[p] = dpct::vectorized_binary<sycl::char4>((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
-                vi1[p] = dpct::vectorized_binary<sycl::char4>(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+                vi0[p] = q6_sub32((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030));
+                vi1[p] = q6_sub32(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030));
             }
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) {
@@ -1661,8 +1673,8 @@ void native_mmvq_q6k_pf_kernel(const Q6KBlock* __restrict__ w, const Q81Block* _
             int vi0[4], vi1[4];
 #pragma unroll
             for (int p = 0; p < 4; ++p) {
-                vi0[p] = dpct::vectorized_binary<sycl::char4>((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
-                vi1[p] = dpct::vectorized_binary<sycl::char4>(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+                vi0[p] = q6_sub32((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030));
+                vi1[p] = q6_sub32(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030));
             }
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) {
@@ -1703,6 +1715,19 @@ inline int q6k_wide_rpw() {
     static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
     return v;
 }
+// Large-GRF mode (256 registers per thread instead of 128) for the wide kernels (Q6_K a2 and the generic one) at 2-8
+// columns: on the A770 they spill at 128, and mmvq_bench Q6_K 4 columns goes 70-80 -> 150-237 GB/s with the same
+// checksum. Large GRF halves the threads an Xe core keeps resident, so it is the default on Arc A-series (Alchemist)
+// only, where it was measured; Battlemage and anything else, and 1 column everywhere, launch the same kernels as before.
+// STRATA_MMVQ_LARGE_GRF=1 forces it on, =0 off.
+inline bool mmvq_large_grf(dpct::queue_ptr s) {
+    static const bool v = [s] {
+        const char* e = std::getenv("STRATA_MMVQ_LARGE_GRF");
+        if (e != nullptr) return std::atoi(e) != 0;
+        return strata::intel_gpu_gen(s->get_device()) == strata::IntelGpuGen::Alchemist;
+    }();
+    return v;
+}
 template <int NCOLS>
 void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const Q6KBlock*>(weights);
@@ -1726,6 +1751,17 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+        if constexpr (NCOLS > 1) {
+            if (mmvq_large_grf(s)) {
+                s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2_grf256, dpct_kernel_scalar<NCOLS>>>(
+                    sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+                    sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out);
+                    });
+                return;
+            }
+        }
         s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2, dpct_kernel_scalar<NCOLS>>>(
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
@@ -1769,9 +1805,8 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
 // replace does 4-byte loads (Q4_K/Q5_K, 230-280 GB/s) or global-memory codebook lookups (IQ4_XS, ~100 GB/s).
 // Lane g of a block: Q4_K/Q5_K take qs bytes [16g, 16g+16) = sub-blocks 2(g/2) (low nibbles) and 2(g/2)+1 (high
 // nibbles) at positions 16(g%2)..+15; IQ4_XS takes sub-block g (16 bytes, low nibbles = positions 0-15).
-__dpct_inline__ sycl::int4 ld_q8_16(const Q81Block* b, int half) {   // Q8_1 qs is 4-byte aligned: four int loads
-    const int* q = reinterpret_cast<const int*>(b->qs) + 4 * half;
-    return sycl::int4(q[0], q[1], q[2], q[3]);
+__dpct_inline__ sycl::int4 ld_q8_16(const Q81Block* b, int half) {   // Q8_1 qs is 4-byte aligned: one dword-vector load
+    return ld_i4_a4(reinterpret_cast<const int*>(b->qs) + 4 * half);
 }
 __dpct_inline__ int dp4a4(const sycl::int4 a, const sycl::int4 b, int acc) {
     acc = strata::dp4a(a.x(), b.x(), acc); acc = strata::dp4a(a.y(), b.y(), acc);
@@ -1959,6 +1994,15 @@ void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, in
     STRATA_WKR(2) STRATA_WKR(4)
 #undef STRATA_WKR
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+    if constexpr (NCOLS > 1) {
+        if (mmvq_large_grf(s)) {
+            s->parallel_for<dpct_kernel_name<class native_mmvq_wide_grf256, F, dpct_kernel_scalar<NCOLS>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+                sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
+            return;
+        }
+    }
     s->parallel_for<dpct_kernel_name<class native_mmvq_wide, F, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
@@ -2817,6 +2861,157 @@ bool q6_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
     launch_check();
     return true;
 }
+
+// ============================ STRATA_Q6_PLANAR: the Q6_K heads as 16-byte-aligned planes (SYCL port) ============================
+//
+// native_mmvq_q6k_wide_kernel<..., A2 = true> reads each lane's ql / qh run as two aligned 16-byte loads and a funnel shift
+// because a 210-byte block is only 2-byte aligned. The planar layout holds the same bytes as four planes (ql 128 B, qh 64 B,
+// scales 16 B, d 2 B per block): a lane's runs are single aligned int4 loads, its two scales one 16-bit load (the pair
+// scales[so], scales[so + 4] stored adjacent, at byte 2g). The kernel is the A2 kernel's, line for line, from the loads on:
+// every output is bitwise equal, ~14% faster on the 521 MB LM head and the draft head. Same bytes, so a matrix is CONVERTED
+// (planar allocation made, GGUF-layout one freed): no VRAM is spent. Only the output heads are converted - the prompt path
+// reads the other projections in the GGUF layout.
+struct Q6Planar {
+    void* base;
+    const uint8_t* ql; const uint8_t* qh; const uint8_t* sc; const sycl::half* d;
+    int n_in, n_out;
+};
+std::unordered_map<const void*, Q6Planar>& q6_planar_registry() {
+    static std::unordered_map<const void*, Q6Planar> registry;
+    return registry;
+}
+
+template <int NCOLS>
+void native_mmvq_q6k_planar_kernel(const uint8_t* __restrict__ qlp, const uint8_t* __restrict__ qhp,
+                                   const uint8_t* __restrict__ scp, const sycl::half* __restrict__ dp,
+                                   const Q81Block* __restrict__ x, float* __restrict__ y, int n_in, int n_out) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int lane = int(item.get_local_id(2)), warp = int(item.get_local_id(1));
+    const int row = int(item.get_group(2)) * WARPS + warp;
+    if (row >= n_out) return;
+    const int blocks_per_row = n_in / QK, x_stride = n_in / Q8K;
+    const int g = lane & 7, sub = lane >> 3;
+    const int vh_shift = 2 * ((g & 3) >> 1);
+    const int qh4_idx = 2 * (g >> 2) + (g & 1);
+    const int bq8_offset = 4 * (g >> 2) + ((g & 3) >> 1);
+    const int u_int4 = g & 1;
+    float acc[NCOLS] = {};
+    for (int kbx = sub; kbx < blocks_per_row; kbx += WARP / 8) {
+        const int kby = kbx * (QK / Q8K);
+        const std::size_t bi = std::size_t(row) * blocks_per_row + kbx;
+        const sycl::int4 ql4 = reinterpret_cast<const sycl::int4*>(qlp + bi * 128)[g];
+        const sycl::int4 qh4 = reinterpret_cast<const sycl::int4*>(qhp + bi * 64)[qh4_idx];
+        const uint16_t s2 = reinterpret_cast<const uint16_t*>(scp + bi * 16)[g];
+        const float d = dp[bi];
+        const float dsc0 = d * (float) (int8_t) (s2 & 0xff), dsc1 = d * (float) (int8_t) (s2 >> 8);
+        sycl::int4 u0[NCOLS], u1[NCOLS];
+        float ds0[NCOLS], ds1[NCOLS];
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j) {
+            const Q81Block* xb = x + std::size_t(j) * x_stride + kby + bq8_offset;
+            u0[j] = ld_i4_a4(reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4);
+            u1[j] = ld_i4_a4(reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4);
+            ds0[j] = xb[0].ds[0]; ds1[j] = xb[2].ds[0];
+        }
+        const int vl[4] = {ql4.x(), ql4.y(), ql4.z(), ql4.w()};
+        const int vh[4] = {qh4.x() >> vh_shift, qh4.y() >> vh_shift, qh4.z() >> vh_shift, qh4.w() >> vh_shift};
+        int vi0[4], vi1[4];
+#pragma unroll
+        for (int p = 0; p < 4; ++p) {
+            vi0[p] = q6_sub32((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030));
+            vi1[p] = q6_sub32(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030));
+        }
+#pragma unroll
+        for (int j = 0; j < NCOLS; ++j) {
+            int s0 = 0, s1 = 0;
+            s0 = strata::dp4a(vi0[0], u0[j].x(), s0); s0 = strata::dp4a(vi0[1], u0[j].y(), s0);
+            s0 = strata::dp4a(vi0[2], u0[j].z(), s0); s0 = strata::dp4a(vi0[3], u0[j].w(), s0);
+            s1 = strata::dp4a(vi1[0], u1[j].x(), s1); s1 = strata::dp4a(vi1[1], u1[j].y(), s1);
+            s1 = strata::dp4a(vi1[2], u1[j].z(), s1); s1 = strata::dp4a(vi1[3], u1[j].w(), s1);
+            acc[j] += ds0[j] * dsc0 * (float) s0 + ds1[j] * dsc1 * (float) s1;
+        }
+    }
+    auto sg = item.get_sub_group();
+#pragma unroll
+    for (int j = 0; j < NCOLS; ++j) {
+        float v = acc[j];
+#pragma unroll
+        for (int o = WARP / 2; o > 0; o >>= 1) v += sycl::permute_group_by_xor(sg, v, o);
+        if (lane == 0) y[std::size_t(j) * n_out + row] = v;
+    }
+}
+
+template <int NCOLS>
+void q6_planar_launch(const Q6Planar& w, const Q81Block* x, float* y, dpct::queue_ptr s) {
+    const unsigned blocks = unsigned((std::size_t(w.n_out) + WARPS - 1) / WARPS);
+    const uint8_t *ql = w.ql, *qh = w.qh, *sc = w.sc;
+    const sycl::half* d = w.d;
+    const int n_in = w.n_in, n_out = w.n_out;
+    if constexpr (NCOLS > 1) {   // same rule as the GGUF-layout wide kernel (#2207): the multi-column kernel spills at 128 GRF on Alchemist
+        if (mmvq_large_grf(s)) {
+            s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar_grf256, dpct_kernel_scalar<NCOLS>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+                sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>},
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                    native_mmvq_q6k_planar_kernel<NCOLS>(ql, qh, sc, d, x, y, n_in, n_out);
+                });
+            return;
+        }
+    }
+    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_planar, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+            native_mmvq_q6k_planar_kernel<NCOLS>(ql, qh, sc, d, x, y, n_in, n_out);
+        });
+}
+
+// every registered matrix is served here whatever the column count (more than 8: in chunks of 8), so a converted matrix is
+// never read through a GGUF-layout kernel
+bool q6_planar_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
+    auto& registry = q6_planar_registry();
+    if (registry.empty() || ncols < 1) return false;
+    const auto found = registry.find(weights);
+    if (found == registry.end() || found->second.n_in != n_in || found->second.n_out != n_out) return false;
+    validate_shape(n_in, std::min(ncols, 8), 256);
+    validate_pointer(x_q8_1);
+    validate_pointer(y);
+    validate_stream(stream);
+    const auto s = strata::q_of(stream);
+    const std::size_t x_col = std::size_t(n_in / Q8K);   // Q8_1 blocks per column
+    for (int c0 = 0; c0 < ncols; c0 += 8) {
+        const int nc = std::min(8, ncols - c0);
+        const auto* x = static_cast<const Q81Block*>(x_q8_1) + std::size_t(c0) * x_col;
+        float* yy = y + std::size_t(c0) * n_out;
+        switch (nc) {
+            case 1: q6_planar_launch<1>(found->second, x, yy, s); break;
+            case 2: q6_planar_launch<2>(found->second, x, yy, s); break;
+            case 3: q6_planar_launch<3>(found->second, x, yy, s); break;
+            case 4: q6_planar_launch<4>(found->second, x, yy, s); break;
+            case 5: q6_planar_launch<5>(found->second, x, yy, s); break;
+            case 6: q6_planar_launch<6>(found->second, x, yy, s); break;
+            case 7: q6_planar_launch<7>(found->second, x, yy, s); break;
+            default: q6_planar_launch<8>(found->second, x, yy, s); break;
+        }
+    }
+    launch_check();
+    return true;
+}
+
+// plane offsets of a matrix of nb blocks in one allocation: ql | qh | scales | d, each 256-byte aligned
+struct Q6PlanarLayout { std::size_t o_qh, o_sc, o_d, total; };
+Q6PlanarLayout q6_planar_layout(std::size_t nb) {
+    Q6PlanarLayout l;
+    l.o_qh = (nb * 128 + 255) & ~std::size_t(255);
+    l.o_sc = (l.o_qh + nb * 64 + 255) & ~std::size_t(255);
+    l.o_d = (l.o_sc + nb * 16 + 255) & ~std::size_t(255);
+    l.total = l.o_d + nb * 2;
+    return l;
+}
+Q6Planar q6_planar_make(void* dev, std::size_t nb, int n_in, int n_out) {
+    const Q6PlanarLayout l = q6_planar_layout(nb);
+    auto* base = static_cast<uint8_t*>(dev);
+    return Q6Planar{dev, base, base + l.o_qh, base + l.o_sc, reinterpret_cast<const sycl::half*>(base + l.o_d), n_in, n_out};
+}
 } // namespace
 
 bool native_q8_0_packed_enabled() {
@@ -2862,6 +3057,98 @@ bool native_q6_k_packed_enabled() {
         return v && v[0] == '1' && v[1] == '\0';
     }();
     return enabled;
+}
+
+bool native_q6_k_planar_enabled() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_Q6_PLANAR");
+        return !(v && v[0] == '0' && v[1] == '\0');
+    }();
+    return enabled;
+}
+
+bool native_q6_k_is_planar(const void* weights) { return q6_planar_registry().count(weights) != 0; }
+
+// Converts a GGUF-layout Q6_K matrix (a device allocation of the caller's) to the planar layout: a new allocation holds the
+// planes, the old one is freed, the returned pointer (the new allocation's, to be freed with sycl::free as the old one would
+// have been, after native_q6_k_unpack) is the key native_q6_k_mmvq serves it under. Not eligible or no room: `weights` back.
+void* native_q6_k_planar_adopt(void* weights, int n_in, int n_out, const char* what) try {
+    if (!weights || n_in <= 0 || n_in % 256 || n_out <= 0 || !native_q6_k_planar_enabled()) return weights;
+    if (q6_planar_registry().count(weights)) return weights;
+    auto& q = dpct::get_in_order_queue();
+    const std::size_t nb = std::size_t(n_in / 256) * std::size_t(n_out);
+    const Q6PlanarLayout l = q6_planar_layout(nb);
+    void* dev = nullptr;
+    try { dev = strata::malloc_device_guarded(l.total, q, what); } catch (...) { dev = nullptr; }
+    if (dev == nullptr) {
+        std::fprintf(stderr, "strata: STRATA_Q6_PLANAR: no VRAM for the %s's planar copy (+%.1f MiB), keeping the GGUF layout\n", what,
+                     l.total / 1048576.0);
+        return weights;
+    }
+    const uint8_t* src = static_cast<const uint8_t*>(weights);
+    uint8_t* base = static_cast<uint8_t*>(dev);
+    const std::size_t o_qh = l.o_qh, o_sc = l.o_sc, o_d = l.o_d;
+    q.parallel_for(sycl::range<1>(nb), [=](sycl::id<1> id) {
+        const std::size_t b = id[0];
+        const uint16_t* s16 = reinterpret_cast<const uint16_t*>(src + b * 210);
+        uint16_t* qlo = reinterpret_cast<uint16_t*>(base + b * 128);
+        for (int i = 0; i < 64; ++i) qlo[i] = s16[i];
+        uint16_t* qho = reinterpret_cast<uint16_t*>(base + o_qh + b * 64);
+        for (int i = 0; i < 32; ++i) qho[i] = s16[64 + i];
+        const int8_t* sc = reinterpret_cast<const int8_t*>(src + b * 210 + 192);
+        uint8_t* sco = base + o_sc + b * 16;
+        for (int g = 0; g < 8; ++g) {
+            const int so = 8 * (g >> 2) + (g & 3);
+            sco[2 * g] = (uint8_t) sc[so]; sco[2 * g + 1] = (uint8_t) sc[so + 4];
+        }
+        reinterpret_cast<uint16_t*>(base + o_d)[b] = s16[104];
+    });
+    q.wait();
+    sycl::free(weights, q);
+    q6_planar_registry()[dev] = q6_planar_make(dev, nb, n_in, n_out);
+    std::fprintf(stderr, "strata: STRATA_Q6_PLANAR: the %s (%d x %d) is stored as 16-byte-aligned planes (same bytes)\n", what, n_out, n_in);
+    return dev;
+}
+catch (sycl::exception const& exc) {
+    std::fprintf(stderr, "strata: STRATA_Q6_PLANAR conversion failed: %s\n", exc.what());
+    return weights;
+}
+
+// A planar matrix's rows `rows_dev[0 .. n_sel)` as a new planar matrix (the draft head's token subset of the LM head).
+void* native_q6_k_planar_gather(const void* planar, int n_in, const int32_t* rows_dev, int64_t n_sel, const char* what) try {
+    const auto found = q6_planar_registry().find(planar);
+    if (found == q6_planar_registry().end() || found->second.n_in != n_in || n_sel <= 0) return nullptr;
+    auto& q = dpct::get_in_order_queue();
+    const int nbr = n_in / 256;
+    const std::size_t nb = std::size_t(nbr) * std::size_t(n_sel);
+    const Q6PlanarLayout l = q6_planar_layout(nb);
+    void* dev = nullptr;
+    try { dev = strata::malloc_device_guarded(l.total, q, what); } catch (...) { dev = nullptr; }
+    if (dev == nullptr) return nullptr;
+    const Q6Planar src = found->second;
+    uint8_t* base = static_cast<uint8_t*>(dev);
+    const std::size_t o_qh = l.o_qh, o_sc = l.o_sc, o_d = l.o_d;
+    q.parallel_for(sycl::range<1>(nb), [=](sycl::id<1> id) {
+        const std::size_t b = id[0];
+        const std::size_t i = b / nbr, j = b - i * nbr;
+        const std::size_t sb = std::size_t(rows_dev[i]) * nbr + j;
+        const sycl::int4* sq = reinterpret_cast<const sycl::int4*>(src.ql + sb * 128);
+        sycl::int4* dq = reinterpret_cast<sycl::int4*>(base + b * 128);
+        for (int k = 0; k < 8; ++k) dq[k] = sq[k];
+        const sycl::int4* sh = reinterpret_cast<const sycl::int4*>(src.qh + sb * 64);
+        sycl::int4* dh = reinterpret_cast<sycl::int4*>(base + o_qh + b * 64);
+        for (int k = 0; k < 4; ++k) dh[k] = sh[k];
+        *reinterpret_cast<sycl::int4*>(base + o_sc + b * 16) = *reinterpret_cast<const sycl::int4*>(src.sc + sb * 16);
+        reinterpret_cast<uint16_t*>(base + o_d)[b] = reinterpret_cast<const uint16_t*>(src.d)[sb];
+    });
+    q.wait();
+    q6_planar_registry()[dev] = q6_planar_make(dev, nb, n_in, (int) n_sel);
+    std::fprintf(stderr, "strata: STRATA_Q6_PLANAR: the %s (%lld x %d) is gathered from the planar head\n", what, (long long) n_sel, n_in);
+    return dev;
+}
+catch (sycl::exception const& exc) {
+    std::fprintf(stderr, "strata: STRATA_Q6_PLANAR gather failed: %s\n", exc.what());
+    return nullptr;
 }
 
 bool native_q6_k_pack(const void *weights, int n_in, int n_out,
@@ -3040,6 +3327,7 @@ catch (sycl::exception const &exc) {
 }
 
 void native_q6_k_unpack(const void* weights) {
+    q6_planar_registry().erase(weights);   // planar matrices are the caller's allocation (native_q6_k_planar_adopt): the caller frees it
     auto& registry = q6_packed_registry();
     const auto found = registry.find(weights);
     if (found == registry.end()) return;
@@ -3522,6 +3810,7 @@ void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
 void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream) {
     if (q6_packed_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q6_PACKED=1 heads
+    if (q6_planar_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream)) return;   // STRATA_Q6_PLANAR copies
     // SYCL port: 16-byte-load kernel for the decode shapes (ncols <= 4)
     // With the aligned loads (load16_a2) the wide kernel wins on every Q6_K shape and window width: 2.6-3.4x the
     // misaligned-load kernels in q6k_align_bench, decode 44.9 -> 54 tok/s on the Coder, output tokens identical.

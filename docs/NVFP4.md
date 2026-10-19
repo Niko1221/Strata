@@ -5,6 +5,11 @@ blocks of E2M1 codes with four UE4M3 sub-block scales, plus one FP32 `weight_sca
 Everything else (attention, GDN, shared experts, routers, the head) stays in the formats the native path already
 reads. Measured on Windows 11, RTX 5090 (32 GB), Ryzen 9 9950X3D, 128 GB DDR5-5600.
 
+**The three NVFP4 versions in setup and the app.** `NVFP4` is "NVFP4 (Strata's version)", `NVFP4-NVIDIA` is "NVFP4
+(NVIDIA's version)", and `NVFP4-QAD` is "NVFP4 (NVIDIA, trained for FP4)" ([the short guide](MODELS.md#nvfp4)). All three
+read pictures, through the original model's picture reader file that setup downloads with them (see "Images" below and
+the FP4-Local section). The other sections of this page apply to all three unless they say otherwise.
+
 ## Getting a model
 
 ```
@@ -38,7 +43,7 @@ original model therefore work as they are.
 Tested end to end with `jpezzulli/OrcaRouter-Qwen3.8-Flash-Next-Uncensored-ModelOpt-NVFP4`. By its
 `hf_quant_config.json`, NVIDIA's `nvidia/Qwen3.8-Flash-Next-NVFP4` quantizes the routed experts the same way
 (NVFP4, group 16; the other layers BF16, the PLE table FP8, the MTP experts FP8), so it takes the same path. It has
-not been run here.
+not been run here as downloaded. Setup offers it as a ready-made pack, the size `NVFP4-NVIDIA`.
 
 ## Measured
 
@@ -111,7 +116,8 @@ Images: the packs keep Qwen's vision tower unquantized, so the original's image 
 (`--vision`; strata-vision opens the dense GGUF for the vocabulary). Checked on an RTX 5070 and an RTX 3060 against
 IQ3_XXS's answers on the same picture (a number in the picture read, two shapes with their colours and sides). The
 encoder on the GPU takes ~1.1 GiB of VRAM: on the 3060 at 8K context the cache held 1,293 experts with images against
-1,734 without.
+1,734 without. Pictures are on by default; setup and the app pick the CPU reader under 24 GB of graphics memory and the
+GPU reader from 24 GB (`--vision cpu` / `--vision gpu` change it).
 
 ## Where the global scales go
 
@@ -168,8 +174,14 @@ busiest experts, max|x|/rms 4 median and 9 at most. The errors:
 `src/kernels/cpu/nvfp4_avx512.cpp` computes the CPU pool's NVFP4 rows in 512-bit lanes. Each 64-value block is
 decoded once for every token of a verify window: `vpdpbusd` on |E2M1| codes, with the sign moved onto the
 activation. The arithmetic is ggml-cpu's `ggml_vec_dot_nvfp4_q8_0`, with the float additions ordered differently
-(worst 4.5e-7 relative, `nvfp4_avx512_parity`). `STRATA_NO_NVFP4_512=1` falls back to ggml-cpu, which is also the
-path of CPUs without AVX-512.
+(worst 4.5e-7 relative, `nvfp4_avx512_parity`). `STRATA_NO_NVFP4_512=1` falls back to ggml-cpu.
+
+A CPU without AVX-512 (Zen 1-3, Intel Core 4th-10th and 12th-14th gen, Core Ultra, Xeon E5 v3/v4) runs the same rows in 256-bit lanes
+(`src/kernels/cpu/nvfp4_avx2.cpp`): ggml's AVX2 arithmetic step for step, so every row is bit-equal to ggml-cpu's
+(`nvfp4_cpu_parity`, 0 of 1280x9 / 2560x9 rows differ on a Ryzen 5 5600X, a Ryzen 7 255 and a Core Ultra 7 265).
+`STRATA_NO_NVFP4_256=1` falls back to ggml-cpu. An NVFP4 pack is a native pack (its folder holds `native_experts.txt`),
+so the engine starts on such a CPU; the AVX-512 requirement belongs to the canonical Q2_0 pack only (#2347: a `--pack`
+folder without `native_experts.txt` is read as that pack, and the engine now says so before it refuses).
 
 | tokens | ggml-cpu | AVX-512 | speedup |
 |---|---|---|---|
@@ -178,6 +190,22 @@ path of CPUs without AVX-512.
 | 7 | 0.719 ms | 0.196 ms | 3.66x |
 
 These are one expert's gate+up (1280 rows of 2560, cache-resident). The pool itself is bound by DRAM.
+
+The pool in DRAM terms (`nvfp4_avx512_parity --bw THREADS TOKENS`: 1536 experts, 4.2 GB, GB/s of weights read; tokens = tokens an
+expert serves in one verify window, 1-2 in decode):
+
+| CPU (threads) | kernel | 1 thread, 1 tok | all cores, 1 tok | 2 tok | 4 tok |
+|---|---|---|---|---|---|
+| Ryzen 7 255, Zen 4 (8) | AVX-512 | 15.4 | 58.6 | 57.6 | 47.7 |
+| | AVX2 rows | 13.9 | 58.9 | 58.1 | 42.1 |
+| | ggml-cpu | 12.6 | 58.7 | 44.8 | 22.4 |
+| Ryzen 5 5600X, Zen 3, DDR4-3200 (6) | AVX2 rows | 12.1 | 42.2 | 41.5 | 30.1 |
+| | ggml-cpu | 10.4 | 42.9 | 30.9 | 15.5 |
+| Core Ultra 7 265, DDR5-5600 (20) | AVX2 rows | 16.0 | 74.2 | 73.0 | 60.6 |
+| | ggml-cpu | 10.3 | 74.1 | 62.7 | 37.1 |
+
+Without AVX-512 a core reads ~10% slower (13.9 vs 15.4 GB/s), but a pool that reads DRAM runs at the same rate up to two tokens a
+window and ~12% below at four. The CPU's memory decides, not its vector width.
 
 ## Other GPUs
 
@@ -195,3 +223,30 @@ guarded (`GGML_USE_HIP`). Neither was built for HIP here.
 - `nvfp4_avx512_parity`: the CPU rows against ggml-cpu (with `--expert`: one whole expert).
 - `mmq_nvfp4_parity`: the prompt path's products against FP64 (with `--real`: rows dumped by `STRATA_DUMP_MOE_INPUT`).
 - `tools/nvfp4_verify.py` and `tools/nvfp4_verify_gguf.py`: the conversion, bit for bit.
+
+## NVIDIA's FP4-Local checkpoint
+
+`nvidia/Qwen3.8-Flash-Next-FP4-Local` (setup size **NVFP4-QAD**) is NVIDIA's own retrained 4-bit model: ModelOpt 0.47
+safetensors, experts retrained by quantization-aware distillation. Strata reads it by converting it on the user's PC;
+nothing of NVIDIA's weights is redistributed (licenses: NVIDIA Open Model Agreement and Qwen Community License 1.0).
+
+What the checkpoint holds, and what `tools/nvfp4_local_pack.py` does with it:
+
+| In the checkpoint | Becomes |
+| --- | --- |
+| routed experts: NVFP4 (E2M1, E4M3 scale per 16, F32 scale per tensor); the scales stored in NVIDIA's "CSF" form (`.nvfp4_csf_fixed` U8 + `.nvfp4_csf_exceptions` U32) | the scales are decoded to the plain E4M3 matrix (byte-exact; the format is the one vLLM's loader documents), then repacked exactly like every other NVFP4 pack: `experts.bin` with the same 36-byte super-blocks and the 16-byte scale tail. Checked: 304 complete experts and the whole `experts.bin` (SHA-256) equal the route through a full GGUF |
+| attention, GDN projections, shared experts, indexer: MXFP8 (E4M3 values, E8M0 scale per 32) | dequantized exactly, then Q8_0 (same 32-value blocks; +0.6% RMS on top of MXFP8's own ~3%), or BF16 for the small projections the BF16 kernels read |
+| n-gram (PLE) table, 26.8 GiB: NVFP4 rows of 160 values | a one-tensor GGUF of 90-byte rows (80 B codes + 10 E4M3 scales, one F32 for the table), read by the new PLE format `NVFP4` (`strata.ple.format = nvfp4x16`) in `ngram.cpp`; same row size as IQ4_NL |
+| MTP head: NVFP4 experts, BF16 rest | a Q2_0 draft layer built with `mtp_pack.py` / `mtp_rt.py` (88.7% of drafts accepted over 225 test requests) |
+| vision tower | not converted. Pictures are read by the original model's picture reader (the shared `mmproj` file that setup downloads, as for the other NVFP4 versions); the dense GGUF supplies the vocabulary |
+
+`python tools/nvfp4_local_pack.py prepare --model <checkpoint> --out <dir>` runs every step (setup does this): the n-gram
+table, the dense GGUF (no experts), the pack (experts written straight from the checkpoint) and the draft layer. It needs
+about 110 GB of free disk beside the 102 GB download, which can be deleted afterwards. On a Threadripper PRO with the files
+on NVMe it took about 12 minutes.
+
+Measured on an RTX PRO 5000 72 GB (Blackwell), 128K context, int8 KV, every expert in VRAM (`tools/strata_bench.py`):
+decode 159 tokens/s (median of chat answers, 137-216), 4K prompt 3,981 tokens/s, 16K 4,813, 32K 4,916 (first token 6.6 s),
+agent session 151 tokens/s; the engine holds 69 GB of RAM beside 72 GB of VRAM. Quality is in the table below
+(`tools/quant_quality.py`, set v1, against Unsloth's Q8_0): top-1 90.5%, mean KL 0.085, perplexity 3.95 (Q8_0: 4.05).
+This is a retrained model, so its distance to the original's Q8_0 includes real weight changes, not only rounding.
