@@ -613,6 +613,8 @@ void ExpertPool::diag(std::FILE* f) const {
     const uint64_t h = head_.load();
     uint32_t batch = (uint32_t) (h >> 32), claimed = (uint32_t) h & 0xffffu, total = (uint32_t) (h >> 16) & 0xffffu,
              done = done_.load();
+    // CBA: this summed-slices branch is never run by a test (it needs a diag call mid-phase), it is a trivial sum, a mid-phase
+    // diag test if it ever misreports
     if (numa_n_ > 0 && mode_ >= 5) {   // a split native batch never writes head_/done_: the slices' sums instead
         claimed = total = done = 0;
         for (int k = 0; k < numa_n_; ++k) {
@@ -676,7 +678,13 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     // STRATA_NUMA_SPLIT: decided here, before any worker starts (a worker counts into its slice's `parked` from its
     // first instruction), and never revised.  Unset: the plan stays empty and nothing below runs.
     NumaSplitPlan plan;
-    if (const char* env = std::getenv("STRATA_NUMA_SPLIT"); env != nullptr && *env != '\0' && std::strcmp(env, "0") != 0) {
+    const char* env = std::getenv("STRATA_NUMA_SPLIT");
+    const bool env_off = env == nullptr || *env == '\0' || std::strcmp(env, "0") == 0;
+    const bool env_known = !env_off && (std::strcmp(env, "1") == 0 || std::strcmp(env, "test") == 0);
+    if (!env_off && !env_known) {
+        plan.why = std::string("unknown STRATA_NUMA_SPLIT value '") + env + "' (use 1 or test)";
+        std::fprintf(stderr, "strata cpu pool: NUMA split off: %s\n", plan.why.c_str());
+    } else if (env_known) {
         plan.test = std::strcmp(env, "test") == 0;
         const int threads = n_ + (host_works_ ? 1 : 0);   // thread j < n_: worker j; j == n_: the host
         [[maybe_unused]] auto core_of = [&](int j) {
@@ -710,15 +718,21 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
                 std::sort(nodes.begin(), nodes.end());
                 nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
                 if (nodes.size() != 2) {
-                    std::snprintf(why, sizeof why, "the pool's threads span %zu NUMA node(s), the prototype needs exactly 2",
+                    std::snprintf(why, sizeof why, "the pool's threads span %zu NUMA node(s), the NUMA split supports exactly 2",
                                   nodes.size());
                 } else {
                     plan.nodes[0] = nodes[0];
                     plan.nodes[1] = nodes[1];
+                    int per[2] = {0, 0};
                     for (int j = 0; j < threads; ++j) {
                         slice[(size_t) j] = node[(size_t) j] == nodes[1] ? 1 : 0;
                         plan.cores[slice[(size_t) j]].push_back(core_of(j));
+                        ++per[slice[(size_t) j]];
                     }
+                    // rows stay 50/50, so a slice with under half the other's threads would be the straggler of every batch
+                    if (std::min(per[0], per[1]) * 2 < std::max(per[0], per[1]))
+                        std::snprintf(why, sizeof why, "slices too unbalanced (node %d: %d thread%s, node %d: %d thread%s)",
+                                      nodes[0], per[0], per[0] == 1 ? "" : "s", nodes[1], per[1], per[1] == 1 ? "" : "s");
                 }
             }
 #else

@@ -227,6 +227,30 @@ int main(int argc, char** argv) {
         unset_env("STRATA_NUMA_SPLIT");
         if (!refused) { std::fprintf(stderr, "numa-split did not refuse STRATA_EXCHANGE_ROTATE=1\n"); return 1; }
     }
+    {   // the real split on any host: on means two distinct nodes and cores on both slices, off always says why
+        put_env("STRATA_NUMA_SPLIT", "1");
+        bool ok = false;
+        {
+            cpu::ExpertPool pool(4, true, true);
+            const auto& plan = cpu::active_numa_split();
+            ok = plan.on ? plan.nodes[0] != plan.nodes[1] && !plan.cores[0].empty() && !plan.cores[1].empty()
+                         : !plan.why.empty();
+            std::printf("pool tasks: real split %s%s\n", plan.on ? "on" : "off: ", plan.why.c_str());
+        }
+        unset_env("STRATA_NUMA_SPLIT");
+        if (!ok) { std::fprintf(stderr, "numa-split real-mode plan invariant broken\n"); return 1; }
+        // a value other than 1 / test is off, with the value in the reason; "0" and "" are off silently
+        for (const char* v : {"off", "yes"}) {
+            put_env("STRATA_NUMA_SPLIT", v);
+            bool bad = false;
+            {
+                cpu::ExpertPool pool(2, true, true);
+                bad = cpu::active_numa_split().on || cpu::active_numa_split().why.find(std::string("'") + v + "'") == std::string::npos;
+            }
+            unset_env("STRATA_NUMA_SPLIT");
+            if (bad) { std::fprintf(stderr, "numa-split did not refuse STRATA_NUMA_SPLIT=%s\n", v); return 1; }
+        }
+    }
 #endif
     std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode (%d with modes 0-4 "
                 "interleaved)\n", checks + split_checks + mixed_checks, split_checks + mixed_checks, mixed_checks);

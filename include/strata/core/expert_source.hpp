@@ -121,7 +121,8 @@ uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_f
 /// its slice-1 bytes the rest. Page rule (absolute arena offsets): any page holding a slice-0 byte belongs to slice 0,
 /// so slice-0 ranges round OUTWARDS (start down, end up) and slice-1 ranges round INWARDS (start up, end down) - this
 /// also settles pages shared across role and slot boundaries. Returns three ranges in arena offsets, possibly empty
-/// (first == second).
+/// (first == second). Adjacent roles smaller than a page may give overlapping slice-0 ranges: harmless (same node, the
+/// caller coalesces them).
 std::array<std::pair<uint64_t, uint64_t>, 3> numa_slice_ranges(uint64_t slot_off, const uint64_t role_bytes[3],
                                                                int slice, uint64_t page = 4096);
 /// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
