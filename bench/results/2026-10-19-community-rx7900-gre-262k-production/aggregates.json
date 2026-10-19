@@ -1,0 +1,26 @@
+{
+  "<1000": {
+    "n": 61,
+    "median_prompt_tok_s": 198.2,
+    "median_decode_tok_s": 52.1
+  },
+  "1000-8000": {
+    "n": 25,
+    "median_prompt_tok_s": 777.8,
+    "median_decode_tok_s": 53.5
+  },
+  ">=8000": {
+    "n": 82,
+    "median_prompt_tok_s": 965.9,
+    "median_decode_tok_s": 52.5
+  },
+  "expert_cache_slots": {
+    "min": 7310,
+    "max": 7654
+  },
+  "total_request_lines": 1004,
+  "fresh_lines": 168,
+  "hipblaslt_table": "gfx1100-hipblaslt-100200 (26 rows)",
+  "engine": "0.1.43.1 commit a0116b2",
+  "hugepages": "0"
+}

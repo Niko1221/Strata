@@ -67,6 +67,7 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
+- [2026-10-19: AMD Radeon RX 7900 GRE (gfx1100, 16 GB), Ryzen 5 5600X, 64 GB RAM](../bench/results/2026-10-19-community-rx7900-gre-262k-production/README.md): Strata 0.1.43.1 source build, original Flash-Next IQ2_XS, 262,144-token context, `--kv int8` with `--kv-resident 32768` streaming, `--vram-reserve-mib 832`, MTP `--spec 4`; **production serving log**, not a controlled bench — 168 fresh-prompt requests, prompt 198/778/966 tok/s and decode 52/54/53 tok/s median at <1K / 1K-8K / >=8K buckets, up to 114K fresh prompt tokens; confirms the two settings decided on this machine (`--vram-reserve-mib 832` after decode crashes, `fit_max_tokens` after the 400 context error).
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
 ## Run the benchmark
