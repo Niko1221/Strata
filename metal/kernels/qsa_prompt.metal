@@ -64,8 +64,11 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                 for (uint16_t i = 0; i < rk.get_capacity(); ++i) {
                     const auto ix = rk.get_multidimensional_index(i);
                     const int k = k0 + ix[0], id = cid[ix[1]];
-                    const uint row = uint(id) * QKV + g;
-                    rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                    // the row is clamped and the select is on the value: a select with the device load in the arm
+                    // loses the threadgroup on the M1 (macOS 26, measured); the discarded value cannot matter
+                    const uint row = uint(max(id, 0)) * QKV + g;
+                    const float v = float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)]);
+                    rk[i] = id >= 0 ? half(v) : half(0.0f);
                 }
             } else
 #pragma clang loop unroll(full)
@@ -120,7 +123,9 @@ kernel void qsa_attn_mm(device const half* qh [[buffer(0)]], device const char* 
                 for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
                     const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
                     const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
-                    rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vs[c][d >> 6])) : half(0.0f);
+                    const uint row = uint(max(id, 0)) * QKV + g;   // clamped, as in the S fill above
+                    const float v = float(vq[row * QD + d]) * float(vs[c][d >> 6]);
+                    rv[i] = id >= 0 ? half(v) : half(0.0f);
                 }
                 tPh = tP.template slice<32, 16>(c0, 0);
                 op.run(tPh, rv, acc);
@@ -231,7 +236,11 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
     auto tPh = tP.template slice<32, 16>(0, 0);
     auto acc = opO.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tPh)>,
                                                                __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();
-    auto tot = acc;   // the running output; acc takes one chunk (fresh each chunk: on the M4 a run does not accumulate
+    // (a second destination tensor, not a copy of acc: the MetalPerformancePrimitives headers of macOS 26.3 cannot copy a
+    // cooperative tensor - "cannot initialize a parameter of type 'void *' with an rvalue of type 'const void *'", #2323;
+    // tot is zeroed right below, so the copy was only there for its type)
+    auto tot = opO.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tPh)>,
+                                                               __tensor_ops_detail::__remove_addrspace_t<decltype(rv)>, float>();   // the running output; acc takes one chunk (fresh each chunk: on the M4 a run does not accumulate
                       // into elements rescaled in place)
     for (uint16_t i = 0; i < acc.get_capacity(); ++i)
         if (acc.is_valid_element(i)) tot[i] = 0.0f;
@@ -258,8 +267,9 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
                     for (uint16_t i = 0; i < rk.get_capacity(); ++i) {
                         const auto ix = rk.get_multidimensional_index(i);
                         const int k = k0 + ix[0], id = cid[ix[1]];
-                        const uint row = uint(id) * QKV + g;
-                        rk[i] = id >= 0 ? half(float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)])) : half(0.0f);
+                        const uint row = uint(max(id, 0)) * QKV + g;   // clamped, as in qsa_attn_mm
+                        const float v = float(kq[row * QD + k]) * float(ksc[row * 4 + (k >> 6)]);
+                        rk[i] = id >= 0 ? half(v) : half(0.0f);
                     }
                 } else
 #pragma clang loop unroll(full)
@@ -314,7 +324,9 @@ kernel void qsa_flash(device const half* qh [[buffer(0)]], device const char* kq
             for (uint16_t i = 0; i < rv.get_capacity(); ++i) {
                 const auto ix = rv.get_multidimensional_index(i);   // (cell, dim)
                 const int c = c0 + ix[0], d = d0 + ix[1], id = cid[c];
-                rv[i] = id >= 0 ? half(float(vq[(uint(id) * QKV + g) * QD + d]) * float(vsc[(uint(id) * QKV + g) * 4 + sg])) : half(0.0f);
+                const uint row = uint(max(id, 0)) * QKV + g;   // clamped, as in qsa_attn_mm
+                const float v = float(vq[row * QD + d]) * float(vsc[row * 4 + sg]);
+                rv[i] = id >= 0 ? half(v) : half(0.0f);
             }
             tPh = tP.template slice<32, 16>(c0, 0);
             opO.run(tPh, rv, acc);

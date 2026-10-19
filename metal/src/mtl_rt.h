@@ -9,15 +9,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace mtl {
 
 struct Buffer {
-    void* handle = nullptr;   // id<MTLBuffer> (retained)
+    void* handle = nullptr;   // id<MTLBuffer> (retained); the first chunk of a chunked buffer
     void* ptr = nullptr;      // CPU address (shared storage)
     size_t bytes = 0;
+    // a buffer longer than maxBufferLength: overlapping chunks every `stride` bytes (see Context::wrap)
+    std::shared_ptr<std::vector<void*>> chunks;
+    size_t stride = 0;
     template <class T> T* as() const { return static_cast<T*>(ptr); }
 };
 
@@ -26,6 +30,7 @@ struct Pipeline {
     int max_threads = 0;      // maxTotalThreadsPerThreadgroup
     int simd_width = 0;       // threadExecutionWidth
     int static_tg_mem = 0;    // staticThreadgroupMemoryLength
+    std::string name;         // the function (+ its constants), for messages
 };
 
 // A function-constant value set (index -> int / bool / uint).
@@ -58,6 +63,16 @@ struct Dispatch {
     bool barrier = true;              // run_graph: a buffer memory barrier before this dispatch
 };
 
+// A pipeline whose maxTotalThreadsPerThreadgroup is below the threadgroup size a dispatch asks for is NOT executed by
+// Metal and raises no error (0.1.44, #2323: gdn_step needs 512 threads, an M2 Max gave 448 for the GDN_NTOK >= 2
+// specializations - the layers silently kept their old outputs and every answer was garbage).  So every dispatch is
+// checked: too few threads is fatal, with a message that names the kernel, the limit and the size needed.
+// STRATA_METAL_MAX_THREADS_CAP=N lowers every pipeline's reported limit to N (a test hook: it proves this check).
+void require_fit(const Pipeline& p, uint32_t threads, const char* where);
+inline void require_fit(const Dispatch& d, const char* where = "dispatch") {
+    require_fit(*d.p, d.tg[0] * d.tg[1] * d.tg[2], where);
+}
+
 class Context {
 public:
     Context();
@@ -78,6 +93,9 @@ public:
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed
     Buffer wrap(void* page_aligned, size_t bytes);  // no-copy wrap (page-aligned, size multiple of page)
+    // the same, also when bytes > maxBufferLength: then overlapping chunks, each holding any range of up to
+    // max_span bytes that starts in it (max_span = the largest tensor bound at one offset)
+    Buffer wrap(void* page_aligned, size_t bytes, size_t max_span);
     void free(Buffer& b);
 
     // Encodes `ds` into ONE compute encoder (serial or concurrent dispatch type) and ONE command buffer, `reps`

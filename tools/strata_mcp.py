@@ -43,6 +43,9 @@ PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")   # the revisions this se
 VERSION = "0.1.0"
 WIN = os.name == "nt"
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
+# The desktop app runs this under Strata Control's Python (STRATA_CONTROL_INSTALL=1): the install runs on that Python, makes no
+# .venv and installs no package (setup.py's own CONTROL mode).
+CONTROL = os.environ.get("STRATA_CONTROL_INSTALL") == "1"
 DEFAULT_PORT = 8080
 STATE_DIR = ".strata-mcp"                             # in the Strata folder (git-ignored)
 
@@ -74,12 +77,25 @@ FALLBACK_MODELS = {
     "Q8_0": {"about": "8-bit, the reference quality (every expert Q8_0); for a 192 GB PC",
              "download_gb": 188.2, "ram_gb": 136, "arena_gb": 128.3, "families": ("unsloth",), "budget": True,
              "vision": True},
+    "Gyro-S": {"about": "the smallest option, for PCs with little memory (27.6 GB of VRAM + RAM together); lower quality "
+                        "than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster",
+               "engine": (0, 1, 45, 1),
+               "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
+               "vision": True},
+    "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
+                        "about 20% slower than Q2_0 on 12 GB cards",
+               "engine": (0, 1, 45, 1),
+               "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
+               "vision": True},
     "NVFP4": {"about": "4-bit NVFP4 experts, GPTQ (sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, other "
                        "NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "vision": True},
     "NVFP4-NVIDIA": {"about": "NVIDIA's own NVFP4 checkpoint (plain rounding), converted by sergqwer; the same size "
                               "and speed as NVFP4", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
                      "families": ("nvfp4",), "vision": True},
+    "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 - slightly faster on short prompts; a 102 GB download "
+                           "that this PC turns into a Strata pack once; it reads pictures",
+                  "download_gb": 102.2, "ram_gb": 80, "arena_gb": 68.0, "families": ("nvfp4",), "vision": True},
 }
 FALLBACK_FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "about": "the original model", "tag": ""},
@@ -92,10 +108,17 @@ FALLBACK_FAMILIES = {
                                                                   "~80 GB (UD-IQ4_XS) to ~136 GB (Q8_0) of RAM, else "
                                                                   "part of them read from the SSD",
                 "tag": "unsloth-", "vision": True},
+    "gyro": {"title": "Qwen3.8-Flash-Next (Gyro)", "about": "Gyro-S (27.6 GB of memory) and Gyro-M (35 GB): the smallest "
+                                                              "sizes, for PCs with little memory; 58 and 92 GB "
+                                                              "downloads (the files include the n-gram table)",
+             "tag": "gyro-"},
     "nvfp4": {"title": "Qwen3.8-Flash-Next (NVFP4)", "about": "4-bit NVFP4 experts, NVIDIA cards; a 128 GB download, "
                                                               "~80 GB of RAM to keep every expert in RAM",
               "tag": "nvfp4-"},
 }
+OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
+MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))   # as setup.py's: RAM + VRAM floors of the owner's 64 / 48 / 40 GB tiers
+GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
                 "Plain prose, no title.")
@@ -187,6 +210,14 @@ def proc_terminate(pid, ident) -> bool:
         return True
     except OSError:
         return False
+
+
+def _rmtree_ignore_missing(func, path, exc_info):
+    """shutil.rmtree error hook: a file that vanished while its folder was being removed is already gone."""
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if isinstance(exc, FileNotFoundError):
+        return
+    raise exc
 
 
 def proc_kill_tree(pid, ident) -> bool:
@@ -404,15 +435,18 @@ def system_folders() -> list[Path]:
 class Strata:
     """One Strata folder: what is installed there, the PC, and the processes this server started."""
 
-    def __init__(self, root: Path | str = DEFAULT_ROOT):
+    def __init__(self, root: Path | str = DEFAULT_ROOT, src: Path | str | None = None):
         self.root = Path(root).resolve()
+        # where setup.py, tools/ and serve/ are (the app: inside Strata Control); `root` is where the installs live
+        self.src = Path(src).resolve() if src else self.root
         self.state_dir = self.root / STATE_DIR
         self.lock = threading.Lock()                    # install / start / stop one at a time
         self.children: list[subprocess.Popen] = []      # reaped now and then (no zombies on POSIX)
         self._setup = None
         self._setup_tried = False
         self._hw_cache = None
-        self.python_override: str | None = None         # tests: the interpreter that runs setup / the server
+        # tests: the interpreter that runs setup / the server. The app's Control runs the installer on its own Python.
+        self.python_override: str | None = sys.executable if CONTROL else None
         self.health_timeout = 2.0
 
     # ---- setup.py's own tables and logic
@@ -422,7 +456,9 @@ class Strata:
         if not self._setup_tried:
             self._setup_tried = True
             try:
-                spec = importlib.util.spec_from_file_location("strata_setup_for_mcp", self.root / "setup.py")
+                if str(self.src) not in sys.path:
+                    sys.path.insert(0, str(self.src))   # setup.py imports strata_control
+                spec = importlib.util.spec_from_file_location("strata_setup_for_mcp", self.src / "setup.py")
                 mod = importlib.util.module_from_spec(spec)
                 real = sys.stdout
                 sys.stdout = sys.stderr                 # nothing it prints may reach the protocol stream
@@ -440,17 +476,44 @@ class Strata:
     def tables(self):
         s = self.setup_module()
         if s is not None:
-            return s.MODELS, s.FAMILIES, list(s.CONTEXTS), "setup.py"
+            return s.MODELS, {**s.FAMILIES, **self.own_families()}, list(s.CONTEXTS), "setup.py"
         return FALLBACK_MODELS, FALLBACK_FAMILIES, FALLBACK_CONTEXTS, "built-in table (setup.py not importable)"
 
-    @staticmethod
-    def sizes_of(models, family) -> list:
+    def own_families(self) -> dict:
+        """setup.py's OWN_PATH_FAMILIES (Qwen3.6-35B-A3B): families with an engine path of their own.  They are not in FAMILIES
+        (whose entries are Flash-Next files with packs), so the model list used to leave them out and the app's Qwen3.6 page
+        showed no versions at all.  Each is returned as a family entry (title, about, tag, license) of this server's table."""
+        s = self.setup_module()
+        out = {}
+        for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
+            out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
+                      "vision": bool(d.get("vision", True)), "own_path": True}
+        return out
+
+    def own_size(self, family, model) -> dict | None:
+        """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
+        The download is the GGUF; the picture reader (mmproj, ~0.9 GB) is counted by the plan when pictures are on."""
+        d = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if not d or model not in d["models"]:
+            return None
+        size_gb = d["sha256"][d["file"].format(q=model)][0] / 1e9
+        return {"about": d["models"][model]["about"], "download_gb": round(size_gb, 1), "ram_gb": d["models"][model]["ram_gb"],
+                # the routed experts are ~93% of the file (setup.own_path_parallel_fits_all); the dense part and buffers ~1 GB more
+                "arena_gb": round(size_gb * 0.93, 1), "vision": bool(d.get("vision", True)),
+                "engine": OWN_PATH_ENGINE, "families": (family,)}
+
+    def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
+        own = (getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if own:
+            return list(own["models"])
         return sorted((m for m in models if family in models[m].get("families", ("qwen", "swift"))),
                       key=lambda m: bool(models[m].get("experimental")))
 
     # ---- paths
     def settings_path(self) -> Path:
+        if os.environ.get("STRATA_SETTINGS_FILE"):
+            return Path(os.environ["STRATA_SETTINGS_FILE"])
         if WIN:
             return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Strata" / "settings.json"
         return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "strata" / "settings.json"
@@ -509,7 +572,7 @@ class Strata:
         except (OSError, ValueError):
             return {}
 
-    def describe_config(self, path: Path) -> dict:
+    def describe_config(self, path: Path, usage: dict | None = None) -> dict:
         cfg = self.read_config(path)
         a = cfg.get("args") if isinstance(cfg.get("args"), list) else []
 
@@ -518,8 +581,12 @@ class Strata:
         tag = path.stem[len("strata-"):]
         missing = [p for p in [cfg.get("exe"), *[x for x in a if isinstance(x, str) and x.endswith(".gguf")]]
                    if not p or not Path(p).exists()]
+        gaps = shard_gaps([x for x in a if isinstance(x, str) and x.endswith(".gguf")])   # a model in parts is whole only with every part
+        missing += gaps
         script = self.root / f"run-{tag}.{'bat' if WIN else 'sh'}"
         vis = cfg.get("vision")
+        own_usage = (usage or self.disk_usage())["models"].get(tag) or {"gb": 0.0, "bytes": 0, "shared_bytes": 0}
+        plan = self.removal_plan(path)
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "off",
@@ -527,8 +594,147 @@ class Strata:
                 "gpu": cfg.get("gpu"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
-                "ready": not missing and bool(cfg), "missing_files": missing[:3],
+                "ready": not missing and bool(cfg), "missing_files": missing[:3], "parts_missing": len(gaps),
+                "disk_gb": own_usage["gb"], "disk_bytes": own_usage["bytes"],
+                "shared_bytes": own_usage["shared_bytes"],
+                # what Delete would remove (files in Strata's own folders that no other model uses); the person's own GGUF folders stay
+                "removable_gb": plan["gb"], "kept_files": len(plan["keep"]),
                 "last_used": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))}
+
+    # ---- what a model owns on disk (Delete, and the per-model disk usage in Storage)
+    FILE_FLAGS = ("--native", "--ple-gguf", "--embd-gguf", "--native-dense-gguf")
+    DIR_FLAGS = ("--pack", "--mtp")
+
+    def model_paths(self, cfg: dict) -> tuple[list, list]:
+        """(the GGUF files, the folders) a run config names: --native/--ple-gguf/... and --pack/--mtp, plus any other .gguf."""
+        a = [x for x in (cfg.get("args") or []) if isinstance(x, str)]
+        files = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.FILE_FLAGS]
+        files += [Path(x) for x in a if x.lower().endswith(".gguf")]
+        dirs = [Path(a[i + 1]) for i, x in enumerate(a[:-1]) if x in self.DIR_FLAGS]
+        seen, once = set(), []
+        for f in files:                                 # one file named by several flags is still one file
+            if norm(f) not in seen:
+                seen.add(norm(f))
+                once.append(f)
+        seen_d, once_d = set(), []
+        for d in dirs:
+            if norm(d) not in seen_d:
+                seen_d.add(norm(d))
+                once_d.append(d)
+        return once, once_d
+
+    @staticmethod
+    def tree_bytes(path: Path) -> int:
+        if path.is_file():
+            try:
+                return path.stat().st_size
+            except OSError:
+                return 0
+        total = 0
+        for base, _d, names in os.walk(path):
+            for n in names:
+                try:
+                    total += os.stat(os.path.join(base, n)).st_size
+                except OSError:
+                    pass
+        return total
+
+    @staticmethod
+    def file_key(path: Path):
+        """What makes two names the same file on disk: device + inode (hard links), else the resolved path."""
+        try:
+            st = os.stat(path)
+            if st.st_ino:
+                return ("ino", st.st_dev, st.st_ino), st.st_size
+            return ("path", str(norm(path))), st.st_size
+        except OSError:
+            return None, 0
+
+    def used_files(self, cfg: dict) -> dict:
+        """Every file a model really uses, from its run config: all parts of a multi-part GGUF (the config names the first), the
+        picture reader, the packs and the draft layer folders.  {file identity: bytes}, wherever they live (the Strata folders or the
+        person's own)."""
+        files, dirs = self.model_paths(cfg)
+        paths = list(files)
+        vis = cfg.get("vision")
+        if isinstance(vis, dict) and isinstance(vis.get("mmproj"), str):
+            paths.append(Path(vis["mmproj"]))
+        for f in list(paths):                           # the other parts of a multi-part file
+            m = SHARD_NAME.match(str(f))
+            if m:
+                paths += [Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf") for i in range(1, int(m.group(3)) + 1)]
+        for d in dirs:
+            for base, _sub, names in os.walk(d):
+                paths += [Path(base) / n for n in names]
+        out = {}
+        for p in paths:
+            if p.is_file():
+                key, size = self.file_key(p)
+                if key is not None:
+                    out[key] = size
+        return out
+
+    def disk_usage(self) -> dict:
+        """What the installed models take on disk, from the real files: each model's own files, the files shared between models
+        (the picture reader, the draft layer) counted ONCE, and the total.  A model's own figure leaves out the shared files and
+        every other model's; rows plus 'shared' add up to the total."""
+        per = {c.stem[len("strata-"):]: self.used_files(self.read_config(c)) for c in self.configs()}
+        owners: dict = {}
+        for files in per.values():
+            for k in files:
+                owners[k] = owners.get(k, 0) + 1
+        models, shared = {}, {}
+        for tag, files in per.items():
+            own = sum(b for k, b in files.items() if owners[k] == 1)
+            models[tag] = {"bytes": own, "gb": round(own / 1e9, 2), "files": len(files),
+                           "shared_bytes": sum(b for k, b in files.items() if owners[k] > 1)}
+            shared.update({k: b for k, b in files.items() if owners[k] > 1})
+        shared_bytes = sum(shared.values())
+        total = sum(m["bytes"] for m in models.values()) + shared_bytes
+        return {"models": models, "shared_bytes": shared_bytes, "shared_gb": round(shared_bytes / 1e9, 2),
+                "total_bytes": total, "total_gb": round(total / 1e9, 2)}
+
+    def removal_plan(self, config: Path) -> dict:
+        """What deleting this model removes and what it keeps. A file or folder another installed model's config still names
+        (the shared MTP draft, a shared PLE shard) is kept; so is anything outside Strata's own folders."""
+        cfg = self.read_config(config)
+        files, dirs = self.model_paths(cfg)
+        used_files, used_dirs = set(), set()
+        for other in self.configs():
+            if norm(other) == norm(config):
+                continue
+            f, d = self.model_paths(self.read_config(other))
+            used_files |= {norm(x) for x in f}
+            used_dirs |= {norm(x) for x in d}
+        remove, keep = [], []
+
+        def shared(p: Path, is_dir: bool) -> bool:
+            n = norm(p)
+            if n in used_files or n in used_dirs or any(is_inside(u, n) for u in used_files | used_dirs) and is_dir:
+                return True
+            return any(is_inside(n, u) for u in used_dirs)
+
+        for p, is_dir in [(x, False) for x in files] + [(x, True) for x in dirs]:
+            if not p.exists():
+                continue
+            if not self.allowed(p):
+                keep.append({"path": str(p), "reason": "outside Strata's folders"})
+            elif shared(p, is_dir):
+                keep.append({"path": str(p), "reason": "another installed model still uses it"})
+            else:
+                remove.append({"path": str(p), "kind": "folder" if is_dir else "file", "bytes": self.tree_bytes(p)})
+                if not is_dir:
+                    for extra in (p.with_name(p.name + ".done"), p.with_name(p.name + ".part"),
+                                  p.with_name(p.name + ".part.chunks")):
+                        if extra.exists():
+                            remove.append({"path": str(extra), "kind": "file", "bytes": self.tree_bytes(extra)})
+        tag = config.stem[len("strata-"):]
+        for extra in (config, config.with_name(config.name + ".bak"), config.with_name(f"strata-{tag}.log"),
+                      self.root / f"run-{tag}.bat", self.root / f"run-{tag}.sh"):
+            if extra.exists():
+                remove.append({"path": str(extra), "kind": "file", "bytes": self.tree_bytes(extra)})
+        total = sum(x["bytes"] for x in remove)
+        return {"model": tag, "remove": remove, "keep": keep, "bytes": total, "gb": round(total / 1e9, 2)}
 
     def find_config(self, model: str | None) -> Path:
         have = self.configs()
@@ -576,9 +782,11 @@ class Strata:
                                 entry["downloading"] = bool(list(c.glob("*.part")))
                             items.setdefault(sub, []).append(entry)
         mtp = data / "mtp" / "rt" / "experts.bin"
+        usage = self.disk_usage()
         return {"strata_folder": str(self.root), "data_folder": str(data), "data_folder_exists": data.is_dir(),
                 "python_env": self.venv_python().exists(), "engine": self.engine_info(),
-                "models": [self.describe_config(c) for c in self.configs()],
+                "models": [self.describe_config(c, usage) for c in self.configs()],
+                "usage": usage,
                 "downloads": items.get("models", []), "prepared": items.get("packs", []),
                 "draft_layer": mtp.exists()}
 
@@ -629,6 +837,8 @@ class Strata:
             hw["cpu"] = {"name": name, "cores": os.cpu_count(), "avx2": avx2, "avx512": avx512}
         except Exception:                               # noqa: BLE001
             hw["cpu"] = {"name": platform.processor(), "cores": os.cpu_count()}
+        if sys.platform == "darwin":                    # a Mac: one pool of unified memory, the Metal engine (strata_control/mac_fit.py)
+            return self._mac_hardware(hw)
         nv = []
         try:
             nv = S.gpus() if S else own_nvidia_gpus()
@@ -643,35 +853,157 @@ class Strata:
                 g["problem"] = None
             g["usable"] = g["problem"] is None
         amd = []
-        if not WIN:
-            try:
-                amd = S.amd_gpus() if S else []
-                for g in amd:
-                    g["vendor"] = "amd"
-                    g["vram_gb"] = round(g["vram_gb"], 1)
-                    g["problem"] = S.amd_problem(g)
-                    g["usable"] = g["problem"] is None
-            except Exception:                           # noqa: BLE001
-                amd = []
-            if not amd and shutil.which("rocm-smi"):
-                amd = rocm_smi_gpus()
+        try:                                            # Linux: the kernel's KFD topology; Windows: the display adapters' PCI ids + registry (setup.amd_gpus_win)
+            amd = S.amd_gpus() if S else []
+            for g in amd:
+                g["vendor"] = "amd"
+                g["vram_gb"] = round(g["vram_gb"], 1)
+                g["problem"] = S.amd_problem(g)
+                g["usable"] = g["problem"] is None
+        except Exception:                               # noqa: BLE001
+            amd = []
+        if not WIN and not amd and shutil.which("rocm-smi"):
+            amd = rocm_smi_gpus()
+        if any(g.get("usable") for g in nv):
+            for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
+                if g.get("uma") and g.get("usable"):
+                    g["usable"], g["problem"] = False, "integrated graphics: Strata uses the NVIDIA card in this computer"
         hw["gpus"] = nv + amd
+        self._engine_vendor(hw)
         if WIN:
             hw["display_adapters"] = windows_video_controllers()
         hw["nvidia_smi"] = bool(shutil.which("nvidia-smi"))
         return hw
+
+    @staticmethod
+    def _engine_vendor(hw: dict) -> None:
+        """One engine drives the cards of ONE make (CUDA: NVIDIA, HIP: AMD, ...): note which one for this PC (the installed engine's, else the one
+        setup fetches first) and, when the other make has the bigger card, the one plain line that says so. The model list below only counts
+        the cards this engine can drive; a model is never split across makes (strata_control/gpu_fit.py)."""
+        try:
+            from strata_control import gpu_fit
+            backend = None
+            try:
+                from strata_control import engine_component as ec
+                rep = ec.status()
+                backend = (rep.get("engine") or {}).get("backend") if rep.get("usable") else None
+            except Exception:                           # noqa: BLE001
+                backend = None
+            vendor = gpu_fit.pick_vendor(hw.get("gpus", []), backend)
+            hw["engine_vendor"] = vendor
+            note = gpu_fit.other_vendor_note(hw.get("gpus", []), vendor)
+            if note:
+                hw["gpu_note"] = note
+        except Exception:                               # noqa: BLE001 - never break the hardware page over this
+            pass
+
+    @staticmethod
+    def engine_gpus(hw: dict | None) -> list:
+        """The usable cards the engine of this PC drives (all usable cards when the make is not known)."""
+        hw = hw or {}
+        vendor = hw.get("engine_vendor")
+        return [g for g in hw.get("gpus", []) if g.get("usable") and (not vendor or not g.get("vendor") or g.get("vendor") == vendor)]
+
+    # ---- a Mac (Apple Silicon): unified memory, the Metal engine.  The rules are strata_control/mac_fit.py's (the same module
+    # metal/setup_mac.py uses), so the app, the Terminal and a Mac that builds the engine itself judge a model the same way.
+    def mac(self):
+        """strata_control/mac_fit.py, or None when this Strata folder does not carry it."""
+        try:
+            if str(self.src) not in sys.path:
+                sys.path.insert(0, str(self.src))
+            from strata_control import mac_fit
+            return mac_fit
+        except Exception as e:                          # noqa: BLE001
+            log(f"strata_control/mac_fit.py could not be imported ({e})")
+            return None
+
+    def _mac_hardware(self, hw: dict) -> dict:
+        mf = self.mac()
+        info = mf.mac_info() if mf else {"chip": platform.processor() or "Apple silicon", "ram_gb": hw.get("ram_gb") or 0.0,
+                                         "macos": platform.mac_ver()[0], "arm64": platform.machine() == "arm64", "clt": "x"}
+        problems = mf.mac_problems(info, need_compiler=False) if mf else []
+        ram = round(float(info.get("ram_gb") or hw.get("ram_gb") or 0.0), 1)
+        hw["ram_gb"] = ram
+        hw["cpu"] = {"name": info["chip"], "cores": os.cpu_count(), "avx2": None, "avx512": None}
+        # The graphics memory IS the RAM here: vram_gb stays 0 so nothing is counted twice (the pages that fit RAM + VRAM add them up).
+        hw["gpus"] = [{"index": 0, "name": info["chip"], "vendor": "apple", "vram_gb": 0.0, "unified_gb": ram, "arch": "apple-gpu",
+                       "problem": problems[0] if problems else None, "usable": not problems}]
+        hw["mac"] = {"chip": info["chip"], "macos": info.get("macos"), "unified_gb": ram}
+        hw["nvidia_smi"] = False
+        return hw
+
+    def _mac_sizes(self, models: dict) -> list:
+        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack). Unsloth's many-shard files need
+        metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not offer them yet."""
+        mf = self.mac()
+        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == "qwen" and m in models] if mf else []
+
+    def _mac_verdict(self, model: str, ram: float) -> str:
+        mf = self.mac()
+        if ram < mf.MIN_STREAM_RAM_GB:
+            return "does not fit"
+        if not mf.streams(model, ram):
+            return "fits"
+        speed = mf.STREAM_MEASURED.get(model)
+        if speed:
+            return (f"part of its experts in memory, the rest read from the SSD (slower: {speed} measured on a 32 GB Mac mini)")
+        return "slow here: part of its experts read from the SSD (slower, not measured on a Mac of this size)"
+
+    def _mac_recommend(self, hw: dict, models: dict, families: dict) -> dict:
+        mf = self.mac()
+        ram = float(hw.get("ram_gb") or 0)
+        usable = [g for g in hw.get("gpus", []) if g.get("usable")]
+        if not mf or not usable:
+            why = (hw.get("gpus") or [{}])[0].get("problem") or "this Mac cannot run the Metal engine"
+            return {"family": None, "model": None, "why": why}
+        if ram < mf.MIN_STREAM_RAM_GB:
+            return {"family": None, "model": None,
+                    "why": f"{ram:.0f} GB of unified memory: Strata needs {mf.MIN_STREAM_RAM_GB:.0f} GB or more on a Mac (32 GB or more is what it was tested on)"}
+        model, notes = mf.recommend_model(ram)
+        notes = [n for n in notes if "UD-Q4_K_XL" not in n]          # the app does not offer the Unsloth files yet
+        if model not in self._mac_sizes(models):
+            model = "Q2_0"
+        if mf.streams(model, ram):
+            speed = mf.STREAM_MEASURED.get(model)
+            why = (f"{ram:.0f} GB of unified memory: no size fits whole, so {model}'s experts are read from the SSD as it answers"
+                   + (f" ({speed} measured on a 32 GB Mac mini)" if speed else ""))
+        else:
+            why = f"{ram:.0f} GB of unified memory: {model} stays in memory (the best size that does)"
+        ctx = mf.recommend_context(ram)
+        return {"family": "qwen", "model": model, "title": families["qwen"]["title"] + " " + model, "context": ctx,
+                "backend": "metal", "gpu": {k: usable[0].get(k) for k in ("index", "name", "vram_gb")},
+                "download_gb": models[model]["download_gb"], "why": why, "notes": notes,
+                "setup_command": f"./setup.sh --setup --yes --family qwen --model {model} --context {ctx}"}
+
+    def _mac_model_table(self, hw: dict) -> list:
+        models, families, _ctx, _src = self.tables()
+        ram = float(hw.get("ram_gb") or 0)
+        have = {c.stem[len("strata-"):] for c in self.configs()}
+        fd = families["qwen"]
+        sizes = []
+        for m in self._mac_sizes(models):
+            d = models[m]
+            tag = (fd.get("tag", "") + m).lower()
+            sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
+                          "images": False,           # the app's first release reads no pictures (setup.py's Control mode says so)
+                          "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
+                          "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                          "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
+        return [{"family": "qwen", "title": fd["title"], "about": fd.get("about"), "experimental": False, "images": False, "sizes": sizes}]
 
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the
         Coder below the full model's RAM (setup's RAM table), the low-RAM mode when the GPU makes up for the RAM, and
         the context it preselects for the card's VRAM (32K under 14 GB, 64K under 20 GB, else 128K)."""
         models, families, _ctx, _src = self.tables()
+        if hw.get("mac"):
+            return self._mac_recommend(hw, models, families)
         S = self.setup_module()
-        usable = [g for g in hw.get("gpus", []) if g.get("usable")]
+        usable = self.engine_gpus(hw)
         ram = hw.get("ram_gb") or 0
         if not usable:
             why = ("no NVIDIA RTX 20-series-or-newer GPU found (nvidia-smi did not list one)"
-                   + ("; AMD cards run on Linux only" if WIN and any(
+                   + ("; the AMD graphics in this PC is not a card Strata supports (an RX 7000 or 9000 series card, or a Ryzen AI Max, is needed)" if WIN and any(
                        "amd" in str(a.get("name", "")).lower() or "radeon" in str(a.get("name", "")).lower()
                        for a in hw.get("display_adapters", [])) else ""))
             return {"family": None, "model": None, "why": why}
@@ -685,7 +1017,23 @@ class Strata:
             except Exception:                           # noqa: BLE001
                 return False
         notes = []
-        if ram >= 60:
+        # 0.2.0, the owner's memory tiers (README "The other sizes"; setup.py MEMORY_TIERS holds the same floors): RAM + VRAM
+        # together.  An APU's shared memory is the RAM itself, so only its BIOS carve-out counts as VRAM.
+        tvram = float(best.get("dedicated_gb", 0.0)) if best.get("uma") else float(vram)
+        tier = next(((f, n) for lo, f, n in MEMORY_TIERS if ram + tvram >= lo), None)
+        if tier and tier[1] in models and tier[0] in families:
+            fam, model = tier
+            total = f"{ram:.0f} GB of RAM + {tvram:.0f} GB of VRAM = {ram + tvram:.0f} GB"
+            if model == "IQ2_XS":
+                why = (f"{total}, the 40 GB tier: Swift 1.5's IQ2_XS (thinks for a shorter time)"
+                       + ("; Gyro-M (35 GB) is the other choice there, close to IQ3_XXS in quality but 17-21% slower at "
+                          "writing answers than Q2_0" if "Gyro-M" in models and best.get("vendor") in ("nvidia", "amd") else ""))
+            elif model == "IQ3_XXS":
+                why = f"{total}, the 48 GB tier: IQ3_XXS (better quality, slower)"
+            else:
+                why = (f"{total}, the 64 GB tier: IQ3_S (matches the full model, the slowest); Swift 1.5's IQ3_S is an "
+                       "equal choice")
+        elif ram >= 60:
             fam, model, why = "qwen", "IQ3_XXS", f"{ram:.0f} GB of RAM: setup's own pick from 60 GB (better quality)"
         elif ram >= models["Q2_0"]["ram_gb"] - 4:
             fam, model, why = "qwen", "Q2_0", f"{ram:.0f} GB of RAM: the full model's fastest size fits"
@@ -695,6 +1043,14 @@ class Strata:
         elif low_fits("IQ1_M"):
             fam, model, why = "coder", "IQ1_M", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but the GPU's "
                                                  f"{vram:.0f} GB make up for it (setup's low-RAM mode: slower)")
+        elif "Gyro-S" in models and ram + vram >= models["Gyro-S"]["ram_gb"] + GYRO_ROOM_GB:
+            # Gyro (agentionai): only where the sizes above do not fit.  Their memory figure (Gyro-S 27.6 GB, Gyro-M 35 GB)
+            # is VRAM + RAM together and the system needs room beside it, so GYRO_ROOM_GB more is asked for here.
+            # Gyro-M when this PC has that much, else Gyro-S.
+            model = "Gyro-M" if ram + vram >= models["Gyro-M"]["ram_gb"] + GYRO_ROOM_GB else "Gyro-S"
+            fam, why = "gyro", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but RAM + VRAM = {ram + vram:.0f} GB "
+                                f"holds {model} ({models[model]['ram_gb']} GB of memory in total; the quality is lower "
+                                "than the 2-3-bit sizes, and it needs the whole download on a fast SSD)")
         else:
             return {"family": None, "model": None, "why": f"{ram:.0f} GB of RAM: Strata needs 32 GB or more "
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
@@ -706,7 +1062,7 @@ class Strata:
             notes.append("this CPU has no AVX2: EXPERIMENTAL and slow - setup compiles the engine on this PC for the "
                          "older CPU (10-20 minutes), and the CPU's share of the experts runs a few times slower")
         if backend == "hip":
-            notes.append("AMD (experimental, Linux): the engine is compiled during setup; no images")
+            notes.append("AMD (experimental): pictures are on; the reader runs on the CPU under 24 GB of VRAM and on the GPU from 24 GB")
         cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
                f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
         return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
@@ -714,23 +1070,29 @@ class Strata:
                 "download_gb": models[model]["download_gb"], "why": why, "notes": notes, "setup_command": cmd}
 
     def model_table(self, hw: dict | None) -> list:
+        if (hw or {}).get("mac"):
+            return self._mac_model_table(hw)
         models, families, _ctx, _src = self.tables()
         S = self.setup_module()
         ram = (hw or {}).get("ram_gb")
-        usable = [g for g in (hw or {}).get("gpus", []) if g.get("usable")]
+        usable = self.engine_gpus(hw)
         vram = max((g["vram_gb"] for g in usable), default=0.0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
         for f, fd in families.items():
             sizes = []
             for m in self.sizes_of(models, f):
-                d = models[m]
+                own = self.own_size(f, m)
+                d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
                 verdict = None
                 if ram is not None:
-                    verdict = "fits" if ram >= d["ram_gb"] else "tight" if ram >= d["ram_gb"] - 8 else "does not fit"
+                    have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
+                    verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
                     try:
-                        if d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
+                        if own:                         # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
+                            pass
+                        elif d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
                             verdict = ("experimental: " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
                         elif d.get("budget"):
                             verdict = (("experimental: " if d.get("experimental") else "")
@@ -738,20 +1100,54 @@ class Strata:
                                        if ram >= d["ram_gb"] else
                                        "slow here: part of its experts in RAM, the rest read from the SSD (setup "
                                        "asks first)" if ram >= 48 else "does not fit")
-                        elif S and S.low_ram_needed(m, ram) and S.low_ram_fits(m, ram, vram):
+                        elif not d.get("mem_total") and S and S.low_ram_needed(m, ram) and S.low_ram_fits(m, ram, vram):
                             verdict = "fits in the low-RAM mode (slower: the GPU holds part of the experts)"
                     except Exception:                   # noqa: BLE001
                         pass
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
+                              # which picture reader "pictures on" gets on this PC (strata_control/vision_reader.py, the one rule: the CPU reader
+                              # under 24 GB of graphics memory, the GPU reader from 24 GB; the person can switch it per model)
+                              "images_reader": self.images_reader(vram),
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"),
-                              "on_this_pc": verdict, "installed": tag in have, "id": tag})
+                              # RAM + VRAM the weights need together, WITHOUT the n-gram table (that stays on the SSD): Gyro states it
+                              # (mem_total), for the rest the experts plus ~1 GB for the dense part (Swift IQ2_XS: 35.5 + 1 = 36.5)
+                              "mem_total": bool(d.get("mem_total")),
+                              # the first engine that reads this size's files (setup.py "engine"); the app says "needs a newer engine"
+                              # with the update step when the installed one is older. None: any engine that setup accepts.
+                              "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
+                              "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                              "on_this_pc": verdict, "installed": tag in have, "id": tag,
+                              # which graphics cards to use for it (strata_control/gpu_fit.py, the one rule app / Terminal / setup share):
+                              # only with two or more cards that count; "recommended" names the pre-selected option
+                              "gpu_options": None if own else self.gpu_options(d, ram, hw)})   # Qwen3.6 runs on one card so far
             out.append({"family": f, "title": fd["title"], "about": fd.get("about"),
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
         return out
+
+    @staticmethod
+    def images_reader(vram) -> str:
+        try:
+            from strata_control import vision_reader
+            return vision_reader.default_mode(vram) if vram else "cpu"
+        except Exception:                                  # noqa: BLE001
+            return "cpu"
+
+    @staticmethod
+    def gpu_options(d: dict, ram, hw) -> dict | None:
+        try:
+            from strata_control import gpu_fit
+            mem = float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
+            res = gpu_fit.options(round(mem, 1), ram, (hw or {}).get("gpus", []), (hw or {}).get("engine_vendor"))
+            if len(res["options"]) >= 2:
+                return res
+            # one card the engine can drive: no choice to offer, but a bigger card of the other make is still worth one plain line
+            return {"options": [], "recommended": None, "other_vendor_note": res.get("other_vendor_note")} if res.get("other_vendor_note") else None
+        except Exception:                                  # noqa: BLE001 - the choice is a convenience: never break the model list
+            return None
 
     # ---- the running server
     def ports(self, port: int | None) -> list[int]:
@@ -839,6 +1235,7 @@ class Strata:
         log_path = Path(j.get("log", ""))
         tail = read_tail(log_path, 400) if log_path.name else []
         prog = install_progress(tail)
+        prog = combined_progress(prog, j)
         out = {"running": running, "started": j.get("started"), "model": j.get("model"), "family": j.get("family"),
                "log": str(log_path), **prog}
         if not running:
@@ -852,6 +1249,135 @@ class Strata:
             out["result"] = "running"
         out["last_lines"] = tail[-12:]
         return out
+
+
+SHARD_NAME = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
+DEFAULT_MMPROJ_BYTES = 907_543_008          # the Flash-Next picture reader (mmproj BF16), when a family does not pin its size
+
+
+def shard_gaps(ggufs) -> list:
+    """The parts of a multi-part GGUF (name-00001-of-00004.gguf) that are not there whole: a missing part, or one still being
+    downloaded (<part>.part).  A config that names only the first part used to look finished with one part of four on disk."""
+    gaps = []
+    for g in ggufs:
+        m = SHARD_NAME.match(str(g))
+        if not m:
+            continue
+        for i in range(1, int(m.group(3)) + 1):
+            sib = Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf")
+            if not sib.is_file() or sib.with_name(sib.name + ".part").exists():
+                gaps.append(str(sib))
+    return gaps
+
+
+def expected_files(S, family: str, model: str, models_dir: Path, vision: bool) -> list:
+    """The files setup fetches for one install, with the sizes it can know before the download starts:
+    [{path, bytes|None, role}] where role is "model" (the shards or the pack's files) or "vision" (the picture reader).
+    Empty when the setup module cannot say (the caller then falls back to the folder scan)."""
+    out = []
+    try:
+        own = (getattr(S, "OWN_PATH_FAMILIES", None) or {}).get(family)
+        if own:                                         # Qwen3.6: the GGUF and the picture reader in the model's folder
+            folder = Path(models_dir) / (own["tag"] + model)
+            name = own["file"].format(q=model)
+            out.append({"path": str(folder / name), "bytes": own["sha256"][name][0], "role": "model"})
+            if vision:
+                out.append({"path": str(folder / own["mmproj"]), "bytes": own["sha256"][own["mmproj"]][0], "role": "vision"})
+            return out
+        fam, d = S.FAMILIES[family], S.MODELS[model]
+        if d.get("repo"):                               # NVFP4: a ready-made pack, many files with pinned sizes
+            for f in S.ready_needed(model, Path(models_dir)):
+                out.append({"path": str(S.ready_where(Path(models_dir), f)), "bytes": f[4], "role": "model"})
+        else:
+            folder = Path(models_dir) / (fam.get("tag", "") + model)
+            for i in range(1, S.model_shards(fam, model) + 1):
+                out.append({"path": str(folder / S.model_file(fam, model, i)), "bytes": None, "role": "model"})
+        if vision:                                      # beside the model folders, not inside them (setup step 5)
+            size = (fam.get("mmproj_sha256") or (None,))[0] or DEFAULT_MMPROJ_BYTES
+            out.append({"path": str(Path(models_dir) / fam.get("mmproj", S.MMPROJ)), "bytes": size, "role": "vision"})
+    except Exception:                                   # noqa: BLE001 - progress is a convenience: never break the install
+        return []
+    return out
+
+
+def files_progress(prog: dict, job: dict, files: list) -> dict:
+    """One honest download figure for a model in parts: every part counted (finished, partial, waiting), the picture reader as a part
+    of its own, and a part list the screen can name ("part 2 of 4").  The finished state needs EVERY part: a first shard that is whole
+    does not make the model downloaded."""
+    log = prog.get("download") or {}
+    cur_gb = float(log.get("total_gb") or 0)
+    rows = []
+    for f in files:
+        p = Path(f["path"])
+        part = p.with_name(p.name + ".part")
+        try:
+            if part.is_file():
+                state, have = "downloading", part.stat().st_size
+            elif p.is_file():
+                state, have = "done", p.stat().st_size
+            else:
+                state, have = "waiting", 0
+        except OSError:
+            state, have = "waiting", 0
+        total = f.get("bytes") or (have if state == "done" else 0)
+        if state == "downloading" and not total and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
+            total = int(cur_gb * 1e9)
+        rows.append({"role": f.get("role", "model"), "state": state, "have": have, "total": max(total, have)})
+    plan_total = float(job.get("total_gb") or 0) * 1e9
+    parts = []
+    for role, name in (("model", "Model files"), ("vision", "Picture reader")):
+        mine = [r for r in rows if r["role"] == role]
+        if not mine:
+            continue
+        have = sum(r["have"] for r in mine)
+        known = sum(r["total"] for r in mine)
+        total = known if all(r["total"] for r in mine) else max(plan_total if role == "model" else 0, known, have)
+        k = sum(1 for r in mine if r["state"] == "done")
+        state = "done" if k == len(mine) else "downloading" if any(r["state"] == "downloading" for r in mine) or k else "waiting"
+        parts.append({"kind": role, "name": name, "state": state, "done_gb": round(min(have, total) / 1e9, 3),
+                      "total_gb": round(total / 1e9, 3), "files_done": k, "files_total": len(mine)})
+    total_gb = sum(x["total_gb"] for x in parts)
+    done_gb = min(sum(x["done_gb"] for x in parts), total_gb)
+    active = next((x for x in parts if x["state"] != "done"), parts[-1] if parts else None)
+    if active and active["state"] == "waiting" and any(x["state"] == "done" for x in parts):
+        active = dict(active, state="downloading")
+    prog["download"] = {"file": "picture reader" if active and active["kind"] == "vision" else "model files",
+                        "done_gb": round(done_gb, 3), "total_gb": round(total_gb, 3),
+                        "remaining_gb": round(max(0.0, total_gb - done_gb), 3),
+                        "percent": min(99, int(100 * done_gb / total_gb)) if total_gb else 0}
+    prog["parts"] = parts
+    return prog
+
+
+def combined_progress(prog: dict, job: dict) -> dict:
+    """One total for the whole model: the bytes of all its files (finished, partial and the one in flight, read from the
+    model's folder) over the download size, instead of each file's own 0-100% (a two-file model went 70 GB -> 0 -> up
+    again). Only while the download step runs; later steps are not a download."""
+    folder, total = job.get("folder"), job.get("total_gb")
+    step = str(prog.get("step") or "")
+    if job.get("files") and step.startswith("5/"):      # the install knows its files: count each of them
+        return files_progress(prog, job, job["files"])
+    if not folder or not total or not step.startswith("5/"):
+        prog.pop("download", None)
+        return prog
+    done = 0
+    try:
+        for entry in os.scandir(folder):
+            if entry.is_file() and (entry.name.endswith(".gguf") or entry.name.endswith(".part")):
+                done += entry.stat().st_size
+    except OSError:
+        pass
+    if not done:                                        # nothing on disk yet: the log's own line is all there is
+        return prog
+    done_gb = min(done / 1e9, float(total))
+    prog["download"] = {"file": "model files", "done_gb": round(done_gb, 3), "total_gb": float(total),
+                        "remaining_gb": round(max(0.0, float(total) - done_gb), 3),
+                        "percent": min(99, int(100 * done_gb / float(total))) if total else 0}
+    # The parts of the whole job, for a progress bar that sums them (the job that fetches the engine adds its own part):
+    # {kind, name, done_gb, total_gb, state}
+    prog["parts"] = [{"kind": "model", "name": "Model files", "done_gb": prog["download"]["done_gb"],
+                      "total_gb": float(total), "state": "downloading"}]
+    return prog
 
 
 def install_progress(lines: list[str]) -> dict:
@@ -970,13 +1496,20 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                         "Read-only.",
          "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
          "annotations": ro},
+        {"name": "strata_remove", "title": "Delete an installed model",
+         "description": "Delete an installed model's own files (its model GGUFs, its pack folder, its run config) and nothing "
+                        "another installed model still uses (a shared MTP draft or PLE file). Without confirm=true it only "
+                        "returns the plan (what would be removed and how big, what is kept). Stop the model first.",
+         "inputSchema": {"type": "object", "additionalProperties": False, "required": ["model"],
+                         "properties": {"model": installed_model, "confirm": {"type": "boolean"}}},
+         "annotations": {"readOnlyHint": False, "destructiveHint": True}},
         {"name": "strata_install", "title": "Install Strata",
          "description": "Install a Strata model on this PC by running Strata's setup non-interactively in the "
                         "background (Python packages, the engine, a 58-111 GB model download, preparation, start "
                         "script). Without confirm=true it only returns the plan (what would be downloaded, disk "
                         "space): show it to the user and call again with confirm=true once they agree. Returns at "
                         "once; call it again (no arguments needed) to see the progress, or with cancel=true to stop "
-                        "it (it resumes later). Defaults: the recommended model and context for this PC, images off. "
+                        "it (it resumes later). Defaults: the recommended model and context for this PC, pictures on where the model can read them. "
                         "After it finishes, start the model with strata_start.",
          "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
              "family": {"type": "string", "enum": list(families),
@@ -990,8 +1523,10 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
              "context": {"type": "integer", "enum": contexts,
                          "description": "context length in tokens (more needs more VRAM)"},
              "vision": {"type": "string", "enum": ["no", "yes", "gpu", "cpu"],
-                        "description": "let the model read images (yes = the encoder on the GPU; ~0.9 GB more "
-                                       "download); default no"},
+                        "description": "let the model read images (~0.9 GB more download). Default yes where the model can "
+                                       "read them (not on a Mac): yes = the best reader for this card (the CPU "
+                                       "under 24 GB of VRAM, the GPU from 24 GB, any make), gpu / cpu = that "
+                                       "reader, no = text only"},
              "kv": {"type": "string", "enum": ["int8", "q4_0", "k8v4"],
                     "description": "KV cache precision above 8K context (default int8)"},
              "gpu": {"type": "integer", "minimum": 0, "maximum": 63,
@@ -1008,6 +1543,9 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                                          "Strata folder). Only the current data folder, a folder inside the Strata "
                                          "folder, or a new absolute path whose last folder is named Strata... "
                                          "(e.g. D:\\Strata-data) outside system folders"},
+             "gguf_dir": {"type": "string", "maxLength": 260,
+                          "description": "a folder that already holds this model's GGUF files under their original names: setup "
+                                         "checks them (size and SHA-256) and does not download them again"},
              "confirm": {"type": "boolean", "description": "true = really start the install (after the user agreed "
                                                            "to the plan and the download size)"},
              "cancel": {"type": "boolean", "description": "true = stop the install in progress"}}},
@@ -1146,8 +1684,48 @@ class Tools:
                                 "rope scaling (experimental)",
                 "recommendation": rec, "source": src,
                 "this_pc": {"ram_gb": hw.get("ram_gb"),
-                            "gpus": [{k: g.get(k) for k in ("index", "name", "vram_gb", "usable")}
-                                     for g in hw.get("gpus", [])]}}
+                            "gpus": [{k: g.get(k) for k in ("index", "name", "vram_gb", "usable", "vendor")}
+                                     for g in hw.get("gpus", [])],
+                            **({"engine_vendor": hw["engine_vendor"]} if hw.get("engine_vendor") else {}),
+                            **({"gpu_note": hw["gpu_note"]} if hw.get("gpu_note") else {})}}
+
+    # ---- strata_remove
+    def strata_remove(self, model=None, confirm=False) -> dict:
+        s = self.s
+        config = s.find_config(model)
+        plan = s.removal_plan(config)
+        if not confirm:
+            return {"summary": f"Plan: delete {plan['model']} ({plan['gb']:.1f} GB). Nothing was done yet.", "plan": plan}
+        with s.lock:
+            job = s.install_job()
+            if job and job["running"]:
+                raise ToolError("an install is running: wait for it to finish or stop it first")
+            tracked = s.tracked_server()
+            if tracked and not tracked.get("ended") and tracked.get("model") == plan["model"]:
+                raise ToolError("this model is running: stop it first")
+            failed = []
+            # The plan can list a folder and files inside it, or a file that is already gone (an earlier delete, a file moved by hand):
+            # a path that is not there is already removed, not an error. Only what is still there afterwards counts as a failure.
+            for item in sorted(plan["remove"], key=lambda x: (x["path"] == str(config), x["path"])):
+                p = Path(item["path"])
+                try:
+                    if p.is_dir() and not p.is_symlink():
+                        shutil.rmtree(p, onerror=_rmtree_ignore_missing)
+                    else:
+                        p.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    if p.exists() or p.is_symlink():
+                        failed.append(f"{p.name}: {e}")
+            files, dirs = s.model_paths(s.read_config(config)) if config.exists() else ([], [])
+            for p in {x.parent for x in [Path(i["path"]) for i in plan["remove"]] if x.suffix == ".gguf"}:
+                try:
+                    p.rmdir()                           # the model's own folder, when nothing else is in it
+                except OSError:
+                    pass
+        return {"summary": f"Deleted {plan['model']} ({plan['gb']:.1f} GB)" + (f"; could not remove {len(failed)} item(s)" if failed else ""),
+                "plan": plan, "failed": failed}
 
     # ---- strata_install
     def check_data_dir(self, raw: str) -> Path:
@@ -1177,7 +1755,8 @@ class Tools:
         return p
 
     def strata_install(self, family=None, model=None, context=None, vision=None, kv=None, gpu=None, gpus=None,
-                       backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False) -> dict:
+                       backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False,
+                       gguf_dir=None) -> dict:
         s = self.s
         with s.lock:
             job = s.install_job()
@@ -1208,7 +1787,7 @@ class Tools:
                                 "fix the problem above and call strata_install again with confirm=true (finished "
                                 "steps are skipped)"}
             plan, args = self.install_plan(family, model, context, vision, kv, gpu, gpus, backend, low_ram, port,
-                                           data_dir)
+                                           data_dir, gguf_dir)
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 raise ToolError("Strata is running (started by strata_start): stop it first with strata_stop - setup "
@@ -1222,14 +1801,11 @@ class Tools:
                 raise ToolError(plan["disk_short"])
             return self.launch_install(plan, args)
 
-    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir):
+    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None):
         s = self.s
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
             raise ToolError("give gpu (one card) or gpus (several), not both")
-        if backend == "hip" and WIN:
-            raise ToolError("the AMD (hip) backend runs on Linux only; on Windows Strata needs an NVIDIA RTX 20 "
-                            "series or newer card")
         if sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32):
             raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.10+; run "
                             + ("START-HERE.bat" if WIN else "./setup.sh") + " once instead (it installs Python)")
@@ -1247,33 +1823,37 @@ class Tools:
         elif family is None:
             fams = [f for f in families if model in s.sizes_of(models, f)]
             family = "qwen" if "qwen" in fams else fams[0]
+        if family not in families:
+            raise ToolError(f"unknown family {family}; the families: {', '.join(families)}")
         sizes = s.sizes_of(models, family)
         if model not in sizes:
             raise ToolError(f"{families[family]['title']} has no {model}; its sizes: {', '.join(sizes)}")
+        md = s.own_size(family, model) or models[model]   # Qwen3.6-35B-A3B: its sizes are not in setup's MODELS
+        mac = bool(hw.get("mac"))
+        if mac:                                         # a Mac: no card to pick, no KV choice, no RAM mode: unified memory decides
+            if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
+                raise ToolError(f"{model} does not fit this Mac: {rec['why']}")
+            gpu = gpus = kv = low_ram = None
+            context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None:
-            usable = [g for g in hw.get("gpus", []) if g.get("usable")]
+            usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
             context = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-            if models[model].get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
+            if md.get("budget") and (not hasattr(s.setup_module(), "unsloth_budget") or
                                                 s.setup_module().unsloth_budget(model, hw.get("ram_gb") or 0.0)):
                 context = 8192 if vram < 14 else 32768
-        if vision in ("yes", "gpu", "cpu") and models[model].get("vision", families[family].get("vision")) is False:
+        if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
-        if vision is not None and backend == "hip" and vision != "no":
-            # setup.py's hip_vision rules (#990): the AMD backend has no GPU image encoder, but --vision cpu reads
-            # images on the CPU beside it (Linux; the ready-made Windows AMD engine has no encoder)
-            if vision == "cpu" and not WIN:
-                pass
-            elif vision == "cpu":
-                raise ToolError("images on the CPU with an AMD card are Linux-only for now: use vision=no")
-            else:
-                raise ToolError("the AMD backend has no GPU image encoder yet: use vision=cpu (images on the CPU, "
-                                "Linux) or vision=no")
+        if vision is None:
+            # owner rule (2026-10-18): pictures are on by default wherever the model can read them and the engine has a reader; setup picks
+            # the reader (strata_control/vision_reader.py: the CPU under 24 GB, the GPU from 24 GB, every make of card).  A Mac has none yet.
+            can_read = md.get("vision", families[family].get("vision")) is not False
+            vision = "yes" if can_read and not mac else "no"
         target = self.check_data_dir(data_dir) if data_dir else s.data_dir()
         tag = (families[family].get("tag", "") + model)
         have_dir = target / "models" / tag
-        partly = have_dir.is_dir() and any(have_dir.glob("*.gguf*"))
-        need = (8 if partly else models[model]["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
+        partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
+        need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)
         free = s.disk_free(target)
         short = None
         if free is not None and free < need:
@@ -1283,21 +1863,30 @@ class Tools:
                 "--vision", vision or "no"]
         if family in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
+        own = bool(s.own_families().get(family))
         for flag, v in (("--kv", kv), ("--gpu", gpu), ("--gpus", gpus), ("--low-ram", low_ram), ("--port", port),
                         ("--data-dir", str(target) if data_dir else None)):
+            if own and flag in ("--kv", "--low-ram"):      # Flash-Next settings: Qwen3.6's engine path does not use them (setup would warn)
+                continue
             if v is not None:
                 args += [flag, str(v)]
+        if gguf_dir:
+            local = Path(os.path.expandvars(gguf_dir)).expanduser()
+            if not local.is_absolute() or not local.is_dir() or ".." in local.parts:
+                raise ToolError("gguf_dir must be an existing absolute folder")
+            args += ["--gguf-dir", str(local)]
         if backend in ("cuda", "hip"):
             args += ["--backend", backend]
         fit = None
         ram = hw.get("ram_gb")
         if ram is not None:
-            need_ram = models[model]["ram_gb"]
+            need_ram = md["ram_gb"]
             fit = "fits" if ram >= need_ram else f"needs ~{need_ram} GB of RAM, this PC has {ram:.0f} GB"
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
-                "context": context, "images": vision or "no", "download_gb": models[model]["download_gb"],
-                "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "disk_free_gb": free,
+                "context": context, "images": vision or "no", "download_gb": md["download_gb"],
+                "partly_downloaded": partly, "ram": fit, "data_folder": str(target), "model_folder": str(have_dir),
+                "disk_free_gb": free,
                 "disk_needed_gb": round(need), "disk_short": short, "already_installed": installed,
                 "setup_command": ("START-HERE.bat " if WIN else "./setup.sh ") + " ".join(args),
                 "takes": "about 20-90 minutes, mostly the download; the PC stays usable",
@@ -1307,7 +1896,7 @@ class Tools:
                             "the options (finished steps are skipped)")
         if families[family].get("license"):
             plan["license"] = families[family]["license"]
-        if families[family].get("experimental") or models[model].get("experimental"):
+        if families[family].get("experimental") or md.get("experimental"):
             plan["experimental"] = True
         return plan, args
 
@@ -1318,7 +1907,8 @@ class Tools:
         log_path = s.state_dir / "setup.log"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n===== strata-mcp: install {plan['title']} at {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
-        spec = {"job": job_id, "root": str(s.root), "python": s.run_python(), "base_python": sys.executable,
+        spec = {"job": job_id, "root": str(s.root), "src": str(s.src), "control": CONTROL,
+                "python": s.run_python(), "base_python": sys.executable,
                 "create_venv": s.python_override is None and not s.venv_python().exists(),
                 "args": args, "result": str(s.state_dir / "install-result.json")}
         spec_path = s.state_dir / "install-job.json"
@@ -1332,8 +1922,14 @@ class Tools:
         ident = proc_identity(p.pid)
         if ident is None and p.poll() and s.state("install-result").get("job") != job_id:
             raise ToolError("setup did not start: " + " | ".join(read_tail(log_path, 5)))
+        folder = plan.get("model_folder")
+        files = []
+        if s.setup_module() is not None and folder:     # every file of this install, for a progress that counts all the parts
+            files = expected_files(s.setup_module(), plan["family"], plan["model"], Path(folder).parent,
+                                   plan.get("images") in ("yes", "gpu", "cpu"))
         s.save_state("install", {"job": job_id, "pid": p.pid, "ident": ident, "log": str(log_path),
-                                 "model": plan["model"], "family": plan["family"],
+                                 "model": plan["model"], "family": plan["family"], "folder": folder, "files": files,
+                                 "total_gb": plan.get("download_gb"),
                                  "started": time.strftime("%Y-%m-%d %H:%M:%S"), "args": args})
         return {"summary": f"Install of {plan['title']} started in the background (about 20-90 minutes, mostly the "
                            f"{plan['download_gb']:.0f} GB download). Call strata_install again to see the progress; "
@@ -1712,6 +2308,7 @@ def install_job(spec_path: str) -> int:
         os.replace(tmp, result)
 
     py = Path(spec["python"])
+    src = Path(spec.get("src") or root)
     try:
         if spec.get("create_venv"):
             venv = root / ".venv"
@@ -1727,10 +2324,18 @@ def install_job(spec_path: str) -> int:
                           "once in a terminal", flush=True)
                     record(exit_code=1, ended=time.strftime("%Y-%m-%d %H:%M:%S"))
                     return 1
-        cmd = [str(py), str(root / "setup.py"), *spec["args"]]
+        cmd = [str(py), str(src / "setup.py"), *spec["args"]]
         print("strata-mcp: running " + " ".join(cmd), flush=True)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-        p = subprocess.Popen(cmd, cwd=str(root), stdin=subprocess.DEVNULL, env=env)
+        if spec.get("control"):                         # the app: the installer's own mode, writing to `root`
+            env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(root), PYTHONNOUSERSITE="1")
+            for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+                env.pop(key, None)
+            # This job is the explicit install the user asked for (it downloads model files and the preparation sources). The
+            # server that started it, and every start or serve, keep STRATA_NO_ACQUIRE; setup.py's CONTROL mode still runs
+            # no pip, git, compiler or engine fetch.
+            env.pop("STRATA_NO_ACQUIRE", None)
+        p = subprocess.Popen(cmd, cwd=str(src if spec.get("control") else root), stdin=subprocess.DEVNULL, env=env)
         record(child_pid=p.pid, child_ident=proc_identity(p.pid))
         rc = p.wait()
     except Exception as e:                              # noqa: BLE001
@@ -1745,6 +2350,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Strata's MCP server (stdio): install, start, check and stop Strata "
                                              "from an AI assistant. See docs/MCP_SERVER.md.")
     ap.add_argument("--root", help="the Strata folder (default: the one this file is in)")
+    ap.add_argument("--src", help="where setup.py, tools/ and serve/ are, when that is not the Strata folder (the app)")
     ap.add_argument("--install-job", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.install_job:
@@ -1753,12 +2359,13 @@ def main(argv=None) -> int:
         log("Python 3.10 or newer is needed")
         return 2
     root = Path(a.root).expanduser().resolve() if a.root else DEFAULT_ROOT
-    if not (root / "setup.py").is_file() or not (root / "serve" / "server.py").is_file():
-        log(f"{root} is not a Strata folder (no setup.py / serve/server.py)")
+    src = Path(a.src).expanduser().resolve() if a.src else root
+    if not (src / "setup.py").is_file() or not (src / "serve" / "server.py").is_file():
+        log(f"{src} is not a Strata folder (no setup.py / serve/server.py)")
         return 2
     out = sys.stdout.buffer
     sys.stdout = sys.stderr                             # stray prints must never corrupt the protocol stream
-    server = McpServer(Strata(root), out)
+    server = McpServer(Strata(root, src), out)
     log(f"ready (Strata folder {root})")
     try:
         server.serve(sys.stdin.buffer)

@@ -17,6 +17,8 @@ downloaded catches it (the drafter then accepts nothing, silently).  A range rea
 Content-Range is the range asked for, and every tensor of the pinned revision is checked against SHA256 below.
 """
 import argparse
+import collections
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -28,7 +30,7 @@ import urllib.request
 
 # #214: a fixed commit of the checkpoint (its `sha` from https://huggingface.co/api/models/Qwen/Qwen3.8-Flash-Next
 # on 2026-09-30), so every install reads the same tensors; STRATA_MTP_REVISION overrides it (e.g. main).  When the
-# repository no longer has it, the current files are read instead, with a message (resolve_repo).
+# repository no longer has it, reading stops (resolve_repo) unless STRATA_ALLOW_UNPINNED=1.
 PINNED_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
 REVISION = os.environ.get("STRATA_MTP_REVISION") or PINNED_REVISION
 # #495: HF_ENDPOINT (a mirror, e.g. https://hf-mirror.com) serves the same revision; the SHA256 checks below still apply
@@ -133,6 +135,42 @@ def get(url, start=None, end=None, retries=4):
             print("retry %s: %s" % (url, e), file=sys.stderr)
 
 
+def connections():
+    """Ranges read at once: STRATA_DL_CONNECTIONS (the setting of setup's downloads), else 8; 1 reads them one by one."""
+    try:
+        n = int((os.environ.get("STRATA_DL_CONNECTIONS") or "").strip() or 8)
+    except ValueError:
+        n = 8
+    return max(1, min(n, 32))
+
+
+def ranged(url, start, last, chunk, workers):
+    """The bytes start..last of `url` in order, read in `chunk`-sized ranges with `workers` of them in flight.  Each range is
+    checked by get() (a 206 with the range asked for), so a server that ignores Range still fails here."""
+    spans = []
+    pos = start
+    while pos <= last:
+        spans.append((pos, min(pos + chunk - 1, last)))
+        pos = spans[-1][1] + 1
+    if workers <= 1 or len(spans) <= 1:
+        for a, b in spans:
+            yield get(url, a, b)
+        return
+    todo = iter(spans)
+    window = collections.deque()
+    with concurrent.futures.ThreadPoolExecutor(min(workers, len(spans))) as ex:
+        for a, b in todo:
+            window.append(ex.submit(get, url, a, b))
+            if len(window) >= workers:
+                break
+        while window:
+            data = window.popleft().result()
+            for a, b in todo:
+                window.append(ex.submit(get, url, a, b))
+                break
+            yield data
+
+
 def check_range(status, content_range, start, end):
     """#327: a range read is only what was asked for when the server says so: 206 and `bytes START-END/...`."""
     if status != 206:
@@ -157,16 +195,19 @@ def sha256_of(path):
 
 
 def resolve_repo():
-    """REPO, or the repository's current files when the pinned revision is gone from it (a 404 on its index)."""
+    """REPO.  When the pinned revision is gone from the repository (a 404 on its index) it stops, unless
+    STRATA_ALLOW_UNPINNED=1: then the current files are read (their tensors are still checked against the pinned SHA256)."""
     global REPO
     try:
         req = urllib.request.Request(REPO + "model.safetensors.index.json", method="HEAD",
                                      headers={"User-Agent": "strata-mtp-fetch"})
         urllib.request.urlopen(req, timeout=120).close()
     except urllib.error.HTTPError as e:
-        if e.code == 404 and "/resolve/main/" not in REPO:
-            print("the checkpoint's pinned revision %s is gone: reading its current files (main)" % REVISION,
-                  file=sys.stderr)
+        if e.code == 404 and "/resolve/%s/" % REVISION in REPO:
+            if (os.environ.get("STRATA_ALLOW_UNPINNED") or "").strip() != "1":
+                sys.exit("the pinned version of the checkpoint (%s) is no longer on Hugging Face: update Strata" % REVISION)
+            print("STRATA_ALLOW_UNPINNED=1: the checkpoint's pinned revision %s is gone: reading its current files "
+                  "(main); every tensor is still checked against the pinned SHA256" % REVISION, file=sys.stderr)
             REPO = REPO.replace("/resolve/%s/" % REVISION, "/resolve/main/")
     except OSError:
         pass                                        # no answer: get() retries and reports it
@@ -226,7 +267,8 @@ def fetch(out, only):
     rows = inv["tensors"] if same else inventory(out)
     os.makedirs(tdir, exist_ok=True)
     manifest = []
-    chunk = 64 << 20
+    workers = connections()
+    chunk = (32 if workers > 1 else 64) << 20
     for r in rows:
         if only and only not in r["name"]:
             continue
@@ -242,10 +284,9 @@ def fetch(out, only):
                 have = 0
             with open(path, "ab") as f:
                 pos = r["start"] + have
-                while pos <= r["end"]:
-                    end = min(pos + chunk - 1, r["end"])
-                    f.write(get(REPO + r["shard"], pos, end))
-                    pos = end + 1
+                for data in ranged(REPO + r["shard"], pos, r["end"], chunk, workers):
+                    f.write(data)
+                    pos += len(data)
                     print("%s %.0f%%" % (r["name"], 100 * (pos - r["start"]) / r["bytes"]), file=sys.stderr)
             if os.path.getsize(path) != r["bytes"]:
                 sys.exit("%s: size %d != %d" % (path, os.path.getsize(path), r["bytes"]))

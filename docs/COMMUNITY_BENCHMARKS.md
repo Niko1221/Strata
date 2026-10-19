@@ -5,6 +5,8 @@ might run on a similar machine. This guide suggests a report format and a pull
 request workflow; a single model, GPU, or context length is enough to contribute.
 The quickest way is the built-in benchmark: [`BENCH.bat` / `./bench.sh`](#run-the-benchmark) writes a report in this format.
 
+A standard benchmark protocol for future submissions exists only as a **draft**: [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md). The tools described on this page do not implement it, and the reports below are not standard results; keep using this guide for now.
+
 Existing [benchmark reports](../bench/results/) provide examples. The
 [engine 0.1.26 speed report](../bench/results/2026-09-29-speed-0126/README.md)
 includes hardware, settings, and per-run JSON. The
@@ -64,12 +66,15 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
+  the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
 `python tools/strata_bench.py` from the Strata folder. Setup also offers it at the end of an interactive install
-(default no).
+(default no). The Terminal's `strata bench run` ([TERMINAL.md](TERMINAL.md)) is a different tool: it measures serving suites and
+writes JSON evidence for your own comparisons, but not the `README.md` report in this format and not the draft standard protocol.
 
 It starts the model with the settings you already have (the newest `strata-*.json`; `--config FILE` picks another one),
 or uses a Strata server that is already running on that port (`--url http://127.0.0.1:8080` for another address). It then

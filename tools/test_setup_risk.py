@@ -238,7 +238,7 @@ class LowRamGpus(unittest.TestCase):
     def test_asked_and_answered_two(self):
         ram, found = PROFILES["32GB-2x24GB"]
         code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                                        answers={"Low-RAM mode: which GPUs?": "2"})
+                                        answers={"Which GPUs?": "2", "Low-RAM mode: which GPUs?": "2"})     # the split asked for (the default is the largest card + RAM)
         self.assertEqual(code, 0, out)
         self.assertTrue(any("Low-RAM mode: which GPUs? [1]" in q for q in asked), asked)
         self.assertEqual(cfg["gpu"], [0, 1])
@@ -276,7 +276,7 @@ class LowRamGpus(unittest.TestCase):
         ram, found = PROFILES["32GB-2x24GB"]
         with mock.patch.object(setup, "MIN_ENGINE", setup.RESIDENT_SPLIT_ENGINE):
             code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                                            answers="")
+                                            answers={"Which GPUs?": "2"})          # the split chosen (the default is the largest card + RAM)
             self.assertEqual(code, 0, out)
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertIn("--resident-experts", cfg["args"])

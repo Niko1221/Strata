@@ -144,6 +144,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         d.args = std::move(a);
         d.grid[0] = gx; d.grid[1] = gy; d.grid[2] = gz;
         d.tg[0] = tg;
+        mtl::require_fit(d, "prompt-chain dispatch");
         ds.push_back(std::move(d));
     };
     auto gemm = [&](const mtl::Buffer& A, const mtl::Buffer& B, const mtl::Buffer& Y, int M, int Nn, int K) {
@@ -287,6 +288,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
                     N, NFF};
         ma.gu_stride = (uint64_t) ma.gu_row * NFF;
         ma.d_stride = (uint64_t) ma.d_row * N;
+        const size_t ebase = moe_rebase(ma.gate_off, ma.up_off, ma.down_off);
         const uint32_t ne = N;
         mtl::Dispatch g;
         g.p = P_(b.lib, "mm_gather");
@@ -304,7 +306,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
             const std::string fn = "mm_gu2_" + std::to_string(eg.type) + gu2_tile(eg.type);
             gu.p = P_(b.lib, fn, mtl::Constants().i(5, 0), fn + "#p0");
         }
-        gu.args = {mtl::Arg::B(W_), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
+        gu.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.XS), mtl::Arg::B(b.HS), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
         gu.tg[0] = b.k4 ? 32 * b.gu3[3] : 64;
         gu.indirect = &b.meta;
         gu.ind_off = 2 * 4;
@@ -316,7 +318,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         } else {
             dn.p = P_(b.lib, "mm_down2_" + std::to_string(ed.type) + dn2_tile(ed.type));
         }
-        dn.args = {mtl::Arg::B(W_), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
+        dn.args = {mtl::Arg::B(W_, ebase), mtl::Arg::B(b.HS), mtl::Arg::B(b.YE), mtl::Arg::B(b.tiles), mtl::Arg::V(ma)};
         dn.tg[0] = b.k4 ? 32 * b.dn3[3] : 64;
         dn.indirect = &b.meta;
         dn.ind_off = 5 * 4;
