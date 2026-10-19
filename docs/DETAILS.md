@@ -1429,7 +1429,7 @@ block at all (0.1.45) a request without sampling keys gets the sampling the mode
 request's thinking state: Qwen3.8-Flash-Next (and Gyro) thinking temperature 1.0, top_p 0.95, top_k 20; not thinking temperature 0.7,
 top_p 0.8, top_k 20, presence_penalty 1.5. Qwen3.6-35B-A3B thinking 1.0 / 0.95 / 20 with presence_penalty 1.5, not thinking
 0.7 / 0.8 / 20 with 1.5 (min_p 0 and repetition_penalty 1 are "off"). Order of precedence: the request, the web page's shared Chat settings,
-the config's `sampling` block, the card. Greedy is only for who asks for it: `temperature: 0` in the request, or `"sampling": {"temperature": 0}` in the config
+the config's `sampling` block, the card. Greedy is only for who asks for it: `temperature: 0` in the request, or `"sampling": {"temperature": 0}` in the config (or the shared Chat settings) - and then without the card's penalties: a penalty makes the engine sample from its logits, so the answer would not be the greedy one and the MTP drafts (greedy requests only) would not run (#2940)
 (before 0.1.45 a config without a block ran greedy, and greedy decoding is what makes small local models loop; #2685). The web page sends no sampling of its own until you change its Sampling settings (it showed and sent 0.6 before); an old stored 0.6 with the default top_p and top_k counts as not set. The penalties (`presence_penalty`, `frequency_penalty`,
 `repetition_penalty`, with `penalty_last_n` capping how many recent tokens they count over, default 64 when any
 penalty is set; llama.cpp's names `repeat_penalty` and `repeat_last_n` work too, in the config's `sampling` block and in a request, #1819) ride the same path; they count the tokens the request has consumed, so a repetition penalty
