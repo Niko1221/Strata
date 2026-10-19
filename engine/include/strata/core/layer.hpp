@@ -282,6 +282,9 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 /// Also puts the MTP drafter's K/V in a ring of its window (`ring_cells` of qsa_state_bytes/init; -1 forces a fully
 /// resident state).
 void qsa_set_kv_resident(int64_t cells);
+/// v4 (opt-in): the ring this session needs for `cells_needed` prompt+generation cells, capped by `cap` and
+/// floored at qsa_kv_resident_min().  Returns `cap` unchanged when cap <= 0.
+int64_t qsa_kv_ring_adapt(const ModelGeometry& g, int64_t cells_needed, int64_t cap);
 /// THE ELASTIC K/V (--kv-grow; vmm.hpp).  A mode-0 state's K/V pools get addresses for every cell of the context but
 /// physical memory only for the first `init_cells`; `qsa_kv_elastic_grow` maps more as the context grows (from
 /// chunks the expert cache gives up) and `qsa_kv_elastic_shrink` hands them back.  The addresses never move, so the
