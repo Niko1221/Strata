@@ -234,7 +234,8 @@ int main(int argc, char** argv) {
             cpu::ExpertPool pool(4, true, true);
             const auto& plan = cpu::active_numa_split();
             ok = plan.on ? plan.nodes[0] != plan.nodes[1] && !plan.cores[0].empty() && !plan.cores[1].empty()
-                         : !plan.why.empty();
+                         : !plan.why.empty() && plan.nodes[0] == -1 && plan.nodes[1] == -1 && plan.cores[0].empty() &&
+                           plan.cores[1].empty();
             std::printf("pool tasks: real split %s%s\n", plan.on ? "on" : "off: ", plan.why.c_str());
         }
         unset_env("STRATA_NUMA_SPLIT");

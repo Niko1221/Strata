@@ -741,6 +741,11 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         }
         plan.why = why;
         plan.on = plan.why.empty();
+        if (!plan.on) {   // a refusal after the slices were planned (unbalanced) leaves no half-filled plan behind
+            plan.nodes[0] = plan.nodes[1] = -1;
+            plan.cores[0].clear();
+            plan.cores[1].clear();
+        }
         if (plan.on) {
             numa_n_ = 2;
             nsync_.reset(new NodeSync[2]);
