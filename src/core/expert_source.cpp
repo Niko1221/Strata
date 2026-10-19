@@ -664,6 +664,9 @@ struct NumaComplementPlacement {
     void report(const uint8_t* arena, uint64_t got, uint64_t registered, uint64_t bytes, const char* stop) const {
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         uint64_t on_node[2] = {0, 0}, sampled[2] = {0, 0}, per_node[2][64] = {}, absent[2] = {0, 0};
+        constexpr int kNotSampled = -100000;   // outside any per-page status (a node id, or -errno)
+        int sys_errno[2] = {0, 0};              // first errno of a failed move_pages batch, per slice
+        size_t batches[2] = {0, 0}, failed[2] = {0, 0};
         std::vector<void*> pages;
         std::vector<int> status;
         for (int k = 0; k < 2; ++k) {
@@ -675,14 +678,19 @@ struct NumaComplementPlacement {
             status.assign(pages.size(), -1);
             for (size_t b = 0; b < pages.size(); b += 4096) {
                 const size_t cnt = std::min<size_t>(4096, pages.size() - b);
-                if (syscall(SYS_move_pages, 0, (unsigned long) cnt, pages.data() + b, nullptr, status.data() + b, 0) != 0)
-                    for (size_t i = b; i < b + cnt; ++i) status[i] = -1;
+                ++batches[k];
+                if (syscall(SYS_move_pages, 0, (unsigned long) cnt, pages.data() + b, nullptr, status.data() + b, 0) != 0) {
+                    if (sys_errno[k] == 0) sys_errno[k] = errno;
+                    ++failed[k];
+                    for (size_t i = b; i < b + cnt; ++i) status[i] = kNotSampled;   // the syscall failed: no sample, unlike a page's own -errno
+                }
             }
             for (int s : status) {
+                if (s == kNotSampled) continue;
+                ++sampled[k];
                 if (s >= 0 && s < 64) ++per_node[k][s];
                 else ++absent[k];
             }
-            sampled[k] = pages.size();
             on_node[k] = nodes[k] >= 0 && nodes[k] < 64 ? per_node[k][nodes[k]] : 0;
         }
         double share[2];
@@ -702,13 +710,23 @@ struct NumaComplementPlacement {
                          (double) registered / 1073741824.0, (double) bytes / 1073741824.0, stop != nullptr ? stop : "?");
         if (pin_failed)
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement: a toucher could not be pinned to its core\n");
-        for (int k = 0; k < 2; ++k)
+        for (int k = 0; k < 2; ++k) {
+            if (batches[k] > 0 && failed[k] == batches[k]) {
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement could not be verified: move_pages failed "
+                                     "(errno %d: %s) for slice %d (node %d)\n", sys_errno[k], std::strerror(sys_errno[k]), k, nodes[k]);
+                continue;
+            }
+            if (failed[k] > 0)
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement: move_pages failed (errno %d: %s) for %zu of %zu "
+                                     "batches of slice %d; judged on the other samples\n", sys_errno[k],
+                             std::strerror(sys_errno[k]), failed[k], batches[k], k);
             if (share[k] < 95.0)
                 std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: slice %d has %.1f %% of its pages "
                                      "on node %d (< 95 %%; of %llu sampled: node %d %llu, node %d %llu, not present %llu)\n",
                              k, share[k], nodes[k], (unsigned long long) sampled[k], nodes[0],
                              (unsigned long long) per_node[k][nodes[0]], nodes[1], (unsigned long long) per_node[k][nodes[1]],
                              (unsigned long long) absent[k]);
+        }
     }
 };
 #endif
