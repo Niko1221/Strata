@@ -1,0 +1,76 @@
+{
+ "segments": [
+  {
+   "name": "code",
+   "first_line": 0,
+   "end_line": 999
+  },
+  {
+   "name": "docs",
+   "first_line": 999,
+   "end_line": 1998
+  },
+  {
+   "name": "english",
+   "first_line": 1998,
+   "end_line": 2997
+  },
+  {
+   "name": "multilingual",
+   "first_line": 2997,
+   "end_line": 3996
+  },
+  {
+   "name": "agent",
+   "first_line": 3996,
+   "end_line": 4995
+  }
+ ],
+ "config": "<run dir>/cfg.json",
+ "args": [
+  "<Strata>\\engine\\strata.exe",
+  "--serve",
+  "--pack",
+  "<Strata-data>\\packs\\iq3_s",
+  "--native",
+  "<Strata-data>\\models\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "<Strata-data>\\models\\ple-fp8\\ple-fp8.gguf",
+  "--expert-profile",
+  "<Strata>\\data\\expert-profile.bin",
+  "--spec",
+  "4",
+  "--mtp",
+  "<Strata-data>\\mtp\\rt",
+  "--vram-reserve-mib",
+  "1000",
+  "--spec-min-p",
+  "0.70",
+  "--expert-cache",
+  "auto",
+  "--adapt-every",
+  "100000",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0",
+  "--prompt-cache",
+  "0",
+  "--kv",
+  "fp16",
+  "--max-context",
+  "1512",
+  "--short-read",
+  "1064",
+  "--prefill",
+  "512"
+ ],
+ "env": [
+  "STRATA_ROUTE_TAIL_SKIP=0"
+ ],
+ "expert_cache_lines": [
+  "strata generate: expert cache auto: 9.58 GiB free, 1000 MiB reserved (+217 MiB for the draft head) -> 3383 slots",
+  "strata generate: expert cache 4396 slots, 8.39 GiB of VRAM; policy is",
+  "strata serve: decode expert cache hit rate: 32.9% (158 hits / 480 lookups)"
+ ]
+}

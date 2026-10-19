@@ -1,0 +1,32 @@
+{
+ "exe": "<Strata>\\engine\\strata.exe",
+ "cwd": "<Strata>",
+ "lib_dirs": [
+  "<Strata>\\.venv\\Lib\\site-packages\\nvidia\\cu13\\bin\\x86_64"
+ ],
+ "tokenizer": "<Strata-data>\\packs\\unsloth-q8_0\\tokenizer",
+ "model_name": "qwen3.8-flash-next-unsloth-q8_0",
+ "args": [
+  "--pack",
+  "<Strata-data>\\packs\\unsloth-q8_0",
+  "--native",
+  "<Strata-data>\\models\\unsloth-Q8_0\\Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+  "--expert-profile",
+  "<Strata>\\data\\expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<Strata-data>\\mtp\\rt",
+  "--max-context",
+  "8192",
+  "--resident-budget-gib",
+  "39"
+ ],
+ "env": {}
+}

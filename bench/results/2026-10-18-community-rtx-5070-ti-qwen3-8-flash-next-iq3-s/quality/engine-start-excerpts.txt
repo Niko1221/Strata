@@ -1,0 +1,58 @@
+== q8_0
+strata generate: PLE on, table 320001536 rows of <Strata-data>\models\unsloth-Q8_0\Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf
+strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.45)
+strata generate: token graph hit path: 1 resident experts, decided on the device
+FileExpertSource: RAM budget 39.00 GiB: 8018 of the 119.53 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: mapped pinned cache complement ready: resident 39.00 GiB, pinned 39.00 GiB in 16 s; page-locked and mapped
+strata generate: resident RAM mode: 39.00 GiB of experts in RAM (page-locked), 1 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+strata serve: adaptive overlap: off: not in the resident RAM mode unless STRATA_ADAPT_OVERLAP_RESIDENT=1
+
+== iq3s_cpu
+strata generate: PLE on, table 320001536 rows of <Strata-data>\models\ple-fp8\ple-fp8.gguf
+strata generate: expert arena: large pages are resident without a lock; cudaHostRegister of the whole arena FAILED (out of memory); 47 slices pinned (45 GiB); large pages (2097152 B)
+strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.45)
+strata generate: token graph hit path: 1 resident experts, decided on the device
+
+== skip0
+strata generate: PLE on, table 320001536 rows of <Strata-data>\models\ple-fp8\ple-fp8.gguf
+strata generate: expert arena: large pages are resident without a lock; cudaHostRegister of the whole arena FAILED (out of memory); 47 slices pinned (45 GiB); large pages (2097152 B)
+strata generate: expert cache auto: 9.58 GiB free, 1000 MiB reserved (+217 MiB for the draft head) -> 3383 slots
+strata generate: expert cache 4396 slots, 8.39 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.45)
+strata generate: token graph hit path: 4396 resident experts, decided on the device
+
+== skip7
+strata generate: PLE on, table 320001536 rows of <Strata-data>\models\ple-fp8\ple-fp8.gguf
+strata generate: expert arena: large pages are resident without a lock; cudaHostRegister of the whole arena FAILED (out of memory); 47 slices pinned (45 GiB); large pages (2097152 B)
+strata generate: expert cache auto: 9.58 GiB free, 1000 MiB reserved (+217 MiB for the draft head) -> 3383 slots
+strata generate: expert cache 4396 slots, 8.39 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.45)
+strata generate: token graph hit path: 4396 resident experts, decided on the device
+strata serve: route tail skip: 71540 missed experts skipped (77071 entries) since the start
+strata serve: route tail skip: 131776 missed experts skipped (141899 entries) since the start
+strata serve: route tail skip: 194263 missed experts skipped (211860 entries) since the start
+strata serve: route tail skip: 263382 missed experts skipped (286657 entries) since the start
+strata serve: route tail skip: 330508 missed experts skipped (358576 entries) since the start
+
+== skip0_int8
+strata generate: PLE on, table 320001536 rows of <Strata-data>\models\ple-fp8\ple-fp8.gguf
+strata generate: expert arena: large pages are resident without a lock; cudaHostRegister of the whole arena FAILED (out of memory); 47 slices pinned (45 GiB); large pages (2097152 B)
+strata generate: expert cache auto: 9.60 GiB free, 1000 MiB reserved (+217 MiB for the draft head) -> 3391 slots
+strata generate: expert cache 4407 slots, 8.41 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.45)
+strata generate: token graph hit path: 4407 resident experts, decided on the device
+
+== iq3s_cpu_iq4nl
+strata generate: PLE on, table 320001536 rows of <Strata-data>\models\IQ3_S\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata generate: expert arena: large pages are resident without a lock; cudaHostRegister of the whole arena FAILED (out of memory); 47 slices pinned (45 GiB); large pages (2097152 B)
+strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: session is up (engine 0.1.45)
+strata generate: token graph hit path: 1 resident experts, decided on the device

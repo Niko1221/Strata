@@ -1,0 +1,57 @@
+positions: 4995 (code, docs, english, multilingual, agent)
+
+== Every run against Q8_0, all texts
+run              same top      KL   p99  KL>1    PPL Q8 PPL
+iq3s_cpu           87.51%  0.1421  1.81   112  4.061  3.997   IQ3_S, experts on the CPU (the published yardstick method)
+iq3s_cpu_iq4nl     87.43%  0.1454  1.92   117  4.113  3.997   IQ3_S, experts on the CPU, the GGUF's IQ4_NL n-gram table instead of FP8
+skip0              86.97%  0.1436  1.77   122  4.068  3.997   IQ3_S, GPU experts (auto), tail skip off, FP16 K/V
+skip7              86.67%  0.1540  2.13   141  4.062  3.997   IQ3_S, GPU experts (auto), tail skip on (=7), FP16 K/V
+skip0_int8         87.11%  0.1435  1.81   127  4.036  3.997   IQ3_S, GPU experts (auto), tail skip off, int8 K/V (the live settings)
+
+== The live settings (skip0_int8) against Q8_0, per text
+text          same top     KL  KL>1   real next token: run / Q8      PPL: run / Q8
+code             93.3%  0.083    20             84.2% / 84.4%     2.035 / 2.040 (-0.3%)
+docs             77.5%  0.203    27             49.7% / 49.7%    10.010 / 9.974 (+0.4%)
+english          86.4%  0.085     4             60.5% / 59.1%     4.139 / 4.252 (-2.7%)
+multilingual     92.5%  0.047     3             77.2% / 77.6%     2.694 / 2.703 (-0.3%)
+agent            85.9%  0.299    73             72.1% / 72.6%     4.718 / 4.363 (+8.1%)
+all              87.1%  0.143   127             68.7% / 68.7%     4.036 / 3.997 (+1.0%)
+
+== Where skip0_int8 and Q8_0 pick different top tokens: which one is the text's real next token
+text          differ run right Q8 right neither
+code              67        15       17      35
+docs             225        47       47     131
+english          136        47       33      56
+multilingual      75        12       16      47
+agent            141        37       42      62
+all              644       158      155     331
+
+== Paired: run B's KL minus run A's, per position (both against Q8_0); 95% ranges of single positions and of blocks of 32
+tail skip on vs off (skip7 - skip0)
+  code          +0.0103  positions [+0.0015, +0.0190]  blocks [+0.0008, +0.0201]  worse/better by >0.01: 167/98
+  docs          +0.0108  positions [-0.0007, +0.0229]  blocks [+0.0021, +0.0208]  worse/better by >0.01: 383/307
+  english       +0.0251  positions [+0.0180, +0.0334]  blocks [+0.0172, +0.0343]  worse/better by >0.01: 432/213
+  multilingual  +0.0113  positions [+0.0062, +0.0167]  blocks [+0.0051, +0.0193]  worse/better by >0.01: 211/115
+  agent         -0.0054  positions [-0.0506, +0.0342]  blocks [-0.0549, +0.0371]  worse/better by >0.01: 286/196
+  all           +0.0104  positions [+0.0005, +0.0192]  blocks [+0.0004, +0.0196]  worse/better by >0.01: 1479/929
+IQ4_NL vs FP8 n-gram table (iq3s_cpu_iq4nl - iq3s_cpu)
+  code          -0.0089  positions [-0.0163, -0.0025]  blocks [-0.0179, -0.0014]  worse/better by >0.01: 103/133
+  docs          -0.0020  positions [-0.0099, +0.0056]  blocks [-0.0111, +0.0071]  worse/better by >0.01: 300/311
+  english       -0.0014  positions [-0.0038, +0.0010]  blocks [-0.0041, +0.0016]  worse/better by >0.01: 220/272
+  multilingual  -0.0014  positions [-0.0059, +0.0020]  blocks [-0.0053, +0.0018]  worse/better by >0.01: 122/107
+  agent         +0.0302  positions [+0.0059, +0.0621]  blocks [+0.0049, +0.0635]  worse/better by >0.01: 197/214
+  all           +0.0033  positions [-0.0024, +0.0094]  blocks [-0.0028, +0.0102]  worse/better by >0.01: 942/1037
+int8 vs FP16 K/V (skip0_int8 - skip0)
+  code          +0.0038  positions [-0.0003, +0.0084]  blocks [-0.0005, +0.0085]  worse/better by >0.01: 105/109
+  docs          +0.0078  positions [+0.0008, +0.0149]  blocks [+0.0002, +0.0163]  worse/better by >0.01: 307/294
+  english       -0.0002  positions [-0.0032, +0.0031]  blocks [-0.0032, +0.0030]  worse/better by >0.01: 212/252
+  multilingual  -0.0018  positions [-0.0046, +0.0006]  blocks [-0.0041, +0.0001]  worse/better by >0.01: 97/127
+  agent         -0.0102  positions [-0.0402, +0.0196]  blocks [-0.0440, +0.0287]  worse/better by >0.01: 173/208
+  all           -0.0001  positions [-0.0062, +0.0062]  blocks [-0.0083, +0.0084]  worse/better by >0.01: 894/990
+GPU vs CPU experts (placement) (skip0 - iq3s_cpu)
+  code          -0.0042  positions [-0.0105, +0.0011]  blocks [-0.0106, +0.0016]  worse/better by >0.01: 94/103
+  docs          -0.0020  positions [-0.0080, +0.0036]  blocks [-0.0102, +0.0055]  worse/better by >0.01: 296/308
+  english       +0.0020  positions [-0.0007, +0.0046]  blocks [-0.0006, +0.0049]  worse/better by >0.01: 242/232
+  multilingual  -0.0015  positions [-0.0058, +0.0020]  blocks [-0.0074, +0.0026]  worse/better by >0.01: 117/110
+  agent         +0.0131  positions [-0.0062, +0.0346]  blocks [-0.0086, +0.0345]  worse/better by >0.01: 200/190
+  all           +0.0015  positions [-0.0030, +0.0061]  blocks [-0.0034, +0.0067]  worse/better by >0.01: 949/943
