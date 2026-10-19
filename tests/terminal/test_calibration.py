@@ -348,6 +348,17 @@ class CalibrationFlowTests(unittest.TestCase):
                 expected_report_sha256="0" * 64,
                 smoke=lambda *_args: self.fail("smoke must not start"))
 
+    def test_measure_refuses_a_missing_output_directory_before_the_sweep(self):
+        """#3187: the output directory was only checked at the write, after the whole sweep."""
+        not_a_dir = self.root / "not-a-dir"
+        not_a_dir.write_text("a file is not a directory", encoding="utf-8")
+        for path in (self.root / "no-such-dir" / "calibration.json", not_a_dir / "calibration.json"):
+            with self.assertRaisesRegex(profiles.ProfileError, "report output directory does not exist") as caught:
+                calibration.measure("local", path, exclusive_ack=True, say=lambda _: None,
+                                    runner=lambda *_args, **_kwargs: self.fail("runner must not start"))
+            self.assertEqual(caught.exception.exit_code, 5)
+            self.assertFalse(path.exists())
+
     def test_measure_review_apply_and_setup_persistence(self):
         before = self.config.read_bytes()
         report_path = self.root / "calibration.json"
