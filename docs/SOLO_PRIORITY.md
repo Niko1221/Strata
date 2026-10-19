@@ -104,6 +104,13 @@ see the results and remaining validation limits below.
 
 ## Deployment and upgrades
 
+The latest [0.2.0-beta revalidation](../bench/results/2026-10-19-solo-priority-v020-beta/README.md)
+uses the original IQ3_S model on Windows/RTX 3090. It includes an unmodified beta
+control, flag-off/on comparisons, the complete Windows server test suite and a
+one-hour multi-conversation soak. It also records a 46.663-second short-request
+wait during partial-cache-hit prefill; the option is not a latency guarantee.
+The reports below retain the earlier runtime measurements.
+
 The primary Windows comparison uses Strata's default, non-abliterated Qwen model
 family in ISTA-DASLab IQ3_S quantization; see the
 [one-hour multi-conversation soak, lifecycle checks and final comparison](../bench/results/2026-10-16-solo-priority-qwen-soak/README.md)

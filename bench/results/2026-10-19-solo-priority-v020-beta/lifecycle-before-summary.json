@@ -1,0 +1,29 @@
+{
+  "success": true,
+  "cancel_cases": [
+    "queued",
+    "active",
+    "paused"
+  ],
+  "responses": true,
+  "requests": {
+    "requests": 12,
+    "completed": 9,
+    "intentional_cancellations": 3,
+    "unexpected_transport_errors": [],
+    "validation_failures": [],
+    "quick": {
+      "count": 0,
+      "p50_ttft_s": null,
+      "p95_ttft_s": null,
+      "max_ttft_s": null
+    },
+    "session_latency": {
+      "count": 0,
+      "p50_ttft_s": null,
+      "p95_ttft_s": null,
+      "max_ttft_s": null
+    },
+    "completed_output_tokens": 11038
+  }
+}

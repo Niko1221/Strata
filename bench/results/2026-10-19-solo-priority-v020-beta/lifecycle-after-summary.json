@@ -1,0 +1,41 @@
+{
+  "success": true,
+  "cancel_cases": [
+    "queued",
+    "active",
+    "paused"
+  ],
+  "responses": true,
+  "engine_death": true,
+  "requests": {
+    "requests": 15,
+    "completed": 10,
+    "intentional_cancellations": 3,
+    "unexpected_transport_errors": [
+      {
+        "label": "engine-death-active-responses",
+        "error": "RuntimeError: {\"id\": \"resp_fe068ab0a51344e8ae710f9ed349f1b4\", \"object\": \"response\", \"created_at\": 1792445203, \"status\": \"failed\", \"background\": false, \"error\": {\"code\": \"server_error\", \"message\": \"the engine stopped unexpectedly (exit code 4294967295); the next request restarts it\"}, \"incomplete_details\": null, \"instructions\": null, \"max_output_tokens\": 6000, \"model\": \"qwen3.8-flash-next-iq3_s\", \"output\": [], \"parallel_tool_calls\": true, \"previous_response_id\": null, \"reasoning\": {\"effort\": \"none\", \"summary\": null}, \"store\": false, \"temperature\": 0, \"text\": {\"format\": {\"type\": \"text\"}}, \"tool_choice\": {\"type\": \"function\", \"name\": \"record_items\"}, \"tools\": [{\"type\": \"function\", \"name\": \"record_items\", \"description\": \"Synthetic manifest, never executed.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"session\": {\"type\": \"string\"}, \"items\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"session\", \"items\"]}}], \"top_p\": null, \"truncation\": \"disabled\", \"usage\": null, \"user\": null, \"metadata\": {}}",
+        "status": 200
+      },
+      {
+        "label": "engine-death-paused-chat",
+        "error": "RuntimeError: {'type': 'server_error', 'message': 'the engine stopped while this request was paused; the next request restarts it'}",
+        "status": 200
+      }
+    ],
+    "validation_failures": [],
+    "quick": {
+      "count": 0,
+      "p50_ttft_s": null,
+      "p95_ttft_s": null,
+      "max_ttft_s": null
+    },
+    "session_latency": {
+      "count": 0,
+      "p50_ttft_s": null,
+      "p95_ttft_s": null,
+      "max_ttft_s": null
+    },
+    "completed_output_tokens": 11060
+  }
+}
