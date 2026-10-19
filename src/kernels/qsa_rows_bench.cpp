@@ -342,8 +342,11 @@ int main(int argc, char** argv) {
             for (int t = 0; t < MAXR; ++t)
                 for (int i = 0; i < IQ * ID; ++i) hqi8[(size_t) t * IQ * ID + i] = hqi[(size_t) (t % MAXT) * IQ * ID + i] + 0.05f * (float) t;
             std::vector<int32_t> hs8((size_t) (MAXR * k::kStepCount));
+            const int64_t max_pos = std::max<int64_t>(MAXR, max_cells - 1);
             for (int t = 0; t < MAXR; ++t) {
-                const int64_t pos = std::max<int64_t>(17 + t * 5, ctx - (MAXR - 1 - t) * 19 + t), n_kv = pos + 1;
+                const int64_t raw_pos = std::max<int64_t>(17 + t * 5, ctx - (MAXR - 1 - t) * 19 + t);
+                const int64_t pos = std::min<int64_t>(raw_pos, max_pos - (MAXR - 1 - t));
+                const int64_t n_kv = pos + 1;
                 hs8[(size_t) t * k::kStepCount + k::kStepPos] = (int32_t) pos;
                 hs8[(size_t) t * k::kStepCount + k::kStepNKv] = (int32_t) n_kv;
                 hs8[(size_t) t * k::kStepCount + k::kStepNBid] = (int32_t) (n_kv / s.idx_block);
