@@ -4611,8 +4611,12 @@ class Service:
     # path.  The text keeps the line naming it, so the model still knows what it is looking at, and the caps are the
     # MCP ones (serve/mcp.py's MAX_RESULT_IMAGES, this file's IMAGE_URL_MAX).
     BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{1024,}={0,2}")   # 1024 characters: a 32x32 PNG and everything bigger
-    IMAGE_MAGICS = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"BM", "image/bmp"),
-                    (b"GIF89a", "image/gif"), (b"GIF87a", "image/gif"))
+    # Only a magic that ordinary text cannot reach: a PNG's 8 bytes, a JPEG's FF D8 FF.  A BMP's "BM" is 2 bytes and a
+    # GIF's "GIF87a"/"GIF89a" 6, and a tool's text is full of ordinary base64 - the run of
+    # base64(b"BMW service log " + b"x" * 3000) reads as a 3,016-byte bitmap, and that text is taken from the model
+    # (#2343).  A BMP or GIF a client sends as a real image part is untouched: Vision.normalize passes both to the
+    # encoder, as it always did.
+    IMAGE_MAGICS = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"))
 
     @classmethod
     def _picture_kind(cls, data: bytes) -> str | None:

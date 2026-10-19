@@ -1598,7 +1598,9 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   `/v1/chat/completions`, JSON-stringify a tool's `content` output - so the base64 of the picture lands inside the
   tool message (one photo of a chat: 1,491,022 tokens, a request no context can hold). A long enough base64 run in a
   **tool's** text that decodes to a picture is therefore taken out of the text and goes to the vision encoder like an
-  MCP one, with the same caps, and the text keeps the line naming it. A client that sends the picture as a real image
+  MCP one, with the same caps, and the text keeps the line naming it. Only a PNG's or a JPEG's magic bytes are read
+  this way: a bitmap's `BM` is 2 bytes, and a tool's ordinary base64 - a log line, a checksum - matches it too often
+  to be worth guessing at. A client that sends the picture as a real image
   part (an Anthropic `tool_result`, an OpenAI `image_url`) never needed this and works as before; a user's own text
   is never read this way.
 - Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as

@@ -25,6 +25,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1500).decode()
 JPEG = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x01" * 1400).decode()
 NOT_A_PICTURE = base64.b64encode(b"a zip, not a picture" * 90).decode()
+# A tool's own text that starts with a bitmap's 2-byte magic: the case a reviewer of #2343 hit, where the log line
+# was taken away from the model and handed to the encoder as a 3,016-byte "bitmap".
+BMW = base64.b64encode(b"BMW service log " + b"x" * 3000).decode()
+BMP = base64.b64encode(b"BM" + b"\x00" * 1500).decode()
+GIF = base64.b64encode(b"GIF89a" + b"\x00" * 1500).decode()
 
 
 class FakeVision:
@@ -92,10 +97,24 @@ class ToolTextPictures(unittest.TestCase):
 
     def test_text_that_is_not_a_picture_stays_text(self):
         for text in (self.chatbox_text(NOT_A_PICTURE),                  # long base64, but no image magic
+                     "result: " + BMW,                                  # bytes beginning "BMW ": not a bitmap
                      "sha256 " + "a" * 4000):                            # a long run of letters, not a picture
             messages = conversation(text)
             _, prompt = self.prepare(messages)
             with self.subTest(text=text[:40]):
+                self.assertEqual(messages[2]["content"], text)          # left exactly as the client sent it
+                self.assertNotIn("<|vision_start|>", prompt)
+                self.assertEqual(self.vision.seen, [])
+
+    def test_a_bitmap_or_gif_in_a_tools_text_stays_text(self):
+        """Only a PNG's or a JPEG's magic is read out of a tool's text: "BM" is 2 bytes, and a GIF's 6 are not worth
+        the guessing either (#2343).  A BMP or GIF sent as a real image part still reaches the encoder -
+        `Vision.normalize` passes both through to it, as it always did."""
+        for blob in (BMP, GIF):
+            text = self.chatbox_text(blob)
+            messages = conversation(text)
+            _, prompt = self.prepare(messages)
+            with self.subTest(magic=blob[:8]):
                 self.assertEqual(messages[2]["content"], text)          # left exactly as the client sent it
                 self.assertNotIn("<|vision_start|>", prompt)
                 self.assertEqual(self.vision.seen, [])
