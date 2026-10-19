@@ -849,6 +849,12 @@ print(r.choices[0].message.content)
   `max_tokens` (the rest of the context) get a budget of three quarters of it. `"answer_room": false` in
   `strata-<model>.json` turns it off. Qwen recommends up to 262,144 tokens of reasoning and 131,072 of answer: a client
   should not cap the reply far below what the context allows.
+- **llama.cpp's `n_predict` (#2980).** `/v1/chat/completions` reads it when the request has no `max_tokens` or
+  `max_completion_tokens`: `0` reads the prompt through the normal generation path and returns an empty answer with
+  `finish_reason: "length"` (llama.cpp's shape for this), `N > 0` is the output cap, and `-1` (or absent) leaves the
+  rest of the context. An OpenAI limit in the same request wins over it, so an existing client keeps its behaviour.
+  The prompt-only call samples and drops one token, because the engine's `GEN` needs at least one; the prompt is what
+  the client's follow-up wanted read.
 - **A reply that ends inside its thinking (#1053, opt-in).** Some turns write a sentence of reasoning and then the
   end-of-turn token with no `</think>`: the content is empty and an agent stops. `"reasoning_close_retry": true` in
   `strata-<model>.json` closes the thinking once (as the thinking budget does) and continues, once per request, only for

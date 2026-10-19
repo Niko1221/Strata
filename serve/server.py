@@ -5940,6 +5940,19 @@ def make_handler(svc: Service):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
+            # llama.cpp's n_predict (#2980): 0 evaluates the prompt into the cache and generates nothing; N > 0 is the
+            # answer limit; -1 (or absent) leaves the rest of the context.  An OpenAI max_tokens/max_completion_tokens
+            # wins over it, so an existing request keeps exactly the behaviour it had.
+            prompt_only = False
+            if req.get("max_completion_tokens") is None and req.get("max_tokens") is None:
+                n_predict = req.get("n_predict")
+                if n_predict is not None:
+                    if isinstance(n_predict, bool) or not isinstance(n_predict, int):
+                        raise ValueError("n_predict: a whole number (-1 or more; 0 reads the prompt only)")
+                    if n_predict == 0:
+                        prompt_only = True
+                    elif n_predict > 0:
+                        max_req = max_new = n_predict
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
@@ -5957,8 +5970,12 @@ def make_handler(svc: Service):
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
-            ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
-            _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
+            ids, thinking, max_new = svc.prepare(messages, tools, kw, 1 if prompt_only else max_new,
+                                                 force=force, req=req, cancel=cancel)
+            _debug_req("openai", req, messages, tools, 0 if prompt_only else max_new, thinking, len(ids))
+            if prompt_only:
+                print("[strata] n_predict: 0: the prompt is read, no answer is generated", flush=True)
+                return self._prompt_only(req, ids, tools, cancel, force)
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
@@ -5992,6 +6009,42 @@ def make_handler(svc: Service):
                 err = {"error": {"type": "server_error", "message": str(e)}}   # headers are sent, so no 400 now
                 self._note(error=err["error"])
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+
+        def _prompt_only(self, req, ids, tools, cancel, force=None):
+            """llama.cpp's n_predict: 0 (#2980): evaluate the prompt through the normal generation path and generate
+            nothing.  The engine's GEN needs max_new >= 1, so one token is sampled and dropped; the prompt read is
+            the part that matters.  The answer is empty with finish_reason 'length', llama.cpp's shape for this."""
+            done = None
+            for kind, x in svc.run(ids, False, tools, 1, req, cancel, force=force):   # no answer is parsed
+                if kind == "done":
+                    done = x
+            if cancel.is_set():
+                self._note(outcome="disconnected")
+                return
+            pt = int((done or {}).get("prompt_tokens") or len(ids))
+            usage = {"prompt_tokens": pt, "completion_tokens": 0, "total_tokens": pt,
+                     "prompt_tokens_details": {"cached_tokens": int((done or {}).get("reused") or 0)}}
+            cid, created = "chatcmpl-" + uuid.uuid4().hex[:24], int(time.time())
+            model = svc.model_for(req)
+            self._note(usage=usage, finish="length", outcome="completed")
+            if not req.get("stream"):
+                return self._json(200, {
+                    "id": cid, "object": "chat.completion", "created": created, "model": model,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": ""},
+                                 "finish_reason": "length"}],
+                    "usage": usage})
+            self._sse()
+            base = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model}
+            try:
+                self.wfile.write(b"data: " + json.dumps({**base, "choices": [
+                    {"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]}).encode()
+                    + b"\n\n")
+                self.wfile.write(b"data: " + json.dumps({**base, "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "length"}], "usage": usage}).encode() + b"\n\n")
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except OSError:
+                self._note(outcome="disconnected")
 
         def _responses_ready(self, req, events):
             """Send a finished Responses result that did not run on the engine."""
