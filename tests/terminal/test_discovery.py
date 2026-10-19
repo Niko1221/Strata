@@ -79,6 +79,11 @@ class GuiLayout(unittest.TestCase):
         p = mock.patch.object(models, "ROOT", self.terminal)
         p.start()
         self.addCleanup(p.stop)
+        # the launch screens look "here" in the folder they run from, this checkout, which may hold the developer's own run configs
+        real_places = discovery.places
+        p = mock.patch.object(discovery, "places", lambda *, here=None, **kw: real_places(here=self.terminal, **kw))
+        p.start()
+        self.addCleanup(p.stop)
         self.install = discovery.app_install_dir()
         self.docs = base / "home" / "Documents" / "Strata"
         gyro = self.docs / "Models" / "gyro-Gyro-S"
@@ -107,6 +112,10 @@ class GuiLayout(unittest.TestCase):
 
     def catalog(self) -> Catalog:
         return Catalog(hardware=HW_12)
+
+    def cli_settings(self) -> Path:
+        """The command-line Strata's settings file on this platform (%APPDATA%/Strata or $XDG_CONFIG_HOME/strata)."""
+        return discovery.own_settings_file({k: v for k, v in os.environ.items() if k != "STRATA_SETTINGS_FILE"})
 
     # ---- T04: one answer for list and the wizard
     def test_models_list_finds_the_app_install_by_default(self):
@@ -142,7 +151,7 @@ class GuiLayout(unittest.TestCase):
         old = self.base / "T-Strata"
         old.mkdir()
         (old / "strata-qwen-iq3_xxs.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.cli_settings()
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({"installs": [str(old)]}))
         got = models.list_installed()
@@ -155,7 +164,7 @@ class GuiLayout(unittest.TestCase):
         (old / "strata-x.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
         app_settings = self.install.parent / "app-settings.json"
         with mock.patch.dict(os.environ, {"STRATA_SETTINGS_FILE": str(app_settings)}):
-            settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+            settings = self.cli_settings()
             settings.parent.mkdir(parents=True)
             settings.write_text(json.dumps({"installs": [str(old)]}))
             self.assertEqual([m["id"] for m in models.list_installed()["models"]], ["gyro-gyro-s"])
@@ -239,7 +248,7 @@ class GuiLayout(unittest.TestCase):
     def test_an_own_setting_beats_the_apps_folder(self):
         mine = self.base / "mine"
         mine.mkdir()
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.cli_settings()
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"data_dir": str(mine)}))
         self.assertEqual(self.catalog().data_dir().resolve(), mine.resolve())
