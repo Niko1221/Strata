@@ -423,6 +423,20 @@ void test_numa_slice_ranges() {
             require(hits == 1, "a page was in " + std::to_string(hits) + " slice ranges, not exactly one");
         }
     }
+    // (b) no slice-1 range intersects a slice-0 range, within a slot and across two consecutive slots
+    const auto meet = [](const std::pair<uint64_t, uint64_t>& x, const std::pair<uint64_t, uint64_t>& y) {
+        return x.first < y.second && y.first < x.second;
+    };
+    for (uint64_t off : offs) {
+        const auto s0 = numa_slice_ranges(off, roles, 0), s1 = numa_slice_ranges(off, roles, 1);
+        const auto n0 = numa_slice_ranges(off + slot_bytes, roles, 0), n1 = numa_slice_ranges(off + slot_bytes, roles, 1);
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                require(!meet(s0[i], s1[j]), "a slice-1 range intersects a slice-0 range of the same slot");
+                require(!meet(s1[i], n0[j]) && !meet(n1[i], s0[j]),
+                        "a slice-1 range intersects a slice-0 range of the neighbouring slot");
+            }
+    }
     const auto a = numa_slice_ranges(0, roles, 0), b = numa_slice_ranges(0, roles, 1);
     require(a[0].first <= 435199 && 435199 < a[0].second, "last slice-0 gate byte not in slice 0's gate range");
     require(b[0].first <= 435200 + P && 435200 + P < b[0].second, "a slice-1 gate byte not in slice 1's gate range");
