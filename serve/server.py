@@ -5265,7 +5265,7 @@ class Service:
                         if par:
                             self.status["queued"] -= 1
                             queued_counted = False
-                            self.terminal_requests[request_id].update(state="waiting", admitted_at=time.time())
+                            self.terminal_requests[request_id].update(state="admitted" if solo else "waiting", admitted_at=time.time())
                             self._terminal_event_locked(request_id, "admitted")
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
