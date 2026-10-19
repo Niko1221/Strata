@@ -2969,6 +2969,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
         return 2;
     }
+#if defined(STRATA_GPU_METAL)
+    if (o.kv == "q4_0" || o.kv == "k8v4") {
+        std::fprintf(stderr, "strata generate: --kv %s is not supported on Metal (int8 native layout used)\n", o.kv.c_str());
+        return 2;
+    }
+    if (o.kv == "fp16") {
+        std::fprintf(stderr, "strata generate: note: --kv fp16 specified; Metal backend natively uses int8 KV layout\n");
+    }
+#endif
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to

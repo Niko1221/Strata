@@ -106,7 +106,7 @@ GPU_SHARE = 0.75
 RESIDENT_LEAVE_SHARE = 0.30
 BIG_MAC_GB = 64.0
 GIB_GB = 1.073741824    # a GiB in GB: ram_gb is binary, the model sizes are decimal
-CONTEXTS = [8192, 32768, 65536, 131072]
+CONTEXTS = [8192, 32768, 65536, 131072, 262144, 524288]
 MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
@@ -298,7 +298,8 @@ def stream_mtp(stream: bool, ram_gb: float) -> bool:
     return (not stream) or ram_gb >= STREAM_MTP_FROM_GB
 
 
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
+                rope_scaling: str | None = None, rope_scale: float | None = None) -> list[str]:
     """The Metal defaults: --spec 2 with the MTP draft layer (measured best on the M5 Max, docs/MAC.md) and the Q8_0
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
@@ -312,8 +313,11 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
             "--prefill", "auto", "--spec", str(STREAM_SPEC if stream and mtp else 2)]
     args += ["--suffix-draft", "0"] if stream else []
     args += ["--mtp", str(rt)] if mtp else []
-    return args + ["--max-context", str(ctx),
-                   "--mmap-experts"]   # what the Metal engine does anyway (the GGUF mapped in place); the server says so
+    args += ["--max-context", str(ctx), "--mmap-experts"]
+    scaling, scale = S.resolve_rope(ctx, rope_scaling, rope_scale)
+    if scaling is not None:
+        args += ["--rope-scaling", scaling, "--rope-scale", f"{scale:g}"]
+    return args
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
@@ -489,6 +493,8 @@ def main(argv=None) -> int:
                     help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL (follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
+    ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"], help="RoPE scaling method")
+    ap.add_argument("--rope-scale", type=float, help="RoPE scaling factor")
     ap.add_argument("--port", type=int)
     ap.add_argument("--host")
     ap.add_argument("--api-key")
@@ -678,7 +684,7 @@ def main(argv=None) -> int:
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], a.rope_scaling, a.rope_scale), pack, f"{fam['name']}-{model.lower()}", tag, port)
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
     if vision == "yes":
         cfg["args"] += ["--vision"]

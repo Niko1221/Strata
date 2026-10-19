@@ -99,7 +99,8 @@ Settings were restored to the verified optimal profile for 128 GB Apple Silicon:
     "--prefill", "auto",
     "--spec", "2",
     "--mtp", "/Volumes/vl/ai/Strata-data/mtp/rt",
-    "--max-context", "65536",
+    "--max-context", "262144",
+    "--kv", "int8",
     "--mmap-experts",
     "--vision"
   ],
