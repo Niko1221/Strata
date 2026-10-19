@@ -1,0 +1,75 @@
+test_a_child_ends_when_its_server_is_killed (serve.test_lifeline.Lifeline.test_a_child_ends_when_its_server_is_killed) ... FAIL
+test_the_child_is_recorded_while_it_runs_and_forgotten_after (serve.test_lifeline.Lifeline.test_the_child_is_recorded_while_it_runs_and_forgotten_after) ... FAIL
+test_the_portable_watcher_ends_the_child_when_the_server_is_killed (serve.test_lifeline.Lifeline.test_the_portable_watcher_ends_the_child_when_the_server_is_killed) ... FAIL
+test_min_tokens_is_passed_only_when_set (serve.test_server.VisionArgs.test_min_tokens_is_passed_only_when_set) ... ERROR
+
+======================================================================
+ERROR: test_min_tokens_is_passed_only_when_set (serve.test_server.VisionArgs.test_min_tokens_is_passed_only_when_set)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<verification-root>/upstream/serve/test_server.py", line 5610, in test_min_tokens_is_passed_only_when_set
+    base = self.args_for({"max_tokens": 300})
+  File "<verification-root>/upstream/serve/test_server.py", line 5606, in args_for
+    server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<verification-root>/upstream/serve/server.py", line 2521, in __init__
+    self._start()
+    ~~~~~~~~~~~^^
+  File "<verification-root>/upstream/serve/server.py", line 2542, in _start
+    self._start_reader()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "<verification-root>/upstream/serve/server.py", line 2555, in _start_reader
+    self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      cwd=self.dir)
+                      ^^^^^^^^^^^^^
+  File "<verification-root>/upstream/serve/server.py", line 89, in popen
+    return lifeline.popen(args, role, **kw)       # a child that cannot outlive this server (serve/lifeline.py)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "<verification-root>/upstream/serve/lifeline.py", line 260, in popen
+    _watch(child)
+    ~~~~~~^^^^^^^
+  File "<verification-root>/upstream/serve/lifeline.py", line 147, in _watch
+    watcher = subprocess.Popen([sys.executable, "-S", "-c", _WATCHER, str(child.pid), _start_token(child.pid)],
+                                                                          ^^^^^^^^^
+AttributeError: 'Proc' object has no attribute 'pid'
+
+======================================================================
+FAIL: test_a_child_ends_when_its_server_is_killed (serve.test_lifeline.Lifeline.test_a_child_ends_when_its_server_is_killed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<verification-root>/upstream/serve/test_lifeline.py", line 102, in test_a_child_ends_when_its_server_is_killed
+    self.assertIn(self._killed_parent_takes_the_child(), ("job", "pdeathsig", "watcher"))
+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "<verification-root>/upstream/serve/test_lifeline.py", line 98, in _killed_parent_takes_the_child
+    self.assertTrue(self.wait_gone(info["child"]), f"the child outlived a killed server ({info['mechanism']})")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : the child outlived a killed server (watcher)
+
+======================================================================
+FAIL: test_the_child_is_recorded_while_it_runs_and_forgotten_after (serve.test_lifeline.Lifeline.test_the_child_is_recorded_while_it_runs_and_forgotten_after)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<verification-root>/upstream/serve/test_lifeline.py", line 134, in test_the_child_is_recorded_while_it_runs_and_forgotten_after
+    self.assertTrue(self.wait_gone(info["child"]))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_the_portable_watcher_ends_the_child_when_the_server_is_killed (serve.test_lifeline.Lifeline.test_the_portable_watcher_ends_the_child_when_the_server_is_killed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<verification-root>/upstream/serve/test_lifeline.py", line 106, in test_the_portable_watcher_ends_the_child_when_the_server_is_killed
+    self.assertEqual(self._killed_parent_takes_the_child(STRATA_LIFELINE="watcher"), "watcher")
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<verification-root>/upstream/serve/test_lifeline.py", line 98, in _killed_parent_takes_the_child
+    self.assertTrue(self.wait_gone(info["child"]), f"the child outlived a killed server ({info['mechanism']})")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : the child outlived a killed server (watcher)
+
+----------------------------------------------------------------------
+Ran 4 tests in 45.358s
+
+FAILED (failures=3, errors=1)

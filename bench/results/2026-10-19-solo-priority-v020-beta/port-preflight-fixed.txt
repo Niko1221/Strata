@@ -1,0 +1,86 @@
+test_config_off_does_not_replace_lock_or_engine (serve.test_solo_priority.Scheduling.test_config_off_does_not_replace_lock_or_engine) ... ok
+test_invalid_config_is_rejected (serve.test_solo_priority.Scheduling.test_invalid_config_is_rejected) ... ok
+test_waiting_age_and_minimum_run_time (serve.test_solo_priority.Scheduling.test_waiting_age_and_minimum_run_time) ... ok
+test_cancel_while_paused_does_not_stop_the_other_request (serve.test_solo_priority.Streaming.test_cancel_while_paused_does_not_stop_the_other_request) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 9 output tokens
+[strata] done: 9 tokens in 0 s (76.5 tok/s) (cancel, cancel=True)
+[strata] done: 9 tokens in 0 s (751.2 tok/s) (stop, cancel=False)
+ok
+test_close_generator_while_paused_does_not_release_other_owner (serve.test_solo_priority.Streaming.test_close_generator_while_paused_does_not_release_other_owner) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 9 output tokens
+[strata] reading the prompt: 21,248 of 60,000 tokens, 1 s so far
+[strata] done: 9 tokens in 1 s (8.9 tok/s) (disconnect, cancel=False)
+[strata] reading the prompt: 42,944 of 60,000 tokens, 2 s so far
+[strata] done: 9 tokens in 3 s (696.6 tok/s) (stop, cancel=False)
+ok
+test_cold_prefill_yields_and_resumes (serve.test_solo_priority.Streaming.test_cold_prefill_yields_and_resumes) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 0 output tokens
+[strata] done: 9 tokens in 0 s (739.9 tok/s) (stop, cancel=False)
+[strata] writing a tool call: edit: 475 of max 2000 tokens, 678.8 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (677.7 tok/s) (stop, cancel=False)
+ok
+test_engine_death_while_paused_releases_all_waiters (serve.test_solo_priority.Streaming.test_engine_death_while_paused_releases_all_waiters) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 9 output tokens
+[strata] the engine reported an error: injected engine failure
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 3). The engine exited (code 3) after it reported: injected engine failure - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 9 tokens in 0 s (786.7 tok/s) (error, cancel=False)
+ok
+test_equal_priority_does_not_preempt (serve.test_solo_priority.Streaming.test_equal_priority_does_not_preempt) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] writing a tool call: edit: 666 of max 2000 tokens, 668.1 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (668.0 tok/s) (stop, cancel=False)
+[strata] done: 9 tokens in 0 s (722.0 tok/s) (stop, cancel=False)
+ok
+test_parked_failure_uses_the_launching_server_exception_class (serve.test_solo_priority.Streaming.test_parked_failure_uses_the_launching_server_exception_class) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 9 output tokens
+[strata] the engine reported an error: injected engine failure
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (error, cancel=False)
+[strata] the engine stopped while this request was paused. The engine exited (code 3) after it reported: injected engine failure - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 9 tokens in 0 s (650.2 tok/s) (error, cancel=False)
+ok
+test_preempt_inside_a_tool_argument_emits_one_call (serve.test_solo_priority.Streaming.test_preempt_inside_a_tool_argument_emits_one_call) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 132 output tokens
+[strata] done: 9 tokens in 0 s (752.3 tok/s) (stop, cancel=False)
+[strata] writing a tool call: edit: 663 of max 2000 tokens, 664.9 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (665.0 tok/s) (stop, cancel=False)
+ok
+test_preemption_keeps_utf8_tool_arguments_and_usage (serve.test_solo_priority.Streaming.test_preemption_keeps_utf8_tool_arguments_and_usage) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] writing a tool call: edit: 668 of max 2000 tokens, 670.1 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (669.8 tok/s) (stop, cancel=False)
+[strata] solo priority: paused after 9 output tokens
+[strata] done: 9 tokens in 0 s (745.2 tok/s) (stop, cancel=False)
+[strata] writing a tool call: edit: 665 of max 2000 tokens, 666.5 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (667.6 tok/s) (stop, cancel=False)
+ok
+test_restored_partial_prefill_reaches_a_token_before_yielding (serve.test_solo_priority.Streaming.test_restored_partial_prefill_reaches_a_token_before_yielding) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 4 output tokens
+[strata] done: 9 tokens in 0 s (757.2 tok/s) (stop, cancel=False)
+[strata] writing a tool call: edit: 536 of max 2000 tokens, 661.4 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (664.1 tok/s) (stop, cancel=False)
+ok
+test_third_short_request_does_not_wait_for_long_request_to_finish (serve.test_solo_priority.Streaming.test_third_short_request_does_not_wait_for_long_request_to_finish) ... [strata] solo priority on: one GEN at a time; at least five seconds between pauses
+[strata] solo priority: paused after 9 output tokens
+[strata] done: 9 tokens in 0 s (736.0 tok/s) (stop, cancel=False)
+[strata] solo priority: paused after 19 output tokens
+[strata] done: 9 tokens in 0 s (734.4 tok/s) (stop, cancel=False)
+[strata] solo priority: paused after 29 output tokens
+[strata] done: 9 tokens in 0 s (734.0 tok/s) (stop, cancel=False)
+[strata] writing a tool call: edit: 648 of max 2000 tokens, 649.9 tok/s, 1 s
+[strata] done: 704 tokens in 1 s (652.4 tok/s) (stop, cancel=False)
+ok
+test_a_queued_stream_gets_keep_alives_then_its_answer (serve.test_queue_keepalive.QueueKeepAlive.test_a_queued_stream_gets_keep_alives_then_its_answer) ... [strata] thinking limited to 24386 of max_tokens 32514 so the answer has room ("answer_room": false in the config turns this off)
+[strata] done: 3 tokens in 0 s (17050.0 tok/s) (stop, cancel=False)
+ok
+test_a_request_cancelled_while_queued_never_takes_the_turn (serve.test_queue_keepalive.QueueKeepAlive.test_a_request_cancelled_while_queued_never_takes_the_turn) ... ok
+test_closing_a_queued_request_is_no_longer_queued (serve.test_queue_keepalive.QueueKeepAlive.test_closing_a_queued_request_is_no_longer_queued) ... ok
+test_a_continuation_is_not_held_back (serve.test_admit_order.AdmitOrderTest.test_a_continuation_is_not_held_back)
+A request already admitted once (new=False: promoted from the solo path) is not part of the order. ... ok
+test_a_long_request_that_waited_too_long_goes_first (serve.test_admit_order.AdmitOrderTest.test_a_long_request_that_waited_too_long_goes_first) ... ok
+test_off_by_default (serve.test_admit_order.AdmitOrderTest.test_off_by_default) ... ok
+test_short_first_puts_the_chat_before_the_agent_reads (serve.test_admit_order.AdmitOrderTest.test_short_first_puts_the_chat_before_the_agent_reads) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 14.328s
+
+OK
