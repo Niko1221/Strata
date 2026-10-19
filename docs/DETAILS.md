@@ -1438,6 +1438,54 @@ more than 16 MiB apart. A symbolic link, a second hard link and a file with one 
 `--rope-freq-base` refused the file and then answered; a save with a RAM floor above the machine's RAM was refused as
 `memory` before any copy, the file it would have replaced untouched. The times are single runs.
 
+**Parked conversations on the disk (opt-in, `--conversation-disk-dir DIR`, with the conversation cache).** A
+conversation the RAM cache evicts (its slots or its byte budget full) is dropped, and a client that comes back to it
+reads the whole prompt again: an agent that switches between its main conversation and sub-agents too large for the
+budget together reads ~150K tokens again on every switch. With `--conversation-disk-dir DIR` the evicted conversation
+goes to `DIR` instead, and a request that continues it reads it back (the same validation and restore as a RAM-parked
+one) when the disk holds a longer prefix than the session, a `--batch` slot or the RAM cache:
+
+- every image of it (one per stage with `--layer-split`) is one session file, written and read with the session files'
+  code above (the same size, header and hash checks, and the free-space preflight `--session-min-free-mib`), with the
+  live state and every checkpoint, as in RAM; a park that does not fit the cache's byte budget goes to the disk too
+  (`sent to the disk` in the log) instead of being dropped;
+- a background thread (CPU nice 10 on Linux) writes the files, so a switch never waits for the disk; a conversation
+  asked for again before its write ends comes back from the write queue (a "RAM hit"). A queued image holds its RAM
+  until it is written: when RAM is short, parking and a read back wait for the queue before they evict more;
+- a read back needs RAM for the whole image above `--conversation-cache-min-free-mib`, as a park does; without it the
+  prompt is read again (`not restored (not enough RAM ...)`). A read back removes the conversation from the disk (the
+  session holds it again, and it is parked again on the next switch);
+- `--conversation-disk-mib N` (default 32768): the files' total, oldest out first. Without `--conversation-disk-persist`
+  the files' identity is a random number of the run: only this engine reads them, and its files (`strata-conv-*`) are
+  removed at start and when it ends;
+- the log has a line for every queue, write, hit and wait (MiB, ms, MB/s) and a totals line
+  (`strata serve: conversation disk: ...`); a request reused from the disk says so at the end of its line.
+
+`--conversation-disk-persist on|exit-only` (default `off`): the conversations outlive the engine, for whoever stops
+Strata between sessions or restarts it (an update, a settings change, a reboot). The files are bound to the session
+files' identity (the model files, the engine version and the settings that change the saved bytes); a small index file
+beside each conversation lets the next start take them in without reading the images, and files of another model,
+engine version or settings, a damaged index and leftovers of an interrupted write are removed at start. On QUIT the
+engine parks the current conversation, moves every parked one to the disk and waits for the writes; the server waits
+up to 300 s for that (20 s otherwise). While persist is on, the engine ignores SIGINT, SIGTERM and SIGHUP and ends only
+through its stdin (the server's QUIT, or EOF when the server is gone), so Ctrl+C in the server's terminal and the
+SIGTERM a shutdown sends to every process do not cut the save short. A crash or `kill -9` keeps what was already
+written. `exit-only` writes nothing while the engine runs (an eviction drops the conversation, as without a disk
+folder) and only saves at QUIT: on the box below, on one day of agent sessions the evictions' writes were never read
+back within a run (40 writes, 197 GiB, 34 requests that waited 4.5 min in all for a write), while both disk hits of the
+day came from the QUIT save.
+
+Measured on 2x CMP 50HX (sm_75, layer split), 2x Xeon E5-2670 v2, 64 GB RAM, NVMe ext4, Flash-Next IQ3_XXS, on
+0.2.0-beta with this change (`--conversation-disk-persist exit-only`, `--adapt-swaps 0`, greedy, 48 tokens): three
+conversations that share no prefix (41,839, 41,846 and 165,558 tokens, read cold in 22.5, 23.3 and 73.3 s), then a
+SIGTERM to the server: saved for the next start in 17.0 s (3 conversations, 5,786 MiB). The next start took in all
+three, and each came back from the disk with the same answer as before the restart: in 2.6, 2.9 and 8.4 s (the
+165,558-token one: 3,436 MiB read in 5.6 s at 643 MB/s, GPU restore 1.6 s). Earlier (2026-10-11, an older base) with a
+one-slot RAM cache that pushed conversations to the disk while the engine ran: a 165,557-token conversation came back in 6.4 s
+instead of a 77.8 s cold read; the background writes ran at 80-370 MB/s while the next prompt was read, and a request
+waited for a write once (0.9 s). Unit test: `conversation_disk_test` (CPU only, `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`).
+Not run on Windows, HIP, SYCL or Metal.
+
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats
 re-reads the other one unless the opt-in cache above is enabled, or each conversation keeps its own batch slot); images only when set up with them (below); no video. **Temperature / top_p / top_k / min_p /

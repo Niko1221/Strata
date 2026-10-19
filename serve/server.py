@@ -1013,6 +1013,9 @@ class StrataEngine:
         pin = {}
         if cpus and hasattr(os, "sched_setaffinity"):    # replicas: this engine's own physical cores (serve/replicas.py)
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
+        # --conversation-disk-persist on|exit-only: at QUIT the engine first writes its conversations to the disk (GBs)
+        persist = args[args.index("--conversation-disk-persist") + 1] if "--conversation-disk-persist" in args else "off"
+        self.quit_s = ENGINE_QUIT_WAIT_S if persist == "off" else 300
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
         self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
@@ -2435,7 +2438,7 @@ class StrataEngine:
                     self.proc.stdin.write("STOP\nQUIT\n")
                     self.proc.stdin.flush()
                     self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
-                    self.proc.wait(timeout=ENGINE_QUIT_WAIT_S)
+                    self.proc.wait(timeout=getattr(self, "quit_s", ENGINE_QUIT_WAIT_S))
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     self.proc.terminate()
                     self.proc.wait(timeout=ENGINE_TERM_WAIT_S)
