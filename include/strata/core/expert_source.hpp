@@ -713,9 +713,12 @@ public:
     ///
     /// The resident RAM mode (`--resident-experts`, `--resident-cpu-experts`):
     ///   - `pin`: page-locked and mapped (`cudaHostAlloc`), so the prompt path copies it by DMA and the verify
-    ///     window may read a share of the misses over PCIe; when the driver refuses, ordinary memory locked in the
-    ///     working set instead.  `pin = false` is ordinary pageable memory (the ROCm arm: large pinned allocations
-    ///     can fail there, and it is what the HIP measurements used).
+    ///     window may read a share of the misses over PCIe; when the driver refuses the one allocation, ordinary
+    ///     memory registered slice by slice (about one layer each, as the arena) up to the GPU's shared-memory budget
+    ///     on Windows, and only what no slice holds is locked in the working set instead (STRATA_COMPLEMENT_PIN_GIB:
+    ///     "all" until the driver refuses a slice, N caps the slices at N GiB, 0 skips them).
+    ///     `pin = false` is ordinary pageable memory (the ROCm arm: large pinned allocations can fail there, and it is
+    ///     what the HIP measurements used).
     ///   - `lend_from_slot` >= 0: the GPU-cache slots from there to the end are the prompt path's lend region; their
     ///     experts are kept in RAM too, from the last slot down, as far as available memory minus headroom allows
     ///     (a lent slot's expert is streamed during the prompt and copied back after it).
@@ -1172,6 +1175,12 @@ private:
     bool complement_ready_ = false;
     uint64_t complement_locked_ = 0;          ///< bytes held in the working set (pin refused)
     int64_t complement_lent_slots_ = 0;
+    /// The one page-locked allocation refused: the copy registered slice by slice, each with its own device alias
+    /// (sorted by `start`, page-aligned; empty otherwise).  A blob is pinned only when one slice holds all of it.
+    struct ComplementSlice { uint64_t start, end; const uint8_t* device; };
+    std::vector<ComplementSlice> complement_slices_;
+    bool complement_vmem_ = false;            ///< Windows: the sliced copy is VirtualAlloc'd (page-aligned), not malloc'd
+    const ComplementSlice* complement_slice(uint64_t offset, uint64_t bytes) const;
     std::vector<std::vector<std::pair<int32_t, int32_t>>> stage_lend_regions_;  ///< a split: each stage's lend region
     std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
     struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };

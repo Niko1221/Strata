@@ -29,6 +29,12 @@ enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
 /// -2 for "auto" (Windows: the sliced pin stays below the GPU's shared-memory budget).
 int arena_pin_cap_gib();
 
+/// #243: what a page-locked registration that CUDA device `dev` reads may pin on Windows: the shared (non-local) WDDM
+/// segment budget of its adapter (DXGI, found by cudaDeviceProp::luid) less this process's use of it less a margin
+/// (STRATA_PIN_MARGIN_GIB, default 4 GiB); without the DXGI numbers RAM/2 - 8 GiB.  False where there is no such
+/// budget (not Windows); `why` says where the number came from.
+bool shared_pin_limit_for(int dev, uint64_t& limit, std::string& why);
+
 struct PinnedArena {
     void* base = nullptr;
     uint64_t capacity = 0;
