@@ -14,9 +14,12 @@
 //      pools leaves the owned state's bytes untouched;
 //   4. five states, one per draft layer, each independently owned and independent.
 #include "strata/core/layer.hpp"
+#include "strata/core/dflash.hpp"
+#include "strata/core/session.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/spec/dflash_policy.hpp"
 #include "strata/kernels/native_rope.hpp"
 #include "strata/core/vmm.hpp"
 #include "strata/core/conversation_snapshot.hpp"
@@ -230,6 +233,11 @@ void batch_and_attention_regression(const ModelGeometry& g) {
                 std::fprintf(stderr, "active attention K=%d cells=%d maxerr=%.9g\n", k, active, maxerr);
                 check(false, "active vs selected attention tolerance 1e-5");
             }
+            const int padded = (int) strata::spec::dflash_attention_bucket(active, cap);
+            dflash_attn_batch(qd, pools, steps, padded, cap, s, scratch, new_out, k, cs);
+            cudaMemcpyAsync(a.data(), new_out, a.size() * 4, cudaMemcpyDeviceToHost, cs);
+            cudaStreamSynchronize(cs);
+            check(a == b, "padded attention preserves every output bit");
         }
     }
     for (void* p : {static_cast<void*>(kd), static_cast<void*>(vd), static_cast<void*>(qd),
@@ -317,10 +325,24 @@ void conversation_regression(const ModelGeometry& g) {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     if (cudaSetDevice(0) != cudaSuccess) {
         std::printf("dflash_owned_kv_test: no GPU\n");
         return 77;
+    }
+    {
+        DFlashDrafter drafter;
+        SessionState session;
+        ModelGeometry geometry;
+        std::string err;
+        int32_t out[7] = {};
+        check(!drafter.upload(geometry, session, 0, 128, -1, err), "unloaded upload refused");
+        check(!drafter.propose(1, 0, 3, out, err), "unbound proposal refused");
+        check(!drafter.add_context(nullptr, 5, 1, 0, 1, err), "unloaded BF16 context refused");
+        check(!drafter.add_context_f32(nullptr, 5, 2560, 0, 1, err), "unloaded F32 context refused");
+        drafter.release();
+        drafter.release();
+        check(drafter.vram_bytes() == 0 && drafter.capacity() == 0, "release is idempotent");
     }
     ModelGeometry g;   // the canonical head geometry: 24Q/2KV x 256, page_size 4
     const int64_t max_cells = 4096;
@@ -429,6 +451,39 @@ int main() {
         qsa_set_kv_elastic(false, 0);
         cudaFree(o.arena);
         (void) cudaGetLastError();   // the VMM experiments may leave a sticky error; the test is done
+    }
+    // Optional real artifact: repeat upload/release and reject mutation while
+    // uploaded. No target weights or target forward are needed for this gate.
+    for (int arg = 1; arg < argc; ++arg) {
+        Owned target;
+        if (!target.init(g, 256)) { check(false, "lifecycle target init"); continue; }
+        SessionState session;
+        session.qsa_states = &target.st;
+        session.qsa_alloc = 1;
+        DFlashDrafter drafter;
+        std::string err;
+        check(drafter.load(argv[arg], err), "lifecycle artifact load");
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            const bool uploaded = drafter.upload(g, session, 0, 192, -1, err);
+            if (!uploaded) std::fprintf(stderr, "lifecycle upload: %s\n", err.c_str());
+            check(uploaded, "lifecycle upload");
+            if (!uploaded) break;
+            const auto bytes = drafter.vram_bytes();
+            check(!drafter.upload(g, session, 0, 192, -1, err), "second upload refused");
+            check(!drafter.load(argv[arg], err), "loaded device artifact cannot be replaced");
+            check(bytes == drafter.vram_bytes(), "refused mutation preserves allocations");
+            WeightTable empty;
+            check(!drafter.bind(empty, nullptr, err), "missing target head refused");
+            int32_t picks[7] = {};
+            check(!drafter.propose(1, 0, 3, picks, err), "failed bind leaves proposal disabled");
+            drafter.release();
+            drafter.release();
+            check(drafter.vram_bytes() == 0 && drafter.capacity() == 0, "lifecycle release");
+        }
+        if (target.st.host_step) cudaFreeHost(target.st.host_step);
+        if (target.st.host_pos) cudaFreeHost(target.st.host_pos);
+        if (target.st.owns_rope) { cudaFree(target.st.cos_tab); cudaFree(target.st.sin_tab); }
+        cudaFree(target.arena);
     }
     std::printf(g_fail ? "dflash_owned_kv_test: %d FAILURES\n" : "dflash_owned_kv_test: ok\n", g_fail);
     return g_fail ? 1 : 0;

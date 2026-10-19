@@ -1,0 +1,8 @@
+{
+  "default_greedy": true,
+  "optimization_greedy": true,
+  "target_greedy": true,
+  "default_sampled": true,
+  "optimization_sampled": true,
+  "target_sampled": false
+}

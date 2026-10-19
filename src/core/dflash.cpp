@@ -216,6 +216,7 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
         {&g.vocab, {"dflash.vocab_size", "qwen3.vocab_size"}, "vocab_size", true},
         {&g.block_size, {"dflash.block_size"}, "block_size", true},
         {&g.head_dim, {"dflash.attention.key_length", "qwen3.attention.key_length"}, "attention.key_length", false},
+        {&g.sliding_window, {"dflash.attention.sliding_window"}, "attention.sliding_window", false},
         {&g.mask_token_id, {"dflash.mask_token_id"}, "mask_token_id", false},
         {&g.markov_rank, {"dflash.markov_rank"}, "markov_rank", false},
         {&g.selector_top_k, {"dflash.selector_top_k"}, "selector_top_k", false},
@@ -258,6 +259,7 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
     for (const Flag& flag : {Flag{{"dflash.sample_from_anchor"}, &g.sample_from_anchor},
                              Flag{{"dflash.attention.causal", "dflash.causal"}, &g.causal},
                              Flag{{"dflash.has_confidence_head"}, &g.confidence_head},
+                             Flag{{"dflash.target_hc_mean"}, &g.target_hc_mean},
                              Flag{{"dflash.target_layer_inputs"}, &g.target_layer_inputs}}) {
         if (meta(f, flag.keys) && !meta_flag(f, flag.keys, flag.out)) {
             err = std::string("dflash: invalid boolean metadata ") + flag.keys[0];
@@ -289,7 +291,7 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
     }
 
     // Structural sanity before any tensor is resolved.
-    if (g.hidden <= 0 || g.layers <= 0 || g.layers > 64 || g.n_head <= 0 || g.n_head_kv <= 0 ||
+    if (g.hidden <= 0 || g.layers <= 0 || g.layers > 64 || g.n_head <= 0 || g.n_head_kv <= 0 || g.n_head % g.n_head_kv != 0 ||
         g.head_dim <= 0 || g.intermediate <= 0 || g.vocab <= 0 || g.block_size <= 0 || g.block_size > 128) {
         err = "dflash: implausible geometry (hidden=" + std::to_string(g.hidden) +
               " layers=" + std::to_string(g.layers) + " heads=" + std::to_string(g.n_head) + "/" +
@@ -327,18 +329,45 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
               "non-causal (dflash.attention.causal=false)";
         return false;
     }
-    if (g.markov_rank > 0 || g.confidence_head) {
+    if (g.markov_rank != 0 || g.confidence_head) {
         err = "dflash: this artifact carries DSpark extras (Markov head / confidence gate); "
               "this implementation supports plain DeepSpec DFlash only";
         return false;
+    }
+    // These llama.cpp GGUF options change the math; do not silently ignore them.
+    struct Scalar { const char* key; double expected; };
+    for (const Scalar& scalar : {Scalar{"dflash.attention.layer_norm_rms_epsilon", 1e-6},
+                                Scalar{"dflash.logit_scale", 1},
+                                Scalar{"dflash.final_logit_softcapping", 0},
+                                Scalar{"dflash.embedding_scale", 1},
+                                Scalar{"dflash.attention.value_scale", 1},
+                                Scalar{"dflash.attention.scale", 1.0 / std::sqrt((double) g.head_dim)}}) {
+        double value = 0;
+        if (meta(f, {scalar.key}) && (!meta_f64(f, {scalar.key}, &value) || !std::isfinite(value) ||
+            std::abs(value - scalar.expected) > 1e-7 * std::abs(scalar.expected))) {
+            err = std::string("dflash: unsupported metadata ") + scalar.key;
+            return false;
+        }
+    }
+    for (const char* key : {"dflash.rope.dimension_count", "qwen3.rope.dimension_count"}) {
+        int64_t dimensions = 0;
+        if (meta(f, {key}) && (!meta_i64(f, {key}, &dimensions) || dimensions != g.head_dim)) {
+            err = std::string("dflash: partial rotary dimensions are unsupported: ") + key; return false;
+        }
+    }
+    for (const char* key : {"dflash.rope.scaling.type", "qwen3.rope.scaling.type"}) {
+        if (const auto* value = meta(f, {key}); value &&
+            (value->type != strata::MetaType::STRING || value->s != "none")) {
+            err = std::string("dflash: unsupported RoPE scaling: ") + key; return false;
+        }
     }
     if (g.is_dflash2()) {
 #ifndef STRATA_ENABLE_DFLASH2
         err = "dflash2: rebuild with -DSTRATA_ENABLE_DFLASH2=ON (experimental runtime)";
         return false;
 #else
-        if (g.sample_from_anchor || g.block_size < 2 || g.block_size > 8 ||
-            g.selector_top_k > 64 || g.selector_top_k > g.vocab ||
+        if (g.sliding_window < 0 || g.sliding_window > INT32_MAX || g.sample_from_anchor || g.block_size < 2 || g.block_size > 8 ||
+            g.selector_top_k < 1 || g.selector_top_k > 64 || g.selector_top_k > g.vocab ||
             g.selector_rank < 1 || g.selector_rank > 1024 ||
             g.conv_kernel_size < 1 || g.conv_kernel_size > 8 ||
             g.conv_group_size < 1 || g.hidden % g.conv_group_size != 0 ||
@@ -346,25 +375,9 @@ bool DFlashArtifact::open(const std::string& path, std::string& err) {
             err = "dflash2: invalid conv/selector geometry or anchor layout (block 2..8, top-k 1..64, rank 1..1024)";
             return false;
         }
-        // These llama.cpp GGUF options change the math; do not silently ignore them.
-        struct Scalar { const char* key; double expected; };
-        for (const Scalar& scalar : {Scalar{"dflash.attention.layer_norm_rms_epsilon", 1e-6},
-                                    Scalar{"dflash.logit_scale", 1},
-                                    Scalar{"dflash.final_logit_softcapping", 0},
-                                    Scalar{"dflash.embedding_scale", 1},
-                                    Scalar{"dflash.attention.value_scale", 1},
-                                    Scalar{"dflash.attention.scale", 1.0 / std::sqrt((double) g.head_dim)},
-                                    Scalar{"dflash.attention.sliding_window", 0}}) {
-            double value = 0;
-            if (meta(f, {scalar.key}) && (!meta_f64(f, {scalar.key}, &value) || !std::isfinite(value) ||
-                std::abs(value - scalar.expected) > 1e-7 * std::abs(scalar.expected))) {
-                err = std::string("dflash2: unsupported metadata ") + scalar.key;
-                return false;
-            }
-        }
         if (!meta(f, {"dflash.target_layer_inputs"})) g.target_layer_inputs = true;
 #endif
-    } else if (g.selector_top_k < 0 || g.selector_rank != 0 || g.conv_kernel_size != 0 || g.conv_group_size != 0) {
+    } else if (g.sliding_window != 0 || g.target_hc_mean || g.selector_top_k < 0 || g.selector_rank != 0 || g.conv_kernel_size != 0 || g.conv_group_size != 0) {
         err = "dflash2: incomplete conv/selector metadata";
         return false;
     }
@@ -497,12 +510,13 @@ bool DFlashArtifact::validate_supported(const DFlashGeometry& g, std::string& er
         int64_t got, want;
         const char* what;
     };
+    const bool official = g.is_dflash2() && g.head_dim == 128;
     const Fixed fixed[] = {
         {g.hidden, 2560, "embedding_length"},
         {g.layers, 5, "block_count"},
-        {g.n_head, 24, "attention.head_count"},
-        {g.n_head_kv, 2, "attention.head_count_kv"},
-        {g.head_dim, 256, "attention.key_length"},
+        {g.n_head, official ? 32 : 24, "attention.head_count"},
+        {g.n_head_kv, official ? 8 : 2, "attention.head_count_kv"},
+        {g.head_dim, official ? 128 : 256, "attention.key_length"},
         {g.intermediate, 7680, "feed_forward_length"},
     };
     for (const auto& f : fixed) {
@@ -517,6 +531,9 @@ bool DFlashArtifact::validate_supported(const DFlashGeometry& g, std::string& er
         err = "dflash: target_layers holds " + std::to_string(g.target_layers.size()) +
               " taps; the runtime implements five-tap drafters only";
         return false;
+    }
+    if (g.sliding_window && (!g.is_dflash2() || g.head_dim != 128)) {
+        err = "dflash2: sliding attention requires the 128-dimensional DFlash2 runtime"; return false;
     }
     if (g.rope_theta <= 0) {
         err = "dflash: rope.frequency_base missing or non-positive";

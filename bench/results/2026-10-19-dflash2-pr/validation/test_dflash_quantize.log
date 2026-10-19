@@ -1,0 +1,12 @@
+.Q8_0: /tmp/tmp5zbwyerj/Q8_0-a.gguf (1472 bytes)
+Q8_0: /tmp/tmp5zbwyerj/Q8_0-b.gguf (1472 bytes)
+Q5_0: /tmp/tmp5zbwyerj/Q5_0-a.gguf (1152 bytes)
+Q5_0: /tmp/tmp5zbwyerj/Q5_0-b.gguf (1152 bytes)
+Q4_0: /tmp/tmp5zbwyerj/Q4_0-a.gguf (1056 bytes)
+Q4_0: /tmp/tmp5zbwyerj/Q4_0-b.gguf (1056 bytes)
+Q8_0: /tmp/tmp5zbwyerj/collision.gguf (1472 bytes)
+.
+----------------------------------------------------------------------
+Ran 2 tests in 0.038s
+
+OK

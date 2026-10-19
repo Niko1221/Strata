@@ -54,6 +54,8 @@ struct DFlashGeometry {
     int64_t markov_rank = 0;                ///< > 0 (DSpark Markov head) is refused at load
     int64_t selector_top_k = 0;             ///< > 0 enables the opt-in DFlash2 architecture
     int64_t selector_rank = 0, conv_kernel_size = 0, conv_group_size = 0;
+    int64_t sliding_window = 0;            ///< symmetric local attention, 0 = full
+    bool target_hc_mean = false;            ///< completed layer output averaged over HC streams
     bool target_layer_inputs = false;       ///< llama.cpp GGUF taps are layer inputs
     bool is_dflash2() const { return selector_top_k > 0; }
     bool confidence_head = false;           ///< true (DSpark confidence gate) is refused at load
@@ -113,6 +115,7 @@ class DFlashDrafter {
 public:
     /// Parse + validate the artifact (no device work, no inference).
     bool load(const std::string& gguf_path, std::string& err) {
+        if (cs_ || w_) { err = "dflash: release before loading another artifact"; return false; }
         return artifact_.open(gguf_path, err);
     }
     const DFlashArtifact& artifact() const { return artifact_; }
@@ -139,7 +142,8 @@ public:
     /// QSA pool shapes); the pools hold the artifact's `layers` draft layers.  `window` sizes the
     /// drafter's context: the attention sees cells [0, window) and the pools hold exactly those
     /// cells (the reference attends to every cell; 0 = every cell the session's cache could hold,
-    /// which prices five FP16 pools at 10 KiB per cell). On supported CUDA cache
+    /// which prices five FP16 K/V pools at 10 KiB per cell for plain DFlash,
+    /// or 20 KiB for the official DFlash2 geometry). On supported CUDA cache
     /// configurations, physical K/V and attention scratch grow from 8192 cells; other
     /// backends allocate them up front. The attention always covers the same cells.
     /// `mask_override`: the CLI's --dflash-mask-token (-1 = the artifact's metadata decides; the
@@ -150,8 +154,12 @@ public:
     /// Binds the target's LM head.  The query rows' embeddings are gathered per cycle from the
     /// target's table - nothing is cached here.
     bool bind(const WeightTable& wt, const NativeHead* head, std::string& err, const std::string& vocab = {});
+    /// Native-protocol diagnostic A/B; independent graphs keep switching from
+    /// charging either mode for the other's graph capture. No effect on plain DFlash.
+    void set_reference_mode(bool on) { reference_mode_ = on; }
     /// Frees every resource this drafter holds (device buffers, the five K/V states' arenas and
-    /// their pinned staging, the stream) and leaves it unloaded.  Safe on a partially-uploaded
+    /// their pinned staging, the stream) and unbinds the device state. The parsed artifact is retained
+    /// for a later upload or load. Safe on a partially-uploaded
     /// drafter; called by the destructor and on upload()'s failure paths.
     void release();
 
@@ -206,9 +214,10 @@ public:
 
 private:
     cudaStream_t cs_ = nullptr;
-    std::array<cudaGraphExec_t, 9> graph_exec_{};
-    std::array<int64_t, 9> graph_chunks_{}, graph_cap_{};
+    std::array<cudaGraphExec_t, 18> graph_exec_{};
+    std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
+    bool reference_mode_ = false;
     void clear_graphs();
 
     // the target's shared modules
@@ -247,6 +256,7 @@ private:
     float *selector_unary_ = nullptr;
     int32_t* selector_ids_ = nullptr;
     uint8_t *arg_scratch_ = nullptr, *top_scratch_ = nullptr, *xq_ = nullptr;
+    uint8_t* selector_scratch_ = nullptr;
     int32_t* out_ = nullptr;         ///< the block's picks, device alias
     int32_t* h_out_ = nullptr;       ///< ... and its mapped host memory
     int32_t* h_tok_ = nullptr;       ///< host-side token ids staged to tok_

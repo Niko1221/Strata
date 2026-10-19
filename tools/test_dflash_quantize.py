@@ -47,6 +47,10 @@ class Export(unittest.TestCase):
                     self.assertLess(np.linalg.norm(back-values)/np.linalg.norm(values), .14)
                     with self.assertRaisesRegex(ValueError, 'original BF16'):
                         d.export(a, Path(folder)/'requant.gguf', 'Q8_0')
+            collision = Path(folder)/'collision.gguf.part'
+            collision.write_bytes(raw)
+            d.export(collision, Path(folder)/'collision.gguf', 'Q8_0')
+            self.assertEqual(collision.read_bytes(),raw)
             truncated = Path(folder)/'truncated.gguf'
             truncated.write_bytes(raw[:-16])
             with self.assertRaisesRegex(ValueError, 'truncated'):

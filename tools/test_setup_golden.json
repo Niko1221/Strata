@@ -44,7 +44,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -97,7 +97,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -150,7 +150,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/q2_0/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -203,7 +203,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -242,12 +242,11 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "env": {
     "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
-   "drafter": "mtp",
-
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -320,7 +319,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -381,7 +380,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -442,7 +441,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/q2_0/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -503,7 +502,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -542,11 +541,10 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "env": {
     "STRATA_HC_Q8": "1"
    },
-   "drafter": "mtp",
-
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -621,7 +619,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -681,7 +679,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -740,7 +738,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/q2_0/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -800,7 +798,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -838,11 +836,10 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "env": {
     "STRATA_HC_Q8": "1"
    },
-   "drafter": "mtp",
-
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -910,7 +907,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -963,7 +960,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1016,7 +1013,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/q2_0/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1067,7 +1064,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": true,
     "max_tokens": 1024,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1106,11 +1103,10 @@
     "700"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "env": {
     "STRATA_HC_Q8": "1"
    },
-   "drafter": "mtp",
-
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1173,7 +1169,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1225,7 +1221,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1277,7 +1273,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/q2_0/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1329,7 +1325,7 @@
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
    "vision": {
-    "exe": "<T>/engine/strata-vision.exe",
+    "exe": "<T>/engine/<VEXE>",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -1367,12 +1363,11 @@
     "--vision"
    ],
    "cwd": "<T>",
+   "drafter": "mtp",
    "env": {
     "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
-   "drafter": "mtp",
-
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,

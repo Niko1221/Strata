@@ -1,0 +1,20 @@
+Original BF16 head: 300/1536 bytes
+Original BF16 head: 600/1536 bytes
+Original BF16 head: 900/1536 bytes
+Original BF16 head: 1200/1536 bytes
+Original BF16 head: 1500/1536 bytes
+Original BF16 head: 1536/1536 bytes
+Original BF16 DFlash head: /tmp/tmprxy3aolv/head.gguf
+Original BF16 DFlash head: /tmp/tmprxy3aolv/head.gguf (cached)
+Original BF16 head: 300/1536 bytes
+Original BF16 head: 600/1536 bytes
+Original BF16 head: 900/1536 bytes
+Original BF16 head: 1200/1536 bytes
+Original BF16 head: 1500/1536 bytes
+Original BF16 head: 1536/1536 bytes
+Original BF16 DFlash head: /tmp/tmprxy3aolv/head.gguf
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.002s
+
+OK

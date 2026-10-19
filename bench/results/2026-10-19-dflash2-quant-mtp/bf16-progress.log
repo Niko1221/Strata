@@ -1,0 +1,16 @@
+bf16 warm code 3 42.991
+bf16 warm math 3 42.514
+bf16 warm prose 3 36.195
+bf16 warm long 3 34.515
+bf16 0 code 3 43.094 66 87
+bf16 0 math 3 43.484 69 78
+bf16 0 prose 3 36.399 58 111
+bf16 0 long 3 41.492 62 99
+bf16 1 code 3 43.362 66 87
+bf16 1 math 3 42.538 69 78
+bf16 1 prose 3 36.366 58 111
+bf16 1 long 3 40.477 62 99
+bf16 2 code 3 39.785 66 87
+bf16 2 math 3 43.071 69 78
+bf16 2 prose 3 36.452 58 111
+bf16 2 long 3 40.929 62 99

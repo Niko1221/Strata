@@ -1,0 +1,30 @@
+Internal ctest changing into directory: ./build-dflash2
+Test project ./build-dflash2
+      Start  38: mmvq_multi_parity
+ 1/12 Test  #38: mmvq_multi_parity ................   Passed    0.76 sec
+      Start  47: gdn_rec_parity
+ 2/12 Test  #47: gdn_rec_parity ...................   Passed    0.37 sec
+      Start  56: dflash2_parity
+ 3/12 Test  #56: dflash2_parity ...................   Passed    0.40 sec
+      Start  57: dflash_taps_test
+ 4/12 Test  #57: dflash_taps_test .................   Passed    0.23 sec
+      Start  58: dflash_head_bf16_test
+ 5/12 Test  #58: dflash_head_bf16_test ............   Passed    0.22 sec
+      Start  59: dflash_rope_parity
+ 6/12 Test  #59: dflash_rope_parity ...............   Passed    0.22 sec
+      Start  60: dflash_owned_kv_test
+ 7/12 Test  #60: dflash_owned_kv_test .............   Passed    0.34 sec
+      Start  61: gdn_parity
+ 8/12 Test  #61: gdn_parity .......................   Passed    0.49 sec
+      Start  62: gdn_chunk_parity
+ 9/12 Test  #62: gdn_chunk_parity .................   Passed    9.49 sec
+      Start  82: bf16_gemv_parity
+10/12 Test  #82: bf16_gemv_parity .................   Passed    0.33 sec
+      Start 107: dflash_policy_test
+11/12 Test #107: dflash_policy_test ...............   Passed    0.00 sec
+      Start 108: dflash_load_test
+12/12 Test #108: dflash_load_test .................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 12
+
+Total Test time (real) =  12.86 sec

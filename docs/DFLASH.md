@@ -1,378 +1,87 @@
-# DFlash: standalone block drafter for Qwen3.8-Flash-Next
+# Experimental standalone DFlash
 
-Experimental support for the DeepSpec DFlash drafter
-[`PixelML/Qwen3.8-Flash-Next-NVFP4-DFlash`](https://huggingface.co/PixelML/Qwen3.8-Flash-Next-NVFP4-DFlash)
-as a **standalone draft model** next to Strata's own MTP layer:
+The standalone DFlash infrastructure supplies feature capture, private draft K/V,
+block execution and target verification. It is the prerequisite for the official
+[DFlash2 integration](DFLASH2.md). Setup now offers MTP, DFlash2 or Off; the older
+plain-DFlash checkpoint and private-head experiments use the engine CLI directly.
+MTP remains the default drafter. `--dflash` and `--mtp` are mutually exclusive.
 
-```text
-Qwen3.8-Flash-Next target (any supported quant)
-        +  standalone DFlash artifact (GGUF, BF16 or quantized matrices, 498M params, no embed / no LM head)
-        ↓
-one parallel draft pass per cycle  →  existing Strata Verifier
-```
+## Artifact and execution
 
-Nothing here changes target-only decoding or MTP when DFlash is not selected.
+`tools/dflash_gguf.py` converts a compatible BF16 safetensors checkpoint and configuration
+into GGUF. Plain DFlash uses the Flash-Next geometry: hidden 2560, five draft layers,
+five target taps, 24 Q / 2 KV heads of width 256 and MLP 7680. The loader checks tensor
+shapes, payload bounds, vocabulary, mask token, normalization, attention and scaling
+metadata before uploading anything. Malformed or unsupported artifacts are refused.
 
-## Semantics (pinned from the references)
-
-Derived from, in priority order when they disagree: (1) the PixelML serving adapter and
-trainer for this exact checkpoint (`PixelML/deepspec-qwen38-flash-next`), (2) llama.cpp
-`src/models/dflash.cpp` + `common/speculative.cpp`, (3) z-lab `dflash/dflash/model.py` and
-`deepseek-ai/DeepSpec`.
-
-### Target feature taps
-
-Five taps, target layers `[3, 15, 23, 35, 43]` (`target_layer_ids`). At each tap take the
-**HC-contracted native-width (2560) residual** — the `mixed` output of the tapped layer's
-own attention-half HyperConnection read — not the raw 4×2560 stream, not the MLP input, not
-the final hidden state. The PixelML exporter captures at vLLM aux boundaries
-`tap + 1 = [4, 16, 24, 36, 44]`, each `attn_hyper_connection.mix(...)[1]`; Strata's
-equivalent is the attn-half HC read (`gr_read` / `fused_gr_read`) output `mixed` at layers
-`[4, 16, 24, 36, 44]`, which equals the contracted residual *after* layers `[3, 15, 23, 35,
-43]` including those layers' FFN write-back. One feature = `concat` in tap order, `[12800]`.
-
-### The drafter
-
-Dense 5-layer Qwen3-style decoder, 58 BF16 tensors, all shapes checked at load:
-`fc` [2560×12800], `hidden_norm` [2560], `norm` [2560], and per layer 0..4:
-`input_layernorm`, `post_attention_layernorm` [2560], `self_attn.{q,k,v,o}_proj`
-[6144/512/512/2560 × 2560], `self_attn.{q,k}_norm` [256], `mlp.{gate,up}_proj` [7680×2560],
-`mlp.down_proj` [2560×7680]. RMSNorm eps 1e-6, SiLU MLP, GQA 24 Q / 2 KV, head_dim 256,
-scaling 1/16, NeoX RoPE theta 1e7 (full head), no biases. `embed_tokens` and `lm_head` are
-**bound from the target at load** (the checkpoint ships neither).
-
-### Context K/V (the "KV cache injection")
-
-For every committed target position `p` the drafter holds a context cell computed once:
-
-```text
-ctx(p)   = rmsnorm(fc(feature(p)), hidden_norm.weight, eps 1e-6)     # one vector, all layers
-k_l(p)   = rope_neox(k_norm_l(k_proj_l(ctx(p))), p)                  # k_norm applies, per layer
-v_l(p)   = v_proj_l(ctx(p))
-```
-
-The same `ctx(p)` feeds every layer (vLLM `_project_context_kv`: one fused GEMM over the
-normed context; "unnormalised-by-layer context K/V"). Context cells are written **after**
-verification, from the verify window's tap rows for the window rows that were committed, in
-place at their positions. A rejected position's cell is simply overwritten when that
-position is committed later — the same position-addressed overwrite the Verifier already
-uses for target K/V; the drafter needs no rollback of its own.
-
-### The DeepSpec anchor layout (query_zero_predicts_next)
-
-This checkpoint is trained with DeepSpec's anchor-as-first-prediction convention, which
-differs from generic DFlash's `1+N` fill-in layout (vLLM raises
-`sample_from_anchor=True is not supported for DFlash` for it; the PixelML adapter teaches
-the kernel `sample_offset = 0`). The concrete rule, in the `_prepare_dflash_inputs_kernel`
-wording: with `P` the position of the last valid **context** row, query `j` (0-based, `K`
-queries, `j < K`) sits at rope position `P + 1 + j`, query 0's input token is the last
-committed token (the anchor id) and queries `1..K-1` are `mask_token_id`; every query is
-sampled and `sample_pos = query_pos + 1` — each query's distribution is for the position
-**after** its own. So candidate `j` = argmax(query `j`) lands at position `P + 2 + j`,
-the `K` candidates cover `[P+2, P+K+1]`, and the verify window is
-`[anchor token] + K candidates` = `K + 1` rows — exactly Strata's existing window contract,
-with the anchor re-fed as window row 0.
-
-Written out per Strata cycle (anchor = last committed token `x` at position `P`, the draft
-cache holds context cells for `[0, P-1]`):
-
-1. Query forward, one pass: `K` rows at positions `[P .. P+K-1]`, inputs
-   `[embed(x), embed(mask) × (K-1)]` (raw target embedding, scale 1). Per layer: q-norm,
-   rope; query K/V cells written at the query positions; attention is **non-causal** among
-   the query rows and full over the context cells (vLLM `get_draft_attn_causal`,
-   `dflash_config.causal = false`). Final `norm`, then the target's `lm_head`:
-   candidate `j` = argmax(row `j`).
-2. Verify: `Verifier::run(K+1, [x, c0..c(K-1)], pos0=P)`; commit `a+1` rows; the target
-   correction (bonus) `b = outv[a]` is committed at `P+a+1`.
-3. Context update: write feature cells for positions `[P .. P+a]` from the window's tap
-   rows `[0..a]`. Position `P+a+1` (the bonus) has no valid features yet — it was never a
-   committed target input — and is deliberately left to the next cycle's query 0.
-4. `P ← P+a+1`, `x ← b`.
-
-The first cycle after prefill is the same with the prompt's taps as context cells
-`[0, N-2]` and the prompt's last token as query 0's input; the prompt's last position
-`N-1` *is* a real committed row, so its context cell exists (from the prefill taps) and
-query 0 sits at `N`.
-
-Block size: the checkpoint trains `block_size = 7` = `K_max` (7 queries = anchor + 6
-masks; llama.cpp: "anchor-first yields a full block_size draft tokens"). Serving at `K < 7`
-takes the identical proposer path (the PixelML plugin allowlist `(4,5,7)` was "a scope
-marker, not an architectural limit"). `K ≥ 8` is refused: it exceeds both the trained
-block and `kVerifyMaxT - 1`. In Strata terms `--spec T` stays the **window size**, so
-`K = T - 1` and `T ≤ 8`.
-
-### Greedy and sampled requests
-
-DFlash proposes greedy tokens only. For `temperature > 0`, the server uses
-target-only decoding with the request's own sampler, filters, penalties and seed.
-It still records draft context for a later greedy continuation and its in-memory
-conversation cache. Sampled CLI runs select target-only decoding before loading
-the drafter. No sampled speedup is claimed.
-
-Exact-match acceptance preserves the target distribution in exact arithmetic.
-In the engine, speculative target windows can round differently from a series
-of one-row windows. The 128-token sampled gate exposed output changes, so sampled
-speculation is disabled until it passes. The review report includes a target-logit
-comparison and a control with draft computation enabled but its acceptance gate
-closed. A smaller draft vocabulary only affects greedy proposals; the verifier
-always uses the target's full head.
-
-CLI sampling follows Strata's existing convention: pass `--seed N` to select
-sampling, together with `--temperature F`; `--greedy` selects argmax decoding.
-The server honors each request's sampling parameters. `--mtp` and `--dflash`
-remain mutually exclusive.
-
-The GPU integration gate exercises the native server protocol and CLI, positive
-temperatures, top-k/top-p/min-p, penalties, sampled fallback, repeated seeds and greedy
-regression. It pins expert residency and uses `STRATA_IQ_MT_MIN=1` to compare
-tokens under consistent CPU/GPU arithmetic:
+The target embedding and output head are shared by default. Each draft layer owns a
+separate whole-resident FP16 K/V pool; it does not inherit the target's quantized or
+streamed K/V allocation. Feature taps are taken from the checkpoint's selected target
+layers. Plain DFlash consumes the learned HC-contracted read; the official DFlash2
+checkpoint selects the raw HC stream mean instead.
 
 ```sh
-python tools/dflash_sampling.py --config strata-iq3_xxs.json \
-  --engine build/strata --baseline /path/to/previous/strata --output /tmp/df-sampling
+build/strata --pack /path/to/target-pack --native /path/to/target-shard.gguf \
+  --dflash /path/to/plain-dflash.gguf --dflash-window 0 \
+  --spec 8 --dflash-block 5 --spec-min-p 0.5 \
+  --tokens-file /path/to/prompt-ids.txt --max-new 128
 ```
 
-The supplied fixture must pass token equality against target-only decoding.
-This does not establish byte equality for every workload: adaptive expert
-placement and different verify widths can introduce floating-point differences.
-With partial expert residency, the default route-tail skip also depends on the
-whole verification window and can change which experts are computed. The review
-report distinguishes this from Niko's all-experts-resident case.
+The reference plain-DFlash artifact emits its row-zero prediction. DFlash2 reserves
+row zero for its anchor and excludes it from emitted proposals. The effective block
+must fit both the trained artifact and the verifier's window. Greedy proposals are
+checked by the target, and only the accepted prefix is committed. Sampled requests
+use target-only decoding; a later greedy request can reuse committed draft context.
 
-Historical sampling measurement, before the target-only restriction described above
-was applied (2026-10-09, RTX 4070 Ti SUPER 16 GB, Ryzen 5900X,
-128 GB RAM, Linux/CUDA 13.4): IQ3_XXS target, Q4_0 DFlash, temperature 0.7,
-seed 8675309, eight serial HTTP requests, up to 512 generated tokens each.
-Aggregate decode throughput was 74.30 tok/s with DFlash, 61.72 with the previous
-sampled target-only fallback, and 79.66 with MTP. Startup and prefill are excluded.
-EOS was respected: the runs emitted 4020, 3897 and 4096 tokens respectively.
-These are single short-context suites with adaptive expert placement, not
-bitwise-identical continuations or a general speed guarantee. DFlash is still
-slower than MTP in this comparison.
+## Context, cache and memory
 
-## One-click setup and server
+`--dflash-window N` is a draft capacity, not a rolling attention window. The CLI
+default is 32768 cells; 0 uses the target session's full configured context.
+Prompt plus requested output must fit that capacity. Proposal guards also account for
+the anchor and the remaining target context. Positions retain their true RoPE indices.
 
-Run `./setup.sh --setup` (Windows: `START-HERE.bat --setup`) and select MTP, DFlash or Off
-in the numbered menu. Off skips both draft models and leaves suffix/prompt lookup enabled.
-The same choice is available as `./setup.sh --setup --yes --drafter none`. DFlash then offers original BF16, Q8_0, Q5_0 and
-Q4_0. The choice applies to the drafter's matrices. Norm vectors keep their
-original BF16 bits; the target's weights, embedding and output head stay as selected.
+Draft weights, private pools, scratch and head binding are allocated before the
+automatic expert cache is sized. CUDA's profiled VMM path can grow draft K/V and
+attention scratch from 8192 cells by taking memory from expert slots. Other paths
+allocate full draft capacity at startup. The configured VRAM reserve also has to
+cover later verifier buffers and graph capture; it is not all free after startup.
 
-For a non-interactive install, keeping the same target model:
+In-memory prompt checkpoints and parked conversations include the committed draft
+K/V prefixes. Rewind overwrites rejected or later cells before use. Parked draft
+snapshots are charged against the conversation-cache RAM budget; whole compatible
+images are restored rather than borrowing a donor conversation's prefix.
+Disk SAVE/RESTORE is refused because the disk schema does not contain the draft pools.
 
-```sh
-./setup.sh --setup --yes --model IQ3_XXS --drafter dflash --dflash-quant q8
-```
+The [cache regression report](../bench/results/2026-10-19-dflash2-pr/cache/README.md)
+records exact output controls, actual expert placement and the earlier invalid
+comparisons that exceeded the requested cache budget. GPU and CPU expert arithmetic
+can differ, so a fixed budget must be verified through native INFO before comparing IDs.
 
-Setup downloads the pinned PixelML checkpoint (~1 GB), checks its SHA-256,
-exports GGUF and optionally quantizes it with llama.cpp's GGML quantizers.
-It reuses prepared files on later runs. `--dflash /path/to/drafter.gguf` also
-accepts a local artifact; an additional quantization requires an original BF16
-source. Selecting DFlash skips the MTP download, preparation and load. Selecting
-MTP again writes an MTP-only configuration.
+## Manual quantization experiments
 
-The selected drafter is passed to the server. New DFlash installations default
-to `temperature: 0`; setup retains existing saved sampling settings. Clients
-can request sampling by setting a positive temperature. Subsequent starts use
-the saved choice.
-DFlash currently supports one GPU and serial requests. Prompt checkpoints and
-live continuation reuse the committed draft context prefix. Parked conversations
-include all five FP16 draft K/V pools, charged to the conversation-cache RAM
-budget and admission check. The final decode window also appends its committed
-context, including when generation stops at the token limit or EOS. On a rewind,
-later draft cells are overwritten before use. DFlash takes parked conversations
-whole rather than borrowing a donor's prefix. Disk SAVE/RESTORE is refused because
-the disk schema does not store the draft pools. Elastic target KV growth is disabled with DFlash. Setup uses
-`--dflash-window 0`, preserving the full configured context. On CUDA, with one
-GPU and a profiled RAM-backed expert cache, the drafter's FP16 K/V and attention
-scratch start at 8192 cells and grow as requests use more positions. The expert
-cache supplies physical chunks and gets them back after a shorter request. This
-is independent of the target's KV streaming. Other configurations allocate the
-full draft capacity up front. `STRATA_DFLASH_KV_GROW=0` retains that allocation
-for comparisons. A positive `--dflash-window N` is a capacity limit, not a
-rolling window: requests beyond it are refused.
+`tools/dflash_quantize.py` exports Q8_0, Q5_0 or Q4_0 backbone matrices from an original
+BF16 source. Norms retain BF16. DFlash2 convolution and selector tensors also remain
+BF16. Quantization tools reject in-place output and validate complete tensor payloads;
+prepared artifacts are cached separately from their source.
 
-The default pass uses the artifact's trained block (seven rows for this checkpoint)
-and verifies only the consecutive predictions whose draft probability is at least
-`--spec-min-p 0.5`. Cutting the verified prefix does not change the drafter's
-non-causal input width. `--dflash-block K` still selects an actual fixed forward
-width for reproducible comparisons; its probability gate is off unless explicitly
-requested. With `--spec-min-p 0`, the server retains the measured block-length
-policy, including periodic probes and pauses.
+Plain DFlash additionally accepts `--dflash-head HEAD.gguf`, a private BF16 or supported
+quantized `output.weight`. The verifier retains its original head. That extra allocation
+reduces room for target experts and is not used by DFlash2. A shared quantized plain-DFlash
+head may use `--dflash-vocab FILE` with unique int32 token IDs. BF16 heads use the full
+vocabulary. The engine-only experiments are separate from setup's DFlash2 weight menu.
 
-Setup's existing calibration (`./setup.sh --calibrate`) also measures actual
-DFlash forward lengths, within the loaded drafter's and `--spec` limits. It
-sweeps the block before and after the PCIe share and probability floor, then
-compares the candidate and defaults three times each in alternating order.
-A gain must exceed 3% to save `--dflash-block` in the run configuration. CPU
-worker and expert-tier measurements then use that chosen block. Saved results
-are specific to the PC, target/context, drafter artifact, vocabulary and draft
-capacity; DFlash and off do not reuse MTP's calibration.
+## Checks and diagnostics
 
-Setup projects only the chosen draft vocabulary's rows from the shared target
-head (`--dflash-vocab FILE`); no second head matrix is allocated. Its default
-subset is the same CJK-inclusive subset used by MTP. `--draft-vocab en`, `fr`,
-`cyrillic` or `cjk` selects the corresponding indices. Omitting `--dflash-vocab`
-uses the full head. This affects draft proposals and their probabilities; the
-target always verifies against its own full head.
+Loader and policy checks use `dflash_load_test` and `dflash_policy_test`. CUDA checks
+cover taps, RoPE, owned pools, BF16 projections and indexed heads. The independent
+`tools/dflash_stage_parity.py` forward checks every plain-DFlash layer against the
+actual artifact. `tools/dflash_cache.py` compares live, parked, checkpoint, rewind and
+sampled-to-greedy cases with fresh drafter and target-only controls.
 
-Drafter forwards reuse GPU graphs while their attention chunk count and scratch
-layout are unchanged. Growing or trimming the scratch, changing probability
-output, or rebinding the head invalidates them. `STRATA_DFLASH_GRAPH=0` keeps
-eager execution for comparisons. Stage dumps and GPU-event profiling also use
-eager execution. Prompt-lookup drafts follow `--suffix-draft`; lookup-chain
-composition remains unsupported.
+`STRATA_DF_PARITY=DIR` writes intermediate tensors for a selected diagnostic cycle;
+`STRATA_DF_EVENTS=1` records drafter section timings. These paths are disabled by default.
+They are correctness/measurement tools, not evidence of performance by themselves.
 
-Both greedy and sampled requests compute the draft context during prefill and
-use the same draft capacity checks. A request exceeding an explicit draft capacity
-is rejected before changing state.
-The server and CLI capture the same layer boundaries, and the prompt feature
-stride follows the current buffer layout after each relayout.
-
-This branch's CUDA and Linux HIP engines are built from source for DFlash;
-released engines may lack its server and quantization support. Windows HIP needs
-a compatible build via `--prebuilt`. Setup checks support before writing the
-configuration. Quantized drafter weights are experimental; the target still
-verifies every proposal. Current validation and unresolved review requirements
-are recorded in [the review report](../bench/results/2026-10-17-dflash-review/REPORT.md).
-
-## Strata integration
-
-| Piece | Where |
-|---|---|
-| CLI: `--dflash FILE.gguf`, `--dflash-block K`, `--dflash-window N` | `src/program/generate.cpp` |
-| Artifact: GGUF v3 reader (existing `strata::GgufFile`), metadata + tensor validation, BF16/quantized → device | `include/strata/core/dflash.hpp`, `src/core/dflash.cpp` |
-| Taps: verify window writes the 5 contracted residuals per row | `src/core/verify.cpp` (`pre` lambda, attn-half HC read) |
-| Taps: prefill writes them for the anchor (and prompt rows for context cells) | `src/prefill/prefill.cpp` |
-| Drafter runtime: fusion, context KV (own QsaState pools), block forward, argmax | `src/core/dflash_runtime.cpp` |
-| Decode loop wiring, prefill wiring, VRAM reservation, metrics | `src/program/generate.cpp` |
-
-The five draft FP16 K/V pools use 10 KiB per position (5 layers × 2 K/V
-arrays × 2 heads × 256 values × 2 bytes). DFlash does not allocate the target's
-sparse-indexer history. The attention scratch grows with the mapped capacity.
-Weights, mapped pools and scratch are loaded before the expert cache is sized.
-The target's embedding and output head are shared. The
-[review report](../bench/results/2026-10-17-dflash-review/REPORT.md) records the
-available performance evidence and its limits.
-
-Feature-capture gate (commit 2): `STRATA_DFLASH_TAPS=<file>` makes a target-only run append one
-record per prompt chunk and per verify window with the five boundaries' contracted residuals
-(prompt path in BF16 - the fusion's input precision; window path in f32), and
-`tools/dflash_taps.py` compares the two kernel paths' capture of the same position.  On the
-IQ3_XXS target, 400-token prompts: per-tap cos 0.9966-0.9999, rel mean 1.2e-2 to 8.5e-2 - the
-prompt path's batched BF16 GEMMs and the window's per-token kernels (multi-row AVX2 CPU experts)
-agree to engine-path tolerance, while any wiring bug (wrong layer, the other HC half, the raw
-10240-wide stream, a token offset, reordered taps) measures cos <= 0.7.  The reference-forward
-comparison against the PixelML exporter's own tensors needs the vLLM stack and is not runnable
-here; the exporter's tap definition was transcribed from its published adapter patch instead.
-
-### Stage parity (STRATA_DF_PARITY, per row, all five layers)
-
-`STRATA_DF_PARITY=<dir> [STRATA_DF_PARITY_CYCLE=c] ./build/strata ... --dflash DFLASH.gguf` dumps
-one draft cycle's stages — the fused context, and per draft layer `xn`, `qraw`, `qnormed`, `q`,
-`k`, `v`, the pool pages the attention reads (`kpool`/`vpool`, with `pt` and the per-row
-attention `steps`), `attn`, `h_attn`, `h_mlp` — plus `emb` and `meta.bin`
-`[anchor pos, K, anchor token, mask token, page_size]`.  `tools/dflash_stage_parity.py` recomputes
-every stage independently from the same GGUF and judges EACH ROW (cos / max-abs / rel-L2 per row;
-an aggregate cosine hides one bad anchor row among six exact mask rows), recompute the attention
-cell by cell from the dumped pools (failing hard on an out-of-range cell instead of emitting NaN),
-roll the reference through all five layers, and verify the context cells' K/V values AND rope
-positions.  Measured on the IQ3_XXS target, RTX 4070 Ti SUPER: at the first propose after an
-8-token and a 119-token prompt, every stage of every row passes (attention max|d| ~2-4e-6 against
-the oracle; the block at bf16-GEMV rounding), and the artifact's safetensors match the GGUF
-bit-for-bit.
-
-Three bugs this fixture caught, all fixed:
-
-1. `parity_dump_u16_as_f32` widened the fp16 pools with the BF16 bit shift (no exponent
-   re-bias), so every dumped pool decoded as plausible-looking nonsense.  A readback compared
-   against such a dump made a correct append look like it wrote garbage.
-2. The query rows' and the KV rows' rope positions shared one pinned staging buffer with the
-   copies that read it still in flight; a late DMA read the KV-layout bytes and roped query
-   row 0's first heads at the wrong positions - the row-0-only, run-to-run-flaky layer-1 Q
-   divergence.  The two regions are now disjoint, and the fusion's per-chunk position/step
-   stagings (whose values do change) sync after the copy.
-3. The decode loop filled the verify window's draft slots from `--spec-oracle`'s fixture list
-   (token 0 past its end) whenever `--mtp` was absent - a `--dflash` run verified
-   `[anchor, 0, 0, ...]` and accepted nothing, whatever the drafter produced.  DFlash drafts
-   now ride the MTP slot.
-
-Measured acceptance after the fixes (greedy, IQ3_XXS target, K=6, RTX 4070 Ti SUPER): the
-119-token fixture above accepts 10 of 78 drafts (0.128, 1.71 tokens per round) over 24 new
-tokens; a 69-token natural-language prompt accepts 68 of 413 (0.165, 2.13 tokens per round) over
-128 new tokens, against 0 of 30 and 0 of 161 before.  With the expert cache pinned to the same
-slot count (4283), the temperature-0 output of a `--dflash` run is token-for-token identical to
-target-only at 24 and 128 tokens (the drafter's ~1 GiB changes the expert-cache auto-sizing, and
-CPU-computed experts round differently from resident GPU ones - pin `--expert-cache` when
-comparing).
-
-Known limitations of the first implementation are listed at the end of this file after the
-measurements.
-
-
-## Draft-only head quantization experiment
-
-`--dflash-head HEAD.gguf` loads a separate `output.weight` for DFlash. The target
-verifier keeps its original head. The file is loaded before automatic expert-cache
-sizing, so its extra device memory reduces the space available for experts.
-Without this flag DFlash uses the shared target head and allocates no extra head.
-
-Setup (`./setup.sh --setup`) offers **Share the target model's head** (default) or
-**Original BF16 head**, separately from the drafter weight quantization menu.
-For an unattended install:
-
-```bash
-./setup.sh --setup --yes --drafter dflash --dflash-quant q4 --dflash-head original
-```
-
-This copies the original Qwen checkpoint's `lm_head.weight` BF16 bytes into a cached
-one-tensor GGUF. Only this tensor is downloaded, using checked HTTP ranges from the
-checkpoint revision pinned in `tools/mtp_fetch.py`. The cache records and checks its
-SHA-256; no precision is reconstructed from a quantized target head. The file contains
-248320 x 2560 BF16 values (1271398400 bytes, about 1.18 GiB extra VRAM). BF16 weights
-use F32 activations directly and the full vocabulary; `--draft-vocab` only selects rows
-of a shared quantized head. No speed or acceptance improvement is claimed.
-`--dflash-head target` restores the shared head. The choice is saved across starts.
-The engine's `--dflash-head` argument takes a GGUF path; setup's argument takes a choice.
-
-Export a head with the offline tool (the repository's gguf-py is used only here):
-
-```bash
-python tools/dflash_head_quantize.py TARGET_SHARD.gguf --type Q8_0 -o head-Q8_0.gguf
-python tools/dflash_head_quantize.py TARGET_SHARD.gguf --type Q4_0 -o head-Q4_0.gguf
-# Add --dflash-head head-Q4_0.gguf to the existing DFlash command.
-```
-
-These files re-quantize the source tensor. Exporting Q8 from a Q5_K source does
-not restore precision lost in Q5_K. The tool records tensor hashes and weight
-reconstruction errors in a JSON file beside the export.
-
-On an RTX 4070 Ti SUPER, IQ3_XXS target, K=6, fixed expert budget 3500,
-128-token math fixture and 256 generated tokens, three alternating runs gave
-median throughput 40.20 tok/s with the shared Q5_K head, 40.21 with Q8_0 and
-40.80 with Q4_0. Q8 adds 644.2 MiB of weights; Q4 adds 341.0 MiB. A separate
-CUDA-event capture measured 1.213, 1.137 and 0.828 ms per head projection,
-respectively. The event capture is excluded from throughput measurements.
-
-Q4 changed the generated code continuation and reduced its acceptance in a
-single code run. Q8 and Q4 both changed the chat continuation. These heads are
-experiments, remain opt-in, and have not passed a general greedy-output gate.
-The historical experiment's detailed report was not included in this branch;
-these numbers are not a reproducible performance gate for the current build.
-
-For diagnostic evidence, `STRATA_DF_EVENTS=1` records individual GPU section
-and CPU enqueue times. Their sum is not decode wall time. `STRATA_DF_CYCLES=PATH`
-writes proposal IDs, verifier IDs, accepted prefix, anchor position and correction
-per cycle. `STRATA_DF_TARGET_PROBE=POSITION` prints the verifier's top two logits
-at a kept absolute input position in either CLI or server, with Off, MTP or DFlash.
-`STRATA_DF_TARGET_PROBE_FILE=PATH` also saves that row as raw F32 logits.
-These diagnostics are disabled by default. Parity captures also contain full
-head logits, quantized activations and argmax IDs; check these with
-`tools/dflash_head_parity.py --head HEAD.gguf --dir PARITY_DIRECTORY`.
-
-Run `tools/dflash_sampling.py` against an existing configuration to check target
-token parity and request reset, and `tools/dflash_cache.py` for live continuation,
-checkpoint rewind and conversation parking. Both require a GPU and model files;
-neither downloads weights. A passing fixture does not establish exactness on
-other prompts. The unresolved divergence reported in review must not be described
-as a near tie without comparing the target logits at the first differing position.
+This integration is single-GPU and serial. CUDA execution has local evidence; HIP and
+SYCL compilation and hardware execution of shared changes are not established here.
+See [DFlash2 measurements and limits](DFLASH2.md) before making performance claims.

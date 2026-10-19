@@ -10,6 +10,7 @@ import hashlib
 from pathlib import Path
 import struct
 import sys
+import tempfile
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
@@ -19,6 +20,10 @@ from gguf_reader import GGUFFile, BLOCK_GEOMETRY
 from gguf_writer import GGUFWriter
 from gguf import GGMLQuantizationType as Q
 from gguf.quants import quantize
+
+
+def is_extension_tensor(name):
+    return any(part in name for part in ('selector', 'conv_base', 'conv_proj', 'base_kernel', 'kernel_projection'))
 
 
 def export(source, output, kind, chunk_rows=256):
@@ -33,7 +38,7 @@ def export(source, output, kind, chunk_rows=256):
     directory = []
     offset = 0
     for t in g.tensors:
-        extension = any(name in t.name for name in ('selector', 'conv_base', 'conv_proj', 'base_kernel', 'kernel_projection'))
+        extension = is_extension_tensor(t.name)
         if t.type_id != 30 or len(t.shape) not in ((1, 2, 3) if extension else (1, 2)):
             raise ValueError(f'{t.name}: expected original BF16 vector or matrix')
         if g.data_start + t.offset + t.expected_bytes() > source.stat().st_size:
@@ -63,7 +68,8 @@ def export(source, output, kind, chunk_rows=256):
         header += struct.pack('<' + 'Q' * len(t.shape), *t.shape) + struct.pack('<IQ', typ, at)
     header += b'\0' * (-len(header) % 32)
     output.parent.mkdir(parents=True, exist_ok=True)
-    tmp = output.with_suffix(output.suffix + '.part')
+    temp_dir = tempfile.TemporaryDirectory(prefix=".dflash-quant-", dir=output.parent)
+    tmp = Path(temp_dir.name) / output.name
     try:
         with source.open('rb') as src, tmp.open('wb') as dst:
             dst.write(header)
@@ -91,9 +97,8 @@ def export(source, output, kind, chunk_rows=256):
                 (t.name, t.shape, typ) for t, typ, _, _ in directory]:
             raise ValueError('quantized directory verification failed')
         tmp.replace(output)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    finally:
+        temp_dir.cleanup()
     print(f'{kind}: {output} ({output.stat().st_size} bytes)', flush=True)
     return output
 

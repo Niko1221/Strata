@@ -1,0 +1,10 @@
+SKIP complete ar
+SKIP complete mtp
+SKIP complete bf16
+SKIP complete Q4_0
+START Q8_0
+FINISH Q8_0 0
+START Q5_0
+FINISH Q5_0 0
+START mtp-final
+FINISH mtp-final 0

@@ -143,7 +143,7 @@ int main() {
               "DFlash2 missing anchor flag uses the reference fill-in default");
         auto unsupported = meta2(); unsupported.push_back(fixture::u32("dflash.attention.sliding_window", 2048));
         fixture::write(dir / "dflash2_sliding.gguf", unsupported, tensors2());
-        check(!a.open((dir / "dflash2_sliding.gguf").string(), err), "unsupported attention metadata refused");
+        check(a.open((dir / "dflash2_sliding.gguf").string(), err) && a.geom().sliding_window == 2048, "sliding attention metadata retained");
         const auto saved = a.weight_bytes();
         auto missing = tensors2(); missing.pop_back();
         fixture::write(dir / "dflash2_missing.gguf", meta2(), missing);
@@ -152,6 +152,7 @@ int main() {
         for (const auto& item : {std::pair{"dflash.conv_group_size", 3},
                                 std::pair{"dflash.selector_rank", 0},
                                 std::pair{"dflash.block_size", 9},
+                                std::pair{"dflash.selector_top_k", 0},
                                 std::pair{"dflash.selector_top_k", 65}}) {
             auto bad = meta2();
             for (auto& kv : bad) if (kv.key == item.first) kv.u = item.second;
@@ -282,6 +283,12 @@ int main() {
              fixture::Kv{"dflash.embedding_length", 11, {}, (uint64_t) INT64_MAX},
              fixture::str("dflash.attention.key_length", "not-an-integer"),
              fixture::str("dflash.attention.causal", "maybe"),
+             fixture::i32("dflash.markov_rank", (uint64_t)-1),
+             fixture::u32("dflash.attention.head_count_kv", 3),
+             fixture::f32("dflash.attention.layer_norm_rms_epsilon", 1e-5f),
+             fixture::f32("dflash.embedding_scale", 2.f),
+             fixture::str("dflash.rope.scaling.type", "linear"),
+             fixture::u32("dflash.rope.dimension_count", 4),
              fixture::i32("dflash.attention.key_length", (uint64_t) -1),
              fixture::f32("dflash.rope.frequency_base", std::numeric_limits<float>::quiet_NaN())}) {
         auto kv = meta();
@@ -416,6 +423,14 @@ int main() {
         bad = g;
         bad.n_head_kv = 4;
         check(!DFlashArtifact::validate_supported(bad, err), "wrong kv heads refused");
+        DFlashGeometry official = g;
+        official.selector_top_k = 16; official.selector_rank = 256;
+        official.n_head = 32; official.n_head_kv = 8; official.head_dim = 128;
+        official.target_layers = {5,15,25,35,45}; official.target_hc_mean = true;
+        official.sliding_window = 2048;
+        check(DFlashArtifact::validate_supported(official, err), "official 32Q/8KV x 128 geometry supported");
+        official.n_head_kv = 2;
+        check(!DFlashArtifact::validate_supported(official, err), "mixed official and old KV geometry refused");
     }
     {   // the batch attention's identity table: one [0, cap) row per query row
         std::vector<int32_t> ids(3 * 7, -1);

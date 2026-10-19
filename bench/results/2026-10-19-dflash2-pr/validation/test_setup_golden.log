@@ -1,0 +1,2308 @@
+FFFFFFFFFFFFFFFFFFFF...FFFFFFFFFFFFFFFFFFFF
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [64GB-1x32GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[878 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[889 chars]uf'}}
+Diff is 1359 characters long. Set self.maxDiff to None to see it. : 64: may run out of memory)
+  6) 256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)
+  7) 384K tokens   (experimental: setup adds rope scaling)   (needs ~80 GB RAM, this PC has 64: may run out of memory)
+  8) 512K tokens   (experimental: setup adds rope scaling)   (needs ~81 GB RAM, this PC has 64: may run out of memory)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpkdttk9ar/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpkdttk9ar/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpkdttk9ar/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpkdttk9ar/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpkdttk9ar/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 64; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [64GB-1x32GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[894 chars]024}} != {'args': ['--pack', '<T>/data/packs/q2_0', [905 chars]uf'}}
+Diff is 1399 characters long. Set self.maxDiff to None to see it. : p stays on)
+  [ok] drafter: MTP
+
+  Context length = how much text the model can see at once (your chat, files, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp1_832she/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmp1_832she/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp1_832she/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp1_832she/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmp1_832she/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~0.6 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [64GB-1x32GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[924 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[935 chars]uf'}}
+Diff is 1429 characters long. Set self.maxDiff to None to see it. : ommended for your GPU)
+  5) 200K tokens   (needs ~70 GB RAM, this PC has 64: may run out of memory)
+  6) 256K tokens   (needs ~70 GB RAM, this PC has 64: may run out of memory)
+  7) 384K tokens   (experimental: setup adds rope scaling)   (needs ~72 GB RAM, this PC has 64: may run out of memory)
+  8) 512K tokens   (experimental: setup adds rope scaling)   (needs ~74 GB RAM, this PC has 64: may run out of memory)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpn8em5zqn/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpn8em5zqn/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpn8em5zqn/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpn8em5zqn/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpn8em5zqn/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~0.6 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [64GB-1x32GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[878 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[889 chars]uf'}}
+Diff is 1359 characters long. Set self.maxDiff to None to see it. : 64: may run out of memory)
+  6) 256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)
+  7) 384K tokens   (experimental: setup adds rope scaling)   (needs ~80 GB RAM, this PC has 64: may run out of memory)
+  8) 512K tokens   (experimental: setup adds rope scaling)   (needs ~81 GB RAM, this PC has 64: may run out of memory)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpqmzyp63m/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpqmzyp63m/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpqmzyp63m/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpqmzyp63m/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpqmzyp63m/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 64; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [32GB-2x24GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[916 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[927 chars]uf'}}
+Diff is 1409 characters long. Set self.maxDiff to None to see it. : f the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode: IQ3_XXS's experts (43 GB) are read from the model folder through the OS file cache instead of a copy in RAM (32 GB); the GPU holds ~40% of them
+  [!]  most of the experts are read from the SSD while it answers: expect it to be much slower than with enough RAM (a faster SSD and a smaller size help)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpdhbd7a_d/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpdhbd7a_d/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpdhbd7a_d/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 43 GB) ...
+  [ok] model prepared: /tmp/tmpdhbd7a_d/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpdhbd7a_d/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~60 GB IQ3_XXS uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [32GB-2x24GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[890 chars]024}} != {'args': ['--pack', '<T>/data/packs/q2_0', [901 chars]uf'}}
+Diff is 1383 characters long. Set self.maxDiff to None to see it. :  of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode: the GPU holds ~50% of Q2_0's experts (34 GB) and the other ~17 GB stay in RAM (32 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpt8xt22or/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpt8xt22or/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpt8xt22or/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 34 GB) ...
+  [ok] model prepared: /tmp/tmpt8xt22or/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpt8xt22or/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~48 GB Q2_0 uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: on a PC with 32 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [32GB-2x24GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[948 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[959 chars]uf'}}
+Diff is 1444 characters long. Set self.maxDiff to None to see it. : ts; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode on 2 GPUs: they hold ~81% of IQ3_XXS's experts (43 GB) and the other ~8 GB stay in RAM (32 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpy8rrhc9m/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpy8rrhc9m/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpy8rrhc9m/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 43 GB) ...
+  [ok] model prepared: /tmp/tmpy8rrhc9m/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpy8rrhc9m/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~60 GB IQ3_XXS uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  [!]  GPU 1 is in the compute mode No devices were found, not Default: a second process cannot use the card while the first holds it, so the vision encoder or the tuning run can fail with "CUDA-capable device(s) is/are busy or unavailable". If it does, set it back with: sudo nvidia-smi -i 1 -c DEFAULT
+  [ok] layer split across GPUs [0, 1] (auto)
+  tip: on a PC with 32 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~1.8 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [32GB-2x24GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[928 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[939 chars]uf'}}
+Diff is 1424 characters long. Set self.maxDiff to None to see it. :           documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode on 2 GPUs: they hold ~69% of IQ3_S's experts (50 GB) and the other ~16 GB stay in RAM (32 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpeg6zpqct/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpeg6zpqct/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpeg6zpqct/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 50 GB) ...
+  [ok] model prepared: /tmp/tmpeg6zpqct/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpeg6zpqct/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  [!]  GPU 1 is in the compute mode No devices were found, not Default: a second process cannot use the card while the first holds it, so the vision encoder or the tuning run can fail with "CUDA-capable device(s) is/are busy or unavailable". If it does, set it back with: sudo nvidia-smi -i 1 -c DEFAULT
+  [ok] layer split across GPUs [0, 1] (auto)
+  tip: on a PC with 32 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~1.8 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [47GB-2x16GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[880 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[891 chars]: 6}}
+Diff is 1363 characters long. Set self.maxDiff to None to see it. : ew seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+  [ok] low-RAM mode: IQ3_S's experts (50 GB) are read from the model folder through the OS file cache instead of a copy in RAM (47 GB); the GPU holds ~21% of them
+  [!]  most of the experts are read from the SSD while it answers: expect it to be much slower than with enough RAM (a faster SSD and a smaller size help)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpt2thmeh3/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpt2thmeh3/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpt2thmeh3/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 50 GB) ...
+  [ok] model prepared: /tmp/tmpt2thmeh3/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpt2thmeh3/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [47GB-2x16GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[852 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/q2_0', [863 chars]: 6}}
+Diff is 1323 characters long. Set self.maxDiff to None to see it. : ded: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpmf00gei7/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpmf00gei7/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpmf00gei7/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpmf00gei7/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpmf00gei7/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~48 GB Q2_0 uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [47GB-2x16GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[904 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[915 chars]: 6}}
+Diff is 1387 characters long. Set self.maxDiff to None to see it. : m the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+  [ok] low-RAM mode: the GPU holds ~24% of IQ3_XXS's experts (43 GB) and the other ~32 GB stay in RAM (47 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpd05dtx6m/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpd05dtx6m/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpd05dtx6m/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 43 GB) ...
+  [ok] model prepared: /tmp/tmpd05dtx6m/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpd05dtx6m/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~60 GB IQ3_XXS uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: on a PC with 47 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [47GB-2x16GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[912 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[923 chars]: 6}}
+Diff is 1398 characters long. Set self.maxDiff to None to see it. : d on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+  [ok] low-RAM mode on 2 GPUs: they hold ~42% of IQ3_S's experts (50 GB) and the other ~29 GB stay in RAM (47 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmprx07ap20/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmprx07ap20/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmprx07ap20/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 50 GB) ...
+  [ok] model prepared: /tmp/tmprx07ap20/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmprx07ap20/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  [!]  GPU 1 is in the compute mode No devices were found, not Default: a second process cannot use the card while the first holds it, so the vision encoder or the tuning run can fail with "CUDA-capable device(s) is/are busy or unavailable". If it does, set it back with: sudo nvidia-smi -i 1 -c DEFAULT
+  [ok] layer split across GPUs [0, 1] (auto)
+  tip: on a PC with 47 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [96GB-1x16GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[888 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[899 chars]: 6}}
+Diff is 1383 characters long. Set self.maxDiff to None to see it. : uments; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp6p9vjx48/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp6p9vjx48/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp6p9vjx48/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp6p9vjx48/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp6p9vjx48/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [96GB-1x16GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[878 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/q2_0', [889 chars]: 6}}
+Diff is 1373 characters long. Set self.maxDiff to None to see it. :     documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpjxbpqjua/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpjxbpqjua/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpjxbpqjua/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpjxbpqjua/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpjxbpqjua/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [96GB-1x16GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[908 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[919 chars]: 6}}
+Diff is 1403 characters long. Set self.maxDiff to None to see it. : ontext lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp6jtk3um1/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmp6jtk3um1/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp6jtk3um1/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp6jtk3um1/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmp6jtk3um1/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [96GB-1x16GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[888 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[899 chars]: 6}}
+Diff is 1383 characters long. Set self.maxDiff to None to see it. : uments; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp_grxw6xm/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp_grxw6xm/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp_grxw6xm/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp_grxw6xm/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp_grxw6xm/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [128GB-1x24GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[904 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[915 chars]uf'}}
+Diff is 1409 characters long. Set self.maxDiff to None to see it. : : setup adds rope scaling)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp7fl79ct7/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp7fl79ct7/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp7fl79ct7/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp7fl79ct7/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp7fl79ct7/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [128GB-1x24GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[894 chars]024}} != {'args': ['--pack', '<T>/data/packs/q2_0', [905 chars]uf'}}
+Diff is 1399 characters long. Set self.maxDiff to None to see it. : al: setup adds rope scaling)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpjclkg8bu/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpjclkg8bu/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpjclkg8bu/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpjclkg8bu/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpjclkg8bu/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 3 decodes up to 3 together instead of one after the other (each takes ~0.6 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [128GB-1x24GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[924 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[935 chars]uf'}}
+Diff is 1429 characters long. Set self.maxDiff to None to see it. : ope scaling)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpx6_53p3v/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpx6_53p3v/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpx6_53p3v/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpx6_53p3v/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpx6_53p3v/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_enter_for_every_question (__main__.Golden.test_enter_for_every_question) [128GB-1x24GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 209, in test_enter_for_every_question
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[904 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[915 chars]uf'}}
+Diff is 1409 characters long. Set self.maxDiff to None to see it. : : setup adds rope scaling)
+  [ok] context: 131072 tokens
+
+  KV cache precision (the model's memory of the conversation):
+  1) 8-bit   (recommended: what every published number was measured with)
+  2) 4-bit   half the memory (about 4% faster at 128K), but measurably less precise on long
+             documents; long-context lookups (needle tests) still pass
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmptc2ppbyl/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmptc2ppbyl/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmptc2ppbyl/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmptc2ppbyl/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmptc2ppbyl/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [64GB-1x32GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[878 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[889 chars]uf'}}
+Diff is 1359 characters long. Set self.maxDiff to None to see it. :   Context length = how much text the model can see at once (your chat, files, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens   (needs ~77 GB RAM, this PC has 64: may run out of memory)
+  6) 256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)
+  7) 384K tokens   (experimental: setup adds rope scaling)   (needs ~80 GB RAM, this PC has 64: may run out of memory)
+  8) 512K tokens   (experimental: setup adds rope scaling)   (needs ~81 GB RAM, this PC has 64: may run out of memory)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp6_4e4r08/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp6_4e4r08/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp6_4e4r08/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp6_4e4r08/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp6_4e4r08/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 64; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [64GB-1x32GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[894 chars]024}} != {'args': ['--pack', '<T>/data/packs/q2_0', [905 chars]uf'}}
+Diff is 1399 characters long. Set self.maxDiff to None to see it. :  64 GB PC with little else running; download 84 GB, uses ~50 GB of RAM
+  [ok] size: Q2_0
+
+  Speculative decoding = a small drafter proposes tokens which the target checks.
+  1) MTP (default)
+  2) DFlash2 (experimental; uses the target model's shared output head)
+  3) Off (no MTP/DFlash2; prompt lookup stays on)
+  [ok] drafter: MTP
+
+  Context length = how much text the model can see at once (your chat, files, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp21imujob/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmp21imujob/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp21imujob/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp21imujob/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmp21imujob/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~0.6 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [64GB-1x32GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[924 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[935 chars]uf'}}
+Diff is 1429 characters long. Set self.maxDiff to None to see it. : )
+  3) Off (no MTP/DFlash2; prompt lookup stays on)
+  [ok] drafter: MTP
+
+  Context length = how much text the model can see at once (your chat, files, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens   (needs ~70 GB RAM, this PC has 64: may run out of memory)
+  6) 256K tokens   (needs ~70 GB RAM, this PC has 64: may run out of memory)
+  7) 384K tokens   (experimental: setup adds rope scaling)   (needs ~72 GB RAM, this PC has 64: may run out of memory)
+  8) 512K tokens   (experimental: setup adds rope scaling)   (needs ~74 GB RAM, this PC has 64: may run out of memory)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpzuzwnm5i/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpzuzwnm5i/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpzuzwnm5i/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpzuzwnm5i/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpzuzwnm5i/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~0.6 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [64GB-1x32GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[878 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[889 chars]uf'}}
+Diff is 1359 characters long. Set self.maxDiff to None to see it. :   Context length = how much text the model can see at once (your chat, files, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens   (needs ~77 GB RAM, this PC has 64: may run out of memory)
+  6) 256K tokens   (needs ~78 GB RAM, this PC has 64: may run out of memory)
+  7) 384K tokens   (experimental: setup adds rope scaling)   (needs ~80 GB RAM, this PC has 64: may run out of memory)
+  8) 512K tokens   (experimental: setup adds rope scaling)   (needs ~81 GB RAM, this PC has 64: may run out of memory)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp8upqg6j1/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp8upqg6j1/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp8upqg6j1/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp8upqg6j1/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp8upqg6j1/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 64; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [32GB-2x24GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[916 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[927 chars]uf'}}
+Diff is 1409 characters long. Set self.maxDiff to None to see it. : 2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode: IQ3_XXS's experts (43 GB) are read from the model folder through the OS file cache instead of a copy in RAM (32 GB); the GPU holds ~40% of them
+  [!]  most of the experts are read from the SSD while it answers: expect it to be much slower than with enough RAM (a faster SSD and a smaller size help)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp77uso_jy/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmp77uso_jy/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp77uso_jy/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 43 GB) ...
+  [ok] model prepared: /tmp/tmp77uso_jy/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmp77uso_jy/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~60 GB IQ3_XXS uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [32GB-2x24GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[890 chars]024}} != {'args': ['--pack', '<T>/data/packs/q2_0', [901 chars]uf'}}
+Diff is 1383 characters long. Set self.maxDiff to None to see it. :   2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode: the GPU holds ~50% of Q2_0's experts (34 GB) and the other ~17 GB stay in RAM (32 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpft3us54g/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpft3us54g/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpft3us54g/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 34 GB) ...
+  [ok] model prepared: /tmp/tmpft3us54g/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpft3us54g/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~48 GB Q2_0 uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: on a PC with 32 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [32GB-2x24GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[948 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[959 chars]uf'}}
+Diff is 1444 characters long. Set self.maxDiff to None to see it. : p adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode on 2 GPUs: they hold ~81% of IQ3_XXS's experts (43 GB) and the other ~8 GB stay in RAM (32 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpt1ywnwwo/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpt1ywnwwo/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpt1ywnwwo/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 43 GB) ...
+  [ok] model prepared: /tmp/tmpt1ywnwwo/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpt1ywnwwo/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~60 GB IQ3_XXS uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  [!]  GPU 1 is in the compute mode No devices were found, not Default: a second process cannot use the card while the first holds it, so the vision encoder or the tuning run can fail with "CUDA-capable device(s) is/are busy or unavailable". If it does, set it back with: sudo nvidia-smi -i 1 -c DEFAULT
+  [ok] layer split across GPUs [0, 1] (auto)
+  tip: on a PC with 32 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~1.8 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [32GB-2x24GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[928 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[939 chars]uf'}}
+Diff is 1424 characters long. Set self.maxDiff to None to see it. : xperimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+  [ok] low-RAM mode on 2 GPUs: they hold ~69% of IQ3_S's experts (50 GB) and the other ~16 GB stay in RAM (32 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpq9nm5pjk/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpq9nm5pjk/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpq9nm5pjk/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 50 GB) ...
+  [ok] model prepared: /tmp/tmpq9nm5pjk/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpq9nm5pjk/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~1.8 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 32; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  [!]  GPU 1 is in the compute mode No devices were found, not Default: a second process cannot use the card while the first holds it, so the vision encoder or the tuning run can fail with "CUDA-capable device(s) is/are busy or unavailable". If it does, set it back with: sudo nvidia-smi -i 1 -c DEFAULT
+  [ok] layer split across GPUs [0, 1] (auto)
+  tip: on a PC with 32 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 4 decodes up to 4 together instead of one after the other (each takes ~1.8 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [47GB-2x16GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[880 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[891 chars]: 6}}
+Diff is 1363 characters long. Set self.maxDiff to None to see it. : ew seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+  [ok] low-RAM mode: IQ3_S's experts (50 GB) are read from the model folder through the OS file cache instead of a copy in RAM (47 GB); the GPU holds ~21% of them
+  [!]  most of the experts are read from the SSD while it answers: expect it to be much slower than with enough RAM (a faster SSD and a smaller size help)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpmnfi8_cm/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpmnfi8_cm/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpmnfi8_cm/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 50 GB) ...
+  [ok] model prepared: /tmp/tmpmnfi8_cm/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpmnfi8_cm/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [47GB-2x16GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[852 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/q2_0', [863 chars]: 6}}
+Diff is 1323 characters long. Set self.maxDiff to None to see it. : ed for your GPU)
+  4) 128K tokens
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 65536 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpldwzypjv/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpldwzypjv/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpldwzypjv/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpldwzypjv/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpldwzypjv/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~48 GB Q2_0 uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [47GB-2x16GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[904 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[915 chars]: 6}}
+Diff is 1387 characters long. Set self.maxDiff to None to see it. : m the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+  [ok] low-RAM mode: the GPU holds ~24% of IQ3_XXS's experts (43 GB) and the other ~32 GB stay in RAM (47 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmphfn_fp8t/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmphfn_fp8t/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmphfn_fp8t/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 43 GB) ...
+  [ok] model prepared: /tmp/tmphfn_fp8t/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmphfn_fp8t/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~60 GB IQ3_XXS uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: on a PC with 47 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [47GB-2x16GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[912 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[923 chars]: 6}}
+Diff is 1398 characters long. Set self.maxDiff to None to see it. : d on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+  [ok] low-RAM mode on 2 GPUs: they hold ~42% of IQ3_S's experts (50 GB) and the other ~29 GB stay in RAM (47 GB), read once from a copy in the model folder
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpdvsl0mkc/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpdvsl0mkc/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpdvsl0mkc/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  Writing the experts into one file for the low-RAM mode (one time, 50 GB) ...
+  [ok] model prepared: /tmp/tmpdvsl0mkc/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpdvsl0mkc/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming off: it needs ~0.9 GB of RAM beside the ~62 GB IQ3_S uses, and this PC has 47; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on turns it on anyway
+  [!]  GPU 1 is in the compute mode No devices were found, not Default: a second process cannot use the card while the first holds it, so the vision encoder or the tuning run can fail with "CUDA-capable device(s) is/are busy or unavailable". If it does, set it back with: sudo nvidia-smi -i 1 -c DEFAULT
+  [ok] layer split across GPUs [0, 1] (auto)
+  tip: on a PC with 47 GB of RAM, "env": {"STRATA_RESIDENT_HEADROOM_GIB": "6"} in the config kept decode speed in a community benchmark and left the system 2 GiB more (#834); the default is 4
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [96GB-1x16GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[888 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[899 chars]: 6}}
+Diff is 1383 characters long. Set self.maxDiff to None to see it. :  setup adds rope scaling)
+  [ok] context: 65536 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp8k0pfc2o/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp8k0pfc2o/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp8k0pfc2o/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp8k0pfc2o/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp8k0pfc2o/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [96GB-1x16GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[878 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/q2_0', [889 chars]: 6}}
+Diff is 1373 characters long. Set self.maxDiff to None to see it. : mental: setup adds rope scaling)
+  [ok] context: 65536 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp0sd5ufwl/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmp0sd5ufwl/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp0sd5ufwl/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp0sd5ufwl/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmp0sd5ufwl/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [96GB-1x16GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[908 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[919 chars]: 6}}
+Diff is 1403 characters long. Set self.maxDiff to None to see it. : pe scaling)
+  [ok] context: 65536 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpih181g6w/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpih181g6w/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpih181g6w/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpih181g6w/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpih181g6w/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [96GB-1x16GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[888 chars]: 6}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[899 chars]: 6}}
+Diff is 1383 characters long. Set self.maxDiff to None to see it. :  setup adds rope scaling)
+  [ok] context: 65536 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download. On a card under 24 GB the encoder runs on the CPU (a few seconds per picture, nothing taken
+  from the GPU, pictures read at up to 300 tokens; --vision-tokens 1024 for more detail): the GPU
+  encoder keeps ~1.4 GB of VRAM free, which costs 3-5% of text speed on 16 GB cards (measured) and
+  more on some PCs. --vision gpu if you want pictures in under a second.
+  [ok] images: on (encoder on the CPU)
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmp28tg37c_/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmp28tg37c_/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmp28tg37c_/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmp28tg37c_/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmp28tg37c_/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (0.9 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [128GB-1x24GB qwen recommended]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[904 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[915 chars]uf'}}
+Diff is 1409 characters long. Set self.maxDiff to None to see it. : s, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpknmxx9l4/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpknmxx9l4/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpknmxx9l4/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpknmxx9l4/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpknmxx9l4/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [128GB-1x24GB qwen Q2_0]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[894 chars]024}} != {'args': ['--pack', '<T>/data/packs/q2_0', [905 chars]uf'}}
+Diff is 1399 characters long. Set self.maxDiff to None to see it. : les, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpfobtudff/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next Q2_0 ===
+  The model files go in /tmp/tmpfobtudff/models/Q2_0
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpfobtudff/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpfobtudff/data/packs/q2_0
+  [ok] MTP draft layer: /tmp/tmpfobtudff/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-Q2_0.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-Q2_0.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once (opt-in): --parallel 3 decodes up to 3 together instead of one after the other (each takes ~0.6 GB of VRAM from the expert cache; docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [128GB-1x24GB qwen IQ3_XXS]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[924 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_xxs[935 chars]uf'}}
+Diff is 1429 characters long. Set self.maxDiff to None to see it. : ).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpodro4y7q/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_XXS ===
+  The model files go in /tmp/tmpodro4y7q/models/IQ3_XXS
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpodro4y7q/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpodro4y7q/data/packs/iq3_xxs
+  [ok] MTP draft layer: /tmp/tmpodro4y7q/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_XXS.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_XXS.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+======================================================================
+FAIL: test_yes (__main__.Golden.test_yes) [128GB-1x24GB qwen IQ3_S]
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "./tools/test_setup_golden.py", line 199, in test_yes
+    self.assertEqual(cfg, self.golden[key]["config"], out[-3000:])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'exe': '<T>/engine/<EXE>', 'args': ['--pac[904 chars]024}} != {'args': ['--pack', '<T>/data/packs/iq3_s',[915 chars]uf'}}
+Diff is 1409 characters long. Set self.maxDiff to None to see it. : s, tool output).
+  Longer needs more VRAM for it, so fewer experts fit on the GPU:
+  1) 8K tokens
+  2) 32K tokens
+  3) 64K tokens
+  4) 128K tokens   (recommended for your GPU)
+  5) 200K tokens
+  6) 256K tokens
+  7) 384K tokens   (experimental: setup adds rope scaling)
+  8) 512K tokens   (experimental: setup adds rope scaling)
+  [ok] context: 131072 tokens
+  [ok] KV cache: 8-bit
+
+  Images: the model can also read pictures (screenshots, photos, scanned pages). This adds a 0.9 GB
+  download and keeps ~1.4 GB of VRAM free for the image encoder, so text is a few % slower.
+  [ok] images: on
+
+  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).
+  It changes how the model answers: its package describes it as a refusal-direction projection (the
+  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off
+  per chat. Details: data/experimental-speed-projection/README.md
+  [ok] experimental speed projection: off
+
+=== Step 3: Python packages ===
+
+=== Step 4: the Strata engine ===
+  [ok] llama.cpp 3cf0325 (gguf-py, ggml, mtmd)
+  [ok] engine: /tmp/tmpjq48hjnr/engine/strata
+
+=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===
+  The model files go in /tmp/tmpjq48hjnr/models/IQ3_S
+  Files you already have: put them here with their original names (Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf, Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf), or use --gguf-dir <their folder>.
+  [ok] model files present
+  [ok] vision encoder: /tmp/tmpjq48hjnr/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+
+=== Step 6: preparing the model for Strata ===
+  [ok] model prepared: /tmp/tmpjq48hjnr/data/packs/iq3_s
+  [ok] MTP draft layer: /tmp/tmpjq48hjnr/data/mtp/rt
+
+=== Step 7: writing the start script ===
+  [ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM
+  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded (#779), keep more VRAM free: run setup again with --vram-reserve-mib 1500
+  tip: with 128 GB of RAM, --prefill auto:32768 in the config's args read prompts 21-35% faster in community benchmarks (#433 #440 #834); not set, nothing changes
+  tip: for several agents or clients at once, --conversation-cache-mib 8192 in the config's args keeps each one's conversation; without it they were measured re-reading ~90% of their prompts (#882 #440; docs/DETAILS.md, Multiple conversations)
+  [ok] start script: run-IQ3_S.bat
+
+All set.
+  API (OpenAI):     http://127.0.0.1:8080/v1   (any API key; model name: anything)
+  API (Anthropic):  http://127.0.0.1:8080/v1/messages
+  Next time:        just run ./setup.sh (or run-IQ3_S.bat) - it starts right away
+  Images:           send them in the chat page, in chat.py (/image <path>) or over the API
+  Several requests at once: left at one at a time - parallel N reduces waiting for several users but costs about 10-25% speed per request on this card (docs/BATCHING.md).
+
+
+----------------------------------------------------------------------
+Ran 5 tests in 2.568s
+
+FAILED (failures=40)

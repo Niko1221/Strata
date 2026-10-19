@@ -196,7 +196,8 @@ public:
     /// read's contracted residual (n_embd BF16 per row - the fusion's input precision) for every row
     /// of each chunk.  Before init.  Buffer: [n_taps x chunk x n_embd] bf16, rows [0, T) of the last
     /// chunk; delivered by on_taps right after on_chunk (same synchronization).
-    void set_tap_layers(const int* layers, int n);
+    /// hc_mean=true captures the completed raw HC stream mean before the learned HC read.
+    void set_tap_layers(const int* layers, int n, bool hc_mean = false);
     /// Rows per tap in the device buffer (the chunk capacity); the per-tap stride of `taps`.
     int64_t tap_stride_rows() const;
     std::function<bool(const uint16_t* taps, int n_taps, int64_t T, int64_t pos0, std::string& err)> on_taps;

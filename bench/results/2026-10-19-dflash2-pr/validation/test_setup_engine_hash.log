@@ -1,0 +1,15 @@
+  [ok] strata-windows-x64.zip: SHA-256 checksum verified against GitHub's (dd014862ead0...)
+..  [ok] strata-windows-x64.zip: SHA-256 checksum verified against GitHub's (dd014862ead0...)
+..  [ok] strata-windows-x64.zip: SHA-256 checksum verified against GitHub's (dd014862ead0...)
+.....  [ok] strata-windows-x64.zip: SHA-256 checksum verified against GitHub's (dd014862ead0...)
+.........  Downloading the ready-made Strata engine ...
+
+  [X]  the downloaded Strata engine does not match GitHub's checksum: strata-linux-x64.zip is 248 bytes, not the published 999
+       the bad download has been deleted (corrupt or tampered), so the next run fetches the published file again. Set STRATA_SKIP_SHA256=1 only if you insist on installing it anyway
+
+Setup stopped. Fix the item above and run it again - everything already done is kept and skipped.
+............
+----------------------------------------------------------------------
+Ran 30 tests in 0.010s
+
+OK

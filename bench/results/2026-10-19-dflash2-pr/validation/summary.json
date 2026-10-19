@@ -1,0 +1,46 @@
+{
+  "base_commit": "e88ee39d1d6be6e3364183af3b39b62a7ed6f211",
+  "source_manifest": "validation/tested-source-sha256.json",
+  "python_tool_tests": 203,
+  "python_server_tests": 342,
+  "cuda_ctests": {
+    "passed": 12,
+    "failed": 0
+  },
+  "cpu_ctests": {
+    "passed": 44,
+    "failed": 4,
+    "skipped": 1,
+    "main_control_reproduces_all_four_failures": true
+  },
+  "default_path": {
+    "candidate_token_ids_matching_main": 768,
+    "main_reference_ids": 384,
+    "final_rebuild_executables_unchanged": true
+  },
+  "cache_final": {
+    "cases": 8,
+    "tokens": 256,
+    "fresh_equal": true,
+    "target_equal": true,
+    "reused": {
+      "initial": 0,
+      "live_continuation": 55,
+      "other_conversation": 0,
+      "parked_continuation": 88,
+      "parked_prompt": 16,
+      "rewind": 16,
+      "sampled": 16,
+      "sampled_to_greedy": 72
+    }
+  },
+  "not_run": [
+    "HIP compilation/execution: no ROCm",
+    "SYCL compilation/execution: no icpx",
+    "Metal",
+    "Windows",
+    "multi-GPU",
+    "concurrent requests",
+    "full 128K prompt"
+  ]
+}

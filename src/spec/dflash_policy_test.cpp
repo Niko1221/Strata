@@ -6,6 +6,26 @@ static int fails;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); ++fails; } } while (0)
 
 int main() {
+    using strata::spec::dflash_attention_bucket;
+    CHECK(dflash_attention_bucket(1, 8192) == 64);
+    CHECK(dflash_attention_bucket(64, 8192) == 64);
+    CHECK(dflash_attention_bucket(65, 8192) == 256);
+    CHECK(dflash_attention_bucket(257, 8192) == 1024);
+    CHECK(dflash_attention_bucket(1025, 8192) == 4096);
+    CHECK(dflash_attention_bucket(4097, 8192) == 8192);
+    CHECK(dflash_attention_bucket(90, 98) == 98);
+    CHECK(dflash_attention_bucket(2052, 2052) == 2052);
+    CHECK(dflash_attention_bucket(INT64_MAX, INT64_MAX) == INT64_MAX);
+    CHECK(dflash_attention_bucket(0, 8192) == 0);
+    CHECK(dflash_attention_bucket(8193, 8192) == 0);
+    using strata::spec::dflash_proposal_fits;
+    CHECK(dflash_proposal_fits(90, 7, false, 100, 97));
+    CHECK(!dflash_proposal_fits(90, 7, true, 100, 97));
+    CHECK(dflash_proposal_fits(90, 7, true, 100, 98));
+    CHECK(!dflash_proposal_fits(93, 7, false, 100, 100));
+    CHECK(!dflash_proposal_fits(-1, 3, true, 100, 100));
+    CHECK(!dflash_proposal_fits(INT64_MAX, 7, true, INT64_MAX, INT64_MAX));
+    CHECK(!dflash_proposal_fits(90, 0, true, 100, 100));
     for (int cap = 0; cap <= 7; ++cap) {
         DFlashPolicy p(cap);
         int counts[8] = {};

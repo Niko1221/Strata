@@ -3,8 +3,30 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 
 namespace strata::spec {
+
+// Attention kernels mask cells using the device step record. A bounded launch
+// bucket can therefore serve later positions without rebuilding the draft graph.
+inline int64_t dflash_attention_bucket(int64_t visible, int64_t capacity) {
+    if (visible < 1 || visible > capacity) return 0;
+    int64_t cells = std::min<int64_t>(64, capacity);
+    while (cells < visible) {
+        if (cells > capacity / 4) return capacity;
+        cells *= 4;
+    }
+    return cells;
+}
+
+// A target verifies anchor + K proposals; DFlash2 also evaluates an anchor
+// in its draft forward. Subtraction keeps untrusted large positions overflow-safe.
+inline bool dflash_proposal_fits(int64_t pos, int k, bool dflash2,
+                                 int64_t target_capacity, int64_t draft_capacity) {
+    return pos >= 0 && k >= 1 && k <= 7 && pos <= target_capacity &&
+           pos <= draft_capacity && k + 1 <= target_capacity - pos &&
+           k + (dflash2 ? 1 : 0) <= draft_capacity - pos;
+}
 
 // Measure real forwards at each block length: non-causal DFlash logits at K=2
 // are not a truncated K=7 forward. Score the committed tokens per millisecond,

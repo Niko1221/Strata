@@ -1,170 +1,123 @@
-# Experimental DFlash2 runtime
+# Experimental DFlash2 for Flash-Next
 
-This branch extends the standalone DFlash drafter from PR #1426 at `22da2204`,
-rebased onto Niko main at `296b59d2`.
-The DFlash2 commit contains only the extension; the prerequisite remains in its separate PR.
-DFlash2 is disabled at build time by default.
-There is no trained Flash-Next DFlash2 checkpoint in this change. Synthetic tests check the operations and
-artifact contract; they do not establish draft acceptance, end-to-end output equality or a speed improvement.
+DFlash2 is an opt-in CUDA drafter for Qwen3.8-Flash-Next. It depends on the standalone
+DFlash infrastructure from [PR #1426](https://github.com/Niko1221/Strata/pull/1426).
+The existing DFlash2 discussion is [PR #1961](https://github.com/Niko1221/Strata/pull/1961).
+MTP remains the setup default. DFlash2 and MTP cannot be loaded together.
 
-## Implementation reference
+The supported checkpoint is
+[incoai/Qwen3.8-Flash-Next-DFlash2](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2/tree/a22a1744e85c17364dcc54a6a420af7135d4c7f6),
+revision `a22a1744e85c17364dcc54a6a420af7135d4c7f6`.
+Its `model.safetensors` SHA-256 is
+`d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f`.
+It contains 81 BF16 tensors and no embedding or output-head tensor. The target supplies
+both the embedding and the full output head. A Qwen3.8-27B drafter is not a substitute.
 
-The implementation was checked against:
+## Setup
 
-- [llama.cpp](https://github.com/ggml-org/llama.cpp/tree/a9d27ac693ff0a1d3cba449c912c2b891904a4c7),
-  especially `src/models/dflash.cpp` and `common/speculative.cpp`.
-- [Z Lab's MIT-licensed reference](https://github.com/z-lab/dflash/blob/07ebd93db9f472af339b644bb70221ad8428328a/dflash/model.py).
-- The [llama.cpp DFlash2 change](https://github.com/ggml-org/llama.cpp/pull/27342).
+Run `./setup.sh --setup` and select DFlash2, or use:
 
-Strata's existing `feat/dflash` implementation at `22da2204` supplies feature capture, private draft KV,
-parallel attention, the shared target embedding/head and target verification. Its DeepSpec artifact layout
-remains supported. DFlash2 adds the operations below; weights from a plain DFlash checkpoint cannot supply them.
-
-Each attention and MLP sublayer projects its normalized input to two sets of dynamic coefficients.
-The first set convolves that input; the second convolves the sublayer output before its residual addition.
-For a channel `c` in group `g`, at block position `i`:
-
-```text
-out[i,c] = sum_t (base[side,t,c] + dynamic[i,side,t,g]) * input[i-t,c]
+```sh
+./setup.sh --setup --yes --drafter dflash2 --dflash2-quant q8
 ```
 
-Positions before the block start contribute zero. No convolution state persists across proposal blocks.
-The output coefficients come from the original normalized sublayer input, not from its output.
+Setup downloads the pinned checkpoint, checks its hash, converts it to GGUF and builds
+the local CUDA engine with `STRATA_ENABLE_DFLASH2=ON`. It offers BF16, Q8_0 and Q4_0.
+Q8_0 is the balanced recommendation from the local comparison; Q4_0 saves more memory.
+Only the 36 backbone matrices are quantized. The 45 norm, convolution and selector
+tensors remain BF16. A local compatible GGUF can be supplied with `--dflash2 FILE`.
+The old plain-DFlash installer and separate-head choices are no longer offered.
 
-The selector retains the top-K unary head candidates at each noise position. It starts from the verified
-anchor token, then greedily chooses each successor using:
+DFlash2 currently requires one NVIDIA GPU and serial requests. HIP and SYCL cannot
+build the DFlash2 extension. Compilation and hardware execution of the shared DFlash
+prerequisite on those backends still require validation. Windows was not tested.
 
-```text
-score(candidate) = unary[candidate]
-                 + dot(predecessor_codebook[previous] * hidden_projection(hidden),
-                       successor_codebook[candidate])
-```
+`./setup.sh --calibrate` measures runtime settings for the selected artifact: draft
+block length, probability floor and PCIe share. It does not select a weight format or
+calibrate a separate head. Change `--dflash2-quant` through setup to compare formats.
 
-The chosen token becomes the next position's predecessor. This is the same path as the greedy CPU walk over
-llama.cpp's selector lattice. Strata computes the selected edges directly on the GPU and copies the final IDs
-back. The initial top-K scan and path walk are serial correctness implementations; no speed claim is made.
-Equal unary scores prefer smaller token IDs. Near-tied logits may differ from another backend through rounding.
-
-DFlash2 noise rows are `[anchor, mask, ...]`. Row zero is not emitted: a trained block of eight rows produces
-at most seven proposals. Plain DeepSpec DFlash still emits its row-zero prediction. Returned gate probabilities
-are conditional softmax confidences over selector candidates. The verifier treats proposals as point masses,
-including on sampled requests; this change does not implement sampling from the DFlash2 proposal distribution.
-Only the target-confirmed prefix is committed by Strata's existing verifier.
-
-## Build and use
+## Build and manual use
 
 ```sh
 cmake -S . -B build-dflash2 -DSTRATA_ENABLE_CUDA=ON \
-  -DSTRATA_ENABLE_DFLASH2=ON -DCMAKE_CUDA_ARCHITECTURES=89
+  -DSTRATA_ENABLE_DFLASH2=ON -DCMAKE_CUDA_ARCHITECTURES=89 \
+  -DSTRATA_BUILD_TESTS=ON
 cmake --build build-dflash2 --target strata
-```
-
-Choose the CUDA architecture for your GPU. Once a compatible trained checkpoint exists:
-
-```sh
 python tools/dflash_gguf.py /path/to/model.safetensors \
   --config /path/to/config.json -o /path/to/dflash2.gguf
-build-dflash2/strata generate --pack /path/to/target-pack --native /path/to/model-shard1.gguf \
-  --dflash /path/to/dflash2.gguf --spec 8 --dflash-block 7 \
-  --spec-min-p 0 --tokens-file /path/to/prompt-token-ids.txt --max-new 128
+build-dflash2/strata --pack /path/to/target-pack --native /path/to/target-shard.gguf \
+  --dflash /path/to/dflash2.gguf --dflash-window 0 --spec 8 --dflash-block 3 \
+  --spec-min-p 0.5 --tokens-file /path/to/prompt-ids.txt --max-new 128
 ```
 
-Use the engine's existing generation arguments for your target pack. There is no automatic DFlash2 download
-or installer choice. The installer and calibration are unchanged from the DFlash prerequisite branch.
+Choose the CUDA architecture for the actual card. The build flag defaults to OFF;
+a normal build rejects DFlash2 metadata. `--spec` reserves the verifier window;
+`--dflash-block K` selects K proposals plus the anchor. The official trained block
+has eight rows and allows at most seven proposals. The anchor is never emitted.
 
-The converter recognizes `architectures: ["DFlash2DraftModel"]` and reads the architecture fields from
-`dflash_config`. It accepts BF16 safetensors, including both published selector-codebook naming forms.
-The GGUF architecture remains `dflash`, as in llama.cpp. Required extra keys are:
+## Context and memory
 
-| Key | Meaning / supported values |
-| --- | --- |
-| `dflash.conv_kernel_size` | Causal taps, 1–8 |
-| `dflash.conv_group_size` | Positive channel group size dividing the hidden width |
-| `dflash.selector_rank` | Transition rank, 1–1024 |
-| `dflash.selector_top_k` | Candidates per position, 1–64, at most the vocabulary size |
-| `dflash.block_size` | Noise rows including anchor, 2–8 |
-| `dflash.sample_from_anchor` | Must be false |
-| `dflash.target_layer_inputs` | Optional Strata marker; absent means llama.cpp layer-input indices |
+Setup passes `--dflash-window 0`: the draft capacity follows `--max-context`.
+The engine CLI otherwise defaults to a 32768-cell capacity. A positive value is a
+capacity limit, not a rolling context window. Requests exceeding the draft capacity
+are refused. Near the end of the available context, the proposal-fit guard shortens
+verification to a target-only step rather than overrunning a pool.
 
-HF `target_layer_ids` identify layer outputs. The Strata converter retains those IDs and writes
-`dflash.target_layer_inputs=false`; generation advances them to the next attention-input boundary.
-A llama.cpp GGUF already contains input-boundary IDs, which generation uses directly. Taps are validated
-against the target. This interpretation still needs validation against a trained Flash-Next DFlash2 checkpoint,
-including Flash-Next's HC contraction.
+DFlash2 owns five FP16 K/V pools using its own head geometry. They remain on the GPU
+when the target's KV is streamed to RAM. Weights, pools, scratch and head binding
+are allocated before `--expert-cache auto` reads free device memory. The auto cache
+therefore uses the selected artifact's actual allocation, not a fixed drafter estimate.
 
-Extension tensors use llama.cpp names: `blk.N.{attn,ffn}_conv_base`,
-`blk.N.{attn,ffn}_conv_proj.weight`, `selector_predecessor.weight`, `selector_successor.weight`,
-and `selector_hidden.weight`. Raw HF aliases are also accepted. Base kernels retain all three dimensions
-`[hidden, kernel, 2]` in GGUF order. Extension tensors must remain BF16; `tools/dflash_quantize.py` preserves
-their bits while allowing Q8_0/Q5_0/Q4_0 backbone matrices.
+On the profiled CUDA/VMM path, draft pools and attention scratch start at 8192 cells.
+They grow as requests need more context by exchanging memory with expert-cache slots.
+Without that path the full capacity is allocated at startup. An infeasible allocation
+or growth reports an error; a larger configured context is not guaranteed to fit every GPU.
+The setup low-RAM estimate includes the selected weight format and full draft capacity.
 
-The runtime retains the existing Flash-Next fast-path geometry: hidden 2560, five layers, five feature taps,
-24 Q heads / two KV heads, head dimension 256 and MLP width 7680. It requires full non-causal attention,
-SiLU, RMS epsilon 1e-6 and the full shared target head. It rejects private/pruned heads, DSpark extras,
-sliding windows and non-default embedding, attention or logit scaling. A dense Qwen3.8-27B checkpoint is not
-a Flash-Next checkpoint and must not be substituted. Single-GPU serial requests only; draft-aware conversation
-snapshots are not implemented. SYCL builds reject DFlash2 explicitly. HIP compilation and execution remain
-unvalidated in this environment.
+The [128K VRAM audit](../bench/results/2026-10-19-dflash2-vram/README.md) checks full
+BF16/Q8_0/Q4_0 allocations and one actual elastic growth step on RTX 4070 Ti SUPER.
+It does not test a full 128K prompt.
 
-## Verification
+## Checkpoint and verification contract
 
-The synthetic checks require no model download:
+The official geometry is hidden 2560, five layers, 32 Q / 8 KV heads of width 128,
+MLP 7680, RoPE theta 10000 and symmetric local attention with window 2048.
+Target features are completed layer outputs `[5,15,25,35,45]`, averaged across the
+four raw HC streams. The converter marks `dflash.target_hc_mean=true` and
+`dflash.target_layer_inputs=false`; runtime capture occurs at the next layer boundary.
+Other compatible artifacts retain the prior learned HC contraction unless explicitly marked.
 
-```sh
-cmake -S . -B build-dflash2 -DSTRATA_BUILD_TESTS=ON
-cmake --build build-dflash2 --target dflash2_parity dflash_load_test
-ctest --test-dir build-dflash2 -R 'dflash2_parity|dflash_load_test' --output-on-failure
-python tools/test_dflash2_gguf.py
-```
+The converter accepts `DFlash2DraftModel` and both published selector-codebook naming
+forms. GGUF retains `general.architecture=dflash`, with convolution, selector,
+`sample_from_anchor=false`, sliding-window and feature-capture metadata. Unsupported
+shapes, scaling, private/pruned heads and DSpark extras are rejected.
 
-The Python export/quantization checks need NumPy and llama.cpp's `gguf-py` dependency, like the existing
-DFlash quantization tools. Tests cover both convolution sides, group sizes, padding and block isolation;
-selector top-K ties, predecessor-dependent reranking, confidence and invalid-score propagation; artifact
-shapes, missing weights, transactional reopen and unsupported metadata; and bit-exact BF16 export and
-extension preservation during quantization. The small loader fixtures test parsing, not the fixed runtime
-geometry. The flag-off loader test confirms that DFlash2 is refused unless compiled in.
+Dynamic causal convolutions surround attention and FFN operations. The selector takes
+the unary top-K candidates, scores predecessor transitions and follows a greedy path.
+Top-K ties prefer the smaller token ID. The GPU selector keeps codebooks in BF16,
+uses caller-owned scratch and preserves the reference reduction order. Greedy proposals
+are point masses verified by the target; only its accepted prefix is committed.
+Sampled requests use target-only decoding and maintain draft context for later greedy reuse.
 
-Before reporting usable Flash-Next support, a compatible trained checkpoint must pass intermediate-tensor
-comparison against its reference, feature alignment across acceptance and rejection, and target-only versus
-DFlash2 generation checks on identical prefixes. Performance needs a same-day baseline on the same hardware.
-No such generation or performance results are claimed here.
+In-memory prompt and conversation snapshots include the drafter's five committed K/V
+prefixes. Rewind overwrites later cells. Disk SAVE/RESTORE remains unsupported.
+The [cache regression evidence](../bench/results/2026-10-19-dflash2-pr/cache/README.md)
+records fixed-residency comparisons with fresh drafter and target-only controls.
 
-### Checks run on 2026-10-11
+## Validation and measurement limits
 
-The extension is tested on top of the DFlash prerequisite at `dcd07e9b` (merged with main at `7695859a`).
-Linux, RTX 4070 Ti SUPER 16 GB, CUDA toolkit 13.4, GCC 14.2, CUDA architecture 89:
+Run the relevant loader, policy, taps, RoPE, owned-KV and DFlash2 parity CTests, plus
+`tools/test_dflash2_gguf.py`, `tools/test_dflash_quantize.py` and
+`tools/test_setup_dflash2.py`. `tools/dflash2_stage_parity.py` compares trained-weight
+dumps against an independent NumPy forward, including all five layers and selector IDs.
+This checks Strata's FP32/BF16 boundaries, not bit equality with every PyTorch backend.
 
-- CUDA engine build with `STRATA_ENABLE_DFLASH2=ON`: passed after extracting the extension.
-- Eight CTest checks (DFlash2 parity, DFlash loader/policy/taps/RoPE/owned KV, batched MMVQ and BF16 projection): passed after extracting the extension.
-- Converter/quantization group: six Python tests passed, including three new DFlash2 tests.
-- HIP compilation and execution remain unvalidated; no ROCm installation is available.
-- DFlash2 + SYCL is explicitly rejected by configuration.
+The [quantization comparison](../bench/results/2026-10-19-dflash2-quant-mtp/README.md)
+contains individual runs, commands, failures and output controls. Q8_0 and Q4_0 were
+within 1% of MTP overall on four local prompts on RTX 4070 Ti SUPER, within observed
+run variation. Code improved, while prose and long-prompt results regressed. These
+results do not establish an overall or cross-hardware speedup.
 
-The earlier combined branch on Niko's main at `61b3fb5d` passed its CUDA build, eight relevant CTests,
-292 server tests and 17 calibration tests. Those server and calibration results were obtained on the
-combined main-based tree, not on this extracted extension. The installer and calibration are not changed here.
-
-No trained-drafter generation comparison or end-to-end byte equality check was run. The synthetic checks
-and inspection of the inactive feature branches do not replace that check.
-
-### Rebase checks on 2026-10-15
-
-Rebased the extension onto DFlash `22da2204`, which includes Niko main `296b59d2`
-and the optional original BF16 draft head. The DFlash2 selector still requires the
-full shared target head; the original-head option remains available for plain DFlash.
-Linux, RTX 4070 Ti SUPER 16 GB, CUDA 13.4, GCC 14.2, architecture 89:
-
-- CUDA engine build with DFlash2 enabled: passed.
-- Nine CTests (DFlash2 parity, DFlash loader/policy/taps/RoPE/owned KV, BF16 head,
-  batched MMVQ and BF16 projection): passed.
-- Loader with DFlash2 disabled: passed, including refusal of DFlash2 artifacts.
-- DFlash converter, quantization and original-head tools: eight Python tests passed.
-- Setup suite: 597 tests, passed with one skipped.
-- Plain DFlash with the original BF16 head on an IQ3_XXS target: the 16 generated
-  token IDs matched the same-day target-only run (prompt IDs `1,2,3`, greedy,
-  context 1024, expert cache 1000). This checks the inherited plain-DFlash path,
-  not generation with a trained DFlash2 checkpoint.
-
-HIP remains unvalidated because ROCm is unavailable. The SYCL compiler is also
-unavailable; DFlash2 continues to reject SYCL at configuration time. No trained
-DFlash2 generation or performance comparison was run.
+[Review evidence](../bench/results/2026-10-19-dflash2-pr/README.md) distinguishes historical
+checks from fresh final-branch validation. No AMD, Intel, Windows, multi-GPU or
+concurrent-request correctness claim is made. DFlash2 remains experimental and opt-in.

@@ -19,6 +19,20 @@ class HeadExport(unittest.TestCase):
                 w.add_uint32('qwen4exp.'+key,value)
             w.add_tensor('output.weight',original,raw_dtype=Q.Q8_0)
             w.write_header_to_file();w.write_kv_data_to_file();w.write_tensors_to_file();w.close()
+            before = source.read_bytes()
+            with self.assertRaises(ValueError): h.export(source,source,'copy')
+            self.assertEqual(source.read_bytes(),before)
+            sidecar_source = pathlib.Path(d)/'sidecar.gguf.json'
+            sidecar_source.write_bytes(before)
+            with self.assertRaises(ValueError): h.export(sidecar_source,pathlib.Path(d)/'sidecar.gguf','copy')
+            self.assertEqual(sidecar_source.read_bytes(),before)
+            for rows in (0,-1):
+                with self.assertRaises(ValueError): h.export(source,pathlib.Path(d)/'invalid.gguf','copy',rows)
+            # A fixed ".part" name used to truncate a source with that name.
+            collision = pathlib.Path(d)/'collision.gguf.part'
+            collision.write_bytes(before)
+            h.export(collision,pathlib.Path(d)/'collision.gguf','copy')
+            self.assertEqual(collision.read_bytes(),before)
             for kind in ['copy','Q8_0','Q4_0']:
                 output=pathlib.Path(d)/f'{kind}.gguf';r=h.export(source,output,kind,chunk_rows=7)
                 g=h.GGUFFile(output);t=g.tensors[0]

@@ -31,8 +31,23 @@ def replace(args: list[str], key: str, value: str | None) -> None:
         args.extend((key, value))
 
 
+def validate_residency(info, requested, reference=None):
+    """A requested budget is not evidence of identical CPU/GPU expert placement."""
+    for key in ("expert_slots", "expert_slots_primary"):
+        if int(info.get(key, -1)) != requested:
+            raise AssertionError(f"{key}={info.get(key)}; requested {requested}. "
+                                 "Reduce --expert-cache so every arm fits without automatic shrinking.")
+    if reference is not None:
+        for key in ("context", "kv", "kv_resident", "expert_slots", "expert_slots_primary",
+                    "spec", "pcie_frac", "pool_workers"):
+            if key not in reference or key not in info or reference[key] != info[key]:
+                raise AssertionError(f"incomparable engine setting {key}: "
+                                     f"{reference.get(key)} versus {info.get(key)}")
+
+
 class Engine:
     def __init__(self, exe: Path, args: list[str], cwd: Path, env: dict[str, str], log: Path):
+        self.info = {}
         self.log = log.open("w", encoding="utf-8")
         self.p = subprocess.Popen([str(exe), *args, "--serve"], cwd=cwd, env=env,
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -60,6 +75,8 @@ class Engine:
             raise RuntimeError("engine response timed out; inspect the engine log") from None
         if line is None:
             raise RuntimeError(f"engine exited ({self.p.poll()}); inspect the engine log")
+        if line.startswith("INFO "):
+            self.info = dict(p.split("=", 1) for p in line.split()[1:] if "=" in p)
         return line
 
     def request(self, ids: list[int], sampling: str, count: int) -> dict:
@@ -93,7 +110,10 @@ class Engine:
             self.reader.join(timeout=5)
             for pipe in (self.p.stdin, self.p.stdout):
                 if pipe is not None:
-                    pipe.close()
+                    try:
+                        pipe.close()
+                    except BrokenPipeError:
+                        pass   # a buffered QUIT may fail again when a dead child's stdin closes
             self.log.close()
 
 
@@ -105,7 +125,10 @@ def main() -> None:
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--tokens", default="50,3815,2923,539,2923,13,6558,281,2007,8,283,220,18,87,61,17,471,220,22,87,478,220,17,13")
     ap.add_argument("--count", type=int, default=64)
+    ap.add_argument("--expert-cache", type=int, default=2000)
     a = ap.parse_args()
+    if a.expert_cache < 1:
+        ap.error("--expert-cache must be positive")
     if a.count < 2 or a.count > 128:
         ap.error("--count must be in 2..128")
     out = a.output.resolve()
@@ -120,7 +143,7 @@ def main() -> None:
     ids = [int(t) for t in a.tokens.replace(",", " ").split()]
     if not ids or len(ids) + a.count + 8 > 192:
         ap.error("prompt + output + 8 must fit the test's 192-cell draft capacity")
-    for key, value in (("--expert-cache", "3500"), ("--adapt-every", "100000"),
+    for key, value in (("--expert-cache", str(a.expert_cache)), ("--adapt-every", "100000"),
                        ("--adapt-swaps", "0"), ("--pcie-frac", "0"), ("--prefill", "256"),
                        ("--max-context", "512"), ("--kv-resident", "512"),
                        ("--spec", "8"), ("--dflash-block", "4"), ("--spec-min-p", "0"),
@@ -143,10 +166,14 @@ def main() -> None:
         ("filtered_repeat", "temperature=0.7 seed=3456 top_k=40 top_p=0.9 min_p=0.05"),
     ]
     results = {}
+    infos = {}
     for name, binary, arm_args in [("target", a.engine, target_args), ("dflash", a.engine, args)] + (
             [("previous", a.baseline, target_args)] if a.baseline else []):
         engine = Engine(binary.resolve(), arm_args, cwd, env, out / f"{name}-engine.txt")
         try:
+            infos[name] = engine.info
+            (out / "engine-info.json").write_text(json.dumps(infos, indent=2))
+            validate_residency(engine.info, a.expert_cache, infos.get("target"))
             records = {}
             if name == "dflash":
                 refused = engine.request(ids, "temperature=0.7 seed=1", 192)

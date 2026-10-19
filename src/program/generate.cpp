@@ -5760,6 +5760,11 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        if (!o.serve && ((int64_t)o.tokens.size() > dflash.capacity() ||
+                        o.max_new > dflash.capacity() - (int64_t)o.tokens.size())) {
+            std::fprintf(stderr, "strata generate: prompt + max_new exceeds DFlash capacity; raise --dflash-window\n");
+            return 2;
+        }
         std::fprintf(stderr, "dflash: %.1f MiB of VRAM held (weights, pools, scratch)\n",
                      (double) dflash.vram_bytes() / 1048576.0);
     }
@@ -8665,7 +8670,7 @@ int main(int argc, char** argv) {
 
 
         if (has_dflash) {
-            sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size());
+            sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
             sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
                 return !df_request || dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
             };
@@ -9409,7 +9414,7 @@ int main(int argc, char** argv) {
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
         if (has_dflash) {
-            ver.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size());
+            ver.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
         }
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err) ||
@@ -12589,6 +12594,7 @@ int main(int argc, char** argv) {
             bool req_pcie_set = false;   // the request names its own share (the measured one holds meanwhile)
             int req_dflash_k = dflash_k;
             bool req_dflash_block_set = false, bad_dflash_block = false, bad_tune = false;
+            bool req_df2_reference = false, bad_df2_reference = false;
 
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
@@ -12639,6 +12645,12 @@ int main(int argc, char** argv) {
                         }
 
                     }
+                    else if (key == "dflash2_reference") {
+                        const std::string value = tok.substr(eq + 1);
+                        bad_df2_reference = bad_df2_reference || !has_dflash ||
+                            !dflash.artifact().geom().is_dflash2() || (value != "0" && value != "1");
+                        req_df2_reference = value == "1";
+                    }
                     else if (key == "dflash_block") {
                         char* tail = nullptr;
                         errno = 0;
@@ -12654,6 +12666,10 @@ int main(int argc, char** argv) {
                 }
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
+            if (bad_df2_reference) {
+                std::printf("ERR dflash2_reference requires DFlash2 and a value of 0 or 1\n");
+                continue;
+            }
             std::vector<float> req_bias;
             std::string bias_error;
             if (req_bias_present && (o.batch > 0 ||
@@ -12688,10 +12704,11 @@ int main(int argc, char** argv) {
             // Keep sampling target-only while that discrepancy is investigated.
             // Still maintain draft context for a later greedy continuation.
             const bool req_dflash = has_dflash && req_temperature <= 0.0f;
+            if (has_dflash) dflash.set_reference_mode(req_df2_reference);
             df_request = has_dflash;
             if (has_dflash && !req_dflash)
                 std::fprintf(stderr, "dflash: sampled request uses target-only decoding\n");
-            if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n - 8)) {
+            if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n)) {
                 std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
                             (long long) dflash.capacity());
                 continue;
@@ -15490,6 +15507,31 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                // Opt-in parity fixture: dump only an EMITTED target row at an absolute
+                // position, before any later window can overwrite its logits.
+                static const char* target_probe = std::getenv("STRATA_DF_TARGET_PROBE");
+                static const char* target_dump = std::getenv("STRATA_DF_TARGET_LOGITS");
+                if (target_probe && target_dump) {
+                    const int64_t at = std::atoll(target_probe);
+                    const int row = at >= p && at <= p + a ? (int)(at - p) : -1;
+                    const int64_t output_index = produced_n + (merged ? 0 : row);
+                    bool after_eos = false;
+                    for (int i = 0; !merged && i < row; ++i)
+                        after_eos = after_eos || std::find(o.eos_ids.begin(), o.eos_ids.end(),
+                                                         (int64_t)outv[(size_t)i]) != o.eos_ids.end();
+                    if (row >= 0 && (!merged || row == a) && output_index < max_new && !after_eos) {
+                        std::vector<float> logits((size_t)ver.vocab());
+                        const int64_t header[] = {ver.vocab(), at, p, row, output_index, outv[(size_t)row]};
+                        FILE* f = ver.copy_logits(row, logits.data()) ? std::fopen(target_dump, "ab") : nullptr;
+                        const bool ok = f && std::fwrite(header, sizeof(int64_t), 6, f) == 6 &&
+                            std::fwrite(logits.data(), sizeof(float), logits.size(), f) == logits.size();
+                        if (f) std::fclose(f);
+                        if (!ok) {
+                            if (adapt_thr.joinable()) adapt_thr.join();
+                            std::printf("ERR writing target logit fixture\n"); return 1;
+                        }
+                    }
+                }
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 if (!merged) {   // (a merged window's rows are prompt tokens, not drafts)
@@ -15520,8 +15562,9 @@ int main(int argc, char** argv) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     // The next proposal waits on this same stream. Keep an explicit wait when
                     // there is no proposal or the ungated policy needs the completed context time.
-                    const bool sync_context = !req_dflash || df_auto || eos || produced_n >= max_new ||
-                                              p + a + 1 + req_dflash_k + 1 > o.max_context;
+                    const bool sync_context = !req_dflash || df_auto || eos || produced_n >= max_new || !strata::spec::dflash_proposal_fits(
+                        p + a + 1, req_dflash_k, dflash.artifact().geom().is_dflash2(),
+                        o.max_context, dflash.capacity());
                     drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err,
                                                     sync_context);
                     const auto ctx_done = Clock::now();
@@ -15534,7 +15577,8 @@ int main(int argc, char** argv) {
                     // Finish near the context limit with target-only windows rather than
                     // proposing a block which the next verification window cannot fit.
                     dflash_ready = req_dflash && drafted && !eos && produced_n < max_new && df_pending_k > 0 &&
-                                   p + a + 1 + df_pending_k + 1 <= o.max_context;
+                                   strata::spec::dflash_proposal_fits(p + a + 1, df_pending_k,
+                                       dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
                     const bool proposed = dflash_ready;
                     if (dflash_ready)
                         drafted = dflash.propose(outv[(size_t) a], p + a + 1, df_pending_k, drafts.data(), err,
@@ -16174,7 +16218,7 @@ int main(int argc, char** argv) {
         if ((use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) ||
             (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
             const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
-            prefill.set_tap_layers(taps.data(), (int) taps.size());   // before init: the taps join the buffer carve
+            prefill.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // before init: the taps join the buffer carve
         }
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
@@ -16570,7 +16614,7 @@ int main(int argc, char** argv) {
 #endif
         if (use_dflash || (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
             const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
-            ver.set_tap_layers(taps.data(), (int) taps.size());   // before init: the tap buffer joins the arena carve
+            ver.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // before init: the tap buffer joins the arena carve
         }
         if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
             if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
@@ -16976,16 +17020,17 @@ int main(int argc, char** argv) {
             return mtp.draft(T_, outv.data(), p, a_, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
         };
         int win_cap = o.spec;   // the widest window the VRAM allows (lowered on an out-of-memory capture, see below)
+        bool dflash_ready = false;
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
         retry_round:
             strata::core::progress_at("spec loop: choosing the window", (int64_t) produced.size());
-            int T = use_dflash ? dflash_k + 1 : S_mtp;
+            int T = use_dflash ? (dflash_ready ? dflash_k + 1 : 1) : S_mtp;
             policy.set_context(p);
             if (use_mtp && spec_cost && !first_window) {
                 T = std::clamp(chain_rows, 1, S_mtp);
             } else if ((use_mtp || use_dflash) && o.spec_min_p > 0.0) {
-                const int max_t = use_dflash ? dflash_k + 1 : S_mtp;
+                const int max_t = use_dflash ? (dflash_ready ? dflash_k + 1 : 1) : S_mtp;
                 T = 1;
                 while (T < max_t && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
             }
@@ -17196,17 +17241,19 @@ int main(int argc, char** argv) {
                 // cells are simply overwritten by the next block's queries), then the next block
                 if ((int64_t) produced.size() < max_new) {
                     const Clock::time_point td = Clock::now();
+                    dflash_ready = strata::spec::dflash_proposal_fits(p, dflash_k,
+                        dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
                     const bool ok = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(),
-                                                           p - (a + 1), a + 1, err, false) &&
-                                    (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
-                                                                o.spec_min_p > 0 ? dprob.data() : nullptr));
-                    if (ok && std::getenv("STRATA_DF_DBG") != nullptr) {
+                                                           p - (a + 1), a + 1, err, !dflash_ready) &&
+                                    (!dflash_ready || (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
+                                                                o.spec_min_p > 0 ? dprob.data() : nullptr)));
+                    if (ok && dflash_ready && std::getenv("STRATA_DF_DBG") != nullptr) {
                         std::fprintf(stderr, "df dbg: anchor=%d at %lld proposals:", x, (long long) p);
                         for (int i = 0; i < dflash_k; ++i) std::fprintf(stderr, " %d", drafts[(size_t) i]);
                         std::fprintf(stderr, "\n");
                     }
                     ms_dflash += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
-                    ++dflash_proposes;
+                    if (dflash_ready) ++dflash_proposes;
                     if (!ok) {
                         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                         return 1;

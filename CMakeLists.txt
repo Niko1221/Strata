@@ -87,6 +87,9 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+if(STRATA_ENABLE_DFLASH2 AND (NOT STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP OR STRATA_HIP_GFX906))
+  message(FATAL_ERROR "DFlash2 currently requires the NVIDIA CUDA backend")
+endif()
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K (Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF
 # projections, STRATA_DENSE_MMQ).  On by default since MODEL-UPDATE Phase 1: on CUDA they are their own library
@@ -1601,11 +1604,14 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_policy_test src/spec/dflash_policy_test.cpp)
   target_link_libraries(dflash_policy_test PRIVATE strata_spec)
   add_test(NAME dflash_policy_test COMMAND dflash_policy_test)
-  # the DFlash artifact contract: GGUF metadata, naming families, refusals (host-only, no GPU)
-  add_executable(dflash_load_test src/core/dflash_load_test.cpp src/core/dflash.cpp)
-  target_include_directories(dflash_load_test PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/tests/core
-    ${CUDAToolkit_INCLUDE_DIRS})   # dflash.hpp pulls session.hpp -> cuda_runtime.h (host-only runner)
-  add_test(NAME dflash_load_test COMMAND dflash_load_test)
+  # No device work, but the runtime header depends on GPU toolkit headers.
+  # A CPU-only build must not require cuda_runtime.h just to build its tests.
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    add_executable(dflash_load_test src/core/dflash_load_test.cpp src/core/dflash.cpp)
+    target_include_directories(dflash_load_test PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/tests/core
+      ${CUDAToolkit_INCLUDE_DIRS})
+    add_test(NAME dflash_load_test COMMAND dflash_load_test)
+  endif()
 endif()
 if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(message_boundary_test src/program/message_boundary_test.cpp)

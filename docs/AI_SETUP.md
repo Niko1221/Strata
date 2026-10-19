@@ -289,20 +289,16 @@ shell commands above. See [MCP_SERVER.md](MCP_SERVER.md).
 
 ### Selecting the drafter
 
-Setup offers MTP (default), DFlash, or Off (no model drafter; prompt lookup stays on).
-Use `--setup --yes --drafter none` to skip both draft models and keep suffix/prompt lookup enabled. Use `--drafter dflash --dflash-quant original|q8|q5|q4`
-with `--setup --yes` for non-interactive DFlash setup. It fetches the pinned drafter automatically,
-prepares its GGUF and skips MTP. Quantization affects the drafter's matrices; norms retain BF16.
-The resulting server defaults to greedy decoding and chooses the draft block length from measured throughput.
-The DFlash setup menu also offers an output head independently of drafter quantization.
-The default shares the target head. Choose **Original BF16 head** or pass
-`--dflash-head original` to fetch only the original Qwen `lm_head.weight` (about 1.27 GB),
-without quantizing it. This takes about 1.18 GiB of extra VRAM and uses the full vocabulary;
-`--draft-vocab` applies to the shared head. The target verifier keeps its selected head.
-For example: `./setup.sh --setup --yes --drafter dflash --dflash-quant q4 --dflash-head original`.
-Use `--dflash-head target` to return to the shared head.
+Setup offers MTP (default), DFlash2, or Off (no model drafter; prompt lookup stays on).
+Use `--setup --yes --drafter none` to skip both draft models and keep suffix/prompt lookup enabled.
+Use `--drafter dflash2 --dflash2-quant bf16|q8|q4` with `--setup --yes` for non-interactive DFlash2 setup.
+The pinned official checkpoint is downloaded and converted automatically; DFlash2 replaces MTP and uses the
+target model's full shared output head. It has no separate lm_head, so there is no independent DFlash2 head to
+quantize or download. Q8_0 is the recommended balanced option from the local comparison; Q4_0 is smaller and
+left more VRAM for target experts. Norms, convolutions and selector tensors stay BF16 in both quantized files.
 
-On supported CUDA configurations the draft K/V and scratch grow with the used context. Sampling requests also use DFlash;
-the target's sampler applies the requested temperature, filters and penalties before accepting any proposal.
-DFlash currently needs one GPU and serial requests and rereads prompts. Its FP16 draft KV uses
-10 KiB per mapped context token. See [DFLASH.md](DFLASH.md) for build requirements and limits.
+Setup builds the experimental CUDA engine with DFlash2 enabled. It is currently limited to one NVIDIA GPU and
+one request at a time. The optional hardware calibration measures PCIe share, draft probability and DFlash2 block
+length on the selected quantized artifact; later, run ./setup.sh --calibrate to tune it again.
+--draft-vocab applies to MTP and plain DFlash only; DFlash2's selector needs the full shared head.
+See [DFLASH2.md](DFLASH2.md) for the measured quantization comparison and runtime limits.

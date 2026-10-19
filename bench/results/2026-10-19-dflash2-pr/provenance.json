@@ -1,0 +1,22 @@
+{
+  "date": "2026-10-19",
+  "branch": "codex/dflash2-main",
+  "base_commit": "d87d8e88aac8da25d18b65ff87ab3954c2c1b73e",
+  "drafter_repo": "incoai/Qwen3.8-Flash-Next-DFlash2",
+  "drafter_revision": "a22a1744e85c17364dcc54a6a420af7135d4c7f6",
+  "safetensors_sha256": "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f",
+  "reference_repo": "https://github.com/z-lab/dflash",
+  "reference_revision": "07ebd93db9f472af339b644bb70221ad8428328a",
+  "feature_reference": "https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2/blob/a22a1744e85c17364dcc54a6a420af7135d4c7f6/patches/qwen38-dflash2-capture.patch",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER, 16 GB",
+  "cpu": "AMD Ryzen 9 5900X, 12 cores",
+  "ram_gib": 125.7,
+  "cuda_architecture": 89,
+  "cuda_toolkit": "13.4",
+  "hip_tested": false,
+  "sycl_tested": false,
+  "before_selector_binary_sha256": "aae1abfdcecb79fcf7fa1b58b70334d9af447d402fb280c40234896e3711cdab",
+  "original_branch_binary_sha256": "43dfadf24abd179c3374520bd8b4cd9b32b0dcd6c27d6aaeab7f6a2ed62d248d",
+  "optimized_binary_sha256": "f8f5731c2961da9c9a58bdcbafd19f2c98a8ed60ebde07c391e1b0698500d35b",
+  "expert_profile_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+}

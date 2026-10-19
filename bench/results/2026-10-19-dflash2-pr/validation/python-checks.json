@@ -1,0 +1,102 @@
+[
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_setup_dflash2.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_setup_choices.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_setup_amd.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_setup_golden.py"
+    ],
+    "exit_code": 1
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_setup_engine_hash.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_calibrate.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash2_gguf.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash_quantize.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash_head_quantize.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash_head_original.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash_cache.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash_output_gate.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "tools/test_dflash_logit_explain.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "command": [
+      ".venv/bin/python",
+      "-m",
+      "unittest",
+      "serve.test_server"
+    ],
+    "exit_code": 0
+  }
+]

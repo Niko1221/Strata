@@ -1,0 +1,14 @@
+{
+  "Q8_0": {
+    "bf16_tensors_bit_exact": 45,
+    "status": "PASS"
+  },
+  "Q5_0": {
+    "bf16_tensors_bit_exact": 45,
+    "status": "PASS"
+  },
+  "Q4_0": {
+    "bf16_tensors_bit_exact": 45,
+    "status": "PASS"
+  }
+}

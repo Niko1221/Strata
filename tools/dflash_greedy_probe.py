@@ -17,7 +17,7 @@ import math
 import os
 from pathlib import Path
 
-from dflash_sampling import Engine, replace
+from dflash_sampling import Engine, replace, validate_residency
 
 
 def main():
@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--case", default="integration")
     ap.add_argument("--index", type=int, default=72, help="zero-based output index to probe")
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("--expert-cache", type=int, default=3500, help="fixed expert slots; must fit both arms")
     a = ap.parse_args()
     cfg = json.loads(a.config.read_text())
     args = list(cfg["args"])
@@ -37,7 +38,7 @@ def main():
     ids = fixture["tokens"]
     if not ids or len(ids) + a.index + 9 > 4096:
         ap.error("prompt and generated tokens must fit the test context")
-    for key, value in (("--expert-cache", "3500"), ("--adapt-every", "0"),
+    for key, value in (("--expert-cache", str(a.expert_cache)), ("--adapt-every", "0"),
                        ("--adapt-swaps", "0"), ("--pcie-frac", "0.20"), ("--prefill", "256"),
                        ("--short-read", "0"), ("--max-context", "4096"),
                        ("--kv-resident", "4096"), ("--dflash-window", "4096"),
@@ -48,7 +49,7 @@ def main():
     out = a.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cwd = Path(cfg.get("cwd", Path(__file__).resolve().parents[1]))
-    records, logits = {}, {}
+    records, logits, infos = {}, {}, {}
     position = len(ids) - 1 + a.index
     for arm in ("target", "dflash"):
         arm_args = args.copy()
@@ -63,6 +64,9 @@ def main():
                    STRATA_DF_TARGET_PROBE=str(position), STRATA_DF_TARGET_PROBE_FILE=str(path))
         engine = Engine(a.engine.resolve(), arm_args, cwd, env, out / f"{arm}-engine.log")
         try:
+            infos[arm] = engine.info
+            (out / "engine-info.json").write_text(json.dumps(infos, indent=2))
+            validate_residency(engine.info, a.expert_cache, infos.get("target"))
             records[arm] = engine.request(ids, "temperature=0 seed=7", a.index + 1)
         finally:
             engine.close()

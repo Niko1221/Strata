@@ -2,9 +2,10 @@
 """GPU regression for DFlash live continuation, checkpoint rewind and RAM parking.
 
 No downloads. Uses an existing DFlash config and one-candidate split windows to
-keep target arithmetic consistent between fresh and cached reads. Writes tokens, timings and engine
-logs to --output, and checks cached answers against fresh requests on the same
-binary with fixed expert residency. Disk sessions remain unsupported.
+keep target arithmetic consistent between fresh and cached reads. Writes tokens,
+timings, resolved engine settings and logs to --output. Checks cached answers
+against fresh DFlash and target-only requests with verified fixed expert
+residency. Disk sessions remain unsupported.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from dflash_sampling import Engine, replace
+from dflash_sampling import Engine, replace, validate_residency
 
 
 def main():
@@ -22,7 +23,11 @@ def main():
     ap.add_argument("--engine", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--tokens-file", type=Path)
+    ap.add_argument("--expert-cache", type=int, default=2000,
+                    help="fixed expert slots, must fit in every arm without automatic shrinking")
     a = ap.parse_args()
+    if a.expert_cache < 1:
+        ap.error("--expert-cache must be positive")
     out = a.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cfg = json.loads(a.config.read_text())
@@ -32,7 +37,7 @@ def main():
     ids = ([int(t) for t in a.tokens_file.read_text().replace(",", " ").split()]
            if a.tokens_file else [50, 3815, 2923, 539, 2923, 13, 6558, 281, 2007, 8,
                                   283, 220, 18, 87, 61, 17, 471, 220, 22, 87, 478, 220, 17, 13])
-    for key, value in (("--expert-cache", "3500"), ("--adapt-every", "0"),
+    for key, value in (("--expert-cache", str(a.expert_cache)), ("--adapt-every", "0"),
                        ("--adapt-swaps", "0"), ("--pcie-frac", "0"), ("--prefill", "256"),
                        ("--short-read", "4096"), ("--max-context", "4096"),
                        ("--kv-resident", "4096"), ("--dflash-window", "4096"),
@@ -49,11 +54,20 @@ def main():
     engine = Engine(a.engine.resolve(), args, cwd, env, out / "cached-engine.txt")
     records = {}
     prompts = {}
+    infos = {}
+    commands = {}
+    def observe(label, engine):
+        infos[label] = engine.info
+        commands[label] = [str(a.engine.resolve()), *args, "--serve"]
+        (out / "engine-info.json").write_text(json.dumps(infos, indent=2))
+        (out / "commands.json").write_text(json.dumps(commands, indent=2))
+        validate_residency(engine.info, a.expert_cache, infos.get("cached") if label != "cached" else None)
     try:
+        observe("cached", engine)
         def request(label, tokens, sampling="temperature=0 seed=7 pin=16"):
             prompts[label] = (tokens, sampling)
             r = engine.request(tokens, sampling, 32)
-            assert "error" not in r, r
+            assert "error" not in r and len(r["tokens"]) == 32, r
             records[label] = r
             print(label, r["done"], flush=True)
             (out / "results.json").write_text(json.dumps(records, indent=2))
@@ -73,11 +87,27 @@ def main():
     replace(args, "--prompt-cache", "0")
     engine = Engine(a.engine.resolve(), args, cwd, env, out / "fresh-engine.txt")
     try:
+        observe("fresh", engine)
         for label, (tokens, sampling) in prompts.items():
             r = engine.request(tokens, sampling, 32)
             records[label]["fresh"] = r
             (out / "results.json").write_text(json.dumps(records, indent=2))
             assert "error" not in r and r["tokens"] == records[label]["tokens"], label
+    finally:
+        engine.close()
+    # Same expert placement, target-only decode: cache parity alone cannot prove
+    # that the speculative verifier preserved the target's output.
+    for key in ("--dflash", "--dflash-block", "--dflash-window", "--dflash-head",
+                "--dflash-vocab", "--dflash-mask-token"):
+        replace(args, key, None)
+    engine = Engine(a.engine.resolve(), args, cwd, env, out / "target-engine.txt")
+    try:
+        observe("target", engine)
+        for label, (tokens, sampling) in prompts.items():
+            r = engine.request(tokens, sampling, 32)
+            records[label]["target"] = r
+            (out / "results.json").write_text(json.dumps(records, indent=2))
+            assert "error" not in r and r["tokens"] == records[label]["tokens"], f"target: {label}"
     finally:
         engine.close()
     log = (out / "cached-engine.txt").read_text()

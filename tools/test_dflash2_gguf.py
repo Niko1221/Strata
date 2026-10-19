@@ -83,9 +83,57 @@ class Export(unittest.TestCase):
             cfg = copy.deepcopy(CONFIG); cfg[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError): d.normalize_config(cfg)
 
+    def test_official_sliding_contract(self):
+        cfg = copy.deepcopy(CONFIG)
+        cfg.update(is_causal=False, use_sliding_window=True, sliding_window=2048,
+                   layer_types=['sliding_attention'] * cfg['num_hidden_layers'])
+        self.assertEqual(d.normalize_config(cfg)['sliding_window'], 2048)
+        self.assertFalse(d.normalize_config(cfg)['target_hc_mean'])
+        official = copy.deepcopy(cfg)
+        official.update(hidden_size=2560, head_dim=128, num_attention_heads=32, num_key_value_heads=8)
+        official['dflash_config']['target_layer_ids'] = [5,15,25,35,45]
+        self.assertTrue(d.normalize_config(official)['target_hc_mean'])
+        official['is_causal'] = True
+        with self.assertRaisesRegex(ValueError, 'non-causal'): d.normalize_config(official)
+        cfg['layer_types'][0] = 'full_attention'
+        with self.assertRaisesRegex(ValueError, 'uniform'): d.normalize_config(cfg)
+
+    def test_math_changing_options_are_not_silently_dropped(self):
+        for modern in (False, True):
+            cfg = copy.deepcopy(CONFIG)
+            if not modern:
+                cfg.pop('architectures'); cfg.update(cfg.pop('dflash_config')); cfg['sample_from_anchor'] = True
+            for key, value in [('input_embedding_scale', 2), ('attention_bias', True),
+                               ('is_causal', True), ('rms_norm_eps', 1e-5), ('hidden_act', 'gelu'),
+                               ('markov_rank', 16), ('enable_confidence_head', True)]:
+                bad = copy.deepcopy(cfg); bad[key] = value
+                with self.subTest(modern=modern,key=key), self.assertRaises(ValueError): d.normalize_config(bad)
+            bad = copy.deepcopy(cfg); bad['rope_parameters']['rope_type'] = 'linear'
+            with self.assertRaises(ValueError): d.normalize_config(bad)
+            bad = copy.deepcopy(cfg); bad['layer_types'] = ['sliding_attention'] * bad['num_hidden_layers']
+            bad['sliding_window'] = 2048; bad['use_sliding_window'] = False
+            with self.assertRaises(ValueError): d.normalize_config(bad)
+
+    def test_corrupt_safetensor_ranges_are_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for offsets in ([0, 1], [0, 100], [-2, 0]):
+                h = json.dumps({'x': dict(dtype='BF16',shape=[1],data_offsets=offsets)}).encode()
+                f = root/'bad.safetensors'; f.write_bytes(struct.pack('<Q',len(h))+h+b'\0\0')
+                with self.subTest(offsets=offsets), self.assertRaises(ValueError): d.read_safetensors(f)
+
+    def test_converter_does_not_replace_its_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source,_ = self.source(Path(folder)); before=source.read_bytes()
+            r = subprocess.run([sys.executable,d.__file__,str(source),'-o',str(source)],capture_output=True)
+            self.assertNotEqual(r.returncode,0)
+            self.assertEqual(source.read_bytes(),before)
+
     def test_plain_dflash_contract_retained(self):
-        cfg = dict(CONFIG); cfg.pop('architectures'); cfg.update(cfg.pop('dflash_config'))
+        cfg = dict(CONFIG); cfg.pop('architectures'); cfg.update(cfg.pop('dflash_config')); cfg['sample_from_anchor'] = True
         self.assertEqual(len(d.expected(cfg)), 3 + 11 * cfg['num_hidden_layers'])
         self.assertIs(d.normalize_config(cfg), cfg)
+        cfg['sample_from_anchor'] = False
+        with self.assertRaisesRegex(ValueError, 'anchor'): d.normalize_config(cfg)
 
 if __name__ == '__main__': unittest.main()

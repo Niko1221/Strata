@@ -1,0 +1,124 @@
+Internal ctest changing into directory: [VALIDATION_ROOT]/cpu-check
+Test project [VALIDATION_ROOT]/cpu-check
+      Start  1: batch_telemetry_test
+ 1/49 Test  #1: batch_telemetry_test .............   Passed    0.00 sec
+      Start  2: logit_bias_test
+ 2/49 Test  #2: logit_bias_test ..................   Passed    0.01 sec
+      Start  3: gguf_reader_test
+ 3/49 Test  #3: gguf_reader_test .................   Passed    0.00 sec
+      Start  4: gguf_split_test
+ 4/49 Test  #4: gguf_split_test ..................   Passed    0.00 sec
+      Start  5: model_family_test
+ 5/49 Test  #5: model_family_test ................   Passed    0.06 sec
+      Start  6: batch_read_test
+ 6/49 Test  #6: batch_read_test ..................   Passed    0.00 sec
+      Start  7: gguf_geometry_test
+ 7/49 Test  #7: gguf_geometry_test ...............   Passed    0.02 sec
+      Start  8: tuning_header_arch_family_test
+ 8/49 Test  #8: tuning_header_arch_family_test ...   Passed    0.00 sec
+      Start  9: split_rules_test
+ 9/49 Test  #9: split_rules_test .................   Passed    0.00 sec
+      Start 10: prefill_plan_test
+10/49 Test #10: prefill_plan_test ................   Passed    0.00 sec
+      Start 11: share_rules_test
+11/49 Test #11: share_rules_test .................   Passed    0.00 sec
+      Start 12: host_limits_test
+12/49 Test #12: host_limits_test .................   Passed    0.00 sec
+      Start 13: arch_defaults_test
+13/49 Test #13: arch_defaults_test ...............   Passed    0.00 sec
+      Start 14: suffix_drafter_test
+14/49 Test #14: suffix_drafter_test ..............   Passed    0.02 sec
+      Start 15: controller_test
+15/49 Test #15: controller_test ..................   Passed    0.00 sec
+      Start 16: draft_policy_test
+16/49 Test #16: draft_policy_test ................   Passed    0.00 sec
+      Start 17: dflash_policy_test
+17/49 Test #17: dflash_policy_test ...............   Passed    0.00 sec
+      Start 18: message_boundary_test
+18/49 Test #18: message_boundary_test ............   Passed    0.00 sec
+      Start 19: split_ring_test
+19/49 Test #19: split_ring_test ..................   Passed    0.00 sec
+      Start 20: conv_cache_test
+20/49 Test #20: conv_cache_test ..................   Passed    0.00 sec
+      Start 21: draft_kv_plan_test
+21/49 Test #21: draft_kv_plan_test ...............   Passed    0.00 sec
+      Start 22: coupled_draft_test
+22/49 Test #22: coupled_draft_test ...............   Passed    0.00 sec
+      Start 23: spec_prob_test
+23/49 Test #23: spec_prob_test ...................   Passed    3.37 sec
+      Start 24: bf16_bits_test
+24/49 Test #24: bf16_bits_test ...................   Passed    0.97 sec
+      Start 25: batch_rows_test
+25/49 Test #25: batch_rows_test ..................   Passed    0.00 sec
+      Start 26: batch_groups_test
+26/49 Test #26: batch_groups_test ................   Passed    0.00 sec
+      Start 27: dequant_q5_1_test
+27/49 Test #27: dequant_q5_1_test ................   Passed    0.00 sec
+      Start 28: pool_tasks_test
+28/49 Test #28: pool_tasks_test ..................   Passed    3.28 sec
+      Start 29: router_dot_parity
+29/49 Test #29: router_dot_parity ................   Passed    0.04 sec
+      Start 30: router_dot_parity_avx
+30/49 Test #30: router_dot_parity_avx ............   Passed    0.04 sec
+      Start 31: iq_avx2_parity
+31/49 Test #31: iq_avx2_parity ...................   Passed    0.16 sec
+      Start 32: iq_avx2_parity_iq3s_mt1
+32/49 Test #32: iq_avx2_parity_iq3s_mt1 ..........   Passed    0.18 sec
+      Start 33: iq_avx1_parity
+33/49 Test #33: iq_avx1_parity ...................   Passed    0.13 sec
+      Start 34: q8k_quant_parity
+34/49 Test #34: q8k_quant_parity .................   Passed    0.01 sec
+      Start 35: q8k_quant_parity_avx
+35/49 Test #35: q8k_quant_parity_avx .............   Passed    0.01 sec
+      Start 36: nvfp4_cpu_parity
+36/49 Test #36: nvfp4_cpu_parity .................   Passed    0.20 sec
+      Start 37: pool_affinity_test
+37/49 Test #37: pool_affinity_test ...............   Passed    0.00 sec
+      Start 38: expert_multi_test
+38/49 Test #38: expert_multi_test ................***Skipped   0.00 sec
+      Start 39: q2_bitplane_parity
+39/49 Test #39: q2_bitplane_parity ...............   Passed    0.00 sec
+      Start 40: native_hadamard_test
+40/49 Test #40: native_hadamard_test .............***Failed    0.00 sec
+this ggml has no trellis types (build with STRATA_GGML_DIR = the agention fork)
+FWHT vs dense normalized Sylvester matrix: max abs diff 3.35e-07  ok
+
+      Start 41: tq_cpu_parity
+41/49 Test #41: tq_cpu_parity ....................***Failed    0.00 sec
+this ggml has no trellis types (build with STRATA_GGML_DIR = the agention llama.cpp fork)
+
+      Start 42: tq_cpu_parity_avx2
+42/49 Test #42: tq_cpu_parity_avx2 ...............***Failed    0.01 sec
+this ggml has no trellis types (build with STRATA_GGML_DIR = the agention llama.cpp fork)
+
+      Start 43: expert_parity
+43/49 Test #43: expert_parity ....................   Passed    0.00 sec
+      Start 44: pool_test
+44/49 Test #44: pool_test ........................   Passed    0.00 sec
+      Start 45: pool_plan_test
+45/49 Test #45: pool_plan_test ...................   Passed    0.00 sec
+      Start 46: pool_stress
+46/49 Test #46: pool_stress ......................   Passed    0.00 sec
+      Start 47: isa_guard_check
+47/49 Test #47: isa_guard_check ..................***Failed    0.88 sec
+check_isa_guard: [VALIDATION_ROOT]/cpu-check/libstrata_kernels_cpu.a: 482 functions, 70 hold wide-ISA instructions, 1 not allowed
+  VIOLATION strata::kernels::cpu::tq_detail::tq_rows_avx512(int, unsigned char const*, unsigned long, int, strata::kernels::cpu::tq_detail::TqAct const* const*, int, float* (606 wide instructions, first vmovq): wide-ISA code outside the wide-ISA translation units (object tq_avx512.cpp.o) [tq_avx512.cpp.o]
+
+      Start 48: direct_file_async_test
+48/49 Test #48: direct_file_async_test ...........   Passed    0.00 sec
+      Start 49: aux_cpus_test
+49/49 Test #49: aux_cpus_test ....................   Passed    0.01 sec
+
+92% tests passed, 4 tests failed out of 49
+
+Total Test time (real) =   9.48 sec
+
+The following tests did not run:
+	 38 - expert_multi_test (Skipped)
+
+The following tests FAILED:
+	 40 - native_hadamard_test (Failed)
+	 41 - tq_cpu_parity (Failed)
+	 42 - tq_cpu_parity_avx2 (Failed)
+	 47 - isa_guard_check (Failed)
+Errors while running CTest

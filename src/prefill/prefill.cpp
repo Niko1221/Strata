@@ -1,3 +1,6 @@
+#ifdef STRATA_ENABLE_DFLASH2
+#include "strata/kernels/dflash2.hpp"
+#endif
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -881,6 +884,7 @@ struct Prefill::Impl {
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
     int64_t T = 0, T_max = 0;
+    bool tap_hc_mean_ = false;
     int tap_layers_[8] = {};
     int n_taps_ = 0;
     uint16_t* taps = nullptr;  ///< n_taps_ x T_max x n_embd BF16
@@ -2045,8 +2049,9 @@ bool Prefill::bind_stage_helper(int64_t T) {
 // planes follow that current layout, not the largest chunk accepted at init.
 int64_t Prefill::tap_stride_rows() const { return impl_->T; }
 
-void Prefill::set_tap_layers(const int* layers, int n) {
+void Prefill::set_tap_layers(const int* layers, int n, bool hc_mean) {
     Impl& m = *impl_;
+    m.tap_hc_mean_ = hc_mean;
     m.n_taps_ = n > 8 ? 8 : n;
     for (int i = 0; i < m.n_taps_; ++i) m.tap_layers_[i] = layers[i];
     g_n_taps = m.n_taps_;   // the static counters (bytes_needed_impl) read this
@@ -3275,6 +3280,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const int64_t TN = g.n_embd;
                     for (int ti = 0; ti < m.n_taps_; ++ti)
                         if (l == m.tap_layers_[ti]) {
+#ifdef STRATA_ENABLE_DFLASH2
+                            if (m.tap_hc_mean_)
+                                strata::kernels::dflash2_hc_mean(m.R, nullptr,
+                                    m.taps + (size_t) ti * m.T * TN, T, TN, g.hc, m.cs);
+                            else
+#endif
                             strata::kernels::f32_to_bf16_bulk(
                                 m.mixed, m.taps + ((size_t) ti * (size_t) m.T) * (size_t) TN,
                                 (int64_t) T * TN, m.cs);
