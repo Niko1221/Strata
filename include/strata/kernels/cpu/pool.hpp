@@ -209,6 +209,8 @@ public:
     bool host_works() const { return host_works_; }
 
     bool is_hybrid() const { return topo_.is_hybrid; }
+    /// The CPUs worker i is pinned to, in worker order (STRATA_NUMA_SPLIT reorders them: interleave_packages).
+    const std::vector<int>& worker_cores() const { return topo_.worker_cores; }
     int p_cores() const { return topo_.p_cores; }
     int p_threads() const { return topo_.p_threads; }
     int e_cores() const { return topo_.e_cores; }
