@@ -66,9 +66,36 @@ no cross-version comparisons anywhere.
 Peak 62/60 °C, max 202 W per card at the 250 W default limit, stock fan curves on the
 front-intake open rig; no throttling, both cards within 2 °C of each other at all times.
 
+## In daily use (engine 0.1.45, 2026-10-19)
+
+Numbers from ordinary use of this box rather than the suite, on UD-Q6_K_XL and UD-IQ4_XS, both at
+262,144 context:
+
+- **A long answer**: 1,665 tokens at **44.1 tok/s** on Q6 with the expert cache at 96.5% hit; a
+  1,500-token answer on the same tier 38.4-45.5 tok/s by run (draft acceptance 57-62%).
+- **The CPU is not the wall**: during that decode both sockets together burned ~39.5 cores' worth
+  of time, i.e. **0.9 core-seconds per output token**. Forcing `--pool-workers 9` instead of the
+  default 35 cost only **13%** of decode while CPU use fell from ~39.5 to ~9 cores — the rest is
+  spin waiting, not work. On a dual-socket host this is the cheapest way to buy power and fan
+  noise back.
+- **Three conversations at once** (`parallel: 3`): **67.1 tok/s aggregate = 1.41x** one stream,
+  23 tok/s each, reproducible (63.9 on an earlier day). `--batch-mtp --batch-groups 1` does run the
+  slot drafters — the engine logs `MTP proposals accepted 933 of 1463 (63.8%)` — but aggregates
+  **63.6 tok/s**, 5% below the pipelined default on this tier: the serial windows cost more than
+  the drafts return.
+- **Restart variance is real on a two-node Windows box**: same binary, same config, four restarts,
+  3x800-token probes: **43.9 / 45.5 / 47.4 / 48.0 tok/s**. The two high runs had the expert arena
+  on NUMA node 0 and the two low ones on node 1 (**+6.7% for node 0**); the engine pins its workers
+  across both processor groups either way. Benchmarks on this class of machine should record which
+  node the arena landed on, or average two restarts.
+- **`--pipeline-windows 2` is a loss on this tier**: **-5%** with the draft layer on the last card
+  and -5% again with `STRATA_MTP_STAGE0=1`, while the XXS tier in the paired table above gained
+  (129.0 vs 108.6). Tier-dependent, and opt-in on NVIDIA.
+
 ## Not tested
 Batching on a split (#776), `STRATA_PREFILL_HELP`, `STRATA_SPLIT_MTP_BATCH`,
-`STRATA_ARENA_PIN_GIB`, three cards, 262K context on the UD tier.
+`STRATA_ARENA_PIN_GIB`, three cards. Long context (256K native / 512K / 1M) is covered in the
+[2026-10-19 follow-up](../2026-10-19-community-2x-pcie-v100-longctx/README.md).
 
 ## Files
 `results-flash-0144-*.json` — every arm's raw records (tags: short / long / L1-4k-doc /
