@@ -305,8 +305,10 @@ def install(argv) -> None:
             d = S.MODELS.get(m, {})
             shard1 = d.get("download_gb", 0) - 28.8          # all but the per-layer lookup table (read from disk)
             room = intel[0]["vram_gb"] - 3 + max(0.0, real_ram - 10)   # VRAM, plus a pinned host mirror (or the CPU)
+            every = sum(g["vram_gb"] - 1.5 for g in intel)   # a layer split across every card (each keeps its own room)
             msg = (f"  {m:8s} ~{shard1:.0f} GB of weights: " +
                    ("fits in VRAM" if shard1 <= intel[0]["vram_gb"] - 1.5 else
+                    f"fits in VRAM across the {len(intel)} cards (--layer-split)" if len(intel) > 1 and shard1 <= every else
                     "fits, the experts the card does not hold are computed on the CPU (slower)" if alch and shard1 <= room else
                     "fits with part of its experts mirrored in RAM (slower)" if shard1 <= room else "does not fit"))
         say(msg)
