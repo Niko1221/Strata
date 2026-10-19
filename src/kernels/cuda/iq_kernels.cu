@@ -4716,8 +4716,21 @@ int sm75_down_em(int em0, int64_t cap_groups) {
     cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
     return strata::is_sm75(major, minor) ? 0 : em0;
 }
+// The down projection's mode on Volta's default (mode 8): the LDS down kernel is slower than the CUDA
+// layout for IQ4_NL (native_expert_bench, the IQ3_S pack's iq2_s/iq4_nl layers, 10 groups: T1 25.8 -> 20.7
+// us, T4 39.2 -> 28.3 us, bitwise equal), while gate/up keeps its mode-8 win on the same layers
+// (T1 36.3 vs 38.6, T4 55.0 vs 65.3 us).  Q2_0 (42) keeps mode 8 (down 14.4 vs 16.7 us at T1).
+int sm70_down_em(int em0, int d_type) {
+    if (em0 != 8 || d_type != 20 || std::getenv("STRATA_EXP_MODE") != nullptr) return em0;
+    int dev = 0, major = 0, minor = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return em0;
+    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    return (major == 7 && minor == 0) ? 0 : em0;
+}
 #else
 int sm75_down_em(int em0, int64_t) { return em0; }
+int sm70_down_em(int em0, int) { return em0; }
 #endif
 
 void native_expert_set_mode(int mode, int phase) {
@@ -4951,7 +4964,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 || L.d_type == 40 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
-    const int em0d = sm75_down_em(em0, cap_groups);
+    const int em0d = sm70_down_em(sm75_down_em(em0, cap_groups), L.d_type);
     if ((em0d == 7 || em0d == 8) && (L.d_type == 20 || L.d_type == 42)) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
