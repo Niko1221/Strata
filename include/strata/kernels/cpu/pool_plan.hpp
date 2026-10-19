@@ -145,8 +145,13 @@ inline std::string pool_workers_warning(int requested, const PoolPlanInput& in, 
            std::to_string(plan.workers) + " workers and the end of each layer waits for every one). " + rec;
 }
 
-/// STRATA_NUMA_SPLIT: the order to take worker cores in so that a default count below the core count still spans the
-/// packages evenly - round-robin over the packages in their first-seen order (the host's first), stable inside each.
+/// STRATA_NUMA_SPLIT: whether two slices of `a` and `b` threads may split the rows 50/50 - a slice with under half
+/// the other's threads would be the straggler of every batch, so the pool refuses that split.
+inline bool numa_slices_balanced(int a, int b) { return std::min(a, b) * 2 >= std::max(a, b); }
+
+/// STRATA_NUMA_SPLIT: the order to take worker cores in so that a count below the core count (the default or a
+/// configured one) still spans the packages evenly - round-robin over the packages in their first-seen order (the
+/// host's first), stable inside each.
 /// `package[i]` is worker core i's package (-1: unknown, a package of its own); returns indices into it.
 inline std::vector<size_t> interleave_packages(const std::vector<int>& package) {
     std::vector<int> ids;                                 // packages in first-seen order

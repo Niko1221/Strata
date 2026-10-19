@@ -183,6 +183,26 @@ int main() {
         const std::vector<size_t> same = cpu::interleave_packages({1, 1, 1});
         expect(same == std::vector<size_t>({0, 1, 2}), "one package: the order is kept");
     }
+    // a configured count under the split, on the 2 x 12-core box: the worker cores as fill_plan_fields orders them
+    // (the host's socket first: its 11 cores but the host's, then the other socket's 12), taken in interleave order;
+    // the host thread drains on socket 0
+    {
+        std::vector<int> pkg(11, 0);
+        pkg.insert(pkg.end(), 12, 1);
+        const std::vector<size_t> o = cpu::interleave_packages(pkg);
+        auto per = [&](int n, bool interleaved, int s) {
+            int c = 0;
+            for (int i = 0; i < n; ++i) c += pkg[interleaved ? o[(size_t) i] : (size_t) i] == s;
+            return c;
+        };
+        expect(per(12, true, 0) == 6 && per(12, true, 1) == 6, "--pool-workers 12 under the split: 6 + 6 workers");
+        expect(cpu::numa_slices_balanced(per(12, true, 0) + 1, per(12, true, 1)), "12: 7 / 6 threads, balanced");
+        expect(per(13, true, 0) == 7 && per(13, true, 1) == 6, "--pool-workers 13 under the split: 7 + 6 workers");
+        expect(cpu::numa_slices_balanced(per(13, true, 0) + 1, per(13, true, 1)), "13: 8 / 6 threads, balanced");
+        expect(!cpu::numa_slices_balanced(per(12, false, 0) + 1, per(12, false, 1)),
+               "12 in the host-first order would be 12 / 1 threads: refused (what the interleave avoids)");
+        expect(per(22, true, 0) == 11 && per(22, true, 1) == 11, "22 (the split default here): 11 + 11 workers");
+    }
 
     if (g_fail) {
         std::fprintf(stderr, "pool_plan_test: %d failure(s)\n", g_fail);

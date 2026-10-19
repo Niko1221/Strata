@@ -656,25 +656,26 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     const bool env_known = !env_off && (std::strcmp(env, "1") == 0 || std::strcmp(env, "test") == 0);
     const PoolPlanInput plan_in = pool_plan_input(topo_);
     const PoolPlan wplan = plan_pool_workers(plan_in);
+    // the split needs workers on both nodes: its cores are taken round-robin over the packages, so any count under
+    // the core count (the default or a configured one) spans them evenly (one package: the order is kept)
+    if (env_known && topo_.worker_package.size() == topo_.worker_cores.size()) {
+        std::vector<int> cores, pkgs;
+        for (size_t i : interleave_packages(topo_.worker_package)) {
+            cores.push_back(topo_.worker_cores[i]);
+            pkgs.push_back(topo_.worker_package[i]);
+        }
+        topo_.worker_cores = std::move(cores);
+        topo_.worker_package = std::move(pkgs);
+    }
     if (n_workers > 0) {
         n_ = n_workers;
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
         n_ = (std::max)(1, topo_.p_cores - 1);
     } else if (env_known) {
-        // the split needs workers on both nodes: the default spans every socket (the plan's other bounds stay), its
-        // cores taken round-robin over the packages so a count under the core count still spans them evenly
+        // ... and the default spans every socket (the plan's other bounds stay)
         PoolPlanInput span_in = plan_in;
         span_in.span_packages = true;
         const PoolPlan sp = plan_pool_workers(span_in);
-        if (topo_.worker_package.size() == topo_.worker_cores.size()) {
-            std::vector<int> cores, pkgs;
-            for (size_t i : interleave_packages(topo_.worker_package)) {
-                cores.push_back(topo_.worker_cores[i]);
-                pkgs.push_back(topo_.worker_package[i]);
-            }
-            topo_.worker_cores = std::move(cores);
-            topo_.worker_package = std::move(pkgs);
-        }
         n_ = (std::min)(sp.workers, (std::max)(1, (int) topo_.worker_cores.size()));
         plan_limit_ = sp.limit;
     } else {
@@ -743,8 +744,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
                         plan.cores[slice[(size_t) j]].push_back(core_of(j));
                         ++per[slice[(size_t) j]];
                     }
-                    // rows stay 50/50, so a slice with under half the other's threads would be the straggler of every batch
-                    if (std::min(per[0], per[1]) * 2 < std::max(per[0], per[1]))
+                    if (!numa_slices_balanced(per[0], per[1]))
                         std::snprintf(why, sizeof why, "slices too unbalanced (node %d: %d thread%s, node %d: %d thread%s)",
                                       nodes[0], per[0], per[0] == 1 ? "" : "s", nodes[1], per[1], per[1] == 1 ? "" : "s");
                 }
