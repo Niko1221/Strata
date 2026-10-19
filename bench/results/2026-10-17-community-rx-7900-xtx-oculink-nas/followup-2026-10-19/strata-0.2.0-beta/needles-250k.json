@@ -1,0 +1,29 @@
+[
+ {
+  "length": "250k",
+  "depth": 10,
+  "prompt_tokens": 251626,
+  "seconds": 223.2,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504"
+ },
+ {
+  "length": "250k",
+  "depth": 50,
+  "prompt_tokens": 251626,
+  "seconds": 147.5,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940"
+ },
+ {
+  "length": "250k",
+  "depth": 90,
+  "prompt_tokens": 251627,
+  "seconds": 152.7,
+  "found": false,
+  "word": "willow-cobalt-696",
+  "answer": ""
+ }
+]

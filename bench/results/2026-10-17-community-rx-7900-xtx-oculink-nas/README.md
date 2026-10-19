@@ -150,6 +150,16 @@ prompt 3 % faster (85.3 against 88.1 s). Greedy answers (temperature 0, thinking
 identically twice in a row differed with 0.1.45 in two of the three (first difference after 30 and 488 characters);
 the content was equivalent. A fourth prompt with reasoning effort `low` varied even within one build and is left out. Our baseline was the `296b59d` branch build, not the 0.1.44.1 release.
 
+## Follow-up 2026-10-19 (folder `followup-2026-10-19/`)
+
+Added on 2026-10-19, same machine, same model files. Scripts are in the linked hardware repo (`messen/t020.py`, `r3177.py`, `folgetests.py`, `visiontest.py`); the folder's own README explains each file and its fields.
+
+- **0.2.0-beta prebuilt `hip-rx7900` engine (0.1.45.3) on this gfx1100:** runs. `strata_bench.py --long`: chat decode 61.3 tok/s, prompt 741 / 1,207 / 1,223 tok/s at 4K / 16K / 32K, agent cache hit 68.6 %; needles 9/9 up to 250K; our task set 27 of 29. Same as 0.1.44.1 above. Details and two packaging notes: #3263.
+- **0.2.0's default worker count** on this hybrid CPU is 15 and decodes 39.8 / 41.2 tok/s against 59.7 / 64.0 with `--pool-workers 9`; the LP-E cores are planned as P-cores. Details: #3262.
+- **Picture reader:** CPU reader with the 0.1.44.1 engine: 5/5 test pictures, no VRAM, about 1 GiB RAM. 0.2.0 GPU reader on 24 GB: 776 fewer expert slots (1.28 GiB), large picture 3.5 s instead of 5.6 s.
+- **#3177 reproduction attempt:** 6 of 6 agent requests of 55,019 tokens finished (0.1.45 and 0.1.44.1, MTP on and off).
+- **Fresh engines with MTP, 4K prompt:** 0.2.0: 1 of 24 read about 38 % slower; 0.1.44.1: 0 of 24.
+
 ## Correctness and limitations
 
 - Quality is covered by the engine comparison against llama.cpp and the needles; no coding or task-level suite is included.

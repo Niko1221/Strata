@@ -1,0 +1,185 @@
+{
+ "leerlauf": {
+  "vram_max_gib": 23.53,
+  "ram_max_gib": 50.57,
+  "watt_mittel": 68.0,
+  "watt_max": 74.0,
+  "gpu_last_mittel": 0
+ },
+ "schreiben_kurz": {
+  "tps_median": 39.76,
+  "ttft_median_s": 0.37,
+  "tokens": [
+   85,
+   87,
+   87
+  ],
+  "laeufe": [
+   {
+    "ttft_s": 0.437,
+    "gesamt_s": 2.612,
+    "prompt_tokens": 37,
+    "completion_tokens": 85,
+    "usage_gemeldet": true,
+    "schreiben_tps": 39.08,
+    "einlesen_tps": 84.7,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 37,
+     "prompt_ms": 405.9,
+     "prompt_per_token_ms": 10.97,
+     "prompt_per_second": 91.2,
+     "predicted_n": 85,
+     "predicted_ms": 2193.9,
+     "predicted_per_token_ms": 25.811,
+     "predicted_per_second": 38.7,
+     "draft_n": 76,
+     "draft_n_accepted": 37
+    },
+    "fertig": "stop",
+    "werkzeuge": []
+   },
+   {
+    "ttft_s": 0.366,
+    "gesamt_s": 2.238,
+    "prompt_tokens": 37,
+    "completion_tokens": 87,
+    "usage_gemeldet": true,
+    "schreiben_tps": 46.5,
+    "einlesen_tps": 101.0,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 37,
+     "prompt_ms": 336.3,
+     "prompt_per_token_ms": 9.089,
+     "prompt_per_second": 110.0,
+     "predicted_n": 87,
+     "predicted_ms": 1890.2,
+     "predicted_per_token_ms": 21.726,
+     "predicted_per_second": 46.0,
+     "draft_n": 79,
+     "draft_n_accepted": 35
+    },
+    "fertig": "stop",
+    "werkzeuge": []
+   },
+   {
+    "ttft_s": 0.348,
+    "gesamt_s": 2.536,
+    "prompt_tokens": 37,
+    "completion_tokens": 87,
+    "usage_gemeldet": true,
+    "schreiben_tps": 39.76,
+    "einlesen_tps": 106.3,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 37,
+     "prompt_ms": 311.9,
+     "prompt_per_token_ms": 8.43,
+     "prompt_per_second": 118.6,
+     "predicted_n": 87,
+     "predicted_ms": 2214.1,
+     "predicted_per_token_ms": 25.449,
+     "predicted_per_second": 39.3,
+     "draft_n": 80,
+     "draft_n_accepted": 36
+    },
+    "fertig": "stop",
+    "werkzeuge": []
+   }
+  ],
+  "vram_max_gib": 23.53,
+  "ram_max_gib": 50.62,
+  "watt_mittel": 242.1,
+  "watt_max": 283.0,
+  "gpu_last_mittel": 96.4
+ },
+ "schreiben_lang": {
+  "tps_median": 41.2,
+  "ttft_median_s": 1.05,
+  "tokens": [
+   1500,
+   1500,
+   1500
+  ],
+  "laeufe": [
+   {
+    "ttft_s": 0.696,
+    "gesamt_s": 37.141,
+    "prompt_tokens": 64,
+    "completion_tokens": 1500,
+    "usage_gemeldet": true,
+    "schreiben_tps": 41.16,
+    "einlesen_tps": 92.0,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 64,
+     "prompt_ms": 668.1,
+     "prompt_per_token_ms": 10.439,
+     "prompt_per_second": 95.8,
+     "predicted_n": 1500,
+     "predicted_ms": 36462.2,
+     "predicted_per_token_ms": 24.308,
+     "predicted_per_second": 41.1,
+     "draft_n": 1268,
+     "draft_n_accepted": 677
+    },
+    "fertig": "length",
+    "werkzeuge": []
+   },
+   {
+    "ttft_s": 1.048,
+    "gesamt_s": 37.457,
+    "prompt_tokens": 64,
+    "completion_tokens": 1500,
+    "usage_gemeldet": true,
+    "schreiben_tps": 41.2,
+    "einlesen_tps": 61.0,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 64,
+     "prompt_ms": 1009.5,
+     "prompt_per_token_ms": 15.773,
+     "prompt_per_second": 63.4,
+     "predicted_n": 1500,
+     "predicted_ms": 36432.0,
+     "predicted_per_token_ms": 24.288,
+     "predicted_per_second": 41.2,
+     "draft_n": 1203,
+     "draft_n_accepted": 633
+    },
+    "fertig": "length",
+    "werkzeuge": []
+   },
+   {
+    "ttft_s": 1.061,
+    "gesamt_s": 33.235,
+    "prompt_tokens": 64,
+    "completion_tokens": 1500,
+    "usage_gemeldet": true,
+    "schreiben_tps": 46.62,
+    "einlesen_tps": 60.3,
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 64,
+     "prompt_ms": 1029.5,
+     "prompt_per_token_ms": 16.086,
+     "prompt_per_second": 62.2,
+     "predicted_n": 1500,
+     "predicted_ms": 32198.1,
+     "predicted_per_token_ms": 21.465,
+     "predicted_per_second": 46.6,
+     "draft_n": 1226,
+     "draft_n_accepted": 667
+    },
+    "fertig": "length",
+    "werkzeuge": []
+   }
+  ],
+  "vram_max_gib": 23.53,
+  "ram_max_gib": 50.81,
+  "watt_mittel": 244.0,
+  "watt_max": 289.0,
+  "gpu_last_mittel": 96.5
+ }
+}

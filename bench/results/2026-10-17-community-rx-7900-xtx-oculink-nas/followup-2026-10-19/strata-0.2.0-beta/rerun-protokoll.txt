@@ -1,0 +1,4 @@
+a020 geladen in 17.8 s, Antwort 'OK', Backend http://127.0.0.1:18100
+$ cd /volume1/docker/strata-test/src && .venv/bin/python tools/needle_bench.py --url http://127.0.0.1:18100 --lengths 250k --depths 10,50,90 --out /volume1/docker/ki-messung/ergebnisse/t020-20261019-2212/needles-250k-wiederholung.json
+  → Exit 0, Ausgabe needles-250k-wiederholung.txt
+Ergebnis: /volume1/docker/ki-messung/ergebnisse/t020-20261019-2212 · config.yaml zurück
