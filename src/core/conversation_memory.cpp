@@ -17,6 +17,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace strata::core {
@@ -286,6 +289,22 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
+#elif defined(__APPLE__)
+    // macOS has no /proc and no commit limit: credit what macOS can hand over without paging anything out -
+    // free + purgeable + min(inactive + speculative, the pages it keeps outside its anonymous set), the
+    // arena_budget.h rule the stream path already uses.  vm_statistics64 counts kernel pages.
+    vm_statistics64_data_t vs;
+    mach_msg_type_number_t vn = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &vn) != KERN_SUCCESS) return {};
+    const uint64_t pg = vm_page_size ? vm_page_size : 16384;
+    const uint64_t avail = (uint64_t) (vs.free_count + vs.purgeable_count) * pg +
+                           std::min<uint64_t>((uint64_t) (vs.inactive_count + vs.speculative_count) * pg,
+                                              (uint64_t) vs.external_page_count * pg);
+    uint64_t total = 0;
+    size_t len = sizeof total;
+    if (sysctlbyname("hw.memsize", &total, &len, nullptr, 0) != 0) total = 0;
+    return combine(avail, total ? std::optional<uint64_t> (total) : std::optional<uint64_t>{}, CgroupScan{},
+                   memory_limit_bytes());
 #else
     return {};
 #endif

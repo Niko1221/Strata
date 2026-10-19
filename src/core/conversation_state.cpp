@@ -145,10 +145,20 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
     const size_t layers = owned_qsa(ss);
+    (void) layers;
+#if defined(STRATA_GPU_METAL)
+    // on Metal the running state lives in the decode window: its save (metal/src/engine/window.cpp) writes the
+    // window's own layout - no per-layer block_pos, since the indexer derives the block position from the token
+    // count - and its restore revalidates every buffer size.  The session's CPU-side byte counts describe a
+    // payload this engine never produces; only the image and prefix invariants are checked here.
+    if (!image_keys(c.imgs, c.ids.size())) return fail(error, "invalid checkpoint image keys");
+    return true;
+#else
     if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
         c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
         c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
         return fail(error, "invalid checkpoint running-state payload");
+#endif
     return true;
 }
 

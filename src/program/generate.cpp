@@ -109,6 +109,9 @@
 #if !defined(__APPLE__)   // major() / minor(): <sys/types.h> on macOS
 #include <sys/sysmacros.h>
 #endif
+#if defined(__APPLE__)
+#include <mach/mach.h>   // the watchdog's memory readings: macOS has no /proc (file_tier_activity, mem_sample)
+#endif
 #endif
 
 #include <cuda_runtime.h>
@@ -1219,6 +1222,21 @@ static std::string ram_note(const std::optional<strata::core::HostMemoryReading>
     return std::to_string(mem->available >> 20) + " MiB available, source " + strata::core::memory_source_name(mem->source);
 }
 
+// STRATA_PARK_DEBUG only: ask libmalloc whether its zones are intact.  A park writes a fresh
+// snapshot's worth of vectors; if a later request dies in operator new, this says whether the
+// damage predates the park or happened inside it (a corrupt zone prints its own line too).
+#if defined(__APPLE__)
+extern "C" int malloc_zone_check(void*);
+#endif
+static void park_canary(const char* where) {
+#if defined(__APPLE__)
+    if (!std::getenv("STRATA_PARK_DEBUG")) return;
+    std::fprintf(stderr, "strata metal park: malloc integrity check %d (%s)\n", malloc_zone_check(nullptr), where);
+#else
+    (void) where;
+#endif
+}
+
 // ---- issue #31: what the watchdog prints before it stops a stalled engine
 struct MemSample {
     unsigned long long faults = 0, rss_mib = 0, avail_mib = 0, commit_mib = 0;   // faults: hard (Linux) / all (Windows)
@@ -1235,6 +1253,29 @@ MemSample mem_sample() {
     MEMORYSTATUSEX ms{};
     ms.dwLength = sizeof ms;
     if (GlobalMemoryStatusEx(&ms)) m.avail_mib = ms.ullAvailPhys >> 20;
+#elif defined(__APPLE__)
+    // macOS has no /proc: task_info gives the process's faults, footprint and compressed pages (the same reading
+    // the Metal stream's proc_mem uses, window.cpp), and vm_statistics64 the RAM macOS can hand over without
+    // paging anything out - arena_avail's rule (metal/src/engine/arena_budget.h): free + purgeable + min(inactive
+    // + speculative, the pages macOS keeps outside its anonymous set).
+    task_vm_info_data_t tvi;
+    mach_msg_type_number_t tn = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &tvi, &tn) == KERN_SUCCESS) {
+        m.rss_mib = tvi.phys_footprint >> 20;
+        m.commit_mib = tvi.compressed >> 20;   // the bytes macOS parked out of RAM for this process
+    }
+    task_events_info_data_t tei;
+    mach_msg_type_number_t en = TASK_EVENTS_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t) &tei, &en) == KERN_SUCCESS)
+        m.faults = tei.faults;   // counts soft faults too, like Windows: the page-ins drive it
+    vm_statistics64_data_t vs;
+    mach_msg_type_number_t vn = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &vn) == KERN_SUCCESS) {
+        const double pg = (double) vm_page_size;
+        m.avail_mib = (unsigned long long) ((vs.free_count + vs.purgeable_count) * pg +
+                                            std::min((vs.inactive_count + vs.speculative_count) * pg,
+                                                     vs.external_page_count * pg)) >> 20;
+    }
 #else
     if (std::FILE* f = std::fopen("/proc/self/stat", "r")) {
         char buf[4096];
@@ -1301,8 +1342,17 @@ static uint64_t file_tier_activity() {
     // thread waiting on one page at a time), which at >> 6 is 3 a second and never counted as busy
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) total += pmc.PageFaultCount >> 3;
     return total;
+#elif defined(__APPLE__)
+    // the gap #1984 closed for Windows, on macOS too: the process fault counter is the signal - a host paging the
+    // 47 GB expert file back in under memory pressure drives it at hundreds a second, and >> 3 (like Windows, where
+    // 200 faults/s read at 3/s on the /8 scale) clears the busy test; a truly stuck engine makes almost none.
+    task_events_info_data_t tei;
+    mach_msg_type_number_t en = TASK_EVENTS_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t) &tei, &en) != KERN_SUCCESS) return 0;
+    // pageins (the hard, storage-backed faults) plus soft-fault churn /8: the Windows #1984 formula's Mac form
+    return (uint64_t) (unsigned) tei.pageins + ((uint64_t) (unsigned) tei.faults >> 3);
 #else
-    return 0;
+    return 0;   // no /proc, no Win32 counters, no Mach: the watchdog keeps the plain 60 s limit
 #endif
 }
 
@@ -1456,6 +1506,8 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
                      m.commit_mib,
 #if defined(_WIN32)
                      "committed", m.avail_mib, m.faults, "page faults so far"
+#elif defined(__APPLE__)
+                     "in swap", m.avail_mib, m.faults, "page faults so far"   // task_info counts soft faults too
 #else
                      "in swap", m.avail_mib, m.faults, "major page faults so far"
 #endif
@@ -3159,6 +3211,12 @@ int main(int argc, char** argv) {
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+#if defined(STRATA_GPU_METAL)
+    // the Metal window's kernels store int8 codes with an fp16 scale per 64 whatever --kv says (qsa.metal), so
+    // the default fp16 mode's session states must describe those bytes: the conversation snapshot's layout
+    // arithmetic and the window's cells then agree, and park repacks them without inventing fp16 zeros.
+    if (o.kv == "fp16") strata::core::qsa_set_kv_int8(true);
+#endif
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
@@ -9461,8 +9519,10 @@ int main(int argc, char** argv) {
                                  (long long) o.conversation_cache_min_free_mib);
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
+                park_canary("before park");
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
                         std::move(reuse), &reused_bytes)) return false;
+                park_canary("after park");
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
@@ -9474,6 +9534,7 @@ int main(int argc, char** argv) {
                         return false;
                     image.stage_images.push_back(std::move(part));
                 }
+                park_canary("after stage images");
                 const auto mem_after = strata::core::sample_host_memory();
                 if (!strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
