@@ -1496,6 +1496,10 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
   gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
   (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
+- A call to a tool the request itself declared goes back to the client, as always. A call the model writes with a
+  tool's bare name (`read_file` instead of `files__read_file`) runs when exactly one offered MCP server has that
+  name; when two servers offer it, or no offered tool has it, the model reads an `error:` result naming the full
+  `<server>__<tool>` names and can correct itself - instead of a tool call the chat page cannot answer.
 - Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
   before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
   gets `strata_mcp` tool events in the stream).

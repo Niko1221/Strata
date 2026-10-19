@@ -346,6 +346,70 @@ class ToolLoop(unittest.TestCase):
         self.assertIn('"name": "fake__echo"', self.engine.prompt_text(0))
         self.assertEqual(len(self.engine.prompts), 1)
 
+    def test_a_bare_mcp_tool_name_runs_the_tool(self):
+        """#3113: the model copies the user's wording (`list_directory`), so the offered `server__tool` name is not
+        what it writes.  The one offered tool with that name runs; no client tool call is left for the web app."""
+        self.start(call_script("echo", text="bare"), "</think>\n\nThe tool said bare.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp], ["start", "call", "result"])
+        self.assertEqual((mcp[1]["name"], mcp[1]["server"], mcp[1]["tool"]), ("fake__echo", "fake", "echo"))
+        self.assertEqual((mcp[2]["ok"], mcp[2]["text"]), (True, "bare"))
+        self.assertFalse([tc for c in self.chunks(text)
+                          for tc in c["choices"][0]["delta"].get("tool_calls") or []])
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("<function=fake__echo>", self.engine.prompt_text(1))   # the history names the route that ran
+        self.assertIn("<tool_response>\nbare\n</tool_response>", self.engine.prompt_text(1))
+
+    def test_an_unoffered_tool_name_is_an_error_to_the_model(self):
+        """An unknown name used to become a client tool call the web app cannot answer: nothing ran and nothing was
+        shown.  Now the model reads why and can correct itself."""
+        self.start(call_script("nope", x="y"), "</think>\n\nSorry, I meant the other one.")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        mcp = [c["strata_mcp"] for c in cs if "strata_mcp" in c]
+        self.assertEqual([m["event"] for m in mcp], ["start", "call", "result"])
+        self.assertIsNone(mcp[1]["server"])
+        self.assertFalse(mcp[2]["ok"])
+        self.assertIn("no tool named 'nope'", mcp[2]["text"])
+        self.assertIn("fake__echo", mcp[2]["text"])
+        self.assertFalse([tc for c in cs for tc in c["choices"][0]["delta"].get("tool_calls") or []])
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertIn("<tool_response>\nerror: no tool named 'nope'", self.engine.prompt_text(1))
+
+    def test_a_bare_name_two_servers_offer_is_an_error(self):
+        self.hub.close()
+        self.hub = McpHub({"fake": stdio(), "other": stdio()},
+                          {"timeout_s": 10, "max_result_chars": 500, "max_rounds": 2})
+        self.hub.start(wait=True)
+        self.start(call_script("echo", text="x"), "</think>\n\nWhich one?")
+        code, text = self.post({"strata_mcp": True})
+        self.assertEqual(code, 200, text)
+        mcp = [c["strata_mcp"] for c in self.chunks(text) if "strata_mcp" in c]
+        self.assertFalse(mcp[2]["ok"])
+        self.assertIn("more than one MCP server", mcp[2]["text"])
+        self.assertIn("fake__echo", mcp[2]["text"])
+        self.assertIn("other__echo", mcp[2]["text"])
+        self.assertFalse([tc for c in self.chunks(text)
+                          for tc in c["choices"][0]["delta"].get("tool_calls") or []])
+        self.assertEqual(len(self.engine.prompts), 2)
+
+    def test_an_own_tool_keeps_its_bare_name(self):
+        """A request that declares `echo` itself keeps it: the client answers, not the MCP server, even though one
+        MCP server also offers a tool called `echo`."""
+        own = [{"type": "function", "function": {"name": "echo", "parameters": {"type": "object", "properties": {
+            "text": {"type": "string"}}}}}]
+        self.start(call_script("echo", text="x"), "</think>\n\nnever")
+        code, text = self.post({"strata_mcp": True, "tools": own})
+        self.assertEqual(code, 200, text)
+        cs = self.chunks(text)
+        calls = [tc for c in cs for tc in c["choices"][0]["delta"].get("tool_calls") or []]
+        self.assertEqual(calls[0]["function"]["name"], "echo")
+        self.assertFalse([c for c in cs if "strata_mcp" in c])
+        self.assertEqual(len(self.engine.prompts), 1)
+
     def test_tool_error_is_a_result(self):
         self.start(call_script("fake__fail"), "</think>\n\nIt failed.")
         code, text = self.post({"strata_mcp": True})

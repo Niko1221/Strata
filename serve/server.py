@@ -4738,32 +4738,58 @@ def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
 
 # ------------------------------------------------------------------------------------------------ MCP tool loop
 def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new, max_req, sampling, cancel,
-                 mcp_names):
+                 mcp_names, own_names=frozenset()):
     """Service.run with the MCP tools executed here: the model writes a call to an MCP tool, the server runs it, adds
     the call and its result to the conversation and lets the model continue - up to `max_rounds` times.  Yields what
     Service.run yields (text, thinking, the request's own tool calls) plus ("mcp", {...}) for the tool activity, and
     one ("done", ...) at the very end with the output tokens of every round.
 
-    `mcp_names`: the MCP tools this request offered; any other call is one of the request's own tools and ends the
-    turn as always (the client answers it).  MCP calls written in the same answer are then not run (their results
-    could not reach the model before the client's)."""
+    `mcp_names`: the MCP tools this request offered, by their `<server>__<tool>` name.  `own_names`: the tools the
+    request declared itself; a call to one of those ends the turn as always (the client answers it).  A call the
+    model writes with a tool's bare name is run when exactly one offered MCP tool has that name (#3113: the model
+    copies the user's wording, and the web app cannot answer a client tool call).  Any other name is an `error:`
+    result the model can correct, instead of a tool call the server never runs.  MCP calls written in the same
+    answer as an own call are not run (their results could not reach the model before the client's)."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
     messages = list(messages)
+    routes = hub.routes()
+    bare = {}
+    for n in mcp_names:                                 # the tool's own name -> its namespaced route(s)
+        if n in routes:
+            bare.setdefault(routes[n][1], []).append(n)
+
+    def resolve(name):
+        """The route a call name means, or (None, the reason the model should read)."""
+        if name in mcp_names:
+            return name, None
+        hits = bare.get(name) or []
+        if len(hits) == 1:                              # the model wrote the tool's own name: the common case
+            return hits[0], None
+        if len(hits) > 1:
+            return None, (f"error: {name!r} is offered by more than one MCP server; use one of: "
+                          f"{', '.join(sorted(hits))}")
+        names = ", ".join(sorted(mcp_names)[:12]) + (", ..." if len(mcp_names) > 12 else "")
+        return None, (f"error: no tool named {name!r}. The MCP tools this chat offers are {names}; "
+                      "call one by its full name.")
+
     while True:
-        text, reasoning, calls, own_calls = [], [], [], 0
+        text, reasoning, pending, own_calls = [], [], [], 0
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
             if kind == "done":
                 done = x
                 continue
             if kind == "event":
                 ev: Event = x
-                if ev.call is not None and ev.call.name in mcp_names:
-                    if ev.kind == "tool_start":          # the model has started writing a call: say so at once
-                        yield "mcp", {"event": "start", "id": ev.call.id, "name": ev.call.name}
-                    elif ev.kind == "tool_call":
-                        calls.append(ev.call)
-                    continue                             # its argument pieces are not streamed to the client
+                if ev.call is not None and ev.kind in ("tool_start", "tool_args", "tool_call"):
+                    if ev.call.name not in own_names:   # the request's own tools win, as template_tools(exclude=)
+                        route, why = resolve(ev.call.name)
+                        if ev.kind == "tool_start":      # the model has started writing a call: say so at once
+                            yield "mcp", {"event": "start", "id": ev.call.id, "name": route or ev.call.name}
+                        elif ev.kind == "tool_call":
+                            pending.append((ev.call, route, why))
+                        continue                         # its argument pieces are not streamed to the client
+                    # a call to one of the request's own tools: the client answers it, as always
                 if ev.kind == "tool_call":
                     own_calls += 1
                 elif ev.kind == "content":
@@ -4772,28 +4798,35 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                     reasoning.append(ev.text)
             yield kind, x
         total += done["completion_tokens"]
-        run_them = calls and not own_calls and done["finish"] == "stop" and not cancel.is_set()
+        run_them = pending and not own_calls and done["finish"] == "stop" and not cancel.is_set()
         if run_them and rounds >= max_rounds:
             yield "mcp", {"event": "limit", "max_rounds": max_rounds}
             run_them = False
         if not run_them:
-            for c in calls:                              # announced, never run: close them in the client's view
+            for c, _, _ in pending:                      # announced, never run: close them in the client's view
                 yield "mcp", {"event": "result", "id": c.id, "ok": False, "skipped": True, "text": "not run",
                               "chars": 0, "truncated": False, "ms": 0}
             break
         rounds += 1
         results = []
-        for c in calls:
-            s, tool = hub.routes().get(c.name, (None, c.name))
-            yield "mcp", {"event": "call", "id": c.id, "name": c.name, "server": s.name if s else None,
-                          "tool": tool, "arguments": c.arguments, "round": rounds}
+        for c, route, why in pending:
+            s, tool = routes.get(route, (None, c.name)) if route else (None, c.name)
+            yield "mcp", {"event": "call", "id": c.id, "name": route or c.name,
+                          "server": s.name if s else None, "tool": tool, "arguments": c.arguments, "round": rounds}
+            if route is None:                            # not offered: the model reads why and can correct itself
+                r = {"ok": False, "text": why, "chars": len(why or ""), "truncated": False, "ms": 0,
+                     "server": None, "tool": c.name}
+                results.append(r["text"])
+                yield "mcp", {"event": "result", "id": c.id,
+                              **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
+                continue
             # The call runs on a thread while this generator keeps yielding heartbeats: they reach the client as
             # keep-alives, which is how a client that went away (the web app's Stop) is noticed during a slow tool.
             box = {}
 
-            def work(c=c, box=box):
+            def work(route=route, c=c, box=box):
                 try:
-                    box["r"] = hub.call(c.name, c.arguments, cancel)
+                    box["r"] = hub.call(route, c.arguments, cancel)
                 except McpCancelled:
                     box["cancelled"] = True
             worker = threading.Thread(target=work, daemon=True)
@@ -4813,12 +4846,13 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                   f"{r['ms'] / 1000:.1f} s{' (truncated for the model)' if r['truncated'] else ''}", flush=True)
             results.append(r["text"])
             yield "mcp", {"event": "result", "id": c.id, **{k: r[k] for k in ("ok", "text", "chars", "truncated", "ms")}}
-        if cancel.is_set() or len(results) < len(calls):
+        if cancel.is_set() or len(results) < len(pending):
             done = {**done, "finish": "cancel"}
             break
         messages.append({"role": "assistant", "content": "".join(text).strip(),
                          **({"reasoning_content": "".join(reasoning).strip()} if reasoning else {}),
-                         "tool_calls": [{"function": {"name": c.name, "arguments": c.arguments}} for c in calls]})
+                         "tool_calls": [{"function": {"name": route or c.name, "arguments": c.arguments}}
+                                        for c, route, _ in pending]})
         messages += [{"role": "tool", "content": r} for r in results]
         try:
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_req, cancel=cancel)
@@ -4826,8 +4860,6 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
             done = {**done, "finish": "cancel"}
             break
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
-
-
 # ------------------------------------------------------------------------------------------------ OpenAI
 # The engine's last PP line stops short of the prompt: up to `--short-read` tokens (generate.cpp's `short_read`, 64 by
 # default) are read through the verify windows instead of the batched path, so the batched path never reports the whole
@@ -5960,7 +5992,7 @@ def make_handler(svc: Service):
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
-                               {t["name"] for t in extra}) if use_mcp else None
+                               {t["name"] for t in extra}, own) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
             if validator is not None:
                 chunks = structured_chunks(chunks, validator)
