@@ -13,12 +13,13 @@ it.  A server that stops later (a crash) is started again on its next call.
 
 Tool results reach the model as text: the MCP content blocks joined, capped at `max_result_chars` (a directory tree or
 a web page can be megabytes, far more than a context holds) with a note saying so.  A failed call - the tool's own
-error, a crash, a timeout - becomes a result that starts with "error:", so the model can react instead of the chat
-breaking.
+error, a crash, a timeout, or an HTTP answer shorter than its Content-Length - becomes a result that starts with
+"error:", so the model can react instead of the chat breaking.
 """
 from __future__ import annotations
 
 import collections
+import http.client
 import json
 import os
 import re
@@ -69,6 +70,8 @@ def _wait(slot: _Slot, timeout: float, cancel: threading.Event | None, what: str
     if slot.error:
         raise slot.error
     msg = slot.msg
+    if not isinstance(msg, dict):                        # a transport that ended without a message or an error
+        raise McpError(f"{what}: the server sent no answer")
     if "error" in msg:
         err = msg["error"] if isinstance(msg["error"], dict) else {"message": str(msg["error"])}
         raise McpError(f"{err.get('message') or 'error'} (code {err.get('code')})")
@@ -303,11 +306,21 @@ class HttpTransport:
             detail = ""
             try:
                 detail = e.read().decode("utf-8", "replace")[:300]
-            except OSError:
+            except (OSError, http.client.HTTPException):   # the error body itself can be cut off
                 pass
             if e.code == 404 and self.session:           # the session expired: a restart starts a new one
                 self.broken = McpError("the server ended the session")
             err = McpError(f"HTTP {e.code} {e.reason}{': ' + detail if detail else ''}")
+            if slot is None:
+                raise err from None
+            slot.error = err
+        except http.client.IncompleteRead as e:           # a body shorter than its Content-Length
+            err = McpError(f"the server's answer was cut off: {e}")
+            if slot is None:
+                raise err from None
+            slot.error = err
+        except http.client.HTTPException as e:           # any other malformed answer from the HTTP layer
+            err = McpError(f"the server's answer failed ({type(e).__name__}): {e}")
             if slot is None:
                 raise err from None
             slot.error = err

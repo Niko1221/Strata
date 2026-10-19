@@ -201,6 +201,40 @@ class HttpClient(unittest.TestCase):
         self.assertIn("could not reach", self.hub.servers["down"].error)
 
 
+class HttpTruncated(unittest.TestCase):
+    """A Streamable HTTP answer shorter than its Content-Length (IncompleteRead): a failed start, and a tool call
+    that becomes an error result instead of a TypeError in the wait path."""
+
+    def hub(self, truncate):
+        httpd = fake.http_server(0, truncate)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/mcp"
+        hub = McpHub({"cut": {"url": url}}, {"timeout_s": 1.5, "start_timeout_s": 5})
+        self.addCleanup(hub.close)
+        hub.start(wait=True)
+        return hub
+
+    def test_a_truncated_start_fails_the_server(self):
+        for method in ("initialize", "tools/list"):
+            with self.subTest(method=method):
+                hub = self.hub(method)
+                s = hub.servers["cut"]
+                self.assertEqual(s.status, "failed")
+                self.assertIn("cut off", s.error)
+                self.assertEqual(hub.status()["tools"], 0)
+
+    def test_a_truncated_tool_answer_is_an_error_result(self):
+        hub = self.hub("tools/call")
+        s = hub.servers["cut"]
+        self.assertEqual(s.status, "ready", s.error)
+        hub.routes()
+        r = hub.call("cut__echo", {"text": "x"})
+        self.assertFalse(r["ok"])
+        self.assertIn("error:", r["text"])
+        self.assertIn("cut off", r["text"])
+
+
 class Config(unittest.TestCase):
     def test_both_spellings_and_the_file(self):
         with tempfile.TemporaryDirectory() as d:

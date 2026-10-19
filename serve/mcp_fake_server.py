@@ -2,6 +2,7 @@
 
     python serve/mcp_fake_server.py                  stdio: JSON-RPC lines on stdin/stdout
     python serve/mcp_fake_server.py --http 8765      Streamable HTTP on 127.0.0.1:8765/mcp
+    python serve/mcp_fake_server.py --http 8765 --truncate tools/call   (a body shorter than its Content-Length)
 
 Tools: echo (returns its text), fail (a tool error, isError), sleep (answers after `seconds`), big (`n` characters),
 die (the process exits mid-call), add (two integers).  tools/list pages two tools at a time (`--page N`), so the
@@ -108,9 +109,10 @@ def stdio():
             answer(msg)
 
 
-def http_server(port: int = 0) -> ThreadingHTTPServer:
+def http_server(port: int = 0, truncate: str | None = None) -> ThreadingHTTPServer:
     """Streamable HTTP at /mcp: JSON answers, except tools/call, which answers as an event stream (a progress
-    notification first); a session id from initialize is required afterwards."""
+    notification first); a session id from initialize is required afterwards.  `truncate`: the method whose answer is
+    cut off (a Content-Length longer than the body), for the client's IncompleteRead path."""
     sessions = set()
 
     class H(BaseHTTPRequestHandler):
@@ -129,6 +131,16 @@ def http_server(port: int = 0) -> ThreadingHTTPServer:
             if r is None:
                 self.send_response(202)
                 self.end_headers()
+                return
+            if truncate and msg.get("method") == truncate:
+                body = json.dumps(r).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body) + 16))
+                self.end_headers()
+                self.wfile.write(body[:max(1, len(body) // 2)])
+                self.wfile.flush()
+                self.close_connection = True             # HTTP/1.0: the client reads a short body and raises
                 return
             if msg.get("method") == "tools/call":
                 self.send_response(200)
@@ -166,7 +178,8 @@ if __name__ == "__main__":
         sys.stderr.write("cannot start: missing configuration\n")
         sys.exit(2)
     if "--http" in sys.argv:
-        server = http_server(int(sys.argv[sys.argv.index("--http") + 1]))
+        truncate = sys.argv[sys.argv.index("--truncate") + 1] if "--truncate" in sys.argv else None
+        server = http_server(int(sys.argv[sys.argv.index("--http") + 1]), truncate)
         print(f"listening on http://127.0.0.1:{server.server_address[1]}/mcp", flush=True)
         threading.Event().wait()
     stdio()

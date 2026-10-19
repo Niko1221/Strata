@@ -1493,9 +1493,10 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   without them. The Monitor tab lists them, and the Sampling drawer has **Use tools from MCP servers** (on by
   default). A server that stops later is started again at its next call.
 - In the chat each call shows as a small block (tool, arguments, result); the model reads the result and goes on,
-  up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
-  gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
-  (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
+  up to `max_rounds` calls in a row per answer. A tool that fails, takes longer than `timeout_s` (default 60 s), or
+  whose HTTP server cuts the answer off gives the model an `error: ...` result instead of ending the chat. Results
+  longer than `max_result_chars` (default 20,000 characters) are cut, with a note, before the model reads them. Stop
+  stops a running tool too.
 - Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
   before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
   gets `strata_mcp` tool events in the stream).
