@@ -952,7 +952,8 @@ print(r.choices[0].message.content)
   ids with the template's low-effort sentence in place of the xhigh or medium one in the first system message (a splice of
   token ids: the rest of the prompt is not decoded or re-encoded). When the prompt carries no effort sentence to
   swap (a low-effort run, or a client that sends none at all), the resume goes on from the same ids with the
-  sampling raise alone. The task stays the same; no answer or `</think>`
+  sampling raise alone; a prompt without a system message was never a native-effort run and is left without
+  recovery, as before. The task stays the same; no answer or `</think>`
   is inserted, and both passes share the original output limit. On recovery only, temperature is raised to at least
   1.0 and presence penalty to at least 1.5; a client's top-p, top-k and seed are never changed. `/metrics` records
   `reasoning_recoveries` and the coverage. This is a policy, not a numerical engine fix or a guarantee of an answer.

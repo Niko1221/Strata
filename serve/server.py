@@ -79,6 +79,7 @@ from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
+SYSTEM_HEAD = IM_END[:2] + "im_start" + IM_END[-2:] + "system\n"   # brackets spelled once, from the end marker
 
 
 def popen(what: str, args: list, role: str = "engine", **kw):
@@ -260,7 +261,7 @@ def focused_recovery_prompt(tok, ids, generated):
     if len(end) != 1 or end[0] not in ids:
         return None
     head = ids[:ids.index(end[0])]
-    if not tok.decode(head).startswith("<|im_start|>system\n"):
+    if not tok.decode(head).startswith(SYSTEM_HEAD):
         return None
     old_candidates = [tok.encode(s, parse_special=False) for s in (HIGH_EFFORT, EFFORT_TEXT["medium"])]
     new = tok.encode(LOW_EFFORT, parse_special=False)
@@ -269,6 +270,16 @@ def focused_recovery_prompt(tok, ids, generated):
             if head[i:i + len(old)] == old:
                 return ids[:i] + new + ids[i + len(old):] + list(generated)
     return None
+
+
+def prompt_has_system_turn(tok, ids) -> bool:
+    """Whether the prompt's first turn is a system message: the no-splice recovery accepts only such a
+    prompt (a template render that carries no effort sentence); a prompt without a system turn was never a
+    native-effort run and is left without recovery (#728)."""
+    end = tok.encode(IM_END, parse_special=True)
+    if len(end) != 1 or end[0] not in ids:
+        return False
+    return tok.decode(ids[:ids.index(end[0])]).startswith(SYSTEM_HEAD)
 
 
 LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
@@ -4827,12 +4838,13 @@ class Service:
                                             break
                                         if not emb:              # "recover": not for a request with pictures
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
-                                            if recover_prompt is None:
-                                                # no effort sentence to swap (a low run, or a client that sends
-                                                # none): recover on the sampling raise alone
+                                            if recover_prompt is None and prompt_has_system_turn(self.tok, ids):
+                                                # a template prompt with no effort sentence to swap (a low run, or a
+                                                # client that sends none): recover on the sampling raise alone
                                                 recover_prompt = list(ids) + list(raw_ids)
                                                 spliced = False
-                                            break
+                                            if recover_prompt is not None:
+                                                break
                                 if budget and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens

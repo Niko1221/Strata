@@ -15,7 +15,8 @@ import os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from serve.server import (EFFORT_TEXT, HIGH_EFFORT, LOW_EFFORT, IM_END, LOOP_SENTENCE_RUN,
-                          focused_recovery_prompt, reasoning_repeat_coverage, reasoning_sentence_run)
+                          focused_recovery_prompt, prompt_has_system_turn,
+                          reasoning_repeat_coverage, reasoning_sentence_run)
 
 SPECIAL = 0xE000
 
@@ -105,5 +106,14 @@ check("a Chinese sentence run counts by characters", reasoning_sentence_run((CJK
 passage = "the model should now answer with the final result and stop thinking about it"
 dense = " ".join(f"filler word number {k}" for k in range(1500)) + ". " + (passage + ". ") * 60
 check("coverage regression: a dense loop still fires", reasoning_repeat_coverage(dense) >= 0.25, True)
+
+# C: the no-splice recovery accepts only a prompt with a system turn: a prompt without one
+#    was never a native-effort run and must stay without recovery (the contract of
+#    serve/test_reasoning_loop_recovery.test_missing_native_high_hint_skips_recovery).
+check("system turn: bare recovery is allowed",
+      prompt_has_system_turn(tok, prompt_with(EFFORT_TEXT["low"])), True)
+user_turn = IM_END[:2] + "im_start" + IM_END[-2:] + "user\nTask" + IM_END + "\n"
+check("no system turn: recovery stays skipped",
+      prompt_has_system_turn(tok, tok.encode(user_turn, parse_special=True)), False)
 
 print("loop_guard_test: all ok")
