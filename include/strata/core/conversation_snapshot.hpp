@@ -139,4 +139,11 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
                                                           SessionState& session, const ModelGeometry& g,
                                                           const QsaState* draft, std::string& error);
 
+#if defined(STRATA_GPU_METAL)
+// The park/restore repack between the Metal window's [cell][head][unit] order and the image's
+// [page][head][cell in page][unit] order; to_image runs the park, false runs the restore.
+// Exposed so metal/tests/window_cells_test.cpp can check it without a model.
+void window_cells(void* dst, const void* src, int64_t cells, int64_t page, int64_t heads, size_t unit,
+                  bool to_image);
+#endif
 } // namespace strata::core
