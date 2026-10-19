@@ -9,11 +9,35 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import setup  # noqa: E402
 import strata_mcp as M  # noqa: E402
+import test_setup_unsloth  # noqa: E402
+from test_setup_unsloth import Base  # noqa: E402  the mocked setup.main() harness
+from unittest import mock  # noqa: E402
 
 
 def hardware(ram, vram):
     return {"ram_gb": ram, "gpus": [{"usable": True, "vram_gb": vram, "vendor": "nvidia", "index": 0, "name": "RTX"}],
             "cpu": {"avx2": True}}
+
+
+class GyroLowRamPack(Base):
+    """A low-RAM Gyro install packs twice (the pack, then experts.bin); both runs need the family's --compat-bf16, or
+    iq_pack.py refuses Gyro's IQ4_NL / Q6_K / Q8_0 hc tensors and setup stops at the second run on every retry."""
+
+    def test_both_pack_runs_carry_compat_bf16(self):
+        class OneFileGGUF:                             # Gyro is one file: experts and the PLE table together
+            def __init__(self, path):
+                self.tensors = [mock.Mock(), mock.Mock()]
+                self.tensors[0].name, self.tensors[1].name = "blk.0.ffn_up_exps.weight", "per_layer_token_embd.weight"
+
+        with mock.patch.object(test_setup_unsloth, "FakeGGUF", OneFileGGUF):
+            code, out, _ = self.main(["--family", "gyro", "--context", "8192", "--vision", "no"], ram=31.0,
+                                     vram=23.9, version="0.1.45.3", family=False, m="Gyro-S")
+        self.assertEqual(code, 0, out)
+        packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
+        self.assertEqual(len(packs), 2, self.runs)
+        self.assertIn("--experts-bin", packs[1])
+        for p in packs:
+            self.assertIn("--compat-bf16", p)
 
 
 class GyroCatalog(unittest.TestCase):
