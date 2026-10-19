@@ -127,30 +127,6 @@ show_status() {
   echo "$DETAIL"
 }
 
-# Live monitor: redraws the badge once a second until Ctrl+C.
-monitor() {
-  MON_STOP=0
-  if [ -t 1 ]; then
-    trap 'MON_STOP=1' INT
-  fi
-  echo "Live monitor (1 s) — Ctrl+C returns to the menu."
-  echo ""
-  while :; do
-    status_view
-    printf '%s %s %s\n' "$REV" "$BADGE" "$SRESET"
-    printf '%s\n' "$DETAIL"
-    sleep 1 || true
-    if [ "$MON_STOP" -eq 1 ]; then
-      break
-    fi
-    if [ -t 1 ]; then
-      printf '\033[2A\033[J'
-    fi
-  done
-  trap - INT
-  echo ""
-}
-
 # Start a server in the background, then poll /metrics until it answers.
 # The menu loop can continue while the server keeps running.
 start_server_background() {
@@ -182,11 +158,10 @@ show_menu() {
   echo "Select a model to start:"
   echo "  1) Swift 1.5 Abliterated IQ3_S (512k context, vision)"
   echo "  2) Qwen 3.8 Flash Next IQ3_S (512k context, vision)"
-  echo "  3) Show status"
-  echo "  4) Stop active server"
-  echo "  5) Live monitor (state, tk/s, reading %, queue)"
+  echo "  3) Stop active server"
+  echo "  4) Live TUI monitor (state, speed, queue, hardware, history)"
   echo "  q) Quit"
-  printf "Choice [1-5, q]: "
+  printf "Choice [1-4, q]: "
 }
 
 TARGET="$1"
@@ -230,19 +205,15 @@ while :; do
     2|qwen)
       start_server_background run-iq3_s.sh
       ;;
-    3|status)
-      echo ""
-      show_status
-      printf "\nPress Enter to return to the menu... "
-      read -r _ || exit 0
-      ;;
-    4|stop)
+    3|stop)
       stop_server
       ;;
-    5|monitor)
+    4|monitor)
       echo ""
-      monitor
-      printf "Press Enter to return to the menu... "
+      # Textual dashboard; || true so a non-zero exit (e.g. Ctrl+C) does not
+      # end the menu loop under set -e.
+      "$PY" "$ROOT/monitor.py" || true
+      printf "\nPress Enter to return to the menu... "
       read -r _ || exit 0
       ;;
     q|Q)
