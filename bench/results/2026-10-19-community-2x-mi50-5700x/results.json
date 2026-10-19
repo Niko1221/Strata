@@ -1,0 +1,362 @@
+{
+ "date": "2026-10-19",
+ "engine": "0.1.43.1 (a0116b2)",
+ "rocm": "mixa3607/rocm-gfx906:7.14-complete",
+ "model": "IQ3_XXS, rev ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+ "context": 131072,
+ "hardware": "2x MI50 16GB (1002:66af), Ryzen 7 5700X, 64GB DDR4-3600, X570-E",
+ "arms": {
+  "2400": {},
+  "3600-more": {
+   "long_decode": {
+    "median": 49.1,
+    "min": 48.2,
+    "max": 55.5,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 353.3,
+    "min": 353.1,
+    "max": 353.6,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 51.0,
+    "min": 50.9,
+    "max": 51.8,
+    "n": 5
+   }
+  },
+  "3600": {},
+  "attn": {
+   "long_decode": {
+    "median": 49.4,
+    "min": 48.4,
+    "max": 53.7,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 356.1,
+    "min": 349.1,
+    "max": 356.3,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 53.4,
+    "min": 49.9,
+    "max": 54.5,
+    "n": 5
+   }
+  },
+  "base": {
+   "long_decode": {
+    "median": 49.2,
+    "min": 47.5,
+    "max": 56.7,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 353.1,
+    "min": 352.9,
+    "max": 353.6,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 51.5,
+    "min": 49.8,
+    "max": 52.5,
+    "n": 5
+   }
+  },
+  "final": {
+   "long_decode": {
+    "median": 65.8,
+    "min": 63.3,
+    "max": 75.5,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 371.4,
+    "min": 371.1,
+    "max": 371.9,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 74.0,
+    "min": 69.7,
+    "max": 74.8,
+    "n": 5
+   }
+  },
+  "mmap": {
+   "long_decode": {
+    "median": 49.7,
+    "min": 48.0,
+    "max": 51.7,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 352.1,
+    "min": 351.8,
+    "max": 352.4,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 51.4,
+    "min": 50.9,
+    "max": 55.7,
+    "n": 5
+   }
+  },
+  "pipe_trim": {
+   "long_decode": {
+    "median": 68.4,
+    "min": 64.1,
+    "max": 72.7,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 371.0,
+    "min": 370.8,
+    "max": 371.7,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 72.7,
+    "min": 72.6,
+    "max": 73.6,
+    "n": 5
+   }
+  },
+  "pipe_trim_attn": {
+   "long_decode": {
+    "median": 69.5,
+    "min": 67.7,
+    "max": 73.5,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 377.7,
+    "min": 377.4,
+    "max": 378.2,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 72.4,
+    "min": 71.4,
+    "max": 76.9,
+    "n": 5
+   }
+  },
+  "pipeline2": {
+   "long_decode": {
+    "median": 66.9,
+    "min": 65.1,
+    "max": 74.5,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 352.3,
+    "min": 352.0,
+    "max": 352.4,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 74.1,
+    "min": 71.1,
+    "max": 75.4,
+    "n": 5
+   }
+  },
+  "prefill4096": {
+   "long_decode": {
+    "median": 48.9,
+    "min": 47.2,
+    "max": 53.6,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 353.3,
+    "min": 352.3,
+    "max": 353.4,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 51.6,
+    "min": 50.9,
+    "max": 52.4,
+    "n": 5
+   }
+  },
+  "trim": {
+   "long_decode": {
+    "median": 50.1,
+    "min": 48.5,
+    "max": 54.6,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 370.8,
+    "min": 363.6,
+    "max": 371.3,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 52.9,
+    "min": 52.8,
+    "max": 53.8,
+    "n": 5
+   }
+  }
+ },
+ "concurrency": {
+  "pipe_trim": [
+   {
+    "n": 1,
+    "aggregate_tps": 20.2
+   },
+   {
+    "n": 2,
+    "aggregate_tps": 20.6
+   },
+   {
+    "n": 4,
+    "aggregate_tps": 21.1
+   }
+  ],
+  "pipe_trim_batch2": [
+   {
+    "n": 1,
+    "aggregate_tps": 20.4
+   },
+   {
+    "n": 2,
+    "aggregate_tps": 23.0
+   },
+   {
+    "n": 4,
+    "aggregate_tps": 21.6
+   }
+  ],
+  "pipe_trim_batch4": [
+   {
+    "n": 1,
+    "aggregate_tps": 20.0
+   },
+   {
+    "n": 2,
+    "aggregate_tps": 22.5
+   },
+   {
+    "n": 4,
+    "aggregate_tps": 21.8
+   }
+  ]
+ },
+ "ram_compare": {
+  "2400": {},
+  "3600": {
+   "long_decode": {
+    "median": 49.1,
+    "min": 48.2,
+    "max": 55.5,
+    "n": 7
+   },
+   "long_prompt": {
+    "median": 353.3,
+    "min": 353.1,
+    "max": 353.6,
+    "n": 7
+   },
+   "short_decode": {
+    "median": 51.0,
+    "min": 50.9,
+    "max": 51.8,
+    "n": 5
+   }
+  }
+ },
+ "deep_context": {
+  "v0": {
+   "label": "kv0",
+   "wall_s": 44.6,
+   "prompt_n": 31285,
+   "prompt_tps": 712.7,
+   "decode_tps": 50.9,
+   "decode_n": 64
+  },
+  "v20480-r1": {
+   "label": "kv20480-r1",
+   "wall_s": 45.0,
+   "prompt_n": 31285,
+   "prompt_tps": 705.9,
+   "decode_tps": 50.9,
+   "decode_n": 64
+  },
+  "v20480-r2": {
+   "label": "kv20480-r2",
+   "wall_s": 47.5,
+   "prompt_n": 31285,
+   "prompt_tps": 710.3,
+   "decode_tps": 52.0,
+   "decode_n": 64
+  },
+  "v20480-r3": {
+   "label": "kv20480-r3",
+   "wall_s": 45.3,
+   "prompt_n": 31285,
+   "prompt_tps": 698.5,
+   "decode_tps": 51.4,
+   "decode_n": 64
+  },
+  "v20480": {
+   "label": "kv20480",
+   "wall_s": 46.5,
+   "prompt_n": 31285,
+   "prompt_tps": 706.0,
+   "decode_tps": 73.7,
+   "decode_n": 64
+  },
+  "v65536": {
+   "label": "kv65536",
+   "wall_s": 44.8,
+   "prompt_n": 31285,
+   "prompt_tps": 704.1,
+   "decode_tps": 52.5,
+   "decode_n": 64
+  },
+  "ipe_trim-r1": {
+   "label": "pipe_trim-r1",
+   "wall_s": 47.3,
+   "prompt_n": 31285,
+   "prompt_tps": 703.7,
+   "decode_tps": 51.8,
+   "decode_n": 64
+  },
+  "ipe_trim-r2": {
+   "label": "pipe_trim-r2",
+   "wall_s": 44.5,
+   "prompt_n": 31285,
+   "prompt_tps": 704.9,
+   "decode_tps": 73.7,
+   "decode_n": 64
+  },
+  "ipe_trim-r3": {
+   "label": "pipe_trim-r3",
+   "wall_s": 45.6,
+   "prompt_n": 31285,
+   "prompt_tps": 693.6,
+   "decode_tps": 53.2,
+   "decode_n": 64
+  },
+  "ipe_trim": {
+   "label": "pipe_trim",
+   "wall_s": 44.5,
+   "prompt_n": 31285,
+   "prompt_tps": 704.5,
+   "decode_tps": 51.4,
+   "decode_n": 64
+  }
+ },
+ "concat_note": "deep = ~31.3K prompt tokens, 64 tokens out, one request per file"
+}
