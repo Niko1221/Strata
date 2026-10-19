@@ -46,7 +46,7 @@ inline constexpr unsigned cudaEventDisableTiming = strata::gpu::kEventDisableTim
 inline constexpr unsigned cudaEventBlockingSync = strata::gpu::kEventBlockingSync;
 inline constexpr unsigned cudaStreamNonBlocking = strata::gpu::kStreamNonBlocking;
 enum cudaStreamCaptureMode { cudaStreamCaptureModeGlobal = 0, cudaStreamCaptureModeThreadLocal = 1, cudaStreamCaptureModeRelaxed = 2 };
-enum cudaDeviceAttr { cudaDevAttrClockRate = 13, cudaDevAttrMultiProcessorCount = 16, cudaDevAttrIntegrated = 18 };
+enum cudaDeviceAttr { cudaDevAttrClockRate = 13, cudaDevAttrComputeCapabilityMajor = 75, cudaDevAttrComputeCapabilityMinor = 76, cudaDevAttrMultiProcessorCount = 16, cudaDevAttrIntegrated = 18 };
 
 // ---- errors, devices
 inline cudaError_t cudaGetLastError() { return strata::gpu::get_last_error(); }
@@ -65,11 +65,19 @@ inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int d) {
         case cudaDevAttrIntegrated: return strata::gpu::device_integrated(v, d);
         case cudaDevAttrMultiProcessorCount: return strata::gpu::device_sm_count(v, d);
         case cudaDevAttrClockRate: return strata::gpu::device_clock_khz(v, d);
+        // a fixed 9.0: no Apple GPU is a Turing (7.5) card, so the sm75 defaults stay off
+        case cudaDevAttrComputeCapabilityMajor: *v = 9; return cudaSuccess;
+        case cudaDevAttrComputeCapabilityMinor: *v = 0; return cudaSuccess;
     }
     return strata::gpu::compat_detail::bad();
 }
 inline cudaError_t cudaDeviceCanAccessPeer(int* v, int d, int p) { return strata::gpu::device_can_access_peer(v, d, p); }
 inline cudaError_t cudaDeviceEnablePeerAccess(int p, unsigned f) { return strata::gpu::device_enable_peer_access(p, f); }
+// one Apple GPU: no peers (cudaDeviceCanAccessPeer says 0, so PeerExperts never reaches these); "unsupported" if it did
+inline cudaError_t cudaDeviceDisablePeerAccess(int) { return strata::gpu::compat_detail::bad(); }
+inline cudaError_t cudaMemcpyPeer(void*, int, const void*, int, size_t) { return strata::gpu::compat_detail::bad(); }
+// no stream priorities on Metal: an empty 0/0 range, and a priority stream is a plain one
+inline cudaError_t cudaDeviceGetStreamPriorityRange(int* lo, int* hi) { *lo = 0; *hi = 0; return cudaSuccess; }
 
 // ---- memory and copies
 template <class T> inline cudaError_t cudaMalloc(T** p, size_t n) { return strata::gpu::malloc_device(p, n); }
@@ -97,6 +105,7 @@ inline cudaError_t cudaMemcpyPeerAsync(void* d, int dd, const void* s, int sd, s
 // ---- streams, events, host functions
 inline cudaError_t cudaStreamCreate(cudaStream_t* s) { return strata::gpu::stream_create(s); }
 inline cudaError_t cudaStreamCreateWithFlags(cudaStream_t* s, unsigned f) { return strata::gpu::stream_create(s, f); }
+inline cudaError_t cudaStreamCreateWithPriority(cudaStream_t* s, unsigned f, int) { return strata::gpu::stream_create(s, f); }
 inline cudaError_t cudaStreamDestroy(cudaStream_t s) { return strata::gpu::stream_destroy(s); }
 inline cudaError_t cudaStreamSynchronize(cudaStream_t s) { return strata::gpu::stream_synchronize(s); }
 inline cudaError_t cudaStreamQuery(cudaStream_t s) { return strata::gpu::stream_query(s); }

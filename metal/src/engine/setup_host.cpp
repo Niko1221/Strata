@@ -57,6 +57,7 @@ bool native_qsa_indexer_enabled() { return g_qsa_indexer.load(std::memory_order_
 void native_rope_set_enabled(bool v) { g_rope.store(v, std::memory_order_relaxed); }
 bool native_rope_enabled() { return g_rope.load(std::memory_order_relaxed); }
 void fused_gr_check() {}   // the CUDA read variants' self-test: no variants on Metal
+void fused_gr_persist_init() {}   // STRATA_HC_PERSIST=1 is a HIP-only opt-in (as on CUDA/SYCL): nothing to initialise on Metal
 
 // ---- scratch sizes
 uint64_t ple_block_scratch_bytes() {
