@@ -973,12 +973,17 @@ __global__ void __launch_bounds__(TK_T) block_topk_wide_kernel(const float* __re
 // qsa_block_scores takes it for every call without an active-block count and at most MQ queries: the captured decode
 // window, the uncaptured decode, and prefill's pooled16 call.
 constexpr int MQ = 8;
+// OWN (the batch window's rows, qsa_block_scores_rows): each query reads its own sequence's keys from srow.  The
+// default form (OWN false) is the kernel as it was before #2234 - no per-query branch and no QsaScoreRows argument -
+// since that argument and branch in the default kernel left a gfx1151 verify window stalled on its first layer
+// (Windows HIP, with STRATA_PLE_BATCH, STRATA_LFUSE and STRATA_TSUM or STRATA_GDN_SPLIT, gfx1151's defaults).
+template <bool OWN>
 __device__ __forceinline__ void block_scores_multi_body(const float* __restrict__ pooled,
                                                         const float* __restrict__ dead,
                                                         const float* __restrict__ q_idx,
                                                         const int32_t* __restrict__ steps, int nq, int64_t max_blocks,
                                                         float* __restrict__ out, bool early_exit,
-                                                        const QsaScoreRows& srow) {
+                                                        const QsaScoreRows* srow) {
     __shared__ __align__(16) float qs[MQ * IDX_HEADS * IDX_DIM];
     __shared__ int64_t s_nkv[MQ], s_nbid[MQ];
     if (!early_exit)
@@ -1001,16 +1006,21 @@ __device__ __forceinline__ void block_scores_multi_body(const float* __restrict_
     const int lane = threadIdx.x & 31;
     const int64_t wstride = (int64_t) gridDim.x * SCORE_WARPS;
     for (int64_t b = (int64_t) blockIdx.x * SCORE_WARPS + (threadIdx.x >> 5); b <= top && b < max_blocks; b += wstride) {
-        // srow.n > 0: each query reads its own sequence's keys; else one set of keys for every query
-        const bool own = srow.n > 0;
-        const float4 kp = own ? float4{} : *reinterpret_cast<const float4*>(pooled + b * IDX_DIM + lane * 4);
-        const float4 kd = own ? float4{} : *reinterpret_cast<const float4*>(dead + lane * 4);
+        // OWN: each query reads its own sequence's keys; else one set of keys for every query
+        float4 kp{}, kd{};
+        if constexpr (!OWN) {
+            kp = *reinterpret_cast<const float4*>(pooled + b * IDX_DIM + lane * 4);
+            kd = *reinterpret_cast<const float4*>(dead + lane * 4);
+        }
         for (int qi = 0; qi < nq; ++qi) {
             const int64_t n_bid = s_nbid[qi];
             if (b > n_bid) continue;
-            const float4 k4 = !own ? ((b == n_bid) ? kd : kp)
-                            : (b == n_bid) ? *reinterpret_cast<const float4*>(srow.dead[qi] + lane * 4)
-                                           : *reinterpret_cast<const float4*>(srow.pooled[qi] + b * IDX_DIM + lane * 4);
+            float4 k4;
+            if constexpr (OWN)
+                k4 = (b == n_bid) ? *reinterpret_cast<const float4*>(srow->dead[qi] + lane * 4)
+                                  : *reinterpret_cast<const float4*>(srow->pooled[qi] + b * IDX_DIM + lane * 4);
+            else
+                k4 = (b == n_bid) ? kd : kp;
             const float* q = qs + qi * IDX_HEADS * IDX_DIM + lane * 4;
             float score = 0.0f;
 #pragma unroll
@@ -1034,8 +1044,17 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_kernel(co
                                                                               const float* __restrict__ q_idx,
                                                                               const int32_t* __restrict__ steps, int nq,
                                                                               int64_t max_blocks, float* __restrict__ out,
-                                                                              bool early_exit, QsaScoreRows srow = {}) {
-    block_scores_multi_body(pooled, dead, q_idx, steps, nq, max_blocks, out, early_exit, srow);
+                                                                              bool early_exit) {
+    block_scores_multi_body<false>(pooled, dead, q_idx, steps, nq, max_blocks, out, early_exit, nullptr);
+}
+
+// qsa_block_scores_rows: the same work, each query with its own sequence's keys (rows.pooled[q], rows.dead[q])
+__global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_multi_rows_kernel(const float* __restrict__ q_idx,
+                                                                                   const int32_t* __restrict__ steps,
+                                                                                   int nq, int64_t max_blocks,
+                                                                                   float* __restrict__ out,
+                                                                                   bool early_exit, QsaScoreRows rows) {
+    block_scores_multi_body<true>(nullptr, nullptr, q_idx, steps, nq, max_blocks, out, early_exit, &rows);
 }
 
 // Queries of different slots, each with its own indexer keys: blockIdx.y is the query, and its CTAs run exactly the
@@ -1056,9 +1075,9 @@ __global__ void __launch_bounds__(SCORE_WARPS * 32) block_scores_slots_kernel(Sc
 #pragma unroll
     for (unsigned i = 1; i < MQ; ++i)
         if (z == i) { pooled = keys.pooled[i]; dead = keys.dead[i]; }
-    block_scores_multi_body(pooled, dead, q_idx + (size_t) z * IDX_HEADS * IDX_DIM,
+    block_scores_multi_body<false>(pooled, dead, q_idx + (size_t) z * IDX_HEADS * IDX_DIM,
                             steps + (size_t) z * kStepCount, 1, max_blocks, out + (size_t) z * max_blocks, early_exit,
-                            QsaScoreRows{});
+                            nullptr);
 }
 
 // QSAROWS (docs/QSAROWS.md, STRATA_QSA_ROWS=1): block_scores_multi_kernel's work for NQ <= 4 queries with less issue
@@ -1815,8 +1834,8 @@ void qsa_block_scores_rows(const QsaScoreRows& rows, const float* q_idx, const i
         std::exit(1);
     }
     static const bool early = [] { const char* v = std::getenv("STRATA_QSA_EARLY_EXIT"); return v == nullptr || std::atoi(v) != 0; }();
-    block_scores_multi_kernel<<<256, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(nullptr, nullptr, q_idx, steps, (int) nq,
-                                                                                 max_blocks, scores, early, rows);
+    block_scores_multi_rows_kernel<<<256, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(q_idx, steps, (int) nq, max_blocks,
+                                                                                      scores, early, rows);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_scores_rows: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
