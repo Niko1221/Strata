@@ -19,7 +19,12 @@ class Scripts(unittest.TestCase):
     @unittest.skipIf(SH is None, "needs sh")
     def test_shell_scripts_parse(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "smoke-test.sh"):
-            r = subprocess.run([SH, "-n", str(DOCKER / name)], capture_output=True, text=True)
+            shell = SH
+            if (DOCKER / name).read_text().startswith("#!/bin/bash"):      # smoke-test.sh: bash on the host, not the image's sh
+                shell = shutil.which("bash")
+                if shell is None:
+                    continue
+            r = subprocess.run([shell, "-n", str(DOCKER / name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
 
     def test_scripts_use_unix_line_ends(self):
