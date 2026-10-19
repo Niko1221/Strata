@@ -43,7 +43,8 @@ class CallScanTests(unittest.TestCase):
                 self.assertEqual(events_without_ids(a.finish()), events_without_ids(b.finish()))
 
     def test_no_structural_rescans_until_closer_and_reset_for_next_call(self):
-        parser = frontend.OutputParser(thinking=False)
+        # a declared tool, so the parser does enter the call state: #3075 leaves a call out of it when nothing was offered
+        parser = frontend.OutputParser(thinking=False, tools=[{"name": "write"}])
         with patch.object(frontend, "call_end", wraps=frontend.call_end) as walk:
             for _ in range(2):
                 parser.feed("<tool_call><function=write><parameter=text>")
