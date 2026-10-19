@@ -135,6 +135,10 @@ public:
     struct CheckpointSizes { size_t gdn, ple, tails, dead, block_pos; };
     CheckpointSizes checkpoint_sizes() const;
     void reset();   // a new sequence (session_zero): the running state zeroed
+    // The conversation snapshots read the K/V through the session's QsaStates (and the drafter's): describe the
+    // window's own K/V buffers there (INT8 codes and scales, full residency), as the CUDA session holds its own
+    void bind_kv();
+    void set_draft_state(strata::core::QsaState* st) { draft_ = st; }
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
     bool mtp_load(const std::string& gguf, int max_t, std::string& err);
@@ -361,6 +365,7 @@ private:
     mtl::Buffer Wm_, mnorm_, mR_, memb_, men_, me2_, mhn_, mh2_, midx_, mbo_, minj_[2], mqids_, mlm_;
     std::map<std::string, size_t> mnorm_off_;
     std::vector<mtl::Buffer> mkq_, mvq_, mksc_, mvsc_, mtail_, mdead_, mpooled_;
+    strata::core::QsaState* draft_ = nullptr;   // the drafter's QsaState (MtpDrafter::kv_state), described by bind_kv
     // the draft head over a token subset (data/draft_vocab.bin, as the CUDA drafter): its rows gathered from the head
     mtl::Buffer mhead_;
     gguf::Tensor mhead_t_;
@@ -1502,6 +1507,29 @@ void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
     nb_ = false;   // what follows reads the folded state: a barrier
 }
 
+void Window::bind_kv() {
+    const int64_t pages = max_cells_ / 4;   // qsa_real_shapes().page_size cells a page
+    auto describe = [&](strata::core::QsaState& q, const mtl::Buffer& k, const mtl::Buffer& v, const mtl::Buffer& ks,
+                        const mtl::Buffer& vs, const mtl::Buffer& pooled) {
+        q.k_pool = q.v_pool = nullptr;
+        q.kv_int8 = true;
+        q.kv_q4 = q.kv_hybrid = q.kv_rot = false;
+        q.k_q = (int8_t*) k.ptr; q.v_q = (int8_t*) v.ptr;
+        q.k_scale = (uint16_t*) ks.ptr; q.v_scale = (uint16_t*) vs.ptr;
+        q.kv_mode = 0;
+        q.kv_elastic = -1;
+        q.n_pages = q.n_slots = pages;
+        q.max_cells = max_cells_;
+        q.idx_pooled_rows = max_cells_ / 4 + 2;
+        q.idx_pooled = (float*) pooled.ptr;
+    };
+    if (ss_ != nullptr)
+        for (size_t j = 0; j < kq_.size() && (int64_t) j < ss_->qsa_alloc; ++j)
+            describe(ss_->qsa_states[ss_->qsa_ord0 + j], kq_[j], vq_[j], ksc_[j], vsc_[j], pooled_[j]);
+    if (draft_ != nullptr && !mkq_.empty())
+        describe(*draft_, mkq_[0], mvq_[0], mksc_[0], mvsc_[0], mpooled_[0]);
+}
+
 Window::CheckpointSizes Window::checkpoint_sizes() const {
     const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
     return {gst_.size() * (gs + hs), (size_t) 4 * 9 * 10240, tail_.size() * ts, dead_.size() * dsz, 0};
@@ -2599,6 +2627,8 @@ void set_model_shard(const char* shard1) { g_shard1 = shard1 ? shard1 : ""; }
 // One decode window per process: the prompt path (Prefill::init) may bring it up before the Verifier does.
 namespace {
 Window* g_the_window = nullptr;
+// the drafter is loaded before the window exists: its QsaState waits here for window_init
+strata::core::QsaState* g_draft_state = nullptr;
 }
 void* window_create() {
     if (g_the_window == nullptr) g_the_window = new Window();
@@ -2623,6 +2653,8 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
         if (!x->init(g, ss, g_shard1, MAXT, max_cells, err)) return false;
         window_register(w);
         if (!mtp_load_pending(x, err)) return false;
+        x->set_draft_state(g_draft_state);
+        x->bind_kv();
     }
     x->set_max_t(max_t);
     *n_vocab = x->vocab();
@@ -2650,6 +2682,12 @@ bool window_checkpoint_sizes(size_t& gdn, size_t& ple, size_t& tails, size_t& de
     const auto z = g_the_window->checkpoint_sizes();
     gdn = z.gdn; ple = z.ple; tails = z.tails; dead = z.dead; block_pos = z.block_pos;
     return true;
+}
+void mtp_bind_state(strata::core::QsaState* st) {
+    g_draft_state = st;
+    if (g_the_window == nullptr || !g_the_window->ready()) return;
+    g_the_window->set_draft_state(st);
+    g_the_window->bind_kv();
 }
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
