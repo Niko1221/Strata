@@ -4639,7 +4639,7 @@ class Service:
         nf_retried = False                              # #879: the request was sent again after non-finite logits
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage, sentence_run = 0, "", 0.0, 0
-        looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
+        looped, next_loop_check, spliced = False, LOOP_CHECK_EVERY, True   # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
@@ -4827,8 +4827,12 @@ class Service:
                                             break
                                         if not emb:              # "recover": not for a request with pictures
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
-                                            if recover_prompt is not None:
-                                                break
+                                            if recover_prompt is None:
+                                                # no effort sentence to swap (a low run, or a client that sends
+                                                # none): recover on the sampling raise alone
+                                                recover_prompt = list(ids) + list(raw_ids)
+                                                spliced = False
+                                            break
                                 if budget and parser.state == "reasoning":
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
@@ -4911,8 +4915,9 @@ class Service:
                                 trace["reasoning_repeat_coverage"] = round(repeat_coverage, 3)
                                 trace["reasoning_sentence_run"] = sentence_run
                             print(f"[strata] repeated reasoning detected at {n} tokens "
-                                  f"(coverage={repeat_coverage:.3f}, sentence_run={sentence_run}); resuming the same output with the low-effort "
-                                  "instruction (reasoning_loop_recovery)", flush=True)
+                                  f"(coverage={repeat_coverage:.3f}, sentence_run={sentence_run}); resuming the same output "
+                                  + ("with the low-effort instruction" if spliced else "on the sampling raise alone")
+                                  + " (reasoning_loop_recovery)", flush=True)
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
