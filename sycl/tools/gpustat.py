@@ -20,7 +20,7 @@ import collections, glob, json, os, subprocess, time
 
 OUT = "/run/gpustat.json"
 INTERVAL = float(os.environ.get("GPUSTAT_INTERVAL", "3"))   # each sample scans /proc/*/fd; keep it modest
-NAMES = {"e223": "Intel(R) Arc(TM) Pro B70 Graphics"}
+NAMES = {"e223": "Intel(R) Arc(TM) Pro B70 Graphics", "e222": "Intel(R) Arc(TM) Pro B65 Graphics"}
 
 
 def find_card():
@@ -52,10 +52,10 @@ def card_name(dev_id):
     if dev_id in NAMES:
         return NAMES[dev_id]
     try:
-        out = subprocess.run(["lspci", "-mm", "-s", PCI], capture_output=True, text=True, timeout=5).stdout
-        parts = [p.strip('"') for p in out.split('" "')]
-        if len(parts) >= 3 and parts[2]:
-            return parts[2]
+        out = subprocess.run(["lspci", "-vmm", "-s", PCI], capture_output=True, text=True, timeout=5).stdout
+        name = next((l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("Device:")), "")
+        if name:   # (-mm's quoted fields do not split: an unquoted -p00 sits among them)
+            return name
     except (OSError, subprocess.SubprocessError):
         pass
     return f"Intel GPU 8086:{dev_id}"
@@ -116,13 +116,17 @@ def clients():
             except Exception:
                 continue
             cid = info.get("drm-client-id")
-            if not cid or cid in res:
+            if not cid:
+                continue
+            cid = (info.get("drm-pdev", "").strip(), cid)   # client ids count per card: two cards can repeat one
+            if cid in res:
                 continue
             kb = lambda k: int(info.get(k, "0").split()[0] or 0)
             cyc = max(kb("drm-cycles-rcs"), kb("drm-cycles-ccs"))
             tot = max(kb("drm-total-cycles-rcs"), kb("drm-total-cycles-ccs"))
             res[cid] = {"pid": int(pdir[6:]), "comm": rd(f"{pdir}/comm", "?"),
-                        "cg": rd(f"{pdir}/cgroup", ""), "vram_kb": kb("drm-resident-vram0"), "cycles": cyc, "total": tot}
+                        "cg": rd(f"{pdir}/cgroup", ""), "vram_kb": kb("drm-resident-vram0"), "cycles": cyc, "total": tot,
+                        "pdev": info.get("drm-pdev", "").strip()}
     return res
 
 def main():
@@ -134,7 +138,8 @@ def main():
     link = pcie_link(); link_t = time.time()
     while True:
         now = time.time(); dt = max(now - t_prev, 1e-3)
-        cl = clients()
+        # this card's clients only: with two cards every process's fdinfo lists both, and their sum read as 163% of one
+        cl = {cid: c for cid, c in clients().items() if not c.get("pdev") or c["pdev"] == PCI}
         busy = 0.0
         for cid, c in cl.items():
             p = prev.get(cid)
