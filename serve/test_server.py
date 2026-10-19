@@ -4944,11 +4944,22 @@ class AmdWindowsTelemetry(unittest.TestCase):
         from serve import telemetry
         g = telemetry._AmdWindows(99)                                       # no such AMD card (or no ADL at all)
         self.assertFalse(g.ok())
+        card = {"name": "AMD Radeon RX 7900 XTX", "provider": "Advanced Micro Devices, Inc.", "driver": "32.0",
+                "vram_bytes": 24 << 30}
         with mock.patch.object(telemetry, "WINDOWS", True):
             self.assertIsNone(telemetry.free_vram_mib(99, amd=True))
-            t = telemetry.Telemetry(gpu_index=99, amd=True)
+            with mock.patch.object(telemetry, "windows_amd_cards", return_value=[]):
+                t = telemetry.Telemetry(gpu_index=99, amd=True)
             self.assertIsNone(t.static["gpu_name"])
             self.assertIn("atiadlxx.dll", t.static["gpu_note"])                 # #1380: says why
+            self.assertFalse(any(k.startswith("gpu_") for k in t.sample()))
+            if os.name != "nt":                                              # the registry fallback is Windows-only
+                return
+            # #1587: without readings the registry still names the card and its VRAM; the note still says why
+            with mock.patch.object(telemetry, "windows_amd_cards", return_value=[card]):
+                t = telemetry.Telemetry(gpu_index=99, amd=True)
+            self.assertEqual((t.static["gpu_name"], t.static["gpu_vram_total_mib"]), (card["name"], 24 << 10))
+            self.assertIn("atiadlxx.dll", t.static["gpu_note"])
             self.assertFalse(any(k.startswith("gpu_") for k in t.sample()))
 
 
