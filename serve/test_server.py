@@ -3649,6 +3649,19 @@ class UsageAndStatus(unittest.TestCase):
         self.assertEqual(last["usage"]["prompt_tokens_details"]["cached_tokens"], ClockedEngine.REUSED)
         self.assertEqual(last["timings"]["cache_n"], ClockedEngine.REUSED)
 
+    def test_responses(self):
+        # /v1/responses carries the same top-level timings as /v1/chat/completions
+        body = {"model": "x", "max_output_tokens": 20, "input": "hi"}
+        status, raw = self.request("/v1/responses", body)
+        self.assertEqual(status, 200)
+        r = json.loads(raw)
+        self.assertEqual(r["timings"]["cache_n"], ClockedEngine.REUSED)
+        self.assertEqual(r["timings"]["predicted_n"], r["usage"]["output_tokens"])
+        status, raw = self.request("/v1/responses", {**body, "stream": True})
+        last = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: {")][-1]
+        self.assertIn(last["type"], ("response.completed", "response.incomplete"))
+        self.assertAlmostEqual(last["timings"]["predicted_per_second"], 50.0, delta=0.1)   # 20 ms a token
+
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)

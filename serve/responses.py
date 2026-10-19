@@ -666,10 +666,17 @@ class Assembler:
         if length:
             self.response["status"] = "incomplete"
             self.response["incomplete_details"] = {"reason": "max_output_tokens"}
-            return out + [self.event("response.incomplete", response=self.snapshot())]
+            return out + [self._with_timings(self.event("response.incomplete", response=self.snapshot()), done)]
         self.response["status"] = "completed"
         self.response["completed_at"] = int(time.time())
-        return out + [self.event("response.completed", response=self.snapshot())]
+        return out + [self._with_timings(self.event("response.completed", response=self.snapshot()), done)]
+
+    @staticmethod
+    def _with_timings(event: dict, done: dict) -> dict:
+        """Top-level `timings` on the final event, as /v1/chat/completions has them (#107)."""
+        if done.get("timings"):
+            event["timings"] = done["timings"]
+        return event
 
     def failed(self, message: str, code: str = "server_error") -> dict:
         """response.failed: an error after the stream started (the HTTP status is already sent)."""
@@ -687,4 +694,6 @@ def collect(events) -> dict:
     for e in events:
         if e is not None:
             last = e
+    if last.get("timings"):                          # as on a whole /v1/chat/completions reply (#107)
+        return {**last["response"], "timings": last["timings"]}
     return last["response"]
