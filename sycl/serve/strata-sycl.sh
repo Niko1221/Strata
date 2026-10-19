@@ -24,7 +24,11 @@ for a in "$@"; do args+=" $(printf '%q' "$a")"; done
 # the port's run-time switches: the device-built verify plan, and no host handshakes in it. NO_HOST is for a card on
 # the xe driver (the host<->GPU flag stores are not visible there); an i915 card (Arc A-series) runs without it
 # (docs/INTEL.md)
-declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STRATA_STAGER_THREADS]=12)
+# STRATA_CACHE_DIR: the engine's measurements that outlive a run (the int8 prompt experts' crossover, measured at
+# the first prompt of each format: ~1.4 s of a B70's first 2K prompt) - under the mounted data root, not in the
+# throwaway container's home
+declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STRATA_STAGER_THREADS]=12
+                    [STRATA_CACHE_DIR]=/work/.strata-cache)
 while IFS= read -r k; do
     case "$k" in
         STRATA_SYCL_*) ;;                                 # this script's own settings
