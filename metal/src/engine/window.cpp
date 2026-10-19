@@ -131,6 +131,9 @@ public:
     // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
     bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
+    // the byte sizes of the checkpoint payload, one source for save, restore and the generic validator
+    struct CheckpointSizes { size_t gdn, ple, tails, dead, block_pos; };
+    CheckpointSizes checkpoint_sizes() const;
     void reset();   // a new sequence (session_zero): the running state zeroed
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
@@ -1499,6 +1502,11 @@ void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
     nb_ = false;   // what follows reads the folded state: a barrier
 }
 
+Window::CheckpointSizes Window::checkpoint_sizes() const {
+    const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
+    return {gst_.size() * (gs + hs), (size_t) 4 * 9 * 10240, tail_.size() * ts, dead_.size() * dsz, 0};
+}
+
 bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
     (void) err;
     if (pend_fold_ > 0) {   // the last commit's fold first: the checkpoint is the state after it
@@ -1509,14 +1517,15 @@ bool Window::checkpoint_save(strata::core::ConversationCheckpoint& c, std::strin
         pend_fold_ = 0;
     }
     const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
-    c.gdn.resize(gst_.size() * (gs + hs));
+    const CheckpointSizes z = checkpoint_sizes();
+    c.gdn.resize(z.gdn);
     for (size_t i = 0; i < gst_.size(); ++i) {
         std::memcpy(c.gdn.data() + i * (gs + hs), gst_[i].ptr, gs);
         std::memcpy(c.gdn.data() + i * (gs + hs) + gs, ghist_[hp_][i].ptr, hs);
     }
-    c.ple.assign((const uint8_t*) pleHist_.ptr, (const uint8_t*) pleHist_.ptr + 4 * 9 * 10240);
-    c.tails.resize(tail_.size() * ts);
-    c.dead.resize(dead_.size() * dsz);
+    c.ple.assign((const uint8_t*) pleHist_.ptr, (const uint8_t*) pleHist_.ptr + z.ple);
+    c.tails.resize(z.tails);
+    c.dead.resize(z.dead);
     for (size_t j = 0; j < tail_.size(); ++j) {
         std::memcpy(c.tails.data() + j * ts, tail_[j].ptr, ts);
         std::memcpy(c.dead.data() + j * dsz, dead_[j].ptr, dsz);
@@ -1547,8 +1556,9 @@ void Window::reset() {
 
 bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
     const size_t gs = 4 * 128 * 48 * 128, hs = 4 * 10240 * 3, ts = 4 * 4 * 128, dsz = 4 * 128;
-    if (c.gdn.size() != gst_.size() * (gs + hs) || c.ple.size() != (size_t) 4 * 9 * 10240 ||
-        c.tails.size() != tail_.size() * ts || c.dead.size() != dead_.size() * dsz) {
+    const CheckpointSizes z = checkpoint_sizes();
+    if (c.gdn.size() != z.gdn || c.ple.size() != z.ple || c.tails.size() != z.tails || c.dead.size() != z.dead ||
+        c.block_pos.size() != z.block_pos) {
         err = "metal window: the checkpoint is not this engine's (sizes differ)";
         return false;
     }
@@ -2634,6 +2644,12 @@ void window_reset() {
 bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
     return g_the_window->checkpoint_save(c, err);
+}
+bool window_checkpoint_sizes(size_t& gdn, size_t& ple, size_t& tails, size_t& dead, size_t& block_pos) {
+    if (g_the_window == nullptr || !g_the_window->ready()) return false;
+    const auto z = g_the_window->checkpoint_sizes();
+    gdn = z.gdn; ple = z.ple; tails = z.tails; dead = z.dead; block_pos = z.block_pos;
+    return true;
 }
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
