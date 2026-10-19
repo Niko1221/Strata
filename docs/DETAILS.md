@@ -1965,7 +1965,9 @@ the pairs in which the switched arm won). They are here so you can try them on y
   is freed, nothing is allocated: the block never moves, so the decode's captured graphs stay valid) and the decode's
   own bytes are back before the first generated token. Measured on the Q8_0 4-way rig: the ring really did take the
   675 MiB and the decode did not move, but the deeper ring bought no time at 3,080 or 14,859 tokens (it was not what
-  the prompt waited on). Reported by merbanan on an 8 GB RTX 2060 SUPER, where the ring was the limit: +17% / +17% /
+  the prompt waited on). On that rig on 2026-10-19 the read threshold was measured: continuations that read 61, 7
+  and 7 tokens skipped the room, and their first token came 0.19-0.24 s sooner (the room's lend and reclaim).
+  Reported by merbanan on an 8 GB RTX 2060 SUPER, where the ring was the limit: +17% / +17% /
   +23% prompt tokens/s at 4K / 16K / 32K, decode within noise, logits bitwise equal. The same shape the Maya checkout
   implemented for its DFlash drafter and then for its MTP config's NextN block (local commits `7df369c`, `5ccf9a4`).
   Details, how to measure it and what it costs: [MTP_PROMPT_ROOM.md](MTP_PROMPT_ROOM.md).

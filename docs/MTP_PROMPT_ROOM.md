@@ -86,9 +86,10 @@ other buffer of a chunk is inside the region `bytes_needed` sized for it. A room
   back independently (the room before the first window, the head with its own `head_restore`).
 - Measured on the Q8_0 4-way rig, at 3,080 and 14,859 tokens, and on the shape that still rebuilt the prompt path;
   there the ring was not the limit, so the room bought nothing and its rebuild was what the request paid. Reported by
-  merbanan on an 8 GB RTX 2060 SUPER, where the ring was the limit: +17% / +17% / +23% at 4K / 16K / 32K. The in-place
-  shape and the threshold that counts the tokens a request reads have not been run on our hardware. See
-  [Measuring it](#measuring-it).
+  merbanan on an 8 GB RTX 2060 SUPER, where the ring was the limit: +17% / +17% / +23% at 4K / 16K / 32K. The
+  in-place shape and the threshold that counts the tokens a request reads were measured on the same Q8_0 4-way rig
+  on 2026-10-19: a continuation that reads 7 tokens skips the room, and its first token came 0.19-0.21 s sooner
+  (that is the room's lend and reclaim). See [Measuring it](#measuring-it).
 
 ## Measuring it
 
@@ -184,9 +185,45 @@ greedy replies matched, and the drafter's acceptance after the room was given ba
 `experts_reclaim` restores the bytes intact. `STRATA_PREFILL_KEEP=64` (#2833) on top of the room changed nothing on
 this card: the chunk stayed 6,656 and the result was +78.2 / +92.0 / +134.9.
 
-What this report does not cover: the in-place shape on our rigs, HIP/SYCL, `--prefill-head-alias`, or a threshold
-other than `0`. The threshold that counts the tokens a request reads (below) was added after this report and has not
-been measured; `=0` keeps every request roomed, as measured here.
+What this report does not cover: HIP/SYCL, `--prefill-head-alias`, or a threshold other than `0`. The in-place shape
+and the threshold that counts the tokens a request reads were measured on our Q8_0 4-way rig after it (below); `=0`
+keeps every request roomed, as measured here and in the control there.
+
+### Measured: Q8_0 4-way, 2026-10-19: the threshold that counts what a request reads
+
+**What it was measured on.** 2x RTX 3060 (11.6 GB) + 2x RTX 5060 (7.5 GB), layer split `18,39,46`,
+Qwen3.8-Flash-Next Q8_0 pack, MTP runtime `rt`, `--spec 4 --spec-min-p 0.5`, `--prefill auto:262144`,
+`--kv fp16 --kv-resident 0`, `--max-context 262144 --vram-reserve-mib 700 --trim-stage-weights --vision`, 247 GB of
+RAM. The config's other environment variables (`STRATA_PREFILL_MAX`, `STRATA_WARM_PROMPT`, `STRATA_MMQ_SLAB`,
+`STRATA_PREFILL_STAGES`, `STRATA_PREFILL_KEEP`) belong to branches that are not in this one and were ignored; only
+`STRATA_MTP_ROOM_MIN` is read here. The room was the drafter's 675 MiB on CUDA3 (135 slots past the ring's own).
+
+Two engines from the same branch, one start each: the parent commit (whole-prompt test) against the fixed one
+(tokens-read test), `MIN=1024` in both. The same client sent one 5,042-token chat (temperature 0, 32 tokens out,
+roomed in both arms) and then three continuations: the assistant's answer echoed back plus a one-line user turn,
+3 tokens out. A third start of the fixed binary at `MIN=0` is the control.
+
+| request | parent: whole prompt | fixed: tokens read |
+|---|---|---|
+| cold: 5,042 read | room 5042 tok; lend 603 + close 104 ms; read 17,454 ms; first token 17.62 s | room 5042 tok; lend 534 + close 107 ms; read 17,323 ms; first token 17.47 s |
+| turn 2: 5,035 reused + **61 read** | room **5096 tok**; 102 + 104 ms; read 2,054 ms; first token 2.110 s | **no room**; read 1,813 ms; first token **1.869 s** |
+| turn 3: 5,089 reused + **7 read** | room **5096 tok**; 102 + 104 ms; read 360 ms; first token 0.409 s | **no room**; read 153 ms; first token **0.203 s** |
+| turn 4: 5,089 reused + **7 read** | room **5096 tok**; 102 + 105 ms; read 344 ms; first token 0.390 s | **no room**; read 152 ms; first token **0.199 s** |
+
+The parent lent the room for the whole 5,096-token prompt on every continuation while the request read 61, 7 and 7
+tokens; its lend and reclaim (the two numbers in each cell) are the whole difference. Turns 3 and 4 are the clean
+comparison - turn 2 also restores the 5,035-token conversation, so its read is not the room's cost alone: the room's
+~206-207 ms is gone, and the first token comes 206 ms and 191 ms sooner. The cold request still takes the room in
+both arms; its 131 ms difference is run-to-run noise (the control start read the same prompt in 16,286 ms).
+
+The `MIN=0` control opened the room on the same continuations with `23 tokens to read` and `7 tokens to read`
+(lend ~103 ms, close 105-106 ms): first token 0.432 s and 0.415 s on turns 3-4, the parent's ~0.4 s again. So `=0`
+is unchanged, and the savings above are the room being skipped, not the new binary.
+
+Every continuation answered `done.` in all three arms. The cold answer (temperature 0) matched between the parent
+and fixed arms but differed in the control run after the same opening, so run-to-run bitwise determinism is not
+claimed here. What this measurement does not cover: more than one run per timing, HIP/SYCL, `--prefill-head-alias`,
+or a threshold other than 0/1024.
 
 ## Where this comes from
 
