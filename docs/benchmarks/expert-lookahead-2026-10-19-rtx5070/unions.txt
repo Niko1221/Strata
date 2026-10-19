@@ -1,0 +1,16 @@
+docs/benchmarks/expert-lookahead-2026-10-19-rtx5070/inputs/prose.oracle8.routing.bin: 65 positions per layer, last 64 used
+  T= 1 windows/layer=64 mean distinct experts/layer=  10.0 of 512
+  T= 2 windows/layer=32 mean distinct experts/layer=  15.7 of 512
+  T= 4 windows/layer=16 mean distinct experts/layer=  25.4 of 512
+  T= 8 windows/layer= 8 mean distinct experts/layer=  40.8 of 512
+  T=16 windows/layer= 4 mean distinct experts/layer=  61.6 of 512
+  T=32 windows/layer= 2 mean distinct experts/layer=  84.7 of 512
+  T=64 windows/layer= 1 mean distinct experts/layer= 109.6 of 512
+docs/benchmarks/expert-lookahead-2026-10-19-rtx5070/inputs/code.oracle8.routing.bin: 65 positions per layer, last 64 used
+  T= 1 windows/layer=64 mean distinct experts/layer=  10.0 of 512
+  T= 2 windows/layer=32 mean distinct experts/layer=  16.9 of 512
+  T= 4 windows/layer=16 mean distinct experts/layer=  27.7 of 512
+  T= 8 windows/layer= 8 mean distinct experts/layer=  45.0 of 512
+  T=16 windows/layer= 4 mean distinct experts/layer=  70.0 of 512
+  T=32 windows/layer= 2 mean distinct experts/layer= 106.3 of 512
+  T=64 windows/layer= 1 mean distinct experts/layer= 157.7 of 512
