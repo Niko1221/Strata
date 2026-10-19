@@ -1984,8 +1984,9 @@ reads it. The CPU computes layer l while the GPU runs layer l+1's mixer; that mi
 runs without layer l's CPU rows. The stage's last layer is never deferred, nor layer 0 when layer 1 runs the PLE block.
 
 It changes the answers (teacher-forced KL against the default: see below). Windows that run without it (one start-up
-line says why): batch windows, `--spec-split` token groups, `--remote-expert-opt`, the all-resident graph (no CPU
-rows), a stage with no layer to defer, a control vector on the stage. Start-up lines when on:
+line says why): batch windows, `--spec-split` token groups, `--remote-expert-opt`, `STRATA_PCIE_BALANCE` (its fit
+times the wait for the CPU rows), the all-resident graph (no CPU rows), a stage with no layer to defer, a control
+vector on the stage. Start-up lines when on:
 `STRATA_VERIFY_DEFER_CPU=1 (changes the output)`, then the split's (below)
 `STRATA_VERIFY_DEFER_CPU_BELOW=0.1 (the default): a deferred layer waits for its CPU rows of routing weight >= 0.1 ...`
 (without `(the default)` when it is set; `STRATA_VERIFY_DEFER_CPU_BELOW=<w>: every CPU row joins late` for `w` >= 1),
@@ -2020,8 +2021,10 @@ with `STRATA_VERIFY_PROFILE` the wait for the heavy rows shows as `waitCPU` of t
 The split is turned off at start-up, with one line saying so (`STRATA_VERIFY_DEFER_CPU: the heavy rows (weight >=
 0.1, the default) are not kept on time with ...` when `w` was not set), and every CPU row joins late (as with
 `w` >= 1), when the verifier takes the device plan (`STRATA_VERIFY_DEVICE_PLAN=1`) and with `--peer-device` or a helper
-cache (`--expert-cache-device1..3`), whose rows land after the CPU's. The doorbell carries the routing weights in the windows
-that defer (`doorbell_publish`, as `--remote-expert-opt` uses it), so those windows copy the layer's input to the host
+cache (`--expert-cache-device1..3`), whose rows land after the CPU's. A layer whose CPU experts were still being read
+when the pool started (`STRATA_COLD_OVERLAP=1`, `2` or `3`, which compute them in batches as their reads land) is not
+split either: it waits for all its CPU rows, and one line (said once) says so. The doorbell carries the routing weights
+in the windows that defer (`doorbell_publish`, as `--remote-expert-opt` uses it), so those windows copy the layer's input to the host
 even when all its experts are in VRAM. Without `STRATA_VERIFY_DEFER_CPU`, nothing of it runs: no flag is allocated and
 no kernel or host step changes; a `STRATA_VERIFY_DEFER_CPU_BELOW` set then gets one line,
 `STRATA_VERIFY_DEFER_CPU_BELOW=<w> ignored (it needs STRATA_VERIFY_DEFER_CPU=1 or check)`.

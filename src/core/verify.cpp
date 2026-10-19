@@ -772,6 +772,16 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         defer_ = defer_check_ || (v != nullptr && std::strcmp(v, "1") == 0);
         if (!defer_ && v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0)
             std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU=%s is not 1 or check: no deferral\n", v);
+        // set_pcie_balance (before init): its GPU fit ends at post(l)'s wait for the CPU rows, which a deferred layer
+        // does not make - no deferral, and nothing of it allocated or said but this line
+        const bool bal_off = defer_ && bal_ != nullptr;
+        if (bal_off) {
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU=%s is not taken with STRATA_PCIE_BALANCE=1 (its "
+                                 "fit times the wait for the CPU rows, which a deferred layer does not make): no deferral\n",
+                         v);
+            defer_ = false;
+            defer_check_ = false;
+        }
         // STRATA_VERIFY_DEFER_CPU_BELOW=<w>: only the CPU rows of routing weight below w are deferred, the others are
         // waited for in their own layer.  Unset: 0.1.  w >= 1: every CPU row deferred, no split (no partial flag).
         constexpr float kBelowDefault = 0.1f;
@@ -786,7 +796,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                                      "default, %.1f\n", h, kBelowDefault);
             below = below_set ? hv : kBelowDefault;
             defer_heavy_ = below < 1.0f ? below : 0.0f;
-        } else if (h_given) {
+        } else if (h_given && !bal_off) {
             std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU_BELOW=%s ignored (it needs "
                                  "STRATA_VERIFY_DEFER_CPU=1 or check)\n", h);
         }
@@ -2597,6 +2607,9 @@ bool Verifier::defer_ok(int T, std::string* why) const {
     if (batch_rec_) return no("a batch window");
     if (split_ && T >= 2) return no("--spec-split's two token groups");
     if (remote_opt_ != nullptr) return no("--remote-expert-opt");
+    // (set_pcie_balance's GPU fit ends at the wait for the CPU rows, which a deferred layer does not make: init turns
+    // deferral off then, as the balance is set before it; this keeps a stamped window from being captured deferred)
+    if (m_bal_ != nullptr) return no("STRATA_PCIE_BALANCE");
     if (ar_on()) return no("every expert of the stage is in VRAM: no CPU rows");
     // record_window's deferred(): not the stage's last layer, nor layer 0 under the PLE block
     const bool ple_layer0 = lb_ == 0 && ss_->ple.ready() && ple_stage();
