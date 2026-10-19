@@ -880,11 +880,15 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, passthrough: bool = False):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
+        # passthrough (Codex's compaction request): its prompt is rendered with the conversation's kept tools, but
+        # the request declares none, and its answer keeps the calls the model writes (responses.py's
+        # _kept_prompt_tools).  So the content state scans for a call although the request offered no schema.
+        self.passthrough = passthrough
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -1282,7 +1286,9 @@ class OutputParser:
                         self.buf = ""
                         return out
                     self.buf, self.lead = stripped, False
-                i = self.buf.find(CALL_START) if self.schemas else -1      # #3075: a call the request never offered
+                # #3075: a call the request never offered stays text.  passthrough is the one request whose answer
+                # keeps its calls although it declared nothing: Codex's compaction (see the constructor).
+                i = self.buf.find(CALL_START) if self.schemas or self.passthrough else -1
                 b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
                 if b >= 0 and (i < 0 or b < i):
                     # recover: <function=NAME> alone at the start of a line - the call without its <tool_call>.

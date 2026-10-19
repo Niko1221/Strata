@@ -661,9 +661,9 @@ class CodexCompactionOverHttp(Server):
         self.parser_tools = []
         run = self.svc.run
 
-        def recorded(ids, thinking, tools, *rest):
+        def recorded(ids, thinking, tools, *rest, **extra):
             self.parser_tools.append(tools)
-            return run(ids, thinking, tools, *rest)
+            return run(ids, thinking, tools, *rest, **extra)
         self.svc.run = recorded
 
     def compaction(self, meta, output="before", between=None, **extra):
@@ -696,13 +696,17 @@ class CodexCompactionOverHttp(Server):
         self.assertEqual(outputs, [("function_call", "multi_agent_v1.spawn_agent", None),
                                    ("function_call", "apply_patch", None)])
         # the same request without Codex's metadata (upstream's behaviour): the same answer, but its prompt starts
-        # differently, so the engine reads it from the start
+        # differently, so the engine reads it from the start.  It is then a plain request that declared no tools, so
+        # the calls the model wrote come back as text (#3075); only the compaction request keeps them as calls.
         plain, code, r2 = self.compaction({})
         self.assertEqual(code, 200, r2)
         self.assertFalse(plain.startswith(self.first_prompt))
         self.assertNotIn("multi_agent_v1.spawn_agent", plain[:plain.index("<|im_end|>")])
         self.assertEqual(self.parser_tools[-1], None)
-        self.assertEqual([(o["type"], o["name"], o.get("namespace")) for o in r2["output"]], outputs)
+        self.assertEqual([o["type"] for o in r2["output"]], ["message"])
+        text = "".join(part.get("text") or "" for part in r2["output"][0]["content"])
+        self.assertIn("<function=multi_agent_v1.spawn_agent>", text)
+        self.assertIn("<function=apply_patch>", text)
 
     def test_a_compaction_too_long_with_the_kept_tools_is_rendered_as_sent(self):
         long = "before\n" * 300                         # a long tool output: the turn fits, its compaction barely
