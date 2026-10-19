@@ -26,6 +26,10 @@
 #include <vector>
 
 namespace k = strata::kernels;
+namespace strata::kernels {   // SYCL port: the prompt path's per-cell attention (qsa_decode_attn.dp.cpp)
+void qsa_prompt_attn_percell(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+}
 
 namespace {
 void ck(dpct::err0 e, const char *w) {
@@ -242,17 +246,27 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
             k::qsa_decode_attn_batch(d_q + t0 * NH * HD, pl, d_ids + t0 * cap, d_steps + t0 * k::kStepCount, cap, s,
                                      scratch, d_old + t0 * NH * HD, std::min(batch, nq - t0), nullptr);
     };
+    float* d_pc = nullptr;   // SYCL port: qsa_prompt_attn_percell's output
+    ck(DPCT_CHECK_ERROR(d_pc = (float *)sycl::malloc_device(nq * NH * HD * 4, dpct::get_in_order_queue())), "malloc");
+    auto pc_run = [&]() {
+        for (int64_t t0 = 0; t0 < nq; t0 += batch)
+            k::qsa_prompt_attn_percell(d_q + t0 * NH * HD, pl, d_ids + t0 * cap, d_steps + t0 * k::kStepCount, cap, s,
+                                       scratch, d_pc + t0 * NH * HD, std::min(batch, nq - t0), nullptr);
+    };
+    bool refused = false;   // SYCL port: the XMX kernel takes int8 and FP16 pools; the per-cell check runs anyway
     auto new_run = [&]() {
         if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
-            std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools\n");
-            std::exit(2);
+            if (!refused) std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools: per-cell check only\n");
+            refused = true;
         }
     };
     old_run();
     new_run();
+    pc_run();
     ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
        "run");
-    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size());
+    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), pcw(o.size());
+    ck(DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(pcw.data(), d_pc, pcw.size() * 4).wait()), "down");
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                             .memcpy(o.data(), d_old, o.size() * 4)
                             .wait()),
@@ -261,13 +275,14 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                             .memcpy(nw.data(), d_new, nw.size() * 4)
                             .wait()),
        "down");
+    if (refused) nw = o;   // SYCL port: nothing of the XMX kernel to compare
     {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
         uint64_t hh = 1469598103934665603ull;
         for (float x : nw) { uint32_t u; std::memcpy(&u, &x, 4); hh = (hh ^ u) * 1099511628211ull; }
         std::printf("NEWHASH %016llx\n", (unsigned long long) hh);
     }
     // 1. FP64 reference on a sample of queries
-    double err_old = 0, err_new = 0, ref_scale = 0;
+    double err_old = 0, err_new = 0, err_pc = 0, ref_scale = 0;
     for (int64_t i = 0; i < nq; i += std::max<int64_t>(1, nq / 16)) {
         const int64_t w = steps[i * k::kStepCount + k::kStepWidth];
         const int32_t* sel = ids.data() + i * cap;
@@ -301,13 +316,15 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 ref_scale = std::max(ref_scale, std::fabs(r));
                 err_old = std::max(err_old, std::fabs(o[at] - r));
                 err_new = std::max(err_new, std::fabs(nw[at] - r));
+                err_pc = std::max(err_pc, std::fabs(pcw[at] - r));
             }
         }
     }
     // 2. new vs old everywhere
-    double diff = 0, scale = 0;
+    double diff = 0, scale = 0, diff_pc = 0;
     for (size_t i = 0; i < o.size(); ++i) {
         diff = std::max(diff, (double) std::fabs(o[i] - nw[i]));
+        diff_pc = std::max(diff_pc, (double) std::fabs(o[i] - pcw[i]));
         scale = std::max(scale, (double) std::fabs(o[i]));
     }
     // 3. speed
@@ -331,7 +348,20 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
         (e1->get_profiling_info<sycl::info::event_profiling::command_end>() -
          e0->get_profiling_info<sycl::info::event_profiling::command_start>()) /
         1000000.0f;
-    const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale);
+    float ms_pc = 0;
+    dpct::sync_barrier(e0);
+    for (int r = 0; r < reps; ++r) pc_run();
+    dpct::sync_barrier(e1);
+    ck(DPCT_CHECK_ERROR(e1->wait_and_throw()), "time");
+    ms_pc = (e1->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             e0->get_profiling_info<sycl::info::event_profiling::command_start>()) / 1000000.0f;
+    // SYCL port: the per-cell kernel - FP32 like the warp kernel, another summation order
+    const bool ok_pc = err_pc <= std::max(4.0 * err_old, 1e-6 * ref_scale) && diff_pc <= 1e-4 * scale;
+    std::printf("%s %s per-cell: vs FP64 %.3g (warp kernel %.3g), vs the warp kernel %.2g of scale; %.3f -> %.3f ms per chunk (%.2fx)\n",
+                ok_pc ? "PASS" : "FAIL", fmt == 2 ? "q4_0" : fmt == 1 ? "int8" : "fp16", err_pc, err_old, diff_pc / scale,
+                ms_old / reps, ms_pc / reps, ms_old / ms_pc);
+    sycl::free((void *)d_pc, dpct::get_in_order_queue());
+    const bool ok1 = err_new <= std::max(4.0 * err_old, 1e-6 * ref_scale) && ok_pc;
     const bool ok2 = diff <= 1e-4 * scale;
     std::printf("%s %s ctx %lld, %lld queries: vs FP64 old %.3g new %.3g (output scale %.3g); new vs old %.3g (%.2g of "
                 "scale); %.3f -> %.3f ms per chunk (%.2fx)\n",

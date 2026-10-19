@@ -40,6 +40,10 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
+namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_decode_attn.dp.cpp
+void qsa_prompt_attn_percell(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+}
 
 #include <algorithm>
 #include <set>
@@ -3432,6 +3436,15 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                             m.attn, T, m.cs))
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
+                            // SYCL port: the scores one work-item per cell (qsa_prompt_attn_percell, 128-cell chunks;
+                            // FP32, not bitwise with the warp kernel). STRATA_ATTN_PERCELL=0: the warp kernel.
+                            static const bool percell = [] { const char* v = std::getenv("STRATA_ATTN_PERCELL"); return !v || v[0] != '0'; }();
+                            if (percell) {
+                                strata::kernels::qsa_prompt_attn_percell(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
+                                                                         m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
+                                                                         s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
+                                continue;
+                            }
                             strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
                                                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
                                                                    s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
