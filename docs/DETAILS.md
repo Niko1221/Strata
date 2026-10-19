@@ -2110,6 +2110,27 @@ never changes a result.
   stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
   loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
 
+**NUMA-split CPU expert pool (opt-in, `STRATA_NUMA_SPLIT=1`):** on a 2-socket Linux box it splits the CPU expert pool into
+one slice per NUMA node, each with its own task counter and barrier, and at load it places each node's half of every
+CPU-side expert's rows in that node's memory (first touch by threads pinned to that node; the model file's page cache is
+released first), so a slice reads its own socket's memory. Under the split the default worker count is the physical cores
+of both sockets minus the host core, minus one more kept free from 16 workers on, capped at 32 (22 on 2x12 cores); an explicit `--pool-workers N` is spread alternately across the
+sockets. Measured on a dual Xeon Gold 6226 (2x12 cores, 64 GB, 4 of 6 memory channels per socket populated), RTX 3090,
+PCIe 3.0, `orcarouter-qwen3.8-flash-next-uncensored-iq4_xs` (the IQ4_XS pack) at 262K context, server decode median over 12
+samples: 60.0 tok/s with the split against 52.6 for the 0.2.0 default (11 workers, one socket), +14%. Without the split,
+22 workers gave 50.25 tok/s, and the split at 12 workers gave 51.5; prompt speed is unchanged. It needs Linux, exactly 2
+NUMA nodes and enough free memory on each node for its half: otherwise the log warns `NUMA placement at risk`, and after
+the load it judges the placement from move_pages samples and prints FAILED when a node holds under 95% of its slice. Only
+native expert layers are split (`ArenaExpertSource` and the `cudaHostAlloc` path are not, and the engine says so at start-up
+for the arena path). The pool refuses the split with `STRATA_EXCHANGE_ROTATE=1` and when the two sockets' worker counts are
+lopsided, logs the reason (`NUMA split off: ...`) and runs as usual. `STRATA_NUMA_SPLIT=test` builds the same slices by
+alternating the threads between two slices on any machine, with no node lookup, no pinning requirement and no memory
+placement; it is for testing the per-slice scheduling, not for speed. Off switch: leave `STRATA_NUMA_SPLIT` unset (the
+default; the default path is unchanged). Log: `strata cpu pool: NUMA split on: slice 0 = node 0 (N threads), slice 1 =
+node 1 (M threads)` at start, then `FileExpertSource: NUMA placement: node 0 <GiB> (xx.x % of its slices), node 1
+<GiB> (xx.x % of its slices); free before: ...; after the drop: ...; pages taken and page-locked in N s since the
+placement started`.
+
 ---
 
 ## Experimental speed projection (EXPERIMENTAL, off by default)
