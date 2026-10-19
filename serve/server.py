@@ -8011,7 +8011,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
               f"chat: {', '.join(hub.servers)}", flush=True)
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
-    httpd = serve(svc, host=a.host, port=a.port)
+    try:
+        httpd = serve(svc, host=a.host, port=a.port)
+    except BaseException:
+        svc.usage.close()
+        raise
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()
@@ -8052,10 +8056,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             ready_file.publish(ready_path, record)
         except OSError as e:
             print(f"[strata] could not write ready file ({type(e).__name__})", file=sys.stderr)
-            for close in (httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                          hub.close if hub is not None else None):
-                if close:
-                    close()
+            try:
+                for close in (httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
+                              hub.close if hub is not None else None):
+                    if close:
+                        close()
+            finally:
+                svc.usage.close()
             return 6
     if event_sink is not None:
         notify_lifecycle("ready", record)
@@ -8099,6 +8106,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                         except Exception as e:  # noqa: BLE001 - never block the exit
                             print(f"[strata] could not release the model files' cache: {e}", flush=True)
         finally:
+            svc.usage.close()
             if ready_path is not None:
                 ready_file.remove_if_owned(ready_path, svc.instance_id)
             finished.set()

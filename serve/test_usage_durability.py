@@ -170,5 +170,50 @@ class Serving(unittest.TestCase):
         self.assertEqual(self.svc.usage.lifetime["requests"], 0)
 
 
+class ServerOwnership(unittest.TestCase):
+    """Embedded beta server lifetimes must release the ledger without process exit."""
+
+    def test_main_releases_store_after_stop_and_startup_failure(self):
+        from serve import server as S
+        from contextlib import ExitStack
+        import io
+        for failure in ("none", "ready", "bind"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                cfg = Path(folder) / "config.json"
+                ledger = Path(folder) / "usage.json"
+                cfg.write_text(json.dumps({"usage_stats": True, "usage_stats_path": str(ledger)}))
+                seen = []
+                httpd = mock.Mock(server_address=("127.0.0.1", 12345))
+
+                def start(svc, **kwargs):
+                    seen.append(svc.usage)
+                    stack.callback(svc.usage.close)
+                    svc.usage.record(output_tokens=7)
+                    if failure == "bind":
+                        raise OSError("test bind failure")
+                    return httpd
+
+                stack.enter_context(mock.patch.object(S, "serve", side_effect=start))
+                stack.enter_context(mock.patch.object(S.lifeline, "install_stop_handlers"))
+                stack.enter_context(mock.patch.object(S.usage, "install_atexit"))
+                stack.enter_context(mock.patch.object(S.time, "sleep", side_effect=KeyboardInterrupt))
+                stack.enter_context(mock.patch.object(sys, "stdout", io.StringIO()))
+                stack.enter_context(mock.patch.object(sys, "stderr", io.StringIO()))
+                if failure == "ready":
+                    stack.enter_context(mock.patch.object(S.ready_file, "publish", side_effect=OSError("test ready failure")))
+                args = ["--engine", "mock", "--port", "0", "--config", str(cfg)]
+                if failure == "ready":
+                    args += ["--ready-file", str(Path(folder) / "ready.json")]
+                if failure == "bind":
+                    with self.assertRaisesRegex(OSError, "test bind failure"):
+                        S.main(args)
+                else:
+                    self.assertEqual(S.main(args), 6 if failure == "ready" else 0)
+                again = Usage(ledger)
+                stack.callback(again.close)
+                self.assertTrue(again.enabled, failure)
+                self.assertEqual(again.lifetime["output_tokens"], 7)
+
+
 if __name__ == "__main__":
     unittest.main()

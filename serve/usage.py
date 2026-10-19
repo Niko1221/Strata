@@ -125,6 +125,7 @@ class Usage:
             print(f"[strata] {self.persistence_error}", flush=True)
 
     def close(self):
+        atexit.unregister(self.close)
         with self.lock:
             self._save()
             if self._owner:
