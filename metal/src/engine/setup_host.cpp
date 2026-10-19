@@ -58,6 +58,7 @@ void native_rope_set_enabled(bool v) { g_rope.store(v, std::memory_order_relaxed
 bool native_rope_enabled() { return g_rope.load(std::memory_order_relaxed); }
 void fused_gr_check() {}   // the CUDA read variants' self-test: no variants on Metal
 void fused_gr_persist_init() {}   // STRATA_HC_PERSIST=1 is a HIP-only opt-in (as on CUDA/SYCL): nothing to initialise on Metal
+bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }   // the CUDA non-HIP build's answer
 
 // ---- scratch sizes
 uint64_t ple_block_scratch_bytes() {

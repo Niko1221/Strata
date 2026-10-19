@@ -65,9 +65,9 @@ inline cudaError_t cudaDeviceGetAttribute(int* v, cudaDeviceAttr a, int d) {
         case cudaDevAttrIntegrated: return strata::gpu::device_integrated(v, d);
         case cudaDevAttrMultiProcessorCount: return strata::gpu::device_sm_count(v, d);
         case cudaDevAttrClockRate: return strata::gpu::device_clock_khz(v, d);
-        // a fixed 9.0: no Apple GPU is a Turing (7.5) card, so the sm75 defaults stay off
-        case cudaDevAttrComputeCapabilityMajor: *v = 9; return cudaSuccess;
-        case cudaDevAttrComputeCapabilityMinor: *v = 0; return cudaSuccess;
+        // no CUDA compute capability on Apple GPUs: "unsupported" like the peer calls (verify.cpp reads that as "not a Turing card")
+        case cudaDevAttrComputeCapabilityMajor:
+        case cudaDevAttrComputeCapabilityMinor: *v = 0; return strata::gpu::compat_detail::bad();
     }
     return strata::gpu::compat_detail::bad();
 }
