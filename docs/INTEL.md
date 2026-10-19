@@ -105,6 +105,12 @@ device ids). Ahead-of-time code, no compile at the first start:
     docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e REPO=/work/$H \
         -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
 
+**Podman instead of Docker** (e.g. Fedora Silverblue, rootless): `podman build -t strata-sycl-dev sycl/tools`, then the
+same `run` lines with `podman` and `--security-opt label=disable` (a data disk without SELinux labels is otherwise
+unreadable in the container). To serve or bench that way, set `STRATA_SYCL_RUNNER=podman` for `strata-sycl.sh`;
+`STRATA_SYCL_RUNNER=native` runs the engine directly when the server already runs inside a toolbox with oneAPI (the
+data root at `/work`), and `distrobox:<name>` enters that distrobox from the host.
+
 The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. The binary is `build-sycl-aot/strata`
 (B-series) or `build-sycl/strata` (A-series); setup finds either one. Run the `docker build` again after pulling a
 Strata update that changes `sycl/tools/Dockerfile`, and the `docker run` after every update of the engine (setup
