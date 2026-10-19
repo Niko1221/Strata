@@ -1,0 +1,7 @@
+# The converter for NVIDIA's FP4-Local checkpoint (tools/nvfp4_local_pack.py prepare); setup.py installs these
+# before it runs a prepare, and only then. A ready-made model and a prepared pack need none of this.
+# torch comes from PyPI: the CPU build is enough (the conversion runs on the CPU); on Linux pip's default wheel
+# carries CUDA libraries (~2 GB heavier, still correct).
+torch==2.14.1
+transformers==5.20.2
+safetensors==0.8.0
