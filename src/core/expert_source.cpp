@@ -5509,10 +5509,14 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
 // `unbuffered` (Windows, experts_unbuffered): each chunk's 4 KiB-aligned window is read with FILE_FLAG_NO_BUFFERING into
 // an aligned buffer and scattered into the blobs - no copy through the file cache when the drive is read anyway.
 LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
-                            int threads, bool unbuffered, const std::atomic<int>* ready, const PadMap* pad) {
-    // where blob (l, e) goes in `dst`: packed (experts.bin) or the padded layout of pin by need
-    auto dst_blob = [&lay, pad](int64_t l, int64_t e) -> uint64_t {
-        return pad != nullptr ? pad->blob_off(l, e) : lay.blob_offset(l, e);
+                            int threads, bool unbuffered, const std::atomic<int>* ready, const PadMap* pad,
+                            uint64_t dst_bias, int64_t l0, int64_t l1) {
+    if (l1 < 0 || l1 > lay.n_layers) l1 = lay.n_layers;
+    if (l0 < 0) l0 = 0;
+    // where blob (l, e) goes in `dst`: packed (experts.bin), the padded layout of pin by need, minus dst_bias when the
+    // caller split the file across allocations (arena-skip: the tail block's first layer maps to its dst[0])
+    auto dst_blob = [&lay, pad, dst_bias](int64_t l, int64_t e) -> uint64_t {
+        return (pad != nullptr ? pad->blob_off(l, e) : lay.blob_offset(l, e)) - dst_bias;
     };
     // `ready`: layer l is written only once *ready > l + 1 (a PinnedArena registering its slices meanwhile; the next
     // slice too, since its registration starts on the page that may hold this layer's tail)
@@ -5521,14 +5525,14 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
             while (ready->load(std::memory_order_acquire) <= l + 1) std::this_thread::yield();
     };
     LoadStats st;
-    st.layers = (uint64_t) lay.n_layers;
+    st.layers = (uint64_t) std::max<int64_t>(0, l1 - l0);
     const auto t0 = std::chrono::steady_clock::now();
-    std::atomic<int64_t> next{0};
+    std::atomic<int64_t> next{l0};
     std::atomic<bool> bad{false};
 #if defined(_WIN32)
     if (unbuffered) {
         uint64_t max_chunk = 0;
-        for (int64_t l = 0; l < lay.n_layers; ++l) {
+        for (int64_t l = l0; l < l1; ++l) {
             const auto& fm = lay.fmt[(size_t) l];
             max_chunk = std::max<uint64_t>(max_chunk, std::max<uint64_t>(fm.up_off, lay.bytes[(size_t) l] - fm.down_off) * 16);
         }
@@ -5548,7 +5552,7 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
             if (buf == nullptr) fail("cannot allocate a read buffer");
             for (;;) {
                 const int64_t l = next.fetch_add(1);
-                if (l >= lay.n_layers || bad) break;
+                if (l >= l1 || bad) break;
                 wait_ready(l);
                 const auto& fm = lay.fmt[(size_t) l];
                 const uint64_t blob = lay.bytes[(size_t) l];
@@ -5608,7 +5612,8 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
             st.error = err.empty() ? "unreadable shard while reading the experts from the GGUF" : err;
             return st;
         }
-        st.bytes = lay.total;
+        st.bytes = 0;
+    for (int64_t q = l0; q < l1; ++q) st.bytes += lay.bytes[(size_t) q] * (uint64_t) lay.n_expert;   // bytes[] is per expert
         st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         return st;
     }
@@ -5627,7 +5632,7 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
         std::vector<uint8_t> buf;
         for (;;) {
             const int64_t l = next.fetch_add(1);
-            if (l >= lay.n_layers || bad) break;
+            if (l >= l1 || bad) break;
             wait_ready(l);
             const auto& fm = lay.fmt[(size_t) l];
             const uint64_t blob = lay.bytes[(size_t) l];
@@ -5670,7 +5675,8 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
         st.error = "short read or unreadable shard while reading the experts from the GGUF";
         return st;
     }
-    st.bytes = lay.total;
+    st.bytes = 0;
+    for (int64_t q = l0; q < l1; ++q) st.bytes += lay.bytes[(size_t) q] * (uint64_t) lay.n_expert;   // bytes[] is per expert
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return st;
 }
@@ -5826,7 +5832,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // residency table built after the caches are sized can prove it (see release_tail() and generate.cpp).
     // Packed layout, arena in RAM only: the padded (pin by need) layout and the mapped/GGUF paths keep one block.
     const bool tail_ok = split_hint_ > 0 && split_hint_ < n_layers && !padded_ && !arena_mmap &&
-                         shared_arena_file.empty() && !from_gguf;
+                         shared_arena_file.empty();
     split_layer_ = tail_ok ? split_hint_ : -1;
     boundary_off_ = tail_ok ? lay.layer_offset(split_layer_) : 0;
     const uint64_t prefix_bytes = tail_ok ? boundary_off_ : want;
@@ -5943,7 +5949,22 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     }
     const std::atomic<int>* rp = deferred ? &ready : nullptr;
     if (from_gguf) {
-        st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr);
+        // arena-skip: the GGUF loader walks the layout's whole layer list, so a split block passes its own range and
+        // the destination bias (a block's first layer lands at its dst[0]).
+        st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr,
+                               /*dst_bias=*/0, /*l0=*/0, /*l1=*/tail_ok ? split_layer_ : -1);
+        if (tail_ok && st.ok) {
+            const LoadStats s1 = load_experts_gguf(gguf_, a1->data(), lay, readers, unbuffered, nullptr, nullptr,
+                                                   boundary_off_, split_layer_, /*l1=*/-1);
+            if (s1.ok) {
+                st.bytes += s1.bytes;
+                st.seconds += s1.seconds;
+                st.read_seconds += s1.read_seconds;
+                st.copy_seconds += s1.copy_seconds;
+            } else {
+                st = s1;   // the tail read failed: refuse the load rather than run on a half-written arena
+            }
+        }
     } else if (tail_ok) {
         // arena-skip: two blocks.  The loader writes at dst + off - dst_bias, so the tail block's first layer maps to
         // its dst[0].  Buffered for both (load_experts_direct has no dst_bias yet): that is what a split start pays.

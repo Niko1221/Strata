@@ -1363,8 +1363,11 @@ bool check_experts_gguf(const std::string& native, const strata::kernels::cpu::E
 /// `unbuffered`: each chunk read past the file cache (Windows); `ready`: layer l is written only once
 /// *ready > l + 1 (an arena that is still being registered).
 /// `pad` (optional): the destination is the page-aligned padded layout (pin by need), see PadMap.
+/// `dst_bias` / `[l0, l1)`: the destination offset that maps to the file's layer 0, and the layer range to load.
+/// Both exist so that one pack can be spread over several allocations (the arena's blocks): a block's first layer
+/// lands at dst[0].  Defaults (0, all layers) are the old single-destination behaviour.
 LoadStats load_experts_gguf(const std::string& native, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
                             int threads, bool unbuffered = false, const std::atomic<int>* ready = nullptr,
-                            const PadMap* pad = nullptr);
+                            const PadMap* pad = nullptr, uint64_t dst_bias = 0, int64_t l0 = 0, int64_t l1 = -1);
 
 }  // namespace strata::core
