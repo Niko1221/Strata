@@ -1,8 +1,11 @@
 // metal/src/engine/stubs_0145.cpp - the kernel-library entry points the 0.1.45 sources added and Metal does not implement yet.
 // Same job and shape as stubs.cpp (each stops the engine with its name, metal/src/engine/missing.cpp). Written from the linker's
 // undefined-symbol report because tools/gen_stubs.py reads an older clang AST dump format than macOS 27's clang prints.
-// A symbol that gets a Metal implementation is deleted from here. fused_gr_persist_init / fused_gr_read_persist / f16_range_read /
-// gemm_f16_range_read are opt-in features of the HIP and Turing builds: off on Metal, so they answer "nothing to do" instead of stopping the engine.
+// A symbol that gets a Metal implementation is deleted from here.  Most of the original list now lives in
+// stubs.cpp (upstream landed the same regeneration), except f16_range_read / gemm_f16_range_read: opt-in
+// HIP/Turing reads that stay off on Metal and must answer "nothing to do" when called - a missing() trap
+// stub kills serve on a call that never happened.  fused_gr_persist_init / fused_gr_read_persist are the
+// same no-ops in src/engine/missing.cpp.
 
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -121,27 +124,8 @@
 
 namespace strata::metal_engine { void missing(const char* name); }
 
-namespace strata::kernels { void copy_rows_from_mapped_after(unsigned int const* p0, unsigned int p1, float* p2, float const* p3, long long p4, long long p5, int const* p6, int const* p7, void* p8) { strata::metal_engine::missing("strata::kernels::copy_rows_from_mapped_after"); } }
-namespace strata::kernels::cpu { void iq256_gu_rows_exact_one(int p0, unsigned char const* p1, unsigned long p2, unsigned long p3, int p4, void const* p5, float* p6, int p7, int p8) { strata::metal_engine::missing("strata::kernels::cpu::iq256_gu_rows_exact_one"); } }
-namespace strata::kernels { void fused_gr_persist_init() {  } }
-namespace strata::kernels { bool fused_gr_read_persist(strata::kernels::FusedGrArgs const* p0, int p1, void* p2) {  return false; } }
-namespace strata::kernels { void gdn_step_norm_groups(strata::kernels::GdnGroups const& p0, float const* p1, int p2, float const* p3, float const* p4, float const* p5, float const* p6, float p7, float* p8, int p9, int p10, bool p11, void* p12) { strata::metal_engine::missing("strata::kernels::gdn_step_norm_groups"); } }
-namespace strata::kernels { void handoff_publish(float* p0, float const* p1, long long p2, float const* p3, long long p4, float const* p5, long long p6, unsigned int* p7, unsigned int* p8, void* p9, unsigned int const* p10) { strata::metal_engine::missing("strata::kernels::handoff_publish"); } }
-namespace strata::kernels { void hc_q8_to_bf16(void const* p0, float const* p1, unsigned short* p2, long long p3, void* p4) { strata::metal_engine::missing("strata::kernels::hc_q8_to_bf16"); } }
-namespace strata::kernels { void native_quantize_q8_1_il(float const* p0, void* p1, void* p2, int p3, int p4, void* p5) { strata::metal_engine::missing("strata::kernels::native_quantize_q8_1_il"); } }
-namespace strata::kernels { void qsa_block_scores_rows(strata::kernels::QsaScoreRows const& p0, float const* p1, int const* p2, long long p3, long long p4, strata::kernels::QsaShapes const& p5, float* p6, void* p7) { strata::metal_engine::missing("strata::kernels::qsa_block_scores_rows"); } }
-namespace strata::kernels { void qsa_decode_attn_batch_rows(float const* p0, strata::kernels::QsaAttnPoolsRows const& p1, int const* p2, int const* p3, long long p4, strata::kernels::QsaShapes const& p5, float* p6, float* p7, long long p8, void* p9) { strata::metal_engine::missing("strata::kernels::qsa_decode_attn_batch_rows"); } }
-namespace strata::kernels { bool qsa_decode_attn_split(float const* p0, strata::kernels::QsaAttnPools const& p1, int const* p2, int const* p3, long long p4, strata::kernels::QsaShapes const& p5, float* p6, unsigned long long p7, float* p8, long long p9, void* p10) { strata::metal_engine::missing("strata::kernels::qsa_decode_attn_split"); return {}; } }
-namespace strata::kernels { void res_patch(int* p0, int const* p1, int p2, void* p3) { strata::metal_engine::missing("strata::kernels::res_patch"); } }
-namespace strata::kernels { void wait_copy_i32_from_mapped(unsigned int const* p0, unsigned int p1, int* p2, int const* p3, long long p4, void* p5) { strata::metal_engine::missing("strata::kernels::wait_copy_i32_from_mapped"); } }
-namespace strata::kernels { void wait_flag_ge_stamped(unsigned int const* p0, unsigned int p1, unsigned long long* p2, unsigned long long* p3, void* p4) { strata::metal_engine::missing("strata::kernels::wait_flag_ge_stamped"); } }
-namespace strata::kernels { void wait_handoff(unsigned int const* p0, unsigned int p1, unsigned int* p2, unsigned long long p3, void* p4) { strata::metal_engine::missing("strata::kernels::wait_handoff"); } }
 namespace strata::prefill { bool f16_range_read(float& p0, unsigned long long& p1, bool p2) {  return false; } }
 namespace strata::prefill { bool gemm_f16_range_read(float* p0, unsigned long long* p1, bool p2) {  return false; } }
-namespace strata::prefill { void gr_norm(float const* p0, float const* p1, float p2, float* p3, unsigned short* p4, long long p5, void* p6, unsigned short* p7, bool p8) { strata::metal_engine::missing("strata::prefill::gr_norm"); } }
-namespace strata::prefill { void gr_norm_rs(float const* p0, float const* p1, float p2, float* p3, unsigned short* p4, long long p5, void* p6, unsigned short* p7, long long p8, bool p9) { strata::metal_engine::missing("strata::prefill::gr_norm_rs"); } }
-namespace strata::prefill { void gr_write_cvec_norm_rs(float* p0, float const* p1, float const* p2, long long p3, float const* p4, float const* p5, int const* p6, int p7, float const* p8, float p9, float* p10, unsigned short* p11, long long p12, void* p13, unsigned short* p14, long long p15, bool p16) { strata::metal_engine::missing("strata::prefill::gr_write_cvec_norm_rs"); } }
-namespace strata::prefill { void gr_write_norm_rs(float* p0, float const* p1, float const* p2, long long p3, float const* p4, float p5, float* p6, unsigned short* p7, long long p8, void* p9, unsigned short* p10, long long p11, bool p12) { strata::metal_engine::missing("strata::prefill::gr_write_norm_rs"); } }
 // pf_wmma (STRATA_PF_WMMA=1, Volta prompt experts) is CUDA only; the prefill code of 148/149 references it, so the Metal link needs the entry point. Off on Metal: "not launched".
 namespace strata::kernels { bool gemm_iq_f16_grouped(int p0, void const* p1, unsigned long p2, int p3, int p4, void const* p5, int p6, int const* p7, int p8, int p9, float* p10, int p11, void* p12) { return false; } }
 // STRATA_Q8_SM60 (Pascal GP100, opt-in): a no-op on Metal; NativeHead::load()/unload() call these for a Q8_0 head, so they must exist and answer "nothing packed".
