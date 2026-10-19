@@ -2116,9 +2116,10 @@ CPU-side expert's rows in that node's memory (first touch by threads pinned to t
 released first), so a slice reads its own socket's memory. Under the split the default worker count is the physical cores
 of both sockets minus the host core, minus one more kept free from 16 workers on, capped at 32 (22 on 2x12 cores); an explicit `--pool-workers N` is spread alternately across the
 sockets. Measured on a dual Xeon Gold 6226 (2x12 cores, 64 GB, 4 of 6 memory channels per socket populated), RTX 3090,
-PCIe 3.0, `orcarouter-qwen3.8-flash-next-uncensored-iq4_xs` (the IQ4_XS pack) at 262K context, server decode median over 12
-samples: 60.0 tok/s with the split against 52.6 for the 0.2.0 default (11 workers, one socket), +14%. Without the split,
-22 workers gave 50.25 tok/s, and the split at 12 workers gave 51.5; prompt speed is unchanged. It needs Linux, exactly 2
+PCIe 3.0 with the kernel's IOMMU in passthrough (`iommu=pt`), `orcarouter-qwen3.8-flash-next-uncensored-iq4_xs` (the
+IQ4_XS pack) at 262K context, server decode median over 12 samples: 59.3 tok/s with the split against 54.05 for the 0.2.0
+default (11 workers, one socket), +9.7% (+14% and +11.5% in two earlier sessions with the IOMMU translating DMA). Without
+the split, 22 workers gave 43.25 tok/s, and the split at 12 workers gave 51.45; prompt speed is unchanged. It needs Linux, exactly 2
 NUMA nodes and enough free memory on each node for its half: otherwise the log warns `NUMA placement at risk`, and after
 the load it judges the placement from move_pages samples and prints FAILED when a node holds under 95% of its slice. Only
 native expert layers are split (`ArenaExpertSource` and the `cudaHostAlloc` path are not, and the engine says so at start-up
