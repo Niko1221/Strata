@@ -2805,6 +2805,10 @@ int main(int argc, char** argv) {
             try {
                 strata::GgufFile pg(o.ple_gguf);
                 if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
+                // a table-only shard of ANOTHER file set (UD-Q5/Q6/Q8 shard 3 = per_layer_token_embd only, used
+                // as a bigger table beside a smaller quant): no projections, and its split metadata is not ours
+                if (pg.tensors().size() == 1 && pg.tensors().front().name == "per_layer_token_embd.weight")
+                    ple_only = true;
             } catch (const std::exception&) {}
             if (!ple_only &&
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
