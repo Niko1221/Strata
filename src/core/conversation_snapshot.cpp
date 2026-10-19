@@ -117,6 +117,8 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
     return true;
 }
 
+}  // namespace (the park block below is left open: window_cells is checked model-free by
+   // metal/tests/window_cells_test.cpp)
 #if defined(STRATA_GPU_METAL)
 // park/restore for the Metal decode window: the window stores [cell][head][unit], the session pools (and the
 // snapshot image's bytes) are [page][head][page_size][unit] with a page = one indexer block, so the cold-path
@@ -143,6 +145,8 @@ void window_cells(void* dst, const void* src, int64_t cells, int64_t page, int64
             }
 }
 #endif
+
+namespace {
 
 bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (!n) return true;
