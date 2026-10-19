@@ -28,6 +28,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <atomic>
 #include <chrono>
@@ -115,6 +116,14 @@ uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
 /// SMALLEST node's free), i.e. what an even spread would find.  Only lowers the figure, so the pages are then taken in
 /// steps (which reclaim cache as they fault) instead of in one driver call; it never refuses and never caps.
 uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_free);
+/// Byte ranges [first, second) of slice `slice` of 2 inside one complement slot at arena offset `slot_off`, whose roles
+/// (gate, up, down) are `role_bytes[0..2]` long and back to back. Role r's slice-0 bytes are [start_r, start_r + role_r/2),
+/// its slice-1 bytes the rest. Page rule (absolute arena offsets): any page holding a slice-0 byte belongs to slice 0,
+/// so slice-0 ranges round OUTWARDS (start down, end up) and slice-1 ranges round INWARDS (start up, end down) - this
+/// also settles pages shared across role and slot boundaries. Returns three ranges in arena offsets, possibly empty
+/// (first == second).
+std::array<std::pair<uint64_t, uint64_t>, 3> numa_slice_ranges(uint64_t slot_off, const uint64_t role_bytes[3],
+                                                               int slice, uint64_t page = 4096);
 /// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
 /// `meminfo_text`, mapped pages included) and what to do about it; "" when under 1 GiB of cache (nothing to say).
 std::string page_cache_hint(const std::string& meminfo_text);

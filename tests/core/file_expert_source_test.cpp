@@ -399,6 +399,37 @@ void test_pin_pacing() {
     require(page_cache_hint("MemFree: 100 kB\nCached: 1000 kB\n").empty(), "a small cache was reported");
 }
 
+// NUMA split: per-slice byte ranges of one complement slot (page rule: a page holding a slice-0 byte is slice 0's)
+void test_numa_slice_ranges() {
+    using strata::core::detail::numa_slice_ranges;
+    constexpr uint64_t P = 4096;
+    const uint64_t roles[3] = {870400, 870400, 921600};
+    const uint64_t slot_bytes = roles[0] + roles[1] + roles[2];
+    const uint64_t offs[3] = {0, 2662400ull * 7, P * 3 + 100};
+    for (uint64_t off : offs) {
+        const auto r0 = numa_slice_ranges(off, roles, 0), r1 = numa_slice_ranges(off, roles, 1);
+        for (int r = 0; r < 3; ++r) {
+            require(r0[r].first % P == 0 && r0[r].second % P == 0 && r1[r].first % P == 0 && r1[r].second % P == 0,
+                    "a slice range boundary was not page aligned");
+            require(r0[r].first <= r0[r].second && r1[r].first <= r1[r].second, "a slice range was inverted");
+        }
+        // every page fully inside the slot is in exactly one of the six ranges (and none is in two)
+        for (uint64_t pg = (off + P - 1) / P * P; pg + P <= off + slot_bytes; pg += P) {
+            int hits = 0;
+            for (int r = 0; r < 3; ++r) {
+                hits += (pg >= r0[r].first && pg + P <= r0[r].second);
+                hits += (pg >= r1[r].first && pg + P <= r1[r].second);
+            }
+            require(hits == 1, "a page was in " + std::to_string(hits) + " slice ranges, not exactly one");
+        }
+    }
+    const auto a = numa_slice_ranges(0, roles, 0), b = numa_slice_ranges(0, roles, 1);
+    require(a[0].first <= 435199 && 435199 < a[0].second, "last slice-0 gate byte not in slice 0's gate range");
+    require(b[0].first <= 435200 + P && 435200 + P < b[0].second, "a slice-1 gate byte not in slice 1's gate range");
+    require(a[1].first <= 870400 && 870400 < a[1].second, "the gate/up boundary page was not slice 0's up range");
+    require(!(b[0].first <= 870400 && 870400 < b[0].second), "the gate/up boundary page was in slice 1's gate range");
+}
+
 void test_resident_memory_budget() {
     using strata::core::detail::clamp_resident_budget;
     constexpr uint64_t GiB = 1ull << 30, margin = 256ull << 20, headroom = 4 * GiB;
@@ -947,6 +978,7 @@ int main(int argc, char** argv) {
         test_resident_exchange();
         test_resident_memory_budget();
         test_pin_pacing();
+        test_numa_slice_ranges();
         test_cgroup_memory_budget();
         test_host_memory();
         test_canonical_layout();

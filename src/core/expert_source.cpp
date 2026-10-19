@@ -126,6 +126,23 @@ uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_f
     return std::min<uint64_t>(global_free, smallest * (uint64_t) node_free.size());
 }
 
+std::array<std::pair<uint64_t, uint64_t>, 3> numa_slice_ranges(uint64_t slot_off, const uint64_t role_bytes[3],
+                                                               int slice, uint64_t page) {
+    std::array<std::pair<uint64_t, uint64_t>, 3> out{};
+    uint64_t start = slot_off;
+    for (int r = 0; r < 3; ++r) {
+        const uint64_t mid = start + role_bytes[r] / 2, end = start + role_bytes[r];
+        if (slice == 0) {
+            out[r] = {start / page * page, (mid + page - 1) / page * page};
+        } else {
+            const uint64_t lo = (mid + page - 1) / page * page, hi = end / page * page;
+            out[r] = hi > lo ? std::make_pair(lo, hi) : std::make_pair(lo, lo);
+        }
+        start = end;
+    }
+    return out;
+}
+
 std::string page_cache_hint(const std::string& meminfo_text) {
     const uint64_t cache = meminfo_bytes(meminfo_text, "Cached") + meminfo_bytes(meminfo_text, "Buffers");
     if (cache < (1ull << 30)) return "";
