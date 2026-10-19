@@ -152,6 +152,20 @@ __device__ __forceinline__ float warp_max(float x) {
     return x;
 }
 
+// LDS-only workgroup barrier: avoids the L0 vector cache invalidation (global_inv scope:SCOPE_SE) and in-flight
+// global-load drain (s_wait_loadcnt 0x0) that __syncthreads() emits on gfx12 when only shared memory `partial` is
+// synchronized across warps.
+__device__ __forceinline__ void mmvq_sync_lds() {
+#if defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1200__) || defined(__gfx1201__))
+    __asm__ volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#elif defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1030__) || defined(__gfx1100__) || defined(__gfx1101__) || \
+    defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__))
+    __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#else
+    __syncthreads();
+#endif
+}
+
 __launch_bounds__(QUANT_THREADS, 1)
 __global__ void native_quantize_q8_1_kernel(const float* x_, Q81Block* y_, int n_in) {
     const float* STRATA_PDL_RESTRICT x = x_;   // __restrict__ below sm_70 only (pdl.hpp, #1469)
@@ -279,7 +293,7 @@ __global__ void native_q5_k_mmvq_kernel(const Q5KBlock* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -345,7 +359,7 @@ __global__ void native_q2_0_mmvq_kernel(const Q20Block* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -433,7 +447,7 @@ __global__ void native_q3_k_mmvq_kernel(const Q3KBlock* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -446,13 +460,13 @@ __global__ void native_q3_k_mmvq_kernel(const Q3KBlock* __restrict__ w,
 
 // The pinned nonlinear IQ4 codebook and its CUDA two-stage byte lookup. The
 // explicit alignment satisfies the four 32-bit table loads; values are unchanged.
-__device__ __align__(4) int8_t iq4nl_values[16] = {
+__device__ __align__(4) constexpr int8_t iq4nl_values[16] = {
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113
 };
 
 __device__ __forceinline__ int2 iq4_table_lookup(int q4) {
-#if defined(STRATA_HIP_GFX906)
-    // AMD: llama.cpp's HIP lookup (see iq_kernels.cu get_int_from_table_16): 4 v_perm_b32 per 8 values
+#if defined(__HIPCC__)
+    // AMD: llama.cpp's HIP lookup (see iq_kernels.cu get_int_from_table_16): 6 v_perm_b32 per 8 values
     const uint32_t* v32 = reinterpret_cast<const uint32_t*>(iq4nl_values);
     const uint32_t q_even = (uint32_t) q4, q_odd = (uint32_t) q4 >> 4;
     const uint32_t el = __builtin_amdgcn_perm(v32[1], v32[0], q_even & 0x07070707u);
@@ -526,7 +540,7 @@ __global__ void native_iq4_xs_mmvq_kernel(const IQ4XSBlock* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -623,7 +637,7 @@ __global__ void native_q4_k_mmvq_kernel(const Q4KBlock* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -696,7 +710,7 @@ __global__ void native_q6_k_mmvq_kernel(const Q6KBlock* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -807,7 +821,7 @@ __global__ void native_small_mmvq_kernel(const Weight* __restrict__ w,
 #pragma unroll
         for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][i][threadIdx.x] = tmp[i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int i = 0; i < ROWS; ++i) {
@@ -1155,10 +1169,15 @@ struct SmallTraits<IQ4NLBlock, 4> {
 // llama.cpp's generic multi-column table (ncols 2-4: 4 warps; 5-8: 2 warps; always 2 rows per block): faster,
 // equal to ncols = 1 only to float rounding (the cross-warp reduction groups partial sums differently).
 bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
-// B6 STRATA_B6_MMVQ_ROWS (lab, default 0 = off): see native_mmvq_set_b6_rows
+// B6 STRATA_B6_MMVQ_ROWS (-1 = auto: per-format/shape table on gfx12, off elsewhere; 0 = off; 1/2/4/8 = explicit):
 // read at first use (not at load): a per-architecture default set at start (nv_defaults.hpp) must be seen
+bool g_b6_rows_set = false;
 int g_b6_rows = -1;
-int b6_rows_mode() { if (g_b6_rows < 0) { const char* v = std::getenv("STRATA_B6_MMVQ_ROWS"); g_b6_rows = v ? std::atoi(v) : 0; } return g_b6_rows; }
+int b6_rows_mode() {
+    if (g_b6_rows_set) return g_b6_rows;
+    const char* v = std::getenv("STRATA_B6_MMVQ_ROWS");
+    return v && *v ? std::atoi(v) : -1;
+}
 
 // S26 STRATA_TSUM=1 (TS): warp 0's NCOLS x ROWS sums as one transposed butterfly (s26_tsum.cuh), bitwise the same
 static bool s26_tsum_on() {
@@ -1232,7 +1251,7 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
 #pragma unroll
             for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][j][i][threadIdx.x] = tmp[j][i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
     if constexpr (TS) {
         constexpr int V = NCOLS * ROWS, P = s26ts::pow2_ceil(V);
@@ -1318,7 +1337,7 @@ template<typename F> struct B6X { static constexpr bool ok = false; };
 template<> struct B6X<Q6KTraits> {
     static constexpr bool ok = true;
     struct X { int u[2]; float d8[2]; };
-    struct W { int vl, vh, sc[2]; float d; };
+    struct W { int vi[2], sc[2]; float d; };
     __device__ static X xload(const Q81Block* x, int iqs) {
         X r;
         const int off = 4 * (iqs / 16) + (iqs % 16) / 8;   // Q6KTraits::load's bq8_offset
@@ -1332,29 +1351,30 @@ template<> struct B6X<Q6KTraits> {
     __device__ static W wload(const Q6KBlock* __restrict__ w, int iqs) {
         const Q6KTraits::W t = Q6KTraits::load(w, iqs);
         W r;
-        r.vl = t.vl;
-        r.vh = t.vh;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int vil = (t.vl >> (4 * i)) & 0x0f0f0f0f;
+            const int vih = ((t.vh >> (4 * i)) << 4) & 0x30303030;
+            r.vi[i] = __vsubss4(vil | vih, 0x20202020);
+        }
         r.sc[0] = t.scales[0];
         r.sc[1] = t.scales[4];
         r.d = t.d;
         return r;
     }
-    __device__ static float dot(const W& w, const X& x) {   // q6_q8_dot_impl, the scales already in registers
+    __device__ static float dot(const W& w, const X& x) {   // q6_q8_dot_impl, the codes and scales already in registers
         float sumf = 0.0f;
 #pragma unroll
         for (int i = 0; i < 2; ++i) {
-            const int vil = (w.vl >> (4 * i)) & 0x0f0f0f0f;
-            const int vih = ((w.vh >> (4 * i)) << 4) & 0x30303030;
-            const int vi = __vsubss4(vil | vih, 0x20202020);
-            sumf += x.d8[i] * (STRATA_DP4A(vi, x.u[i], 0) * w.sc[i]);
+            sumf += x.d8[i] * (STRATA_DP4A(w.vi[i], x.u[i], 0) * w.sc[i]);
         }
         return w.d * sumf;
     }
 };
-template<typename T, int KIND> struct B6XK {   // Q4_K (KIND 4) and Q5_K (KIND 5): the same activation fragment
+template<typename T, int KIND> struct B6XK {   // Q4_K (KIND 4) and Q5_K (KIND 5): activation fragment + dot2 precomputed once per col
     static constexpr bool ok = true;
-    struct X { int u[4]; float d8[2]; };
-    using W = typename T::W;
+    struct X { int u[4], dot2[2]; float d8[2]; };
+    struct W { int v0[2], v1[2]; uint16_t aux[2]; float2 dmf; };
     __device__ static X xload(const Q81Block* bq8, int iqs) {
         X r;
         const int off = 2 * ((iqs / 2) / 4);   // the traits' bq8_offset
@@ -1365,18 +1385,100 @@ template<typename T, int KIND> struct B6XK {   // Q4_K (KIND 4) and Q5_K (KIND 5
             const int* q8 = reinterpret_cast<const int*>(bq8i->qs) + ((iqs / 2) % 4);
             r.u[2 * i] = q8[0];
             r.u[2 * i + 1] = q8[4];
+            if constexpr (KIND == 4)
+                r.dot2[i] = STRATA_DP4A(0x01010101, r.u[2 * i + 1], STRATA_DP4A(0x01010101, r.u[2 * i], 0));
+            else
+                r.dot2[i] = STRATA_DP4A(0x01010101, r.u[2 * i], STRATA_DP4A(0x01010101, r.u[2 * i + 1], 0));
         }
         return r;
     }
-    __device__ static W wload(const typename T::Block* __restrict__ w, int iqs) { return T::load(w, iqs); }
+    __device__ static W wload(const typename T::Block* __restrict__ w, int iqs) {
+        const typename T::W t = T::load(w, iqs);
+        W r;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            if constexpr (KIND == 4) {
+                r.v0[i] = (t.v[0] >> (4 * i)) & 0x0f0f0f0f;
+                r.v1[i] = (t.v[1] >> (4 * i)) & 0x0f0f0f0f;
+            } else {
+                const int vl0i = (t.vl[0] >> (4 * i)) & 0x0f0f0f0f;
+                const int vl1i = (t.vl[1] >> (4 * i)) & 0x0f0f0f0f;
+                const int vh0i = ((t.vh[0] >> i) << 4) & 0x10101010;
+                const int vh1i = ((t.vh[1] >> i) << 4) & 0x10101010;
+                r.v0[i] = vl0i | vh0i;
+                r.v1[i] = vl1i | vh1i;
+            }
+        }
+        r.aux[0] = t.aux[0];
+        r.aux[1] = t.aux[1];
+        r.dmf = __half22float2(t.dm);
+        return r;
+    }
     __device__ static float dot(const W& w, const X& x) {
         const uint8_t* sc = reinterpret_cast<const uint8_t*>(w.aux);
-        if constexpr (KIND == 4) return q4_q8_dot_impl(w.v, x.u, sc, sc + 2, w.dm, x.d8);
-        else return q5_q8_dot_impl(w.vl, w.vh, x.u, sc, sc + 2, w.dm, x.d8);
+        const uint8_t* m = sc + 2;
+        float sumf_d = 0.0f;
+        float sumf_m = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            const int dot1 = KIND == 4 ? STRATA_DP4A(w.v1[i], x.u[2 * i + 1], STRATA_DP4A(w.v0[i], x.u[2 * i], 0))
+                                       : STRATA_DP4A(w.v0[i], x.u[2 * i], STRATA_DP4A(w.v1[i], x.u[2 * i + 1], 0));
+            sumf_d += x.d8[i] * (dot1 * sc[i]);
+            sumf_m += x.d8[i] * (x.dot2[i] * m[i]);
+        }
+        return w.dmf.x * sumf_d - w.dmf.y * sumf_m;
     }
 };
 template<> struct B6X<Q4KTraits> : B6XK<Q4KTraits, 4> {};
 template<> struct B6X<Q5KTraits> : B6XK<Q5KTraits, 5> {};
+template<> struct B6X<SmallTraits<IQ4NLBlock, 4>> {
+    using F = SmallTraits<IQ4NLBlock, 4>;
+    static constexpr bool ok = true;
+    struct X { int u0[2], u1[2]; float dx; };
+    using W = F::W;
+    __device__ static X xload(const Q81Block* x, int iqs) {
+        X r;
+        const int* q8 = reinterpret_cast<const int*>(x->qs) + iqs;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            r.u0[i] = q8[i];
+            r.u1[i] = q8[i + 4];
+        }
+        r.dx = __low2float(x->ds);
+        return r;
+    }
+    __device__ static W wload(const IQ4NLBlock* __restrict__ w, int iqs) { return F::load(w, iqs); }
+    __device__ static float dot(const W& w, const X& x) {
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            sumi = STRATA_DP4A(w.v[i].x, x.u0[i], sumi);
+            sumi = STRATA_DP4A(w.v[i].y, x.u1[i], sumi);
+        }
+        const float d = w.dw * x.dx;
+        return d * sumi;
+    }
+};
+template<> struct B6X<SmallTraits<Q80Block, 8>> {
+    using F = SmallTraits<Q80Block, 8>;
+    static constexpr bool ok = true;
+    struct X { int u[2]; float d1; };
+    using W = F::W;
+    __device__ static X xload(const Q81Block* x, int iqs) {
+        X r;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) r.u[i] = reinterpret_cast<const int*>(x->qs)[iqs + i];
+        r.d1 = __low2float(x->ds);
+        return r;
+    }
+    __device__ static W wload(const Q80Block* __restrict__ w, int iqs) { return F::load(w, iqs); }
+    __device__ static float dot(const W& w, const X& x) {
+        int sumi = 0;
+#pragma unroll
+        for (int i = 0; i < 2; ++i) sumi = STRATA_DP4A(w.v[i], x.u[i], sumi);
+        return w.d0 * x.d1 * float(sumi);
+    }
+};
 template<> struct B6X<IQ4XSTraits> {
     static constexpr bool ok = true;
     struct X { int u0[4], u1[4]; float dx; };
@@ -1437,7 +1539,7 @@ __global__ void b6_mmvq_rows_kernel(const typename F::Block* __restrict__ w, con
 #pragma unroll
             for (int i = 0; i < ROWS; ++i) partial[threadIdx.y - 1][j][i][threadIdx.x] = tmp[j][i];
     }
-    __syncthreads();
+    mmvq_sync_lds();
     if (threadIdx.y > 0) return;
 #pragma unroll
     for (int j = 0; j < NCOLS; ++j) {
@@ -1451,15 +1553,42 @@ __global__ void b6_mmvq_rows_kernel(const typename F::Block* __restrict__ w, con
     }
 }
 
-// the B6 launch for a format that has a B6X: true when it ran.  g_b6_rows: 1 = 2 rows per block (the fastest on both
-// cards in b6_mmvq_bench), else 2 / 4 / 8 rows.
+// the B6 launch for a format that has a B6X: true when it ran.  b6_rows_mode(): -1 = auto (gfx12 per-shape table, off
+// elsewhere), 0 = off, 1 = 2 rows per block, else 2 / 4 / 8 rows.
+template<typename F, int NCOLS>
+int b6_default_rows_gfx12(int n_out) {
+    if constexpr (std::is_same_v<F, Q4KTraits> || std::is_same_v<F, Q5KTraits>) {
+        return n_out >= 6144 ? 4 : 2;
+    } else if constexpr (std::is_same_v<F, Q6KTraits>) {
+        if (n_out >= 32768) return 4;
+        if (n_out >= 6144) return (NCOLS >= 4 && n_out >= 10240) ? 4 : 2;
+        return NCOLS >= 5 ? 2 : 0;
+    } else if constexpr (std::is_same_v<F, IQ4XSTraits>) {
+        if (NCOLS < 3) return 0;
+        return (n_out >= 6144 && NCOLS <= 4) ? 4 : 2;
+    } else if constexpr (std::is_same_v<F, SmallTraits<IQ4NLBlock, 4>>) {
+        return NCOLS <= 3 ? 2 : 0;
+    } else {
+        return 0;
+    }
+}
+
 template<typename F, int NCOLS>
 bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in, int n_out, cudaStream_t s) {
     if constexpr (!B6X<F>::ok) {
         return false;
     } else {
-        if (b6_rows_mode() <= 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
-        const int rows = b6_rows_mode() == 1 ? 2 : b6_rows_mode();
+        const int mode = b6_rows_mode();
+        if (mode == 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
+        int rows = 0;
+        if (mode < 0) {
+            if (dev_class() == 1) rows = b6_default_rows_gfx12<F, NCOLS>(n_out);
+        } else if (mode == 1) {
+            rows = 2;   // preserve the original explicit setting
+        } else {
+            rows = mode;
+        }
+        if (rows <= 0) return false;
         const dim3 threads(WARP, WARPS);
         if (rows == 2)
             b6_mmvq_rows_kernel<F, NCOLS, 2><<<unsigned((n_out + 1) / 2), threads, 0, s>>>(w, x, y, n_in, n_out);
@@ -2000,7 +2129,7 @@ __global__ void native_q8_0_packed_kernel(const int8_t* __restrict__ qs, const h
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) partial[buf][threadIdx.y - 1][j][threadIdx.x] = tmp[j];
         }
-        __syncthreads();
+        mmvq_sync_lds();
         if (TS && threadIdx.y == 0) {   // S26 STRATA_TSUM=1: one transposed butterfly, bitwise the same sums
             constexpr int P = s26ts::pow2_ceil(NCOLS);
             float v[P];
@@ -2155,7 +2284,7 @@ __global__ void native_q6_k_packed_kernel(const int* __restrict__ ql, const int*
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) partial[buf][threadIdx.y - 1][j][threadIdx.x] = tmp[j];
         }
-        __syncthreads();
+        mmvq_sync_lds();
         if (TS && threadIdx.y == 0) {   // S26 STRATA_TSUM=1: one transposed butterfly, bitwise the same sums
             constexpr int P = s26ts::pow2_ceil(NCOLS);
             float v[P];
@@ -2442,7 +2571,7 @@ void native_q6_k_unpack(const void* weights) {
 
 void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 bool native_mmvq_multi_exact() { return g_multi_exact; }
-void native_mmvq_set_b6_rows(int mode) { g_b6_rows = mode; }
+void native_mmvq_set_b6_rows(int mode) { g_b6_rows_set = true; g_b6_rows = mode; }
 int native_mmvq_b6_rows() { return b6_rows_mode(); }
 
 std::size_t native_q8_1_bytes(int n_in, int ncols) {
