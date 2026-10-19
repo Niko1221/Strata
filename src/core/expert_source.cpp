@@ -645,8 +645,8 @@ struct NumaComplementPlacement {
         for (int k = 0; k < 2; ++k) {
             const uint64_t room = (size_t) nodes[k] < free_after.size() ? free_after[(size_t) nodes[k]] : 0;
             if (room < slice_bytes[k] + reserve_share)
-                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: node %d has %.2f GiB free for its "
-                                     "%.2f GiB slice plus %.2f GiB of reserve; the rest will spill to the other node\n",
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement at risk: node %d has %.2f GiB free for its "
+                                     "%.2f GiB slice plus %.2f GiB of reserve\n",
                              nodes[k], (double) room / 1073741824.0, (double) slice_bytes[k] / 1073741824.0,
                              (double) reserve_share / 1073741824.0);
         }
