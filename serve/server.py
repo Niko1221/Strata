@@ -3780,6 +3780,9 @@ class Service:
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
+                  # what the dashboard labels the model with: the config's "display_name" and an engine adapter's
+                  # note on how it currently runs (e.g. a routing mode)
+                  "display_name": getattr(self, "display_name", None), "mode": getattr(self, "mode_note", None),
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
@@ -5459,6 +5462,7 @@ def make_handler(svc: Service):
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
+                                 "display_name": getattr(svc, "display_name", None),
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata"})
@@ -6952,6 +6956,9 @@ def main() -> int:
         svc.model_arch = cfg.get("arch") or "qwen4exp"
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    # the name the dashboard shows beside the model id, e.g. "Qwen3.8-Flash-Next · IQ3_S" (optional)
+    dn = cfg.get("display_name")
+    svc.display_name = dn.strip() if isinstance(dn, str) and dn.strip() else None
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)
