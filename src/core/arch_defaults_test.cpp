@@ -1,5 +1,6 @@
 // src/core/arch_defaults_test.cpp - the per-architecture default table (no GPU needed).
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -70,6 +71,14 @@ int main() {
     put("STRATA_GFX1151_DEFAULTS", "0");
     CHECK(arch_default_env("gfx1151").empty());
     CHECK(apply_arch_defaults("gfx1151").empty());
+    // the two approved gfx12 prompt defaults (WMMA attention, Q2_0 fused experts): on for Linux, off for Windows
+    CHECK(gfx12_prompt_defaults_on(false));
+    CHECK(!gfx12_prompt_defaults_on(true));
+#if defined(_WIN32)
+    CHECK(!kGfx12PromptDefaultsOn);
+#else
+    CHECK(kGfx12PromptDefaultsOn);
+#endif
     std::printf(fails ? "arch_defaults_test: %d FAILED\n" : "arch_defaults_test: OK\n", fails);
     return fails ? 1 : 0;
 }

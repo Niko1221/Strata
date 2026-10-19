@@ -3,11 +3,14 @@
 //     build/native_expert_parity <shard.gguf> [layer ...]     real rows (a split model's shards are found by name)
 //     build/native_expert_parity --synthetic GU/DOWN ...      random weights quantized by ggml (e.g. q4_K/q5_1)
 //     build/native_expert_parity --q5_1-min                   the Q5_1 min term on crafted activations
+//     (the CPU-only checks of the trellis kernels, AVX2 / AVX-512 / scalar, are in tq_cpu_parity)
 //
 // (a) float reference: ggml's own dequantizer (`to_float`) and a float SwiGLU expert, (b) the CPU path
 // (ggml-cpu vec_dot with its quantized activations), (c) the GPU path (`native_expert_grouped`, q8_1
-// activations).  (b) and (c) each differ from (a) by their activation rounding only (a few 1e-3 relative).  (c) runs
-// twice, with the kernels that decode a weight part once for all entries and with the per-entry ones: bitwise equal.
+// activations).  (b) and (c) each differ from (a) by their activation rounding (a few 1e-3 relative) and, for the
+// trellis types on the GPU, by its int8 codebook (tq_lut_i8, see iq_kernels.cu "Numerics"); both must stay within
+// relative L1 error 3e-2 of (a).  (c) runs twice, with the kernels that decode a weight part once for all entries and
+// with the per-entry ones: those two are bitwise equal to each other.
 // (d) the GPU dequantizers of the prompt path and the embedding against `to_float` (Q8_0: bit for bit).
 // The synthetic mode and (d) follow eddoursul/Strata 8029fa9.
 #include "strata/artifact/gguf_reader.hpp"
@@ -17,8 +20,18 @@
 #include "strata/kernels/cpu/iq_avx2.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/tq_cpu.hpp"
 #include "ggml-cpu.h"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/ngram.hpp"
+#include "strata/kernels/native_mmvq.hpp"
+#include "strata/core/native_dense.hpp"
+#include "strata/core/expert_source.hpp"
+
+#include <fstream>
+#include <set>
+#include <sstream>
 
 #include "ggml.h"
 
@@ -73,13 +86,17 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
     std::vector<float> x((size_t) NT * H);
     for (auto& v : x) v = nd(rng);
     std::vector<float> ref((size_t) NT * H), got_c((size_t) NT * H), got_g((size_t) NT * H);
+    // APR (--hadamard): the folded expert's reference takes H (s * x) and H (s * h), as llama.cpp's graph does
+    std::vector<float> xr(x);
+    if (f.had_gu) for (int k = 0; k < NT; ++k) cpu::hadamard_rotate(xr.data() + k * H, (int) H, f.had_block, f.gu_signs);
     for (int k = 0; k < NT; ++k) {
         std::vector<float> h(FF);
         for (int64_t r = 0; r < FF; ++r) {
             double g = 0, u = 0;
-            for (int64_t i = 0; i < H; ++i) { g += (double) G[r * H + i] * x[k * H + i]; u += (double) U[r * H + i] * x[k * H + i]; }
+            for (int64_t i = 0; i < H; ++i) { g += (double) G[r * H + i] * xr[k * H + i]; u += (double) U[r * H + i] * xr[k * H + i]; }
             h[r] = (float) (g / (1.0 + std::exp(-g)) * u);
         }
+        if (f.had_d) cpu::hadamard_rotate(h.data(), (int) FF, f.had_block, f.d_signs);
         for (int64_t r = 0; r < H; ++r) {
             double o = 0;
             for (int64_t i = 0; i < FF; ++i) o += (double) D[r * FF + i] * h[i];
@@ -99,6 +116,25 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             cpu::native_quant_act(f, x.data() + k * H, act[k].data());
             a[k] = act[k].data();
             ffp[k] = ff[k].data();
+        }
+        if ((f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22) && cpu::cpu_avx2_ok() && !cpu::cpu_avx512_ok()) {
+            const auto dot = ggml_get_type_traits_cpu((ggml_type) f.gu_type)->vec_dot;
+            size_t differ = 0;
+            std::vector<float> exact((size_t) FF);
+            for (int k = 0; k < NT; ++k) {
+                cpu::iq256_gu_rows_exact_one(f.gu_type, blob.data(), f.gu_row, f.up_off, (int) H, a[k],
+                                              exact.data(), 0, (int) FF);
+                for (int r = 0; r < FF; ++r) {
+                    float g = 0.f, u = 0.f;
+                    dot((int) H, &g, 0, blob.data() + (size_t) r * f.gu_row, 0, a[k], 0, 1);
+                    dot((int) H, &u, 0, blob.data() + f.up_off + (size_t) r * f.gu_row, 0, a[k], 0, 1);
+                    const float want = (g / (1.f + std::exp(-g))) * u;
+                    differ += std::memcmp(&want, &exact[(size_t) r], sizeof(float)) != 0;
+                }
+            }
+            std::printf("%s exact singleton: %zu of %lld real gate/up rows differ from ggml\n",
+                        label.c_str(), differ, (long long) (NT * FF));
+            if (differ) ++failures;
         }
         cpu::native_gu_rows(f, blob.data(), a, NT, ffp, 0, (int) FF);
         // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
@@ -182,6 +218,42 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             std::printf("          width invariance (1 vs %d tokens): gate/up %zu, down %zu rows differ\n", NT,
                         gu_diff, dn_diff);
             if (gu_diff || dn_diff) ++failures;
+        }
+        // the trellis types (tq_cpu.hpp, which native_gu_rows / native_down_rows above used): every ISA this CPU has
+        // against the scalar kernel BIT FOR BIT, and against ggml-cpu's vec_dot (float summation order only)
+        for (int role = 0; role < 2; ++role) {
+            const int type = role == 0 ? f.gu_type : f.d_type;
+            if (!cpu::tq_supported(type)) continue;
+            const int n = role == 0 ? (int) H : (int) FF, rows = role == 0 ? (int) FF : (int) H;
+            const size_t rb = role == 0 ? f.gu_row : f.d_row;
+            const uint8_t* w = blob.data() + (role == 0 ? 0 : f.down_off);
+            const void* const* acts = role == 0 ? a : hp;
+            std::vector<float> ref((size_t) NT * rows), got((size_t) NT * rows);
+            float* rp[NT];
+            float* gp[NT];
+            for (int k = 0; k < NT; ++k) { rp[k] = ref.data() + (size_t) k * rows; gp[k] = got.data() + (size_t) k * rows; }
+            cpu::tq_rows(cpu::TqIsa::scalar, type, w, rb, n, acts, NT, rp, 0, rows);
+            const auto* tc = ggml_get_type_traits_cpu((ggml_type) type);
+            double num = 0, den = 0;
+            for (int k = 0; k < NT; ++k)
+                for (int r = 0; r < rows; ++r) {
+                    float v = 0;
+                    tc->vec_dot(n, &v, 0, w + (size_t) r * rb, 0, acts[k], 0, 1);
+                    num += std::pow((double) v - ref[(size_t) k * rows + r], 2);
+                    den += (double) v * v;
+                }
+            const double rg = std::sqrt(num / (den + 1e-30));
+            std::printf("          %s %s rows: scalar kernel vs ggml vec_dot rel %.2e", ggml_type_name((ggml_type) type),
+                        role == 0 ? "gate" : "down", rg);
+            if (rg > 1e-5) ++failures;
+            for (cpu::TqIsa isa : {cpu::TqIsa::avx2, cpu::TqIsa::avx512}) {
+                if (!cpu::tq_isa_ok(isa)) continue;
+                cpu::tq_rows(isa, type, w, rb, n, acts, NT, gp, 0, rows);
+                const bool same = std::memcmp(got.data(), ref.data(), got.size() * sizeof(float)) == 0;
+                std::printf(" | %s %s", cpu::tq_isa_name(isa), same ? "bitwise equal" : "DIFFERENT");
+                if (!same) ++failures;
+            }
+            std::printf("\n");
         }
         // UD-Q4_K_XL's formats: the multi-token AVX2 kernels (kq_avx2.cpp) against ggml-cpu's vec_dot per token,
         // BIT FOR BIT, for 1..8 tokens; then the time of 4 tokens (a verify window) both ways
@@ -285,7 +357,8 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
     }
     // (c) the GPU: one group holding the NT entries
     {
-        const auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, H, FF);
+        auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, H, FF);
+        if (f.had_d) { L.had_block = f.had_block; L.d_signs = strata::kernels::hadamard_device_signs(f.d_signs, (int) FF); }
         void *dblob, *dx, *dxq, *dscr;
         float* dout;
         unsigned long long* dptr;
@@ -309,6 +382,32 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         cudaMemcpy(dn, &one, 4, cudaMemcpyHostToDevice);
         cudaMemcpy(ddst, idx, NT * 4, cudaMemcpyHostToDevice);
         cudaMemcpy(dtok, idx, NT * 4, cudaMemcpyHostToDevice);
+        if (f.had_gu) {   // APR: the GPU rotation of x (in place here), then its floats against the CPU's
+            strata::kernels::hadamard_rows((const float*) dx, (float*) dx, NT, H, f.had_block,
+                                           strata::kernels::hadamard_device_signs(f.gu_signs, (int) H), s);
+            std::vector<float> gx(x.size());
+            cudaStreamSynchronize(s);
+            cudaMemcpy(gx.data(), dx, gx.size() * 4, cudaMemcpyDeviceToHost);
+            const bool same = std::memcmp(gx.data(), xr.data(), gx.size() * 4) == 0;
+            std::printf("          gpu hadamard_rows vs cpu hadamard_rotate: %s (rel %.2e)\n",
+                        same ? "bitwise equal" : "differ", rel(gx, xr));
+            if (!(rel(gx, xr) < 1e-6)) ++failures;
+            // the f16 form (prompt path) on the unrotated x: within fp16 rounding of the float rotation
+            std::vector<uint16_t> xh(x.size()), xh_out(x.size());
+            for (size_t i = 0; i < x.size(); ++i) xh[i] = ggml_fp32_to_fp16(x[i]);
+            uint16_t* dxh = nullptr;
+            cudaMalloc((void**) &dxh, xh.size() * 2);
+            cudaMemcpy(dxh, xh.data(), xh.size() * 2, cudaMemcpyHostToDevice);
+            strata::kernels::hadamard_rows_f16(dxh, NT, H, f.had_block,
+                                               strata::kernels::hadamard_device_signs(f.gu_signs, (int) H), s);
+            cudaStreamSynchronize(s);
+            cudaMemcpy(xh_out.data(), dxh, xh.size() * 2, cudaMemcpyDeviceToHost);
+            cudaFree(dxh);
+            std::vector<float> xf(x.size());
+            for (size_t i = 0; i < xf.size(); ++i) xf[i] = ggml_fp16_to_fp32(xh_out[i]);
+            std::printf("          gpu hadamard_rows_f16 vs cpu float rotation: rel %.2e\n", rel(xf, xr));
+            if (!(rel(xf, xr) < 2e-3)) ++failures;
+        }
         strata::kernels::quantize_q8_1_rows((const float*) dx, NT, H, dxq, s);
         strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
         cudaStreamSynchronize(s);
@@ -535,6 +634,157 @@ int check_bf16_embd(cudaStream_t s) {
     return failures;
 }
 
+// APR: a GGUF's token_embd as the engine gathers it (iq_embed_rows, any embed_type_supported type: Gyro-S's Q6_K),
+// `n` random rows against ggml's to_float, bit for bit; then iq_dequant_f32 of one row
+int check_gguf_embd(const char* path, int n, cudaStream_t s) {
+    const strata::GgufModel model(strata::gguf_split_paths(path));
+    size_t at = 0;
+    const strata::TensorInfo* t = model.find("token_embd.weight", &at);
+    if (!t || t->shape.size() != 2 || t->shape[0] != (uint64_t) H) { std::printf("%s: no token_embd [2560, V]\n", path); return 1; }
+    const int type = (int) t->type;
+    const int64_t V = (int64_t) t->shape[1];
+    if (!strata::kernels::embed_type_supported(type)) { std::printf("token_embd type %d: no GPU dequantizer\n", type); return 1; }
+    const size_t rb = strata::kernels::iq_row_bytes(type, H);
+    if (rb != ggml_row_size((ggml_type) type, H)) { std::printf("row bytes %zu != ggml %zu\n", rb, ggml_row_size((ggml_type) type, H)); return 1; }
+    const uint8_t* table = model.shard(at).tensor_data(*t);
+    std::mt19937 rng(17);
+    std::vector<int32_t> tok((size_t) n);
+    for (auto& v : tok) v = (int32_t) (rng() % (uint64_t) V);
+    tok[0] = 0; tok[(size_t) n - 1] = (int32_t) (V - 1);
+    // the rows the test reads, packed contiguously as a small table (the engine maps the whole one)
+    std::vector<uint8_t> small((size_t) n * rb);
+    for (int i = 0; i < n; ++i) std::memcpy(small.data() + (size_t) i * rb, table + (size_t) tok[(size_t) i] * rb, rb);
+    std::vector<int32_t> idx((size_t) n);
+    for (int i = 0; i < n; ++i) idx[(size_t) i] = n - 1 - i;     // gathered in reverse
+    void* dt = nullptr; int32_t* dtok = nullptr; float* dout = nullptr;
+    cudaMalloc(&dt, small.size());
+    cudaMalloc((void**) &dtok, (size_t) n * 4);
+    cudaMalloc((void**) &dout, (size_t) n * H * 4);
+    cudaMemcpy(dt, small.data(), small.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(dtok, idx.data(), (size_t) n * 4, cudaMemcpyHostToDevice);
+    strata::kernels::iq_embed_rows(type, dt, rb, dtok, n, H, dout, s);
+    cudaStreamSynchronize(s);
+    std::vector<float> got((size_t) n * H), want((size_t) H);
+    cudaMemcpy(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost);
+    const auto* tr = ggml_get_type_traits((ggml_type) type);
+    size_t rows_differ = 0, values_differ = 0;
+    for (int i = 0; i < n; ++i) {
+        tr->to_float(small.data() + (size_t) idx[(size_t) i] * rb, want.data(), H);
+        const size_t d = (size_t) std::count_if(want.begin(), want.end(), [&, k = (size_t) 0](const float& w) mutable {
+            return std::memcmp(&w, &got[(size_t) i * H + k++], 4) != 0; });
+        values_differ += d;
+        rows_differ += d != 0;
+    }
+    strata::kernels::iq_dequant_f32(type, dt, H, dout, s);
+    cudaStreamSynchronize(s);
+    cudaMemcpy(got.data(), dout, (size_t) H * 4, cudaMemcpyDeviceToHost);
+    tr->to_float(small.data(), want.data(), H);
+    const bool one = std::memcmp(got.data(), want.data(), (size_t) H * 4) == 0;
+    cudaFree(dt); cudaFree(dtok); cudaFree(dout);
+    std::printf("%s token_embd (%s, %lld rows): %d random rows gathered on the GPU, %zu rows / %zu values differ from "
+                "ggml to_float; iq_dequant_f32 row: %s\n", path, ggml_type_name((ggml_type) type), (long long) V, n,
+                rows_differ, values_differ, one ? "bitwise equal" : "DIFFERS");
+    return (rows_differ || !one) ? 1 : 0;
+}
+
+// APR: a GGUF's PLE table through PleTable (the engine's reader; mapped and direct SSD I/O), `n` random rows of 16
+// heads against ggml's to_float of the same bytes, bit for bit (Gyro-M's Q8_0 table; IQ4_NL for the others)
+int check_gguf_ple(const char* path, int n) {
+    const strata::GgufModel model(strata::gguf_split_paths(path));
+    size_t at = 0;
+    const strata::TensorInfo* t = model.find("per_layer_token_embd.weight", &at);
+    if (!t) { std::printf("%s: no per_layer_token_embd.weight\n", path); return 1; }
+    const std::string shard = model.shard(at).path();
+    const uint8_t* table = model.shard(at).tensor_data(*t);
+    const int type = (int) t->type;
+    const size_t rb = ggml_row_size((ggml_type) type, 160);
+    const uint64_t rows = t->shape[1];
+    const auto* tr = ggml_get_type_traits((ggml_type) type);
+    std::mt19937 rng(23);
+    std::vector<uint32_t> r16((size_t) n * 16);
+    for (auto& v : r16) v = (uint32_t) (rng() % rows);
+    r16[0] = 0; r16.back() = (uint32_t) (rows - 1);
+    int failures = 0;
+    for (const auto mode : {strata::kernels::PleIo::Mmap, strata::kernels::PleIo::Direct}) {
+        strata::kernels::PleTable ple;
+        strata::kernels::PleIoOptions io;
+        io.mode = mode;
+        std::string err;
+        if (!ple.open(shard, err, io)) { std::printf("PleTable open (%s): %s\n", mode == strata::kernels::PleIo::Direct ? "direct" : "mmap", err.c_str()); ++failures; continue; }
+        std::vector<float> got(r16.size() * 160), want(160);
+        if (!ple.gather_batch(r16.data(), (size_t) n, got.data(), err)) { std::printf("gather_batch: %s\n", err.c_str()); ++failures; continue; }
+        size_t rows_differ = 0;
+        for (size_t i = 0; i < r16.size(); ++i) {
+            tr->to_float(table + (size_t) r16[i] * rb, want.data(), 160);
+            rows_differ += std::memcmp(want.data(), got.data() + i * 160, 160 * 4) != 0;
+        }
+        std::printf("%s PLE table (%s via PleTable as %s, %s I/O): %zu random rows, %zu differ from ggml to_float\n",
+                    path, ggml_type_name((ggml_type) type), ple.format(),
+                    mode == strata::kernels::PleIo::Direct ? "direct" : "mmap", r16.size(), rows_differ);
+        if (rows_differ) ++failures;
+    }
+    return failures;
+}
+
+// APR: the engine's start-up checks for a pack made from a published GGUF, without a GPU allocation: the expert
+// table (native_experts.txt v5 + hadamard.txt), GPU expert kernels for every layer's formats, the GGUF expert
+// offsets (check_experts_gguf), every quantized tensor the index serves from the GGUF has a native kernel (NativeDense
+// projections, the head) or dequantizer (the embedding), and the PLE table opens with the engine's reader.
+int check_load(const char* pack, const char* gguf) {
+    int failures = 0;
+    std::string err;
+    auto fail = [&](const std::string& m) { std::printf("  FAIL %s\n", m.c_str()); ++failures; };
+    if (!cpu::expert_layout_load(pack, 48, 512, err)) { fail("expert_layout_load: " + err); return failures; }
+    const auto& lay = cpu::expert_layout();
+    const auto& hs = cpu::hadamard_spec();
+    int folded = 0;
+    for (int64_t l = 0; l < (int64_t) lay.fmt.size(); ++l) {
+        const auto& f = lay.fmt[(size_t) l];
+        folded += f.had_gu && f.had_d;
+        if (!strata::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff))
+            fail("layer " + std::to_string(l) + ": no GPU expert kernels for " + std::to_string(f.gu_type) + "/" +
+                 std::to_string(f.d_type));
+    }
+    std::printf("  experts: native_experts.txt v%d, %zu layers (%s/%s ...), %.2f GiB; hadamard block %d, %d layers folded\n",
+                lay.version, lay.fmt.size(), ggml_type_name((ggml_type) lay.fmt[0].gu_type),
+                ggml_type_name((ggml_type) lay.fmt[0].d_type), lay.total / 1073741824.0, hs.block, folded);
+    if (!strata::core::check_experts_gguf(gguf, lay, err)) fail("check_experts_gguf: " + err);
+    else std::printf("  check_experts_gguf: ok\n");
+    const std::vector<std::string> shards = strata::gguf_split_paths(gguf);
+    std::set<std::string> served;
+    if (!strata::core::NativeDense::served_names(shards, true, served, err)) fail("served_names: " + err);
+    const strata::GgufModel model(shards);
+    std::ifstream idx(std::string(pack) + "/index.txt");
+    std::string line;
+    int from_gguf = 0, ok_rows = 0;
+    while (std::getline(idx, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream ss(line);
+        std::string name, file, kind;
+        ss >> name >> file >> kind;
+        if (kind != "0") continue;                   // a dense.bin row
+        ++from_gguf;
+        size_t at = 0;
+        const strata::TensorInfo* t = model.find(name, &at);
+        if (!t) { fail(name + ": not in the GGUF"); continue; }
+        bool ok = served.count(name) > 0;
+        if (name == "token_embd.weight") ok = strata::kernels::embed_type_supported((int) t->type);
+        if (name == "output.weight") ok = strata::kernels::native_mmvq_supported((int) t->type);
+        if (!ok) fail(name + " (" + t->type_name() + "): served from the GGUF but no kernel takes it");
+        else ++ok_rows;
+    }
+    std::printf("  index: %d tensors served from the GGUF, %d with a kernel (incl. token_embd %s, output %s)\n",
+                from_gguf, ok_rows, model.find("token_embd.weight")->type_name(), model.find("output.weight")->type_name());
+    size_t pat = 0;
+    if (model.find("per_layer_token_embd.weight", &pat)) {
+        strata::kernels::PleTable ple;
+        strata::kernels::PleIoOptions io;   // the engine's default: direct SSD reads
+        if (!ple.open(model.shard(pat).path(), err, io)) fail("PleTable: " + err);
+        else std::printf("  PLE table: %s, %llu rows, direct I/O: ok\n", ple.format(), (unsigned long long) ple.rows());
+    }
+    return failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -542,8 +792,12 @@ int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"
+                             "       native_expert_parity --synthetic-hadamard GU/DOWN ...   (the same, Hadamard-folded: APR)\n"
                              "       native_expert_parity --q5_1-min\n"
-                             "       native_expert_parity --bf16-embd\n");
+                             "       native_expert_parity --bf16-embd\n"
+                             "       native_expert_parity --load-check <pack> <model.gguf>  (start-up checks, no GPU load)\n"
+                             "       native_expert_parity --gguf-embd <model.gguf> [rows]   (token_embd rows vs to_float)\n"
+                             "       native_expert_parity --gguf-ple <model.gguf> [tokens]  (PLE rows via PleTable vs to_float)\n");
         return 2;
     }
     // #152's width check tests the opt-in rule (the multi-token kernels from one token on)
@@ -558,11 +812,24 @@ int main(int argc, char** argv) {
     cudaStream_t s;
     cudaStreamCreate(&s);
     const std::string mode = argv[1];
-    if (mode == "--q5_1-min") {
+    if (mode == "--load-check" && argc >= 4) {
+        std::printf("load check: pack %s, GGUF %s\n", argv[2], argv[3]);
+        failures += check_load(argv[2], argv[3]);
+    } else if (mode == "--gguf-embd" && argc >= 3) {
+        failures += check_gguf_embd(argv[2], argc > 3 ? std::atoi(argv[3]) : 300, s);
+    } else if (mode == "--gguf-ple" && argc >= 3) {
+        failures += check_gguf_ple(argv[2], argc > 3 ? std::atoi(argv[3]) : 20);
+    } else if (mode == "--q5_1-min") {
         failures += check_q5_1_min(s);
     } else if (mode == "--bf16-embd") {
         failures += check_bf16_embd(s);
-    } else if (mode == "--synthetic") {
+    } else if (mode == "--synthetic" || mode == "--synthetic-hadamard") {
+        // --synthetic-hadamard: the same with the layer Hadamard-folded (APR, prism.hadamard): random signs, block 128
+        const bool had = mode == "--synthetic-hadamard";
+        static std::vector<float> sx((size_t) H), sh((size_t) FF);
+        std::mt19937 srng(5);
+        for (auto& v : sx) v = (srng() & 1) ? 1.f : -1.f;
+        for (auto& v : sh) v = (srng() & 1) ? 1.f : -1.f;
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];
             const size_t slash = arg.find('/');
@@ -576,7 +843,13 @@ int main(int argc, char** argv) {
                 ++failures;
                 continue;
             }
-            failures += check_blob(f, synthetic_blob(f, i), i, "synthetic", s);
+            if (had) {
+                f.had_block = 128;
+                f.had_gu = f.had_d = true;
+                f.gu_signs = sx.data();
+                f.d_signs = sh.data();
+            }
+            failures += check_blob(f, synthetic_blob(f, i), i, had ? "hadamard" : "synthetic", s);
         }
     } else {
         const strata::GgufModel model(strata::gguf_split_paths(argv[1]));

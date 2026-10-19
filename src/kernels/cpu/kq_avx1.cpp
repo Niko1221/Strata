@@ -43,7 +43,7 @@ inline __m256 bf16x8_to_f32x8_avx1(const uint16_t* p) {
 }  // namespace
 
 void bf16_rows_dot_multi_avx1(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out) {
-    // each row is read once for all `nt` (<= 8) tokens, exactly as the AVX2 kernel does
+    // each row is read once for all `nt` (<= 8) tokens
     for (int r = 0; r < rows; ++r) {
         const uint16_t* wr = w + (size_t) r * (size_t) cols;
         __m256 acc[8];

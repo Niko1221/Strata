@@ -32,6 +32,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <cstdint>
 #include <string>
@@ -120,6 +121,8 @@ public:
         return t >= 0 && t < 32 && ((nf_mask_ >> t) & 1u) != 0;
     }
     static bool nan_guard_on();
+    /// The most tokens one window holds (`init`'s `max_t`; 0 before it).
+    int max_t() const { return max_t_; }
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
@@ -170,6 +173,20 @@ public:
     void set_stage(int64_t layer_begin, int64_t layer_end, const float* handoff_in, float* handoff_out) {
         lb_ = layer_begin; le_ = layer_end; hand_in_ = handoff_in; hand_out_ = handoff_out;
     }
+    /// The rows the hand-off buffers of `set_stage` hold (0: kVerifyMaxT, the default).  More than --batch's 8 slots on a
+    /// layer split: the pipelined slot groups write their rows at hbase = group * rows-per-group, one row per slot.
+    void set_handoff_rows(int rows) { handoff_rows_ = rows; }
+    /// Is the zero-doorbell graph the one a batch window would run now (every expert of the stage in VRAM by the host
+    /// table)?  Looks at the table, as each window does.  (STRATA_ADMIT_MERGE_FIRST's gate.)
+    bool ar_live() { refresh_ar(); return ar_on(); }
+    /// STRATA_SPLIT_OVERLAP=1 (opt-in; stages on DIFFERENT devices only): the hand-off carries a ready flag (one
+    /// mapped word per hand-off buffer: host and device addresses).  The writing stage raises it from the GPU when
+    /// its hand-off is out (handoff_publish); the reading stage's window graph waits on it (wait_flag_ge) - so the
+    /// next stage's graph is launched while this stage is still running, and the host no longer syncs between the
+    /// stages.  Null (the default): the old order - sync, then launch the next stage.  Set before `init`.
+    void set_handoff_flags(uint32_t* in_host, uint32_t* in_dev, uint32_t* out_host, uint32_t* out_dev) {
+        hflag_in_h_ = in_host; hflag_in_d_ = in_dev; hflag_out_h_ = out_host; hflag_out_d_ = out_dev;
+    }
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
@@ -217,7 +234,14 @@ public:
     /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
-    bool batch_busy() const { return b_running_; }
+    bool batch_busy() const { return b_running_.load(std::memory_order_acquire); }
+    /// Serves the layers of this stage's window that have rung (the CPU pool and the flags), with no CUDA call: 1 once
+    /// every layer is served (or the window raises no host doorbells), 0 while one is still to ring.  batch_poll
+    /// calls it, unless set_external_serve(true) moved it to a thread of its own (STRATA_PIPED_CONCURRENT: a CUDA
+    /// call can wait for the driver's lock while another thread holds it waiting for the GPU, whose window waits
+    /// for its doorbell, #31); batch_poll then makes no CUDA call before every layer is served.
+    int batch_serve(PoolMultiFn pool, void* user);
+    void set_external_serve(bool on) { ext_serve_.store(on, std::memory_order_release); }
     /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
@@ -249,8 +273,12 @@ public:
     /// Every layer copies the token rows to the host (doorbell_publish), not only the layers with a routed expert
     /// outside the VRAM tier by the device's residency table: with windows in flight the adaptive tier marks an
     /// expert evicted on the host (the pool then computes it on the CPU) before the device table follows.  Also turns
-    /// the device-planned layers (E-6) off.  Before `init`.
-    void set_always_publish(bool on) { always_publish_ = on; }
+    /// the device-planned layers (E-6) off, which read the device table this mode lets lag.  Before the first window
+    /// (its graphs are captured there).
+    void set_always_publish(bool on) {
+        always_publish_ = on;
+        if (on) device_plan_ = false;
+    }
     /// 0.1.43: the adaptive tier's overlap gate (see AdaptGate).  Refused (false) with the device-planned layers (E-6),
     /// which never ask the host.  The pointer must outlive the verifier's windows.
     bool set_adapt_gate(AdaptGate* g) {
@@ -307,7 +335,22 @@ public:
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    /// Called before every window this verifier launches (run, the batch and pipelined launches): the device's
+    /// residency table catches up with the host's (the adaptive tier's evictions while its copies are in flight).
+    /// It gets this verifier's stream; false (with the message in `err`) fails the launch.
+    void set_pre_launch(std::function<bool(cudaStream_t cs, std::string& err)> f) { pre_launch_ = std::move(f); }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
+
+    /// The PCIe count of each layer from measured costs (PcieModel) instead of a fixed share: the spin kernels stamp
+    /// each step's GPU work (the plan's arrival, the PCIe part's start, the wait for the CPU's rows; GPU clock), the host
+    /// times its pool, and after each window *model (the dispatch's) takes the costs. One GPU, no batch slots. Set
+    /// before `init` (the stamps are captured). `paused`: a request's own --pcie-frac holds meanwhile.
+    void set_pcie_balance(PcieModel* model) { bal_ = model; }
+    void pause_pcie_balance(bool paused) {
+        bal_paused_ = paused;
+        if (bal_ != nullptr && m_bal_ != nullptr) bal_->on = !paused;
+    }
+    bool pcie_balance_on() const { return bal_ != nullptr && m_bal_ != nullptr; }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     int64_t windows = 0;
@@ -341,10 +384,22 @@ private:
         for (int t = 0; t < S; ++t) k.push_back(rows[t]);
         return k;
     }
-    // batch_launch / batch_poll
-    bool b_running_ = false;
-    int64_t b_k_ = 0, b_steps_ = 0;
-    std::chrono::steady_clock::time_point b_last_;
+    // batch_launch / batch_poll (with external serving, batch_serve runs on another thread: running and the served
+    // layer count are atomics, set by batch_launch before running)
+    std::atomic<bool> b_running_{false};
+    std::atomic<int64_t> b_k_{0};
+    int64_t b_steps_ = 0;
+    std::atomic<bool> ext_serve_{false};
+    // when a layer was last served (steady clock ticks): the serving thread writes it, batch_poll's checks read it
+    std::atomic<int64_t> b_last_{0};
+    void ring_now() {
+        b_last_.store((int64_t) std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+    }
+    std::chrono::steady_clock::time_point last_ring() const {
+        return std::chrono::steady_clock::time_point(
+            std::chrono::steady_clock::duration(b_last_.load(std::memory_order_acquire)));
+    }
+    std::chrono::steady_clock::time_point ext_checked_{};   ///< batch_poll's last check with external serving
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
@@ -412,8 +467,24 @@ private:
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
+    int handoff_rows_ = 0;               ///< set_handoff_rows (0: kVerifyMaxT)
     const float* hand_in_ = nullptr;
     float* hand_out_ = nullptr;
+    uint32_t* hflag_in_h_ = nullptr;     ///< set_handoff_flags: the incoming hand-off's ready word (host / device)
+    uint32_t* hflag_in_d_ = nullptr;
+    uint32_t* hflag_out_h_ = nullptr;    ///< ... and the outgoing one's
+    uint32_t* hflag_out_d_ = nullptr;
+    uint32_t* hcount_d_ = nullptr;       ///< handoff_publish's block counter (device memory)
+    uint32_t* herr_h_ = nullptr;         ///< the bounded hand-off wait gave up (mapped; the reading stage's)
+    uint32_t* herr_d_ = nullptr;
+    uint32_t* hdrop_h_ = nullptr;        ///< STRATA_TEST_HANDOFF_DROP: the writing stage withholds its flag (mapped)
+    uint32_t* hdrop_d_ = nullptr;
+    bool handoff_failed(std::string& err) const;   ///< the bounded hand-off wait timed out in the last window
+    int prelaunched_ = 0;                ///< prelaunch ran for a window of this size: run skips staging + launch
+    /// The overlapped split: stage this window's inputs and launch its graph now (the graph waits on the hand-off
+    /// flag); `run` then only serves the host side.  Called on a helper thread while the previous stage runs.
+    bool prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string& err);
+    bool chain_overlap() const;          ///< this stage hands off through a flag to a next stage that waits on it
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
     bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
@@ -459,6 +530,13 @@ private:
     cudaEvent_t df_join_[2] = {};
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t exec_nr_[9] = {};   // #871: the doorbell variant of a stage that is all-resident otherwise
+    // fork 34a35db (STRATA_SIDE_MIXER=1): the GDN gates and the QSA indexer on a branch of the window's graph beside the
+    // mixer's projections, joined before the recurrence / the attention
+    cudaStream_t side_ = nullptr;
+    cudaEvent_t mfork_ = nullptr, mjoin_ = nullptr;
+    // fork b063c13 (STRATA_SIDE_MIXER=2): a second branch for the GDN gate projection and the QSA queries' chain
+    cudaStream_t side2_ = nullptr;
+    cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;
     cudaGraphExec_t commit_exec_ = nullptr;
 
     // mapped staging (host pointer, device alias)
@@ -480,6 +558,16 @@ private:
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
+    // set_pcie_balance: per step (layer x group, stride 2 groups) the GPU's clock as the plan arrives, as the PCIe
+    // part starts and as it waits for the CPU rows (4 words a step); the pool's ms, its experts, the PCIe ones, and
+    // whether the step had a plan
+    unsigned long long* h_bal_ = nullptr; unsigned long long* m_bal_ = nullptr;
+    std::vector<double> bal_p_;
+    std::vector<int32_t> bal_nc_, bal_np_;
+    std::vector<char> bal_ok_;
+    PcieModel* bal_ = nullptr;
+    bool bal_paused_ = false;
+    void pcie_balance_window(int64_t steps, int G);
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
@@ -494,6 +582,7 @@ private:
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
     bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
+    std::function<bool(cudaStream_t, std::string&)> pre_launch_;   // set_pre_launch
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
 
@@ -519,6 +608,10 @@ private:
     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;
     uint8_t* nat_xq_ = nullptr;   // plan v0.3 P6: q8_1 activations for a native pack's grouped experts
+    float* nat_xr_ = nullptr;     // APR: the Hadamard-rotated expert input (the shared expert and the CPU keep xm); nullptr
+                                  // unless some layer's gate/up is folded
+    const float* had_sx_ = nullptr;   // APR: device sign vectors for x (n_embd) and h (n_ff); nullptr = identity
+    const float* had_sh_ = nullptr;
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;

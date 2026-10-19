@@ -78,6 +78,9 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
 /// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
 size_t device_free_bytes();
 
+/// One piece of an expert blob that lives contiguously in a source's own memory: `n` bytes at `p`, to land `at` bytes into the blob.
+struct BlobPart { const uint8_t* p; uint64_t n; uint64_t at; };
+
 class ExpertCache {
 public:
     ExpertCache() = default;
@@ -119,6 +122,16 @@ public:
     /// always.  CUDA only: a HIP build refuses it at open.  The slots past `slots()` after a shrink must hold no
     /// resident expert and no loan: the CALLER evicts them first (they become CPU misses).
     void set_segment_bytes(int64_t seg_bytes) { seg_req_ = seg_bytes > 0 ? seg_bytes : 0; }
+    /// STRATA_MMQ_DIRECT: `open_sized` leaves at least `g` bytes of room after each slot's blob (the prompt MMQ
+    /// reads a little past a down matrix when it reads an expert in its slot).  Set before opening, like
+    /// `set_segment_bytes`; `close` keeps it.  0 (the default): no guard.  The uniform `open` ignores it, and so does
+    /// the SYCL engine's open_sized (its slots then have no guard, and `slot_tail` finds no room).
+    void set_slot_guard(int64_t g) { guard_req_ = g > 0 ? g : 0; }
+    /// The guard the open slots were laid out with: what `open_sized` applied (0 for uniform slots, when closed, and
+    /// on SYCL, whose open_sized applies none).
+    int64_t slot_guard() const { return guard_; }
+    /// A sized slot's arena bytes: the blob plus the guard, 256-byte aligned.
+    static int64_t slot_stride(int64_t blob, int64_t guard = 0) { return (blob + guard + 255) / 256 * 256; }
     bool segmented() const { return !segs_.empty(); }
     int64_t segment_bytes() const { return seg_; }
     /// Bytes of the arena backed by VRAM now (a whole number of segments; the arena when not segmented).
@@ -191,6 +204,9 @@ public:
     /// perf-review D-4: `fill_slot_blocking`'s copy on the same (legacy) stream, but queued: many slots are refilled
     /// with one `sync_queued` at the end instead of a wait per slot. Same ordering against earlier work, same bytes.
     bool fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
+    /// `fill_slot_queued` for a blob that is not in one piece: each `parts[i].n` bytes at `parts[i].p` go to byte `parts[i].at`
+    /// of the slot (the pieces tile the blob).  Same queue, same `sync_queued`.
+    bool fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err);
     bool sync_queued(std::string& err);
 
     /// Reads `slot` back to the host and compares it to `host_blob`, byte for byte.  **THE ONLY THING THAT SAYS
@@ -208,6 +224,14 @@ public:
     VmmRange* vmm_range() { return vmm_.get(); }
     /// Byte offset of slot `s` in the arena (s == slots(): the end).
     uint64_t slot_offset(int64_t s) const { return off_.empty() ? (uint64_t) s * (uint64_t) blob_ : off_[(size_t) s]; }
+    /// The arena bytes of slot `s` (its blob, any slack and the guard).
+    uint64_t slot_room(int32_t s) const { return slot_offset(s + 1) - slot_offset(s); }
+    /// STRATA_MMQ_DIRECT: the address `blob` bytes into slot `s` when the slot has room for `need` more bytes there
+    /// (null otherwise, or for a bad slot).  Uniform slots too: their stride is the largest blob.
+    uint8_t* slot_tail(int32_t s, uint64_t blob, uint64_t need) const {
+        if (s < 0 || s >= slots_ || base_ == nullptr) return nullptr;
+        return slot_room(s) >= blob + need ? base_ + slot_offset(s) + blob : nullptr;
+    }
 
 private:
 #if defined(STRATA_USE_HIP)
@@ -221,6 +245,8 @@ private:
     uint8_t* base_ = nullptr;
     int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
     int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
+    int64_t guard_req_ = 0;             ///< STRATA_MMQ_DIRECT: bytes kept after each sized slot's blob (set_slot_guard)
+    int64_t guard_ = 0;                 ///< ...the guard open_sized applied to the open slots (0: none)
     int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)
     uint64_t reserved_ = 0;             ///< #533: the reserved address range's size
     std::vector<unsigned long long> segs_;   ///< #533: each segment's physical handle (0: unmapped)

@@ -11,6 +11,18 @@ verify window (a few hundred KB through pinned RAM), not twice per layer. No NVL
 needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
 is every card's share and skips those probes; there is no per-card setting yet.
 
+**Two models on two cards (the app).** A layer split puts one model on several cards. The other way to use two cards is two
+models, one per card, each answering on its own. In the app, turn on **Run multiple models** on the Models page: the card
+list then says which card a loaded model uses ("Already used by ..."), preselects a free card for the next model, and
+explains a failed start on a card that is taken. Measured on a PC with Radeon AI PRO R9700 cards (two of four, Linux): Q2_0 on
+one card and IQ3_XXS on another both loaded (33 s and 59 s with the files cached, 114 s the first time), both answered chats
+(about 60 tokens/s each), the Monitor listed both, and unloading one left the other answering. This was run with the AMD build only;
+the same app code drives NVIDIA cards, but we have not run two models on two NVIDIA cards.
+
+**One make of card per engine.** An engine drives one make of card (NVIDIA, AMD or Intel). The app, `strata launch` and setup
+offer only the cards the engine can drive, never split a model across two makes, say in one plain line when the other make has
+the bigger card, and say that two models at once on two makes is not supported.
+
 ## Using it
 
 **Nothing to type.** `START-HERE.bat` (Linux: `./setup.sh`) lists your NVIDIA cards and says for each one whether
@@ -22,15 +34,21 @@ Strata can use it:
     GPU 1: NVIDIA GeForce GTX 1080 Ti, 11 GB VRAM - not supported - older than the RTX 20 series (compute capability 6.1; Strata needs 7.5 or newer)
     GPU 2: NVIDIA GeForce RTX 3090, 24 GB VRAM - can be used
   ...
-  1) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) + GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) together   (recommended)
-  2) GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) only
-  3) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) only
+  1) RTX 3090 + RAM: fits: needs 44 GB of the 70 GB available   (recommended)
+  2) RTX 3090 + RTX 5080 + RAM (layer split): fits: needs 44 GB of the 84 GB available
+       prompts are read about 20% faster; the cards share the layers (docs/MULTI_GPU.md)
+  3) RTX 5080 + RAM: fits: needs 44 GB of the 66 GB available
 Which GPUs? [1]:
 ```
 
-When two or more cards can share the model, the two best together are recommended (the newest generation first:
-it becomes the main card). A model installed on one card asks once, at its next start, whether to use both from
-now on; the answer is kept.
+**Which cards a model uses (one rule, in setup, `strata launch` and the app).** Strata first tries the model on your
+**largest** card plus the computer's memory, the normal hybrid mode, and recommends that when it fits (with some RAM to
+spare). Only when it does not fit one card, or would be too tight, the layer split over the two largest cards is
+recommended instead. Every option is listed with plain numbers (what the model needs and what the cards and RAM give;
+how much would be read from the SSD when it does not fit) and the choice is yours. The cards that count: not an
+integrated chip (it shares the system memory and adds nothing beside a real card), at least 4 GB of graphics memory, and
+8 GB or more to share a model. The arithmetic is the app's `fitOn` (strata_control/gpu_fit.py keeps its constants equal);
+each extra card of a split costs an estimated 2 GB of its own buffers.
 
 **Choosing yourself** (at setup or at any start):
 
@@ -67,6 +85,22 @@ The server checks it before the start and says what is wrong (0.1.39, #644).
 
 **Card order with `"auto"`** (NVIDIA, #1352): the faster card (multiprocessors x max clock) goes **last** - the last stage runs the head, the draft layer and the verify, and a prompt chunk waits on it (a 4070 Ti SUPER + 5060 Ti read a 6K prompt in 50 s one way round and 15 s the other). Cards whose scores are within 5% of each other (two of the same model) keep your order; a manual split keeps it too. `"gpu_order": "as_given"` keeps the order you wrote under `"auto"` as well. The engine log line `layer split: card order ...` says when it changed.
 
+**An unequal pair under `"auto"` (#2644).** The search prices a decode window, and it can give almost every layer to the card it
+rates faster. A card with one or two layers holds a handful of experts and clamps the prompt chunk of the whole pipeline
+(#1616), so the search then asks for at least 3 layers per card - which on a 4060 Ti 16 GB + 3060 12 GB (48 layers, IQ3_S)
+was K=3: the 3060 ran 3 layers, 12 GB idle, 452 tok/s of prefill against 802 at 28 layers on the 3060 (the reporter's sweep of
+`"layer_split"` 12, 18, 24, 28, 32: 582, 693, 762, 802, 803 tok/s; the 3060's 360 GB/s of memory bandwidth against the 4060 Ti's
+288 counts for more than its SMs). On two cards the engine now first asks for a placement in which each card owns at least its
+share of the layers by its room for experts, and the log line says which rule chose the split. Measured on 2x RTX A4000 made
+unequal (stage 0 priced at 0.57 of the speed with 3.7 GiB less room, `STRATA_SPLIT_SPEED_SCALE=0.57` and `--vram-reserve-mib 4400`; 14.5K-token
+prompt, IQ3_XXS, 5 interleaved pairs): the old rule chose K=3 (3 layers on stage 0), the new one K=20; prompt reading 945 -> 1,441 tok/s (+52%,
+5/5 pairs), decode 50.2 -> 65.9 tok/s (+31%, 5/5). Equal cards and three or more GPUs are unchanged.
+On x16 + x4 rigs the link-miss scaling (#2007, from a 4x gap) can also move `auto` off the balanced placement (2x RTX 3090, x16 + x4:
+K=31 with miss cost x4.20, 114-119 tok/s decode against 130-136 at K=27, #2418): `STRATA_SPLIT_UNIFORM=1` (opt-in, with `"gpu_order": "as_given"`)
+prices every link the same, as before 0.1.41.
+Prefill that is flat in the prompt length (no gain from 4K to 16K) is the sign of an idle card; **on an unequal pair sweep
+`"layer_split"` once** - a 4K-only benchmark cannot see it.
+
 **Skip the split when the first card holds everything** (opt-in, 0.1.31): `"split_skip_if_fits": true` in the config
 (engine flag `--split-skip-if-fits`, with `--layer-split auto`) runs on the first card alone when it holds every
 profiled expert plus the context's KV, the draft layer and the reserve, and says so in the log; otherwise the split
@@ -95,6 +129,10 @@ helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
 `STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
 `STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+On two Radeon AI PRO R9700 (each limited to 16 GB with `--vram-reserve-mib 17084`, Q2_0 pack, layer split auto, 5 interleaved pairs,
+noise arm within 0.2%), `STRATA_PREFILL_HELP=1` gave prompt tok/s without -> with: 700 tokens 638 -> 672 (x1.053, 5/5), 1.5K 839 -> 809
+(x0.964), 3K 1,105 -> 929 (x0.840), 6K 1,284 -> 1,211 (x0.943): the PCIe 4.0 x16 links of this box (28.4 GB/s each) make the share lose
+from 1.5K tokens up, so it stays off (`STRATA_PREFILL_HELP_FRAC` was not tuned for it).
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
@@ -198,6 +236,103 @@ already reads chunk c+1. (0.1.44, AMD gfx12: the auto chunk on a split stays at 
 that overlap instead of one, a 32K one four instead of two. Same tokens; 2x / 3x / 4x R9700 prompt tok/s at 16K +36% / +45% / +53%,
 32K +18% / +21% / +29%, 64K +4% / +12% / +17%, 8K unchanged. `STRATA_SPLIT_CHUNK16K=1` keeps 16384.) Conversation checkpoints save and restore every card's state; the adaptive expert swaps copy
 into the card that owns the layer.
+
+## Overlapped hand-off (`STRATA_SPLIT_OVERLAP=1`, opt-in)
+
+By default each verify window runs the stages one after another: the host syncs stage 1, then stages and launches
+stage 2's graph, and so on. `STRATA_SPLIT_OVERLAP=1` (stages on different cards only) gives the hand-off a ready
+flag: the earlier stage's GPU writes the hand-off with volatile stores and raises the flag (`handoff_publish`), the
+next stage's graph is staged and launched on a helper thread while the earlier stage is still running and waits for
+the flag on its GPU (`wait_flag_ge`), and the host goes straight from serving one stage's layers to the next, syncing
+the earlier stage only once the chain is done. It takes one stream sync and one graph launch per window off the
+critical path. Batch windows (several conversations) keep the serial order. It is off beside `--pipeline-windows`, whose loop overlaps the stages its own way.
+
+Measured on 2x RX 7900 XTX (gfx1100, ROCm, Linux), Ryzen 9 9900X, 52 GB RAM, Swift 1.5 IQ3_XXS, 128K context, 8-bit
+KV, layers 0-25 / 26-47; 512-token greedy answers, median of 8 runs:
+
+| | serial (default) | `STRATA_SPLIT_OVERLAP=1` | one card |
+|---|---|---|---|
+| decode, code prompt | 53 tok/s | 70.1 tok/s | ~70 tok/s |
+| decode, prose prompt | 45 tok/s | 55.9 tok/s | ~68 tok/s |
+
+Greedy output is byte-identical with the flag at 0 and 1; the quiz set scored the same (47/51). Not measured on
+NVIDIA yet, where a sync and a graph launch cost less.
+
+The reading stage's wait for the flag is bounded on the GPU: `STRATA_SPLIT_WAIT_MS` (default 30000, 0 = no bound).
+If the flag does not arrive in time, the wait marks an error word and returns, the window's graph completes, and the
+host fails that window with an error naming the setting (the server then restarts the engine) instead of using a
+stale hand-off. Normally the host's own per-layer wait (20 s, #267) ends a stalled window first and releases every
+GPU wait, the hand-off's included. Test hook: `STRATA_TEST_HANDOFF_DROP=N` withholds the flag in the first stage's
+N-th window, as if the publish were lost.
+## Prompt chunks sized for the pipeline (`--prefill-pipe`, opt-in; setup's `--calibrate` sets it)
+
+`--prefill auto` takes the largest chunk the buffers allow (up to 8192), which is what one card wants: a chunk costs a
+fixed pass over its layers' experts (b: dequantized, or streamed over PCIe where they are not in VRAM) plus a part per
+token (a), so few large chunks are cheapest. A layer split reads a prompt as a pipeline - stage s reads chunk c while
+stage s+1 reads chunk c-1 - and then takes about sum_i (b + a C_i) + (S - 1) max_i (b + a C_i) for chunks C_i over S
+stages: large or uneven chunks keep the later cards waiting (a 10.7K-token prompt in a 7680 and a 3011 chunk over
+four stages: the first stage carried 24 of the 36 s), small ones pay b again and again.
+
+`--prefill-pipe R` reads each prompt in the chunk count with the least pipeline time for b/a = R tokens, when that
+beats today's split by 3% or more: every count from the fewest the buffers allow is tried, each chunk evened out on the
+256-token grid (at least 512, at most the buffers' chunk; keep `--prefill auto` so long prompts may use large chunks).
+b/a differs by an order of magnitude between rigs - about 700 tokens on four GP100 dies (every expert in VRAM, slow
+arithmetic), about 5000 on two RTX 3090 Ti (part of the experts streamed per chunk, fast arithmetic) - and a wrong one
+costs: a fixed 1024 read 19-24% slower on the two RTX 3090 Ti and 22-36% slower on two RTX 4090 (reported in the PR by
+MistyMoonR). So it is neither guessed nor learned from the prompts the engine serves (that made a prompt's chunks, and
+so its output bits, depend on how busy the PC happened to be): like the PCIe share and the draft floor, it is a
+setting of the PC that setup's `--calibrate` measures once (`tools/calibrate.py`: on a layer split, the prompt read
+speed of a 2K- and an 8K-token prompt - the same text every time, after a header of its own so nothing is reused -
+with the chunks off, evened out and b/a 768, 1536, 3072 and 6144; the best is kept only when it reads faster than off
+in each of three paired rounds and by more than 3% in the median) and writes into the config. Measured so: four GP100
+dies keep b/a 768 (355-356 against 219-220 tok/s in every round, +62%); two RTX 3090 Ti keep it off (nothing read
+faster than off, b/a 768 20% slower). A first version that read a different stretch of text per value and confirmed in
+two rounds picked 1536 on the RTX 3090 Ti pair from one fast read - where the experts are streamed, the read speed
+depends on the text. `--prefill-pipe 1` needs no
+b/a: it is `STRATA_PREFILL_EQUAL=1`'s rule (#693) - today's chunk count, evened out on the 256-token grid, and only
+when today's last chunk has 1024 tokens or more (3072 with `STRATA_PREFILL_CPU_SHARE` set). A chunk that size streams
+every expert its card does not hold, a shorter one only the experts it routes to, so a prompt just past the chunk size
+reads as one full chunk and a nearly free tail, and evening that out would add a second full pass over the experts:
+the first version evened every split out, and on two RTX 4090 MistyMoonR's calibration read 1,601 tok/s with it
+against 2,129 off. 0 (the default) is today's split;
+`STRATA_PREFILL_PIPE=<R>` is the same as the flag where the config cannot carry it. The chunk geometry changes the
+rounding, which is why it is opt-in.
+
+A prompt segment (the prompt between two of its cuts: the system-prompt root, the last turn, a `pin=`) is planned once,
+on its whole length and R, and every run of it reads in that chunk. So its chunks, and the loan its buffers are laid
+out for, are the same whether it is read in one run, in pieces between the windows of decoding `--batch` slots, or goes
+on after a `BYIELD` or from a periodic checkpoint taken inside it (the slot and the checkpoint keep the plan; the read
+goes on in it when it continues the same segment, else it plans again and says so in the log). The output bits then
+match as far as the experts the cards hold do (`--adapt-swaps 0` for byte-identical repeats, as without the pipe).
+Before this, a read beside decoding slots re-planned every piece, and one that went on after a `BYIELD` re-planned what
+was left. A chunk the pipe planned takes no `STRATA_PREFILL_CPU_SHARE`: the stages read
+such chunks at the same time, and which stage got the CPU pool first would decide which experts the CPU computed. The
+DONE line ends with `chunk=` (the first chunk of the request's longest batched segment) and `experts_streamed=` (the
+expert blobs its prompt copied to the cards), and the INFO line carries `prefill_cap`, `prefill_stages`,
+`stream_all_min` and `prefill_pipe`. One line in the log says what a plan chose:
+
+    strata prefill: 10058 tokens in 1280-token chunks over 4 stages (--prefill-pipe 706: b/a)
+
+Four GP100 dies (PH402 SKU 200, `--layer-split 12,24,36`, Flash-Next IQ3_XXS, 64K context), prompt tok/s, fresh
+prompts, two interleaved rounds (each within 0.2%), with b/a 1024 (the same chunks as 700-890, measured on this rig):
+
+| Prompt tokens | `--prefill auto` | `--prefill 2048` | `--prefill auto` + `--prefill-pipe 1024` (chunk) |
+| ---: | ---: | ---: | ---: |
+| 2,013 | 180.9 | 181.4 | 228.0 (1024) |
+| 3,865 | 207.6 | 276.5 | 312.4 (1024) |
+| 10,041 | 261.1 | 433.0 | 432.6 (2048) |
+| 28,998 | 475.7 | 554.1 | 559.7 (3328) |
+
+Two RTX 3090 Ti (CUDA 12.9 build for sm_86, two stages, Swift 1.5 IQ3_XXS, 1M context, 13,371 of 24,576 experts in
+VRAM), prompt tok/s, fresh prompts, two starts per arm, each reading the four prompts twice (the cold first pass after
+a card was freed is left out); b/a 5836 and 6432 (timed on the rig), against 1024:
+
+| Prompt tokens | `--prefill auto` | + b/a 5836 / 6432 (chunk) | for comparison: b/a 1024 |
+| ---: | ---: | ---: | ---: |
+| 2,035 | 694-815 | 698-816 (today's) | 560-562 |
+| 3,887 | 1,127-1,207 | 1,115-1,227 (today's) | 880-885 |
+| 10,063 | 1,437-1,553 | 1,654-1,681 (2 x 5120) | 1,109-1,113 |
+| 29,019 | 2,532-2,603 | 2,566-2,620 (today's) | 2,064-2,089 |
 
 ## Limits (for now)
 
