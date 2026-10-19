@@ -19,6 +19,7 @@
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/gemm.hpp"
+#include "engine/rope_table.h"
 
 #include <atomic>
 #include <cmath>
@@ -111,8 +112,6 @@ size_t gr_workspace_init(const GrShapes& s, void* base, GrWorkspace& out) {
     }
     return bytes;
 }
-
-#include "engine/rope_table.h"
 
 // ---- RoPE (rope.cu, native_rope.cu): the config and the host-built angle table
 void rope_scaling_set(const RopeScaling& scaling) { g_rope_scaling = scaling; }

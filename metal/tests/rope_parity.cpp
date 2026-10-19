@@ -103,6 +103,24 @@ int main(int argc, char** argv) {
                 yarn_bad ? "*** WRONG ***" : "bit-exact", yarn_bad, max_pos * half * 2);
     bad += (int) yarn_bad;
 
+    // ---- 5. The decode window's interleaved layout, against the planar tables above
+    std::vector<float> ic((size_t) max_pos * half * 2), iy((size_t) max_pos * half * 2);
+    strata::metal_engine::build_rope_table_interleaved(n_rot, none, max_pos, ic.data());
+    strata::metal_engine::build_rope_table_interleaved(n_rot, yarn, max_pos, iy.data());
+    long long ilv_bad = 0;
+    for (int p = 0; p < max_pos; ++p) {
+        for (int i = 0; i < half; ++i) {
+            const size_t e = (size_t) p * half + i;
+            if (std::memcmp(&ic[e * 2], &hcos[e], 4) != 0) ++ilv_bad;
+            if (std::memcmp(&ic[e * 2 + 1], &hsin[e], 4) != 0) ++ilv_bad;
+            if (std::memcmp(&iy[e * 2], &yc[e], 4) != 0) ++ilv_bad;
+            if (std::memcmp(&iy[e * 2 + 1], &ys[e], 4) != 0) ++ilv_bad;
+        }
+    }
+    std::printf("  interleaved layout (None, YaRN) vs planar  %s (%lld of %d entries differ)\n",
+                ilv_bad ? "*** WRONG ***" : "bit-identical", ilv_bad, max_pos * half * 4);
+    bad += (int) ilv_bad;
+
     std::printf("\nrope: %d failures\n", bad);
     if (bad) return 1;
     if (selftest) std::printf("rope_parity OK\n");

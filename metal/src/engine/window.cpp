@@ -493,15 +493,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     if (sc.freq_base <= 1.0) {
         sc.freq_base = f_.meta_num.count("qwen4exp.rope.freq_base") ? f_.meta_num["qwen4exp.rope.freq_base"] : 1e7;
     }
-    std::vector<float> cos_tab((size_t)(MAXC + 16) * 32);
-    std::vector<float> sin_tab((size_t)(MAXC + 16) * 32);
-    build_rope_table(64, sc, MAXC + 16, cos_tab.data(), sin_tab.data());
-    for (int p = 0; p < MAXC + 16; ++p) {
-        for (int i = 0; i < 32; ++i) {
-            cs_.as<float>()[(p * 32 + i) * 2] = cos_tab[(size_t)p * 32 + i];
-            cs_.as<float>()[(p * 32 + i) * 2 + 1] = sin_tab[(size_t)p * 32 + i];
-        }
-    }
+    build_rope_table_interleaved(64, sc, MAXC + 16, cs_.as<float>());
     if (sc.type != strata::kernels::RopeScalingType::None) {
         std::fprintf(stderr, "strata metal: RoPE scaling %s active on Metal decode window (factor %.6g, mscale %.6f); M-RoPE/vision path shares table\n",
                      sc.type == strata::kernels::RopeScalingType::YaRN ? "yarn" : "linear", sc.factor, sc.mscale());
