@@ -1251,6 +1251,10 @@ public:
 
     /// Allocates and loads `<pack_dir>/experts.bin`.  Prints nothing; the caller reports `note()` and the load
     /// rate, because those are the two numbers that say whether the arena is the one that was asked for.
+    /// arena-skip: call BEFORE open().  `l` > 0 loads the packed layout into TWO PinnedArenas, [0, l) and [l, n_layers).
+    /// A large-page allocation cannot be freed in part, so a whole block can be handed back with one MEM_RELEASE once
+    /// the GPU caches are known to hold every pair of its layers (release_tail()).  -1: one block, as before.
+    void set_split_layer(int64_t l) { split_hint_ = l; }
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads, std::string& err,
               uint64_t max_pinned_bytes = 0, const std::string& shared_arena_file = {});
     /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's GGUF: `native` is the
@@ -1271,6 +1275,16 @@ public:
     bool pcie_layer(int64_t layer) const override;
     void prefetch(int64_t layer, int64_t expert) override;
     uint64_t release(int64_t layer, int64_t expert) override;
+
+    /// arena-skip: the first layer of the tail block (-1 when open() got no split, or when the layout/backing
+    /// forces one block).  Layers >= it live in `arena1_`; blob_at() answers nullptr once that block is gone.
+    int64_t split_layer() const { return split_layer_; }
+    /// arena-skip: hand the tail block back to the OS, whole (MEM_RELEASE of a large-page allocation).  Only sound
+    /// when EVERY pair of those layers sits in a GPU cache: then the pool never reads them, and the adaptive tier
+    /// has no spare slot in those layers to evict one into a read.  Returns the bytes released (0 when there is
+    /// nothing to release or the block is already gone).
+    uint64_t release_tail();
+    bool tail_released() const { return split_layer_ >= 0 && base1_ == nullptr; }
 
     /// Pin by need (STRATA_PIN_BY_NEED=1): BEFORE open(), the (layer, expert) pairs worth pinning, by decreasing
     /// priority - the profile's ranked pairs the GPU cache will NOT hold, then the unranked ones.  open() merges
@@ -1302,6 +1316,11 @@ public:
 
 private:
     void* arena_ = nullptr;          ///< the PinnedArena, owned
+    void* arena1_ = nullptr;         ///< arena-skip: the tail block's PinnedArena, owned (nullptr = one block / released)
+    const uint8_t* base1_ = nullptr; ///< arena-skip: data() of the tail block
+    int64_t split_layer_ = -1;       ///< arena-skip: first layer of the tail block (-1 = one block)
+    int64_t split_hint_ = -1;        ///< arena-skip: set_split_layer()'s request, honoured only on the packed layout
+    uint64_t boundary_off_ = 0;      ///< arena-skip: arena_off(split_layer_, 0) - the tail block's dst_bias
     void* map_ = nullptr;            ///< STRATA_ARENA_MMAP: the arena file, mapped read-only (not the PinnedArena)
     uint64_t map_bytes_ = 0;
     std::vector<const uint8_t*> dev_slice_;   ///< device alias of each registered slice (or of the whole range)

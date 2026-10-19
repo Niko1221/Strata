@@ -6009,6 +6009,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     return true;
 }
 
+// arena-skip: see header.  The tail block is one large-page allocation, so MEM_RELEASE frees all of it (a partial
+// free of a large-page region is not supported by Windows, which is the whole reason the tail is its own block).
+uint64_t ArenaExpertSource::release_tail() {
+    if (arena1_ == nullptr) return 0;
+    PinnedArena* b = (PinnedArena*) arena1_;
+    const uint64_t bytes = (uint64_t) b->capacity;
+    delete b;                 // PinnedArena's destructor: VirtualFree(MEM_RELEASE) / munmap
+    arena1_ = nullptr;
+    base1_ = nullptr;
+    return bytes;
+}
+
 void ArenaExpertSource::close() {
 #if !defined(_WIN32)
     if (map_ != nullptr) munmap(map_, (size_t) map_bytes_);
@@ -6016,6 +6028,11 @@ void ArenaExpertSource::close() {
     map_ = nullptr;
     map_bytes_ = 0;
     inputs_.clear();
+    if (arena1_ != nullptr) {          // arena-skip: the tail block (usually already released)
+        delete (PinnedArena*) arena1_;
+        arena1_ = nullptr;
+        base1_ = nullptr;
+    }
     if (arena_ != nullptr) {
         delete (PinnedArena*) arena_;
         arena_ = nullptr;
