@@ -979,3 +979,27 @@ medians, output tokens identical in every arm):
 
 The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
 G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).
+
+## Arc Pro B70: QSA prompt attention per cell and block scores as GEMM tiles (2026-10-19)
+
+Two prompt-path kernels that grow with the context. On a 40K prompt (Coder IQ1_M, 256K config) the QSA attention was 27.6%
+of the GPU timeline (7.3 s) and the block selection 8.0% (2.1 s).
+
+- **Attention scores one work-item per cell** (`qsa_prompt_attn_percell`, prompt path only; `STRATA_ATTN_PERCELL=0` off): a
+  work-item holds one cell's key row and all 12 heads' dot products instead of a sub-group splitting the 256 dimensions with a
+  shuffle tree. 2.0-2.2x the warp kernel in `qsa_prompt_attn_parity` (int8 / FP16 pools; 1.2-1.4x on Q4_0).
+- **Block scores as oneMKL FP32 GEMM tiles** (pooled keys x the batch's indexer queries, then a relu-sum kernel;
+  `qsa_block_scores_reduce`). The tile lives in the attention scratch, so it costs no VRAM. It loses to the warp kernel below
+  ~8K cells (oneMKL's launch: -2% at 2K, even at 8K), so it runs only for a batch reaching 2,048 blocks; `STRATA_SELECT_GEMM=0`
+  never, `=1` always. Selection at 40K 2.1 -> 0.7 s.
+
+Both are FP32 in another summation order, not bitwise. First-token logits against the old kernels (whole vocabulary): KL
+3.9e-10 nats at 8K and 1.3e-11 at 40K, top-1 equal (upstream's int8 against FP16 prompt experts, the same prompts: 8.4e-10 and
+5.1e-12); the 256 greedy tokens after a 128K prompt are identical.
+
+`--pcie-frac 0 --adapt-every 0 STRATA_PREFILL_MMQ=1`, 256 greedy tokens, interleaved runs, prefill tok/s (old -> new):
+
+| model | 2,185 | 40,000 | 128,000 |
+|---|---|---|---|
+| Coder IQ1_M, 256K config | 1,329 -> 1,468 (+10%) | 1,562 -> 1,885 (+21%) | 1,336 -> 1,798 (+35%) |
+| Flash-Next IQ2_XS, 128K config | | 1,373 -> 1,613 (+18%) | |

@@ -40,7 +40,10 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
-namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_decode_attn.dp.cpp
+#include <oneapi/mkl.hpp>   // SYCL port: the QSA block scores as GEMM tiles
+namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_select.dp.cpp, qsa_decode_attn.dp.cpp
+void qsa_block_scores_reduce(const float* S, int64_t ld, int64_t b0, int64_t nb, const float* dead, const float* q_idx,
+                             const int32_t* steps, int64_t nq, int64_t max_blocks, float* scores, void* stream);
 void qsa_prompt_attn_percell(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                              int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
 }
@@ -3274,9 +3277,41 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                                 strata::kernels::kStepNBid)] + 1;
                         // the scores on tensor cores (3xTF32: FP32-level, not bitwise); STRATA_SELECT_OLD=1: the warp kernel
                         static const bool old_sel = std::getenv("STRATA_SELECT_OLD") != nullptr;
-                        if (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512,
+                        // SYCL port: the scores as oneMKL FP32 GEMM tiles (pooled keys x the batch's indexer queries)
+                        // and a relu-sum (qsa_block_scores_reduce), FP32-level like the CUDA build's 3xTF32 path. The
+                        // tile lives in the attention scratch, which is free until this layer's attention (same
+                        // queue). It pays from ~8K cells on a B70 (launch cost below: -2% at 2K, even at 8K, select
+                        // 3x faster at 40K), so by default only for a batch reaching 2,048 blocks.
+                        // STRATA_SELECT_GEMM=0: the warp kernel always, =1: the GEMM always.
+                        static const int sel_gemm_mode = [] { const char* v = std::getenv("STRATA_SELECT_GEMM"); return v ? std::atoi(v) : -1; }();
+                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= 2048);
+                        const int64_t sel_tile = std::min<int64_t>(8192, (int64_t) ((uint64_t) m.attn_batch *
+                            strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s) / (uint64_t) (nb * 4)));
+                        bool sel_done = false;
+                        if (sel_gemm && !old_sel && m.attn_scratch != nullptr && s.idx_dim == 128 && s.idx_n_head == 4 &&
+                            sel_tile >= 256) {
+                            try {
+                                for (int64_t b0 = 0; b0 < active; b0 += sel_tile) {
+                                    const int64_t nbk = std::min<int64_t>(sel_tile, active - b0);
+                                    oneapi::mkl::blas::column_major::gemm(*m.cs, oneapi::mkl::transpose::trans,
+                                                                          oneapi::mkl::transpose::nontrans, nbk, nb * 4, 128,
+                                                                          1.0f, st.idx_pooled + b0 * 128, 128,
+                                                                          m.q_idx + t0 * 512, 128, 0.0f, m.attn_scratch,
+                                                                          sel_tile);
+                                    strata::kernels::qsa_block_scores_reduce(m.attn_scratch, sel_tile, b0, nbk, st.idx_dead,
+                                                                             m.q_idx + t0 * 512, steps0, nb, m.max_blocks,
+                                                                             m.sel_scores, m.cs);
+                                }
+                                sel_done = true;
+                            } catch (const std::exception& ex) {
+                                static bool said = false;
+                                if (!said) std::fprintf(stderr, "prefill: the GEMM block scores failed (%s); the warp kernel instead\n", ex.what());
+                                said = true;
+                            }
+                        }
+                        if (!sel_done && (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512,
                                                                              steps0, nb, m.max_blocks, s, m.sel_scores,
-                                                                             m.cs, active))
+                                                                             m.cs, active)))
                             strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
                                                               m.max_blocks, s, m.sel_scores, m.cs, active);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
