@@ -71,6 +71,25 @@ public:
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
     uint64_t vram_bytes() const { return vram_; }
+
+    /// THE PROMPT ROOM (STRATA_MTP_ROOM_MIN).  The layer's 512 routed experts (708 MB) are read by the DECODE alone:
+    /// `record_rest` is their only reader, and every prompt pass - the capture's K/V (record_front) and the prompt
+    /// path's Prefill::draft_kv - touches the dense tensors and the K/V state instead.  So a long prompt may take
+    /// their bytes: the prompt path's ring is pointed AT this block (Prefill::set_ring_room_base), and every expert
+    /// blob it stages overwrites an expert.  `experts_lend` copies the block into pinned host memory first (taken
+    /// once, so the `experts_reclaim` after the prompt is a DMA and not another read of experts.bin); `reclaim`
+    /// copies it back IN PLACE.
+    /// THE BLOCK IS NEVER FREED, NEVER REALLOCATED AND NEVER MOVES: the round and step graphs were captured with its
+    /// address as the MoE kernel's argument, and lending it in place is what keeps them valid - nothing is dropped
+    /// and no round pays a re-capture.
+    /// While the experts are lent no decode pass may run: `draft`, `draft_first`, `chain_launch` and `record_rest`
+    /// refuse (with `err`), rather than read the prompt's staged bytes as experts.
+    uint64_t experts_bytes() const;    ///< 0: this drafter does not own the experts (shared weights: --batch-mtp)
+    void* experts_base() const { return experts_; }   ///< the bytes the room's slots are carved from
+    bool experts_resident() const { return experts_ != nullptr && !experts_lent_; }
+    bool experts_lend(std::string& err);      ///< snapshot to pinned host (the block stays in place)
+    bool experts_reclaim(std::string& err);   ///< the snapshot back into the block, at the address it never left
+
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
@@ -169,6 +188,13 @@ public:
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
+    /// False (with `err`) while the experts are lent to a prompt: the prompt path's ring is pointed at their bytes
+    /// (STRATA_MTP_ROOM_MIN), so a decode pass would read the prompt's staged blobs as experts.  Every decode entry
+    /// checks this before it launches anything.
+    bool decode_ready(std::string& err) const {
+        if (experts_lent_) { err = "mtp: the 512 experts are lent to a prompt (STRATA_MTP_ROOM_MIN)"; return false; }
+        return true;
+    }
     /// The layer's front for T rows at step rows [row0, +T): the embedding, the fc projections, the attention
     /// hyper-connection read (R_, inj_, mixed_) and the K/V appended.
     bool record_front(int T, int row0, cudaStream_t cs, std::string& err);
@@ -246,6 +272,11 @@ private:
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
+    // the prompt room: the experts' pinned host snapshot, its size, and whether a prompt has taken their contents
+    // (the block itself stays where it is - see experts_lend)
+    void* experts_host_ = nullptr;
+    uint64_t experts_host_bytes_ = 0;
+    bool experts_lent_ = false;
     // Slot drafters borrow immutable weights and head; each still owns its state and scratch.
     bool owns_weights_ = true;
     bool owns_draft_head_ = true;
