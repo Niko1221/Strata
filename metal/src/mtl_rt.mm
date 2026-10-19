@@ -67,6 +67,12 @@ static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)
 // the MTLBuffer and offset that bind byte `off` of b (a chunked buffer: the chunk the offset selects)
 static inline id<MTLBuffer> BO(const Buffer& b, size_t off, size_t& o) {
     if (!b.chunks) { o = off + b.bias; return B(b); }   // (bias: a view onto part of a bigger allocation; 0 otherwise)
+    if (b.starts) {
+        size_t k = b.starts->size() - 1;
+        while (k > 0 && (*b.starts)[k] > off) --k;
+        o = off - (*b.starts)[k];
+        return (__bridge id<MTLBuffer>)(*b.chunks)[k];
+    }
     const size_t k = std::min(off / b.stride, b.chunks->size() - 1);
     o = off - k * b.stride;
     return (__bridge id<MTLBuffer>)(*b.chunks)[k];
@@ -647,6 +653,30 @@ Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
 extern "C" void* ds4_gpu_buffer_for_cpu(const void* cpu, size_t bytes, size_t* off) __attribute__((weak_import));
 extern "C" size_t ds4_gpu_alloc_remaining(const void* cpu) __attribute__((weak_import));
 #endif
+Buffer Context::wrap_ranges(void* p, const std::vector<std::pair<size_t, size_t>>& ranges) {
+    Buffer r;
+    r.chunks = std::make_shared<std::vector<void*>>();
+    r.starts = std::make_shared<std::vector<size_t>>();
+    size_t total = 0;
+    for (const auto& rg : ranges) {
+        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:(uint8_t*) p + rg.first length:rg.second - rg.first
+                                                        options:MTLResourceStorageModeShared deallocator:nil];
+        if (!b) {
+            std::fprintf(stderr, "mtl: wrap range %zu+%zu failed\n", rg.first, rg.second - rg.first);
+            std::exit(4);
+        }
+        r.chunks->push_back((__bridge_retained void*)b);
+        r.starts->push_back(rg.first);
+        total += rg.second - rg.first;
+    }
+    allocated_ += total;
+    r.handle = (*r.chunks)[0];
+    r.ptr = p;
+    r.bytes = ranges.back().second;
+    std::fprintf(stderr, "mtl: wrapped %.2f GB as %zu separate ranges (of %.2f GB)\n", total / 1e9, ranges.size(), r.bytes / 1e9);
+    return r;
+}
+
 Buffer Context::wrap(void* p, size_t bytes) {
 #if defined(STRATA_DS4_RUNTIME)
     if (ds4_gpu_buffer_for_cpu && !std::getenv("DS4_WRAP_COPY")) {
