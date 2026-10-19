@@ -163,20 +163,33 @@ SYCL build (`sycl/CMakeLists.txt`) takes every other source from the original lo
 is edited. `sycl/include/dpct/` is the vendored SYCLomatic helper library, so the port builds without the
 migration tool.
 
-**Expert-parallel prompt row reduction (opt-in).** `STRATA_EP_PREFILL_REDUCE=1` combines
-peer-owned routed experts on the peer before returning one FP32 row per token. The primary
-adds its own routed sum and shared expert. Decode is unchanged; unset retains individual
-expert rows and the original combine. This changes FP32 addition order and can change generated
-text. On two B70s with IQ3_XXS, two200k slots, INT8 KV and spec4, matched fresh-prompt medians
-with timing enabled improve from570/576 to1037/1106 tok/s at4K/32K. An8192 prefill chunk
-reaches1265 at32K, with all24576 experts resident. These are bounded screens, not a stability
-or full-context qualification. Normal teardown and per-card/compiled collective health pass.
+**Expert-parallel prompt row reduction (opt-in).** With `--expert-parallel-device`, the peer card returns one
+FP32 row per routed expert of every prompt token, and the primary combines them. `STRATA_EP_PREFILL_REDUCE=1` sums
+the peer-owned routed experts of each token on the peer first and returns one FP32 row per token; the primary adds
+its own routed sum and the shared expert. Decode is unchanged. Unset keeps the per-expert rows and the original
+combine. The FP32 addition order changes, so generated text can change. `STRATA_EP_PREFILL_PUSH=1` (with the
+reduction) moves the sum region to the primary and has the peer write it through the IPC mapping, each producer
+work item fencing at system scope; the host peer wait stays, and the primary still copies the sum uncached before
+using it. PUSH changes the transport, not the arithmetic: its outputs are bitwise those of the reduction alone.
 
-`sycl/probe/ep_prefill_reduce.cpp` checks two-card IPC updates against an independent original
-router-order FP32 FMA oracle, including all-primary/all-peer/mixed ownership and4096 tokens.
-26 cases pass with maximum absolute error9.54e-7 (tolerance scaled by contribution magnitude).
-Build inside the oneAPI development image, then run with access to both cards; Docker needs
-`--cap-add SYS_PTRACE` for Level Zero IPC import with its default seccomp profile:
+Measured on 0.2.0-beta, two B70s, IQ3_XXS, `--expert-parallel-device 1 --prefill 8192 --max-context 65536 --kv int8
+--spec 4 --mtp`, one slot, fresh prompts, one engine per arm (prompt tok/s at 4K / 32K):
+
+| | 4K | 32K | decode tok/s, two prompts |
+|---|---:|---:|---|
+| unset | 635 | 720 | 80.0 / 81.3 |
+| `STRATA_EP_PREFILL_REDUCE=1` | 993 | 1,264 | 80.6 / 83.8 |
+| `+ STRATA_EP_PREFILL_PUSH=1` | 1,148 | 1,514 | 80.2 / 83.4 |
+
+A one-off posted write of 256,235,520 bytes takes 22.8 ms (11.2 GB/s) against 77.2 ms (3.3 GB/s) for an uncached
+peer read, measured on 0.1.x; it excludes the primary's later uncached copy. These are bounded screens at one slot,
+not a stability or 200K-context qualification.
+
+`sycl/probe/ep_prefill_reduce.cpp` checks two-card IPC updates against an independent FP32 FMA oracle in the
+original router order: all-primary, all-peer and mixed ownership, up to 4,096 tokens, repeated updates and a cached
+GPU consumer. Run it without arguments and with `--push`; both 26-case suites pass with a largest error of 9.54e-7
+(tolerance scaled by contribution magnitude). Build it in the oneAPI development image and run it with both cards;
+Docker needs `--cap-add SYS_PTRACE` for the Level Zero IPC import under its default seccomp profile:
 
 ```sh
 icpx -O2 -fsycl -fsycl-targets=spir64_gen \
@@ -184,6 +197,7 @@ icpx -O2 -fsycl -fsycl-targets=spir64_gen \
   -I sycl/include -I include sycl/probe/ep_prefill_reduce.cpp \
   sycl/src/kernels/cuda/ep_kernels.dp.cpp -lze_loader -o ep-prefill-reduce-probe
 ONEAPI_DEVICE_SELECTOR='level_zero:*' SYCL_CACHE_PERSISTENT=0 ./ep-prefill-reduce-probe
+ONEAPI_DEVICE_SELECTOR='level_zero:*' SYCL_CACHE_PERSISTENT=0 ./ep-prefill-reduce-probe --push
 ```
 
 **How it was made, so it can be redone.**
@@ -1032,32 +1046,3 @@ medians, output tokens identical in every arm):
 
 The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
 G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).
-
-### EP prefill PUSH return (opt-in follow-up)
-
-With `STRATA_EP_PREFILL_REDUCE=1`, `STRATA_EP_PREFILL_PUSH=1` makes the
-sum region primary-owned and the peer reducer writes its FP32 sum directly
-through the IPC mapping. Each producer work item fences at system scope;
-the existing host peer wait remains, and the primary still copies the sum
-uncached before consuming it. PUSH changes the transport, not the reduction
-math. Unset preserves the reduced peer-read path; reduction itself remains
-opt-in because its FP32 sum order differs from full-row combine.
-
-On the same two-B70 host, a 256235520-byte posted write takes22.837ms
-(11.22GB/s) versus77.249ms (3.317GB/s) for an uncached peer read. This
-microbenchmark excludes the later local uncached consumer copy. Matched
-full-model medians INCLUDE synchronization and consumption: IQ3_XXS,
-all24576 experts resident, int8KV, spec4/.5, two200k slots configured,
-reserve1024, exact workspace and12288-token chunks, timing on in both arms:
-4K1047.1 ->1214.4 tok/s (native3876.4 ->3342.4ms);32K1308.4 ->1530.9
-(native25013.0 ->21378.6ms; client TTFT25.077 ->21.444s). Three fresh
-requests per case, nine matched response pairs exactly equal. Coding decode
-88.9 tok/s in both arms. Concurrent arithmetic, reasoning, tool round trip,
-normal teardown and per-card/ten compiled collective health pass. This is
-short-context qualification, not a measured two-full200k or stability claim.
-
-Run the standalone reduction probe both without arguments and with `--push`.
-Both26-case suites pass (largest original-router-order error9.54e-7), with
-repeated IPC updates and a cached GPU consumer. Do not load a historical
-vLLM all-reduce binary into this runtime; this ports its posted-write source
-idea into Strata's one-way peer contribution return.
