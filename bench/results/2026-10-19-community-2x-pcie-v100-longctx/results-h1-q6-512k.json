@@ -1,0 +1,10 @@
+{
+ "prompt_tok": 507206,
+ "out_tok": 4511,
+ "prompt_tps": 627.5,
+ "decode_tps": 39.8,
+ "draft_accept": 0.783,
+ "h1_has_8090": true,
+ "wall_s": 138.9,
+ "answer_head": "最小的正整数是：\n\n\\[\n\\boxed{8090}\n\\]\n\n简要证明：\n\n设 \\(Z(n)\\) 为 \\(n!\\) 末尾连续零的个数。因为因子 \\(10=2\\cdot 5\\)，而 \\(n!\\) 中因子 \\(2\\) 的个数远多于因子 \\(5\\) 的个数，所以\n\n\\[\nZ(n)=v_5(n!)=\\left\\lfloor \\frac n5\\right\\rfloor+\\left\\lfloor \\frac n{5^2}\\right\\rfloor+\\left\\lfloor \\frac n{5^3}\\right\\rfloor+\\cdots\n\\]\n\n计算 \\(n=8090\\)：\n\n\\[\n\\begin{align"
+}

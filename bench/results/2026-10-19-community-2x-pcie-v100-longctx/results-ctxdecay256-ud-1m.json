@@ -1,0 +1,38 @@
+[
+ {
+  "target_ctx": 192000,
+  "prompt_tok": 194132,
+  "prompt_tps": 2064.8,
+  "decode_tps": 53.1,
+  "draft_accept": 0.632,
+  "wall_s": 101.6,
+  "decode_vs_base": 100.0
+ },
+ {
+  "target_ctx": 510000,
+  "prompt_tok": 517320,
+  "prompt_tps": 1426.8,
+  "decode_tps": 50.3,
+  "draft_accept": 0.601,
+  "wall_s": 244.7,
+  "decode_vs_base": 94.7
+ },
+ {
+  "target_ctx": 700000,
+  "prompt_tok": 711865,
+  "prompt_tps": 1011.6,
+  "decode_tps": 45.7,
+  "draft_accept": 0.597,
+  "wall_s": 211.1,
+  "decode_vs_base": 86.1
+ },
+ {
+  "target_ctx": 1000000,
+  "prompt_tok": 1021605,
+  "prompt_tps": 819.0,
+  "decode_tps": 41.0,
+  "draft_accept": 0.564,
+  "wall_s": 397.9,
+  "decode_vs_base": 77.2
+ }
+]

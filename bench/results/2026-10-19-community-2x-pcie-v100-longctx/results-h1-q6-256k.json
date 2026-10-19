@@ -1,0 +1,10 @@
+{
+ "prompt_tok": 248032,
+ "out_tok": 2420,
+ "prompt_tps": 310.9,
+ "decode_tps": 40.7,
+ "draft_accept": 0.789,
+ "h1_has_8090": true,
+ "wall_s": 67.0,
+ "answer_head": "最小的正整数是：\n\n\\[\n\\boxed{n=8090}\n\\]\n\n简要证明如下。\n\n\\(n!\\) 末尾零的个数等于因子 \\(10\\) 的个数，也等于\n\n\\[\nv_{10}(n!)=\\min(v_2(n!),v_5(n!)).\n\\]\n\n由于 \\(n!\\) 中因子 \\(2\\) 总是比因子 \\(5\\) 多，所以末尾零的个数就是因子 \\(5\\) 的个数：\n\n\\[\nZ(n)=v_5(n!)=\\left\\lfloor \\frac n5\\right\\rfloor+\\left\\lfloor \\frac n{25}\\right\\rfloor+\\left\\lfloor \\frac n{125}\\right\\rflo"
+}

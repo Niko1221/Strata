@@ -1,0 +1,10 @@
+{
+ "prompt_tok": 1011336,
+ "out_tok": 3642,
+ "prompt_tps": 362.1,
+ "decode_tps": 39.1,
+ "draft_accept": 0.821,
+ "h1_has_8090": true,
+ "wall_s": 127.0,
+ "answer_head": "最小的正整数是：\n\n\\[\n\\boxed{8090}\n\\]\n\n简要证明如下。\n\n\\(n!\\) 末尾连续零的个数等于其十进制表示中因子 \\(10=2\\cdot 5\\) 的个数。由于 \\(n!\\) 中因子 \\(2\\) 的个数总不少于因子 \\(5\\) 的个数，所以末尾零的个数为\n\n\\[\nZ(n)=v_5(n!)=\\left\\lfloor \\frac n5\\right\\rfloor+\\left\\lfloor \\frac n{25}\\right\\rfloor+\\left\\lfloor \\frac n{125}\\right\\rfloor+\\left\\lfloor \\frac n{625}\\right\\rfl"
+}

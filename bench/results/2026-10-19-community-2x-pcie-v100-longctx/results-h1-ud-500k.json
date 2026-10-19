@@ -1,0 +1,12 @@
+{
+ "tag": "ud-500k",
+ "doc_target": 500000,
+ "prompt_tok": 507206,
+ "out_tok": 4404,
+ "prompt_tps": 752.3,
+ "decode_tps": 68.2,
+ "draft_accept": 0.829,
+ "h1_has_8090": true,
+ "wall_s": 85.9,
+ "answer_head": "最小的正整数是：\n\n\\[\n\\boxed{8090}\n\\]\n\n简要证明：\n\n\\(n!\\) 末尾零的个数等于其中因子 \\(10=2\\cdot 5\\) 的个数。由于 \\(n!\\) 中因子 \\(2\\) 的个数总多于因子 \\(5\\) 的个数，所以末尾零数等于 \\(n!\\) 中因子 \\(5\\) 的个数：\n\n\\[\nZ(n)=\\left\\lfloor \\frac n5 \\right\\rfloor+\\left\\lfloor \\frac n{25} \\right\\rfloor+\\left\\lfloor \\frac n{125} \\right\\rfloor+\\left\\lfloor \\frac n{625} \\ri"
+}

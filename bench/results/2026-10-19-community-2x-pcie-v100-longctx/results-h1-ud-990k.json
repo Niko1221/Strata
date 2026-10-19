@@ -1,0 +1,12 @@
+{
+ "tag": "ud-990k",
+ "doc_target": 990000,
+ "prompt_tok": 1011336,
+ "out_tok": 2371,
+ "prompt_tps": 421.8,
+ "decode_tps": 56.9,
+ "draft_accept": 0.792,
+ "h1_has_8090": true,
+ "wall_s": 70.8,
+ "answer_head": "最小的正整数是：\n\n\\[\n\\boxed{n=8090}\n\\]\n\n简要证明如下。\n\n\\(n!\\) 末尾连续零的个数等于其质因数分解中 \\(10=2\\cdot 5\\) 的对数。由于 \\(n!\\) 中因子 \\(2\\) 的个数总多于因子 \\(5\\) 的个数，所以末尾零数为\n\n\\[\nZ(n)=v_5(n!)=\\sum_{k\\ge 1}\\left\\lfloor \\frac{n}{5^k}\\right\\rfloor .\n\\]\n\n计算：\n\n\\[\n\\begin{aligned}\nZ(8090)\n&=\\left\\lfloor \\frac{8090}{5}\\right\\rfloor\n+\\left\\lfloor \\f"
+}
