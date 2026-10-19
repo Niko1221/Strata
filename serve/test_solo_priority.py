@@ -140,6 +140,43 @@ class Streaming(unittest.TestCase):
             if time.monotonic()>end: self.fail('timed out')
             time.sleep(.002)
 
+    def test_queue_deadline_releases_ticket_and_preserves_current_owner(self):
+        from serve.server import QueueWaitExpired
+        self.svc.queue_timeout_s = .05
+        self.sched.acquire()  # A maintenance operation owns the engine.
+        try:
+            queued = self.pool.submit(self.run_request, 2)
+            with self.assertRaises(QueueWaitExpired):
+                queued.result(2)
+            self.assertTrue(self.sched.owned())
+            self.assertEqual(self.svc.status["queued"], 0)
+            self.assertEqual(self.svc.queue_timeouts, 1)
+            self.assertEqual(self.svc.terminal_requests, {})
+            self.assertEqual(self.sched.waiters, [])
+            self.assertEqual(self.sched.requests, [])
+        finally:
+            self.sched.release()
+        self.svc.queue_timeout_s = None
+        events = self.run_request(2)
+        self.assertEqual(events[-1][0], "done")
+        self.assertEqual(events[-1][1]["finish"], "stop")
+
+    def test_terminal_cancellation_removes_queued_priority_request(self):
+        self.sched.acquire()
+        cancel = threading.Event()
+        try:
+            queued = self.pool.submit(self.run_request, 2, cancel)
+            self.wait_for(lambda: bool(self.svc.terminal_requests))
+            self.svc.note_client_disconnect(cancel)
+            events = queued.result(2)
+            self.assertEqual(events[-1][1]["finish"], "cancel")
+            self.assertTrue(self.sched.owned())
+            self.assertEqual(self.svc.terminal_requests, {})
+            self.assertEqual(self.svc.status["queued"], 0)
+            self.assertEqual(self.sched.waiters, [])
+        finally:
+            self.sched.release()
+
     def test_restored_partial_prefill_reaches_a_token_before_yielding(self):
         stops = []
         send = self.eng._send

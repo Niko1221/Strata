@@ -5218,7 +5218,7 @@ class Service:
         try:
             # --batch: the engine runs several requests at once (StrataEngine.generate_batched orders them)
             turn = contextlib.ExitStack()
-            if not par:
+            if not par or solo:
                 # #1619: a request waiting for the single turn sends a keep-alive every QUEUE_BEAT_S, so a client with
                 # a stream idle timeout does not abort a healthy queued request (and its retry read the prompt again);
                 # a client that left while queued gives its place up instead of taking the turn only to cancel there
