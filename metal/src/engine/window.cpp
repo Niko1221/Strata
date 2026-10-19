@@ -91,6 +91,69 @@ struct Act {
     size_t plane_bytes() const { return (size_t) 4 * MAXT * n; }
 };
 
+// L and K fix the summation order, so every tile gives the same y bit for bit.
+struct GemvTile {
+    int L, R, S, K;
+    bool x = false;       // gemvx_
+    bool wide = false;    // gemv_wide.metal
+    bool tuned = false;   // checked in Window::gemv
+};
+std::string gemv_fn(int ty, const GemvTile& g) {
+    return std::string(g.x ? "gemvx" : "gemv") + (g.wide ? "w_" : "_") + std::to_string(ty) + "_" + std::to_string(g.L) +
+           "_" + std::to_string(g.R) + "_" + std::to_string(g.S) + (g.x ? "" : "_" + std::to_string(g.K));
+}
+bool gemv_wide_type(int ty) { return ty == ref::Q4_K || ty == ref::Q5_K || ty == ref::Q6_K || ty == ref::IQ4_XS; }
+int gemv_nr_env() {
+    static const int nr = [] { const char* e = std::getenv("STRATA_METAL_GEMV_NR"); return e ? std::atoi(e) : 1; }();
+    return nr;
+}
+// today's tile (M3 and newer, and shapes not tuned)
+GemvTile gemv_untuned(int ty, int n_in, int n_out, int ntok) {
+    GemvTile g{16, 1, 4, 1};
+    if (n_in >= 6144) g = {32, 1, 8, 2};
+    else if (n_in == 640) g = {8, 1, 4, 1};
+    else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) g = {32, 1, 4, 1};
+    // windows of several tokens: NR rows a lane share each x load (the window's cost is its x traffic).  The sums
+    // run in the same order for any NR, so the answers do not change.  STRATA_METAL_GEMV_NR (1, 2): the tile.
+    if (ntok > 1 && gemv_nr_env() == 2 && n_out >= 2048) {
+        if (g.S == 8 && g.K == 2) { g.S = 4; g.K = 2; }
+        if (g.S == 8 && g.K == 1) g.S = 4;
+        if (g.K == 1 || (g.L == 32 && g.K == 2)) g.R = 2;
+    }
+    return g;
+}
+// M1 / M2: tiles measured faster with gemv_parity --sweep on an M2 Max (1-3 tokens, n_out >= 512).
+// STRATA_METAL_GEMV=0: today's tile; =R,S[,X] forces one (any GPU).
+GemvTile gemv_tile(int ty, int n_in, int n_out, int ntok, bool m12) {
+    GemvTile g = gemv_untuned(ty, n_in, n_out, ntok);
+    static const std::string env = [] { const char* e = std::getenv("STRATA_METAL_GEMV"); return std::string(e ? e : ""); }();
+    if (!env.empty() && env != "0") {
+        int r = 0, s = 0, x = 0;
+        if (std::sscanf(env.c_str(), "%d,%d,%d", &r, &s, &x) >= 2 && r > 0 && s > 0) {
+            g.R = r, g.S = s, g.x = x != 0 && g.K == 1;   // gemv_x has K = 1 only: another K would change the sums
+            g.wide = m12 && gemv_wide_type(ty);
+            g.tuned = true;
+        }
+        return g;
+    }
+    if (!m12 || env == "0" || gemv_nr_env() == 2) return g;
+    const bool kq = ty == ref::Q4_K || ty == ref::Q5_K || ty == ref::Q6_K;
+    const bool measured = kq || ty == ref::IQ4_XS || ty == ref::IQ3_S || ty == ref::Q8_0 || ty == ref::BF16;
+    if (!measured || ntok > 3 || n_out < 512 || g.L == 8) return g;
+    g.tuned = true;
+    g.wide = gemv_wide_type(ty);
+    if (g.K == 2) {   // ssm_out, attn_output
+        if (!(kq && ntok == 3)) g.R = 2, g.S = 4;
+    } else if (g.L == 16) {   // qkv, gate, attn_q, LM head
+        if (kq && ntok == 3) g.S = 8, g.x = true;
+        else g.R = 2;
+    } else {   // shared expert, k / v, router
+        g.R = 2;
+        if (kq || ty == ref::BF16) g.S = 2;
+    }
+    return g;
+}
+
 double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 }  // namespace
@@ -228,6 +291,8 @@ private:
         return (size_t) b;
     }
     int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
+    bool gemv_m12_ = false;                    // M1 / M2: tuned tiles
+    std::map<std::string, bool> gemv_has_;     // kernel lookups by name
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
     bool in_mtp_ = false;   // STRATA_METAL_NOBARRIER keeps barriers through the MTP draft round: the host reads the
@@ -503,8 +568,11 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
     if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
-    lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
-                         "glue.metal"});
+    gemv_m12_ = cx_->has_family_apple(7) && !cx_->has_family_apple(9);
+    std::vector<std::string> dec = {"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal",
+                                    "gr2.metal", "glue.metal"};
+    if (gemv_m12_) dec.insert(dec.begin() + 4, "gemv_wide.metal");   // after gemv.metal
+    lib_ = cx_->compile(dec);
     rcounter_ = cx_->alloc(16);
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -592,20 +660,12 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         std::vector<std::string> names;
         for (const auto& kv : f_.tensors) {
             const gguf::Tensor& x = kv.second;
-<<<<<<< /tmp/stage/o_window.cpp
-            // BF16 (when the Q8_0 read is on) and, whatever the setting, the Gyro file's Q6_K / IQ4_NL ones: the decode window's
-            // hyper-connection kernels read BF16 or Q8_0 only
-            const bool conv = (x.type == ref::BF16 && hc_q8_) || x.type == ref::Q6_K || x.type == ref::IQ4_NL;
+            // BF16 (when the Q8_0 read is on) and, whatever the setting, every other quantized format (Q6_K, IQ3_S,
+            // IQ4_NL, ... the uncensored fine-tunes' files): quantized once to Q8_0 here, the same treatment the BF16
+            // ones get; the decode window's hyper-connection kernels read BF16 or Q8_0 only. Q8_0 (Unsloth's) and
+            // F32 (inject rows) are read by the file's own kernels.
+            const bool conv = (x.type == ref::BF16 && hc_q8_) || (x.type != ref::BF16 && x.type != ref::Q8_0 && x.type != ref::F32);
             if (!conv || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
-||||||| /tmp/stage/b_window.cpp
-            if (x.type != ref::BF16 || x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
-=======
-            // BF16 (the original packs), Q8_0 (Unsloth's) and F32 (inject rows) are read by the file's own kernels;
-            // every other quantized format (Q6_K, IQ3_S, IQ4_NL, ... the uncensored fine-tunes' files) is quantized
-            // once to Q8_0 here, the same treatment the BF16 ones get.
-            if (x.type == ref::Q8_0 || x.type == ref::F32 ||
-                x.name.find("hc_") == std::string::npos || x.name.find("_norm") != std::string::npos) continue;
->>>>>>> /tmp/stage/t_window.cpp
             uint64_t ne = 1;
             for (uint64_t d : x.shape) ne *= d;
             q8off_[x.name] = tot;
@@ -630,17 +690,11 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                         if (!st_->read(raw.data(), x.bytes, x.offset)) { std::fprintf(stderr, "strata metal: read failed\n"); std::exit(6); }
                         src = raw.data();
                     }
-<<<<<<< /tmp/stage/o_window.cpp
                     ref::dequant(x.type, src, tmp.data(), ne);
                     // a Q6_K / IQ4_NL matrix (Gyro) goes through BF16 first: the form the pack gives the CUDA engine
                     // (tools/iq_pack.py --compat-bf16), so the Q8_0 copy below is made from the same numbers
                     if (x.type != ref::BF16)
                         for (uint64_t i = 0; i < ne; ++i) tmp[i] = ref::bf16_to_f32(ref::f32_to_bf16(tmp[i]));
-||||||| /tmp/stage/b_window.cpp
-                    ref::dequant(ref::BF16, src, tmp.data(), ne);
-=======
-                    ref::dequant(x.type, src, tmp.data(), ne);
->>>>>>> /tmp/stage/t_window.cpp
                     ref::quantize_q8_0(tmp.data(), ne, Q8_.as<uint8_t>() + q8off_[names[i]]);
                 }
             });
@@ -690,50 +744,57 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
                   size_t y_stride, int ntok, size_t y_off, const mtl::Buffer* wb) {
     const int n_in = (int) t.shape[0], n_out = t.shape.size() > 1 ? (int) t.shape[1] : 1;
     const int ty = t.type;
-    int L = 16, Rr = 1, S = 4, K = 1;
-    if (n_in >= 6144) { L = 32; Rr = 1; S = 8; K = 2; }
-    else if (n_in == 640) { L = 8; Rr = 1; S = 4; K = 1; }
-    else if (n_out <= 640 || ty == ref::Q2_0 || ty == ref::BF16) { L = 32; Rr = 1; S = 4; K = 1; }
+    const mtl::Buffer& wbuf = wb ? *wb : W_;
+    GemvTile g = gemv_tile(ty, n_in, n_out, ntok, gemv_m12_);
+    // Gyro's dense weights are Q5_K / Q6_K / Q8_0 (3.6 GB a token).  gemv_parity --one on the M4, 2 tokens: Q5_K 2560->10240
+    // 261 us with 16,1,4,1 against 210 with 2,1,4,1 (-20%), 2560->6144 158 -> 129, 6144->2560 162 -> 139, 2560->12288
+    // 313 -> 247, and the shared down Q8_0 640->2560 36 -> 19 us with 4,2,4,1.  (The tile changes the order of the lane sums.)
     static const bool gyro_tiles = !(std::getenv("STRATA_METAL_GYRO_TILES") && std::string(std::getenv("STRATA_METAL_GYRO_TILES")) == "0");   // off: the A/B arm
+    static const char* const ab_tile = std::getenv("STRATA_METAL_GEMV_TILE");   // A/B tiles on M1: "nmin,nmax,L,R,S,K;..." (-1 = open)
+    if ((gyro_dense_ && gyro_tiles && ntok >= 2) || ab_tile != nullptr) g.tuned = false;   // the A/B arms: the untuned path with the picks below
     if (gyro_dense_ && gyro_tiles && ntok >= 2) {
-        // Gyro's dense weights are Q5_K / Q6_K / Q8_0 (3.6 GB a token).  gemv_parity --one on the M4, 2 tokens: Q5_K 2560->10240
-        // 261 us with 16,1,4,1 against 210 with 2,1,4,1 (-20%), 2560->6144 158 -> 129, 6144->2560 162 -> 139, 2560->12288
-        // 313 -> 247, and the shared down Q8_0 640->2560 36 -> 19 us with 4,2,4,1.  (The tile changes the order of the lane sums.)
-        if (ty == ref::Q5_K && n_in == 2560 && n_out >= 6144) { L = 2; Rr = 1; S = 4; K = 1; }
-        else if (ty == ref::Q5_K && n_in == 6144) { L = 2; Rr = 1; S = 4; K = 1; }
-        else if (ty == ref::Q8_0 && n_in == 640) { L = 4; Rr = 2; S = 4; K = 1; }
+        if (ty == ref::Q5_K && n_in == 2560 && n_out >= 6144) g = GemvTile{2, 1, 4, 1};
+        else if (ty == ref::Q5_K && n_in == 6144) g = GemvTile{2, 1, 4, 1};
+        else if (ty == ref::Q8_0 && n_in == 640) g = GemvTile{4, 2, 4, 1};
     }
-    if (const char* e = std::getenv("STRATA_METAL_GEMV_TILE"))   // A/B tiles on M1: "nmin,nmax,L,Rr,S,K;..." (-1 = open)
-        for (const char* p = e; *p;) {
+    if (ab_tile != nullptr)
+        for (const char* p = ab_tile; *p;) {
             int a0, a1, b0, b1, b2, b3;
             if (std::sscanf(p, "%d,%d,%d,%d,%d,%d", &a0, &a1, &b0, &b1, &b2, &b3) != 6) break;
-            if ((a0 < 0 || n_in >= a0) && (a1 < 0 || n_in <= a1)) { L = b0; Rr = b1; S = b2; K = b3; }
+            if ((a0 < 0 || n_in >= a0) && (a1 < 0 || n_in <= a1)) g = GemvTile{b0, b1, b2, b3};
             const char* s = std::strchr(p, ';');
             if (!s) break;
             p = s + 1;
         }
-    {
-        // windows of several tokens: NR rows a lane share each x load (the window's cost is its x traffic).  The sums
-        // run in the same order for any NR, so the answers do not change.  STRATA_METAL_GEMV_NR (1, 2): the tile.
-        static const int nr_env = [] { const char* e = std::getenv("STRATA_METAL_GEMV_NR"); return e ? std::atoi(e) : 1; }();
-        if (ntok > 1 && nr_env == 2 && n_out >= 2048) {
-            if (S == 8 && K == 2) { S = 4; K = 2; }
-            if (S == 8 && K == 1) S = 4;
-            if (K == 1 || (L == 32 && K == 2)) Rr = 2;
+    // gemv_x's threadgroup memory
+    const uint32_t tgm = (uint32_t) (4 * ntok * (n_in + n_in / 16) + 15) / 16 * 16;
+    if (g.tuned) {
+        auto has = [&](const GemvTile& c) {
+            const std::string f = gemv_fn(ty, c);
+            auto it = gemv_has_.find(f);
+            if (it == gemv_has_.end()) it = gemv_has_.emplace(f, cx_->has_function(lib_, f)).first;
+            return it->second;
+        };
         }
+        if (!has(g)) g = gemv_untuned(ty, n_in, n_out, ntok);
     }
-    const std::string fn = "gemv_" + std::to_string(ty) + "_" + std::to_string(L) + "_" + std::to_string(Rr) + "_" +
-                           std::to_string(S) + "_" + std::to_string(K);
+    std::string fn = gemv_fn(ty, g);
     const mtl::Pipeline* p = P(lib_, fn, mtl::Constants().i(0, ntok), fn + "#" + std::to_string(ntok));
+    if (g.tuned && p->max_threads < g.S * 32) {   // the GPU allows fewer threads for it: today's tile
+        g = gemv_untuned(ty, n_in, n_out, ntok);
+        fn = gemv_fn(ty, g);
+        p = P(lib_, fn, mtl::Constants().i(0, ntok), fn + "#" + std::to_string(ntok));
+    }
     GemvArgs a{(uint32_t) n_in, (uint32_t) n_out, (uint32_t) ntok, (uint32_t) ref::row_bytes(t.type, n_in), (uint32_t) n_in,
                (uint32_t) y_stride};
     mtl::Dispatch d;
     d.p = p;
-    d.args = {mtl::Arg::B(wb ? *wb : W_, t.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)),
+    d.args = {mtl::Arg::B(wbuf, t.offset), mtl::Arg::B(x.b, x.plane_bytes() * xkind(ty)),
               mtl::Arg::B(x.b, x.plane_bytes() * 4), mtl::Arg::B(y, y_off), mtl::Arg::V(a)};
-    const int rpt = (S / K) * (32 / L) * Rr;
+    const int rpt = (g.S / g.K) * (32 / g.L) * g.R;
     d.grid[0] = (n_out + rpt - 1) / rpt;
-    d.tg[0] = S * 32;
+    d.tg[0] = g.S * 32;
+    if (g.x) d.tg_mem = tgm;
     push(ds, d);
 }
 
