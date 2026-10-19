@@ -387,3 +387,26 @@ On this branch with `--pipeline-windows 2`, the same PCs and model, exact flags,
 The runs at 4 and 7 of 8 took another word partway into an answer. In the same session, #1887's head (no
 `--pipeline-windows` on a remote main) gave 5 and 5 of 8 against the same run, and 2 of 8 against each other, so a
 single fresh server does not settle the default path here; three of this branch's five matched it.
+
+### After the rebase onto 0.2.0-beta (2026-10-20)
+
+#1748 was rebased onto upstream main e88ee39d (0.2.0-beta, engine 0.1.45.3) and this branch on top of it. The
+textual conflicts were in `generate.cpp`, around the main process's checkpoint chain, which upstream changed after
+0.1.43:
+- `--prompt-cache-spread` drops the checkpoint whose removal leaves the smallest gap for its distance from the
+  newest (`spread_victim`) instead of the least recently used.
+  The main process works out the chain a new checkpoint leaves before the worker stores its part (the ids it sends to
+  keep), so that step and the eviction after it now ask the same function (`evict_victim`), which follows the flag:
+  the worker drops what the main process drops.
+- `STRATA_CKPT_POOL` and `STRATA_CKPT_THREADS` (opt-in) reuse a dropped checkpoint's buffers and save the stages'
+  parts on threads. A remote main has no in-process stage, so its own part is the only one, and the worker's part is
+  kept by id on the worker: both switches act on the main process's buffers alone. The ids and the eviction stay as
+  the chain's.
+- Upstream's lines next to this branch's (the restore's "continuing the live session" line, the pipelined drain's
+  error cleared before the admission merge's check): both kept.
+
+0.1.44's Metal backend hands `conversation_checkpoint_save` and `_restore` to its decode window; the range-taking
+overloads this branch adds stay on the session's buffers, and a remote stage is refused on Metal (#1748). The
+protocol is unchanged (6).
+
+The GPU checks above were not run again on this base.
