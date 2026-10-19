@@ -2520,8 +2520,12 @@ class Vision:
             self.stopped = True
             return
         try:
-            proc.stdin.write("QUIT\n")
-            proc.stdin.flush()
+            if proc.poll() is None and proc.stdin:
+                try:
+                    proc.stdin.write("QUIT\n")
+                    proc.stdin.flush()
+                except OSError:
+                    pass
             proc.wait(timeout=10)
         except Exception:
             try:
@@ -2532,12 +2536,26 @@ class Vision:
                 proc.wait(timeout=10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        self.stopped = True
+        finally:
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            if proc.stdout:
+                try:
+                    proc.stdout.close()
+                except OSError:
+                    pass
+            self.stopped = True
 
     def shutdown(self):
         """#914: close() for good: the server ends, so the encoder's directory (one ~10 MB .sve per image, on a tmpfs
         /tmp that is RAM) goes with it instead of piling up with every start.  unload() keeps it for the restart."""
-        self.close()
+        try:
+            self.close()
+        except OSError:
+            pass
         shutil.rmtree(self.dir, ignore_errors=True)
 
 
@@ -7146,6 +7164,8 @@ def main() -> int:
             except KeyboardInterrupt:                   # a second Ctrl+C: don't wait for the engine to free its memory
                 if getattr(engine, "proc", None):
                     engine.proc.kill()
+            except Exception:
+                pass
         try:
             from serve import cache_drop
             cache_drop.drop_after_exit(engine)           # opt-in (STRATA_DROP_CACHE_ON_EXIT=1), default unchanged
