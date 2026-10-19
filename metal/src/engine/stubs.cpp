@@ -353,14 +353,14 @@ auto strata::prefill::Gemm::rebind(uint16_t * p0, int64_t p1, void * p2, size_t 
 namespace strata::prefill { void blob_dequant_f16(const uint8_t * p0, uint16_t * p1, uint16_t * p2, void * p3) { strata::metal_engine::missing("strata::prefill::blob_dequant_f16"); } }
 namespace strata::prefill { void copy_f32_wide(float * p0, const float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::copy_f32_wide"); } }
 namespace strata::prefill { void copy_i32(int32_t * p0, const int32_t * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::copy_i32"); } }
-namespace strata::prefill { bool f16_range_read(float & p0, unsigned long long & p1, bool p2) { strata::metal_engine::missing("strata::prefill::f16_range_read"); return {}; } }
+// f16_range_read / gemm_f16_range_read get no trap stub here on purpose: opt-in HIP/Turing reads,
+// off on Metal but callable, answered as no-ops in stubs_0145.cpp.
 namespace strata::prefill { void f16_to_f32_wide(float * p0, const uint16_t * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::f16_to_f32_wide"); } }
 namespace strata::prefill { void gate_attn(const float * p0, const float * p1, uint16_t * p2, int64_t p3, void * p4, int64_t p5) { strata::metal_engine::missing("strata::prefill::gate_attn"); } }
 namespace strata::prefill { void gather_rows16(const uint16_t * p0, const int32_t * p1, uint16_t * p2, int64_t p3, int64_t p4, void * p5) { strata::metal_engine::missing("strata::prefill::gather_rows16"); } }
 namespace strata::prefill { void gdn_conv(float * p0, const float * p1, const float * p2, float * p3, int64_t p4, float p5, void * p6) { strata::metal_engine::missing("strata::prefill::gdn_conv"); } }
 namespace strata::prefill { void gdn_gates(const float * p0, const float * p1, const float * p2, float * p3, float * p4, int64_t p5, void * p6) { strata::metal_engine::missing("strata::prefill::gdn_gates"); } }
 namespace strata::prefill { void gdn_recurrence(float * p0, const float * p1, const float * p2, const float * p3, const float * p4, const float * p5, float p6, float * p7, uint16_t * p8, int64_t p9, void * p10, int64_t p11) { strata::metal_engine::missing("strata::prefill::gdn_recurrence"); } }
-namespace strata::prefill { bool gemm_f16_range_read(float * p0, unsigned long long * p1, bool p2) { strata::metal_engine::missing("strata::prefill::gemm_f16_range_read"); return {}; } }
 namespace strata::prefill { void gr_broadcast(const float * p0, float * p1, int64_t p2, void * p3) { strata::metal_engine::missing("strata::prefill::gr_broadcast"); } }
 namespace strata::prefill { void gr_mix(const float * p0, const float * p1, float * p2, uint16_t * p3, int64_t p4, void * p5, uint16_t * p6, uint16_t * p7) { strata::metal_engine::missing("strata::prefill::gr_mix"); } }
 namespace strata::prefill { void gr_mix_r(const float * p0, const float * p1, const float * p2, const float * p3, float * p4, uint16_t * p5, int64_t p6, void * p7, uint16_t * p8, uint16_t * p9) { strata::metal_engine::missing("strata::prefill::gr_mix_r"); } }
