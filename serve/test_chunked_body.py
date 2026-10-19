@@ -177,6 +177,63 @@ class ChunkedBody(unittest.TestCase):
         threading.Thread(target=trickle, daemon=True).start()
         return s, stop
 
+    def open_pieced_drain(self, first: bytes, pieces: list[bytes], every: float, drain_s: float):
+        """The answer first (a 404 from a route that reads no body), then a chunked body sent as `first` and the
+        pieces one `every` seconds apart.  Returns the socket; `drain_elapsed` times the read to its EOF."""
+        old = self.httpd.RequestHandlerClass.DRAIN_SECONDS
+        self.httpd.RequestHandlerClass.DRAIN_SECONDS = drain_s
+        self.addCleanup(setattr, self.httpd.RequestHandlerClass, "DRAIN_SECONDS", old)
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=20)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        self.addCleanup(s.close)
+
+        def trickle():                                     # one piece inside each deadline window
+            try:
+                for piece in pieces:
+                    if stop.is_set():
+                        break
+                    time.sleep(every)
+                    s.sendall(piece)
+            except OSError:
+                pass                                       # the server let go: that is what the tests are about
+
+        s.sendall(b"GET /nope HTTP/1.1" + CRLF + b"Host: 127.0.0.1" + CRLF +
+                  b"Transfer-Encoding: chunked" + CRLF + CRLF + first)
+        threading.Thread(target=trickle, daemon=True).start()
+        return s
+
+    def drain_elapsed(self, s) -> float:
+        """Seconds until the server closes: the 404 answer, then EOF once the drain gives up."""
+        t0 = time.monotonic()
+        while True:
+            s.settimeout(10.0)
+            if not s.recv(65536):
+                return time.monotonic() - t0
+
+    def test_a_trickled_chunk_header_is_let_go_when_the_drain_is_over(self):
+        """The chunk header (and its extension) is read with readline, which may make many recvs under one armed
+        timeout: a byte arriving inside that window each time stretched the line, and so the drain, past the
+        budget.  The size, extension and CRLF are one byte per window here."""
+        s = self.open_pieced_drain(b"1", [b";", b"e", b"x", b"t", b"=", b"1", b"\r", b"\n"], every=0.95, drain_s=1.0)
+        took = self.drain_elapsed(s)
+        self.assertLess(took, 2.0, f"the drain ran {took:.1f}s past a 1.0 s budget")
+
+    def test_a_trickled_chunk_trailer_is_let_go_when_the_drain_is_over(self):
+        """The trailers are read the same way: the zero chunk, then a trailer line a byte per window."""
+        s = self.open_pieced_drain(b"0" + CRLF + b"X-Trailer: ", [b"a"] * 6 + [CRLF + CRLF],
+                                   every=0.95, drain_s=1.0)
+        took = self.drain_elapsed(s)
+        self.assertLess(took, 2.0, f"the drain ran {took:.1f}s past a 1.0 s budget")
+
+    def test_a_trickled_chunk_terminator_is_let_go_when_the_drain_is_over(self):
+        """And the two-byte CRLF after a chunk: read(2) waits for both bytes inside one call, each recv bounded by
+        the timeout armed before the call, so the second byte could arrive after the deadline."""
+        s = self.open_pieced_drain(b"1" + CRLF + b"x", [b"\r", b"\n", b"0" + CRLF + CRLF],
+                                   every=0.95, drain_s=1.0)
+        took = self.drain_elapsed(s)
+        self.assertLess(took, 1.5, f"the drain ran {took:.1f}s past a 1.0 s budget")
+
     def test_a_chunked_body_that_trickles_is_let_go_when_the_drain_is_over(self):
         """DRAIN_SECONDS is the whole drain ("the limit is time", _drain_body's docstring), but the deadline was
         re-armed only at a chunk header.  One chunk is read in as many socket buffers as it takes, and readline/read

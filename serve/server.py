@@ -5163,10 +5163,45 @@ def make_handler(svc: Service):
                 self.connection.settimeout(wait)
                 return True
 
+            def read_line(most: int) -> bytes | None:
+                """A line under the deadline (None: it ran out).  With a deadline it reads a byte at a time: readline
+                makes as many recvs as it takes, each bounded by the timeout armed for the first of them, so a client
+                that trickles inside that window stretches one line past the budget.  read1 returns one socket read's
+                worth, so `armed` before each one bounds the line as it bounds the payload."""
+                if deadline is None:
+                    return self.rfile.readline(most)
+                line = bytearray()
+                while len(line) < most:
+                    if not armed():
+                        return None
+                    piece = self.rfile.read1(1)
+                    if not piece:
+                        break
+                    line += piece
+                    if piece == b"\n":
+                        break
+                return bytes(line)
+
+            def read_exact(n: int) -> bytes | None:
+                """`n` bytes under the deadline (None: it ran out); one socket read per `armed`."""
+                if deadline is None:
+                    return self.rfile.read(n)
+                got = bytearray()
+                while len(got) < n:
+                    if not armed():
+                        return None
+                    piece = self.rfile.read1(n - len(got))
+                    if not piece:
+                        break
+                    got += piece
+                return bytes(got)
+
             while True:
                 if not armed():
                     return b"".join(parts)
-                line = self.rfile.readline(1025)
+                line = read_line(1025)
+                if line is None:
+                    return b"".join(parts)
                 if not line.endswith(b"\n"):
                     raise BadBody(400, "malformed chunked request body")
                 try:
@@ -5179,7 +5214,9 @@ def make_handler(svc: Service):
                     for _ in range(64):                       # the trailers, including the final blank line
                         if not armed():
                             return b"".join(parts)
-                        trailer = self.rfile.readline(8193)
+                        trailer = read_line(8193)
+                        if trailer is None:
+                            return b"".join(parts)
                         if trailer == b"\r\n":
                             return b"".join(parts)
                         if not trailer.endswith(b"\r\n"):
@@ -5201,7 +5238,10 @@ def make_handler(svc: Service):
                         parts.append(piece)
                 if not armed():
                     return b"".join(parts)
-                if self.rfile.read(2) != b"\r\n":
+                terminator = read_exact(2)
+                if terminator is None:
+                    return b"".join(parts)
+                if terminator != b"\r\n":
                     raise BadBody(400, "malformed chunked request body")
 
         def _body(self) -> bytes:
