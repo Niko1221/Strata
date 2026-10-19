@@ -1,0 +1,315 @@
+{
+  "draws": {
+    "U": {
+      "D": 8046,
+      "text": "Step",
+      "qD": 0.127433180809021,
+      "q_mass": 0.9999999823048711,
+      "uniform": 0.8049668669700623
+    },
+    "A": {
+      "D": 8046,
+      "text": "Step",
+      "qD": 0.0861891508102417,
+      "q_mass": 0.999999993480742,
+      "uniform": 0.8049668669700623
+    }
+  },
+  "counterfactuals": [
+    {
+      "p": "U",
+      "q": "U",
+      "distribution": "plain-p",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "U",
+      "q": "U",
+      "distribution": "plain-p",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "U",
+      "q": "U",
+      "distribution": "NULL-residual",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "U",
+      "q": "U",
+      "distribution": "NULL-residual",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "A",
+      "q": "U",
+      "distribution": "plain-p",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "A",
+      "q": "U",
+      "distribution": "plain-p",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "A",
+      "q": "U",
+      "distribution": "NULL-residual",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "A",
+      "q": "U",
+      "distribution": "NULL-residual",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "U",
+      "q": "A",
+      "distribution": "plain-p",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "U",
+      "q": "A",
+      "distribution": "plain-p",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "U",
+      "q": "A",
+      "distribution": "NULL-residual",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "U",
+      "q": "A",
+      "distribution": "NULL-residual",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "A",
+      "q": "A",
+      "distribution": "plain-p",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "A",
+      "q": "A",
+      "distribution": "plain-p",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    },
+    {
+      "p": "A",
+      "q": "A",
+      "distribution": "NULL-residual",
+      "rng_domain": "plain",
+      "uniform": 0.11587321758270264,
+      "output": 16,
+      "text": "1"
+    },
+    {
+      "p": "A",
+      "q": "A",
+      "distribution": "NULL-residual",
+      "rng_domain": "residual",
+      "uniform": 0.9603471159934998,
+      "output": 9764,
+      "text": "Let"
+    }
+  ],
+  "q_draw_checks": [
+    {
+      "arm": "U",
+      "index": 1,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 2,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 3,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 5,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 6,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 7,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 9,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 10,
+      "matches": true
+    },
+    {
+      "arm": "U",
+      "index": 11,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 1,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 2,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 3,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 5,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 6,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 7,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 9,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 10,
+      "matches": true
+    },
+    {
+      "arm": "A",
+      "index": 11,
+      "matches": true
+    }
+  ],
+  "trace_work_comparison": {
+    "U": {
+      "produced": [
+        12,
+        12
+      ],
+      "draft_accepted": [
+        8,
+        8
+      ],
+      "draft_offered": [
+        8,
+        8
+      ],
+      "reused": [
+        0,
+        0
+      ],
+      "prompt_read": [
+        102,
+        102
+      ],
+      "file_blobs": [
+        556,
+        577
+      ]
+    },
+    "A": {
+      "produced": [
+        12,
+        12
+      ],
+      "draft_accepted": [
+        8,
+        8
+      ],
+      "draft_offered": [
+        8,
+        8
+      ],
+      "reused": [
+        0,
+        0
+      ],
+      "prompt_read": [
+        102,
+        102
+      ],
+      "file_blobs": [
+        580,
+        560
+      ]
+    }
+  },
+  "elapsed": 68.85063600540161,
+  "recovery": {
+    "original_service": "absent",
+    "restored": true
+  }
+}

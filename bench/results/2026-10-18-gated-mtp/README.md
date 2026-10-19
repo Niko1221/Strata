@@ -4,6 +4,8 @@ These measurements compare upstream `296b59d2` (U) with the gated-proposal imple
 
 The tested source is available at [96c3060d in the contributor's fork](https://github.com/KeyanHu-git/Strata/tree/96c3060d765aacc56b660e5c35d21982703fa7a8). The PR's later main-branch integration has separate build checks. The timing and GSM8K results here remain tied to the measured executable above.
 
+![Proposal handling before and after the fix](figures/proposal-flow.png)
+
 ## Machine and settings
 
 Windows, Ryzen 5 7600X, Radeon RX 7900 XTX (24 GiB), 32 GiB RAM. Both binaries are HIP Release builds for gfx1100 using ROCm Clang 24.0.0 and ggml commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
@@ -32,10 +34,12 @@ The English prompt has 61 tokens and a 64-token output cap. The repeated-context
 
 The primary statistic is the geometric mean of paired A/U decode-throughput ratios. Positive changes mean faster. Confidence intervals resample whole paired engine blocks, with 20,000 bootstrap draws and the fixed seed in [ANALYSIS-PROTOCOL.md](ANALYSIS-PROTOCOL.md). Generated output lengths can differ, so the primary ratio measures generated-token throughput.
 
+![Decode-throughput estimates with 95% block-bootstrap intervals](figures/throughput.png)
+
 | Workload | Temperature | Pairs | Throughput change | 95% block-bootstrap interval |
 |---|---:|---:|---:|---:|
 | English | 0.6 | 25 | -0.09% | -3.22% to +3.15% |
-| English | 1.0 | 25 | -0.29% | -3.75% to +3.07% |
+| English | 1.0 | 25 | -0.29% | -3.74% to +3.07% |
 | Repeated context | 0.6 | 25 | +2.30% | -0.94% to +5.42% |
 | Repeated context | 1.0 | 25 | +2.19% | -0.92% to +5.20% |
 
@@ -63,3 +67,18 @@ A completed 304 items before a new engine startup encountered Windows commit pre
 | A | 300 | 3 | 1 |
 
 The remaining 1,015 items have no A result. [gsm8k-partial.json](gsm8k-partial.json) records this status and the scorer hash. The truncated item remains counted; a full-test A accuracy is not available.
+
+## Truncated-answer investigation
+
+The truncated item is GSM8K test index 119. Upstream also repeatedly reconsidered this question, then ended after 6,508 tokens; the patch reached the 8,192-token cap. A bounded 12-token replay reproduced their first divergence and identified the failed-gate sampling branch. It also found a target-distribution difference along the incremental path. The comparison against a singleton reference remains open. [Trace, interpretation and measured probabilities](diagnostics/token12.md).
+
+## Reproduce the figures
+
+`figures/render.py` uses matplotlib. The performance figure is generated from the same offline analysis as the table; its input checksum is saved in `figures/plot-data.json`.
+
+```sh
+python3 analyze.py measurements.json --out-dir /tmp/gated-mtp-analysis
+python3 figures/render.py --analysis /tmp/gated-mtp-analysis/analysis.json
+```
+
+The proposal diagram is a schematic of one MTP row. Suffix-root admission includes the eligible lookup token in the retained measure, as described in the PR.
