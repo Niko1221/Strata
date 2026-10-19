@@ -131,6 +131,8 @@ public:
     // PLE history, each QSA layer's indexer tail and tail-block key); the KV and pooled keys are positional
     bool checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err);
     bool checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err);
+    // park/restore: the live K/V cells of the QSA layer that owns this session state, with each buffer's size
+    bool kv_pools(const strata::core::QsaState& st, void* out[5], size_t cap[5]);
     void reset();   // a new sequence (session_zero): the running state zeroed
     void set_max_t(int t) { max_t_ = std::min(t, MAXT); }
     // ---- the MTP draft layer (mtp.hpp's math on mac-kern's kernels; the MTP GGUF from tools/mtp_pack.py)
@@ -1611,6 +1613,33 @@ bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, s
     return true;
 }
 
+// park/restore: `out` = the window's {k, v, k scale, v scale, pooled} buffers for the QSA layer whose session
+// state is `st`, in the window's [cell][head][unit] order.  The session's own CUDA-shaped pools were given back
+// at startup (stream_arena); these cells are the live K/V a parked conversation saves and rewrites.  False for a
+// state this window does not hold (the drafter's ring under --mtp parks no K/V yet).
+bool Window::kv_pools(const strata::core::QsaState& st, void* out[5], size_t cap[5]) {
+    if (!ss_ || !ss_->qsa_states) return false;
+    for (int64_t j = 0; j < ss_->qsa_alloc; ++j)
+        if (&ss_->qsa_states[ss_->qsa_ord0 + (size_t) j] == &st) {
+            if (j >= (int64_t) kq_.size()) {   // the state outlives the window's cell arrays: park, never crash
+                std::fprintf(stderr, "strata metal park: state %lld is beyond the window's %zu cell buffers\n",
+                             (long long) j, kq_.size());
+                return false;
+            }
+            out[0] = kq_[(size_t) j].ptr;   out[1] = vq_[(size_t) j].ptr;
+            out[2] = ksc_[(size_t) j].ptr;  out[3] = vsc_[(size_t) j].ptr;
+            out[4] = pooled_[(size_t) j].ptr;
+            cap[0] = kq_[(size_t) j].bytes;  cap[1] = vq_[(size_t) j].bytes;
+            cap[2] = ksc_[(size_t) j].bytes; cap[3] = vsc_[(size_t) j].bytes;
+            cap[4] = pooled_[(size_t) j].bytes;
+            if (std::getenv("STRATA_PARK_DEBUG"))
+                std::fprintf(stderr, "strata metal park: j=%lld kq=%p/%zu vq=%p/%zu ksc=%p/%zu vsc=%p/%zu pooled=%p/%zu\n",
+                             (long long) j, out[0], cap[0], out[1], cap[1], out[2], cap[2], out[3], cap[3], out[4], cap[4]);
+            return true;
+        }
+    return false;
+}
+
 bool Window::commit(int n_keep, std::string& err) {
     in_mtp_ = false;
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
@@ -2777,6 +2806,9 @@ bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
     return g_the_window->checkpoint_restore(c, err);
+}
+bool window_kv_pools(const strata::core::QsaState& st, void* out[5], size_t cap[5]) {
+    return g_the_window != nullptr && g_the_window->kv_pools(st, out, cap);
 }
 bool window_commit(void* w, int n_keep, std::string& err) {
     const double t0 = now_ms();
