@@ -780,7 +780,11 @@ int64_t qsa_kv_ring_adapt(const ModelGeometry& g, int64_t cells_needed, int64_t 
     // must keep the configuration it would have had, and only a deeper one grows.  Measured: a 20,480 floor
     // cost 7.3 % at 1K (record-iq3s-v4-w4-adaptive-20261019.json) while 32,768 is the live value.
     const int64_t floor = std::max<int64_t>(qsa_kv_resident_min(), 32768);
-    return std::min(cap, std::max(floor, rounded));
+    if (cap <= floor) return cap;
+    // Drafter-aware: grow to the cap only when the ring can cover the whole context.  Anywhere else the draft path
+    // pays for a ring it cannot use (0.2.0, 32K: -9.1 % with MTP against -1.7 % without), and the live 32,768 is
+    // the value a shallow run already has.
+    return rounded >= cap ? cap : floor;
 }
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
