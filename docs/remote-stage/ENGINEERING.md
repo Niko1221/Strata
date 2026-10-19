@@ -618,6 +618,62 @@ so a worker can use it; the moved copy took the change, and it is the same as up
 - The server's 503 for a remote stage's error sends its Retry-After through `_json`'s headers, which upstream added
   too; the merge had sent the field twice, and the server's test now checks it is sent once.
 
+### After the rebase onto 0.2.0-beta (2026-10-20)
+
+The branch was rebased onto upstream main e88ee39d (0.2.0-beta, engine 0.1.45.3; 1335 commits after a0116b27). The
+textual conflicts, and what each side kept:
+- **The expert arena** (`ArenaExpertSource`): pin by need (`STRATA_PIN_BY_NEED=1`, opt-in, 0.1.44) lays the arena
+  out with a page-aligned blob stride, and this branch cuts a worker's arena to its layer range. A layer range keeps
+  the packed layout (its `base_` is shifted back by the range's first byte, which a stride would not match), so pin by
+  need is off with a remote stage: the log says so, and the prefix pinning stays. `load_experts_gguf` takes both the
+  padded map and the range; `blob_at` answers null outside the range, as `blob` does.
+- **The prompt path's loan** (`lend` and `refill`, which this branch moves up so a worker can use them): upstream
+  changed them at their old place (`--prefill-head-alias`, `STRATA_REFILL_PARTS`, the `exact` chunk of a planned
+  segment and `seg_lend`, and 0.2's host-aware chunk, `planned_chunk` with `pf_plan_chunk`, #2824). The moved copy
+  is upstream's, whitespace aside. The worker calls it with `exact` 0, which leaves its chunk as before, and the
+  worker's `lend_whole` (the hello's test of whether `lend` would lend the main process's chunk whole) takes the
+  chunk through `planned_chunk` as `lend` does.
+- **`Verifier::run`** calls `remote_run_` first, then upstream's prelaunch check of the overlapped split. A remote
+  stage is a split on one GPU (`--split-device 0`), which `STRATA_SPLIT_OVERLAP` never prelaunches.
+- **The prompt hand-off**: `STRATA_HANDOFF_PIPE`'s pieces are made for an in-process next stage only, so a remote
+  send always reads a hand-off the host has waited for; the send's own wait comes before the pieces' code.
+- The tail-skip default's 90% rule (upstream adds an NVFP4 clause next to it), the drafter's batched K/V plan
+  (`mtp_first`), `STRATA_PRIMARY_DEVICE`'s refusal of a layer split (after the remote stage's checks), the
+  pinned-memory reserve around the arena's `open` (`pin_reserve_take`), the hand-off's row count for pipelined slot
+  groups, the overlapped split's line and the job thread's place in `verify.cpp`: both sides kept.
+
+In the first commit (so every commit of the branch builds where upstream does):
+- The Metal build compiles `generate.cpp`, so it links the link's code (and `send` asks for no SIGPIPE through
+  `SO_NOSIGPIPE` where there is no `MSG_NOSIGNAL`). Not built here (no Mac).
+- A worker's arena read could wait for most or all of its registration slices under `STRATA_DEFERRED_REGISTER=1`
+  (Windows, opt-in): the readers counted the slices from layer 0, the arena from the range's first layer. They count
+  from the range's first layer now. Read from the code, not run.
+
+Follow-ups (one commit), each a check of this branch's own for what upstream added after 0.1.43.1:
+- `--prefill-head-alias` is refused with a remote stage: a worker has no head, and the alias needs one GPU.
+- A Qwen3.6-35B-A3B file is refused with the remote stage's flags (`--flag value` or `--flag=value`). Upstream runs
+  that family from the same binary on its own engine path, which has no layer split and skips an option it does not
+  know in serve mode: a main process would have run every layer itself, and a worker would never have listened.
+- A remote stage is refused on the Metal build, since the Metal window runs init, run and commit itself, past the
+  remote stage's hooks.
+- `--adapt-async 1` is turned off with a line on a worker, in any mode (it runs the blocking adaptive tier between
+  its windows), and on a remote main in the expert arena's mode (the arena's copy-in tier has not been measured with
+  a remote stage).
+- The automatic prompt chunk's 8192 cap of a layer split on gfx12 applies to a remote main too: it reads its chunks
+  through the worker as the same pipeline. Without it, a gfx12 main on `--prefill auto` took 16384 chunks, and a
+  worker on `auto` that is not gfx12 (8192) refused its hello. Not run: no AMD card here.
+
+Read in the code, no change needed:
+- The server's 503 for a remote stage's error sends its Retry-After through `_json`'s `retry_after` argument, which
+  upstream added; the field is sent once, as the server's test checks.
+- 0.2's host-aware prompt plan (#2824) and `STRATA_RAM_ADAPT2` act on the mapped file tier only (`srcp == &src`); a
+  remote stage's PCs run the expert arena, so neither changes their chunks or their RAM tier.
+- 0.2's sm_86 / sm_60 defaults set `STRATA_ADAPT_NOWAIT=1` and `STRATA_ADAPT_LAG=2` on a PC whose cards are all that
+  architecture. They are each PC's own: a worker's window handler takes the swaps as the main process's decode loop
+  does with them (`adapt_nowait()`), and the adaptive tier does not change the answers.
+
+None of this has run on a GPU since the rebase: the builds and the CPU tests are listed in the pull request.
+
 ### The recovery's open points (2026-10-13)
 
 Faults injected on A + B (RTX 3080 main, RTX 2080 Ti worker, 10 GbE, RVN IQ3_S, K=26) with the branch on 0.1.43
