@@ -615,7 +615,15 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the
-  experts stream from disk with 31 GB of RAM). The ready-made Windows zip has no gfx1031 code unless it is built with it: `STRATA_HIP_ARCHS=gfx1031`
+  experts stream from disk with 31 GB of RAM). A third report, with the numbers and the two changes it needed
+  ([docs/AMD_GFX1031.md](AMD_GFX1031.md), 0.1.45, system ROCm 7.1.1 / rocBLAS 5.1.1, Swift 1.5 iq3_s, 64 GB RAM): a
+  gfx1031-only engine loads and dies on its first ~12K-token prompt with `rocBLAS error: Cannot read
+  .../rocblas/library/TensileLibrary.dat: No such file or directory for GPU arch : gfx1031` - rocBLAS ships gfx1030
+  kernels only, the prompt's dense matrix products are the only path that calls it, and short prompts never reach it,
+  so it reads as out of memory. Built for `gfx1030;gfx1031` and run as gfx1030 (`HSA_OVERRIDE_GFX_VERSION=10.3.0`) it
+  works: 11,103 tokens 322-328 tok/s, 620.9 tok/s with `STRATA_HIP_PROMPT_F16=1` (1.90x), decode 22-32 tok/s. The
+  engine needs the gfx1030 code objects as well as the override: the override on a gfx1031-only binary SEGFAULTS.
+  The ready-made Windows zip has no gfx1031 code unless it is built with it: `STRATA_HIP_ARCHS=gfx1031`
   in `tools\hip\build_windows.bat` (the default list has it from 0.1.40.2 on).
 - **gfx1150** (Radeon 890M, Ryzen AI 9 HX PRO 370, Strix Point, #1217): builds and runs from 0.1.40.2 as an unvalidated target (CMake warns; the
   device code already covers it: the WMMA guards and `gfx_arch_is_gfx11_wmma()` include it). One community machine: MINISFORUM N5 PRO, 96 GB DDR5-5600, GTT

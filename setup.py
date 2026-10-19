@@ -2130,6 +2130,39 @@ GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
 GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
 AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") \
             + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
+# The gfx1031 (RX 6700 XT / 6750 XT, #524, #881) has no rocBLAS kernels of its own: ROCm 7.1.1's rocBLAS 5.1.1 ships
+# Tensile libraries for gfx1030 only (`ls /opt/rocm/lib/rocblas/library | grep -c gfx1031` is 0), so the prompt's dense
+# matrix products (src/prefill/gemm.cu, cublasGemmEx -> rocblas_gemm_ex) abort the engine the first time a prompt
+# crosses the prefill token threshold - it reads as an out-of-memory exit on a PC with room to spare, and short prompts
+# never reach that path.  The card needs code for the family's gfx1030 AND to run as gfx1030: the override on its own
+# SEGFAULTS a gfx1031-only binary (HIP then looks for gfx1030 code objects), and code objects alone leave rocBLAS
+# looking for gfx1031.  Measured on a 6700 XT (16 GB, 64 GB RAM, ROCm 7.1.1, Swift iq3_s): the gfx1030 kernels give
+# 7.0 TFLOPS f16->f32 and 21.3 f16->f16 at N 10240 x T 1024 x K 2560 against a CPU reference, an 11,103-token prompt
+# reads at 322-338 tok/s and decodes at 22-34 tok/s, on 12.39 of 12.87 GB VRAM.  The fat engine is 53.7 MB against
+# 32.5 MB and costs nothing at run time.
+HIP_ROCBLAS_SIBLINGS = {"gfx1031": "gfx1030"}
+HIP_ROCBLAS_AS = {"gfx1031": "10.3.0"}      # HSA_OVERRIDE_GFX_VERSION, the same way docs/AMD_HIP.md sets it for gfx906
+
+
+def hip_report_arch(arch: str) -> str:
+    """The arch name the engine reports for this card once setup runs it as its rocBLAS sibling (above): the engine
+    picks the tuning tables of the arch it sees, so setup looks them up under that name too (tools/hip/)."""
+    return HIP_ROCBLAS_SIBLINGS.get(arch, arch)
+
+
+def hip_build_archs(gpu: dict) -> list[str]:
+    """Every architecture the HIP engine has to carry code for: the card's own (all of them, for a layer split) plus,
+    for a card whose arch rocBLAS has no kernels for, the family's sibling (HIP_ROCBLAS_SIBLINGS above).  The prompt's
+    matrix products run on the arch the card reports, so the sibling's code objects belong in the binary (above)."""
+    archs = sorted(set(gpu.get("archs") or [gpu["arch"]]))
+    if extra := {HIP_ROCBLAS_SIBLINGS[a] for a in archs if a in HIP_ROCBLAS_SIBLINGS}:
+        say(f"  compiling for {', '.join(sorted(set(archs) | extra))}: rocBLAS has no kernels for "
+            f"{', '.join(sorted(a for a in archs if a in HIP_ROCBLAS_SIBLINGS))}, so the engine carries the "
+            "family's gfx1030 code too (the card runs as gfx1030; the run config's env says so)")
+        archs = sorted(set(archs) | extra)
+    return archs
+
+
 # The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
 # STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
 # (tools/hip/gfx1103-hipblaslt-100401.txt) picks others, so it would only report that it cannot run.  A gfx1103 install
@@ -3079,7 +3112,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     stamp = eng / "BUILD.json"
     meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
-    archs = sorted(set(gpu.get("archs") or [gpu["arch"]]))
+    archs = hip_build_archs(gpu)
     has_archs = set(archs) <= set(meta.get("archs", []))
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
@@ -4523,7 +4556,7 @@ def write_config(path: Path, cfg: dict):
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
                         "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
-                       "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
+                       "STRATA_ROUTE_TAIL_SKIP", "HSA_OVERRIDE_GFX_VERSION"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger; HSA_OVERRIDE_GFX_VERSION is setup's for the cards it runs as a sibling arch)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
 # user's own (STRATA_ROUTE_TAIL_SKIP=0 to turn the tail skip off, STRATA_MMQ_KQ=1 ...): a setup run again keeps them there
 # (0.1.44 dropped them with the rest of SETUP_ENV).
@@ -7022,9 +7055,15 @@ def main() -> int:
         # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%
         # prompt speed on the 7900 XTX): only a table for this card's arch AND the installed hipBLASLt version (the
         # engine refuses any other one and falls back to plain hipBLAS)
-        table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"))
+        table = hipblaslt_table(hip_report_arch(gpu["arch"]), lib_dirs, meta.get("hipblaslt_version"))
         if table:
             cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
+        if over := HIP_ROCBLAS_AS.get(gpu["arch"]):
+            # the card runs as its rocBLAS sibling (HIP_ROCBLAS_SIBLINGS) so the prompt's matrix products find kernels;
+            # setup writes it, so a setup run again refreshes it (SETUP_ENV) and the engine's log names the sibling.
+            cfg.setdefault("env", {})["HSA_OVERRIDE_GFX_VERSION"] = over
+            ok(f"{gpu['arch']}: running the card as {hip_report_arch(gpu['arch'])} (HSA_OVERRIDE_GFX_VERSION={over}) - "
+               f"rocBLAS has no {gpu['arch']} kernels, and the engine is built for both")
         if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
             # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
             cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
@@ -7041,7 +7080,7 @@ def main() -> int:
         # the GDN input projection 6x faster below 1,152 tokens on a 6900 XT).  The ids are valid for one rocBLAS
         # build, which only the engine can read, so setup points it at the directory and the engine picks the file
         # <arch>-rocblas-<version>.txt for its own library, or runs the default kernels and says so in its log.
-        rocblas_tables = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{gpu['arch']}-rocblas-*.txt"))
+        rocblas_tables = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{hip_report_arch(gpu['arch'])}-rocblas-*.txt"))
         if rocblas_tables:
             cfg.setdefault("env", {})["STRATA_ROCBLAS_TUNING"] = str(ROOT / "tools" / "hip")
             ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
