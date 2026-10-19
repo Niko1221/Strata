@@ -20,7 +20,7 @@ import setup  # noqa: E402
 class FamilyOrder(unittest.TestCase):
     def test_the_menu_order_on_nvidia(self):
         fams = setup.menu_families(False) + list(setup.OWN_PATH_FAMILIES)
-        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth", "nvfp4", "qwen36"])
+        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth", "gyro", "nvfp4", "qwen36"])
 
     def test_the_default_stays_the_first_family(self):
         self.assertEqual(setup.menu_families(False)[0], "qwen")
@@ -29,7 +29,7 @@ class FamilyOrder(unittest.TestCase):
     def test_nvfp4_is_not_listed_on_amd_and_intel(self):
         fams = setup.menu_families(True)
         self.assertNotIn("nvfp4", fams)
-        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth"])
+        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth", "gyro"])
         self.assertIn("nvfp4", setup.FAMILIES)             # --family nvfp4 still exists, and says why not
 
     def test_the_unsloth_line_names_the_alternative_on_amd_and_intel(self):
@@ -109,7 +109,11 @@ class RecommendedSizes(unittest.TestCase):
     def test_without_the_ram_the_largest_that_fits_and_iq3_s_stays_marked(self):
         n = self.names("qwen")
         self.assertEqual(setup.recommended_size("qwen", n, 61.0), "IQ3_XXS")      # IQ3_S needs 62 GB
-        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ2_XS")
+        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ3_XXS")      # 48 GB tier (RAM + VRAM)
+        self.assertEqual(setup.recommended_size("qwen", n, 40.0, 8.0), "IQ3_XXS")  # 40 + 8 = 48 GB together
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 12.0), "IQ2_XS")  # 44 GB: the 40 GB tier
+        self.assertEqual(setup.recommended_size("swift", self.names("swift"), 32.0, 12.0), "IQ2_XS")
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 32.0), "IQ3_S")   # 64 GB together
         self.assertEqual(setup.size_tag("qwen", "IQ3_S"), " (recommended)")
 
     def test_coder_has_nothing_marked(self):

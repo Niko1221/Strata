@@ -46,7 +46,7 @@ def close_only(source):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--baseline", default="477ac13cbe8e582c20484871ce459d20d82df09d")
+    p.add_argument("--baseline", default="3d1fb48090e8f2cefc22d7b5845fb7f5b71f33fa")
     p.add_argument("--baseline-file", type=Path,
                    help="optional captured baseline replicas.py for a source archive without Git history")
     args = p.parse_args()
@@ -84,8 +84,18 @@ def main():
         }
         rows.append(row)
         print(json.dumps(row), flush=True)
-    expected = [9, 16, 18]
-    ok = all(row["tests"] == 18 and row["passed"] == count for row, count in zip(rows, expected))
+    # The multi-caller statistics race may fail as well as the two forced statistics cases.
+    # Keep every fixed contract mandatory; accept only these known statistics failures in close-only.
+    stats = {
+        "serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock",
+        "serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics",
+    }
+    extra = "serve.test_replica_lifetime.ReplicaContracts.test_four_callers_many_turns_no_cross_output_or_stats"
+    closed = set(rows[1]["failures"])
+    ok = (all(row["tests"] == 18 and not row["errors"] for row in rows)
+          and rows[0]["passed"] == 9
+          and stats <= closed <= stats | {extra}
+          and rows[2]["passed"] == 18)
     report = {"status": "PASS" if ok else "FAIL", "baseline": args.baseline, "rows": rows,
               "scope": "Original/close-only are intentional red controls. Real reader/pump, CPU fixtures, no GPU."}
     (args.output / "summary.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

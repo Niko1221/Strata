@@ -1,0 +1,10 @@
+{
+  "release": "3d1fb48090e8f2cefc22d7b5845fb7f5b71f33fa",
+  "upstream_main": "f57c0adcb31c00f3f216550c004dac4e713a9f70",
+  "previous_pr_head": "f8527faeccbd195e2a1bbc369c0847c071cc8c5c",
+  "upstream_replicas_sha256": "54aef2217788b5f6cd8f02ff08ac7968f477cd051c5e7de3648bfa4b35b4d225",
+  "patched_replicas_sha256": "6484e67ab1ed65a30b115645941b33a9f3845f98b1705ddad55629d130449696",
+  "unchanged_upstream_server_sha256": "d3c615f50cbfee032968a059aca039c1771abd6f8c077829f8f8fc6791b3cf97",
+  "official_callback_preserved": true,
+  "historical_gpu_data_unchanged": true
+}

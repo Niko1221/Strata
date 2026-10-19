@@ -45,6 +45,12 @@ struct PrefillStats {
 namespace strata::core { class MtpDrafter; }
 namespace strata::prefill {
 
+/// HIP: one tiny BF16 and one tiny FP16 product on a private handle, so the first prompt does not pay hipBLAS's one-time
+/// library loads (about 2.5 s on an R9700); once per device, later calls wait for the first and return.  Safe to call from a
+/// thread before the expert arena loads.  STRATA_PREFILL_WARM=0 makes it a no-op.  Nothing on CUDA / SYCL.
+void warm_gemm_libraries(int device);
+
+
 class Prefill {
 public:
     /// E-9: the draft layer's K/V for prompt cells [cell0, cell0 + n) from their final residual rows `R_rows`
@@ -192,6 +198,9 @@ public:
     /// says how many of the run's tokens that is (-1 when the run read them all).  A read beside the batch slots
     /// (STRATA_PIPED_CONCURRENT) gives way to a waiting shorter request there.
     std::function<bool()> stop_at_chunk;
+    /// 149-prefetch (STRATA_RAM_ADAPT2): a layer's routed expert ids (T x k, -1 = none) after the prompt path downloaded them
+    /// for its grouping on the host; a policy may count them. Not called on the paths that keep the ids on the GPU.
+    std::function<void(int64_t layer, const int32_t* ids, int64_t n)> on_routes;
     int64_t stopped_at() const { return stopped_at_; }
     /// Grows this stage's (and the later stages') pinned upload slots to what a text chunk of `T` tokens uploads, so
     /// a run of such chunks allocates no pinned memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's

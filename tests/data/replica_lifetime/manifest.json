@@ -161,6 +161,91 @@
       "sha256": "3978aae77ce87ece324dc569a281a973b54d941fefd6fd54f83268ff73fee88c"
     },
     {
+      "path": "v020-beta/close-only-15-earlier.log",
+      "bytes": 5466,
+      "sha256": "b23db1eee319b0a65d65cd5b352616a1721008c3b6730ea579981b31867b271f"
+    },
+    {
+      "path": "v020-beta/close_only.log",
+      "bytes": 4056,
+      "sha256": "cef938c4ca49f28a250ed88a5a1eb5af961c480e02d92360858bf9fb572bc69e"
+    },
+    {
+      "path": "v020-beta/controls.json",
+      "bytes": 2050,
+      "sha256": "7e92baf825ff3a60a5fdab643a808df0090920da3542051a5674931fdef09ca5"
+    },
+    {
+      "path": "v020-beta/environment.json",
+      "bytes": 434,
+      "sha256": "836ac5792f33b9d2e1e8df7eaa221cb4342b7b8649e21c0c065a2780a858eafd"
+    },
+    {
+      "path": "v020-beta/fixed.log",
+      "bytes": 2925,
+      "sha256": "3c54eba8668db0aa1e8e74ff68bb15b5a939b11179baefa74a50b4011864331d"
+    },
+    {
+      "path": "v020-beta/original.log",
+      "bytes": 10390,
+      "sha256": "74cd6b685c5ec2d74284ab6ae5843098f666773c85a036f3fea7405cf2b14aa1"
+    },
+    {
+      "path": "v020-beta/README.md",
+      "bytes": 2789,
+      "sha256": "528e20a2996f8b6d3b4294f603dc8aa74bb590f4a3d789dc91bc8fffda12df0a"
+    },
+    {
+      "path": "v020-beta/selected-module-1.log",
+      "bytes": 2925,
+      "sha256": "254676c4d59458022f747f130311e6ffa1551960b972349c927cb881a52f79f7"
+    },
+    {
+      "path": "v020-beta/selected-module-2.log",
+      "bytes": 3253,
+      "sha256": "9d3d63519e4434fe49e878b8801f3ea286a26a89429603ea76d6f944a19c55fa"
+    },
+    {
+      "path": "v020-beta/selected-module-3.log",
+      "bytes": 25951,
+      "sha256": "0c3f81a0fcd5ea15629fcb9c51c1d90636961549db2c10652985c63ee8aaeec8"
+    },
+    {
+      "path": "v020-beta/selected-module-4.log",
+      "bytes": 3008,
+      "sha256": "21522fd5427b4a8950b08aad7fea08750c0e85bb7cc79ef5f50f968eb7d5b77a"
+    },
+    {
+      "path": "v020-beta/selected-module-5.log",
+      "bytes": 3114,
+      "sha256": "8237bc71a37f04528ef75f17aa97218b46ea1548a23960f4ee7b577c904814f6"
+    },
+    {
+      "path": "v020-beta/selected-module-6.log",
+      "bytes": 777,
+      "sha256": "e84fef707bf5708350304b574c2d2b8f1dee6de51f5e904846df99ceafae929e"
+    },
+    {
+      "path": "v020-beta/selected-serving-tests.json",
+      "bytes": 2171,
+      "sha256": "63630fcee34923992805717342ee8b07fd0415f6a8a62095edcdc7e08981ba5b"
+    },
+    {
+      "path": "v020-beta/setup-missing-regex.log",
+      "bytes": 8237,
+      "sha256": "3980a9e1490d8a36c03ecc6f9ade98b87cf541676c7a57d5d97272ac9933e396"
+    },
+    {
+      "path": "v020-beta/setup-missing-strata-cli.log",
+      "bytes": 950,
+      "sha256": "31d06ed08120afd057385b0ef1782608a847ffaa478623b88dbcfd7f8c44b6f2"
+    },
+    {
+      "path": "v020-beta/sources.json",
+      "bytes": 570,
+      "sha256": "c656a1937e45a6015e30efacbb8ec75b8315264cdeeb76437b6716e9d09cd06f"
+    },
+    {
       "path": "windows-close_only.log",
       "bytes": 4112,
       "sha256": "567b7cb7bfd8d8c63bc3817066b1ac9a28753d922e0474ff7e82a8c1b1c1b53e"
@@ -181,5 +266,5 @@
       "sha256": "68092eab86b976e72611eaf71d1fbc124f6b059bf30f4227e33fcf167228c300"
     }
   ],
-  "scope": "Focused public evidence, redacted paths and LF-normalized reports/logs. Synthetic request and SSE bytes unchanged; complete private archive hash is provenance only."
+  "scope": "Historical public evidence is unchanged. v020-beta contains CPU-only re-test evidence with private paths redacted. No new GPU or performance claim."
 }

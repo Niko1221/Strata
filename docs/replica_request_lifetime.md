@@ -1,3 +1,11 @@
+# Current revision: 0.2.0-beta re-test
+
+The repair now preserves the official selected-replica callback and is based on main `f57c0adcb31c00f3f216550c004dac4e713a9f70`. Current CPU protocol controls and 102 selected serving tests are recorded in [v020-beta](../tests/data/replica_lifetime/v020-beta/README.md). No GPU run of the new release is claimed.
+
+The replayer now defaults to release `3d1fb48`. Historical commands/results below describe their original revisions; use `--baseline 477ac13cbe8e582c20484871ce459d20d82df09d` to select that older control explicitly.
+
+## Historical 2026-10-17 investigation and GPU qualification
+
 # Replica request ownership: two independent failures
 
 Measured 2026-10-17 on two RTX 3090s. This is a Python serving correctness fix,

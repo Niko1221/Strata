@@ -1,0 +1,10 @@
+[strata] thinking limited to 24386 of max_tokens 32514 so the answer has room ("answer_room": false in the config turns this off)
+[strata] done: 3 tokens in 0 s (3000000.0 tok/s) (stop, cancel=False)
+test_a_queued_stream_gets_keep_alives_then_its_answer (serve.test_queue_keepalive.QueueKeepAlive.test_a_queued_stream_gets_keep_alives_then_its_answer) ... ok
+test_a_request_cancelled_while_queued_never_takes_the_turn (serve.test_queue_keepalive.QueueKeepAlive.test_a_request_cancelled_while_queued_never_takes_the_turn) ... ok
+test_closing_a_queued_request_is_no_longer_queued (serve.test_queue_keepalive.QueueKeepAlive.test_closing_a_queued_request_is_no_longer_queued) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 1.649s
+
+OK

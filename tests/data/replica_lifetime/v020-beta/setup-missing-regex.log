@@ -1,0 +1,115 @@
+test_a_number_cuts_the_gpu_list (serve.test_replicas.Config.test_a_number_cuts_the_gpu_list) ... ok
+test_cpu_sets_off (serve.test_replicas.Config.test_cpu_sets_off) ... ok
+test_mistakes_are_said (serve.test_replicas.Config.test_mistakes_are_said) ... ok
+test_named_groups (serve.test_replicas.Config.test_named_groups) ... ok
+test_replica_cfg (serve.test_replicas.Config.test_replica_cfg) ... ok
+test_a_conversation_goes_back_to_its_replica (serve.test_replicas.ReplicaService.test_a_conversation_goes_back_to_its_replica) ... ERROR
+test_a_replica_that_died_is_skipped (serve.test_replicas.ReplicaService.test_a_replica_that_died_is_skipped) ... ERROR
+test_engines_without_slots_run_one_each_at_once (serve.test_replicas.ReplicaService.test_engines_without_slots_run_one_each_at_once) ... ERROR
+test_metrics_and_status_see_all_slots (serve.test_replicas.ReplicaService.test_metrics_and_status_see_all_slots) ... ERROR
+test_requests_spread_over_both_and_answers_are_the_solo_answer (serve.test_replicas.ReplicaService.test_requests_spread_over_both_and_answers_are_the_solo_answer) ... ERROR
+test_terminal_telemetry_correlates_second_replica_without_global_sample_claim (serve.test_replicas.ReplicaService.test_terminal_telemetry_correlates_second_replica_without_global_sample_claim) ... ERROR
+test_a_dead_replica_is_skipped (serve.test_replicas.RouteChoice.test_a_dead_replica_is_skipped) ... ok
+test_a_long_prefix_outweighs_load (serve.test_replicas.RouteChoice.test_a_long_prefix_outweighs_load) ... ok
+test_batch_is_the_sum (serve.test_replicas.RouteChoice.test_batch_is_the_sum) ... ok
+test_least_loaded_then_affinity (serve.test_replicas.RouteChoice.test_least_loaded_then_affinity) ... ok
+test_nonfinite_forgets_the_replica (serve.test_replicas.RouteChoice.test_nonfinite_forgets_the_replica)
+#879: after DONE ... nonfinite the engine holds no conversation: the router forgets that replica. ... ok
+test_selected_replica_is_reported_for_solo_requests_too (serve.test_replicas.RouteChoice.test_selected_replica_is_reported_for_solo_requests_too) ... ok
+test_matched_prefix_per_replica (serve.test_replicas.Routing.test_matched_prefix_per_replica) ... ok
+test_the_index_is_bounded (serve.test_replicas.Routing.test_the_index_is_bounded) ... ok
+
+======================================================================
+ERROR: test_a_conversation_goes_back_to_its_replica (serve.test_replicas.ReplicaService.test_a_conversation_goes_back_to_its_replica)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<checkout>\serve\test_replicas.py", line 293, in test_a_conversation_goes_back_to_its_replica
+    self.start()
+  File "<checkout>\serve\test_replicas.py", line 175, in start
+    self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\server.py", line 3453, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<checkout>\tools\strata_tokenizer.py", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_a_replica_that_died_is_skipped (serve.test_replicas.ReplicaService.test_a_replica_that_died_is_skipped)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<checkout>\serve\test_replicas.py", line 302, in test_a_replica_that_died_is_skipped
+    self.start()
+  File "<checkout>\serve\test_replicas.py", line 175, in start
+    self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\server.py", line 3453, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<checkout>\tools\strata_tokenizer.py", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_engines_without_slots_run_one_each_at_once (serve.test_replicas.ReplicaService.test_engines_without_slots_run_one_each_at_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<checkout>\serve\test_replicas.py", line 287, in test_engines_without_slots_run_one_each_at_once
+    self.start(slots=0)
+  File "<checkout>\serve\test_replicas.py", line 175, in start
+    self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\server.py", line 3453, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<checkout>\tools\strata_tokenizer.py", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_metrics_and_status_see_all_slots (serve.test_replicas.ReplicaService.test_metrics_and_status_see_all_slots)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<checkout>\serve\test_replicas.py", line 224, in test_metrics_and_status_see_all_slots
+    self.start()
+  File "<checkout>\serve\test_replicas.py", line 175, in start
+    self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\server.py", line 3453, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<checkout>\tools\strata_tokenizer.py", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_requests_spread_over_both_and_answers_are_the_solo_answer (serve.test_replicas.ReplicaService.test_requests_spread_over_both_and_answers_are_the_solo_answer)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<checkout>\serve\test_replicas.py", line 215, in test_requests_spread_over_both_and_answers_are_the_solo_answer
+    self.start()
+  File "<checkout>\serve\test_replicas.py", line 175, in start
+    self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\server.py", line 3453, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<checkout>\tools\strata_tokenizer.py", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+======================================================================
+ERROR: test_terminal_telemetry_correlates_second_replica_without_global_sample_claim (serve.test_replicas.ReplicaService.test_terminal_telemetry_correlates_second_replica_without_global_sample_claim)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<checkout>\serve\test_replicas.py", line 232, in test_terminal_telemetry_correlates_second_replica_without_global_sample_claim
+    self.start()
+  File "<checkout>\serve\test_replicas.py", line 175, in start
+    self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\server.py", line 3453, in __init__
+    from strata_tokenizer import PromptEncoder
+  File "<checkout>\tools\strata_tokenizer.py", line 24, in <module>
+    import regex
+ModuleNotFoundError: No module named 'regex'
+
+----------------------------------------------------------------------
+Ran 19 tests in 1.274s
+
+FAILED (errors=6)

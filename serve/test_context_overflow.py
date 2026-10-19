@@ -85,6 +85,23 @@ class ContextOverflow(unittest.TestCase):
                         else:
                             self.assertEqual(set(error), {"type", "message"})
 
+    def test_default_service_shortens_an_overshooting_budget_in_every_dialect(self):
+        # the Service default (fit_max_tokens on): a prompt that fits is answered, streaming or not; the prompt that
+        # alone leaves no room is the 400 of the strict test above
+        self.assertTrue(Service(self.engine, ByteTokenizer(), self.svc.template).fit_max_tokens)
+        self.svc.fit_max_tokens = True
+        for path, key in APIS:
+            for stream in (False, True):
+                with self.subTest(path=path, stream=stream):
+                    if not stream:      # (a 200 stream is SSE, not the JSON post() reads)
+                        with mock.patch.object(self.engine, "generate", wraps=self.engine.generate) as generate:
+                            status, _, body = self.post(path, key, 1024, CTX, stream)
+                        self.assertEqual(status, 200, body)
+                        self.assertEqual(generate.call_args.args[1], CTX - CTX_SLACK - 1024)
+                    status, _, body = self.post(path, key, CTX - CTX_SLACK, CTX, stream)
+                    self.assertEqual(status, 400, body)
+                    self.assertIn("no room to answer", body["error"]["message"])
+
     def test_one_token_of_room_still_answers_but_zero_is_rejected(self):
         for path, key in APIS:
             for fit in (False, True):

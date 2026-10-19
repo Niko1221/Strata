@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -123,6 +124,53 @@ class Calibrate(unittest.TestCase):
     def test_defaults_kept_when_flat(self):
         res, _ = self.run_with(lambda f, p, w: 50.0)
         self.assertEqual(res["settings"], {})
+
+    def test_measure_reports_bounded_stages_and_stops_between_samples(self):
+        events = []
+        stopped = threading.Event()
+
+        def progress(stage, completed, total):
+            events.append((stage, completed, total))
+            if stage == "pcie_share" and completed == 1:
+                stopped.set()
+
+        with self.assertRaises(CAL.CalibrationCancelled):
+            CAL.measure(BASE, [[1, 2, 3]] * 3,
+                        lambda args: FakeEngine(args, lambda *_: 50.0),
+                        say=lambda *_: None, progress=progress, cancel_event=stopped)
+        self.assertIn(("loading", 1, 1), events)
+        self.assertIn(("pcie_share", 1, len(CAL.PCIE_FRACS) * CAL.SWEEP_ROUNDS), events)
+        self.assertNotIn("draft_floor", [stage for stage, _, _ in events])
+
+    def test_active_generation_receives_shared_cancel_event(self):
+        stopped = threading.Event()
+        seen = []
+
+        class Engine:
+            def generate(self, ids, max_new, sampling, cancel):
+                seen.append(cancel)
+                cancel.set()
+                yield None
+
+        session = CAL.Session(Engine(), [[1, 2, 3]], stopped)
+        with self.assertRaises(CAL.CalibrationCancelled):
+            session.rate()
+        self.assertEqual(seen, [stopped])
+
+    def test_successful_sweep_covers_every_progress_stage(self):
+        events = []
+        CAL.measure(BASE, [[1, 2, 3]] * 3,
+                    lambda args: FakeEngine(args, lambda *_: 50.0),
+                    say=lambda *_: None, progress=lambda *item: events.append(item))
+        stages = list(dict.fromkeys(stage for stage, _, _ in events))
+        self.assertEqual(stages, ["loading", "pcie_share", "draft_floor", "confirmation",
+                                  "cpu_workers", "expert_tier"])
+        for stage in stages:
+            readings = [(done, total) for current, done, total in events if current == stage]
+            self.assertEqual(readings[0][0], 0)
+            self.assertEqual(readings[-1][0], readings[-1][1])
+            self.assertTrue(all(before[0] <= after[0] and before[1] == after[1]
+                                for before, after in zip(readings, readings[1:])))
 
     def test_small_gain_is_noise(self):
         # 2% better at pcie 0.35: below MIN_GAIN, so the default stays

@@ -29,6 +29,7 @@
 
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/kernels/cpu/pool_plan.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -61,6 +62,9 @@ struct ExpertJobMulti {
     float* out[MAXT] = {};
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
+    /// 149-cold: this job's own layout (null: the layer's) - the GGUF read in place, where gate / up / down are three
+    /// tensors: `blob` is the gate rows and the offsets reach the expert's up and down rows in the mapping.
+    const NativeFmt* fmt = nullptr;
 };
 
 /// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
@@ -79,7 +83,21 @@ struct CpuTopology {
     std::vector<int> worker_cores;  ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
     int host_core = -1;             ///< Logical core reserved for host thread
     int host_sibling = -1;          ///< The host core's SMT sibling (-1: none), the logical processor `Sibling` takes
+    /// For the default worker count (pool_plan.hpp): the CPU package (socket) of each worker core (parallel to
+    /// `worker_cores`, -1: not known) and of the host core, the logical processors the process may use, whether the
+    /// OS told physical cores from SMT siblings, and the container's CPU quota (0: none).  On a multi-socket CPU the
+    /// host's package comes first in `worker_cores`.
+    std::vector<int> worker_package;
+    int host_package = -1;
+    int logical = 0;
+    bool layout_known = true;
+    double cpu_quota = 0;
 };
+
+/// The description plan_pool_workers() takes, from a detected topology.
+PoolPlanInput pool_plan_input(const CpuTopology& topo);
+/// The CPUs a container quota allows (cgroup v2 cpu.max / v1 cfs quota), 0 when none or not Linux.
+double container_cpu_quota();
 
 /// Which core the host thread - the layer loop that spins on the GPU's flags - takes when `skip_first` reserves one
 /// (--host-core first|last|sibling, STRATA_HOST_CORE).  `First` is the layout the pool has always used.  `Last`
@@ -162,6 +180,11 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    /// What bounded the default worker count (pool_plan.hpp; "" when a count was configured), the physical cores
+    /// and logical processors counted - for the start-up line.
+    const char* plan_limit() const { return plan_limit_; }
+    int plan_cores() const { return plan_cores_; }
+    int plan_logical() const { return plan_logical_; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
@@ -239,6 +262,9 @@ private:
     void publish();
 
     int n_ = 0;
+    const char* plan_limit_ = "";
+    int plan_cores_ = 0;
+    int plan_logical_ = 0;
     bool host_works_ = true;
     ExpertJob* jobs_ = nullptr;
     int njobs_ = 0;

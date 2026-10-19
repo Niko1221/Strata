@@ -3,6 +3,7 @@
 #
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
 #         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_PORTABLE=OFF]
+#         [-DSTRATA_VISION_HIP=ON -DSTRATA_VISION_HIP_ARCHS="gfx1200;gfx1201" + the HIP compiler the engine build uses]
 #   cmake --build build-vision --target strata-vision
 #
 # Portable (AVX2 baseline) is the default, so an encoder built without extra flags runs on any AVX2 PC: the 0.1.32
@@ -14,6 +15,14 @@ project(strata_vision C CXX)
 
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
+option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip); the program is named strata-vision-hip" OFF)
+set(STRATA_VISION_HIP_ARCHS "" CACHE STRING "the gfx architectures strata-vision-hip is compiled for (';'-separated)")
+if(STRATA_VISION_HIP AND STRATA_VISION_CUDA)
+  message(FATAL_ERROR "strata-vision: STRATA_VISION_CUDA and STRATA_VISION_HIP are two different programs")
+endif()
+if(STRATA_VISION_HIP AND NOT STRATA_VISION_HIP_ARCHS)
+  message(FATAL_ERROR "strata-vision: STRATA_VISION_HIP needs STRATA_VISION_HIP_ARCHS, for example \"gfx1200;gfx1201\"")
+endif()
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -52,6 +61,13 @@ else()
 endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
+set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
+if(STRATA_VISION_HIP)
+  # the engine's HIP build says the same (cmake/hip_backend.cmake); ggml-hip reads AMDGPU_TARGETS / CMAKE_HIP_ARCHITECTURES
+  set(AMDGPU_TARGETS "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
+  set(GPU_TARGETS "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
+  set(CMAKE_HIP_ARCHITECTURES "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
+endif()
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 
@@ -59,3 +75,32 @@ add_executable(strata-vision strata_vision.cpp)
 target_link_libraries(strata-vision PRIVATE mtmd llama)
 target_compile_features(strata-vision PRIVATE cxx_std_17)
 set_target_properties(strata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+if(STRATA_VISION_HIP)
+  # beside strata (and, in a component, the CPU reader "strata-vision"): the GPU reader is its own program, so a PC where
+  # the HIP runtime does not load still has the CPU one to fall back on
+  set_target_properties(strata-vision PROPERTIES OUTPUT_NAME strata-vision-hip)
+  string(REPLACE ";" "," _hip_archs "${STRATA_VISION_HIP_ARCHS}")
+  target_compile_definitions(strata-vision PRIVATE STRATA_VISION_HIP STRATA_VISION_HIP_ARCHS="${_hip_archs}")
+endif()
+if(WIN32 AND STRATA_VISION_HIP)
+  # hipblas.dll (and rocblas.dll behind it) live in rocm\bin of the engine package: loaded on first use, after main() has put that folder on
+  # the DLL search path, so the reader starts from any PATH and says "no GPU" itself where there is none
+  target_link_libraries(strata-vision PRIVATE delayimp)
+  target_link_options(strata-vision PRIVATE -Wl,/delayload:hipblas.dll)
+endif()
+if(UNIX AND NOT APPLE)
+  # the libraries it needs are the ones in its own folder (a component folder is relocatable): RUNPATH $ORIGIN
+  set_target_properties(strata-vision PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN")
+  target_link_options(strata-vision PRIVATE -Wl,--enable-new-dtags)
+endif()
+
+# opens a GGUF that has tensor types llama.cpp does not know (a Gyro quantization's TQK6 / TQK7) for its vocabulary only
+add_executable(strata-vision-gguf-test EXCLUDE_FROM_ALL gguf_meta_test.cpp)
+target_link_libraries(strata-vision-gguf-test PRIVATE llama)
+target_compile_features(strata-vision-gguf-test PRIVATE cxx_std_17)
+set_target_properties(strata-vision-gguf-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# the HIP reader's architecture check (gpu_arch.h), without a GPU
+add_executable(strata-vision-arch-test EXCLUDE_FROM_ALL gpu_arch_test.cpp)
+target_compile_features(strata-vision-arch-test PRIVATE cxx_std_17)
+set_target_properties(strata-vision-arch-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

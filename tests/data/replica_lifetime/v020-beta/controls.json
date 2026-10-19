@@ -1,0 +1,44 @@
+{
+  "status": "PASS",
+  "baseline": "3d1fb48090e8f2cefc22d7b5845fb7f5b71f33fa",
+  "rows": [
+    {
+      "name": "original",
+      "tests": 18,
+      "passed": 9,
+      "failures": [
+        "serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics",
+        "serve.test_replica_lifetime.ReplicaContracts.test_client_disconnect_drains_before_handoff",
+        "serve.test_replica_lifetime.ReplicaContracts.test_delayed_done_is_drained_without_fixed_sleep_workaround",
+        "serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock",
+        "serve.test_replica_lifetime.ReplicaContracts.test_drain_failure_is_error_and_bad_engine_is_not_reused",
+        "serve.test_replica_lifetime.ReplicaContracts.test_no_control_or_token_frame_crosses_requests",
+        "serve.test_replica_lifetime.ReplicaContracts.test_no_generation_starts_before_previous_ack",
+        "serve.test_replica_lifetime.ReplicaContracts.test_stop_string_like_early_close_drains_before_handoff",
+        "serve.test_replica_lifetime.ReplicaContracts.test_successor_receives_its_own_tokens_after_eos"
+      ],
+      "errors": [],
+      "source_sha256": "54aef2217788b5f6cd8f02ff08ac7968f477cd051c5e7de3648bfa4b35b4d225"
+    },
+    {
+      "name": "close_only",
+      "tests": 18,
+      "passed": 16,
+      "failures": [
+        "serve.test_replica_lifetime.RealPipeContracts.test_real_pipe_queued_successor_keeps_output_and_statistics",
+        "serve.test_replica_lifetime.ReplicaContracts.test_done_statistics_remain_request_owned_after_unlock"
+      ],
+      "errors": [],
+      "source_sha256": "37a8a5e0d231a69dba64c649d0b7909277aa13922cbf05d4ffe8f1a93a2a0cd8"
+    },
+    {
+      "name": "fixed",
+      "tests": 18,
+      "passed": 18,
+      "failures": [],
+      "errors": [],
+      "source_sha256": "6484e67ab1ed65a30b115645941b33a9f3845f98b1705ddad55629d130449696"
+    }
+  ],
+  "scope": "Original/close-only are intentional red controls. Real reader/pump, CPU fixtures, no GPU."
+}

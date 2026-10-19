@@ -390,13 +390,16 @@ class ReplicaEngine:
         if k < 0:
             raise EngineDied("no replica is running; this request was not sent")
         e = self.engines[k]
-        _ = self.last                         # initialize a stable before-DONE identity for this caller
+        _ = self.last
         self.tl.cur = e
         produced: list[int] = []
         held = False
         gen = None
         nonfinite = False
         try:
+            selected = getattr(cancel, "_strata_replica_selected", None)
+            if selected is not None:
+                selected(k)
             self.router.note(k, ids)
             if not int(getattr(e, "batch", 0) or 0):          # no slots: this replica takes one request at a time
                 lock = self.run_locks[k]
@@ -419,15 +422,15 @@ class ReplicaEngine:
         finally:
             try:
                 if gen is not None:
-                    gen.close()                 # settle native DONE before another request owns its pipe
+                    gen.close()
             finally:
                 if gen is not None and e.last is not native_before:
-                    self.tl.last = dict(e.last)      # snapshot under the pipe ownership lock
+                    self.tl.last = dict(e.last)
                 if held:
                     self.run_locks[k].release()
                 with self.lock:
                     self.inflight[k] -= 1
-                if nonfinite:
+                if nonfinite:                       # #879: the engine dropped every cached conversation
                     self.router.forget(k)
                 elif produced:
                     self.router.note(k, list(ids) + produced)

@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
@@ -137,14 +137,84 @@ class MaxTokens(unittest.TestCase):
                 self.assertEqual(self.engine.last_max_new, want)
                 self.assertEqual(ct, want)
 
-    def test_explicit_budget_over_the_context_is_rejected(self):
-        for api in ("openai", "anthropic"):
+    def responses(self, text="hi", **budget):
+        """-> (status, body, prompt tokens, completion tokens) for /v1/responses."""
+        s, b = self.post("/v1/responses", {"model": "m", "input": text, **budget})
+        u = b.get("usage", {}) if isinstance(b, dict) else {}
+        return s, b, u.get("input_tokens"), u.get("output_tokens")
+
+    def call_any(self, api, text="hi", **budget):
+        """The three dialects; `budget` is given in the chat/messages spelling (max_tokens)."""
+        if api == "responses":
+            if "max_tokens" in budget:
+                budget["max_output_tokens"] = budget.pop("max_tokens")
+            return self.responses(text, **budget)
+        return self.call(api, text, **budget)
+
+    def test_explicit_budget_over_the_context_is_shortened_to_the_room_left(self):
+        # Claude Code asks for max_tokens 32000 on every request: a prompt that fits must be answered, with the output
+        # cap cut to what the context has left (less CTX_SLACK), not refused.
+        for api in ("openai", "anthropic", "responses"):
             with self.subTest(api=api):
-                s, b, _, _ = self.call(api, max_tokens=CTX)
-                self.assertEqual(s, 400)
-                self.assertIn("exceeds the context", b["error"]["message"])
-                self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
-                self.assertRegex(b["error"]["message"], r"at most \d+ here")
+                s, b, pt, ct = self.call_any(api, max_tokens=CTX)
+                self.assertEqual(s, 200, b)
+                self.assertEqual(self.engine.last_max_new, CTX - CTX_SLACK - pt)
+                self.assertLessEqual(pt + ct, CTX - CTX_SLACK)
+
+    def test_budget_that_fits_exactly_or_less_is_untouched(self):
+        for api in ("openai", "anthropic", "responses"):
+            _, _, pt, _ = self.call_any(api, max_tokens=1)
+            room = CTX - CTX_SLACK - pt
+            for budget in (50, room):
+                with self.subTest(api=api, budget=budget):
+                    s, b, _, _ = self.call_any(api, max_tokens=budget)
+                    self.assertEqual(s, 200, b)
+                    self.assertEqual(self.engine.last_max_new, budget)       # exactly what the client asked for
+            with self.subTest(api=api, budget="room + 1"):
+                s, b, _, _ = self.call_any(api, max_tokens=room + 1)
+                self.assertEqual(s, 200, b)
+                self.assertEqual(self.engine.last_max_new, room)             # one over: cut by one
+
+    def test_a_prompt_that_alone_does_not_fit_is_still_a_400(self):
+        _, _, pt0, _ = self.call("openai", max_tokens=1)
+        overhead = pt0 - len("hi")
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                s, b, _, _ = self.call_any(api, text="y" * (CTX - overhead + 50), max_tokens=CTX)
+                self.assertEqual(s, 400, b)
+                self.assertIn("exceeds the context window", b["error"]["message"])
+                self.assertIn("no room to answer", b["error"]["message"])
+                self.assertIn("never truncated", b["error"]["message"])
+
+    def test_thinking_budget_follows_the_shortened_cap(self):
+        # answer_room: thinking gets 3/4 of the cap; with the cap cut to the room left the budget is cut with it
+        import contextlib
+        import io
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    s, b, pt, _ = self.call_any(api, max_tokens=CTX)
+                self.assertEqual(s, 200, b)
+                room = CTX - CTX_SLACK - pt
+                text = out.getvalue()
+                self.assertIn(f"shortened to {room}", text)
+                if api != "anthropic":          # Anthropic thinks only when asked (#278)
+                    cap = room - min(max(ANSWER_RESERVE_MIN, room // 4), room // 2)
+                    self.assertIn(f"thinking limited to {cap} of max_tokens {room}", text)
+
+    def test_strict_mode_keeps_the_llama_cpp_400(self):
+        self.svc.fit_max_tokens = False
+        try:
+            for api in ("openai", "anthropic", "responses"):
+                with self.subTest(api=api):
+                    s, b, _, _ = self.call_any(api, max_tokens=CTX)
+                    self.assertEqual(s, 400)
+                    self.assertIn("exceeds the context", b["error"]["message"])
+                    self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
+                    self.assertRegex(b["error"]["message"], r"at most \d+ here")
+        finally:
+            self.svc.fit_max_tokens = True
 
     def test_unset_budget_with_a_near_full_prompt(self):
         _, _, pt0, _ = self.call("openai", max_tokens=1)
@@ -5532,7 +5602,7 @@ class VisionArgs(unittest.TestCase):
             seen.append(args)
             return Proc()
 
-        with mock.patch.object(server.subprocess, "Popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server.subprocess, "Popen", popen):
             server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
         return seen[0]
 
@@ -5648,7 +5718,7 @@ class LazyVision(unittest.TestCase):
             started.append(p)
             return p
 
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             v = server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf"}, lazy=True)
             self.addCleanup(lambda: shutil.rmtree(v.dir, ignore_errors=True))
             return v, started, popen
@@ -5661,7 +5731,7 @@ class LazyVision(unittest.TestCase):
     def test_restart_starts_it_and_close_ends_it(self):
         import serve.server as server
         v, started, popen = self.make()
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             v.restart()
         self.assertTrue(v.alive())
         self.assertEqual(len(started), 1)
@@ -5683,7 +5753,7 @@ class LazyVision(unittest.TestCase):
                     return 0
             started.append(P)
             return P()
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             with self.assertRaises(RuntimeError):
                 v.restart()
         self.assertTrue(started[-1].killed)
@@ -5891,7 +5961,7 @@ class UntimedReads(unittest.TestCase):
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))
         try:
-            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "contain"),                     mock.patch.object(server, "VISION_READY_S", 0.3):
+            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "VISION_READY_S", 0.3):
                 with self.assertRaises(RuntimeError) as cm:
                     v._start()
             self.assertIn("did not start", str(cm.exception))

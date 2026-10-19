@@ -1,0 +1,21 @@
+test_replicas (unittest.loader._FailedTest.test_replicas) ... ERROR
+
+======================================================================
+ERROR: test_replicas (unittest.loader._FailedTest.test_replicas)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_replicas
+Traceback (most recent call last):
+  File "<home>\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\unittest\loader.py", line 137, in loadTestsFromName
+    module = __import__(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "<checkout>\serve\test_replicas.py", line 16, in <module>
+    from serve.test_parallel import FAKE_BATCH
+  File "<checkout>\serve\test_parallel.py", line 20, in <module>
+    from strata_cli import bench
+ModuleNotFoundError: No module named 'strata_cli'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+FAILED (errors=1)
