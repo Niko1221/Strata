@@ -18,6 +18,8 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         // and does nothing (measured: with and without it identical, 0.0 to +0.1%).
         // STRATA_GDN_CONVL2 is AMD-only on purpose: it is not bitwise on CUDA 13.3 sm_120 (#1522), and this table is never
         // consulted by a CUDA build.
+        // STRATA_HIP_WMMA is NOT in this process-wide environment table: hip_wmma_usable() resolves the Linux gfx12 default
+        // per device (kGfx12PromptDefaultsOn) so Windows gfx12 and mixed-GPU gfx11 stages stay opt-in.
         const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
         if (off12 != nullptr && off12[0] == '0') return t;
         t = {

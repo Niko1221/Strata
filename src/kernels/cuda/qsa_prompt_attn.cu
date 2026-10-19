@@ -1936,11 +1936,57 @@ __device__ __forceinline__ wf8 wmma_f16(wh8 a, wh8 b, wf8 c) {
 #endif
 }
 
+// Workgroup barrier for LDS-only synchronization inside prompt_attn_wmma_kernel.
+// On RDNA4 (gfx12), __syncthreads() emits s_wait_loadcnt_dscnt 0x0 + global_inv scope:SCOPE_SE, which stalls in-flight
+// global loads and flushes the Shader Engine L0 vector cache twice per 32-cell chunk even though all global accesses in
+// the chunk loop are read-only and shared across neighboring query blocks.
+__device__ __forceinline__ void pa_sync_lds() {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    asm volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#elif STRATA_PA_GFX11
+    asm volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#else
+    __syncthreads();
+#endif
+}
+
 __device__ __forceinline__ wh8 i8_to_h(const uint32_t* x) {   // PA_KL codes, exact: |code| <= 128
     wh8 h;
 #pragma unroll
     for (int i = 0; i < PA_KL; ++i) h[i] = (_Float16) (int) (int8_t) (x[i / 4] >> (8 * (i % 4)));
     return h;
+}
+
+// 4x4 byte transpose across the 4 lanes (s = 0..3) of a hardware DPP quad: lane s enters with the 4 dims (4m..4m+3) of
+// cell cb + s and leaves with the 4 cells (cb..cb+3) of dim 4m + s. Turns 4 scalar ds_load_i8 loads per lane into 1
+// ds_load_b32 load per lane on both RDNA3 (gfx11) and RDNA4 (gfx12).
+__device__ __forceinline__ uint32_t dpp_tr4(uint32_t w, uint32_t sel1, uint32_t sel2) {
+#if STRATA_PA_WMMA
+    const uint32_t wn = __builtin_amdgcn_mov_dpp(w, 0xb1, 0xf, 0xf, true);   // quad_perm:[1,0,3,2]
+    const uint32_t t = __builtin_amdgcn_perm(wn, w, sel1);
+    const uint32_t tn = __builtin_amdgcn_mov_dpp(t, 0x4e, 0xf, 0xf, true);   // quad_perm:[2,3,0,1]
+    return __builtin_amdgcn_perm(tn, t, sel2);
+#else
+    (void) sel1; (void) sel2;
+    return w;
+#endif
+}
+
+// VALU wave32 XOR butterfly shuffles on RDNA3/RDNA4 (DPP quad_perm for 1/2, permlane16 for 4/8, permlanex16 for 16).
+// Avoids ds_bpermute_b32, which goes through the LDS pipe and increments dscnt/lgkmcnt, stalling in-flight LDS loads.
+__device__ __forceinline__ uint32_t pa_xor_u32(uint32_t x, int mask) {
+#if STRATA_PA_WMMA
+    if (mask == 1) return __builtin_amdgcn_mov_dpp(x, 0xb1, 0xf, 0xf, true);
+    if (mask == 2) return __builtin_amdgcn_mov_dpp(x, 0x4e, 0xf, 0xf, true);
+    if (mask == 4) return __builtin_amdgcn_permlane16(x, x, 0x32107654u, 0xba98fedcu, true, false);
+    if (mask == 8) return __builtin_amdgcn_permlane16(x, x, 0xfedcba98u, 0x76543210u, true, false);
+    if (mask == 16) return __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xfedcba98u, true, false);
+#endif
+    return __shfl_xor_sync(0xffffffffu, x, mask);
+}
+
+__device__ __forceinline__ float pa_xor_f32(float x, int mask) {
+    return __uint_as_float(pa_xor_u32(__float_as_uint(x), mask));
 }
 
 // SPLIT = true (default): q and p carried as FP16 hi + lo pairs (two WMMAs each: FP32-level). S23 (opt-in
@@ -1962,15 +2008,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int col = lane & 15, half = lane >> 4;   // fragment column / k half
+    const int qm4 = col & ~3, qs4 = col & 3;       // DPP quad base dim (0, 4, 8, 12) and lane-in-quad (0..3)
+    const uint32_t tr_sel1 = (qs4 & 1) ? 0x03070105u : 0x06020400u;
+    const uint32_t tr_sel2 = (qs4 & 2) ? 0x03020706u : 0x05040100u;
     const int dim0 = warp * 64;
 
     float qm = 0.0f;
     for (int i = t; i < G * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
+    for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, pa_xor_f32(qm, o));
     if (lane == 0) S.qmax[warp] = qm;
     if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
-    __syncthreads();
+    pa_sync_lds();
     qm = fmaxf(fmaxf(S.qmax[0], S.qmax[1]), fmaxf(S.qmax[2], S.qmax[3]));
     int qe = 0;
     if (qm > 0.0f) frexpf(qm, &qe);
@@ -2018,33 +2067,42 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         return r;
     };
     // a chunk's global reads: this wave's V slice (64 bytes of each row) and V scale, and the K fragments (8 or 16
-    // consecutive codes per lane) and K scales of its two 16-cell tiles
+    // consecutive codes per lane) and K scales of its two 16-cell tiles. Scales stay raw uint16_t until consumed so
+    // LLVM does not insert v_cvt_f32_f16 + s_wait_loadcnt 0x0 inside the conditional global-load blocks.
     struct Chunk {
         long long row;
         uint4 v[4];
-        float vsc, ksc[2];
+        uint16_t vsc_u16, ksc_u16[2];
         uint32_t kx[2][4][PA_KL / 4];
+    };
+    // Prevent LLVM from hoisting half->float scale conversion into the conditional global-load blocks (which would
+    // force an early s_wait_loadcnt before the remaining global loads of the chunk are issued).
+    auto u16_scale = [](uint16_t u) -> float {
+#if defined(__AMDGCN__)
+        asm volatile("" : "+v"(u));
+#endif
+        return __half2float(__ushort_as_half(u));
     };
     auto fetch = [&](long long row, Chunk& d) {
         d.row = row;
-        d.v[0] = d.v[1] = d.v[2] = d.v[3] = make_uint4(0, 0, 0, 0);
-        d.vsc = 0.0f;
-        if (row >= 0) {
-            const uint4* src = reinterpret_cast<const uint4*>(p.v_q + row * HD + dim0);
-            d.v[0] = __ldg(src); d.v[1] = __ldg(src + 1); d.v[2] = __ldg(src + 2); d.v[3] = __ldg(src + 3);
-            d.vsc = __half2float(__ushort_as_half(__ldg(p.v_scale + row * (HD / KV_Q8_GROUP) + warp)));
-        }
+        const uint32_t r_lo = (uint32_t) row, r_hi = (uint32_t) ((unsigned long long) row >> 32);
+        const uint32_t rx_lo = pa_xor_u32(r_lo, 16), rx_hi = pa_xor_u32(r_hi, 16);
+        const long long row_x16 = (long long) ((unsigned long long) rx_lo | ((unsigned long long) rx_hi << 32));
+        // Issue K tiles first (consumed immediately by q.k WMMAs) and V last (consumed only after q.k + softmax)
+        // so the FIFO VMEM counter (loadcnt/vmcnt) lets q.k WMMAs run while V is still in flight.
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
-            const long long rr = __shfl(row, nt * 16 + col);
-            d.ksc[nt] = 0.0f;
-            if (rr >= 0) d.ksc[nt] = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
+            const long long rr = (half == nt) ? row : row_x16;
+            d.ksc_u16[nt] = 0;
 #pragma unroll
-            for (int kk = 0; kk < 4; ++kk) {
+            for (int kk = 0; kk < 4; ++kk)
 #pragma unroll
                 for (int i = 0; i < PA_KL / 4; ++i) d.kx[nt][kk][i] = 0;
-                if (rr >= 0) {
-                    const uint32_t* src = reinterpret_cast<const uint32_t*>(p.k_q + rr * HD + dim0 + kk * 16 + PA_KOFF(half));
+            if (rr >= 0) {
+                const int8_t* kbase = p.k_q + rr * HD + dim0 + PA_KOFF(half);
+#pragma unroll
+                for (int kk = 0; kk < 4; ++kk) {
+                    const uint32_t* src = reinterpret_cast<const uint32_t*>(kbase + kk * 16);
 #if STRATA_PA_GFX11
                     const uint4 v = __ldg(reinterpret_cast<const uint4*>(src));
                     d.kx[nt][kk][0] = v.x; d.kx[nt][kk][1] = v.y; d.kx[nt][kk][2] = v.z; d.kx[nt][kk][3] = v.w;
@@ -2053,17 +2111,19 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                     d.kx[nt][kk][0] = v.x; d.kx[nt][kk][1] = v.y;
 #endif
                 }
+                d.ksc_u16[nt] = __ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp);
             }
+        }
+        d.v[0] = d.v[1] = d.v[2] = d.v[3] = make_uint4(0, 0, 0, 0);
+        d.vsc_u16 = 0;
+        if (row >= 0) {
+            const uint4* src = reinterpret_cast<const uint4*>(p.v_q + row * HD + dim0);
+            d.v[0] = __ldg(src); d.v[1] = __ldg(src + 1); d.v[2] = __ldg(src + 2); d.v[3] = __ldg(src + 3);
+            d.vsc_u16 = __ldg(p.v_scale + row * (HD / KV_Q8_GROUP) + warp);
         }
     };
     auto chunk = [&](const Chunk& cd) {
-        // stage this wave's V slice and scale
-        {
-            uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
-            dst[0] = cd.v[0]; dst[1] = cd.v[1]; dst[2] = cd.v[2]; dst[3] = cd.v[3];
-            S.vs[warp][lane] = cd.vsc;
-            if (warp == 0) S.valid[lane] = cd.row >= 0;
-        }
+        if (warp == 0) S.valid[lane] = cd.row >= 0;
         // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
 #pragma unroll
         for (int nt = 0; nt < 2; ++nt) {
@@ -2074,10 +2134,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                 s = wmma_f16(qh[kk], b, s);
                 if constexpr (SPLIT) s = wmma_f16(ql[kk], b, s);
             }
+            const float ksc = u16_scale(cd.ksc_u16[nt]);
 #pragma unroll
-            for (int i = 0; i < 8; ++i) S.part[warp][PA_ROW(i, half)][nt * 16 + col] = s[i] * cd.ksc[nt];
+            for (int i = 0; i < 8; ++i) S.part[warp][PA_ROW(i, half)][nt * 16 + col] = s[i] * ksc;
         }
-        __syncthreads();
+        // stage this wave's V slice and scale after q.k WMMAs so V global loads overlap with q.k compute
+        const float vsc = u16_scale(cd.vsc_u16);
+        {
+            uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
+            dst[0] = cd.v[0]; dst[1] = cd.v[1]; dst[2] = cd.v[2]; dst[3] = cd.v[3];
+            S.vs[warp][lane] = vsc;
+        }
+        pa_sync_lds();
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
         {
             const int r = t >> 3, sub = t & 7;
@@ -2085,37 +2153,38 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
                 const int c = sub * 4 + j;
+                const int vld = S.valid[c];
+                const float sp = (((S.part[0][r][c] + S.part[1][r][c]) + S.part[2][r][c]) + S.part[3][r][c]) * qdown;
                 // past the selection, or a masked cell (non-resident page, as in the decode kernel): no weight
-                x[j] = S.valid[c] ? (((S.part[0][r][c] + S.part[1][r][c]) + S.part[2][r][c]) + S.part[3][r][c]) * qdown
-                                  : -INFINITY;
+                x[j] = vld ? sp : -INFINITY;
                 mx = fmaxf(mx, x[j]);
             }
 #pragma unroll
-            for (int o = 1; o < 8; o <<= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+            for (int o = 1; o < 8; o <<= 1) mx = fmaxf(mx, pa_xor_f32(mx, o));
             const float m_old = S.mrow[r];
             const float m_new = fmaxf(m_old, mx);
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
-                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
+                const float e = exp2f(x[j] == -INFINITY ? -INFINITY : x[j] - m_new);
                 S.p[r][sub * 4 + j] = e;
                 sum += e;
             }
 #pragma unroll
-            for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            for (int o = 1; o < 8; o <<= 1) sum += pa_xor_f32(sum, o);
             if (sub == 0) {
-                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
+                const float a = exp2f(m_old == -INFINITY ? -INFINITY : m_old - m_new);
                 S.alpha[r] = a;
                 S.lsum[r] = fmaf(S.lsum[r], a, sum);
                 S.mrow[r] = m_new;
             }
         }
-        __syncthreads();
+        pa_sync_lds();
         // p.v over this wave's 64 dims: 4 tiles of 16 dims, 2 k-steps of 16 cells
         {
-            float vmax = S.vs[warp][lane];
+            float vmax = vsc;
 #pragma unroll
-            for (int o = 16; o > 0; o >>= 1) vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
+            for (int o = 16; o > 0; o >>= 1) vmax = fmaxf(vmax, pa_xor_f32(vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
             wf8 tmp[4];
 #pragma unroll
@@ -2133,10 +2202,13 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                 }
 #pragma unroll
                 for (int j = 0; j < 4; ++j) {
-                    const int d = j * 16 + col;
-                    wh8 b;
+                    uint32_t vx[PA_KL / 4];
 #pragma unroll
-                    for (int i = 0; i < PA_KL; ++i) b[i] = (_Float16) (int) (int8_t) S.v[warp][cb + i][d];
+                    for (int q4 = 0; q4 < PA_KL / 4; ++q4) {
+                        const uint32_t w = *reinterpret_cast<const uint32_t*>(&S.v[warp][cb + 4 * q4 + qs4][j * 16 + qm4]);
+                        vx[q4] = dpp_tr4(w, tr_sel1, tr_sel2);
+                    }
+                    const wh8 b = i8_to_h(vx);
                     tmp[j] = wmma_f16(ah, b, tmp[j]);
                     if constexpr (SPLIT) tmp[j] = wmma_f16(al, b, tmp[j]);
                 }
