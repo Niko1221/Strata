@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -219,6 +220,51 @@ class Span(unittest.TestCase):
         self.assertIsNone(logprob_span("x{}", "{}", self.entries("x{", "}")))         # no boundary at the start
         self.assertIsNone(logprob_span("{} ", "{}", self.entries("{", "} ")))         # none at the end
         self.assertIsNone(logprob_span("{}", "{}", self.entries("{")))                # the tokens do not spell it
+
+
+class ReplicaLp(LpEngine):
+    def alive(self):                     # ReplicaEngine routes only to a replica that is up
+        return True
+
+
+class Replicas(unittest.TestCase):
+    """Replicas without batch slots read logprobs as one engine does; the 400 for longer replies is only for real
+    batch slots ("parallel"), which ReplicaEngine.batch (one per replica without slots) does not tell apart."""
+
+    def post(self, engines, max_tokens):
+        from serve.replicas import ReplicaEngine
+        tok = Tokenizer()
+        svc = Service(ReplicaEngine(engines), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        try:
+            body = {"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": max_tokens,
+                    "chat_template_kwargs": {"enable_thinking": False}, "logprobs": True, "top_logprobs": 1}
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions",
+                                         json.dumps(body).encode(), {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                with e:
+                    return e.code, json.loads(e.read().decode())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_replicas_without_slots_keep_longer_replies(self):
+        tok = Tokenizer()
+        code, out = self.post([ReplicaLp(tok, "Café costs €5."), ReplicaLp(tok, "Café costs €5.")], 200)
+        self.assertEqual(code, 200)
+        self.assertEqual(out["choices"][0]["message"]["content"], "Café costs €5.")
+        self.assertTrue(out["choices"][0]["logprobs"]["content"])
+
+    def test_a_replica_with_slots_gets_the_400(self):
+        tok = Tokenizer()
+        slots = ReplicaLp(tok, "x")
+        slots.batch = 2
+        code, out = self.post([ReplicaLp(tok, "x"), slots], 200)
+        self.assertEqual(code, 400)
+        self.assertIn("max_tokens 1", out["error"]["message"])
 
 
 if __name__ == "__main__":

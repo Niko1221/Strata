@@ -1394,6 +1394,11 @@ tokens, joined, spell the reply. With thinking on, the thinking's tokens are und
 spell it, the JSON inside a ```` ```json ```` fence included; otherwise the canonical JSON without `logprobs`.
 Measured on a Radeon 8060S (Windows, UD-IQ4_XS, `--spec 4 --mtp`, a greedy 255-token answer): the same text with
 and without `logprobs`, 38.2 and 38.4 tok/s.
+With `"parallel"` (batch slots), `logprobs` works for one-token replies (`"max_tokens": 1`, a typed decision: its
+token comes on the engine's control lines with its `LP` line); a longer reply is a `400`, since a slot's later tokens
+carry no `LP` lines. Replicas without `"parallel"` are not limited. Measured by @karls0r on 2x RTX 3090 (CUDA,
+`"parallel": 2`, `--batch-groups 2`): 109 decisions, one and two at a time, every reply with `logprobs`, the
+probabilities a mean 0.007 (at most 0.08) from the run without `"parallel"`.
 
 **Batch MTP on a layer split (`--batch-mtp`).** Our measurement on 2x R9700 with all experts in VRAM: 80.2 -> 62.7 tok/s (-21.9%, 0/5 pairs faster) against the pipelined default, so it pays only when the experts do not all fit in VRAM (docs/BATCHING.md).
 

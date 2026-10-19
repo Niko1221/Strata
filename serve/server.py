@@ -4938,6 +4938,12 @@ def top_logprobs(req: dict):
     return None
 
 
+def batch_slots_on(engine) -> bool:
+    """Does the engine, or any of its replicas, run batch slots ("parallel")?  ReplicaEngine.batch counts a replica
+    without slots as one (its share of the requests), so with replicas each one's own engine is asked."""
+    return any(int(getattr(e, "batch", 0) or 0) for e in (getattr(engine, "engines", None) or [engine]))
+
+
 class LogprobEntries:
     """The engine's LP lines as OpenAI's logprobs.content entries.  Each token's "token" is the text it completes
     (an incremental UTF-8 decode, as the reply's text is made), so a character split across tokens is in the token
@@ -6130,7 +6136,7 @@ def make_handler(svc: Service):
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
-            if top_logprobs(req) is not None and getattr(svc.engine, "batch", 0) and max_req != 1:
+            if top_logprobs(req) is not None and batch_slots_on(svc.engine) and max_req != 1:
                 # a batch slot's BT lines carry no LP lines: past its first token a request would get partial or
                 # misplaced entries.  One token (a typed decision) is read on the control lines and has its LP line.
                 raise ValueError('logprobs: with "parallel" (batch slots) only for max_tokens 1; '
