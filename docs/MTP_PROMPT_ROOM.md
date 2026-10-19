@@ -5,9 +5,11 @@ only while tokens are **generated**: `record_rest` is their only reader. A promp
 (`record_front`, in both prefill captures) and the prompt path's `Prefill::draft_kv` - run the layer's dense tensors and
 its K/V state, and never touch the 512 expert blobs.
 
-With `STRATA_MTP_ROOM_MIN=TOKENS`, a prompt of at least TOKENS tokens (0: every prompt) takes those bytes for as long
-as it is read: the prompt path's ring is **pointed at the block itself**, and the decode's own bytes are copied back
-into it before the first generated token. The block never leaves VRAM and never moves.
+With `STRATA_MTP_ROOM_MIN=TOKENS`, a request that **reads** at least TOKENS prompt tokens (0: every request) takes
+those bytes for as long as it is read: the prompt path's ring is **pointed at the block itself**, and the decode's own
+bytes are copied back into it before the first generated token. The block never leaves VRAM and never moves. TOKENS
+counts the tokens this request reads, not the whole prompt: an agent turn that sends a 50,000-token conversation and
+reuses 49,900 of it reads 100 tokens, and the room has nothing to buy there.
 
 Unset (the default), nothing of this runs and the prompt path is laid out exactly as it was.
 
@@ -29,16 +31,22 @@ and the decode ran unchanged - and it bought no time at the prompt sizes tried, 
 there. The numbers below are from its first shape, which laid the prompt path out again around the block and so cost
 3.4 to 4.0 s per roomed request; the shape described here lends the block **in place** and has no rebuild at all.
 
+**Reported on an 8 GB RTX 2060 SUPER by merbanan** (on the pull request, ported onto a 0.1.45-based branch; not run by
+us): there the ring *was* the limit, and the room was worth **+17% prompt tokens/s at 4K, +17% at 16K and +23% at
+32K**, with decode unchanged and the first-token logits bitwise equal to the unset run. The report is under
+[Measuring it](#measuring-it).
+
 ## What it does
 
 1. **At start**, `STRATA_MTP_ROOM_MIN` is read once. The room is `experts_bytes / max_blob` ring slots (135 on a Q8_0
-   pack, whose largest blob is 4.98 MiB, for 512 experts of 1,382,400 bytes each). The engine prints the token
+   pack, whose largest blob is 4.98 MiB, for 512 experts of 1,382,400 bytes each). The engine prints the read-token
    threshold, the MiB, the slots and the card.
 2. **The prompt path on the drafter's card is given those bytes** (`Prefill::set_ring_room_base`): slot `i` of the room
    is `experts + (i - rule) * max_blob`, so a slot IS a part of the drafter's block. Nothing is allocated, nothing
    spills and the room costs **no VRAM of its own** - the layout holds it for the engine's life, and the loan, the
    cache and `relayout` are untouched by it.
-3. **Per request**, if the prompt has at least TOKENS tokens:
+3. **Per request**, if the request reads at least TOKENS tokens (the prompt minus the prefix a cached conversation
+   reuses):
    1. The drafter's stream is synchronized, its streamed chain waited for, and the 512 blobs are copied into a pinned
       host buffer (taken once and kept: the room opens and closes around every long prompt, and a second read of the
       675 MiB `experts.bin` per prompt is what that avoids).
@@ -61,10 +69,12 @@ other buffer of a chunk is inside the region `bytes_needed` sized for it. A room
 
 ## Costs
 
-- 708 MB of pinned host memory (taken once, at the first roomed prompt).
+- 708 MB of pinned host memory (taken once, at the first roomed prompt; on a host with 40 GiB already page-locked,
+  merbanan reported the first `cudaHostAlloc` taking 24.4 s, which a later request does not pay again).
 - 708 MB over the PCIe link each way per roomed request, and nothing else: no layout, no allocation, no graph.
 - No VRAM of its own: the room is the drafter's bytes, which are already resident.
-- Prompts below the threshold, every decode, and every other part of the engine are untouched.
+- Requests that read less than the threshold (an agent turn reusing most of its conversation), every decode, and every
+  other part of the engine are untouched.
 
 ## Limits
 
@@ -74,8 +84,10 @@ other buffer of a chunk is inside the region `bytes_needed` sized for it. A room
 - `--pipeline-windows` is fine: the room closes before the request's first window.
 - `--prefill-head-alias` is fine: the head's rebuild lays the path out with the room already in it, and the two are put
   back independently (the room before the first window, the head with its own `head_restore`).
-- Measured on the Q8_0 4-way rig only, at 3,080 and 14,859 tokens, and on the shape that still rebuilt the prompt
-  path; there the ring was not the limit, so the room bought nothing and its rebuild was what the request paid. See
+- Measured on the Q8_0 4-way rig, at 3,080 and 14,859 tokens, and on the shape that still rebuilt the prompt path;
+  there the ring was not the limit, so the room bought nothing and its rebuild was what the request paid. Reported by
+  merbanan on an 8 GB RTX 2060 SUPER, where the ring was the limit: +17% / +17% / +23% at 4K / 16K / 32K. The in-place
+  shape and the threshold that counts the tokens a request reads have not been run on our hardware. See
   [Measuring it](#measuring-it).
 
 ## Measuring it
@@ -84,25 +96,27 @@ The env var is the A/B switch, so two fresh engines with the same prompt do it (
 [docs/COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md) asks for):
 
 ```sh
-STRATA_MTP_ROOM_MIN=0  <engine and args>    # every prompt takes the room
+STRATA_MTP_ROOM_MIN=0  <engine and args>    # every request takes the room
 <engine and args>                           # standing behaviour (the variable unset)
 ```
 
 What to read:
 
-- The startup line `STRATA_MTP_ROOM_MIN=...: a prompt of ... tokens or more points the prompt path's ring on CUDA... at
-  the drafter's ... MiB of experts (N slots past its own)` — N is what the ring gained.
-- `strata serve: prompt room: ... tokens, the prompt path's ring is the drafter's ... MiB (N slots past its own, lent
-  in X ms)` — X is the snapshot's DMA, the whole cost of opening the room now that nothing is laid out again.
+- The startup line `STRATA_MTP_ROOM_MIN=...: a request that reads ... prompt tokens or more points the prompt path's
+  ring on CUDA... at the drafter's ... MiB of experts (N slots past its own)` — N is what the ring gained.
+- `strata serve: prompt room: ... tokens to read, the prompt path's ring is the drafter's ... MiB (N slots past its
+  own, lent in X ms)` — X is the snapshot's DMA, the whole cost of opening the room now that nothing is laid out again.
+  The count is the request's, not the whole prompt: compare it with the `RESUME` line.
 - `strata serve: prompt room (prompt done): the drafter's experts are the decode's again in X ms` — the second DMA.
 - The prompt's own time (the `prompt done` line and the `prefill` tokens/s the API reports; the engine's `prompt ...
   read in` line covers the room's close too) and, for the same requests, decode tokens/s (which should not move) and
   the free VRAM while decoding.
 - `strata mtp draft timing`, and that **no** `round/step graphs are dropped` line appears: the block cannot move.
 
-A prompt where the ring is not the limit (an agent's tool output of a few thousand tokens on a card whose cache holds
-most experts) should show the two DMAs and no gain; a long prompt on a card that streams nearly every expert is where
-the ring has been worth its bytes before.
+An agent turn that reuses most of its prompt (say 50,000 tokens sent, 49,900 reused, 100 read) skips the room at
+`STRATA_MTP_ROOM_MIN=1024`, which is what counting the tokens read is for. A request that reads a few thousand new
+tokens on a card whose cache holds most experts should show the two DMAs and no gain; a long cold read on a card that
+streams nearly every expert is where the ring has been worth its bytes.
 
 ### Measured: Q8_0 4-way, 2026-10-16
 
@@ -141,6 +155,38 @@ each other). In the shape this page describes, that graph drop cannot happen: th
 
 This is the shape the Maya checkout implemented too: the room moves the ring, and on a machine where the ring is not
 the limit, that is all it moves.
+
+### Measured: RTX 2060 SUPER 8 GB, reported 2026-10-18
+
+**What it was measured on.** Reported by **merbanan** on the pull request, on a port of this PR onto a 0.1.45-based
+branch; the maintainers have not run this shape on this card. RTX 2060 SUPER 8 GB (sm_75), PCIe 3.0 x8, Ryzen 9
+3900X, 92 GB RAM, Qwen3.8-Flash-Next IQ3_XXS, `--serve --mtp` (Q2_0 drafter, 675 MiB of experts),
+`--resident-budget-gib 40` (fully page-locked), `--kv k8v4 --kv-resident 20480`, `--prefill auto`. The auto scan's
+chunk was 6,656 tokens with a **96-slot ring**; the room adds **303 slots** (399 in all) and the chunk stays 6,656.
+
+The ring was the limit on this card. `STRATA_PREFILL_RING` alone, paired A/B with 3 pairs against the 96-slot default
+(prompt tok/s): 48 slots gave -6.3% / -3.4% / -4.6% at 4K / 16K / 32K; 192 slots gave +9.8% / +6.2% / +2.3% at the same
+sizes, with decode -3.1 to -3.6 tok/s. Taking ring slots from the expert cache also shrinks the auto chunk
+(6,656 -> 5,632) and costs decode after short prompts; the room gets the ring without either cost.
+
+`STRATA_MTP_ROOM_MIN=0` against the same build unset (paired A/B, 3 pairs, prompt tok/s / decode tok/s):
+
+| prompt | unset | room | paired difference (prompt) | decode |
+|---|---|---|---|---|
+| 4K | 448.4 | 527.2 | +75.8 (+17%) | -0.27 (noise) |
+| 16K | 558.9 | 658.1 | +94.4 (+17%) | +1.42 (noise) |
+| 32K | 584.0 | 719.7 | +135.7 (+23%) | -0.17 (noise) |
+
+The lend cost 107 ms per roomed request. The first roomed request after a start paid 24.4 s once, for the 708 MB
+`cudaHostAlloc` with 40 GiB already page-locked; later requests did not pay it. The first-token logits after a
+15,521-token prompt were **bitwise equal** to the unset run (two runs per arm, all four identical), the 48-token
+greedy replies matched, and the drafter's acceptance after the room was given back was normal (27 of 34), so
+`experts_reclaim` restores the bytes intact. `STRATA_PREFILL_KEEP=64` (#2833) on top of the room changed nothing on
+this card: the chunk stayed 6,656 and the result was +78.2 / +92.0 / +134.9.
+
+What this report does not cover: the in-place shape on our rigs, HIP/SYCL, `--prefill-head-alias`, or a threshold
+other than `0`. The threshold that counts the tokens a request reads (below) was added after this report and has not
+been measured; `=0` keeps every request roomed, as measured here.
 
 ## Where this comes from
 

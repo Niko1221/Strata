@@ -8156,24 +8156,26 @@ int main(int argc, char** argv) {
                                  "%lld MiB free\n",
                          (long long) o.prefill_chunk, (long long) (borrow_bytes >> 20), (long long) (free_b >> 20));
         }
-        // STRATA_MTP_ROOM_MIN=TOKENS (opt-in): a prompt of at least TOKENS tokens (0: every prompt) points the
-        // prompt path's ring AT the MTP drafter's 512 routed experts - 708 MB that only the DECODE reads
+        // STRATA_MTP_ROOM_MIN=TOKENS (opt-in): a request that READS at least TOKENS prompt tokens (0: every request)
+        // points the prompt path's ring AT the MTP drafter's 512 routed experts - 708 MB that only the DECODE reads
         // (record_rest; the prompt's own passes, record_front's K/V and the prompt path's Prefill::draft_kv, run the
         // layer's dense tensors and its K/V) - for as long as the prompt is read.  The block is lent IN PLACE: it is
         // never freed, never allocated again and never moves, so no prompt path is laid out again, the decode's
         // captured graphs stay valid (nothing is dropped), and what comes back before the first window is the
-        // decode's own bytes (MtpDrafter::experts_reclaim).  Unset (the default): not one line below runs, and the
-        // prompt path is laid out exactly as before.
+        // decode's own bytes (MtpDrafter::experts_reclaim).  TOKENS counts the tokens this request reads, not the
+        // whole prompt: a turn that reuses a cached conversation prefix and reads a few hundred tokens gains nothing
+        // from the room and does not take it.  Unset (the default): not one line below runs, and the prompt path is
+        // laid out exactly as before.
         const int64_t mtp_room_min = [] {
             const char* v = std::getenv("STRATA_MTP_ROOM_MIN");
             if (v == nullptr || v[0] == '\0') return (int64_t) -1;
             char* end = nullptr;
             const long long n = std::strtoll(v, &end, 10);
-            if (end == v || *end != '\0' || n < 0) return (int64_t) -2;   // not a count: say so, not "0: every prompt"
+            if (end == v || *end != '\0' || n < 0) return (int64_t) -2;   // not a count: say so, not "0: every request"
             return (int64_t) n;
         }();
         if (mtp_room_min == -2) {
-            std::fprintf(stderr, "strata generate: STRATA_MTP_ROOM_MIN=%s is not a token count (0: every prompt)\n",
+            std::fprintf(stderr, "strata generate: STRATA_MTP_ROOM_MIN=%s is not a token count (0: every request)\n",
                          std::getenv("STRATA_MTP_ROOM_MIN"));
             return 2;
         }
@@ -8190,10 +8192,10 @@ int main(int argc, char** argv) {
             }
             const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
             mtp_room_slots = blob > 0 ? (int) std::min<int64_t>(mtp.experts_bytes() / blob, 4096) : 0;
-            std::fprintf(stderr, "strata serve: STRATA_MTP_ROOM_MIN=%lld: a prompt of %lld tokens or more points the "
-                                 "prompt path's ring on CUDA%d at the drafter's %llu MiB of experts (%d slots past its "
-                                 "own) for as long as it is read, and the decode's own bytes are back before the first "
-                                 "window\n",
+            std::fprintf(stderr, "strata serve: STRATA_MTP_ROOM_MIN=%lld: a request that reads %lld prompt tokens or "
+                                 "more points the prompt path's ring on CUDA%d at the drafter's %llu MiB of experts "
+                                 "(%d slots past its own) for as long as it is read, and the decode's own bytes are back "
+                                 "before the first window\n",
                          (long long) mtp_room_min, (long long) mtp_room_min, mtp.device(),
                          (unsigned long long) (mtp.experts_bytes() >> 20), mtp_room_slots);
         }
@@ -11925,10 +11927,12 @@ int main(int argc, char** argv) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
-            // STRATA_MTP_ROOM_MIN: this prompt points the prompt path's ring at the drafter's experts, if it is this
-            // long and the room applies here.  Nothing is laid out again - the room's slots are the drafter's own
-            // bytes (Prefill::set_ring_room_base) - and `room_close` below gives the decode its contents back before
-            // the first window.  A room left open by an earlier request (a cancelled prompt) is closed first.
+            // STRATA_MTP_ROOM_MIN: this request points the prompt path's ring at the drafter's experts, if it reads
+            // enough new tokens and the room applies here.  The open is below, once `read_from` is known: the
+            // threshold counts the tokens the request reads, not the whole prompt (a reused conversation prefix buys
+            // nothing from the room).  Nothing is laid out again - the room's slots are the drafter's own bytes
+            // (Prefill::set_ring_room_base) - and `room_close` below gives the decode its contents back before the
+            // first window.  A room left open by an earlier request (a cancelled prompt) is closed first.
             bool mtp_room_open = mtp_room_slots > 0 && room_path != nullptr && !mtp.experts_resident();
             auto head_restore = [&]() -> int {
                 if (!o.prefill_head_alias || native_head.loaded()) return 0;
@@ -11965,19 +11969,6 @@ int main(int argc, char** argv) {
                 return 0;
             };
             if (mtp_room_open && room_close("left open") != 0) return 1;
-            if (mtp_room_slots > 0 && room_path != nullptr && (int64_t) n >= mtp_room_min && mtp.experts_resident()) {
-                const auto room_t0 = Clock::now();
-                if (!mtp.experts_lend(err)) {
-                    std::fprintf(stderr, "strata serve: prompt room: %s: this prompt reads as it always did\n", err.c_str());
-                } else {
-                    room_path->set_ring_room_active(true);   // before the loan: a relayout re-carves with the room
-                    mtp_room_open = true;
-                    std::fprintf(stderr, "strata serve: prompt room: %lld tokens, the prompt path's ring is the drafter's "
-                                         "%llu MiB (%d slots past its own, lent in %.1f ms)\n", (long long) n,
-                                 (unsigned long long) (mtp.experts_bytes() >> 20), mtp_room_slots,
-                                 std::chrono::duration<double, std::milli>(Clock::now() - room_t0).count());
-                }
-            }
             if (o.prefill_head_alias && native_head.loaded()) {
                 const auto head_t0 = Clock::now();
                 native_head.unload();
@@ -12488,6 +12479,23 @@ int main(int argc, char** argv) {
             req_times = ReqTimes{};
             if (use_mtp) mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
+            // STRATA_MTP_ROOM_MIN: opened here, once the reused prefix is known - the threshold counts the tokens this
+            // request reads (an agent turn on a long conversation reads a few hundred and gains nothing from the room).
+            // Before `lend()` below, so a relayout re-carves with the room (its slots are the drafter's own bytes).
+            if (mtp_room_slots > 0 && room_path != nullptr && n - read_from >= mtp_room_min && mtp.experts_resident()) {
+                const auto room_t0 = Clock::now();
+                if (!mtp.experts_lend(err)) {
+                    std::fprintf(stderr, "strata serve: prompt room: %s: this prompt reads as it always did\n", err.c_str());
+                } else {
+                    room_path->set_ring_room_active(true);   // before the loan: a relayout re-carves with the room
+                    mtp_room_open = true;
+                    std::fprintf(stderr, "strata serve: prompt room: %lld tokens to read, the prompt path's ring is the "
+                                         "drafter's %llu MiB (%d slots past its own, lent in %.1f ms)\n",
+                                 (long long) (n - read_from),
+                                 (unsigned long long) (mtp.experts_bytes() >> 20), mtp_room_slots,
+                                 std::chrono::duration<double, std::milli>(Clock::now() - room_t0).count());
+                }
+            }
             conversations.limit_reuse(read_from);
             pp_total = n;
             pp_from = read_from;
