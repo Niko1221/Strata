@@ -216,7 +216,14 @@ def overlay(tensors: dict, ck: Checkpoint, stats: dict, dense_only: bool = False
 
 def install(ck: Checkpoint, stats: dict, dense_only: bool = False):
     """Import the converter, give it nvfp4_convert's type policy, and hook the tensor index."""
-    import nvfp4_convert as base
+    try:
+        import nvfp4_convert as base
+    except ModuleNotFoundError as e:            # the converter's packages (setup.py installs them before a prepare;
+        if str(e.name) in ("torch", "transformers", "safetensors"):      # running this tool by hand needs them too)
+            raise SystemExit("nvfp4_local_pack: " + str(e.name) + " is not installed in this Python. Run SETUP.bat, "
+                             "which installs requirements-nvfp4-local.txt before the prepare, or install it here: "
+                             "python -m pip install -r requirements-nvfp4-local.txt") from None
+        raise
     base.install_policy()
     from conversion.base import ModelBase
     from conversion import qwen4exp as Q4

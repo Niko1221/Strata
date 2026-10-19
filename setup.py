@@ -244,6 +244,8 @@ PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 BUILD_PACKAGES = ["cmake", "ninja"]
 BUILD_REQUIREMENTS = ROOT / "requirements-build.txt"
+NVFP4_LOCAL_PACKAGES = ["torch", "transformers", "safetensors"]      # the FP4-Local converter, imported by tools/nvfp4_local_pack.py
+NVFP4_LOCAL_REQUIREMENTS = ROOT / "requirements-nvfp4-local.txt"
 
 # NVFP4 experts (MODEL-UPDATE Phase 4; the engine path is ported from sergqwer/strata-nvfp4, MIT).  Ready-made Strata
 # packs on Hugging Face by the fork's author: nothing is converted here.  Every file is pinned by its upload's commit,
@@ -7898,6 +7900,8 @@ def main() -> int:
     if prepared and not prepared_done(model, models_dir):
         say("  NVIDIA's checkpoint is turned into a Strata pack on this PC (once; 20-40 minutes, reads the 102 GB, writes about")
         say(f"  {MODELS[model]['prepare_gb']:.0f} GB). Nothing of NVIDIA's weights leaves this PC.")
+        pip_install(requirement_lines(NVFP4_LOCAL_REQUIREMENTS) if NVFP4_LOCAL_REQUIREMENTS.exists()
+                    else NVFP4_LOCAL_PACKAGES, "the FP4-Local converter (torch, transformers, safetensors)")
         run([sys.executable, str(ROOT / "tools" / "nvfp4_local_pack.py"), "prepare",
              "--model", str(ready_where(models_dir, ("src", MODELS[model]["repo"], "", "", 0, ""))),
              "--out", str(prepared_dir(model, models_dir))], env=env)
