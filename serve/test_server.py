@@ -2622,6 +2622,65 @@ class NonFiniteLogits(unittest.TestCase):
         self.assertNotIn("STOP", eng.proc.stdin.getvalue())   # the DONE was read: nothing to stop or drain
 
 
+class SentinelEngine(MockEngine):
+    """The Metal port reads no device row check: there a non-finite logits row surfaces as the engine's argmax
+    sentinel id (2147483647) in the token stream instead of a `DONE ... nonfinite`.  The first pass yields `cut`
+    whole tokens, then the sentinel (None: the script runs whole); the later ones run whole, as the retried pass."""
+
+    def __init__(self, *a, cut=0, **kw):
+        super().__init__(*a, **kw)
+        self.cut, self.calls, self.last = cut, [], None
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.calls.append(list(ids))
+        cut, self.cut = self.cut, None
+        self.last = {"prompt_tokens": len(ids), "reused": 0 if cut is None else len(ids) - 1, "finish": "stop"}
+        for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+            if cut is not None and i >= cut:
+                yield 2147483647
+                return
+            yield t
+
+
+class SentinelToken(unittest.TestCase):
+    """the argmax sentinel id in the stream takes the #879 recovery: retried once before the first token, "length"
+    mid-reply - never a raw IndexError out of the detokenizer."""
+
+    def run_reply(self, cut):
+        tok = ByteTokenizer()
+        eng = SentinelEngine(tok, "hello", max_context=CTX, cut=cut)
+        svc = Service(eng, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        ids = tok.encode("hi")
+        events, done, error = [], None, None
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                for kind, x in svc.run(ids, False, None, 100, {}, threading.Event()):
+                    if kind == "done":
+                        done = x
+                    elif kind == "event":
+                        events.append(x)
+            except EngineNonFinite as e:
+                error = e
+        text = "".join(ev.text or "" for ev in events if ev.kind == "content")
+        return eng, done, error, text, out.getvalue()
+
+    def test_before_first_token_is_retried_once(self):
+        eng, done, error, text, log = self.run_reply(0)
+        self.assertIsNone(error)
+        self.assertEqual(len(eng.calls), 2)                     # the same request, once more
+        self.assertEqual(eng.calls[0], eng.calls[1])
+        self.assertEqual(done["finish"], "stop")
+        self.assertEqual(text, "hello")
+
+    def test_mid_reply_ends_as_length(self):
+        eng, done, error, text, log = self.run_reply(3)         # "hel"
+        self.assertIsNone(error)
+        self.assertEqual(len(eng.calls), 1)
+        self.assertEqual((done["finish"], done["completion_tokens"]), ("length", 3))
+        self.assertEqual(text, "hel")
+        self.assertIn("non-finite after 3 tokens", log)
+
+
 class LayerSplit(unittest.TestCase):
     """#644: "layer_split" is the first layer of each later GPU; a list is accepted, counts per card are not."""
 

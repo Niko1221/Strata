@@ -3040,7 +3040,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-    note_nonfinite(T, nullptr);
+    note_nonfinite(T, nullptr, out);
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {
@@ -3654,7 +3654,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
         if (!sample_rows(S, err)) return false;
         for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-        note_nonfinite(S, last_pos_b_);
+        note_nonfinite(S, last_pos_b_, out);
         progress_at("decode");
         progress_beat();
         return true;
@@ -3718,7 +3718,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
     if (!sample_rows(S, err)) return false;
     for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-    note_nonfinite(S, last_pos_b_);
+    note_nonfinite(S, last_pos_b_, out);
     progress_at("decode");
     progress_beat();
     return true;
@@ -3921,7 +3921,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (last_stage()) {
         if (!sample_rows(S, err)) { b_running_ = false; return -1; }
         for (int t = 0; t < S; ++t) b_out_[t] = ((volatile int32_t*) h_out_)[t];
-        note_nonfinite(S, last_pos_b_);
+        note_nonfinite(S, last_pos_b_, b_out_);
     }
     ++windows;
     b_running_ = false;
@@ -3958,15 +3958,22 @@ const std::vector<long long>& nan_inject_list() {
 std::atomic<long long> g_nf_windows{0};
 }  // namespace
 
-void Verifier::note_nonfinite(int T, const int64_t* pos_b) {
+void Verifier::note_nonfinite(int T, const int64_t* pos_b, const int32_t* picks) {
     nf_row_ = -1;
     nf_pos_ = -1;
     nf_mask_ = 0;
-    if (!nan_guard_on() || h_nf_ == nullptr || !last_stage()) return;   // (a stage without the head checks nothing)
-    const volatile uint32_t* f = h_nf_;
-    for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
-        for (int b = 0; b < strata::kernels::kNonfiniteBlocks; ++b)
-            if (f[t * strata::kernels::kNonfiniteBlocks + b] != 0) { nf_mask_ |= 1u << t; break; }
+    if (nan_guard_on() && h_nf_ != nullptr && last_stage()) {   // (a stage without the head checks nothing)
+        const volatile uint32_t* f = h_nf_;
+        for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
+            for (int b = 0; b < strata::kernels::kNonfiniteBlocks; ++b)
+                if (f[t * strata::kernels::kNonfiniteBlocks + b] != 0) { nf_mask_ |= 1u << t; break; }
+    }
+    // The Metal window graphs carry no device row check (the port has no logits_nonfinite_rows): there an
+    // all-non-finite logits row leaves the sampler's argmax sentinel in the pick.  INT32_MAX is past every
+    // vocabulary, so a pick that holds it is the same fact #879 records, read from host memory any platform has.
+    if (picks != nullptr)
+        for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
+            if (picks[t] == INT32_MAX) nf_mask_ |= 1u << t;
     const std::vector<long long>& inject = nan_inject_list();
     if (!inject.empty()) {
         const long long k = g_nf_windows.fetch_add(1) + 1;
@@ -4243,7 +4250,7 @@ bool Verifier::pl_finish(int32_t* out, std::string& err) {
     }
     if (out != nullptr)
         for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-    note_nonfinite(T, nullptr);
+    note_nonfinite(T, nullptr, out);
     progress_beat();
     return true;
 }

@@ -112,7 +112,9 @@ public:
     /// the sync the window already does: no extra sync).  On the stage with the head (a layer split asks the last
     /// stage).  STRATA_NAN_GUARD=0: off (always -1).  STRATA_NAN_INJECT=<n>[,<n>...] (debug): the n-th window the
     /// guard checks in this process (counted from 1 over every stage-with-head verifier: prompt-tail windows, decode
-    /// windows and batch windows alike) reports row 0 as non-finite, so the whole response can be tested.
+    /// windows and batch windows alike) reports row 0 as non-finite, so the whole response can be tested.  Ports
+    /// whose window graphs carry no such kernel (Metal) are covered beside the pick read: an all-non-finite row
+    /// leaves the sampler's sentinel INT32_MAX in it, and that id is past every vocabulary.
     int nonfinite_row() const { return next_ != nullptr && !last_stage() ? next_->nonfinite_row() : nf_row_; }
     int64_t nonfinite_pos() const { return next_ != nullptr && !last_stage() ? next_->nonfinite_pos() : nf_pos_; }
     /// Row t of the last window (a batch window: each slot's own rows) held a non-finite logit.
@@ -551,7 +553,9 @@ private:
     int nf_row_ = -1;                     ///< nonfinite_row()
     int64_t nf_pos_ = -1;                 ///< nonfinite_pos()
     uint32_t nf_mask_ = 0;                ///< nonfinite_in(): bit t = row t
-    void note_nonfinite(int T, const int64_t* pos_b);   ///< the window's flags (+ STRATA_NAN_INJECT) -> nf_row_
+    void note_nonfinite(int T, const int64_t* pos_b, const int32_t* picks);   ///< the window's flags, + the picks
+    /// read beside it (a sentinel INT32_MAX marks its row: the host-side arm of the guard, covering ports whose
+    /// graphs carry no logits_nonfinite_rows), + STRATA_NAN_INJECT -> nf_row_
     float* h_x_ = nullptr;       float* m_x_ = nullptr;         // doorbell payload: T * n_embd
     int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k

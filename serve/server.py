@@ -5072,6 +5072,9 @@ class Service:
                                     last_out = time.perf_counter()
                                     yield "ping", None
                                     continue
+                                if t == 2147483647:           # the sampler's argmax sentinel: a non-finite logits
+                                    raise EngineNonFinite(    # row (#879); engines whose window graphs lack the
+                                        "the engine emitted its argmax sentinel (#879)")   # device guard show it here
                                 n += 1
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
