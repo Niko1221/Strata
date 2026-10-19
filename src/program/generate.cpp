@@ -4960,6 +4960,17 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
+        // v4: the depth-adaptive ring (opt-in).  Set BEFORE the session arena is sized and the graphs are
+        // captured: the arena's K/V pool depends on the ring (qsa_state_bytes sizes the pool by slots).
+        if (std::getenv("STRATA_KV_RING_ADAPT") != nullptr && o.kv_resident > 0) {
+            const int64_t adapt = strata::core::qsa_kv_ring_adapt(g, (int64_t) o.tokens.size() + o.max_new,
+                                                                  o.kv_resident);
+            if (adapt != o.kv_resident) {
+                std::fprintf(stderr, "strata generate: KV ring adaptive: %lld -> %lld cells (prompt %zu + %lld new)\n",
+                             (long long) o.kv_resident, (long long) adapt, o.tokens.size(), (long long) o.max_new);
+                strata::core::qsa_set_kv_resident(adapt);
+            }
+        }
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;

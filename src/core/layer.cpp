@@ -713,6 +713,21 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
 }  // namespace
 
 void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0; }
+// v4 (opt-in, STRATA_KV_RING_ADAPT): the session's ring covers the cells this run needs, capped by the
+// configured --kv-resident and floored at the engine minimum.  The KV pool IS the ring (kv_pool_bytes sizes
+// the pool by slots), so a shallow run leaves the VRAM to the expert cache and a deep one takes it back.
+int64_t qsa_kv_ring_adapt(const ModelGeometry& g, int64_t cells_needed, int64_t cap) {
+    if (cap <= 0) return 0;
+    const QsaShapes s = qsa_shapes(g);
+    const int64_t page = s.page_size > 0 ? s.page_size : 1;
+    const int64_t want = cells_needed > 0 ? cells_needed : 1;
+    const int64_t rounded = ((want + page - 1) / page) * page;
+    // The floor is the engine's historical default ring (32,768), not the allocator minimum: a shallow run
+    // must keep the configuration it would have had, and only a deeper one grows.  Measured: a 20,480 floor
+    // cost 7.3 % at 1K (record-iq3s-v4-w4-adaptive-20261019.json) while 32,768 is the live value.
+    const int64_t floor = std::max<int64_t>(qsa_kv_resident_min(), 32768);
+    return std::min(cap, std::max(floor, rounded));
+}
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
