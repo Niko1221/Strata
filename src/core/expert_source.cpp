@@ -577,6 +577,7 @@ struct NumaComplementPlacement {
                 why = "the role sizes do not add up to the expert blob";
         for (int k = 0; why == nullptr && k < 2; ++k)
             if (plan.cores[k].empty()) why = "a slice has no core";
+            else if (plan.nodes[k] < 0 || plan.nodes[k] >= 64) why = "a node id is out of range";
         if (why != nullptr) {
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: %s; the complement is placed by "
                                  "first touch as usual (this arm is invalid)\n", why);
@@ -638,9 +639,23 @@ struct NumaComplementPlacement {
         }
     }
 
+    /// After the drop: a node whose free memory cannot take its slice plus `reserve_share` will spill to the other node
+    /// (no local reclaim); named up front, the 95 % check stays the verdict.
+    void check_room(uint64_t reserve_share) const {
+        for (int k = 0; k < 2; ++k) {
+            const uint64_t room = (size_t) nodes[k] < free_after.size() ? free_after[(size_t) nodes[k]] : 0;
+            if (room < slice_bytes[k] + reserve_share)
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: node %d has %.2f GiB free for its "
+                                     "%.2f GiB slice plus %.2f GiB of reserve; the rest will spill to the other node\n",
+                             nodes[k], (double) room / 1073741824.0, (double) slice_bytes[k] / 1073741824.0,
+                             (double) reserve_share / 1073741824.0);
+        }
+    }
+
     /// Samples one page in 64 of each slice with move_pages (null node list: returns each page's node) and logs the
-    /// share on the intended node; `got < bytes` means the paced loop stopped early, the arm then fails.
-    void report(const uint8_t* arena, uint64_t got, uint64_t bytes, const char* stop) const {
+    /// share on the intended node, once the arena is registered (its final state); `got < bytes` means the paced loop
+    /// stopped early, `registered < bytes` that the driver did not page-lock all of it: the arm then fails.
+    void report(const uint8_t* arena, uint64_t got, uint64_t registered, uint64_t bytes, const char* stop) const {
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         uint64_t on_node[2] = {0, 0}, sampled[2] = {0, 0}, per_node[2][64] = {}, absent[2] = {0, 0};
         std::vector<void*> pages;
@@ -667,7 +682,7 @@ struct NumaComplementPlacement {
         double share[2];
         for (int k = 0; k < 2; ++k) share[k] = sampled[k] > 0 ? 100.0 * (double) on_node[k] / (double) sampled[k] : 0.0;
         std::fprintf(stderr, "FileExpertSource: NUMA placement: node %d %.2f GiB (%.1f %% of its slices), node %d %.2f GiB "
-                             "(%.1f %% of its slices); free before: %s; after the drop: %s; pages taken in %.1f s\n",
+                             "(%.1f %% of its slices); free before: %s; after the drop: %s; pages taken and page-locked in %.1f s\n",
                      nodes[0], share[0] / 100.0 * (double) slice_bytes[0] / 1073741824.0, share[0], nodes[1],
                      share[1] / 100.0 * (double) slice_bytes[1] / 1073741824.0, share[1], free_text(free_before).c_str(),
                      free_text(free_after).c_str(), secs);
@@ -675,14 +690,19 @@ struct NumaComplementPlacement {
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the paced loop stopped at %.2f of %.2f "
                                  "GiB (%s); the rest is first-touched by unpinned copy threads (this arm is invalid)\n",
                          (double) got / 1073741824.0, (double) bytes / 1073741824.0, stop != nullptr ? stop : "?");
+        else if (registered < bytes)
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: only %.2f of %.2f GiB page-locked (%s); "
+                                 "the unregistered pages can be migrated by NUMA balancing (this arm is invalid)\n",
+                         (double) registered / 1073741824.0, (double) bytes / 1073741824.0, stop != nullptr ? stop : "?");
         if (pin_failed)
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement: a toucher could not be pinned to its core\n");
         for (int k = 0; k < 2; ++k)
             if (share[k] < 95.0)
                 std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: slice %d has %.1f %% of its pages "
-                                     "on node %d (< 95 %%; of %llu sampled: node 0 %llu, node 1 %llu, not present %llu)\n",
-                             k, share[k], nodes[k], (unsigned long long) sampled[k], (unsigned long long) per_node[k][0],
-                             (unsigned long long) per_node[k][1], (unsigned long long) absent[k]);
+                                     "on node %d (< 95 %%; of %llu sampled: node %d %llu, node %d %llu, not present %llu)\n",
+                             k, share[k], nodes[k], (unsigned long long) sampled[k], nodes[0],
+                             (unsigned long long) per_node[k][nodes[0]], nodes[1], (unsigned long long) per_node[k][nodes[1]],
+                             (unsigned long long) absent[k]);
     }
 };
 #endif
@@ -3669,6 +3689,7 @@ bool FileExpertSource::pin_cache_complement(
         // does not cover the complement, register it in steps, each only while the RAM left stays above the reserve.
         // STRATA_PIN_GUARD=0 pages-locks in one go as before, =2 always registers in steps (a test); STRATA_PIN_RESERVE_GIB
         // is the RAM that must stay above every step (default: the resident headroom, at least 2 GiB)
+        // STRATA_NUMA_SPLIT placement forces the drop and the paced path whatever the guard (STRATA_PIN_GUARD=0 included)
         const uint64_t pace_reserve = [&] {
             const char* v = std::getenv("STRATA_PIN_RESERVE_GIB");
             return v != nullptr && std::atof(v) > 0 ? (uint64_t) (std::atof(v) * 1073741824.0)
@@ -3690,6 +3711,12 @@ bool FileExpertSource::pin_cache_complement(
                 std::fprintf(stderr, "FileExpertSource: NUMA placement: the model files' cached pages were released; "
                                      "free after the drop: %s\n",
                              NumaComplementPlacement::free_text(numa.free_after).c_str());
+                // CBA: half the pace reserve as each node's share of the headroom; a per-node reserve if one node
+                // carries the host's other allocations
+                numa.check_room(pace_reserve / 2);
+                if (guard == 0)
+                    std::fprintf(stderr, "FileExpertSource: STRATA_PIN_GUARD=0 overridden: NUMA placement needs the "
+                                         "paced path\n");
             }
             if (guard == 2 || numa.place) {
                 paced = true;
@@ -3709,7 +3736,19 @@ bool FileExpertSource::pin_cache_complement(
                     std::fprintf(stderr, "FileExpertSource: the rest comes from reclaimed cache of other files: "
                                          "page-locking it in steps, as far as the RAM allows (#1250)\n");
             }
+        } else if (strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test) {
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the complement is not page-locked, "
+                                 "nothing placed\n");
         }
+        // STRATA_COMPLEMENT_NOHUGEPAGE=1 (a test knob: the TLB cost of 4 KiB pages without the split) acts on the paced
+        // arena only
+        static const bool nohuge = [] {
+            const char* v = std::getenv("STRATA_COMPLEMENT_NOHUGEPAGE");
+            return v != nullptr && std::strcmp(v, "1") == 0;
+        }();
+        if (nohuge && !paced)
+            std::fprintf(stderr, "FileExpertSource: STRATA_COMPLEMENT_NOHUGEPAGE=1 ignored: the complement was not "
+                                 "allocated in steps\n");
 #endif
         if (pin && !paced) {
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
@@ -3750,12 +3789,7 @@ bool FileExpertSource::pin_cache_complement(
 #endif
 #if defined(__linux__)
                 // STRATA_NUMA_SPLIT: a 2 MiB huge page would put several slices on its toucher's node, so the arena
-                // takes 4 KiB pages (one call, no VMA split); STRATA_COMPLEMENT_NOHUGEPAGE=1 does this alone (a test
-                // knob: the TLB cost of 4 KiB pages without the split)
-                static const bool nohuge = [] {
-                    const char* v = std::getenv("STRATA_COMPLEMENT_NOHUGEPAGE");
-                    return v != nullptr && std::strcmp(v, "1") == 0;
-                }();
+                // takes 4 KiB pages (one call, no VMA split); STRATA_COMPLEMENT_NOHUGEPAGE=1 does this alone
                 if (arena != nullptr && (numa.place || nohuge)) {
                     if (madvise(arena, (size_t) ((bytes + page - 1) / page * page), MADV_NOHUGEPAGE) != 0)
                         std::fprintf(stderr, "FileExpertSource: WARNING: madvise(MADV_NOHUGEPAGE) on the complement "
@@ -3819,9 +3853,6 @@ bool FileExpertSource::pin_cache_complement(
                             for (uint64_t at = got; at < got + step; at += kPage) ((volatile uint8_t*) arena)[at] = 0;
                         got += step;
                     }
-#if defined(__linux__)
-                    if (numa.place) numa.report((const uint8_t*) arena, got, bytes, stop);
-#endif
                     // cut at an expert boundary: a blob that runs past the registered range would be refused by a
                     // cudaMemcpyAsync as not page-locked
                     uint64_t w = got;
@@ -3858,6 +3889,10 @@ bool FileExpertSource::pin_cache_complement(
                                       (double) partial_pin / 1073741824.0);
                     note += std::string(note.empty() ? "" : "; ") + msg;
                     if (stop != nullptr) std::fprintf(stderr, "FileExpertSource: %s\n", msg);
+#if defined(__linux__)
+                    // judged on the final state: registered pages no longer move; before the copy fills them
+                    if (numa.place) numa.report((const uint8_t*) arena, got, partial_pin, bytes, stop);
+#endif
                 } else if (budget_bytes > 0 && partial_on) {
                     const uint64_t step = 2ull << 30;
                     for (uint64_t want = std::min(bytes, pin_cap); want >= step; want = want > step ? want - step : 0) {
