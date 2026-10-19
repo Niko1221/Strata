@@ -15,6 +15,7 @@
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/kq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
 
@@ -55,6 +56,7 @@
 #if defined(__linux__)
 #include <cerrno>
 #include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
+#include <sched.h>
 #include <sys/syscall.h>
 #endif
 
@@ -518,6 +520,170 @@ void log_complement_memory(const char* stage, uint64_t requested) {
     (void) requested;
 #endif
 }
+
+#if defined(__linux__)
+/// STRATA_NUMA_SPLIT step B: each NUMA slice of every complement slot (numa_slice_ranges) is first-touched by a helper
+/// thread pinned to one core of that slice's node, so the default local policy puts its pages there (no mbind: ~113k
+/// ranges would split the arena into more VMAs than vm.max_map_count allows).  Inactive (`place` false) unless the
+/// live pool split on real nodes; then the paced fault loop hands it each step to touch.
+struct NumaComplementPlacement {
+    bool place = false;
+    int nodes[2] = {-1, -1};
+    int core[2] = {-1, -1};
+    std::vector<std::pair<uint64_t, uint64_t>> ranges[2];   ///< page-aligned, sorted, coalesced, arena offsets
+    uint64_t slice_bytes[2] = {0, 0};
+    std::vector<uint64_t> free_before;                      ///< MemFree per node before the allocation
+    std::atomic<bool> pin_failed{false};
+    std::chrono::steady_clock::time_point t0;
+
+    static std::vector<uint64_t> node_free() {
+        std::vector<uint64_t> out;
+        for (int n = 0; n < 64; ++n) {
+            std::ifstream node("/sys/devices/system/node/node" + std::to_string(n) + "/meminfo");
+            if (!node) break;
+            std::string line;
+            uint64_t kb = 0;
+            while (std::getline(node, line)) {
+                std::istringstream f(line);
+                std::string a, id, key;
+                if (f >> a >> id >> key >> kb && key == "MemFree:") break;
+                kb = 0;
+            }
+            out.push_back(kb * 1024);
+        }
+        return out;
+    }
+    std::string free_text() const {
+        std::string s;
+        char buf[64];
+        for (size_t n = 0; n < free_before.size(); ++n) {
+            std::snprintf(buf, sizeof buf, "%snode %zu %.2f GiB", n ? ", " : "", n, (double) free_before[n] / 1073741824.0);
+            s += buf;
+        }
+        return s;
+    }
+
+    /// Decides from the live pool's plan; false with a logged reason when the split is on but placement cannot run.
+    void init(const std::vector<uint64_t>& offsets, int64_t n_expert, const std::vector<uint64_t>& blob_bytes,
+              const std::vector<uint64_t>& role_bytes) {
+        const auto& plan = strata::kernels::cpu::active_numa_split();
+        if (!plan.on || plan.test) return;
+        free_before = node_free();
+        const char* why = nullptr;
+        if (role_bytes.size() != 3 * blob_bytes.size()) why = "this pack has no per-role byte sizes (not a GGUF-mapped native pack)";
+        for (size_t l = 0; why == nullptr && l < blob_bytes.size(); ++l)
+            if (role_bytes[3 * l] + role_bytes[3 * l + 1] + role_bytes[3 * l + 2] != blob_bytes[l])
+                why = "the role sizes do not add up to the expert blob";
+        for (int k = 0; why == nullptr && k < 2; ++k)
+            if (plan.cores[k].empty()) why = "a slice has no core";
+        if (why != nullptr) {
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: %s; the complement is placed by "
+                                 "first touch as usual (this arm is invalid)\n", why);
+            return;
+        }
+        for (int k = 0; k < 2; ++k) {
+            nodes[k] = plan.nodes[k];
+            core[k] = plan.cores[k].front();   // workers come before the host core in the plan
+            std::vector<std::pair<uint64_t, uint64_t>> all;
+            for (size_t i = 0; i < offsets.size(); ++i) {
+                if (offsets[i] == detail::kNoCacheComplement) continue;
+                const size_t l = i / (size_t) n_expert;
+                for (const auto& r : detail::numa_slice_ranges(offsets[i], &role_bytes[3 * l], k))
+                    if (r.second > r.first) all.push_back(r);
+            }
+            std::sort(all.begin(), all.end());
+            for (const auto& r : all) {   // coalesce: ends become monotonic, so a step finds its first range by bisection
+                if (!ranges[k].empty() && r.first <= ranges[k].back().second)
+                    ranges[k].back().second = std::max(ranges[k].back().second, r.second);
+                else ranges[k].push_back(r);
+            }
+            for (const auto& r : ranges[k]) slice_bytes[k] += r.second - r.first;
+        }
+        place = true;
+        t0 = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "FileExpertSource: NUMA placement of the complement: slice 0 -> node %d (%.2f GiB, toucher "
+                             "CPU %d), slice 1 -> node %d (%.2f GiB, toucher CPU %d), 4 KiB pages; free before: %s\n",
+                     nodes[0], (double) slice_bytes[0] / 1073741824.0, core[0], nodes[1],
+                     (double) slice_bytes[1] / 1073741824.0, core[1], free_text().c_str());
+    }
+
+    /// Touches one byte per page of each slice's ranges clipped to [lo, hi), one pinned thread per slice; then the
+    /// calling thread touches the step's other pages (outside every slice: slot tails, the arena end).  The caller
+    /// must not re-touch slice pages: with automatic NUMA balancing on, its access faults would migrate them to its node.
+    void touch_step(uint8_t* arena, uint64_t lo, uint64_t hi) {
+        // CBA: two threads spawned per 1 GiB step (~50 spawns per start); long-lived touchers if the spawn ever shows
+        auto touch = [&](int k) {
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            CPU_SET(core[k], &set);
+            if (sched_setaffinity(0, sizeof set, &set) != 0) pin_failed = true;
+            const auto& rs = ranges[k];
+            auto it = std::partition_point(rs.begin(), rs.end(), [&](const auto& r) { return r.second <= lo; });
+            for (; it != rs.end() && it->first < hi; ++it)
+                for (uint64_t at = std::max(it->first, lo); at < std::min(it->second, hi); at += 4096)
+                    ((volatile uint8_t*) arena)[at] = 0;
+        };
+        std::thread a(touch, 0), b(touch, 1);
+        a.join();
+        b.join();
+        size_t c[2] = {0, 0};   // the pages no slice holds, as the default loop touches them
+        for (uint64_t at = lo; at < hi; at += 4096) {
+            bool covered = false;
+            for (int k = 0; k < 2; ++k) {
+                while (c[k] < ranges[k].size() && ranges[k][c[k]].second <= at) ++c[k];
+                covered = covered || (c[k] < ranges[k].size() && ranges[k][c[k]].first <= at);
+            }
+            if (!covered) ((volatile uint8_t*) arena)[at] = 0;
+        }
+    }
+
+    /// Samples one page in 64 of each slice with move_pages (null node list: returns each page's node) and logs the
+    /// share on the intended node; `got < bytes` means the paced loop stopped early, the arm then fails.
+    void report(const uint8_t* arena, uint64_t got, uint64_t bytes, const char* stop) const {
+        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        uint64_t on_node[2] = {0, 0}, sampled[2] = {0, 0}, per_node[2][64] = {}, absent[2] = {0, 0};
+        std::vector<void*> pages;
+        std::vector<int> status;
+        for (int k = 0; k < 2; ++k) {
+            uint64_t n = 0;
+            pages.clear();
+            for (const auto& r : ranges[k])
+                for (uint64_t at = r.first; at < r.second; at += 4096, ++n)
+                    if (n % 64 == 0) pages.push_back((void*) (arena + at));
+            status.assign(pages.size(), -1);
+            for (size_t b = 0; b < pages.size(); b += 4096) {
+                const size_t cnt = std::min<size_t>(4096, pages.size() - b);
+                if (syscall(SYS_move_pages, 0, (unsigned long) cnt, pages.data() + b, nullptr, status.data() + b, 0) != 0)
+                    for (size_t i = b; i < b + cnt; ++i) status[i] = -1;
+            }
+            for (int s : status) {
+                if (s >= 0 && s < 64) ++per_node[k][s];
+                else ++absent[k];
+            }
+            sampled[k] = pages.size();
+            on_node[k] = nodes[k] >= 0 && nodes[k] < 64 ? per_node[k][nodes[k]] : 0;
+        }
+        double share[2];
+        for (int k = 0; k < 2; ++k) share[k] = sampled[k] > 0 ? 100.0 * (double) on_node[k] / (double) sampled[k] : 0.0;
+        std::fprintf(stderr, "FileExpertSource: NUMA placement: node %d %.2f GiB (%.1f %% of its slices), node %d %.2f GiB "
+                             "(%.1f %% of its slices); free before: %s; pages taken in %.1f s\n",
+                     nodes[0], share[0] / 100.0 * (double) slice_bytes[0] / 1073741824.0, share[0], nodes[1],
+                     share[1] / 100.0 * (double) slice_bytes[1] / 1073741824.0, share[1], free_text().c_str(), secs);
+        if (got < bytes)
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the paced loop stopped at %.2f of %.2f "
+                                 "GiB (%s); the rest is first-touched by unpinned copy threads (this arm is invalid)\n",
+                         (double) got / 1073741824.0, (double) bytes / 1073741824.0, stop != nullptr ? stop : "?");
+        if (pin_failed)
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement: a toucher could not be pinned to its core\n");
+        for (int k = 0; k < 2; ++k)
+            if (share[k] < 95.0)
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: slice %d has %.1f %% of its pages "
+                                     "on node %d (< 95 %%; of %llu sampled: node 0 %llu, node 1 %llu, not present %llu)\n",
+                             k, share[k], nodes[k], (unsigned long long) sampled[k], (unsigned long long) per_node[k][0],
+                             (unsigned long long) per_node[k][1], (unsigned long long) absent[k]);
+    }
+};
+#endif
 
 /// #286: an unbuffered file handle - a HANDLE on Windows, an O_DIRECT descriptor (as a pointer-sized integer) on Linux.
 void close_direct(void* h) {
@@ -3466,6 +3632,9 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
     std::string note;
+#if defined(__linux__)
+    NumaComplementPlacement numa;   ///< STRATA_NUMA_SPLIT step B; inert unless the live pool split on real nodes
+#endif
     auto release = [&]() {
         if (arena == nullptr) return;
         if (pinned_ok) (void) cudaFreeHost(arena);
@@ -3510,9 +3679,11 @@ bool FileExpertSource::pin_cache_complement(
                 return v == nullptr ? 1 : std::atoi(v);
             }();
             uint64_t free_now = 0;
-            if (guard == 2) {
+            numa.init(offsets, n_expert_, layer_blob_bytes_, role_bytes_);   // STRATA_NUMA_SPLIT: placed by the paced loop
+            if (guard == 2 || numa.place) {
                 paced = true;
-                std::fprintf(stderr, "FileExpertSource: STRATA_PIN_GUARD=2: page-locking the complement in steps\n");
+                std::fprintf(stderr, "FileExpertSource: %s: page-locking the complement in steps\n",
+                             guard == 2 ? "STRATA_PIN_GUARD=2" : "STRATA_NUMA_SPLIT");
             } else if (guard != 0 && free_memory_bytes(free_now) &&
                        detail::pin_depends_on_reclaim(free_now, bytes, pace_reserve)) {
                 drop_file_cache();
@@ -3566,6 +3737,23 @@ bool FileExpertSource::pin_cache_complement(
                 const uint64_t page = 4096;
                 if (posix_memalign(&aligned, (size_t) page, (size_t) ((bytes + page - 1) / page * page)) == 0) arena = aligned;
 #endif
+#if defined(__linux__)
+                // STRATA_NUMA_SPLIT: a 2 MiB huge page would put several slices on its toucher's node, so the arena
+                // takes 4 KiB pages (one call, no VMA split); STRATA_COMPLEMENT_NOHUGEPAGE=1 does this alone (a test
+                // knob: the TLB cost of 4 KiB pages without the split)
+                static const bool nohuge = [] {
+                    const char* v = std::getenv("STRATA_COMPLEMENT_NOHUGEPAGE");
+                    return v != nullptr && std::strcmp(v, "1") == 0;
+                }();
+                if (arena != nullptr && (numa.place || nohuge)) {
+                    if (madvise(arena, (size_t) ((bytes + page - 1) / page * page), MADV_NOHUGEPAGE) != 0)
+                        std::fprintf(stderr, "FileExpertSource: WARNING: madvise(MADV_NOHUGEPAGE) on the complement "
+                                             "failed (errno %d)\n", errno);
+                    else if (!numa.place)
+                        std::fprintf(stderr, "FileExpertSource: STRATA_COMPLEMENT_NOHUGEPAGE=1: the complement takes "
+                                             "4 KiB pages\n");
+                }
+#endif
             } else {
                 arena = std::malloc((size_t) bytes);
             }
@@ -3613,9 +3801,16 @@ bool FileExpertSource::pin_cache_complement(
                             stop = "the RAM left would fall under the reserve";
                             break;
                         }
-                        for (uint64_t at = got; at < got + step; at += kPage) ((volatile uint8_t*) arena)[at] = 0;
+#if defined(__linux__)
+                        if (numa.place) numa.touch_step((uint8_t*) arena, got, got + step);   // slices on their nodes
+                        else
+#endif
+                            for (uint64_t at = got; at < got + step; at += kPage) ((volatile uint8_t*) arena)[at] = 0;
                         got += step;
                     }
+#if defined(__linux__)
+                    if (numa.place) numa.report((const uint8_t*) arena, got, bytes, stop);
+#endif
                     // cut at an expert boundary: a blob that runs past the registered range would be refused by a
                     // cudaMemcpyAsync as not page-locked
                     uint64_t w = got;
