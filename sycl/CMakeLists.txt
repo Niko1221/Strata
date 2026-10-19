@@ -27,6 +27,20 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
+option(STRATA_SYCL_WORKLOAD_TRACE "Build diagnostic CPU annotations and optional routing audit" OFF)
+if(STRATA_SYCL_WORKLOAD_TRACE)
+  set_property(SOURCE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/prefill.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/gemm.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/program/generate.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/verify.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/mtp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/native_mmvq.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/iq_kernels.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_decode_attn.dp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/fused_gr.dp.cpp
+    APPEND PROPERTY COMPILE_DEFINITIONS STRATA_SYCL_WORKLOAD_TRACE=1)
+endif()
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
@@ -228,6 +242,7 @@ foreach(k IN LISTS _kernel_cu)
 endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
+list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/weight_permute.dp.cpp)
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
@@ -254,6 +269,31 @@ target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
+# Optional TLA data movement for exact FP32 sparse prompt attention on B70.
+# A caller-provided header checkout avoids adding a download to default builds.
+option(STRATA_SYCL_TLA_ATTN "Build opt-in TLA FP32 prompt attention for B70" OFF)
+set(STRATA_SYCL_TLA_DIR "" CACHE PATH "sycl-tla checkout containing include/cute/tensor.hpp")
+if(STRATA_SYCL_TLA_ATTN)
+  if(NOT STRATA_SYCL_AOT STREQUAL "bmg-g31")
+    message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN requires STRATA_SYCL_AOT=bmg-g31")
+  endif()
+  if(NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/cute/tensor.hpp" OR
+     NOT EXISTS "${STRATA_SYCL_TLA_DIR}/include/cute/atom/copy_traits_xe_2d.hpp")
+    message(FATAL_ERROR "STRATA_SYCL_TLA_DIR must name a sycl-tla header checkout")
+  endif()
+  if(NOT STRATA_ZE_LOADER)
+    message(FATAL_ERROR "STRATA_SYCL_TLA_ATTN requires Level Zero")
+  endif()
+  set(_tla_attn ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_tla.dp.cpp)
+  target_sources(strata_kernels PRIVATE ${_tla_attn})
+  set_property(SOURCE ${_tla_attn} APPEND PROPERTY COMPILE_OPTIONS
+    "-isystem" "${STRATA_SYCL_TLA_DIR}/include")
+  set_property(SOURCE ${_tla_attn} APPEND PROPERTY COMPILE_DEFINITIONS
+    CUTLASS_ENABLE_SYCL SYCL_INTEL_TARGET CUTLASS_ENABLE_HEADERS_ONLY)
+  target_compile_definitions(strata_prefill PRIVATE STRATA_SYCL_TLA_ATTN=1)
+endif()
+
+
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
@@ -262,6 +302,9 @@ target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
   enable_testing()
+  add_executable(gemm_stride_parity src/prefill/gemm_stride_parity.cpp)
+  target_link_libraries(gemm_stride_parity PRIVATE strata_prefill)
+  add_test(NAME gemm_stride_parity COMMAND gemm_stride_parity)
   foreach(p IN ITEMS dequant_s2 s2_gemv shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
                      s_gemv elementwise bf16_gemv s_gemv_q8k qsa kv_q8 kv_stream kv_q4 cvec)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
