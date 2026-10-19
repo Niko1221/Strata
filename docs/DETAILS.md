@@ -1491,7 +1491,9 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
 - The servers start with Strata, in the background; the server window says what each one offers
   (`MCP server 'files': 14 tools (...)`), or why it did not start - its tools are then left out and the chat works
   without them. The Monitor tab lists them, and the Sampling drawer has **Use tools from MCP servers** (on by
-  default). A server that stops later is started again at its next call.
+  default). A server that stops later is started again at its next call. A status fetch that fails (the server
+  restarted, a proxy dropped it, the API key was missing) is retried after 3, 6, 12 and then every 30 seconds, so the
+  tools do not stay hidden for the rest of the page's session; a 404 (an older server without `/mcp`) is not retried.
 - In the chat each call shows as a small block (tool, arguments, result); the model reads the result and goes on,
   up to `max_rounds` calls in a row per answer. A tool that fails or takes longer than `timeout_s` (default 60 s)
   gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`

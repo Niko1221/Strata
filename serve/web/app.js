@@ -95,7 +95,9 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim());
+  toast("success", "API key saved", "Kept in this browser only.");
+  mcpTries = 0; loadMcp(); };                     // a new key may make /mcp answer: ask now, not after the backoff
 
 let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
@@ -405,25 +407,61 @@ $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (las
 // ------------------------------------------------------------------ MCP servers (GET /mcp)
 // Tools from the MCP servers in the run config: the chat offers them to the model (opt-in per request,
 // "strata_mcp": true, which only this page sends); the Monitor lists the servers and what they offer.
-let mcpInfo = {servers: [], tools: 0}, mcpRetry = null;
+let mcpInfo = {servers: [], tools: 0}, mcpRetry = null, mcpTries = 0, mcpError = null;
+const MCP_RETRY_MS = [3000, 6000, 12000, 30000];    // a failed /mcp stays retried: a restart or a proxy hiccup passes
+function mcpRetryLater() {
+  const wait = MCP_RETRY_MS[Math.min(mcpTries++, MCP_RETRY_MS.length - 1)];
+  clearTimeout(mcpRetry);
+  mcpRetry = setTimeout(loadMcp, wait);
+}
 async function loadMcp() {
+  clearTimeout(mcpRetry);                          // one fetch at a time: a retry and the Monitor's poll can meet
+  mcpRetry = null;
+  let r;
   try {
-    const r = await fetch("mcp", {headers: headers()});
-    if (!r.ok) return;
+    r = await fetch("mcp", {headers: headers()});
+  } catch (e) {                                    // the server restarted, a proxy dropped it, the tab woke up
+    mcpError = "MCP status is unreachable; retrying";
+    renderMcp();
+    mcpRetryLater();
+    return;
+  }
+  if (!r.ok) {
+    if (r.status === 404) {                        // an older server without the endpoint: nothing to wait for
+      mcpInfo = {servers: [], tools: 0};
+      mcpError = null;
+      renderMcp();
+      return;
+    }
+    mcpError = r.status === 401 ? "MCP status needs the API key (About > Settings)"
+                                : `MCP status is unavailable (HTTP ${r.status}); retrying`;
+    renderMcp();
+    mcpRetryLater();
+    return;
+  }
+  try {
     mcpInfo = await r.json();
-  } catch (e) { return; /* an older server: no MCP */ }
+  } catch (e) {                                    // a body that stopped arriving
+    mcpError = "MCP status stopped arriving; retrying";
+    renderMcp();
+    mcpRetryLater();
+    return;
+  }
+  mcpError = null;
+  mcpTries = 0;
   renderMcp();
-  clearTimeout(mcpRetry);                          // right after the start, servers may still be starting (npx downloads)
-  if ((mcpInfo.servers || []).some((s) => s.status === "starting")) mcpRetry = setTimeout(loadMcp, 3000);
+  if ((mcpInfo.servers || []).some((s) => s.status === "starting")) mcpRetryLater();
 }
 const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-badge--reading", "Starting"],
                    failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
 function renderMcp() {
   const servers = mcpInfo.servers || [];
-  $("mcp-card").hidden = !servers.length;
+  $("mcp-card").hidden = !(servers.length || mcpError);
   $("mcp-row").hidden = !servers.length;
   const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
+  $("mcp-sum").textContent = mcpError
+    ? (servers.length ? `${mcpError} — last known state shown` : mcpError)
+    : (servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "");
   $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
                                                : "no server is connected yet (see the Monitor)";
   $("mcp-list").innerHTML = servers.map((s) => {
@@ -1057,7 +1095,11 @@ for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $(
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
-$("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-mcp").getAttribute("aria-checked") !== "true"));
+$("s-mcp").onclick = () => {
+  const on = $("s-mcp").getAttribute("aria-checked") !== "true";
+  $("s-mcp").setAttribute("aria-checked", String(on));
+  if (on && !mcpInfo.tools) { mcpTries = 0; loadMcp(); }   // it may have failed while the tools were off
+};
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
