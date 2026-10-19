@@ -611,9 +611,21 @@ const NumaSplitPlan& active_numa_split() { return g_numa_plan; }
 
 void ExpertPool::diag(std::FILE* f) const {
     const uint64_t h = head_.load();
+    uint32_t batch = (uint32_t) (h >> 32), claimed = (uint32_t) h & 0xffffu, total = (uint32_t) (h >> 16) & 0xffffu,
+             done = done_.load();
+    if (numa_n_ > 0 && mode_ >= 5) {   // a split native batch never writes head_/done_: the slices' sums instead
+        claimed = total = done = 0;
+        for (int k = 0; k < numa_n_; ++k) {
+            const uint64_t sh = nsync_[(size_t) k].head.load();
+            batch = (uint32_t) (sh >> 32);   // every slice head carries the batch's epoch
+            claimed += (uint32_t) sh & 0xffffu;
+            total += (uint32_t) (sh >> 16) & 0xffffu;
+            done += nsync_[(size_t) k].done.load();
+        }
+    }
     std::fprintf(f, "  expert pool: epoch %u, batch epoch %u: %u of %u jobs claimed, %u done; %u of %d workers parked, "
-                    "%u sleeping; mode %d\n", epoch_.load(), (uint32_t) (h >> 32), (uint32_t) h & 0xffffu,
-                 (uint32_t) (h >> 16) & 0xffffu, done_.load(), parked_count(), n_, sleepers_.load(), mode_);
+                    "%u sleeping; mode %d\n", epoch_.load(), batch, claimed, total, done, parked_count(), n_,
+                 sleepers_.load(), mode_);
     if (numa_n_ > 0) std::fprintf(f, "  expert pool NUMA slices:%s\n", numa_counters().c_str());
     std::fprintf(f, "  expert pool threads:");
     for (int i = 0; i < n_; ++i) {
@@ -680,7 +692,12 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         } else {
 #if defined(__linux__)
             std::vector<int> node((size_t) threads, -1);
-            if (!pin) std::snprintf(why, sizeof why, "the pool's threads are not pinned");
+            // the expert source's own reading of it (expert_source.cpp): exactly "1"
+            const char* rotate = std::getenv("STRATA_EXCHANGE_ROTATE");
+            if (rotate != nullptr && std::strcmp(rotate, "1") == 0)
+                std::snprintf(why, sizeof why, "STRATA_EXCHANGE_ROTATE=1 moves experts between slots, the split needs "
+                                               "fixed slots");
+            else if (!pin) std::snprintf(why, sizeof why, "the pool's threads are not pinned");
             for (int j = 0; j < threads && why[0] == '\0'; ++j) {
                 const int c = core_of(j);
                 if (c < 0 && j < n_) std::snprintf(why, sizeof why, "worker %d has no core to be pinned to", j);

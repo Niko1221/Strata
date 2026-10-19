@@ -9,7 +9,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace cpu = strata::kernels::cpu;
@@ -21,6 +23,16 @@ static void put_env(const char* k, const char* v) {
     setenv(k, v, 1);
 #endif
 }
+// a synthetic Strata-form (s2) expert: random codes, fp16 scales ~0.004-0.016 (as expert_multi_test's)
+static void make_s2_blob(uint8_t* b, std::mt19937& rng) {
+    for (size_t i = 0; i < cpu::O_GU_SCALES; ++i) b[i] = (uint8_t) rng();
+    for (size_t i = cpu::O_GU_SCALES; i < cpu::BLOB; i += 2) {
+        const uint16_t h = (uint16_t) (0x1C00 + rng() % 0x0800);
+        std::memcpy(b + i, &h, 2);
+    }
+}
+static bool same_h(const float* a, const float* b) { return std::memcmp(a, b, (size_t) cpu::H * sizeof(float)) == 0; }
+static void nan_h(float* a) { std::fill(a, a + cpu::H, std::numeric_limits<float>::quiet_NaN()); }
 static void unset_env(const char* k) {
 #if defined(_WIN32)
     _putenv_s(k, "");
@@ -66,7 +78,7 @@ int main(int argc, char** argv) {
         cpu::native_quant_act(f, x.data(), act[t].data());
         cpu::act_quant_any(x.data(), cpu::H, qact[t]);
     }
-    int checks = 0, split_checks = 0;
+    int checks = 0, split_checks = 0, mixed_checks = 0;
     for (int n : {1, 7, cpu::ExpertPool::kMaxSplitMulti + 1}) {
         std::vector<cpu::ExpertJobMulti> jobs(n);
         std::vector<float> out((size_t) n * cpu::MAXT * cpu::H);
@@ -128,11 +140,95 @@ int main(int argc, char** argv) {
                 }
                 pool.diag(stderr);
             }
+        // The split with modes 0-4 between the native batches, on one pool: a mode-0..4 batch lives on `head_`, a
+        // native one on the slice heads, so this alternates the two families of heads (a stale claim must fail on
+        // the other family) and runs the per-slice `parked` through the non-native modes.  The Strata-form kernels
+        // need AVX-512 VBMI, the oracle contract included (a Xeon Gold 6226 stops on vpmultishiftqb inside
+        // s2_expert_vnni_q with the oracle on), so a CPU without it skips this part.
+        // CBA: no coverage on a VBMI-free CPU (the 6226 box); a test-only kernel seam in the pool if it must have it.
+        const cpu::CpuFeatures feat = cpu::cpu_features();
+        if (n == 7 && feat.usable()) {
+            std::mt19937 rng(7);
+            std::vector<std::vector<uint8_t>> s2(3, std::vector<uint8_t>(cpu::BLOB));
+            for (auto& b : s2) make_s2_blob(b.data(), rng);
+            const int NJ = 5;   // single-token jobs: run() and run_split()
+            std::vector<cpu::ExpertJob> sj(NJ);
+            std::vector<float> sout((size_t) NJ * cpu::H), sref(sout.size());
+            std::vector<cpu::ExpertJobMulti> mj(3);   // multi-token jobs: run_split_multi(), 1, 2 and 3 tokens
+            std::vector<float> mout((size_t) 3 * cpu::MAXT * cpu::H), mref(mout.size());
+            {   // the serial reference: run_split and run_split_multi are bitwise run's, token for token (pool.hpp)
+                cpu::ExpertScratch ws;
+                for (int j = 0; j < NJ; ++j) {
+                    sj[j].blob = s2[(size_t) j % 3].data();
+                    sj[j].act = &qact[(size_t) j % cpu::MAXT];
+                    sj[j].out = sout.data() + (size_t) j * cpu::H;
+                    sj[j].slot = j;
+                    cpu::s2_expert_vnni_q(sj[j].blob, *sj[j].act, sref.data() + (size_t) j * cpu::H, ws);
+                }
+                for (int e = 0; e < 3; ++e) {
+                    mj[e].blob = s2[(size_t) e].data();
+                    mj[e].nt = e + 1;
+                    for (int t = 0; t < mj[e].nt; ++t) {
+                        mj[e].act[t] = &qact[(size_t) t];
+                        mj[e].out[t] = mout.data() + ((size_t) e * cpu::MAXT + t) * cpu::H;
+                        cpu::s2_expert_vnni_q(mj[e].blob, qact[(size_t) t], mref.data() + ((size_t) e * cpu::MAXT + t) * cpu::H, ws);
+                    }
+                }
+            }
+            for (float v : sref) if (!std::isfinite(v)) { std::fprintf(stderr, "s2 reference not finite\n"); return 1; }
+            for (bool host : {false, true}) for (int workers : {1, 2, 3, 5})
+                for (int tasks : {0, 41}) {
+                    cpu::ExpertPool pool(workers, false, host, cpu::PoolAffinity::All, tasks);
+                    for (int repeat = 0; repeat < 3; ++repeat)
+                        for (int step = 0; step < 6; ++step) {
+                            bool ok = true;
+                            if (step % 2 == 1) {   // the native batch between each pair
+                                for (const auto& job : jobs) for (int t = 0; t < job.nt; ++t) nan_h(job.out[t]);
+                                pool.run_split_multi_native(f, jobs.data(), n);
+                                ok = std::memcmp(ref.data(), out.data(), out.size() * sizeof(float)) == 0;
+                            } else if (step < 4) {   // 0: run (mode 0), 2: run_split (modes 1/2)
+                                for (int j = 0; j < NJ; ++j) nan_h(sj[j].out);
+                                if (step == 0) pool.run(sj.data(), NJ);
+                                else pool.run_split(sj.data(), NJ);
+                                for (int j = 0; j < NJ; ++j) ok = ok && same_h(sj[j].out, sref.data() + (size_t) j * cpu::H);
+                            } else {   // 4: run_split_multi (modes 3/4)
+                                for (const auto& job : mj) for (int t = 0; t < job.nt; ++t) nan_h(job.out[t]);
+                                pool.run_split_multi(mj.data(), 3);
+                                for (int e = 0; e < 3; ++e) for (int t = 0; t < mj[e].nt; ++t)
+                                    ok = ok && same_h(mj[e].out[t], mref.data() + ((size_t) e * cpu::MAXT + t) * cpu::H);
+                            }
+                            if (!ok) {
+                                std::fprintf(stderr, "numa-split mixed-mode mismatch step=%d workers=%d host=%d tasks=%d "
+                                                     "repeat=%d\n", step, workers, host, tasks, repeat);
+                                return 1;
+                            }
+                            ++mixed_checks;
+                        }
+                    pool.diag(stderr);
+                }
+        } else if (n == 7) {
+            std::printf("pool tasks: modes 0-4 interleaved under the split SKIPPED (%s)\n", feat.reason());
+        }
         unset_env("STRATA_NUMA_SPLIT");
         unset_env("STRATA_POOL_SPIN_US");
         if (cpu::active_numa_split().on) { std::fprintf(stderr, "numa-split plan outlived its pool\n"); return 1; }
     }
-    std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode\n", checks + split_checks,
-                split_checks);
+#if defined(__linux__)
+    {   // the real split refuses STRATA_EXCHANGE_ROTATE=1 (experts move between slots, the slices need fixed ones)
+        put_env("STRATA_NUMA_SPLIT", "1");
+        put_env("STRATA_EXCHANGE_ROTATE", "1");
+        bool refused = false;
+        {
+            cpu::ExpertPool pool(2, true, true);
+            refused = !cpu::active_numa_split().on &&
+                      cpu::active_numa_split().why.find("STRATA_EXCHANGE_ROTATE") != std::string::npos;
+        }
+        unset_env("STRATA_EXCHANGE_ROTATE");
+        unset_env("STRATA_NUMA_SPLIT");
+        if (!refused) { std::fprintf(stderr, "numa-split did not refuse STRATA_EXCHANGE_ROTATE=1\n"); return 1; }
+    }
+#endif
+    std::printf("pool tasks: %d bitwise comparisons passed, %d of them in NUMA-split mode (%d with modes 0-4 "
+                "interleaved)\n", checks + split_checks + mixed_checks, split_checks + mixed_checks, mixed_checks);
     return 0;
 }
