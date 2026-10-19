@@ -5797,6 +5797,16 @@ int main(int argc, char** argv) {
                 arena_src.set_pin_priority(pin_cand, pin_nonres);
             }
         }
+        // arena-skip (docs/ARCH-EXPERT-MEMORY-2026-10-19.md §4.7): on a layer split the tail stage's layers go into a
+        // second PinnedArena, so the whole block can be handed back with one MEM_RELEASE once the residency table
+        // proves no pair of them can be read from RAM.  A large-page allocation cannot be freed in part - that is
+        // why the block exists at all.  The release itself waits for host_res, below.  Gated on the same switch that
+        // releases it: without the release, two blocks are pure overhead.
+        {
+            const char* ar = std::getenv("STRATA_ARENA_RELEASE_BLOCK");
+            if (multi_gpu && !split_at.empty() && !o.mmap_experts && ar != nullptr && ar[0] != '\0' && ar[0] != '0')
+                arena_src.set_split_layer(split_at.front());
+        }
         // The arena pins until the OS refuses; on Windows that leaves no page-locked memory for the small buffers the
         // engine allocates after it (the verify window's staging: "mapped staging allocation failed", exit 1).  Keep a
         // reserve while the arena pins and hand it back after (pin_budget.hpp).
@@ -7327,6 +7337,40 @@ int main(int argc, char** argv) {
                 }
             (void) pf;
             rss_probe("after the prefetch hints");
+        }
+        // arena-skip: hand the tail block back when EVERY pair of its layers sits in a GPU cache.  Then no CPU-pool
+        // read can land there, and no eviction can arrive either: a layer with all 512 experts resident has no spare
+        // slot to admit another one, so the adaptive tier never swaps an expert of it out.  Without that proof the
+        // block stays - a released blob reads as zeros, which is silent corruption rather than an error.
+        if (arena_src.split_layer() >= 0) {
+            const char* on = std::getenv("STRATA_ARENA_RELEASE_BLOCK");
+            const bool asked = on != nullptr && on[0] != '\0' && on[0] != '0';
+            const int64_t l0 = arena_src.split_layer();
+            bool whole = true;
+            for (int64_t l = l0; l < g.n_layers && whole; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e)
+                    if (host_res[(size_t) (l * g.n_expert + e)] == strata::core::kNotResident) {
+                        whole = false;
+                        break;
+                    }
+            if (!asked)
+                std::fprintf(stderr, "strata generate: arena-skip: the tail block (layers %lld-%lld, %.2f GiB) is "
+                                     "kept; STRATA_ARENA_RELEASE_BLOCK=1 hands it back when %s\n",
+                             (long long) l0, (long long) (g.n_layers - 1),
+                             (double) (strata::kernels::cpu::expert_layout().total -
+                                       strata::kernels::cpu::expert_layout().layer_offset(l0)) /
+                                 (1024.0 * 1024.0 * 1024.0),
+                             whole ? "its layers are fully resident (they are)" : "its layers are fully resident");
+            else if (whole) {
+                const uint64_t freed = arena_src.release_tail();
+                std::fprintf(stderr, "strata generate: arena-skip: layers %lld-%lld are fully resident: %.2f GiB of "
+                                     "the expert arena handed back to the OS\n",
+                             (long long) l0, (long long) (g.n_layers - 1),
+                             (double) freed / (1024.0 * 1024.0 * 1024.0));
+            } else {
+                std::fprintf(stderr, "strata generate: arena-skip: the tail block stays - a layer past %lld is not "
+                                     "fully resident, so the CPU pool still reads it\n", (long long) l0);
+            }
         }
         for (auto& st : stages) {   // layer split across GPUs: the same table on every device
             const strata::core::OnDevice on(st->dev);
