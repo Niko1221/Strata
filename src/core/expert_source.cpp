@@ -533,6 +533,7 @@ struct NumaComplementPlacement {
     std::vector<std::pair<uint64_t, uint64_t>> ranges[2];   ///< page-aligned, sorted, coalesced, arena offsets
     uint64_t slice_bytes[2] = {0, 0};
     std::vector<uint64_t> free_before;                      ///< MemFree per node before the allocation
+    std::vector<uint64_t> free_after;                       ///< the same after the model files' pages are released
     std::atomic<bool> pin_failed{false};
     std::chrono::steady_clock::time_point t0;
 
@@ -553,11 +554,11 @@ struct NumaComplementPlacement {
         }
         return out;
     }
-    std::string free_text() const {
+    static std::string free_text(const std::vector<uint64_t>& free) {
         std::string s;
         char buf[64];
-        for (size_t n = 0; n < free_before.size(); ++n) {
-            std::snprintf(buf, sizeof buf, "%snode %zu %.2f GiB", n ? ", " : "", n, (double) free_before[n] / 1073741824.0);
+        for (size_t n = 0; n < free.size(); ++n) {
+            std::snprintf(buf, sizeof buf, "%snode %zu %.2f GiB", n ? ", " : "", n, (double) free[n] / 1073741824.0);
             s += buf;
         }
         return s;
@@ -604,7 +605,7 @@ struct NumaComplementPlacement {
         std::fprintf(stderr, "FileExpertSource: NUMA placement of the complement: slice 0 -> node %d (%.2f GiB, toucher "
                              "CPU %d), slice 1 -> node %d (%.2f GiB, toucher CPU %d), 4 KiB pages; free before: %s\n",
                      nodes[0], (double) slice_bytes[0] / 1073741824.0, core[0], nodes[1],
-                     (double) slice_bytes[1] / 1073741824.0, core[1], free_text().c_str());
+                     (double) slice_bytes[1] / 1073741824.0, core[1], free_text(free_before).c_str());
     }
 
     /// Touches one byte per page of each slice's ranges clipped to [lo, hi), one pinned thread per slice; then the
@@ -666,9 +667,10 @@ struct NumaComplementPlacement {
         double share[2];
         for (int k = 0; k < 2; ++k) share[k] = sampled[k] > 0 ? 100.0 * (double) on_node[k] / (double) sampled[k] : 0.0;
         std::fprintf(stderr, "FileExpertSource: NUMA placement: node %d %.2f GiB (%.1f %% of its slices), node %d %.2f GiB "
-                             "(%.1f %% of its slices); free before: %s; pages taken in %.1f s\n",
+                             "(%.1f %% of its slices); free before: %s; after the drop: %s; pages taken in %.1f s\n",
                      nodes[0], share[0] / 100.0 * (double) slice_bytes[0] / 1073741824.0, share[0], nodes[1],
-                     share[1] / 100.0 * (double) slice_bytes[1] / 1073741824.0, share[1], free_text().c_str(), secs);
+                     share[1] / 100.0 * (double) slice_bytes[1] / 1073741824.0, share[1], free_text(free_before).c_str(),
+                     free_text(free_after).c_str(), secs);
         if (got < bytes)
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the paced loop stopped at %.2f of %.2f "
                                  "GiB (%s); the rest is first-touched by unpinned copy threads (this arm is invalid)\n",
@@ -3680,6 +3682,15 @@ bool FileExpertSource::pin_cache_complement(
             }();
             uint64_t free_now = 0;
             numa.init(offsets, n_expert_, layer_blob_bytes_, role_bytes_);   // STRATA_NUMA_SPLIT: placed by the paced loop
+            if (numa.place) {
+                // the engine's own mapped model pages sit on whichever node read them, and a toucher on a full node
+                // gets its pages from the other one (no local reclaim): give them back first, as the guard=1 path does
+                drop_file_cache();
+                numa.free_after = NumaComplementPlacement::node_free();
+                std::fprintf(stderr, "FileExpertSource: NUMA placement: the model files' cached pages were released; "
+                                     "free after the drop: %s\n",
+                             NumaComplementPlacement::free_text(numa.free_after).c_str());
+            }
             if (guard == 2 || numa.place) {
                 paced = true;
                 std::fprintf(stderr, "FileExpertSource: %s: page-locking the complement in steps\n",
