@@ -338,8 +338,6 @@ void shared_expert(const uint8_t* x_q8_0, const uint8_t* x_q8k, const uint16_t* 
     // materialised).  The pair kernel is bit-exact vs the three-kernel sequence (shared row math, shared
     // SwiGLU expression).  The ready-made engine's path below is untouched.
     bool paired = false;
-    if (native_gate || native_up)
-        native_quantize_q8_1(x_f32, native->q8_1, (int) n_embd, 1, stream);
     if (!native_gate && !native_up) {
         paired = s_gemv_pair_silu(x_q8_0, x_q8k, gate_form, gate_codes, gate_scales, gate_off,
                                   up_form, up_codes, up_scales, up_off, gate, n_embd, n_ff, 32,

@@ -458,9 +458,10 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         }
         std::printf("  fused GR read + q8_1 (STRATA_QFUSE), T 1..8, direct and graph replays: %s\n", qbad ? "FAIL" : "pass");
         bad += qbad;
-        // Counter-free q8_mixed path (q8_cnt == nullptr, used by MTP when STRATA_QFUSE_HC_LOCAL=1): must return true
-        // and write identical q8_1 bytes across T=1..8 and graph replays, and must return false without writing when
-        // STRATA_QFUSE_HC_LOCAL=0 and q8_cnt == nullptr.
+#if (defined(STRATA_USE_HIP) || defined(__HIP_PLATFORM_AMD__)) && !defined(STRATA_HIP_GFX906)
+        // Counter-free q8_mixed path (q8_cnt == nullptr, used by MTP when STRATA_QFUSE_HC_LOCAL=1 on wave32 HIP where
+        // STRATA_GR_FAST_BUILD == 0): must return true and write identical q8_1 bytes across T=1..8 and graph replays,
+        // and must return false without writing when STRATA_QFUSE_HC_LOCAL=0 and q8_cnt == nullptr.
         if (!v3) {
             int cf_bad = 0;
             const char* prev_loc = std::getenv("STRATA_QFUSE_HC_LOCAL");
@@ -525,6 +526,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                         cf_bad ? "FAIL" : "pass");
             bad += cf_bad;
         }
+#endif
         cudaFree(d_q); cudaFree(d_ref); cudaFree(d_cnt);
     }
     std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
