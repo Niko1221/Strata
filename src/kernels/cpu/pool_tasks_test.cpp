@@ -240,6 +240,20 @@ int main(int argc, char** argv) {
         }
         unset_env("STRATA_NUMA_SPLIT");
         if (!ok) { std::fprintf(stderr, "numa-split real-mode plan invariant broken\n"); return 1; }
+        // the DEFAULT worker count under the split spans every socket (pool_plan.hpp span_packages): on a 2-socket
+        // host the split must then be on, where 0.2.0's host-socket default alone would leave every thread on one node
+        put_env("STRATA_NUMA_SPLIT", "1");
+        {
+            const int packages = (int) cpu::pool_plan_input(cpu::detect_cpu_topology(true, cpu::PoolAffinity::All))
+                                     .cores_per_package.size();
+            cpu::ExpertPool pool(0, true, true);
+            const auto& plan = cpu::active_numa_split();
+            std::printf("pool tasks: default pool under the split: %d workers on %d socket(s), split %s%s (%s)\n",
+                        pool.workers(), packages, plan.on ? "on" : "off: ", plan.why.c_str(), pool.plan_limit());
+            ok = packages != 2 || (plan.on && plan.cores[0].size() > 0 && plan.cores[1].size() > 0);
+        }
+        unset_env("STRATA_NUMA_SPLIT");
+        if (!ok) { std::fprintf(stderr, "numa-split: the default pool on a 2-socket host did not span both nodes\n"); return 1; }
         // a value other than 1 / test is off, with the value in the reason; "0" and "" are off silently
         for (const char* v : {"off", "yes"}) {
             put_env("STRATA_NUMA_SPLIT", v);

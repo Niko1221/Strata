@@ -150,6 +150,40 @@ int main() {
     expect(cpu::pool_workers_warning(8, q, cpu::plan_pool_workers(q)).find("container") != std::string::npos,
            "8 workers under a 4-CPU quota: names the container limit");
 
+    // STRATA_NUMA_SPLIT (span_packages): the default spans every socket, the other bounds stay; off = the plan above
+    {
+        auto x = xeon;   // 2 x 20 cores: 39 but the host's, one kept free -> 38, then the cap
+        x.span_packages = true;
+        line("2-socket 40c/80t, NUMA split", x);
+        const cpu::PoolPlan px = cpu::plan_pool_workers(x);
+        expect(px.workers == cpu::kPoolWorkersCap, "2x20c split: both sockets, then the cap");
+        expect(px.cores_local == 40, "2x20c split: every socket counts as local");
+        auto b = cpu_of(48, {12, 12});   // the 2 x Xeon Gold 6226 box: 23 but the host's, one kept free
+        expect(cpu::plan_pool_workers(b).workers == 11, "2x12c no split: the host socket's 11 (unchanged)");
+        b.span_packages = true;
+        expect(cpu::plan_pool_workers(b).workers == 22, "2x12c split: 22 workers across both sockets");
+        auto one = cpu_of(16, {8});
+        one.span_packages = true;
+        expect(cpu::plan_pool_workers(one).workers == 7, "one socket: the split changes nothing");
+        // the socket warning is silenced while the split is on; the others stay
+        expect(cpu::pool_workers_warning(30, x, px).empty(), "30 workers on 2x20c under the split: no socket warning");
+        auto bx = cpu_of(80, {20, 20});
+        bx.span_packages = true;
+        const std::string w = cpu::pool_workers_warning(36, bx, cpu::plan_pool_workers(bx));
+        expect(!w.empty() && w.find("socket") == std::string::npos, "36 on 2x20c under the split: the cap warning, not the socket one");
+        expect(cpu::pool_workers_warning(60, bx, cpu::plan_pool_workers(bx)).find("physical cores") != std::string::npos,
+               "60 on 2x20c under the split: still more than the physical cores");
+    }
+    // interleave_packages: round-robin over the packages (host's first), stable inside each
+    {
+        const std::vector<size_t> o = cpu::interleave_packages({0, 0, 0, 1, 1, 1, 1});
+        const std::vector<size_t> want = {0, 3, 1, 4, 2, 5, 6};
+        expect(o == want, "interleave 3+4: 0 3 1 4 2 5 6");
+        expect(cpu::interleave_packages({}).empty(), "interleave of nothing");
+        const std::vector<size_t> same = cpu::interleave_packages({1, 1, 1});
+        expect(same == std::vector<size_t>({0, 1, 2}), "one package: the order is kept");
+    }
+
     if (g_fail) {
         std::fprintf(stderr, "pool_plan_test: %d failure(s)\n", g_fail);
         return 1;

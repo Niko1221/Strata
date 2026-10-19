@@ -43,6 +43,10 @@ struct PoolPlanInput {
     /// +12.6% over the 19 of one-per-core, 24 workers -44%: notes-152-users.md).
     int p_cores = 0;
     int e_cores = 0;
+    /// STRATA_NUMA_SPLIT (opt-in): the split needs workers on both NUMA nodes, so the default may use the cores of
+    /// every package instead of the host's only, and a configured count above the host's socket is not warned about.
+    /// The other bounds (reserve, hybrid, quota, cap) stay.  False: the plan above, unchanged.
+    bool span_packages = false;
 };
 
 /// #3262: is a CPU an efficiency-class core?  `pmu_core` / `pmu_atom` / `pmu_lowpower` are Intel's hybrid PMU lists
@@ -83,11 +87,14 @@ inline PoolPlan plan_pool_workers(const PoolPlanInput& in) {
         local = cores;
         p.packages = 1;
     }
+    const bool span = in.span_packages && p.topology_known && p.packages > 1;
+    if (span) local = cores;                              // STRATA_NUMA_SPLIT: every socket counts as local
     p.cores = cores;
     p.cores_local = local;
     p.limit = "every physical core but the host's";
     int n = std::max(1, local - 1);                       // the host thread has the first core
     if (!p.topology_known) p.limit = "half the logical processors (the OS gave no core layout)";
+    else if (span) p.limit = "every CPU socket (STRATA_NUMA_SPLIT)";
     else if (p.packages > 1) p.limit = "the host's CPU socket";
     if (n >= kPoolReserveFrom) {                          // a big CPU keeps a core for the engine's other threads
         n -= kPoolReserve;
@@ -127,7 +134,7 @@ inline std::string pool_workers_warning(int requested, const PoolPlanInput& in, 
     if (plan.topology_known && requested + 1 > plan.cores)
         return asked + ", but this CPU has " + std::to_string(plan.cores) +
                " physical cores. Two workers on one core share its memory bandwidth and slow each other down. " + rec;
-    if (plan.packages > 1 && requested + 1 > plan.cores_local)
+    if (plan.packages > 1 && !in.span_packages && requested + 1 > plan.cores_local)
         return asked + ", more than the " + std::to_string(plan.cores_local) +
                " cores of the CPU socket the engine's main thread runs on. Workers on the other socket read the experts " +
                "across the link and were measured slower than fewer local ones. " + rec;
@@ -136,6 +143,24 @@ inline std::string pool_workers_warning(int requested, const PoolPlanInput& in, 
                " CPUs. Threads beyond the limit are throttled together. " + rec;
     return asked + ", more than this CPU can use well (the speed stops rising at about " +
            std::to_string(plan.workers) + " workers and the end of each layer waits for every one). " + rec;
+}
+
+/// STRATA_NUMA_SPLIT: the order to take worker cores in so that a default count below the core count still spans the
+/// packages evenly - round-robin over the packages in their first-seen order (the host's first), stable inside each.
+/// `package[i]` is worker core i's package (-1: unknown, a package of its own); returns indices into it.
+inline std::vector<size_t> interleave_packages(const std::vector<int>& package) {
+    std::vector<int> ids;                                 // packages in first-seen order
+    std::vector<std::vector<size_t>> of;                  // each package's worker indices, in order
+    for (size_t i = 0; i < package.size(); ++i) {
+        const size_t k = (size_t) (std::find(ids.begin(), ids.end(), package[i]) - ids.begin());
+        if (k == ids.size()) { ids.push_back(package[i]); of.emplace_back(); }
+        of[k].push_back(i);
+    }
+    std::vector<size_t> order;
+    for (size_t r = 0; order.size() < package.size(); ++r)
+        for (const auto& v : of)
+            if (r < v.size()) order.push_back(v[r]);
+    return order;
 }
 
 }  // namespace strata::kernels::cpu

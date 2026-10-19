@@ -650,16 +650,33 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
+    // STRATA_NUMA_SPLIT, read here for the worker count (the split itself is decided below, once the count is known)
+    const char* env = std::getenv("STRATA_NUMA_SPLIT");
+    const bool env_off = env == nullptr || *env == '\0' || std::strcmp(env, "0") == 0;
+    const bool env_known = !env_off && (std::strcmp(env, "1") == 0 || std::strcmp(env, "test") == 0);
     const PoolPlanInput plan_in = pool_plan_input(topo_);
     const PoolPlan wplan = plan_pool_workers(plan_in);
     if (n_workers > 0) {
         n_ = n_workers;
-        // recommend, never force: a count above what this CPU uses well runs as configured, with a plain warning
-        static std::atomic<bool> warned{false};
-        const std::string why = pool_workers_warning(n_workers, plan_in, wplan);
-        if (!why.empty() && !warned.exchange(true)) std::fprintf(stderr, "strata cpu pool: warning: %s\n", why.c_str());
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
         n_ = (std::max)(1, topo_.p_cores - 1);
+    } else if (env_known) {
+        // the split needs workers on both nodes: the default spans every socket (the plan's other bounds stay), its
+        // cores taken round-robin over the packages so a count under the core count still spans them evenly
+        PoolPlanInput span_in = plan_in;
+        span_in.span_packages = true;
+        const PoolPlan sp = plan_pool_workers(span_in);
+        if (topo_.worker_package.size() == topo_.worker_cores.size()) {
+            std::vector<int> cores, pkgs;
+            for (size_t i : interleave_packages(topo_.worker_package)) {
+                cores.push_back(topo_.worker_cores[i]);
+                pkgs.push_back(topo_.worker_package[i]);
+            }
+            topo_.worker_cores = std::move(cores);
+            topo_.worker_package = std::move(pkgs);
+        }
+        n_ = (std::min)(sp.workers, (std::max)(1, (int) topo_.worker_cores.size()));
+        plan_limit_ = sp.limit;
     } else {
         n_ = (std::min)(wplan.workers, (std::max)(1, (int) topo_.worker_cores.size()));
         plan_limit_ = wplan.limit;
@@ -678,9 +695,6 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     // STRATA_NUMA_SPLIT: decided here, before any worker starts (a worker counts into its slice's `parked` from its
     // first instruction), and never revised.  Unset: the plan stays empty and nothing below runs.
     NumaSplitPlan plan;
-    const char* env = std::getenv("STRATA_NUMA_SPLIT");
-    const bool env_off = env == nullptr || *env == '\0' || std::strcmp(env, "0") == 0;
-    const bool env_known = !env_off && (std::strcmp(env, "1") == 0 || std::strcmp(env, "test") == 0);
     if (!env_off && !env_known) {
         plan.why = std::string("unknown STRATA_NUMA_SPLIT value '") + env + "' (use 1 or test)";
         std::fprintf(stderr, "strata cpu pool: NUMA split off: %s\n", plan.why.c_str());
@@ -762,6 +776,15 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         } else {
             std::fprintf(stderr, "strata cpu pool: NUMA split off: %s\n", plan.why.c_str());
         }
+    }
+    if (n_workers > 0) {
+        // recommend, never force: a count above what this CPU uses well runs as configured, with a plain warning
+        // (STRATA_NUMA_SPLIT on: workers on the other socket are the point, that case is not warned about)
+        PoolPlanInput warn_in = plan_in;
+        warn_in.span_packages = plan.on;
+        static std::atomic<bool> warned{false};
+        const std::string why = pool_workers_warning(n_workers, warn_in, plan_pool_workers(warn_in));
+        if (!why.empty() && !warned.exchange(true)) std::fprintf(stderr, "strata cpu pool: warning: %s\n", why.c_str());
     }
     g_numa_plan = std::move(plan);
     g_numa_owner = this;
