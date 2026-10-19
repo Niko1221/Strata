@@ -67,6 +67,10 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
+- [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
+  Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
+  `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
+  +5% on prompt reading; `--batch` gives no aggregate gain, 2400 → 3600 MT/s RAM is +2%, `--kv-resident` neutral.
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
 ## Run the benchmark
