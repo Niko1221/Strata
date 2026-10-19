@@ -145,10 +145,21 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
     const size_t layers = owned_qsa(ss);
-    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
-        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
-        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
-        return fail(error, "invalid checkpoint running-state payload");
+    // the Metal window keeps the indexer block positions itself: its checkpoint carries none
+#if defined(STRATA_GPU_METAL)
+    const size_t block_pos = 0;
+#else
+    const size_t block_pos = layers * z.block_pos;
+#endif
+    const struct { const char* name; size_t actual, expected; } fields[] = {
+        {"gdn", c.gdn.size(), z.gdn}, {"ple", c.ple.size(), ss.ple_hist ? z.ple : 0},
+        {"tails", c.tails.size(), layers * z.tail}, {"dead", c.dead.size(), layers * z.dead},
+        {"block_pos", c.block_pos.size(), block_pos}};
+    for (const auto& f : fields)
+        if (f.actual != f.expected)
+            return fail(error, ("invalid checkpoint running-state payload: " + std::string(f.name) + " is " +
+                                std::to_string(f.actual) + " bytes, expected " + std::to_string(f.expected)).c_str());
+    if (!image_keys(c.imgs, c.ids.size())) return fail(error, "invalid checkpoint image keys");
     return true;
 }
 
