@@ -1,0 +1,14 @@
+speculation              64 rounds of 2, drafts accepted 0 of 63 (0.000), 1.00 tokens per round
+window sizes             T1:1 T2:63  (min draft probability 0.50)
+accepted per round       0:64 1:0
+verify window            wait for rings 8.848  pool 88.349  host 0.018  commit 0.034 ms/round; CPU experts 7.25 distinct / 7.54 routed per layer
+pool multi               gate/up 13.287  quantize 0.094  down 3.708 ms/round; 29.4 GB/s over the rows phases; CPU pool call 88.335 ms/round
+dispatch                 plan 0.077  activation quantize 0.073  jobs 70.891  run 17.097 ms/round
+adaptive tier            1536 experts swapped into the VRAM tier (every 4 rounds, 3.016 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 32184.3 MB read from the files (502.88 MB/round, 99.0 ms/round of reading, 5.08 GB/s per reading thread) (the GGUF in place); prompt copies 8392.4 MB
+routing prefetch         24460 experts warmed, 11066 of the file tier's 0 blob reads had been warmed (0.0%); predictor 15.0 ms/round on its thread, 54 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 141/256 of the misses)
+prompt  : 248045 846 198 3936 1132 279 709 803 884 310 2542 14031 321 460 279 4434 999 13 198 71093 12305 198 727 884 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 884 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248045 74455 198 248068 271 248069 271
+output  : 71093 12305 198 727 2542 14031 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 2542 14031 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248044 248045 248045 248046 198 248045 248045 248046 198 248045 248046 198 248045 248046 198 248045 248046 198
+decode                   64 tokens in 6476.0 ms  ->  9.88 tok/s
+prefill                  69 tokens in 2015.3 ms  ->  34.24 tok/s  (time to first token 2849.6 ms)

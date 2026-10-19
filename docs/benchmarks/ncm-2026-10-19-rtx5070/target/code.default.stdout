@@ -1,0 +1,16 @@
+speculation              20 rounds of 6, drafts accepted 46 of 63 (0.730), 3.30 tokens per round
+window sizes             T1:1 T2:0 T3:0 T4:16 T5:0 T6:3  (min draft probability 0.50)
+suffix drafts            3 windows, drafts accepted 11 of 15
+accepted per round       0:3 1:2 2:5 3:8 4:0 5:2
+verify window            wait for rings 10.761  pool 152.120  host 0.010  commit 0.017 ms/round; CPU experts 20.44 distinct / 28.18 routed per layer
+pool multi               gate/up 27.685  quantize 0.374  down 10.408 ms/round; 37.1 GB/s over the rows phases; CPU pool call 152.084 ms/round
+dispatch                 plan 0.147  activation quantize 0.147  jobs 113.038  run 38.480 ms/round
+adaptive tier            480 experts swapped into the VRAM tier (every 4 rounds, 3.493 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 28732.7 MB read from the files (1436.64 MB/round, 132.3 ms/round of reading, 10.86 GB/s per reading thread) (the GGUF in place); prompt copies 8810.5 MB
+routing prefetch         19303 experts warmed, 11360 of the file tier's 0 blob reads had been warmed (0.0%); predictor 21.1 ms/round on its thread, 0 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 141/256 of the misses)
+mtp                      2.523 ms/round drafting (19 rounds), MTP prompt 0.3 ms, 934 MiB of VRAM
+prompt  : 248045 846 198 3936 1132 279 709 803 884 310 2542 14031 321 460 279 4434 999 13 198 71093 12305 198 727 884 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 884 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248045 74455 198 248068 271 248069 271
+output  : 71093 12305 198 727 2542 14031 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 2542 14031 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248044 248045 248045 248046 198 248045 248045 248046 198 248045 248046 198 248045 248046 198 248045 248046 198
+decode                   64 tokens in 3405.7 ms  ->  18.79 tok/s
+prefill                  69 tokens in 1225.5 ms  ->  56.30 tok/s  (time to first token 2048.1 ms)
