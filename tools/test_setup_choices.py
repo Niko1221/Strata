@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -369,12 +370,14 @@ class HipVision(unittest.TestCase):
 class RotationalDisk(unittest.TestCase):
     """#605: a model on a rotational disk gets --ple-io ram when the n-gram table fits the RAM, else a warning."""
 
-    def install(self, ram, disk, platform_ok=False, model="Q2_0"):
+    def install(self, ram, disk, platform_ok=False, model="Q2_0", family="qwen", extra_patch=None):
         from test_setup_golden import PROFILES, install
         _, found = PROFILES["64GB-1x32GB"]
-        return install(ram, found, ["--family", "qwen", "--model", model, "--no-start"],
-                       extra=[mock.patch.object(setup, "rotational_disk", lambda p: disk),
-                              mock.patch.object(setup, "ple_ram_platform_ok", lambda: platform_ok)])
+        extra = [mock.patch.object(setup, "rotational_disk", lambda p: disk),
+                 mock.patch.object(setup, "ple_ram_platform_ok", lambda: platform_ok)]
+        if extra_patch is not None:
+            extra += extra_patch if isinstance(extra_patch, list) else [extra_patch]
+        return install(ram, found, ["--family", family, "--model", model, "--no-start"], extra=extra)
 
     def test_fits(self):
         code, out, cfg, _ = self.install(127.8, "sdb")
@@ -414,6 +417,44 @@ class RotationalDisk(unittest.TestCase):
         # IQ3_S needs 62 GB: 96 GB is not enough to spare the table, 128 GB is
         for ram, want in ((95.8, False), (127.8, True)):
             code, out, cfg, _ = self.install(ram, None, platform_ok=True, model="IQ3_S")
+            self.assertEqual(code, 0, out)
+            self.assertEqual("--ple-io" in cfg["args"], want, (ram, cfg["args"]))
+
+    def test_ssd_budget_size_pays_for_all_its_experts_too(self):
+        # the budget sizes' "ram_gb" (48) is the budget-mode floor, not what this install holds: on a 94 GB PC
+        # UD-Q4_K_XL keeps its 77 GB (71.7 GiB) of experts in RAM (unsloth_budget), leaving no room for the
+        # 28.8 GB table on top - that pushed experts to the SSD, 2-2.5x slower.  The table joins only beyond
+        # the experts + 16 GiB beside them + the table + 16 to spare for the caches that grow while it runs:
+        # the table joins from ~116 GB for UD-IQ4_XS and ~133 GB for UD-Q4_K_XL (on the old bar 48 + the table
+        # + 16, a 96 GB or 128 GB PC took it: the report).  Same bar on a rotational disk, with 4 GB instead of
+        # 16 to spare (#605: there the table's RAM is the lesser evil).
+        # The bigger sizes' "ram_gb" is already their all-in-RAM need, so their bar barely moves.
+        for model, ram, disk, want in (("UD-IQ4_XS", 31.9, None, False), ("UD-IQ4_XS", 47.0, None, False),
+                                       ("UD-IQ4_XS", 63.7, None, False), ("UD-IQ4_XS", 95.8, None, False),
+                                       ("UD-IQ4_XS", 127.8, None, True), ("UD-IQ4_XS", 191.0, None, True),
+                                       ("UD-Q4_K_XL", 31.9, None, False), ("UD-Q4_K_XL", 47.0, None, False),
+                                       ("UD-Q4_K_XL", 63.7, None, False), ("UD-Q4_K_XL", 95.8, None, False),
+                                       ("UD-Q4_K_XL", 127.8, None, False), ("UD-Q4_K_XL", 191.0, None, True),
+                                       ("UD-Q4_K_XL", 95.8, "sdb", False), ("UD-Q4_K_XL", 127.8, "sdb", True)):
+            code, out, cfg, _ = self.install(ram, disk, platform_ok=True, model=model, family="unsloth",
+                                             extra_patch=mock.patch.dict(setup.MODELS[model], {"engine": (0, 1, 32)}))
+            self.assertEqual(code, 0, out)
+            self.assertEqual("--ple-io" in cfg["args"], want, (model, ram, cfg["args"]))
+
+    def test_ssd_big_size_pays_its_q8_0_table(self):
+        # the big Unsloth sizes carry the Q8_0 n-gram table (~54 GB, docs/UNSLOTH_Q6.md), not the 28.8 GB fallback:
+        # UD-Q5_K_XL's bar is the experts + 16 beside them + the real table + 16 (~178), so 160 GB keeps it on the SSD
+        class Q8PleGGUF:
+            def __init__(self, path):
+                ple = "00002-of" in str(path)
+                t = types.SimpleNamespace(name="per_layer_token_embd.weight" if ple else "blk.0.ffn_up_exps.weight")
+                if ple:
+                    t.expected_bytes = lambda: 54_400_000_000
+                self.tensors = [t]
+        for ram, want in ((159.8, False), (191.0, True)):
+            code, out, cfg, _ = self.install(ram, None, platform_ok=True, model="UD-Q5_K_XL", family="unsloth",
+                                             extra_patch=[mock.patch.dict(setup.MODELS["UD-Q5_K_XL"], {"engine": (0, 1, 32)}),
+                                                          mock.patch.dict(sys.modules, {"gguf_reader": types.SimpleNamespace(GGUFFile=Q8PleGGUF)})])
             self.assertEqual(code, 0, out)
             self.assertEqual("--ple-io" in cfg["args"], want, (ram, cfg["args"]))
 

@@ -2376,7 +2376,9 @@ level because of the fused prompt experts (below). What changed:
 - With the cheaper rows, deeper speculation was measured again (3 pairs): `--spec 3` 1.145 / 1.020 / 1.123 of before,
   `--spec 4` 1.122 / 1.141 / 1.132, `--spec 5` 1.079 / 1.101 / 1.074, `--spec 6` 1.060 / 1.177 / 1.097, `--spec 8` 1.027 /
   1.105 / 1.069 (story / code / document). `--spec 4 --spec-min-p 0.5` stays the default.
-- Setup (Linux, not WSL): when the RAM covers the model's need + the n-gram table + 16 GB (Q2_0 93 GB, IQ3_S 107 GB), the
+- Setup (Linux, not WSL): when the RAM covers the model's need + the n-gram table + 16 GB (Q2_0 93 GB, IQ3_S 107 GB;
+  for Unsloth's budget sizes the need is every expert in RAM with 16 GiB beside it, not the budget-mode floor:
+  UD-Q4_K_XL 133 GB), the
   table is kept in RAM (`--ple-io ram`), so a new prompt does not wait for its rows from the SSD: on this card 4K -18%, 20K
   -9%, 98K -2% with a fresh engine per prompt, the same bits. On an R9700 the read was already hidden; with RAM short (a 48 GB
   cap) ram mode cost +20% prompt and +14 s of start-up, which is why smaller PCs keep the SSD reads.

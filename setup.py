@@ -7988,11 +7988,17 @@ def main() -> int:
     elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
     disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
+    # the RAM what this install keeps in RAM really costs: for the budget sizes "ram_gb" is the budget-mode floor
+    # (48 on the two 4-bit ones), not this install - unsloth_budget put them in the all-in-RAM mode, costing arena_gb
+    # with UNSLOTH_RESIDENT_BESIDE_GB beside it.  On the old bar a 94 GB PC locked the 29 GB table on top of
+    # UD-Q4_K_XL's 77 GB of experts and the engine had to keep some of them out of RAM, reading them from the disk.
+    need_gb = (MODELS[model]["arena_gb"] / 1.073741824 + UNSLOTH_RESIDENT_BESIDE_GB
+               if MODELS[model].get("budget") else MODELS[model]["ram_gb"])
     if disk:
         tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
         size = ple.stat().st_size if ready else getattr(tensor, "expected_bytes", lambda: None)()
         table_gb = size / 1e9 if size else 28.8
-        if ram >= MODELS[model]["ram_gb"] + table_gb + 4:
+        if ram >= need_gb + table_gb + 4:
             args += ["--ple-io", "ram"]
             ok(f"the model is on a rotational disk ({disk}): its {table_gb:.0f} GB n-gram table is kept in RAM "
                "(--ple-io ram) - read from the disk at random, it can stall prompts for minutes (#605)")
@@ -8013,7 +8019,7 @@ def main() -> int:
         except Exception:
             size = None
         table_gb = size / 1e9 if size else 28.8
-        if ram >= MODELS[model]["ram_gb"] + table_gb + 16:
+        if ram >= need_gb + table_gb + 16:
             args += ["--ple-io", "ram"]
             ok(f"{ram:.0f} GB of RAM: the {table_gb:.0f} GB n-gram table is kept in RAM (--ple-io ram), so a new prompt does "
                "not wait for its rows from the SSD (a 4K prompt about 18% sooner on a fast card); remove --ple-io ram from "
