@@ -940,6 +940,21 @@ std::vector<SessionModelFile> session_model_inputs(const SessionInputs& in) {
     return f;
 }
 
+std::vector<SessionModelFile> session_mtp_inputs(const std::string& rt, bool metal) {
+    std::vector<SessionModelFile> f;
+    if (rt.empty()) return f;
+    if (metal) {
+        const std::string gguf = metal_mtp_gguf_path(rt);
+        f.push_back({"mtp", gguf});
+        f.push_back({"mtp draft_vocab.bin", gguf.substr(0, gguf.find_last_of('/') + 1) + "rt/draft_vocab.bin", true});
+        return f;
+    }
+    f.push_back({"mtp", rt + "/dense.bin"});
+    for (const char* n : {"dense.txt", "experts.bin"}) f.push_back({std::string("mtp ") + n, rt + "/" + n});
+    f.push_back({"mtp draft_vocab.bin", rt + "/draft_vocab.bin", true});
+    return f;
+}
+
 bool session_model_fingerprint(const std::vector<SessionModelFile>& files, uint64_t& fingerprint, std::string& error,
                                const std::function<void()>& beat) {
     SessionIdentityBuilder h(0x5354524154414d44ull);
