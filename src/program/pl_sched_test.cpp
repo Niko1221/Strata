@@ -989,6 +989,10 @@ bool Sim::exec(const PlOp& o) {
             if (ch_.live) return hard("chain_launch: a chain is already in flight");
             if (o.n_out < 1 || o.n_out > kChainMax || o.n_force > o.n_out || o.n_force > 16)
                 return hard("chain_launch: arguments out of range");
+            // the engine's drafter has the step graphs for this many outputs only (MtpDrafter::chain_max: depth 3's
+            // STRATA_MTP_CHAIN_MAX once pl_prepare captured it, today's 7 otherwise)
+            if (o.n_out > (C_.mode == Mode::B ? C_.chain_max : C_.chain_out2))
+                return hard("chain_launch: more outputs than the drafter's graphs");
             if (o.slot < 0 || o.slot >= C_.ns()) return hard("chain_launch: slot out of range");
             ch_ = Chain{};
             ch_.live = true;
@@ -3016,6 +3020,7 @@ struct Tally {
         st.chain_steps += s.chain_steps;
         st.chain_launches += s.chain_launches;
         st.chain_cancel += s.chain_cancel;
+        st.chain_skip += s.chain_skip;
         for (int i = 0; i < kCaseN; ++i) st.case_hits[i] += s.case_hits[i];
     }
 };
@@ -3031,12 +3036,13 @@ void print_tally(const char* name, Mode m, const Tally& t) {
                 s.cls_n[0] > 0 ? s.cls_ms[0] / s.cls_n[0] : 0.0);
     std::printf("      C made %lld launched %lld on %lld doomed %lld | undo jobs %lld stage-waits %lld (%.1f ms) | slot "
                 "waits %lld (%.1f ms) | restage %lld (spec %lld; sim %lld) | chain waits %lld (%.1f ms) late %lld "
-                "cancelled %lld | chain steps %.2f/verdict | doomed hand-offs overwritten %lld | chain clamps %lld\n",
+                "cancelled %lld skipped %lld | chain steps %.2f/verdict | doomed hand-offs overwritten %lld | chain clamps "
+                "%lld\n",
                 (long long) s.c_made, (long long) s.c_launched, (long long) s.c_on, (long long) s.c_doomed,
                 (long long) s.undo_jobs, (long long) s.stage_waits, s.stage_wait_ms, (long long) s.slot_waits,
                 s.slot_wait_ms, (long long) s.restage, (long long) s.restage_spec, (long long) t.restage_launch,
                 (long long) s.chain_waits, s.chain_wait_ms, (long long) s.chain_late, (long long) s.chain_cancel,
-                t.verdicts ? (double) s.chain_steps / (double) t.verdicts : 0.0, (long long) t.hazards_doomed,
+                (long long) s.chain_skip, t.verdicts ? (double) s.chain_steps / (double) t.verdicts : 0.0, (long long) t.hazards_doomed,
                 (long long) t.clamps);
     std::printf("      cases:");
     for (int i = 0; i < kCaseN; ++i)
@@ -3162,6 +3168,9 @@ RandomCase make_random(uint64_t seed) {
     if (r.p(0.15) || g_stress) tm.snap_slow = 0.3;
     if (r.p(0.15) || g_stress) tm.src_slow = g_stress ? 0.6 : 0.3;
     tm.chain_n_engine = (mix64(seed + 11) & 3) != 0;   // a quarter with the old reading (not from r: the worlds stay as they were)
+    // depth 3's STRATA_MTP_CHAIN_MAX: a quarter below 11 (7..10; not from r either) - at 7 a chain forced through B
+    // and C may leave no output for D (chain_skip)
+    if ((mix64(seed + 13) & 3) == 0) c.chain_max = 7 + (int) (mix64(seed + 17) % 4);
     if (g_stress) c.slots = 0;   // the fewest slots: windows wait for one, and take a slot the moment it is free
     return rc;
 }
@@ -3418,6 +3427,10 @@ int main(int argc, char** argv) {
             const Stats& s = all[m].st;
             if (kModes[m] == Mode::B) {
                 for (int c : need_d3) check(s.case_hits[c] > 0, std::string("mode B never hit case ") + case_name(c));
+                // the windows a chain is forced through were made by chains of the same chain_max whose output 0 was at
+                // or before B's row 1, so they always leave D's row 0 room: the guard in launch_chain never fires
+                check(s.chain_skip == 0, "mode B skipped a chain for want of room for D (the forced windows overran "
+                                         "chain_max)");
             } else {
                 for (int c : need_d2)
                     check(s.case_hits[c] > 0,

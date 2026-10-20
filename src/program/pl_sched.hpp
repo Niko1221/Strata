@@ -190,6 +190,7 @@ struct Stats {
     int64_t restage = 0, restage_spec = 0;
     int64_t chain_waits = 0; double chain_wait_ms = 0;
     int64_t chain_late = 0, chain_steps = 0, chain_launches = 0, chain_cancel = 0;
+    int64_t chain_skip = 0;          // depth 3: chains not launched for want of room for D (a guard; never expected)
     int64_t case_hits[16] = {};     // the verdict cases (see PlCase)
 };
 
