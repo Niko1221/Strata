@@ -1,8 +1,10 @@
-# RX 9070 XT / 9800X3D / 64 GB: native Windows HIP, full Q4 and 256K context
+# RX 9070 XT / 9800X3D / 64 GB: IQ3 and Q4 speed, context and coding results
 
 Measured October 19, 2026 (America/Los_Angeles; JSON timestamps are October 20 UTC), contributed by visualizedigital with AI assistance. Full Qwen3.8-Flash-Next UD-Q4_K_XL ran beyond installed RAM through SSD-backed experts. Short generation averaged 9.1 tokens/s at a 32K configured window. Near-256K fresh prompts took about eight minutes to the first token. A controlled 225K–230K-input coding loop passed its tests in 13.93 minutes.
 
-These are custom historical measurements, **not the current standard benchmark protocol**, a benchmark of current main, or proof of production coding-agent reliability. No engine or default changes are proposed.
+IQ3_XXS warm short-prompt generation reached 59–71 tokens/s with expert skipping disabled, versus approximately 8–9 tokens/s for Q4. IQ3 passed the full-stack fixture but missed independently tested requirements in Express and WordPress; Q4 passed the Express task. See [IQ3 measurements and coding results](IQ3.md) for all 24 IQ3 inference records and task evidence.
+
+These measurements use a custom protocol on engine package 0.1.45.3. The coding fixtures and recall probes are small, synthetic tests; they do not establish production-repository reliability.
 
 ## Hardware and software
 
@@ -87,8 +89,6 @@ All nine marker checks across the three full-window requests passed. First full-
 ## Limitations and follow-ups
 
 - The coding project is small and embedded in a large synthetic distractor bundle; tools reread its files. Success does not establish comprehension of a 225K-token production repository. Marker recall is not a broad reasoning evaluation.
-- This submission selects Q4 measurements from a larger local evaluation. Earlier IQ3 task outcomes and Vulkan results are not a controlled quality/backend comparison and are not included as headline numbers.
-- No 128 GB RAM system or Mac was measured here. No upgrade speedup or keep-versus-sell recommendation follows from this report.
 - Browser/IDE/Docker responsiveness and thermal behavior were not measured. Other applications were preserved, not standardized. No pressure-free baseline is available.
 - Some Windows formatted GPU engine counters exceeded 100% and were excluded from local utilization summaries; no aggregate GPU utilization claim is made. `/metrics.hardware_static` labelled the integrated GPU, whereas the engine log and WDDM adapter memory identified the discrete RX 9070 XT. These are observations on the tested version, not confirmed current-main bugs.
 - One later restart allocated 25.33 GiB host cache; that is not the allocation used for the published long-context measurements.

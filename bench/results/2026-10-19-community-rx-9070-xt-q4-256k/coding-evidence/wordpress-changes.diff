@@ -1,0 +1,176 @@
+--- baseline/plugin.php
++++ agent/plugin.php
+@@ -1,5 +1,5 @@
+ <?php
+ require_once __DIR__.'/repository.php';
+ require_once __DIR__.'/rest.php';
+-add_action('init', function() { (new DevNotesRest(new DevNotesRepository($GLOBALS['wpdb'])))->register(); });
+-function devnotes_render($note) { return '<li>'.$note['label'].'</li>'; }
++add_action('rest_api_init', function() { (new DevNotesRest(new DevNotesRepository($GLOBALS['wpdb'])))->register(); });
++function devnotes_render($note) { return '<li>'.esc_html($note['label']).'</li>'; }
+--- baseline/regression-tests.php
++++ agent/regression-tests.php
+@@ -0,0 +1,88 @@
++<?php
++// Standalone regression suite; tests.php and test.mjs are intentionally untouched.
++const ARRAY_A='ARRAY_A';
++$actions=[];$routes=[];$can=true;$filter_calls=0;
++function add_action($hook,$cb){$GLOBALS['actions'][$hook][]=$cb;}
++function register_rest_route($ns,$route,$args){$GLOBALS['routes'][]=[$ns,$route,$args];}
++function current_user_can($cap){return $cap==='edit_posts'&&$GLOBALS['can'];}
++function get_current_user_id(){return 7;}
++function sanitize_text_field($s){return trim(strip_tags($s));}
++function esc_html($s){return htmlspecialchars($s,ENT_QUOTES,'UTF-8');}
++function apply_filters($hook,$value){if($hook==='devnotes_note'){$GLOBALS['filter_calls']++;$value['filtered']=true;}return $value;}
++function is_wp_error($v){return $v instanceof WP_Error;}
++class WP_Error{public function __construct(public $code,public $message='',public $data=[]){} public function get_error_data(){return $this->data;}}
++class WP_REST_Response{public function __construct(public $data,public $status=200){} public function get_data(){return $this->data;} public function get_status(){return $this->status;}}
++class FakeDB{
++	public $prefix='wp_',$insert_id=11,$fail=false,$last_error='leaked-internal-detail',$inserted=[],$insert_calls=0,$prepared=false,$query='';
++	function insert($table,$data,$format=null){$this->insert_calls++;$this->inserted=$data;return $this->fail?false:1;}
++	function prepare($query,...$values){$this->prepared=true;return str_replace('%d',(string)$values[0],$query);}
++	function get_results($query,$mode){$this->query=$query;return [['id'=>11,'label'=>'first','owner_id'=>7],['id'=>12,'label'=>'second','owner_id'=>7]];}
++}
++$wpdb=new FakeDB();require __DIR__.'/plugin.php';
++$failures=0;$count=0;
++function check($name,$fn){global $failures,$count;$count++;try{$fn();echo "PASS $name\n";}catch(Throwable $e){$failures++;echo "FAIL $name: ".$e->getMessage()."\n";}}
++function expect($v,$message){if(!$v)throw new Exception($message);}
++
++check('missing label rejected with 400 and no insert',function()use($wpdb){
++	$before=$wpdb->insert_calls;
++	$r=(new DevNotesRest(new DevNotesRepository($wpdb)))->create(['owner_id'=>99]);
++	expect(is_wp_error($r)&&($r->data['status']??0)===400,'missing label must be 400');
++	expect($wpdb->insert_calls===$before,'invalid input must not reach the database');
++});
++
++check('tags-and-whitespace-only label rejected',function()use($wpdb){
++	$before=$wpdb->insert_calls;
++	$r=(new DevNotesRest(new DevNotesRepository($wpdb)))->create(['label'=>'<b>   </b>','owner_id'=>7]);
++	expect(is_wp_error($r)&&($r->data['status']??0)===400,'whitespace-only label must be 400');
++	expect($wpdb->insert_calls===$before,'invalid input must not reach the database');
++});
++
++check('success payload carries inserted row',function()use($wpdb){
++	$r=(new DevNotesRest(new DevNotesRepository($wpdb)))->create(['label'=>'Hello <em>World</em>','owner_id'=>99]);
++	expect($r instanceof WP_REST_Response&&$r->get_status()===201,'201 response required');
++	$d=$r->get_data();
++	expect($d['id']===11&&$d['label']==='Hello World'&&$d['owner_id']===7,'payload must match sanitized insert');
++});
++
++check('db failure returns generic 500',function()use($wpdb){
++	$wpdb->fail=true;
++	try{
++		$r=(new DevNotesRest(new DevNotesRepository($wpdb)))->create(['label'=>'valid','owner_id'=>7]);
++		expect(is_wp_error($r)&&($r->data['status']??0)===500,'DB failure must be 500');
++		expect(!str_contains(json_encode($r),'leaked-internal-detail'),'must not expose DB internals');
++	}finally{$wpdb->fail=false;}
++});
++
++check('listing filters every note',function()use($wpdb){
++	$GLOBALS['filter_calls']=0;
++	$r=(new DevNotesRest(new DevNotesRepository($wpdb)))->index([]);
++	expect($r instanceof WP_REST_Response&&$r->get_status()===200,'listing must return a response');
++	$notes=$r->get_data();
++	expect(count($notes)===2&&$GLOBALS['filter_calls']===2,'every note must pass through the filter');
++	expect($notes[0]['filtered']&&$notes[1]['filtered'],'filtered notes must be returned');
++	expect($wpdb->prepared&&preg_match('/owner_id\s*=\s*7/',$wpdb->query),'listing must stay prepared and tenant-scoped');
++});
++
++check('registered routes dispatch end to end',function()use($wpdb){
++	foreach($GLOBALS['actions']['rest_api_init'] as $cb)$cb();
++	$byMethod=[];
++	foreach($GLOBALS['routes'] as [$ns,$path,$args]){
++		expect($ns==='devnotes/v1'&&$path==='/notes','route mismatch');
++		$byMethod[$args['methods']]=$args;
++	}
++	expect(isset($byMethod['GET'],$byMethod['POST']),'GET and POST routes required');
++	$before=$wpdb->insert_calls;
++	$post=call_user_func($byMethod['POST']['callback'],['label'=>' Route <em>test</em> ','owner_id'=>999]);
++	expect($post instanceof WP_REST_Response&&$post->get_status()===201,'POST route must return 201');
++	expect($wpdb->insert_calls===$before+1&&$wpdb->inserted['label']==='Route test'&&$wpdb->inserted['owner_id']===7,'POST route must sanitize and ignore supplied owner');
++	$get=call_user_func($byMethod['GET']['callback'],[]);
++	expect($get instanceof WP_REST_Response&&count($get->get_data())===2,'GET route must return the listing');
++});
++
++check('render escapes quotes and markup',function(){
++	$out=devnotes_render(['label'=>'a"b<script>x</script>']);
++	expect(!str_contains($out,'<script>'),'markup must be escaped');
++	expect(!str_contains($out,'"'),'quotes must be escaped');
++});
++
++echo json_encode(['tests'=>$count,'failed'=>$failures])."\n";exit($failures?1:0);
+--- baseline/repository.php
++++ agent/repository.php
+@@ -1,6 +1,24 @@
+ <?php
+ class DevNotesRepository {
+- public function __construct(private $db) {}
+- public function create($label,$owner) { $this->db->insert($this->db->prefix.'devnotes',['label'=>$label,'owner_id'=>$owner]); return ['id'=>$this->db->insert_id,'label'=>$label,'owner_id'=>$owner]; }
+- public function list_for($owner) { return $this->db->get_results('SELECT * FROM '.$this->db->prefix.'devnotes', ARRAY_A); }
++	public function __construct(private $db) {}
++
++	public function create($label, $owner) {
++		$inserted = $this->db->insert(
++			$this->db->prefix.'devnotes',
++			['label'=>$label,'owner_id'=>$owner],
++			['%s','%d']
++		);
++		if ($inserted === false) {
++			return false;
++		}
++		return ['id'=>$this->db->insert_id,'label'=>$label,'owner_id'=>$owner];
++	}
++
++	public function list_for($owner) {
++		$query = $this->db->prepare(
++			"SELECT * FROM {$this->db->prefix}devnotes WHERE owner_id = %d",
++			$owner
++		);
++		return $this->db->get_results($query, ARRAY_A);
++	}
+ }
+--- baseline/rest.php
++++ agent/rest.php
+@@ -1,7 +1,38 @@
+ <?php
+ class DevNotesRest {
+- public function __construct(private $repo) {}
+- public function register() { register_rest_route('devnotes/v1','/notes',['methods'=>'POST','callback'=>[$this,'create'],'permission_callback'=>'__return_true']); }
+- public function create($request) { return $this->repo->create($request['label'],$request['owner_id']); }
+- public function index($request) { return $this->repo->list_for(get_current_user_id()); }
++	public function __construct(private $repo) {}
++
++	public function register() {
++		$permission = static function() { return current_user_can('edit_posts'); };
++		register_rest_route('devnotes/v1', '/notes', [
++			'methods' => 'GET',
++			'callback' => [$this, 'index'],
++			'permission_callback' => $permission,
++		]);
++		register_rest_route('devnotes/v1', '/notes', [
++			'methods' => 'POST',
++			'callback' => [$this, 'create'],
++			'permission_callback' => $permission,
++		]);
++	}
++
++	public function create($request) {
++		$label = sanitize_text_field($request['label'] ?? '');
++		if ($label === '') {
++			return new WP_Error('devnotes_invalid_label', 'A non-empty label is required.', ['status'=>400]);
++		}
++		$note = $this->repo->create($label, get_current_user_id());
++		if ($note === false) {
++			return new WP_Error('devnotes_db_error', 'Could not save the note.', ['status'=>500]);
++		}
++		return new WP_REST_Response($note, 201);
++	}
++
++	public function index($request) {
++		$notes = array_map(
++			static fn($note) => apply_filters('devnotes_note', $note),
++			$this->repo->list_for(get_current_user_id())
++		);
++		return new WP_REST_Response($notes, 200);
++	}
+ }

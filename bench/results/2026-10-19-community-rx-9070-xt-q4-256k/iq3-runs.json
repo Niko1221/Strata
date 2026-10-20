@@ -1,0 +1,5368 @@
+[
+  {
+    "label": "iq3xxs-current-32k-0",
+    "prompt_sha256": "8881ce61d082574735e2976ff124f13364a25559f2402e9fd39f6be7b68b7035",
+    "started_utc": "2026-10-20T01:25:47.926500+00:00",
+    "ok": true,
+    "wall_seconds": 37.95721129999947,
+    "ttft_seconds": 37.8388460999995,
+    "usage": {
+      "prompt_tokens": 32204,
+      "completion_tokens": 6,
+      "total_tokens": 32210,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 32204,
+      "prompt_ms": 37795.2,
+      "prompt_per_token_ms": 1.174,
+      "prompt_per_second": 852.1,
+      "predicted_n": 6,
+      "predicted_ms": 139.6,
+      "predicted_per_token_ms": 23.267,
+      "predicted_per_second": 43.0,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62567059456,
+        "ram_available_bytes": 3612688384,
+        "cpu_percent": 67.4
+      },
+      {
+        "ram_used_bytes": 62580588544,
+        "ram_available_bytes": 3599159296,
+        "cpu_percent": 60.7
+      },
+      {
+        "ram_used_bytes": 62640820224,
+        "ram_available_bytes": 3538927616,
+        "cpu_percent": 64.7
+      },
+      {
+        "ram_used_bytes": 62576066560,
+        "ram_available_bytes": 3603681280,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 62573543424,
+        "ram_available_bytes": 3606204416,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 62652104704,
+        "ram_available_bytes": 3527643136,
+        "cpu_percent": 62.2
+      },
+      {
+        "ram_used_bytes": 62580322304,
+        "ram_available_bytes": 3599425536,
+        "cpu_percent": 58.8
+      },
+      {
+        "ram_used_bytes": 62583635968,
+        "ram_available_bytes": 3596111872,
+        "cpu_percent": 59.2
+      },
+      {
+        "ram_used_bytes": 62592741376,
+        "ram_available_bytes": 3587006464,
+        "cpu_percent": 67.6
+      },
+      {
+        "ram_used_bytes": 62591238144,
+        "ram_available_bytes": 3588509696,
+        "cpu_percent": 61.0
+      },
+      {
+        "ram_used_bytes": 62621020160,
+        "ram_available_bytes": 3558727680,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 62596419584,
+        "ram_available_bytes": 3583328256,
+        "cpu_percent": 63.8
+      },
+      {
+        "ram_used_bytes": 62599712768,
+        "ram_available_bytes": 3580035072,
+        "cpu_percent": 72.9
+      },
+      {
+        "ram_used_bytes": 62712922112,
+        "ram_available_bytes": 3466825728,
+        "cpu_percent": 63.8
+      },
+      {
+        "ram_used_bytes": 62641168384,
+        "ram_available_bytes": 3538579456,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 62643965952,
+        "ram_available_bytes": 3535781888,
+        "cpu_percent": 57.9
+      },
+      {
+        "ram_used_bytes": 62712250368,
+        "ram_available_bytes": 3467497472,
+        "cpu_percent": 67.0
+      },
+      {
+        "ram_used_bytes": 62643236864,
+        "ram_available_bytes": 3536510976,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 62756376576,
+        "ram_available_bytes": 3423371264,
+        "cpu_percent": 60.0
+      },
+      {
+        "ram_used_bytes": 62587621376,
+        "ram_available_bytes": 3592126464,
+        "cpu_percent": 63.5
+      },
+      {
+        "ram_used_bytes": 62565859328,
+        "ram_available_bytes": 3613888512,
+        "cpu_percent": 56.5
+      },
+      {
+        "ram_used_bytes": 62573539328,
+        "ram_available_bytes": 3606208512,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 62551281664,
+        "ram_available_bytes": 3628466176,
+        "cpu_percent": 67.8
+      },
+      {
+        "ram_used_bytes": 62548692992,
+        "ram_available_bytes": 3631054848,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 62616903680,
+        "ram_available_bytes": 3562844160,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 62558564352,
+        "ram_available_bytes": 3621183488,
+        "cpu_percent": 60.7
+      },
+      {
+        "ram_used_bytes": 62512902144,
+        "ram_available_bytes": 3666845696,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 62595051520,
+        "ram_available_bytes": 3584696320,
+        "cpu_percent": 61.2
+      },
+      {
+        "ram_used_bytes": 62518468608,
+        "ram_available_bytes": 3661279232,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 62518599680,
+        "ram_available_bytes": 3661148160,
+        "cpu_percent": 57.3
+      },
+      {
+        "ram_used_bytes": 62526902272,
+        "ram_available_bytes": 3652845568,
+        "cpu_percent": 65.0
+      },
+      {
+        "ram_used_bytes": 62529310720,
+        "ram_available_bytes": 3650437120,
+        "cpu_percent": 57.4
+      },
+      {
+        "ram_used_bytes": 62579945472,
+        "ram_available_bytes": 3599802368,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 62527033344,
+        "ram_available_bytes": 3652714496,
+        "cpu_percent": 65.9
+      },
+      {
+        "ram_used_bytes": 62529773568,
+        "ram_available_bytes": 3649974272,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 62581141504,
+        "ram_available_bytes": 3598606336,
+        "cpu_percent": 71.0
+      },
+      {
+        "ram_used_bytes": 62640140288,
+        "ram_available_bytes": 3539607552,
+        "cpu_percent": 62.0
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-current-32k-1",
+    "prompt_sha256": "04ec90b7232cbca7c80ae9894042e08394e65e77f6a0d9f90e4de3494671a8f1",
+    "started_utc": "2026-10-20T01:26:27.287208+00:00",
+    "ok": true,
+    "wall_seconds": 37.73219590000008,
+    "ttft_seconds": 37.59603319999951,
+    "usage": {
+      "prompt_tokens": 32204,
+      "completion_tokens": 6,
+      "total_tokens": 32210,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 32204,
+      "prompt_ms": 37553.5,
+      "prompt_per_token_ms": 1.166,
+      "prompt_per_second": 857.5,
+      "predicted_n": 6,
+      "predicted_ms": 157.1,
+      "predicted_per_token_ms": 26.183,
+      "predicted_per_second": 38.2,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62423969792,
+        "ram_available_bytes": 3755778048,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 62432108544,
+        "ram_available_bytes": 3747639296,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 62483992576,
+        "ram_available_bytes": 3695755264,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 62436802560,
+        "ram_available_bytes": 3742945280,
+        "cpu_percent": 67.4
+      },
+      {
+        "ram_used_bytes": 62440341504,
+        "ram_available_bytes": 3739406336,
+        "cpu_percent": 58.7
+      },
+      {
+        "ram_used_bytes": 62500577280,
+        "ram_available_bytes": 3679170560,
+        "cpu_percent": 66.0
+      },
+      {
+        "ram_used_bytes": 62441070592,
+        "ram_available_bytes": 3738677248,
+        "cpu_percent": 65.4
+      },
+      {
+        "ram_used_bytes": 62418157568,
+        "ram_available_bytes": 3761590272,
+        "cpu_percent": 59.0
+      },
+      {
+        "ram_used_bytes": 62498062336,
+        "ram_available_bytes": 3681685504,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 62477819904,
+        "ram_available_bytes": 3701927936,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 62478790656,
+        "ram_available_bytes": 3700957184,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 62434004992,
+        "ram_available_bytes": 3745742848,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 62432780288,
+        "ram_available_bytes": 3746967552,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 62469312512,
+        "ram_available_bytes": 3710435328,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 62438227968,
+        "ram_available_bytes": 3741519872,
+        "cpu_percent": 63.5
+      },
+      {
+        "ram_used_bytes": 62433792000,
+        "ram_available_bytes": 3745955840,
+        "cpu_percent": 57.0
+      },
+      {
+        "ram_used_bytes": 62486425600,
+        "ram_available_bytes": 3693322240,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 62398922752,
+        "ram_available_bytes": 3780825088,
+        "cpu_percent": 59.6
+      },
+      {
+        "ram_used_bytes": 62393372672,
+        "ram_available_bytes": 3786375168,
+        "cpu_percent": 56.9
+      },
+      {
+        "ram_used_bytes": 62583246848,
+        "ram_available_bytes": 3596500992,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 62520758272,
+        "ram_available_bytes": 3658989568,
+        "cpu_percent": 59.2
+      },
+      {
+        "ram_used_bytes": 62519541760,
+        "ram_available_bytes": 3660206080,
+        "cpu_percent": 54.6
+      },
+      {
+        "ram_used_bytes": 62522269696,
+        "ram_available_bytes": 3657478144,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 62520991744,
+        "ram_available_bytes": 3658756096,
+        "cpu_percent": 61.7
+      },
+      {
+        "ram_used_bytes": 62571712512,
+        "ram_available_bytes": 3608035328,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 62524424192,
+        "ram_available_bytes": 3655323648,
+        "cpu_percent": 57.7
+      },
+      {
+        "ram_used_bytes": 62523023360,
+        "ram_available_bytes": 3656724480,
+        "cpu_percent": 61.5
+      },
+      {
+        "ram_used_bytes": 62587580416,
+        "ram_available_bytes": 3592167424,
+        "cpu_percent": 58.4
+      },
+      {
+        "ram_used_bytes": 62520647680,
+        "ram_available_bytes": 3659100160,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 62516531200,
+        "ram_available_bytes": 3663216640,
+        "cpu_percent": 58.6
+      },
+      {
+        "ram_used_bytes": 62526312448,
+        "ram_available_bytes": 3653435392,
+        "cpu_percent": 64.8
+      },
+      {
+        "ram_used_bytes": 62519861248,
+        "ram_available_bytes": 3659886592,
+        "cpu_percent": 53.4
+      },
+      {
+        "ram_used_bytes": 62533632000,
+        "ram_available_bytes": 3646115840,
+        "cpu_percent": 67.6
+      },
+      {
+        "ram_used_bytes": 62533795840,
+        "ram_available_bytes": 3645952000,
+        "cpu_percent": 69.8
+      },
+      {
+        "ram_used_bytes": 62537629696,
+        "ram_available_bytes": 3642118144,
+        "cpu_percent": 75.0
+      },
+      {
+        "ram_used_bytes": 62600077312,
+        "ram_available_bytes": 3579670528,
+        "cpu_percent": 67.1
+      },
+      {
+        "ram_used_bytes": 62657867776,
+        "ram_available_bytes": 3521880064,
+        "cpu_percent": 57.2
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-current-32k-2",
+    "prompt_sha256": "1ff00d9095131f87b2c8282e90e3328282caa43c67a6076d9d5eb301be1d7618",
+    "started_utc": "2026-10-20T01:27:06.397907+00:00",
+    "ok": true,
+    "wall_seconds": 37.58145990000048,
+    "ttft_seconds": 37.47360960000151,
+    "usage": {
+      "prompt_tokens": 32204,
+      "completion_tokens": 6,
+      "total_tokens": 32210,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 32204,
+      "prompt_ms": 37435.1,
+      "prompt_per_token_ms": 1.162,
+      "prompt_per_second": 860.3,
+      "predicted_n": 6,
+      "predicted_ms": 125.0,
+      "predicted_per_token_ms": 20.833,
+      "predicted_per_second": 48.0,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62468235264,
+        "ram_available_bytes": 3711512576,
+        "cpu_percent": 74.8
+      },
+      {
+        "ram_used_bytes": 62471401472,
+        "ram_available_bytes": 3708346368,
+        "cpu_percent": 64.0
+      },
+      {
+        "ram_used_bytes": 62551093248,
+        "ram_available_bytes": 3628654592,
+        "cpu_percent": 66.4
+      },
+      {
+        "ram_used_bytes": 62485729280,
+        "ram_available_bytes": 3694018560,
+        "cpu_percent": 64.7
+      },
+      {
+        "ram_used_bytes": 62483550208,
+        "ram_available_bytes": 3696197632,
+        "cpu_percent": 57.8
+      },
+      {
+        "ram_used_bytes": 62575374336,
+        "ram_available_bytes": 3604373504,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 62530555904,
+        "ram_available_bytes": 3649191936,
+        "cpu_percent": 66.7
+      },
+      {
+        "ram_used_bytes": 62530539520,
+        "ram_available_bytes": 3649208320,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 62588182528,
+        "ram_available_bytes": 3591565312,
+        "cpu_percent": 60.7
+      },
+      {
+        "ram_used_bytes": 62519345152,
+        "ram_available_bytes": 3660402688,
+        "cpu_percent": 58.8
+      },
+      {
+        "ram_used_bytes": 62518427648,
+        "ram_available_bytes": 3661320192,
+        "cpu_percent": 61.5
+      },
+      {
+        "ram_used_bytes": 62531067904,
+        "ram_available_bytes": 3648679936,
+        "cpu_percent": 64.7
+      },
+      {
+        "ram_used_bytes": 62628622336,
+        "ram_available_bytes": 3551125504,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 62668177408,
+        "ram_available_bytes": 3511570432,
+        "cpu_percent": 58.1
+      },
+      {
+        "ram_used_bytes": 62637670400,
+        "ram_available_bytes": 3542077440,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 62636720128,
+        "ram_available_bytes": 3543027712,
+        "cpu_percent": 56.9
+      },
+      {
+        "ram_used_bytes": 62703091712,
+        "ram_available_bytes": 3476656128,
+        "cpu_percent": 60.4
+      },
+      {
+        "ram_used_bytes": 62625034240,
+        "ram_available_bytes": 3554713600,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 62572212224,
+        "ram_available_bytes": 3607535616,
+        "cpu_percent": 58.4
+      },
+      {
+        "ram_used_bytes": 62778671104,
+        "ram_available_bytes": 3401076736,
+        "cpu_percent": 68.5
+      },
+      {
+        "ram_used_bytes": 62719332352,
+        "ram_available_bytes": 3460415488,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 62718386176,
+        "ram_available_bytes": 3461361664,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 62727200768,
+        "ram_available_bytes": 3452547072,
+        "cpu_percent": 65.2
+      },
+      {
+        "ram_used_bytes": 62720688128,
+        "ram_available_bytes": 3459059712,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 62769295360,
+        "ram_available_bytes": 3410452480,
+        "cpu_percent": 61.2
+      },
+      {
+        "ram_used_bytes": 62726844416,
+        "ram_available_bytes": 3452903424,
+        "cpu_percent": 66.1
+      },
+      {
+        "ram_used_bytes": 62724136960,
+        "ram_available_bytes": 3455610880,
+        "cpu_percent": 55.4
+      },
+      {
+        "ram_used_bytes": 62801895424,
+        "ram_available_bytes": 3377852416,
+        "cpu_percent": 57.6
+      },
+      {
+        "ram_used_bytes": 62730772480,
+        "ram_available_bytes": 3448975360,
+        "cpu_percent": 65.8
+      },
+      {
+        "ram_used_bytes": 62794383360,
+        "ram_available_bytes": 3385364480,
+        "cpu_percent": 61.8
+      },
+      {
+        "ram_used_bytes": 62875181056,
+        "ram_available_bytes": 3304566784,
+        "cpu_percent": 63.9
+      },
+      {
+        "ram_used_bytes": 62806114304,
+        "ram_available_bytes": 3373633536,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 62808469504,
+        "ram_available_bytes": 3371278336,
+        "cpu_percent": 58.1
+      },
+      {
+        "ram_used_bytes": 62813650944,
+        "ram_available_bytes": 3366096896,
+        "cpu_percent": 68.0
+      },
+      {
+        "ram_used_bytes": 62810976256,
+        "ram_available_bytes": 3368771584,
+        "cpu_percent": 63.8
+      },
+      {
+        "ram_used_bytes": 62860574720,
+        "ram_available_bytes": 3319173120,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 62918258688,
+        "ram_available_bytes": 3261489152,
+        "cpu_percent": 53.2
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-current-short-0",
+    "prompt_sha256": "82c93fd76bdd973b4b93b8b5bf312f09742e1b3e36c6c5367a6c9d564d66d5da",
+    "started_utc": "2026-10-20T01:25:05.236386+00:00",
+    "ok": true,
+    "wall_seconds": 4.121699100000114,
+    "ttft_seconds": 0.8100602999984403,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 764.2,
+      "prompt_per_token_ms": 18.195,
+      "prompt_per_second": 55.0,
+      "predicted_n": 192,
+      "predicted_ms": 3349.8,
+      "predicted_per_token_ms": 17.447,
+      "predicted_per_second": 57.3,
+      "draft_n": 157,
+      "draft_n_accepted": 136
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 61611470848,
+        "ram_available_bytes": 4568276992,
+        "cpu_percent": 74.7
+      },
+      {
+        "ram_used_bytes": 61720252416,
+        "ram_available_bytes": 4459495424,
+        "cpu_percent": 81.7
+      },
+      {
+        "ram_used_bytes": 61807693824,
+        "ram_available_bytes": 4372054016,
+        "cpu_percent": 67.1
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-current-short-1",
+    "prompt_sha256": "1cc44282671df5542765a34b611a39f850707075561ef3fdec6d7032164864c1",
+    "started_utc": "2026-10-20T01:25:10.706652+00:00",
+    "ok": true,
+    "wall_seconds": 2.785006500002055,
+    "ttft_seconds": 0.505735700000514,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 479.6,
+      "prompt_per_token_ms": 11.419,
+      "prompt_per_second": 87.6,
+      "predicted_n": 192,
+      "predicted_ms": 2299.7,
+      "predicted_per_token_ms": 11.978,
+      "predicted_per_second": 83.5,
+      "draft_n": 156,
+      "draft_n_accepted": 138
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 61820571648,
+        "ram_available_bytes": 4359176192,
+        "cpu_percent": 69.0
+      },
+      {
+        "ram_used_bytes": 61848375296,
+        "ram_available_bytes": 4331372544,
+        "cpu_percent": 68.7
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-current-short-2",
+    "prompt_sha256": "ef2b259ffe8319e84157c93467ba1bfc384a1bf8139d7d111e48b230ea6c58df",
+    "started_utc": "2026-10-20T01:25:14.887517+00:00",
+    "ok": true,
+    "wall_seconds": 2.7081049000007624,
+    "ttft_seconds": 0.5492683000011311,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 524.5,
+      "prompt_per_token_ms": 12.488,
+      "prompt_per_second": 80.1,
+      "predicted_n": 192,
+      "predicted_ms": 2178.0,
+      "predicted_per_token_ms": 11.344,
+      "predicted_per_second": 88.2,
+      "draft_n": 157,
+      "draft_n_accepted": 137
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 61938909184,
+        "ram_available_bytes": 4240838656,
+        "cpu_percent": 69.8
+      },
+      {
+        "ram_used_bytes": 61944639488,
+        "ram_available_bytes": 4235108352,
+        "cpu_percent": 65.5
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-loaded-desktop-8k-0",
+    "prompt_sha256": "9f82dfa777cd56823988ea8c1c643bc88ec55c696d05a9c82915bf1ac7d69545",
+    "started_utc": "2026-10-20T00:04:13.237147+00:00",
+    "ok": true,
+    "wall_seconds": 40.08669340000051,
+    "ttft_seconds": 39.83102080000026,
+    "usage": {
+      "prompt_tokens": 7634,
+      "completion_tokens": 6,
+      "total_tokens": 7640,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 7634,
+      "prompt_ms": 39748.4,
+      "prompt_per_token_ms": 5.207,
+      "prompt_per_second": 192.1,
+      "predicted_n": 6,
+      "predicted_ms": 313.4,
+      "predicted_per_token_ms": 52.233,
+      "predicted_per_second": 19.1,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 65254563840,
+        "ram_available_bytes": 925184000,
+        "cpu_percent": 57.7
+      },
+      {
+        "ram_used_bytes": 66127319040,
+        "ram_available_bytes": 52428800,
+        "cpu_percent": 41.6
+      },
+      {
+        "ram_used_bytes": 66177757184,
+        "ram_available_bytes": 1990656,
+        "cpu_percent": 52.6
+      },
+      {
+        "ram_used_bytes": 66176684032,
+        "ram_available_bytes": 3063808,
+        "cpu_percent": 65.0
+      },
+      {
+        "ram_used_bytes": 66177130496,
+        "ram_available_bytes": 2617344,
+        "cpu_percent": 58.5
+      },
+      {
+        "ram_used_bytes": 65920262144,
+        "ram_available_bytes": 259485696,
+        "cpu_percent": 72.1
+      },
+      {
+        "ram_used_bytes": 65460596736,
+        "ram_available_bytes": 719151104,
+        "cpu_percent": 69.8
+      },
+      {
+        "ram_used_bytes": 65460039680,
+        "ram_available_bytes": 719708160,
+        "cpu_percent": 44.0
+      },
+      {
+        "ram_used_bytes": 65462927360,
+        "ram_available_bytes": 716820480,
+        "cpu_percent": 49.4
+      },
+      {
+        "ram_used_bytes": 65461448704,
+        "ram_available_bytes": 718299136,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 65459093504,
+        "ram_available_bytes": 720654336,
+        "cpu_percent": 50.4
+      },
+      {
+        "ram_used_bytes": 65621549056,
+        "ram_available_bytes": 558198784,
+        "cpu_percent": 54.7
+      },
+      {
+        "ram_used_bytes": 65459785728,
+        "ram_available_bytes": 719962112,
+        "cpu_percent": 35.6
+      },
+      {
+        "ram_used_bytes": 64902922240,
+        "ram_available_bytes": 1276825600,
+        "cpu_percent": 39.3
+      },
+      {
+        "ram_used_bytes": 64769818624,
+        "ram_available_bytes": 1409929216,
+        "cpu_percent": 34.0
+      },
+      {
+        "ram_used_bytes": 65465982976,
+        "ram_available_bytes": 713764864,
+        "cpu_percent": 31.3
+      },
+      {
+        "ram_used_bytes": 65465888768,
+        "ram_available_bytes": 713859072,
+        "cpu_percent": 39.8
+      },
+      {
+        "ram_used_bytes": 65676148736,
+        "ram_available_bytes": 503599104,
+        "cpu_percent": 42.4
+      },
+      {
+        "ram_used_bytes": 65465946112,
+        "ram_available_bytes": 713801728,
+        "cpu_percent": 36.0
+      },
+      {
+        "ram_used_bytes": 65452015616,
+        "ram_available_bytes": 727732224,
+        "cpu_percent": 53.5
+      },
+      {
+        "ram_used_bytes": 65447776256,
+        "ram_available_bytes": 731971584,
+        "cpu_percent": 51.7
+      },
+      {
+        "ram_used_bytes": 65483894784,
+        "ram_available_bytes": 695853056,
+        "cpu_percent": 42.4
+      },
+      {
+        "ram_used_bytes": 65510731776,
+        "ram_available_bytes": 669016064,
+        "cpu_percent": 45.8
+      },
+      {
+        "ram_used_bytes": 65864118272,
+        "ram_available_bytes": 315629568,
+        "cpu_percent": 42.8
+      },
+      {
+        "ram_used_bytes": 65973129216,
+        "ram_available_bytes": 206618624,
+        "cpu_percent": 38.7
+      },
+      {
+        "ram_used_bytes": 65972903936,
+        "ram_available_bytes": 206843904,
+        "cpu_percent": 51.6
+      },
+      {
+        "ram_used_bytes": 65972879360,
+        "ram_available_bytes": 206868480,
+        "cpu_percent": 47.7
+      },
+      {
+        "ram_used_bytes": 65973235712,
+        "ram_available_bytes": 206512128,
+        "cpu_percent": 47.4
+      },
+      {
+        "ram_used_bytes": 65974099968,
+        "ram_available_bytes": 205647872,
+        "cpu_percent": 55.7
+      },
+      {
+        "ram_used_bytes": 66175213568,
+        "ram_available_bytes": 4534272,
+        "cpu_percent": 50.4
+      },
+      {
+        "ram_used_bytes": 66154688512,
+        "ram_available_bytes": 25059328,
+        "cpu_percent": 54.7
+      },
+      {
+        "ram_used_bytes": 65535397888,
+        "ram_available_bytes": 644349952,
+        "cpu_percent": 53.4
+      },
+      {
+        "ram_used_bytes": 66089631744,
+        "ram_available_bytes": 90116096,
+        "cpu_percent": 44.1
+      },
+      {
+        "ram_used_bytes": 66096533504,
+        "ram_available_bytes": 83214336,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 65284276224,
+        "ram_available_bytes": 895471616,
+        "cpu_percent": 61.8
+      },
+      {
+        "ram_used_bytes": 64258945024,
+        "ram_available_bytes": 1920802816,
+        "cpu_percent": 46.1
+      },
+      {
+        "ram_used_bytes": 65040875520,
+        "ram_available_bytes": 1138872320,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 65067737088,
+        "ram_available_bytes": 1112010752,
+        "cpu_percent": 70.6
+      },
+      {
+        "ram_used_bytes": 65308901376,
+        "ram_available_bytes": 870846464,
+        "cpu_percent": 59.7
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-loaded-desktop-8k-1",
+    "prompt_sha256": "38461e168f29590cc54d698a8154920d3828faeef709c4a7f62cbd0dbd278e12",
+    "started_utc": "2026-10-20T00:04:55.080126+00:00",
+    "ok": true,
+    "wall_seconds": 12.867503100002068,
+    "ttft_seconds": 12.603321599999617,
+    "usage": {
+      "prompt_tokens": 7634,
+      "completion_tokens": 6,
+      "total_tokens": 7640,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 7634,
+      "prompt_ms": 12537.0,
+      "prompt_per_token_ms": 1.642,
+      "prompt_per_second": 608.9,
+      "predicted_n": 6,
+      "predicted_ms": 309.8,
+      "predicted_per_token_ms": 51.633,
+      "predicted_per_second": 19.4,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 65233235968,
+        "ram_available_bytes": 946511872,
+        "cpu_percent": 70.8
+      },
+      {
+        "ram_used_bytes": 65180405760,
+        "ram_available_bytes": 999342080,
+        "cpu_percent": 66.9
+      },
+      {
+        "ram_used_bytes": 65209430016,
+        "ram_available_bytes": 970317824,
+        "cpu_percent": 62.4
+      },
+      {
+        "ram_used_bytes": 65226141696,
+        "ram_available_bytes": 953606144,
+        "cpu_percent": 70.3
+      },
+      {
+        "ram_used_bytes": 65269084160,
+        "ram_available_bytes": 910663680,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 65341181952,
+        "ram_available_bytes": 838565888,
+        "cpu_percent": 67.9
+      },
+      {
+        "ram_used_bytes": 65365819392,
+        "ram_available_bytes": 813928448,
+        "cpu_percent": 86.5
+      },
+      {
+        "ram_used_bytes": 65389203456,
+        "ram_available_bytes": 790544384,
+        "cpu_percent": 76.2
+      },
+      {
+        "ram_used_bytes": 65431773184,
+        "ram_available_bytes": 747974656,
+        "cpu_percent": 69.9
+      },
+      {
+        "ram_used_bytes": 65294954496,
+        "ram_available_bytes": 884793344,
+        "cpu_percent": 80.8
+      },
+      {
+        "ram_used_bytes": 65314463744,
+        "ram_available_bytes": 865284096,
+        "cpu_percent": 75.8
+      },
+      {
+        "ram_used_bytes": 65484566528,
+        "ram_available_bytes": 695181312,
+        "cpu_percent": 67.8
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-loaded-desktop-8k-2",
+    "prompt_sha256": "039164025aa29795243367d98b10bf65d6b863ad5bf128f3b73f5f8f18ee9b01",
+    "started_utc": "2026-10-20T00:05:09.599227+00:00",
+    "ok": true,
+    "wall_seconds": 12.087439699997049,
+    "ttft_seconds": 11.819354999999632,
+    "usage": {
+      "prompt_tokens": 7634,
+      "completion_tokens": 6,
+      "total_tokens": 7640,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 7634,
+      "prompt_ms": 11760.1,
+      "prompt_per_token_ms": 1.54,
+      "prompt_per_second": 649.1,
+      "predicted_n": 6,
+      "predicted_ms": 311.4,
+      "predicted_per_token_ms": 51.9,
+      "predicted_per_second": 19.3,
+      "draft_n": 6,
+      "draft_n_accepted": 6
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 65393258496,
+        "ram_available_bytes": 786489344,
+        "cpu_percent": 71.7
+      },
+      {
+        "ram_used_bytes": 65382957056,
+        "ram_available_bytes": 796790784,
+        "cpu_percent": 59.3
+      },
+      {
+        "ram_used_bytes": 65604968448,
+        "ram_available_bytes": 574779392,
+        "cpu_percent": 65.4
+      },
+      {
+        "ram_used_bytes": 65566298112,
+        "ram_available_bytes": 613449728,
+        "cpu_percent": 70.2
+      },
+      {
+        "ram_used_bytes": 65580257280,
+        "ram_available_bytes": 599490560,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 65542946816,
+        "ram_available_bytes": 636801024,
+        "cpu_percent": 73.9
+      },
+      {
+        "ram_used_bytes": 65506607104,
+        "ram_available_bytes": 673140736,
+        "cpu_percent": 74.6
+      },
+      {
+        "ram_used_bytes": 65534697472,
+        "ram_available_bytes": 645050368,
+        "cpu_percent": 68.8
+      },
+      {
+        "ram_used_bytes": 65581178880,
+        "ram_available_bytes": 598568960,
+        "cpu_percent": 64.9
+      },
+      {
+        "ram_used_bytes": 65543811072,
+        "ram_available_bytes": 635936768,
+        "cpu_percent": 71.2
+      },
+      {
+        "ram_used_bytes": 65536905216,
+        "ram_available_bytes": 642842624,
+        "cpu_percent": 59.2
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-loaded-desktop-short-0",
+    "prompt_sha256": "82c93fd76bdd973b4b93b8b5bf312f09742e1b3e36c6c5367a6c9d564d66d5da",
+    "started_utc": "2026-10-20T00:00:16.517519+00:00",
+    "ok": true,
+    "wall_seconds": 14.716100499997992,
+    "ttft_seconds": 3.673235999998724,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 3611.0,
+      "prompt_per_token_ms": 85.976,
+      "prompt_per_second": 11.6,
+      "predicted_n": 192,
+      "predicted_ms": 11092.4,
+      "predicted_per_token_ms": 57.773,
+      "predicted_per_second": 17.3,
+      "draft_n": 151,
+      "draft_n_accepted": 135
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 64014946304,
+        "ram_available_bytes": 2164801536,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 63091208192,
+        "ram_available_bytes": 3088539648,
+        "cpu_percent": 54.2
+      },
+      {
+        "ram_used_bytes": 63186595840,
+        "ram_available_bytes": 2993152000,
+        "cpu_percent": 52.2
+      },
+      {
+        "ram_used_bytes": 63188164608,
+        "ram_available_bytes": 2991583232,
+        "cpu_percent": 56.5
+      },
+      {
+        "ram_used_bytes": 63122550784,
+        "ram_available_bytes": 3057197056,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 63422140416,
+        "ram_available_bytes": 2757607424,
+        "cpu_percent": 52.5
+      },
+      {
+        "ram_used_bytes": 63213817856,
+        "ram_available_bytes": 2965929984,
+        "cpu_percent": 47.9
+      },
+      {
+        "ram_used_bytes": 63239274496,
+        "ram_available_bytes": 2940473344,
+        "cpu_percent": 49.4
+      },
+      {
+        "ram_used_bytes": 63114706944,
+        "ram_available_bytes": 3065040896,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 63534157824,
+        "ram_available_bytes": 2645590016,
+        "cpu_percent": 49.4
+      },
+      {
+        "ram_used_bytes": 63404507136,
+        "ram_available_bytes": 2775240704,
+        "cpu_percent": 53.3
+      },
+      {
+        "ram_used_bytes": 63271284736,
+        "ram_available_bytes": 2908463104,
+        "cpu_percent": 54.2
+      },
+      {
+        "ram_used_bytes": 63527985152,
+        "ram_available_bytes": 2651762688,
+        "cpu_percent": 55.4
+      },
+      {
+        "ram_used_bytes": 63551197184,
+        "ram_available_bytes": 2628550656,
+        "cpu_percent": 58.1
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-loaded-desktop-short-1",
+    "prompt_sha256": "1cc44282671df5542765a34b611a39f850707075561ef3fdec6d7032164864c1",
+    "started_utc": "2026-10-20T00:00:32.634874+00:00",
+    "ok": true,
+    "wall_seconds": 6.242225000001781,
+    "ttft_seconds": 1.0091096000032849,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 954.8,
+      "prompt_per_token_ms": 22.733,
+      "prompt_per_second": 44.0,
+      "predicted_n": 192,
+      "predicted_ms": 5276.2,
+      "predicted_per_token_ms": 27.48,
+      "predicted_per_second": 36.4,
+      "draft_n": 159,
+      "draft_n_accepted": 136
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 63150821376,
+        "ram_available_bytes": 3028926464,
+        "cpu_percent": 71.1
+      },
+      {
+        "ram_used_bytes": 63181516800,
+        "ram_available_bytes": 2998231040,
+        "cpu_percent": 59.3
+      },
+      {
+        "ram_used_bytes": 63255179264,
+        "ram_available_bytes": 2924568576,
+        "cpu_percent": 58.1
+      },
+      {
+        "ram_used_bytes": 63327850496,
+        "ram_available_bytes": 2851897344,
+        "cpu_percent": 59.6
+      },
+      {
+        "ram_used_bytes": 63260684288,
+        "ram_available_bytes": 2919063552,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 63426109440,
+        "ram_available_bytes": 2753638400,
+        "cpu_percent": 59.0
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-loaded-desktop-short-2",
+    "prompt_sha256": "ef2b259ffe8319e84157c93467ba1bfc384a1bf8139d7d111e48b230ea6c58df",
+    "started_utc": "2026-10-20T00:00:40.432981+00:00",
+    "ok": true,
+    "wall_seconds": 5.959156299999449,
+    "ttft_seconds": 0.9888274999975692,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 933.9,
+      "prompt_per_token_ms": 22.236,
+      "prompt_per_second": 45.0,
+      "predicted_n": 192,
+      "predicted_ms": 5014.3,
+      "predicted_per_token_ms": 26.116,
+      "predicted_per_second": 38.3,
+      "draft_n": 156,
+      "draft_n_accepted": 137
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 63458406400,
+        "ram_available_bytes": 2721341440,
+        "cpu_percent": 67.9
+      },
+      {
+        "ram_used_bytes": 63460630528,
+        "ram_available_bytes": 2719117312,
+        "cpu_percent": 59.1
+      },
+      {
+        "ram_used_bytes": 63530450944,
+        "ram_available_bytes": 2649296896,
+        "cpu_percent": 56.4
+      },
+      {
+        "ram_used_bytes": 63551344640,
+        "ram_available_bytes": 2628403200,
+        "cpu_percent": 54.9
+      },
+      {
+        "ram_used_bytes": 63561740288,
+        "ram_available_bytes": 2618007552,
+        "cpu_percent": 54.1
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-tail0-postagent-0",
+    "prompt_sha256": "82c93fd76bdd973b4b93b8b5bf312f09742e1b3e36c6c5367a6c9d564d66d5da",
+    "started_utc": "2026-10-20T02:06:33.950575+00:00",
+    "ok": true,
+    "wall_seconds": 5.044686199998978,
+    "ttft_seconds": 0.949179199997161,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 903.6,
+      "prompt_per_token_ms": 21.514,
+      "prompt_per_second": 46.5,
+      "predicted_n": 192,
+      "predicted_ms": 4135.5,
+      "predicted_per_token_ms": 21.539,
+      "predicted_per_second": 46.4,
+      "draft_n": 163,
+      "draft_n_accepted": 138
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62723731456,
+        "ram_available_bytes": 3456016384,
+        "cpu_percent": 69.2
+      },
+      {
+        "ram_used_bytes": 62745370624,
+        "ram_available_bytes": 3434377216,
+        "cpu_percent": 71.4
+      },
+      {
+        "ram_used_bytes": 62876663808,
+        "ram_available_bytes": 3303084032,
+        "cpu_percent": 69.2
+      },
+      {
+        "ram_used_bytes": 62832238592,
+        "ram_available_bytes": 3347509248,
+        "cpu_percent": 68.9
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-tail0-postagent-1",
+    "prompt_sha256": "1cc44282671df5542765a34b611a39f850707075561ef3fdec6d7032164864c1",
+    "started_utc": "2026-10-20T02:06:40.331018+00:00",
+    "ok": true,
+    "wall_seconds": 3.312336900002265,
+    "ttft_seconds": 0.6240620000025956,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 592.4,
+      "prompt_per_token_ms": 14.105,
+      "prompt_per_second": 70.9,
+      "predicted_n": 192,
+      "predicted_ms": 2713.8,
+      "predicted_per_token_ms": 14.134,
+      "predicted_per_second": 70.7,
+      "draft_n": 163,
+      "draft_n_accepted": 139
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62792196096,
+        "ram_available_bytes": 3387551744,
+        "cpu_percent": 67.7
+      },
+      {
+        "ram_used_bytes": 62792515584,
+        "ram_available_bytes": 3387232256,
+        "cpu_percent": 64.8
+      },
+      {
+        "ram_used_bytes": 62806519808,
+        "ram_available_bytes": 3373228032,
+        "cpu_percent": 63.4
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-tail0-postagent-2",
+    "prompt_sha256": "ef2b259ffe8319e84157c93467ba1bfc384a1bf8139d7d111e48b230ea6c58df",
+    "started_utc": "2026-10-20T02:06:45.319675+00:00",
+    "ok": true,
+    "wall_seconds": 3.52900039999804,
+    "ttft_seconds": 0.8002008000003116,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 758.4,
+      "prompt_per_token_ms": 18.057,
+      "prompt_per_second": 55.4,
+      "predicted_n": 192,
+      "predicted_ms": 2763.8,
+      "predicted_per_token_ms": 14.395,
+      "predicted_per_second": 69.5,
+      "draft_n": 163,
+      "draft_n_accepted": 139
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62841909248,
+        "ram_available_bytes": 3337838592,
+        "cpu_percent": 78.0
+      },
+      {
+        "ram_used_bytes": 62845698048,
+        "ram_available_bytes": 3334049792,
+        "cpu_percent": 68.6
+      },
+      {
+        "ram_used_bytes": 62852128768,
+        "ram_available_bytes": 3327619072,
+        "cpu_percent": 67.3
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-tail0-short-0",
+    "prompt_sha256": "82c93fd76bdd973b4b93b8b5bf312f09742e1b3e36c6c5367a6c9d564d66d5da",
+    "started_utc": "2026-10-20T01:54:35.682066+00:00",
+    "ok": true,
+    "wall_seconds": 8.889609300000302,
+    "ttft_seconds": 1.5219907999999123,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 1481.3,
+      "prompt_per_token_ms": 35.269,
+      "prompt_per_second": 28.4,
+      "predicted_n": 192,
+      "predicted_ms": 7401.0,
+      "predicted_per_token_ms": 38.547,
+      "predicted_per_second": 25.9,
+      "draft_n": 156,
+      "draft_n_accepted": 135
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 38439710720,
+        "ram_available_bytes": 27740037120,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 40386719744,
+        "ram_available_bytes": 25793028096,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 42036592640,
+        "ram_available_bytes": 24143155200,
+        "cpu_percent": 57.6
+      },
+      {
+        "ram_used_bytes": 43506499584,
+        "ram_available_bytes": 22673248256,
+        "cpu_percent": 63.5
+      },
+      {
+        "ram_used_bytes": 45050470400,
+        "ram_available_bytes": 21129277440,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 45961265152,
+        "ram_available_bytes": 20218482688,
+        "cpu_percent": 72.6
+      },
+      {
+        "ram_used_bytes": 46793940992,
+        "ram_available_bytes": 19385806848,
+        "cpu_percent": 78.7
+      },
+      {
+        "ram_used_bytes": 47958835200,
+        "ram_available_bytes": 18220912640,
+        "cpu_percent": 63.3
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-tail0-short-1",
+    "prompt_sha256": "1cc44282671df5542765a34b611a39f850707075561ef3fdec6d7032164864c1",
+    "started_utc": "2026-10-20T01:54:46.247127+00:00",
+    "ok": true,
+    "wall_seconds": 3.983713399997214,
+    "ttft_seconds": 0.7538413000002038,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 724.7,
+      "prompt_per_token_ms": 17.255,
+      "prompt_per_second": 58.0,
+      "predicted_n": 192,
+      "predicted_ms": 3253.7,
+      "predicted_per_token_ms": 16.946,
+      "predicted_per_second": 59.0,
+      "draft_n": 162,
+      "draft_n_accepted": 139
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 48523366400,
+        "ram_available_bytes": 17656381440,
+        "cpu_percent": 72.4
+      },
+      {
+        "ram_used_bytes": 48517148672,
+        "ram_available_bytes": 17662599168,
+        "cpu_percent": 65.7
+      },
+      {
+        "ram_used_bytes": 48237944832,
+        "ram_available_bytes": 17941803008,
+        "cpu_percent": 80.0
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-tail0-short-2",
+    "prompt_sha256": "ef2b259ffe8319e84157c93467ba1bfc384a1bf8139d7d111e48b230ea6c58df",
+    "started_utc": "2026-10-20T01:54:51.599029+00:00",
+    "ok": true,
+    "wall_seconds": 3.674704199998814,
+    "ttft_seconds": 0.794247899997572,
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 192,
+      "total_tokens": 234,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 42,
+      "prompt_ms": 758.1,
+      "prompt_per_token_ms": 18.05,
+      "prompt_per_second": 55.4,
+      "predicted_n": 192,
+      "predicted_ms": 2911.5,
+      "predicted_per_token_ms": 15.164,
+      "predicted_per_second": 65.9,
+      "draft_n": 161,
+      "draft_n_accepted": 139
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 48458932224,
+        "ram_available_bytes": 17720815616,
+        "cpu_percent": 70.3
+      },
+      {
+        "ram_used_bytes": 48491966464,
+        "ram_available_bytes": 17687781376,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 48599212032,
+        "ram_available_bytes": 17580535808,
+        "cpu_percent": 73.2
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-varied-128k-0",
+    "prompt_sha256": "d509ada6c214935978a64a914c3d465a07252e6ed68c26b7ef27b9c646aefdf8",
+    "started_utc": "2026-10-20T01:38:15.259303+00:00",
+    "ok": true,
+    "wall_seconds": 136.57281180000064,
+    "ttft_seconds": 136.12036119999902,
+    "usage": {
+      "prompt_tokens": 130508,
+      "completion_tokens": 27,
+      "total_tokens": 130535,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 130508,
+      "prompt_ms": 136025.2,
+      "prompt_per_token_ms": 1.042,
+      "prompt_per_second": 959.4,
+      "predicted_n": 27,
+      "predicted_ms": 470.5,
+      "predicted_per_token_ms": 17.426,
+      "predicted_per_second": 57.4,
+      "draft_n": 28,
+      "draft_n_accepted": 17
+    },
+    "recall_check": {
+      "expected": [
+        "ALPHA152564",
+        "BETA433561",
+        "OMEGA262247"
+      ],
+      "all_present": true
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 64430501888,
+        "ram_available_bytes": 1749245952,
+        "cpu_percent": 67.1
+      },
+      {
+        "ram_used_bytes": 64431611904,
+        "ram_available_bytes": 1748135936,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 64504193024,
+        "ram_available_bytes": 1675554816,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 64476000256,
+        "ram_available_bytes": 1703747584,
+        "cpu_percent": 71.0
+      },
+      {
+        "ram_used_bytes": 64479862784,
+        "ram_available_bytes": 1699885056,
+        "cpu_percent": 68.1
+      },
+      {
+        "ram_used_bytes": 64539586560,
+        "ram_available_bytes": 1640161280,
+        "cpu_percent": 66.8
+      },
+      {
+        "ram_used_bytes": 64458158080,
+        "ram_available_bytes": 1721589760,
+        "cpu_percent": 63.0
+      },
+      {
+        "ram_used_bytes": 64427802624,
+        "ram_available_bytes": 1751945216,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 64397721600,
+        "ram_available_bytes": 1782026240,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 64192786432,
+        "ram_available_bytes": 1986961408,
+        "cpu_percent": 64.4
+      },
+      {
+        "ram_used_bytes": 64250421248,
+        "ram_available_bytes": 1929326592,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 64197730304,
+        "ram_available_bytes": 1982017536,
+        "cpu_percent": 57.3
+      },
+      {
+        "ram_used_bytes": 64199180288,
+        "ram_available_bytes": 1980567552,
+        "cpu_percent": 53.6
+      },
+      {
+        "ram_used_bytes": 64260366336,
+        "ram_available_bytes": 1919381504,
+        "cpu_percent": 65.8
+      },
+      {
+        "ram_used_bytes": 64198426624,
+        "ram_available_bytes": 1981321216,
+        "cpu_percent": 65.9
+      },
+      {
+        "ram_used_bytes": 64197083136,
+        "ram_available_bytes": 1982664704,
+        "cpu_percent": 57.0
+      },
+      {
+        "ram_used_bytes": 64381087744,
+        "ram_available_bytes": 1798660096,
+        "cpu_percent": 62.9
+      },
+      {
+        "ram_used_bytes": 64324972544,
+        "ram_available_bytes": 1854775296,
+        "cpu_percent": 60.4
+      },
+      {
+        "ram_used_bytes": 64324214784,
+        "ram_available_bytes": 1855533056,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 64326787072,
+        "ram_available_bytes": 1852960768,
+        "cpu_percent": 65.7
+      },
+      {
+        "ram_used_bytes": 64378363904,
+        "ram_available_bytes": 1801383936,
+        "cpu_percent": 57.5
+      },
+      {
+        "ram_used_bytes": 64380919808,
+        "ram_available_bytes": 1798828032,
+        "cpu_percent": 56.4
+      },
+      {
+        "ram_used_bytes": 64367878144,
+        "ram_available_bytes": 1811869696,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 64348868608,
+        "ram_available_bytes": 1830879232,
+        "cpu_percent": 62.0
+      },
+      {
+        "ram_used_bytes": 64423616512,
+        "ram_available_bytes": 1756131328,
+        "cpu_percent": 64.0
+      },
+      {
+        "ram_used_bytes": 64384315392,
+        "ram_available_bytes": 1795432448,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 64380325888,
+        "ram_available_bytes": 1799421952,
+        "cpu_percent": 59.3
+      },
+      {
+        "ram_used_bytes": 64441380864,
+        "ram_available_bytes": 1738366976,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 64376700928,
+        "ram_available_bytes": 1803046912,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 64370081792,
+        "ram_available_bytes": 1809666048,
+        "cpu_percent": 58.6
+      },
+      {
+        "ram_used_bytes": 64369000448,
+        "ram_available_bytes": 1810747392,
+        "cpu_percent": 64.7
+      },
+      {
+        "ram_used_bytes": 64368857088,
+        "ram_available_bytes": 1810890752,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 64399958016,
+        "ram_available_bytes": 1779789824,
+        "cpu_percent": 60.0
+      },
+      {
+        "ram_used_bytes": 64359133184,
+        "ram_available_bytes": 1820614656,
+        "cpu_percent": 65.5
+      },
+      {
+        "ram_used_bytes": 64471556096,
+        "ram_available_bytes": 1708191744,
+        "cpu_percent": 61.5
+      },
+      {
+        "ram_used_bytes": 64483889152,
+        "ram_available_bytes": 1695858688,
+        "cpu_percent": 62.4
+      },
+      {
+        "ram_used_bytes": 64431185920,
+        "ram_available_bytes": 1748561920,
+        "cpu_percent": 62.5
+      },
+      {
+        "ram_used_bytes": 64430247936,
+        "ram_available_bytes": 1749499904,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 64507637760,
+        "ram_available_bytes": 1672110080,
+        "cpu_percent": 68.0
+      },
+      {
+        "ram_used_bytes": 64441622528,
+        "ram_available_bytes": 1738125312,
+        "cpu_percent": 57.8
+      },
+      {
+        "ram_used_bytes": 64428101632,
+        "ram_available_bytes": 1751646208,
+        "cpu_percent": 54.6
+      },
+      {
+        "ram_used_bytes": 64427716608,
+        "ram_available_bytes": 1752031232,
+        "cpu_percent": 66.6
+      },
+      {
+        "ram_used_bytes": 64425824256,
+        "ram_available_bytes": 1753923584,
+        "cpu_percent": 63.2
+      },
+      {
+        "ram_used_bytes": 64446148608,
+        "ram_available_bytes": 1733599232,
+        "cpu_percent": 56.9
+      },
+      {
+        "ram_used_bytes": 64462925824,
+        "ram_available_bytes": 1716822016,
+        "cpu_percent": 66.4
+      },
+      {
+        "ram_used_bytes": 64546766848,
+        "ram_available_bytes": 1632980992,
+        "cpu_percent": 68.6
+      },
+      {
+        "ram_used_bytes": 64732979200,
+        "ram_available_bytes": 1446768640,
+        "cpu_percent": 80.4
+      },
+      {
+        "ram_used_bytes": 64676880384,
+        "ram_available_bytes": 1502867456,
+        "cpu_percent": 67.2
+      },
+      {
+        "ram_used_bytes": 64676257792,
+        "ram_available_bytes": 1503490048,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 64918855680,
+        "ram_available_bytes": 1260892160,
+        "cpu_percent": 76.0
+      },
+      {
+        "ram_used_bytes": 64743886848,
+        "ram_available_bytes": 1435860992,
+        "cpu_percent": 67.9
+      },
+      {
+        "ram_used_bytes": 64748265472,
+        "ram_available_bytes": 1431482368,
+        "cpu_percent": 64.2
+      },
+      {
+        "ram_used_bytes": 64865636352,
+        "ram_available_bytes": 1314111488,
+        "cpu_percent": 69.9
+      },
+      {
+        "ram_used_bytes": 64851447808,
+        "ram_available_bytes": 1328300032,
+        "cpu_percent": 58.6
+      },
+      {
+        "ram_used_bytes": 64855298048,
+        "ram_available_bytes": 1324449792,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 64832286720,
+        "ram_available_bytes": 1347461120,
+        "cpu_percent": 66.4
+      },
+      {
+        "ram_used_bytes": 64792260608,
+        "ram_available_bytes": 1387487232,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 65031413760,
+        "ram_available_bytes": 1148334080,
+        "cpu_percent": 88.2
+      },
+      {
+        "ram_used_bytes": 65007988736,
+        "ram_available_bytes": 1171759104,
+        "cpu_percent": 91.5
+      },
+      {
+        "ram_used_bytes": 65029525504,
+        "ram_available_bytes": 1150222336,
+        "cpu_percent": 82.1
+      },
+      {
+        "ram_used_bytes": 65068019712,
+        "ram_available_bytes": 1111728128,
+        "cpu_percent": 68.9
+      },
+      {
+        "ram_used_bytes": 64963129344,
+        "ram_available_bytes": 1216618496,
+        "cpu_percent": 75.8
+      },
+      {
+        "ram_used_bytes": 64957550592,
+        "ram_available_bytes": 1222197248,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 65025204224,
+        "ram_available_bytes": 1154543616,
+        "cpu_percent": 67.2
+      },
+      {
+        "ram_used_bytes": 64951357440,
+        "ram_available_bytes": 1228390400,
+        "cpu_percent": 61.3
+      },
+      {
+        "ram_used_bytes": 64932487168,
+        "ram_available_bytes": 1247260672,
+        "cpu_percent": 55.5
+      },
+      {
+        "ram_used_bytes": 64933412864,
+        "ram_available_bytes": 1246334976,
+        "cpu_percent": 66.3
+      },
+      {
+        "ram_used_bytes": 64903049216,
+        "ram_available_bytes": 1276698624,
+        "cpu_percent": 55.2
+      },
+      {
+        "ram_used_bytes": 64896696320,
+        "ram_available_bytes": 1283051520,
+        "cpu_percent": 52.5
+      },
+      {
+        "ram_used_bytes": 64891564032,
+        "ram_available_bytes": 1288183808,
+        "cpu_percent": 63.9
+      },
+      {
+        "ram_used_bytes": 64820543488,
+        "ram_available_bytes": 1359204352,
+        "cpu_percent": 69.2
+      },
+      {
+        "ram_used_bytes": 64988930048,
+        "ram_available_bytes": 1190817792,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 64930439168,
+        "ram_available_bytes": 1249308672,
+        "cpu_percent": 58.3
+      },
+      {
+        "ram_used_bytes": 64844361728,
+        "ram_available_bytes": 1335386112,
+        "cpu_percent": 56.4
+      },
+      {
+        "ram_used_bytes": 64906190848,
+        "ram_available_bytes": 1273556992,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 64842297344,
+        "ram_available_bytes": 1337450496,
+        "cpu_percent": 59.5
+      },
+      {
+        "ram_used_bytes": 64851816448,
+        "ram_available_bytes": 1327931392,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 64925188096,
+        "ram_available_bytes": 1254559744,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 64806789120,
+        "ram_available_bytes": 1372958720,
+        "cpu_percent": 56.2
+      },
+      {
+        "ram_used_bytes": 64807555072,
+        "ram_available_bytes": 1372192768,
+        "cpu_percent": 63.0
+      },
+      {
+        "ram_used_bytes": 64949452800,
+        "ram_available_bytes": 1230295040,
+        "cpu_percent": 73.0
+      },
+      {
+        "ram_used_bytes": 64954818560,
+        "ram_available_bytes": 1224929280,
+        "cpu_percent": 56.5
+      },
+      {
+        "ram_used_bytes": 64974864384,
+        "ram_available_bytes": 1204883456,
+        "cpu_percent": 69.1
+      },
+      {
+        "ram_used_bytes": 64944922624,
+        "ram_available_bytes": 1234825216,
+        "cpu_percent": 63.1
+      },
+      {
+        "ram_used_bytes": 64952651776,
+        "ram_available_bytes": 1227096064,
+        "cpu_percent": 60.3
+      },
+      {
+        "ram_used_bytes": 65020899328,
+        "ram_available_bytes": 1158848512,
+        "cpu_percent": 71.6
+      },
+      {
+        "ram_used_bytes": 64928305152,
+        "ram_available_bytes": 1251442688,
+        "cpu_percent": 67.4
+      },
+      {
+        "ram_used_bytes": 64531759104,
+        "ram_available_bytes": 1647988736,
+        "cpu_percent": 70.9
+      },
+      {
+        "ram_used_bytes": 64426106880,
+        "ram_available_bytes": 1753640960,
+        "cpu_percent": 78.1
+      },
+      {
+        "ram_used_bytes": 64201510912,
+        "ram_available_bytes": 1978236928,
+        "cpu_percent": 68.4
+      },
+      {
+        "ram_used_bytes": 64208224256,
+        "ram_available_bytes": 1971523584,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 64220106752,
+        "ram_available_bytes": 1959641088,
+        "cpu_percent": 67.5
+      },
+      {
+        "ram_used_bytes": 64224251904,
+        "ram_available_bytes": 1955495936,
+        "cpu_percent": 62.7
+      },
+      {
+        "ram_used_bytes": 64224509952,
+        "ram_available_bytes": 1955237888,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 64209473536,
+        "ram_available_bytes": 1970274304,
+        "cpu_percent": 68.0
+      },
+      {
+        "ram_used_bytes": 64221896704,
+        "ram_available_bytes": 1957851136,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 64264806400,
+        "ram_available_bytes": 1914941440,
+        "cpu_percent": 58.4
+      },
+      {
+        "ram_used_bytes": 64212643840,
+        "ram_available_bytes": 1967104000,
+        "cpu_percent": 66.3
+      },
+      {
+        "ram_used_bytes": 64222433280,
+        "ram_available_bytes": 1957314560,
+        "cpu_percent": 57.3
+      },
+      {
+        "ram_used_bytes": 64265707520,
+        "ram_available_bytes": 1914040320,
+        "cpu_percent": 65.7
+      },
+      {
+        "ram_used_bytes": 64206581760,
+        "ram_available_bytes": 1973166080,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 64208904192,
+        "ram_available_bytes": 1970843648,
+        "cpu_percent": 60.7
+      },
+      {
+        "ram_used_bytes": 64276283392,
+        "ram_available_bytes": 1903464448,
+        "cpu_percent": 66.1
+      },
+      {
+        "ram_used_bytes": 64218521600,
+        "ram_available_bytes": 1961226240,
+        "cpu_percent": 65.0
+      },
+      {
+        "ram_used_bytes": 64226959360,
+        "ram_available_bytes": 1952788480,
+        "cpu_percent": 69.3
+      },
+      {
+        "ram_used_bytes": 64354177024,
+        "ram_available_bytes": 1825570816,
+        "cpu_percent": 90.0
+      },
+      {
+        "ram_used_bytes": 64564891648,
+        "ram_available_bytes": 1614856192,
+        "cpu_percent": 69.9
+      },
+      {
+        "ram_used_bytes": 64636080128,
+        "ram_available_bytes": 1543667712,
+        "cpu_percent": 69.9
+      },
+      {
+        "ram_used_bytes": 64650444800,
+        "ram_available_bytes": 1529303040,
+        "cpu_percent": 73.9
+      },
+      {
+        "ram_used_bytes": 64659091456,
+        "ram_available_bytes": 1520656384,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 64706240512,
+        "ram_available_bytes": 1473507328,
+        "cpu_percent": 64.1
+      },
+      {
+        "ram_used_bytes": 64663420928,
+        "ram_available_bytes": 1516326912,
+        "cpu_percent": 61.7
+      },
+      {
+        "ram_used_bytes": 64660971520,
+        "ram_available_bytes": 1518776320,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 64932528128,
+        "ram_available_bytes": 1247219712,
+        "cpu_percent": 79.6
+      },
+      {
+        "ram_used_bytes": 64878731264,
+        "ram_available_bytes": 1301016576,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 64809885696,
+        "ram_available_bytes": 1369862144,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 64849887232,
+        "ram_available_bytes": 1329860608,
+        "cpu_percent": 66.7
+      },
+      {
+        "ram_used_bytes": 64793800704,
+        "ram_available_bytes": 1385947136,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 64743497728,
+        "ram_available_bytes": 1436250112,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 64673456128,
+        "ram_available_bytes": 1506291712,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 64674447360,
+        "ram_available_bytes": 1505300480,
+        "cpu_percent": 59.2
+      },
+      {
+        "ram_used_bytes": 64696827904,
+        "ram_available_bytes": 1482919936,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 64698044416,
+        "ram_available_bytes": 1481703424,
+        "cpu_percent": 67.8
+      },
+      {
+        "ram_used_bytes": 64705126400,
+        "ram_available_bytes": 1474621440,
+        "cpu_percent": 58.4
+      },
+      {
+        "ram_used_bytes": 64750243840,
+        "ram_available_bytes": 1429504000,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 64707747840,
+        "ram_available_bytes": 1472000000,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 64705044480,
+        "ram_available_bytes": 1474703360,
+        "cpu_percent": 55.5
+      },
+      {
+        "ram_used_bytes": 64733937664,
+        "ram_available_bytes": 1445810176,
+        "cpu_percent": 67.8
+      },
+      {
+        "ram_used_bytes": 64674279424,
+        "ram_available_bytes": 1505468416,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 64674394112,
+        "ram_available_bytes": 1505353728,
+        "cpu_percent": 58.4
+      },
+      {
+        "ram_used_bytes": 64675295232,
+        "ram_available_bytes": 1504452608,
+        "cpu_percent": 53.8
+      },
+      {
+        "ram_used_bytes": 64697749504,
+        "ram_available_bytes": 1481998336,
+        "cpu_percent": 45.4
+      },
+      {
+        "ram_used_bytes": 64735449088,
+        "ram_available_bytes": 1444298752,
+        "cpu_percent": 57.4
+      },
+      {
+        "ram_used_bytes": 64714391552,
+        "ram_available_bytes": 1465356288,
+        "cpu_percent": 54.8
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-varied-128k-1",
+    "prompt_sha256": "fa240fa25879dfb41f7eb9cd88de7ae0d198740b003784e8bfd606ea54494ea5",
+    "started_utc": "2026-10-20T01:40:33.403954+00:00",
+    "ok": true,
+    "wall_seconds": 137.37562249999974,
+    "ttft_seconds": 136.9412416999985,
+    "usage": {
+      "prompt_tokens": 130528,
+      "completion_tokens": 27,
+      "total_tokens": 130555,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 130528,
+      "prompt_ms": 136851.2,
+      "prompt_per_token_ms": 1.048,
+      "prompt_per_second": 953.8,
+      "predicted_n": 27,
+      "predicted_ms": 451.8,
+      "predicted_per_token_ms": 16.733,
+      "predicted_per_second": 59.8,
+      "draft_n": 24,
+      "draft_n_accepted": 18
+    },
+    "recall_check": {
+      "expected": [
+        "ALPHA981741",
+        "BETA752873",
+        "OMEGA491061"
+      ],
+      "all_present": true
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 64033771520,
+        "ram_available_bytes": 2145976320,
+        "cpu_percent": 58.2
+      },
+      {
+        "ram_used_bytes": 64042074112,
+        "ram_available_bytes": 2137673728,
+        "cpu_percent": 57.7
+      },
+      {
+        "ram_used_bytes": 64154865664,
+        "ram_available_bytes": 2024882176,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 64091295744,
+        "ram_available_bytes": 2088452096,
+        "cpu_percent": 64.1
+      },
+      {
+        "ram_used_bytes": 64111734784,
+        "ram_available_bytes": 2068013056,
+        "cpu_percent": 58.8
+      },
+      {
+        "ram_used_bytes": 64196538368,
+        "ram_available_bytes": 1983209472,
+        "cpu_percent": 66.6
+      },
+      {
+        "ram_used_bytes": 64134496256,
+        "ram_available_bytes": 2045251584,
+        "cpu_percent": 62.2
+      },
+      {
+        "ram_used_bytes": 64114667520,
+        "ram_available_bytes": 2065080320,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 64193519616,
+        "ram_available_bytes": 1986228224,
+        "cpu_percent": 64.1
+      },
+      {
+        "ram_used_bytes": 64143151104,
+        "ram_available_bytes": 2036596736,
+        "cpu_percent": 59.2
+      },
+      {
+        "ram_used_bytes": 64142290944,
+        "ram_available_bytes": 2037456896,
+        "cpu_percent": 62.0
+      },
+      {
+        "ram_used_bytes": 64135544832,
+        "ram_available_bytes": 2044203008,
+        "cpu_percent": 64.4
+      },
+      {
+        "ram_used_bytes": 64079859712,
+        "ram_available_bytes": 2099888128,
+        "cpu_percent": 57.4
+      },
+      {
+        "ram_used_bytes": 64103862272,
+        "ram_available_bytes": 2075885568,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 64084221952,
+        "ram_available_bytes": 2095525888,
+        "cpu_percent": 65.2
+      },
+      {
+        "ram_used_bytes": 64081805312,
+        "ram_available_bytes": 2097942528,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 64150470656,
+        "ram_available_bytes": 2029277184,
+        "cpu_percent": 57.7
+      },
+      {
+        "ram_used_bytes": 64205430784,
+        "ram_available_bytes": 1974317056,
+        "cpu_percent": 56.7
+      },
+      {
+        "ram_used_bytes": 64205578240,
+        "ram_available_bytes": 1974169600,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 64275853312,
+        "ram_available_bytes": 1903894528,
+        "cpu_percent": 72.8
+      },
+      {
+        "ram_used_bytes": 64211107840,
+        "ram_available_bytes": 1968640000,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 64209920000,
+        "ram_available_bytes": 1969827840,
+        "cpu_percent": 58.2
+      },
+      {
+        "ram_used_bytes": 64214011904,
+        "ram_available_bytes": 1965735936,
+        "cpu_percent": 69.8
+      },
+      {
+        "ram_used_bytes": 64218017792,
+        "ram_available_bytes": 1961730048,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 64222490624,
+        "ram_available_bytes": 1957257216,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 64220737536,
+        "ram_available_bytes": 1959010304,
+        "cpu_percent": 63.9
+      },
+      {
+        "ram_used_bytes": 64220053504,
+        "ram_available_bytes": 1959694336,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 64274481152,
+        "ram_available_bytes": 1905266688,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 64261959680,
+        "ram_available_bytes": 1917788160,
+        "cpu_percent": 80.8
+      },
+      {
+        "ram_used_bytes": 64260825088,
+        "ram_available_bytes": 1918922752,
+        "cpu_percent": 55.5
+      },
+      {
+        "ram_used_bytes": 64347774976,
+        "ram_available_bytes": 1831972864,
+        "cpu_percent": 59.3
+      },
+      {
+        "ram_used_bytes": 64447148032,
+        "ram_available_bytes": 1732599808,
+        "cpu_percent": 69.5
+      },
+      {
+        "ram_used_bytes": 64379273216,
+        "ram_available_bytes": 1800474624,
+        "cpu_percent": 65.7
+      },
+      {
+        "ram_used_bytes": 64349597696,
+        "ram_available_bytes": 1830150144,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 64471564288,
+        "ram_available_bytes": 1708183552,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 64467992576,
+        "ram_available_bytes": 1711755264,
+        "cpu_percent": 59.2
+      },
+      {
+        "ram_used_bytes": 64519151616,
+        "ram_available_bytes": 1660596224,
+        "cpu_percent": 65.6
+      },
+      {
+        "ram_used_bytes": 64611151872,
+        "ram_available_bytes": 1568595968,
+        "cpu_percent": 68.5
+      },
+      {
+        "ram_used_bytes": 64814559232,
+        "ram_available_bytes": 1365188608,
+        "cpu_percent": 68.2
+      },
+      {
+        "ram_used_bytes": 64856514560,
+        "ram_available_bytes": 1323233280,
+        "cpu_percent": 75.3
+      },
+      {
+        "ram_used_bytes": 64784846848,
+        "ram_available_bytes": 1394900992,
+        "cpu_percent": 66.7
+      },
+      {
+        "ram_used_bytes": 64779014144,
+        "ram_available_bytes": 1400733696,
+        "cpu_percent": 58.7
+      },
+      {
+        "ram_used_bytes": 64821456896,
+        "ram_available_bytes": 1358290944,
+        "cpu_percent": 65.4
+      },
+      {
+        "ram_used_bytes": 64751124480,
+        "ram_available_bytes": 1428623360,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 64750899200,
+        "ram_available_bytes": 1428848640,
+        "cpu_percent": 55.2
+      },
+      {
+        "ram_used_bytes": 64766795776,
+        "ram_available_bytes": 1412952064,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 64771010560,
+        "ram_available_bytes": 1408737280,
+        "cpu_percent": 57.8
+      },
+      {
+        "ram_used_bytes": 64820854784,
+        "ram_available_bytes": 1358893056,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 64786919424,
+        "ram_available_bytes": 1392828416,
+        "cpu_percent": 65.3
+      },
+      {
+        "ram_used_bytes": 64784175104,
+        "ram_available_bytes": 1395572736,
+        "cpu_percent": 53.9
+      },
+      {
+        "ram_used_bytes": 64829825024,
+        "ram_available_bytes": 1349922816,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 64763768832,
+        "ram_available_bytes": 1415979008,
+        "cpu_percent": 60.7
+      },
+      {
+        "ram_used_bytes": 64883625984,
+        "ram_available_bytes": 1296121856,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 64993218560,
+        "ram_available_bytes": 1186529280,
+        "cpu_percent": 70.2
+      },
+      {
+        "ram_used_bytes": 64938450944,
+        "ram_available_bytes": 1241296896,
+        "cpu_percent": 58.2
+      },
+      {
+        "ram_used_bytes": 64933629952,
+        "ram_available_bytes": 1246117888,
+        "cpu_percent": 58.2
+      },
+      {
+        "ram_used_bytes": 64928006144,
+        "ram_available_bytes": 1251741696,
+        "cpu_percent": 71.2
+      },
+      {
+        "ram_used_bytes": 64936566784,
+        "ram_available_bytes": 1243181056,
+        "cpu_percent": 65.7
+      },
+      {
+        "ram_used_bytes": 64949514240,
+        "ram_available_bytes": 1230233600,
+        "cpu_percent": 66.0
+      },
+      {
+        "ram_used_bytes": 64941047808,
+        "ram_available_bytes": 1238700032,
+        "cpu_percent": 67.5
+      },
+      {
+        "ram_used_bytes": 64954458112,
+        "ram_available_bytes": 1225289728,
+        "cpu_percent": 60.1
+      },
+      {
+        "ram_used_bytes": 65017618432,
+        "ram_available_bytes": 1162129408,
+        "cpu_percent": 72.1
+      },
+      {
+        "ram_used_bytes": 65061130240,
+        "ram_available_bytes": 1118617600,
+        "cpu_percent": 73.9
+      },
+      {
+        "ram_used_bytes": 65066713088,
+        "ram_available_bytes": 1113034752,
+        "cpu_percent": 63.0
+      },
+      {
+        "ram_used_bytes": 65132449792,
+        "ram_available_bytes": 1047298048,
+        "cpu_percent": 67.6
+      },
+      {
+        "ram_used_bytes": 65096314880,
+        "ram_available_bytes": 1083432960,
+        "cpu_percent": 66.3
+      },
+      {
+        "ram_used_bytes": 65209532416,
+        "ram_available_bytes": 970215424,
+        "cpu_percent": 81.0
+      },
+      {
+        "ram_used_bytes": 65338568704,
+        "ram_available_bytes": 841179136,
+        "cpu_percent": 89.3
+      },
+      {
+        "ram_used_bytes": 65235918848,
+        "ram_available_bytes": 943828992,
+        "cpu_percent": 70.0
+      },
+      {
+        "ram_used_bytes": 65205927936,
+        "ram_available_bytes": 973819904,
+        "cpu_percent": 67.9
+      },
+      {
+        "ram_used_bytes": 65343426560,
+        "ram_available_bytes": 836321280,
+        "cpu_percent": 74.2
+      },
+      {
+        "ram_used_bytes": 65391300608,
+        "ram_available_bytes": 788447232,
+        "cpu_percent": 70.1
+      },
+      {
+        "ram_used_bytes": 65386102784,
+        "ram_available_bytes": 793645056,
+        "cpu_percent": 76.7
+      },
+      {
+        "ram_used_bytes": 65408376832,
+        "ram_available_bytes": 771371008,
+        "cpu_percent": 72.7
+      },
+      {
+        "ram_used_bytes": 65331933184,
+        "ram_available_bytes": 847814656,
+        "cpu_percent": 66.4
+      },
+      {
+        "ram_used_bytes": 65318932480,
+        "ram_available_bytes": 860815360,
+        "cpu_percent": 56.1
+      },
+      {
+        "ram_used_bytes": 65286885376,
+        "ram_available_bytes": 892862464,
+        "cpu_percent": 72.5
+      },
+      {
+        "ram_used_bytes": 65285435392,
+        "ram_available_bytes": 894312448,
+        "cpu_percent": 59.2
+      },
+      {
+        "ram_used_bytes": 65340899328,
+        "ram_available_bytes": 838848512,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 65197391872,
+        "ram_available_bytes": 982355968,
+        "cpu_percent": 56.3
+      },
+      {
+        "ram_used_bytes": 65202036736,
+        "ram_available_bytes": 977711104,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 65275584512,
+        "ram_available_bytes": 904163328,
+        "cpu_percent": 66.9
+      },
+      {
+        "ram_used_bytes": 65206575104,
+        "ram_available_bytes": 973172736,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 65211170816,
+        "ram_available_bytes": 968577024,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 65204584448,
+        "ram_available_bytes": 975163392,
+        "cpu_percent": 62.3
+      },
+      {
+        "ram_used_bytes": 65216741376,
+        "ram_available_bytes": 963006464,
+        "cpu_percent": 66.8
+      },
+      {
+        "ram_used_bytes": 65217105920,
+        "ram_available_bytes": 962641920,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 65213194240,
+        "ram_available_bytes": 966553600,
+        "cpu_percent": 66.9
+      },
+      {
+        "ram_used_bytes": 65254694912,
+        "ram_available_bytes": 925052928,
+        "cpu_percent": 73.6
+      },
+      {
+        "ram_used_bytes": 65423233024,
+        "ram_available_bytes": 756514816,
+        "cpu_percent": 66.8
+      },
+      {
+        "ram_used_bytes": 65356132352,
+        "ram_available_bytes": 823615488,
+        "cpu_percent": 65.5
+      },
+      {
+        "ram_used_bytes": 65354137600,
+        "ram_available_bytes": 825610240,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 65423822848,
+        "ram_available_bytes": 755924992,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 65363537920,
+        "ram_available_bytes": 816209920,
+        "cpu_percent": 61.7
+      },
+      {
+        "ram_used_bytes": 65356288000,
+        "ram_available_bytes": 823459840,
+        "cpu_percent": 64.8
+      },
+      {
+        "ram_used_bytes": 65361502208,
+        "ram_available_bytes": 818245632,
+        "cpu_percent": 72.1
+      },
+      {
+        "ram_used_bytes": 65197768704,
+        "ram_available_bytes": 981979136,
+        "cpu_percent": 57.2
+      },
+      {
+        "ram_used_bytes": 65198493696,
+        "ram_available_bytes": 981254144,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 65184821248,
+        "ram_available_bytes": 994926592,
+        "cpu_percent": 62.2
+      },
+      {
+        "ram_used_bytes": 65192931328,
+        "ram_available_bytes": 986816512,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 65248866304,
+        "ram_available_bytes": 930881536,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 65176145920,
+        "ram_available_bytes": 1003601920,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 65199185920,
+        "ram_available_bytes": 980561920,
+        "cpu_percent": 57.8
+      },
+      {
+        "ram_used_bytes": 65267490816,
+        "ram_available_bytes": 912257024,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 65246773248,
+        "ram_available_bytes": 932974592,
+        "cpu_percent": 74.7
+      },
+      {
+        "ram_used_bytes": 65243402240,
+        "ram_available_bytes": 936345600,
+        "cpu_percent": 55.6
+      },
+      {
+        "ram_used_bytes": 65327697920,
+        "ram_available_bytes": 852049920,
+        "cpu_percent": 68.7
+      },
+      {
+        "ram_used_bytes": 65352429568,
+        "ram_available_bytes": 827318272,
+        "cpu_percent": 54.9
+      },
+      {
+        "ram_used_bytes": 65357971456,
+        "ram_available_bytes": 821776384,
+        "cpu_percent": 58.7
+      },
+      {
+        "ram_used_bytes": 65334083584,
+        "ram_available_bytes": 845664256,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 65338527744,
+        "ram_available_bytes": 841220096,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 65341845504,
+        "ram_available_bytes": 837902336,
+        "cpu_percent": 62.0
+      },
+      {
+        "ram_used_bytes": 65303302144,
+        "ram_available_bytes": 876445696,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 65304674304,
+        "ram_available_bytes": 875073536,
+        "cpu_percent": 54.7
+      },
+      {
+        "ram_used_bytes": 65374650368,
+        "ram_available_bytes": 805097472,
+        "cpu_percent": 63.5
+      },
+      {
+        "ram_used_bytes": 65310040064,
+        "ram_available_bytes": 869707776,
+        "cpu_percent": 62.2
+      },
+      {
+        "ram_used_bytes": 65369374720,
+        "ram_available_bytes": 810373120,
+        "cpu_percent": 67.0
+      },
+      {
+        "ram_used_bytes": 65468358656,
+        "ram_available_bytes": 711389184,
+        "cpu_percent": 65.0
+      },
+      {
+        "ram_used_bytes": 65383559168,
+        "ram_available_bytes": 796188672,
+        "cpu_percent": 68.8
+      },
+      {
+        "ram_used_bytes": 65390481408,
+        "ram_available_bytes": 789266432,
+        "cpu_percent": 63.9
+      },
+      {
+        "ram_used_bytes": 65398276096,
+        "ram_available_bytes": 781471744,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 65400606720,
+        "ram_available_bytes": 779141120,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 65437896704,
+        "ram_available_bytes": 741851136,
+        "cpu_percent": 58.1
+      },
+      {
+        "ram_used_bytes": 65397993472,
+        "ram_available_bytes": 781754368,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 65394364416,
+        "ram_available_bytes": 785383424,
+        "cpu_percent": 55.9
+      },
+      {
+        "ram_used_bytes": 65451839488,
+        "ram_available_bytes": 727908352,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 65403002880,
+        "ram_available_bytes": 776744960,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 65401028608,
+        "ram_available_bytes": 778719232,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 65469976576,
+        "ram_available_bytes": 709771264,
+        "cpu_percent": 73.2
+      },
+      {
+        "ram_used_bytes": 65507610624,
+        "ram_available_bytes": 672137216,
+        "cpu_percent": 82.2
+      },
+      {
+        "ram_used_bytes": 65668452352,
+        "ram_available_bytes": 511295488,
+        "cpu_percent": 78.1
+      },
+      {
+        "ram_used_bytes": 65645379584,
+        "ram_available_bytes": 534368256,
+        "cpu_percent": 54.2
+      },
+      {
+        "ram_used_bytes": 65559359488,
+        "ram_available_bytes": 620388352,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 65566617600,
+        "ram_available_bytes": 613130240,
+        "cpu_percent": 64.1
+      },
+      {
+        "ram_used_bytes": 65561088000,
+        "ram_available_bytes": 618659840,
+        "cpu_percent": 57.8
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-varied-128k-2",
+    "prompt_sha256": "421fa5c20aca12997b8bacdbb7e6f009d5d2cc2c4c7eb0eeb29887b122747600",
+    "started_utc": "2026-10-20T01:42:52.392333+00:00",
+    "ok": true,
+    "wall_seconds": 135.38127779999922,
+    "ttft_seconds": 135.07950580000033,
+    "usage": {
+      "prompt_tokens": 130536,
+      "completion_tokens": 27,
+      "total_tokens": 130563,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 130536,
+      "prompt_ms": 134971.1,
+      "prompt_per_token_ms": 1.034,
+      "prompt_per_second": 967.1,
+      "predicted_n": 27,
+      "predicted_ms": 317.8,
+      "predicted_per_token_ms": 11.77,
+      "predicted_per_second": 85.0,
+      "draft_n": 22,
+      "draft_n_accepted": 19
+    },
+    "recall_check": {
+      "expected": [
+        "ALPHA917892",
+        "BETA372037",
+        "OMEGA108214"
+      ],
+      "all_present": true
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 62613585920,
+        "ram_available_bytes": 3566161920,
+        "cpu_percent": 61.3
+      },
+      {
+        "ram_used_bytes": 62602031104,
+        "ram_available_bytes": 3577716736,
+        "cpu_percent": 56.3
+      },
+      {
+        "ram_used_bytes": 62660722688,
+        "ram_available_bytes": 3519025152,
+        "cpu_percent": 59.3
+      },
+      {
+        "ram_used_bytes": 62626357248,
+        "ram_available_bytes": 3553390592,
+        "cpu_percent": 65.6
+      },
+      {
+        "ram_used_bytes": 62606921728,
+        "ram_available_bytes": 3572826112,
+        "cpu_percent": 58.8
+      },
+      {
+        "ram_used_bytes": 62692409344,
+        "ram_available_bytes": 3487338496,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 62609641472,
+        "ram_available_bytes": 3570106368,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 62691954688,
+        "ram_available_bytes": 3487793152,
+        "cpu_percent": 74.3
+      },
+      {
+        "ram_used_bytes": 62650384384,
+        "ram_available_bytes": 3529363456,
+        "cpu_percent": 64.4
+      },
+      {
+        "ram_used_bytes": 62591442944,
+        "ram_available_bytes": 3588304896,
+        "cpu_percent": 78.1
+      },
+      {
+        "ram_used_bytes": 62592491520,
+        "ram_available_bytes": 3587256320,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 62599725056,
+        "ram_available_bytes": 3580022784,
+        "cpu_percent": 64.4
+      },
+      {
+        "ram_used_bytes": 62622232576,
+        "ram_available_bytes": 3557515264,
+        "cpu_percent": 59.6
+      },
+      {
+        "ram_used_bytes": 62685057024,
+        "ram_available_bytes": 3494690816,
+        "cpu_percent": 66.9
+      },
+      {
+        "ram_used_bytes": 62633115648,
+        "ram_available_bytes": 3546632192,
+        "cpu_percent": 66.1
+      },
+      {
+        "ram_used_bytes": 62632792064,
+        "ram_available_bytes": 3546955776,
+        "cpu_percent": 57.3
+      },
+      {
+        "ram_used_bytes": 62661115904,
+        "ram_available_bytes": 3518631936,
+        "cpu_percent": 64.2
+      },
+      {
+        "ram_used_bytes": 62741049344,
+        "ram_available_bytes": 3438698496,
+        "cpu_percent": 61.3
+      },
+      {
+        "ram_used_bytes": 62723780608,
+        "ram_available_bytes": 3455967232,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 62821138432,
+        "ram_available_bytes": 3358609408,
+        "cpu_percent": 70.5
+      },
+      {
+        "ram_used_bytes": 62752165888,
+        "ram_available_bytes": 3427581952,
+        "cpu_percent": 58.2
+      },
+      {
+        "ram_used_bytes": 62590926848,
+        "ram_available_bytes": 3588820992,
+        "cpu_percent": 60.9
+      },
+      {
+        "ram_used_bytes": 62692302848,
+        "ram_available_bytes": 3487444992,
+        "cpu_percent": 71.9
+      },
+      {
+        "ram_used_bytes": 62670344192,
+        "ram_available_bytes": 3509403648,
+        "cpu_percent": 59.5
+      },
+      {
+        "ram_used_bytes": 62758969344,
+        "ram_available_bytes": 3420778496,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 62752759808,
+        "ram_available_bytes": 3426988032,
+        "cpu_percent": 62.5
+      },
+      {
+        "ram_used_bytes": 62760214528,
+        "ram_available_bytes": 3419533312,
+        "cpu_percent": 60.6
+      },
+      {
+        "ram_used_bytes": 62823501824,
+        "ram_available_bytes": 3356246016,
+        "cpu_percent": 62.2
+      },
+      {
+        "ram_used_bytes": 62789767168,
+        "ram_available_bytes": 3389980672,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 62778515456,
+        "ram_available_bytes": 3401232384,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 62849839104,
+        "ram_available_bytes": 3329908736,
+        "cpu_percent": 57.1
+      },
+      {
+        "ram_used_bytes": 62777819136,
+        "ram_available_bytes": 3401928704,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 62778032128,
+        "ram_available_bytes": 3401715712,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 62775529472,
+        "ram_available_bytes": 3404218368,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 62885253120,
+        "ram_available_bytes": 3294494720,
+        "cpu_percent": 63.1
+      },
+      {
+        "ram_used_bytes": 62905757696,
+        "ram_available_bytes": 3273990144,
+        "cpu_percent": 57.5
+      },
+      {
+        "ram_used_bytes": 62915080192,
+        "ram_available_bytes": 3264667648,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 62825603072,
+        "ram_available_bytes": 3354144768,
+        "cpu_percent": 68.6
+      },
+      {
+        "ram_used_bytes": 62828654592,
+        "ram_available_bytes": 3351093248,
+        "cpu_percent": 67.0
+      },
+      {
+        "ram_used_bytes": 62793879552,
+        "ram_available_bytes": 3385868288,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 62782943232,
+        "ram_available_bytes": 3396804608,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 62846824448,
+        "ram_available_bytes": 3332923392,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 62783942656,
+        "ram_available_bytes": 3395805184,
+        "cpu_percent": 56.7
+      },
+      {
+        "ram_used_bytes": 62831362048,
+        "ram_available_bytes": 3348385792,
+        "cpu_percent": 58.3
+      },
+      {
+        "ram_used_bytes": 62893248512,
+        "ram_available_bytes": 3286499328,
+        "cpu_percent": 60.1
+      },
+      {
+        "ram_used_bytes": 62825148416,
+        "ram_available_bytes": 3354599424,
+        "cpu_percent": 55.8
+      },
+      {
+        "ram_used_bytes": 62825426944,
+        "ram_available_bytes": 3354320896,
+        "cpu_percent": 54.5
+      },
+      {
+        "ram_used_bytes": 62828945408,
+        "ram_available_bytes": 3350802432,
+        "cpu_percent": 62.5
+      },
+      {
+        "ram_used_bytes": 62840688640,
+        "ram_available_bytes": 3339059200,
+        "cpu_percent": 57.6
+      },
+      {
+        "ram_used_bytes": 62911467520,
+        "ram_available_bytes": 3268280320,
+        "cpu_percent": 62.0
+      },
+      {
+        "ram_used_bytes": 62851231744,
+        "ram_available_bytes": 3328516096,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 62974287872,
+        "ram_available_bytes": 3205459968,
+        "cpu_percent": 57.0
+      },
+      {
+        "ram_used_bytes": 63100030976,
+        "ram_available_bytes": 3079716864,
+        "cpu_percent": 66.4
+      },
+      {
+        "ram_used_bytes": 63036145664,
+        "ram_available_bytes": 3143602176,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 63013105664,
+        "ram_available_bytes": 3166642176,
+        "cpu_percent": 57.2
+      },
+      {
+        "ram_used_bytes": 63039209472,
+        "ram_available_bytes": 3140538368,
+        "cpu_percent": 67.3
+      },
+      {
+        "ram_used_bytes": 63027007488,
+        "ram_available_bytes": 3152740352,
+        "cpu_percent": 59.1
+      },
+      {
+        "ram_used_bytes": 63005335552,
+        "ram_available_bytes": 3174412288,
+        "cpu_percent": 63.1
+      },
+      {
+        "ram_used_bytes": 63000276992,
+        "ram_available_bytes": 3179470848,
+        "cpu_percent": 64.0
+      },
+      {
+        "ram_used_bytes": 62998024192,
+        "ram_available_bytes": 3181723648,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 63065972736,
+        "ram_available_bytes": 3113775104,
+        "cpu_percent": 59.5
+      },
+      {
+        "ram_used_bytes": 63003512832,
+        "ram_available_bytes": 3176235008,
+        "cpu_percent": 68.9
+      },
+      {
+        "ram_used_bytes": 62928949248,
+        "ram_available_bytes": 3250798592,
+        "cpu_percent": 62.7
+      },
+      {
+        "ram_used_bytes": 63001284608,
+        "ram_available_bytes": 3178463232,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 62965256192,
+        "ram_available_bytes": 3214491648,
+        "cpu_percent": 61.4
+      },
+      {
+        "ram_used_bytes": 62969946112,
+        "ram_available_bytes": 3209801728,
+        "cpu_percent": 56.4
+      },
+      {
+        "ram_used_bytes": 62978162688,
+        "ram_available_bytes": 3201585152,
+        "cpu_percent": 58.7
+      },
+      {
+        "ram_used_bytes": 62975197184,
+        "ram_available_bytes": 3204550656,
+        "cpu_percent": 61.7
+      },
+      {
+        "ram_used_bytes": 62989479936,
+        "ram_available_bytes": 3190267904,
+        "cpu_percent": 59.0
+      },
+      {
+        "ram_used_bytes": 62981935104,
+        "ram_available_bytes": 3197812736,
+        "cpu_percent": 71.9
+      },
+      {
+        "ram_used_bytes": 63097298944,
+        "ram_available_bytes": 3082448896,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 63161135104,
+        "ram_available_bytes": 3018612736,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 63115907072,
+        "ram_available_bytes": 3063840768,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 63110594560,
+        "ram_available_bytes": 3069153280,
+        "cpu_percent": 59.5
+      },
+      {
+        "ram_used_bytes": 63168663552,
+        "ram_available_bytes": 3011084288,
+        "cpu_percent": 64.4
+      },
+      {
+        "ram_used_bytes": 63117733888,
+        "ram_available_bytes": 3062013952,
+        "cpu_percent": 56.5
+      },
+      {
+        "ram_used_bytes": 63126536192,
+        "ram_available_bytes": 3053211648,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 63131148288,
+        "ram_available_bytes": 3048599552,
+        "cpu_percent": 64.9
+      },
+      {
+        "ram_used_bytes": 63124959232,
+        "ram_available_bytes": 3054788608,
+        "cpu_percent": 53.9
+      },
+      {
+        "ram_used_bytes": 63129591808,
+        "ram_available_bytes": 3050156032,
+        "cpu_percent": 54.9
+      },
+      {
+        "ram_used_bytes": 63117275136,
+        "ram_available_bytes": 3062472704,
+        "cpu_percent": 66.2
+      },
+      {
+        "ram_used_bytes": 63110537216,
+        "ram_available_bytes": 3069210624,
+        "cpu_percent": 56.4
+      },
+      {
+        "ram_used_bytes": 63156076544,
+        "ram_available_bytes": 3023671296,
+        "cpu_percent": 66.5
+      },
+      {
+        "ram_used_bytes": 63105908736,
+        "ram_available_bytes": 3073839104,
+        "cpu_percent": 57.1
+      },
+      {
+        "ram_used_bytes": 63109152768,
+        "ram_available_bytes": 3070595072,
+        "cpu_percent": 58.1
+      },
+      {
+        "ram_used_bytes": 63178072064,
+        "ram_available_bytes": 3001675776,
+        "cpu_percent": 57.6
+      },
+      {
+        "ram_used_bytes": 63120510976,
+        "ram_available_bytes": 3059236864,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 63233236992,
+        "ram_available_bytes": 2946510848,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 63247708160,
+        "ram_available_bytes": 2932039680,
+        "cpu_percent": 68.4
+      },
+      {
+        "ram_used_bytes": 63241867264,
+        "ram_available_bytes": 2937880576,
+        "cpu_percent": 53.2
+      },
+      {
+        "ram_used_bytes": 63243096064,
+        "ram_available_bytes": 2936651776,
+        "cpu_percent": 58.5
+      },
+      {
+        "ram_used_bytes": 63215194112,
+        "ram_available_bytes": 2964553728,
+        "cpu_percent": 62.9
+      },
+      {
+        "ram_used_bytes": 63212630016,
+        "ram_available_bytes": 2967117824,
+        "cpu_percent": 56.9
+      },
+      {
+        "ram_used_bytes": 63280422912,
+        "ram_available_bytes": 2899324928,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 63223767040,
+        "ram_available_bytes": 2955980800,
+        "cpu_percent": 61.5
+      },
+      {
+        "ram_used_bytes": 63222587392,
+        "ram_available_bytes": 2957160448,
+        "cpu_percent": 55.9
+      },
+      {
+        "ram_used_bytes": 63293689856,
+        "ram_available_bytes": 2886057984,
+        "cpu_percent": 57.6
+      },
+      {
+        "ram_used_bytes": 63223799808,
+        "ram_available_bytes": 2955948032,
+        "cpu_percent": 64.2
+      },
+      {
+        "ram_used_bytes": 63225942016,
+        "ram_available_bytes": 2953805824,
+        "cpu_percent": 59.0
+      },
+      {
+        "ram_used_bytes": 63241588736,
+        "ram_available_bytes": 2938159104,
+        "cpu_percent": 62.9
+      },
+      {
+        "ram_used_bytes": 63238307840,
+        "ram_available_bytes": 2941440000,
+        "cpu_percent": 58.7
+      },
+      {
+        "ram_used_bytes": 63236603904,
+        "ram_available_bytes": 2943143936,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 63292325888,
+        "ram_available_bytes": 2887421952,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 63296733184,
+        "ram_available_bytes": 2883014656,
+        "cpu_percent": 60.4
+      },
+      {
+        "ram_used_bytes": 63338328064,
+        "ram_available_bytes": 2841419776,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 63403921408,
+        "ram_available_bytes": 2775826432,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 63409848320,
+        "ram_available_bytes": 2769899520,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 63503405056,
+        "ram_available_bytes": 2676342784,
+        "cpu_percent": 63.9
+      },
+      {
+        "ram_used_bytes": 63438991360,
+        "ram_available_bytes": 2740756480,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 63437697024,
+        "ram_available_bytes": 2742050816,
+        "cpu_percent": 67.2
+      },
+      {
+        "ram_used_bytes": 63504924672,
+        "ram_available_bytes": 2674823168,
+        "cpu_percent": 64.0
+      },
+      {
+        "ram_used_bytes": 63372759040,
+        "ram_available_bytes": 2806988800,
+        "cpu_percent": 61.5
+      },
+      {
+        "ram_used_bytes": 62753095680,
+        "ram_available_bytes": 3426652160,
+        "cpu_percent": 82.4
+      },
+      {
+        "ram_used_bytes": 62555885568,
+        "ram_available_bytes": 3623862272,
+        "cpu_percent": 76.7
+      },
+      {
+        "ram_used_bytes": 62564298752,
+        "ram_available_bytes": 3615449088,
+        "cpu_percent": 61.5
+      },
+      {
+        "ram_used_bytes": 62614863872,
+        "ram_available_bytes": 3564883968,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 62583070720,
+        "ram_available_bytes": 3596677120,
+        "cpu_percent": 65.0
+      },
+      {
+        "ram_used_bytes": 62601084928,
+        "ram_available_bytes": 3578662912,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 62749786112,
+        "ram_available_bytes": 3429961728,
+        "cpu_percent": 62.1
+      },
+      {
+        "ram_used_bytes": 62701977600,
+        "ram_available_bytes": 3477770240,
+        "cpu_percent": 68.0
+      },
+      {
+        "ram_used_bytes": 62682697728,
+        "ram_available_bytes": 3497050112,
+        "cpu_percent": 63.1
+      },
+      {
+        "ram_used_bytes": 62976745472,
+        "ram_available_bytes": 3203002368,
+        "cpu_percent": 79.3
+      },
+      {
+        "ram_used_bytes": 62956351488,
+        "ram_available_bytes": 3223396352,
+        "cpu_percent": 77.5
+      },
+      {
+        "ram_used_bytes": 62952456192,
+        "ram_available_bytes": 3227291648,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 62928404480,
+        "ram_available_bytes": 3251343360,
+        "cpu_percent": 63.0
+      },
+      {
+        "ram_used_bytes": 62926872576,
+        "ram_available_bytes": 3252875264,
+        "cpu_percent": 58.6
+      },
+      {
+        "ram_used_bytes": 62937952256,
+        "ram_available_bytes": 3241795584,
+        "cpu_percent": 61.2
+      },
+      {
+        "ram_used_bytes": 63001919488,
+        "ram_available_bytes": 3177828352,
+        "cpu_percent": 74.5
+      },
+      {
+        "ram_used_bytes": 63065784320,
+        "ram_available_bytes": 3113963520,
+        "cpu_percent": 73.5
+      },
+      {
+        "ram_used_bytes": 63111589888,
+        "ram_available_bytes": 3068157952,
+        "cpu_percent": 72.5
+      },
+      {
+        "ram_used_bytes": 63032303616,
+        "ram_available_bytes": 3147444224,
+        "cpu_percent": 55.2
+      },
+      {
+        "ram_used_bytes": 63024582656,
+        "ram_available_bytes": 3155165184,
+        "cpu_percent": 56.2
+      },
+      {
+        "ram_used_bytes": 63091511296,
+        "ram_available_bytes": 3088236544,
+        "cpu_percent": 53.6
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-varied-64k-0",
+    "prompt_sha256": "9e193afb32f44025d3bc2f94915cb75ca9d409d3b4c16ab1cd15a44bb8298cf4",
+    "started_utc": "2026-10-20T01:32:54.879524+00:00",
+    "ok": true,
+    "wall_seconds": 93.13377030000265,
+    "ttft_seconds": 92.52398820000235,
+    "usage": {
+      "prompt_tokens": 64988,
+      "completion_tokens": 27,
+      "total_tokens": 65015,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 64988,
+      "prompt_ms": 92457.5,
+      "prompt_per_token_ms": 1.423,
+      "prompt_per_second": 702.9,
+      "predicted_n": 27,
+      "predicted_ms": 633.9,
+      "predicted_per_token_ms": 23.478,
+      "predicted_per_second": 42.6,
+      "draft_n": 26,
+      "draft_n_accepted": 18
+    },
+    "recall_check": {
+      "expected": [
+        "ALPHA152564",
+        "BETA433561",
+        "OMEGA262247"
+      ],
+      "all_present": true
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 36578873344,
+        "ram_available_bytes": 29600874496,
+        "cpu_percent": 45.0
+      },
+      {
+        "ram_used_bytes": 38673199104,
+        "ram_available_bytes": 27506548736,
+        "cpu_percent": 37.4
+      },
+      {
+        "ram_used_bytes": 40437755904,
+        "ram_available_bytes": 25741991936,
+        "cpu_percent": 35.3
+      },
+      {
+        "ram_used_bytes": 42081845248,
+        "ram_available_bytes": 24097902592,
+        "cpu_percent": 35.3
+      },
+      {
+        "ram_used_bytes": 43754897408,
+        "ram_available_bytes": 22424850432,
+        "cpu_percent": 45.5
+      },
+      {
+        "ram_used_bytes": 45466980352,
+        "ram_available_bytes": 20712767488,
+        "cpu_percent": 53.9
+      },
+      {
+        "ram_used_bytes": 47058100224,
+        "ram_available_bytes": 19121647616,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 48853004288,
+        "ram_available_bytes": 17326743552,
+        "cpu_percent": 53.2
+      },
+      {
+        "ram_used_bytes": 50557001728,
+        "ram_available_bytes": 15622746112,
+        "cpu_percent": 61.0
+      },
+      {
+        "ram_used_bytes": 52065431552,
+        "ram_available_bytes": 14114316288,
+        "cpu_percent": 59.0
+      },
+      {
+        "ram_used_bytes": 53899042816,
+        "ram_available_bytes": 12280705024,
+        "cpu_percent": 42.3
+      },
+      {
+        "ram_used_bytes": 55451619328,
+        "ram_available_bytes": 10728128512,
+        "cpu_percent": 43.7
+      },
+      {
+        "ram_used_bytes": 57168048128,
+        "ram_available_bytes": 9011699712,
+        "cpu_percent": 42.1
+      },
+      {
+        "ram_used_bytes": 58853134336,
+        "ram_available_bytes": 7326613504,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 60420173824,
+        "ram_available_bytes": 5759574016,
+        "cpu_percent": 46.2
+      },
+      {
+        "ram_used_bytes": 61883351040,
+        "ram_available_bytes": 4296396800,
+        "cpu_percent": 55.8
+      },
+      {
+        "ram_used_bytes": 63753744384,
+        "ram_available_bytes": 2426003456,
+        "cpu_percent": 62.9
+      },
+      {
+        "ram_used_bytes": 65409499136,
+        "ram_available_bytes": 770248704,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 65505902592,
+        "ram_available_bytes": 673845248,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 65308594176,
+        "ram_available_bytes": 871153664,
+        "cpu_percent": 80.0
+      },
+      {
+        "ram_used_bytes": 65339998208,
+        "ram_available_bytes": 839749632,
+        "cpu_percent": 43.5
+      },
+      {
+        "ram_used_bytes": 65340047360,
+        "ram_available_bytes": 839700480,
+        "cpu_percent": 39.2
+      },
+      {
+        "ram_used_bytes": 65340231680,
+        "ram_available_bytes": 839516160,
+        "cpu_percent": 63.4
+      },
+      {
+        "ram_used_bytes": 65340047360,
+        "ram_available_bytes": 839700480,
+        "cpu_percent": 61.8
+      },
+      {
+        "ram_used_bytes": 65340268544,
+        "ram_available_bytes": 839479296,
+        "cpu_percent": 62.0
+      },
+      {
+        "ram_used_bytes": 65755717632,
+        "ram_available_bytes": 424030208,
+        "cpu_percent": 64.2
+      },
+      {
+        "ram_used_bytes": 65623023616,
+        "ram_available_bytes": 556724224,
+        "cpu_percent": 65.5
+      },
+      {
+        "ram_used_bytes": 65683918848,
+        "ram_available_bytes": 495828992,
+        "cpu_percent": 72.7
+      },
+      {
+        "ram_used_bytes": 65615708160,
+        "ram_available_bytes": 564039680,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 65615527936,
+        "ram_available_bytes": 564219904,
+        "cpu_percent": 58.6
+      },
+      {
+        "ram_used_bytes": 65673183232,
+        "ram_available_bytes": 506564608,
+        "cpu_percent": 60.4
+      },
+      {
+        "ram_used_bytes": 65615966208,
+        "ram_available_bytes": 563781632,
+        "cpu_percent": 55.7
+      },
+      {
+        "ram_used_bytes": 65607606272,
+        "ram_available_bytes": 572141568,
+        "cpu_percent": 56.6
+      },
+      {
+        "ram_used_bytes": 65648254976,
+        "ram_available_bytes": 531492864,
+        "cpu_percent": 69.3
+      },
+      {
+        "ram_used_bytes": 65657585664,
+        "ram_available_bytes": 522162176,
+        "cpu_percent": 57.8
+      },
+      {
+        "ram_used_bytes": 65716236288,
+        "ram_available_bytes": 463511552,
+        "cpu_percent": 64.5
+      },
+      {
+        "ram_used_bytes": 65577689088,
+        "ram_available_bytes": 602058752,
+        "cpu_percent": 77.4
+      },
+      {
+        "ram_used_bytes": 65629122560,
+        "ram_available_bytes": 550625280,
+        "cpu_percent": 62.4
+      },
+      {
+        "ram_used_bytes": 65675010048,
+        "ram_available_bytes": 504737792,
+        "cpu_percent": 82.8
+      },
+      {
+        "ram_used_bytes": 65780633600,
+        "ram_available_bytes": 399114240,
+        "cpu_percent": 83.8
+      },
+      {
+        "ram_used_bytes": 65746411520,
+        "ram_available_bytes": 433336320,
+        "cpu_percent": 76.8
+      },
+      {
+        "ram_used_bytes": 65801396224,
+        "ram_available_bytes": 378351616,
+        "cpu_percent": 75.2
+      },
+      {
+        "ram_used_bytes": 65722118144,
+        "ram_available_bytes": 457629696,
+        "cpu_percent": 62.9
+      },
+      {
+        "ram_used_bytes": 65743478784,
+        "ram_available_bytes": 436269056,
+        "cpu_percent": 55.9
+      },
+      {
+        "ram_used_bytes": 65827831808,
+        "ram_available_bytes": 351916032,
+        "cpu_percent": 66.3
+      },
+      {
+        "ram_used_bytes": 65771626496,
+        "ram_available_bytes": 408121344,
+        "cpu_percent": 58.5
+      },
+      {
+        "ram_used_bytes": 65578782720,
+        "ram_available_bytes": 600965120,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 65461583872,
+        "ram_available_bytes": 718163968,
+        "cpu_percent": 69.1
+      },
+      {
+        "ram_used_bytes": 65402769408,
+        "ram_available_bytes": 776978432,
+        "cpu_percent": 53.5
+      },
+      {
+        "ram_used_bytes": 65415491584,
+        "ram_available_bytes": 764256256,
+        "cpu_percent": 61.4
+      },
+      {
+        "ram_used_bytes": 65360490496,
+        "ram_available_bytes": 819257344,
+        "cpu_percent": 73.7
+      },
+      {
+        "ram_used_bytes": 65364938752,
+        "ram_available_bytes": 814809088,
+        "cpu_percent": 67.8
+      },
+      {
+        "ram_used_bytes": 65434296320,
+        "ram_available_bytes": 745451520,
+        "cpu_percent": 63.4
+      },
+      {
+        "ram_used_bytes": 65566535680,
+        "ram_available_bytes": 613212160,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 65507569664,
+        "ram_available_bytes": 672178176,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 65579065344,
+        "ram_available_bytes": 600682496,
+        "cpu_percent": 62.7
+      },
+      {
+        "ram_used_bytes": 65473265664,
+        "ram_available_bytes": 706482176,
+        "cpu_percent": 69.3
+      },
+      {
+        "ram_used_bytes": 65486819328,
+        "ram_available_bytes": 692928512,
+        "cpu_percent": 63.3
+      },
+      {
+        "ram_used_bytes": 65525518336,
+        "ram_available_bytes": 654229504,
+        "cpu_percent": 72.6
+      },
+      {
+        "ram_used_bytes": 65580724224,
+        "ram_available_bytes": 599023616,
+        "cpu_percent": 69.7
+      },
+      {
+        "ram_used_bytes": 65665445888,
+        "ram_available_bytes": 514301952,
+        "cpu_percent": 67.3
+      },
+      {
+        "ram_used_bytes": 65703301120,
+        "ram_available_bytes": 476446720,
+        "cpu_percent": 78.7
+      },
+      {
+        "ram_used_bytes": 65717202944,
+        "ram_available_bytes": 462544896,
+        "cpu_percent": 72.9
+      },
+      {
+        "ram_used_bytes": 65808855040,
+        "ram_available_bytes": 370892800,
+        "cpu_percent": 70.1
+      },
+      {
+        "ram_used_bytes": 65829617664,
+        "ram_available_bytes": 350130176,
+        "cpu_percent": 74.8
+      },
+      {
+        "ram_used_bytes": 66026360832,
+        "ram_available_bytes": 153387008,
+        "cpu_percent": 95.7
+      },
+      {
+        "ram_used_bytes": 65917038592,
+        "ram_available_bytes": 262709248,
+        "cpu_percent": 98.9
+      },
+      {
+        "ram_used_bytes": 65869492224,
+        "ram_available_bytes": 310255616,
+        "cpu_percent": 90.2
+      },
+      {
+        "ram_used_bytes": 65665404928,
+        "ram_available_bytes": 514342912,
+        "cpu_percent": 71.0
+      },
+      {
+        "ram_used_bytes": 65695207424,
+        "ram_available_bytes": 484540416,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 65629192192,
+        "ram_available_bytes": 550555648,
+        "cpu_percent": 64.4
+      },
+      {
+        "ram_used_bytes": 65596456960,
+        "ram_available_bytes": 583290880,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 65657536512,
+        "ram_available_bytes": 522211328,
+        "cpu_percent": 77.1
+      },
+      {
+        "ram_used_bytes": 65599885312,
+        "ram_available_bytes": 579862528,
+        "cpu_percent": 58.5
+      },
+      {
+        "ram_used_bytes": 65663041536,
+        "ram_available_bytes": 516706304,
+        "cpu_percent": 53.2
+      },
+      {
+        "ram_used_bytes": 65745039360,
+        "ram_available_bytes": 434708480,
+        "cpu_percent": 71.3
+      },
+      {
+        "ram_used_bytes": 65612435456,
+        "ram_available_bytes": 567312384,
+        "cpu_percent": 66.7
+      },
+      {
+        "ram_used_bytes": 65628958720,
+        "ram_available_bytes": 550789120,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 65588703232,
+        "ram_available_bytes": 591044608,
+        "cpu_percent": 59.7
+      },
+      {
+        "ram_used_bytes": 65583697920,
+        "ram_available_bytes": 596049920,
+        "cpu_percent": 54.7
+      },
+      {
+        "ram_used_bytes": 65607217152,
+        "ram_available_bytes": 572530688,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 65615790080,
+        "ram_available_bytes": 563957760,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 65630765056,
+        "ram_available_bytes": 548982784,
+        "cpu_percent": 60.4
+      },
+      {
+        "ram_used_bytes": 65689980928,
+        "ram_available_bytes": 489766912,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 65612550144,
+        "ram_available_bytes": 567197696,
+        "cpu_percent": 70.3
+      },
+      {
+        "ram_used_bytes": 65641889792,
+        "ram_available_bytes": 537858048,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 65744609280,
+        "ram_available_bytes": 435138560,
+        "cpu_percent": 69.4
+      },
+      {
+        "ram_used_bytes": 65672093696,
+        "ram_available_bytes": 507654144,
+        "cpu_percent": 67.8
+      },
+      {
+        "ram_used_bytes": 65618300928,
+        "ram_available_bytes": 561446912,
+        "cpu_percent": 50.5
+      },
+      {
+        "ram_used_bytes": 65616093184,
+        "ram_available_bytes": 563654656,
+        "cpu_percent": 62.7
+      },
+      {
+        "ram_used_bytes": 65667952640,
+        "ram_available_bytes": 511795200,
+        "cpu_percent": 48.7
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-varied-64k-1",
+    "prompt_sha256": "2c9a9951689690f103ac8baf3cf2e5a5448e30d4e2d5424dc75eb68513c613a8",
+    "started_utc": "2026-10-20T01:34:29.700523+00:00",
+    "ok": true,
+    "wall_seconds": 69.77545260000261,
+    "ttft_seconds": 69.35592290000204,
+    "usage": {
+      "prompt_tokens": 65006,
+      "completion_tokens": 27,
+      "total_tokens": 65033,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 65006,
+      "prompt_ms": 69295.1,
+      "prompt_per_token_ms": 1.066,
+      "prompt_per_second": 938.1,
+      "predicted_n": 27,
+      "predicted_ms": 439.1,
+      "predicted_per_token_ms": 16.263,
+      "predicted_per_second": 61.5,
+      "draft_n": 23,
+      "draft_n_accepted": 19
+    },
+    "recall_check": {
+      "expected": [
+        "ALPHA981741",
+        "BETA752873",
+        "OMEGA491061"
+      ],
+      "all_present": true
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 65093619712,
+        "ram_available_bytes": 1086128128,
+        "cpu_percent": 63.1
+      },
+      {
+        "ram_used_bytes": 65096704000,
+        "ram_available_bytes": 1083043840,
+        "cpu_percent": 67.0
+      },
+      {
+        "ram_used_bytes": 65130696704,
+        "ram_available_bytes": 1049051136,
+        "cpu_percent": 65.2
+      },
+      {
+        "ram_used_bytes": 65131950080,
+        "ram_available_bytes": 1047797760,
+        "cpu_percent": 71.5
+      },
+      {
+        "ram_used_bytes": 65134223360,
+        "ram_available_bytes": 1045524480,
+        "cpu_percent": 75.7
+      },
+      {
+        "ram_used_bytes": 65213550592,
+        "ram_available_bytes": 966197248,
+        "cpu_percent": 63.7
+      },
+      {
+        "ram_used_bytes": 65216196608,
+        "ram_available_bytes": 963551232,
+        "cpu_percent": 64.8
+      },
+      {
+        "ram_used_bytes": 65250095104,
+        "ram_available_bytes": 929652736,
+        "cpu_percent": 68.5
+      },
+      {
+        "ram_used_bytes": 65310617600,
+        "ram_available_bytes": 869130240,
+        "cpu_percent": 68.1
+      },
+      {
+        "ram_used_bytes": 65255833600,
+        "ram_available_bytes": 923914240,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 65252777984,
+        "ram_available_bytes": 926969856,
+        "cpu_percent": 66.7
+      },
+      {
+        "ram_used_bytes": 65214873600,
+        "ram_available_bytes": 964874240,
+        "cpu_percent": 69.8
+      },
+      {
+        "ram_used_bytes": 64884477952,
+        "ram_available_bytes": 1295269888,
+        "cpu_percent": 80.8
+      },
+      {
+        "ram_used_bytes": 64960028672,
+        "ram_available_bytes": 1219719168,
+        "cpu_percent": 70.8
+      },
+      {
+        "ram_used_bytes": 64638435328,
+        "ram_available_bytes": 1541312512,
+        "cpu_percent": 83.9
+      },
+      {
+        "ram_used_bytes": 64146210816,
+        "ram_available_bytes": 2033537024,
+        "cpu_percent": 74.7
+      },
+      {
+        "ram_used_bytes": 63676313600,
+        "ram_available_bytes": 2503434240,
+        "cpu_percent": 74.7
+      },
+      {
+        "ram_used_bytes": 62118821888,
+        "ram_available_bytes": 4060925952,
+        "cpu_percent": 66.7
+      },
+      {
+        "ram_used_bytes": 61315661824,
+        "ram_available_bytes": 4864086016,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 61368225792,
+        "ram_available_bytes": 4811522048,
+        "cpu_percent": 65.2
+      },
+      {
+        "ram_used_bytes": 61332619264,
+        "ram_available_bytes": 4847128576,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 61331972096,
+        "ram_available_bytes": 4847775744,
+        "cpu_percent": 56.7
+      },
+      {
+        "ram_used_bytes": 61392371712,
+        "ram_available_bytes": 4787376128,
+        "cpu_percent": 57.8
+      },
+      {
+        "ram_used_bytes": 61333958656,
+        "ram_available_bytes": 4845789184,
+        "cpu_percent": 61.1
+      },
+      {
+        "ram_used_bytes": 61327917056,
+        "ram_available_bytes": 4851830784,
+        "cpu_percent": 66.8
+      },
+      {
+        "ram_used_bytes": 61296586752,
+        "ram_available_bytes": 4883161088,
+        "cpu_percent": 70.5
+      },
+      {
+        "ram_used_bytes": 61282308096,
+        "ram_available_bytes": 4897439744,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 61310124032,
+        "ram_available_bytes": 4869623808,
+        "cpu_percent": 65.5
+      },
+      {
+        "ram_used_bytes": 61306245120,
+        "ram_available_bytes": 4873502720,
+        "cpu_percent": 60.7
+      },
+      {
+        "ram_used_bytes": 61309984768,
+        "ram_available_bytes": 4869763072,
+        "cpu_percent": 64.1
+      },
+      {
+        "ram_used_bytes": 61375610880,
+        "ram_available_bytes": 4804136960,
+        "cpu_percent": 62.7
+      },
+      {
+        "ram_used_bytes": 61330145280,
+        "ram_available_bytes": 4849602560,
+        "cpu_percent": 72.1
+      },
+      {
+        "ram_used_bytes": 61350289408,
+        "ram_available_bytes": 4829458432,
+        "cpu_percent": 57.3
+      },
+      {
+        "ram_used_bytes": 61426724864,
+        "ram_available_bytes": 4753022976,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 61360222208,
+        "ram_available_bytes": 4819525632,
+        "cpu_percent": 62.4
+      },
+      {
+        "ram_used_bytes": 61511299072,
+        "ram_available_bytes": 4668448768,
+        "cpu_percent": 59.9
+      },
+      {
+        "ram_used_bytes": 61525172224,
+        "ram_available_bytes": 4654575616,
+        "cpu_percent": 68.3
+      },
+      {
+        "ram_used_bytes": 61538803712,
+        "ram_available_bytes": 4640944128,
+        "cpu_percent": 56.0
+      },
+      {
+        "ram_used_bytes": 61544620032,
+        "ram_available_bytes": 4635127808,
+        "cpu_percent": 58.4
+      },
+      {
+        "ram_used_bytes": 61544333312,
+        "ram_available_bytes": 4635414528,
+        "cpu_percent": 64.9
+      },
+      {
+        "ram_used_bytes": 61566586880,
+        "ram_available_bytes": 4613160960,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 61611089920,
+        "ram_available_bytes": 4568657920,
+        "cpu_percent": 61.0
+      },
+      {
+        "ram_used_bytes": 61579829248,
+        "ram_available_bytes": 4599918592,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 61544144896,
+        "ram_available_bytes": 4635602944,
+        "cpu_percent": 55.0
+      },
+      {
+        "ram_used_bytes": 61616435200,
+        "ram_available_bytes": 4563312640,
+        "cpu_percent": 62.6
+      },
+      {
+        "ram_used_bytes": 61573124096,
+        "ram_available_bytes": 4606623744,
+        "cpu_percent": 65.4
+      },
+      {
+        "ram_used_bytes": 61576003584,
+        "ram_available_bytes": 4603744256,
+        "cpu_percent": 56.7
+      },
+      {
+        "ram_used_bytes": 61661941760,
+        "ram_available_bytes": 4517806080,
+        "cpu_percent": 61.9
+      },
+      {
+        "ram_used_bytes": 61593296896,
+        "ram_available_bytes": 4586450944,
+        "cpu_percent": 53.1
+      },
+      {
+        "ram_used_bytes": 61586681856,
+        "ram_available_bytes": 4593065984,
+        "cpu_percent": 53.3
+      },
+      {
+        "ram_used_bytes": 61563842560,
+        "ram_available_bytes": 4615905280,
+        "cpu_percent": 61.4
+      },
+      {
+        "ram_used_bytes": 61575516160,
+        "ram_available_bytes": 4604231680,
+        "cpu_percent": 61.4
+      },
+      {
+        "ram_used_bytes": 61610020864,
+        "ram_available_bytes": 4569726976,
+        "cpu_percent": 58.0
+      },
+      {
+        "ram_used_bytes": 61669941248,
+        "ram_available_bytes": 4509806592,
+        "cpu_percent": 56.4
+      },
+      {
+        "ram_used_bytes": 61723324416,
+        "ram_available_bytes": 4456423424,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 61785530368,
+        "ram_available_bytes": 4394217472,
+        "cpu_percent": 60.4
+      },
+      {
+        "ram_used_bytes": 61740580864,
+        "ram_available_bytes": 4439166976,
+        "cpu_percent": 61.6
+      },
+      {
+        "ram_used_bytes": 61741568000,
+        "ram_available_bytes": 4438179840,
+        "cpu_percent": 55.9
+      },
+      {
+        "ram_used_bytes": 61798658048,
+        "ram_available_bytes": 4381089792,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 61743607808,
+        "ram_available_bytes": 4436140032,
+        "cpu_percent": 58.8
+      },
+      {
+        "ram_used_bytes": 61746135040,
+        "ram_available_bytes": 4433612800,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 61741879296,
+        "ram_available_bytes": 4437868544,
+        "cpu_percent": 65.3
+      },
+      {
+        "ram_used_bytes": 61753245696,
+        "ram_available_bytes": 4426502144,
+        "cpu_percent": 54.6
+      },
+      {
+        "ram_used_bytes": 61789351936,
+        "ram_available_bytes": 4390395904,
+        "cpu_percent": 58.7
+      },
+      {
+        "ram_used_bytes": 61754384384,
+        "ram_available_bytes": 4425363456,
+        "cpu_percent": 64.3
+      },
+      {
+        "ram_used_bytes": 61788057600,
+        "ram_available_bytes": 4391690240,
+        "cpu_percent": 59.0
+      },
+      {
+        "ram_used_bytes": 61816754176,
+        "ram_available_bytes": 4362993664,
+        "cpu_percent": 52.4
+      },
+      {
+        "ram_used_bytes": 61747990528,
+        "ram_available_bytes": 4431757312,
+        "cpu_percent": 55.2
+      },
+      {
+        "ram_used_bytes": 61873455104,
+        "ram_available_bytes": 4306292736,
+        "cpu_percent": 48.2
+      }
+    ]
+  },
+  {
+    "label": "iq3xxs-varied-64k-2",
+    "prompt_sha256": "d086444981e800fae3d3c2bab64b9a39b49f1a613fd356e6e635f1b8ee265cbb",
+    "started_utc": "2026-10-20T01:35:40.951474+00:00",
+    "ok": true,
+    "wall_seconds": 72.08635910000157,
+    "ttft_seconds": 71.5768702000023,
+    "usage": {
+      "prompt_tokens": 64982,
+      "completion_tokens": 27,
+      "total_tokens": 65009,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 64982,
+      "prompt_ms": 71493.7,
+      "prompt_per_token_ms": 1.1,
+      "prompt_per_second": 908.9,
+      "predicted_n": 27,
+      "predicted_ms": 531.6,
+      "predicted_per_token_ms": 19.689,
+      "predicted_per_second": 50.8,
+      "draft_n": 25,
+      "draft_n_accepted": 18
+    },
+    "recall_check": {
+      "expected": [
+        "ALPHA917892",
+        "BETA372037",
+        "OMEGA108214"
+      ],
+      "all_present": true
+    },
+    "request_settings": {
+      "model": "strata",
+      "temperature": 0,
+      "seed": 42,
+      "max_tokens": 192,
+      "reasoning_effort": "none",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      }
+    },
+    "system_samples": [
+      {
+        "ram_used_bytes": 61470748672,
+        "ram_available_bytes": 4708999168,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 61474770944,
+        "ram_available_bytes": 4704976896,
+        "cpu_percent": 53.8
+      },
+      {
+        "ram_used_bytes": 61542653952,
+        "ram_available_bytes": 4637093888,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 61496377344,
+        "ram_available_bytes": 4683370496,
+        "cpu_percent": 64.1
+      },
+      {
+        "ram_used_bytes": 61616361472,
+        "ram_available_bytes": 4563386368,
+        "cpu_percent": 76.7
+      },
+      {
+        "ram_used_bytes": 61969440768,
+        "ram_available_bytes": 4210307072,
+        "cpu_percent": 86.3
+      },
+      {
+        "ram_used_bytes": 61956714496,
+        "ram_available_bytes": 4223033344,
+        "cpu_percent": 67.1
+      },
+      {
+        "ram_used_bytes": 61949513728,
+        "ram_available_bytes": 4230234112,
+        "cpu_percent": 56.8
+      },
+      {
+        "ram_used_bytes": 62011826176,
+        "ram_available_bytes": 4167921664,
+        "cpu_percent": 59.8
+      },
+      {
+        "ram_used_bytes": 61959217152,
+        "ram_available_bytes": 4220530688,
+        "cpu_percent": 61.4
+      },
+      {
+        "ram_used_bytes": 62035337216,
+        "ram_available_bytes": 4144410624,
+        "cpu_percent": 67.6
+      },
+      {
+        "ram_used_bytes": 62257475584,
+        "ram_available_bytes": 3922272256,
+        "cpu_percent": 74.8
+      },
+      {
+        "ram_used_bytes": 62570590208,
+        "ram_available_bytes": 3609157632,
+        "cpu_percent": 71.2
+      },
+      {
+        "ram_used_bytes": 62623780864,
+        "ram_available_bytes": 3555966976,
+        "cpu_percent": 69.2
+      },
+      {
+        "ram_used_bytes": 62760927232,
+        "ram_available_bytes": 3418820608,
+        "cpu_percent": 71.9
+      },
+      {
+        "ram_used_bytes": 62712082432,
+        "ram_available_bytes": 3467665408,
+        "cpu_percent": 68.3
+      },
+      {
+        "ram_used_bytes": 62824394752,
+        "ram_available_bytes": 3355353088,
+        "cpu_percent": 73.3
+      },
+      {
+        "ram_used_bytes": 62896025600,
+        "ram_available_bytes": 3283722240,
+        "cpu_percent": 61.3
+      },
+      {
+        "ram_used_bytes": 62906019840,
+        "ram_available_bytes": 3273728000,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 62990610432,
+        "ram_available_bytes": 3189137408,
+        "cpu_percent": 58.9
+      },
+      {
+        "ram_used_bytes": 62947508224,
+        "ram_available_bytes": 3232239616,
+        "cpu_percent": 67.3
+      },
+      {
+        "ram_used_bytes": 62994923520,
+        "ram_available_bytes": 3184824320,
+        "cpu_percent": 70.8
+      },
+      {
+        "ram_used_bytes": 63075753984,
+        "ram_available_bytes": 3103993856,
+        "cpu_percent": 63.6
+      },
+      {
+        "ram_used_bytes": 62999875584,
+        "ram_available_bytes": 3179872256,
+        "cpu_percent": 66.9
+      },
+      {
+        "ram_used_bytes": 62997426176,
+        "ram_available_bytes": 3182321664,
+        "cpu_percent": 56.2
+      },
+      {
+        "ram_used_bytes": 62991675392,
+        "ram_available_bytes": 3188072448,
+        "cpu_percent": 73.6
+      },
+      {
+        "ram_used_bytes": 63006420992,
+        "ram_available_bytes": 3173326848,
+        "cpu_percent": 55.0
+      },
+      {
+        "ram_used_bytes": 63048830976,
+        "ram_available_bytes": 3130916864,
+        "cpu_percent": 61.0
+      },
+      {
+        "ram_used_bytes": 62996434944,
+        "ram_available_bytes": 3183312896,
+        "cpu_percent": 57.1
+      },
+      {
+        "ram_used_bytes": 63004196864,
+        "ram_available_bytes": 3175550976,
+        "cpu_percent": 55.9
+      },
+      {
+        "ram_used_bytes": 63069048832,
+        "ram_available_bytes": 3110699008,
+        "cpu_percent": 62.8
+      },
+      {
+        "ram_used_bytes": 63014780928,
+        "ram_available_bytes": 3164966912,
+        "cpu_percent": 59.1
+      },
+      {
+        "ram_used_bytes": 63130128384,
+        "ram_available_bytes": 3049619456,
+        "cpu_percent": 65.1
+      },
+      {
+        "ram_used_bytes": 63188021248,
+        "ram_available_bytes": 2991726592,
+        "cpu_percent": 66.5
+      },
+      {
+        "ram_used_bytes": 62650363904,
+        "ram_available_bytes": 3529383936,
+        "cpu_percent": 72.6
+      },
+      {
+        "ram_used_bytes": 62736752640,
+        "ram_available_bytes": 3442995200,
+        "cpu_percent": 64.6
+      },
+      {
+        "ram_used_bytes": 62765240320,
+        "ram_available_bytes": 3414507520,
+        "cpu_percent": 69.0
+      },
+      {
+        "ram_used_bytes": 62769442816,
+        "ram_available_bytes": 3410305024,
+        "cpu_percent": 60.5
+      },
+      {
+        "ram_used_bytes": 62829809664,
+        "ram_available_bytes": 3349938176,
+        "cpu_percent": 63.5
+      },
+      {
+        "ram_used_bytes": 62839541760,
+        "ram_available_bytes": 3340206080,
+        "cpu_percent": 66.1
+      },
+      {
+        "ram_used_bytes": 62837067776,
+        "ram_available_bytes": 3342680064,
+        "cpu_percent": 59.4
+      },
+      {
+        "ram_used_bytes": 62881198080,
+        "ram_available_bytes": 3298549760,
+        "cpu_percent": 61.8
+      },
+      {
+        "ram_used_bytes": 62841270272,
+        "ram_available_bytes": 3338477568,
+        "cpu_percent": 60.2
+      },
+      {
+        "ram_used_bytes": 62807724032,
+        "ram_available_bytes": 3372023808,
+        "cpu_percent": 55.5
+      },
+      {
+        "ram_used_bytes": 63207325696,
+        "ram_available_bytes": 2972422144,
+        "cpu_percent": 71.5
+      },
+      {
+        "ram_used_bytes": 63191834624,
+        "ram_available_bytes": 2987913216,
+        "cpu_percent": 60.8
+      },
+      {
+        "ram_used_bytes": 63078420480,
+        "ram_available_bytes": 3101327360,
+        "cpu_percent": 69.0
+      },
+      {
+        "ram_used_bytes": 63178928128,
+        "ram_available_bytes": 3000819712,
+        "cpu_percent": 85.1
+      },
+      {
+        "ram_used_bytes": 63344656384,
+        "ram_available_bytes": 2835091456,
+        "cpu_percent": 86.8
+      },
+      {
+        "ram_used_bytes": 63320182784,
+        "ram_available_bytes": 2859565056,
+        "cpu_percent": 75.7
+      },
+      {
+        "ram_used_bytes": 63477637120,
+        "ram_available_bytes": 2702110720,
+        "cpu_percent": 84.1
+      },
+      {
+        "ram_used_bytes": 63459450880,
+        "ram_available_bytes": 2720296960,
+        "cpu_percent": 69.6
+      },
+      {
+        "ram_used_bytes": 63537594368,
+        "ram_available_bytes": 2642153472,
+        "cpu_percent": 73.1
+      },
+      {
+        "ram_used_bytes": 63600709632,
+        "ram_available_bytes": 2579038208,
+        "cpu_percent": 87.6
+      },
+      {
+        "ram_used_bytes": 63714656256,
+        "ram_available_bytes": 2465091584,
+        "cpu_percent": 68.5
+      },
+      {
+        "ram_used_bytes": 63719034880,
+        "ram_available_bytes": 2460712960,
+        "cpu_percent": 71.8
+      },
+      {
+        "ram_used_bytes": 63929946112,
+        "ram_available_bytes": 2249801728,
+        "cpu_percent": 81.3
+      },
+      {
+        "ram_used_bytes": 64176467968,
+        "ram_available_bytes": 2003279872,
+        "cpu_percent": 78.0
+      },
+      {
+        "ram_used_bytes": 64225763328,
+        "ram_available_bytes": 1953984512,
+        "cpu_percent": 83.7
+      },
+      {
+        "ram_used_bytes": 64108576768,
+        "ram_available_bytes": 2071171072,
+        "cpu_percent": 85.7
+      },
+      {
+        "ram_used_bytes": 64088530944,
+        "ram_available_bytes": 2091216896,
+        "cpu_percent": 83.8
+      },
+      {
+        "ram_used_bytes": 64147734528,
+        "ram_available_bytes": 2032013312,
+        "cpu_percent": 86.5
+      },
+      {
+        "ram_used_bytes": 64075149312,
+        "ram_available_bytes": 2104598528,
+        "cpu_percent": 80.2
+      },
+      {
+        "ram_used_bytes": 63988486144,
+        "ram_available_bytes": 2191261696,
+        "cpu_percent": 74.5
+      },
+      {
+        "ram_used_bytes": 63992799232,
+        "ram_available_bytes": 2186948608,
+        "cpu_percent": 72.0
+      },
+      {
+        "ram_used_bytes": 64026632192,
+        "ram_available_bytes": 2153115648,
+        "cpu_percent": 73.9
+      },
+      {
+        "ram_used_bytes": 64024580096,
+        "ram_available_bytes": 2155167744,
+        "cpu_percent": 72.9
+      },
+      {
+        "ram_used_bytes": 64343126016,
+        "ram_available_bytes": 1836621824,
+        "cpu_percent": 81.6
+      },
+      {
+        "ram_used_bytes": 64279638016,
+        "ram_available_bytes": 1900109824,
+        "cpu_percent": 70.7
+      },
+      {
+        "ram_used_bytes": 64269725696,
+        "ram_available_bytes": 1910022144,
+        "cpu_percent": 55.3
+      },
+      {
+        "ram_used_bytes": 64480096256,
+        "ram_available_bytes": 1699651584,
+        "cpu_percent": 60.5
+      }
+    ]
+  }
+]

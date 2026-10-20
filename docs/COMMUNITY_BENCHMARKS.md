@@ -21,8 +21,8 @@ and their limits. Report what you actually measured and label estimates separate
 ## Community reports
 
 - [2026-10-19: RX 9070 XT 16 GB, Ryzen 7 9800X3D, 64 GB RAM](../bench/results/2026-10-19-community-rx-9070-xt-q4-256k/README.md):
-  Windows HIP 0.1.45.3, full UD-Q4_K_XL with SSD-backed experts; three-run short/8K/near-256K probes,
-  approximately eight-minute full-window TTFT and a passed 225K–230K-input controlled coding loop.
+  Windows HIP 0.1.45.3, IQ3_XXS and full UD-Q4_K_XL; 39 inference records through 128K/256K,
+  IQ3 coding passes/failures, approximately eight-minute Q4 full-window TTFT and a passed 225K–230K-input coding loop.
   Custom historical protocol; synthetic context, background applications and cache-allocation caveats.
 
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):

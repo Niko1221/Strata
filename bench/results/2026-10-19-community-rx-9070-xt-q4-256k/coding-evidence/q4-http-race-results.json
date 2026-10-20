@@ -1,0 +1,32 @@
+{
+  "method": "HTTP requests with service-call start barrier; all use original implementation internals",
+  "results": [
+    {
+      "fixture": "typescript-express",
+      "statuses": [
+        200,
+        201
+      ],
+      "orders": 1,
+      "passed": false
+    },
+    {
+      "fixture": "typescript-express-tail0",
+      "statuses": [
+        201,
+        201
+      ],
+      "orders": 1,
+      "passed": false
+    },
+    {
+      "fixture": "typescript-express-q4",
+      "statuses": [
+        201,
+        409
+      ],
+      "orders": 1,
+      "passed": true
+    }
+  ]
+}

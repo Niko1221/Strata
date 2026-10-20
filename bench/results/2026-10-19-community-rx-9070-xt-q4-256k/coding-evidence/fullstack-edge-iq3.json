@@ -1,0 +1,30 @@
+{
+  "node": "22.14.0",
+  "exit_code": 0,
+  "report": {
+    "results": [
+      {
+        "name": "shared database across API instances cannot oversell",
+        "passed": true
+      },
+      {
+        "name": "invalid quantities cannot mutate stock",
+        "passed": true
+      },
+      {
+        "name": "stale failure cannot overwrite a newer success",
+        "passed": true
+      },
+      {
+        "name": "stale success cannot overwrite a newer error",
+        "passed": true
+      },
+      {
+        "name": "obsolete completion cannot clear active loading state",
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "stderr": ""
+}

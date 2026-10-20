@@ -1,0 +1,231 @@
+--- baseline/api.js
++++ agent/api.js
+@@ -1 +1,23 @@
+-export function createApi(db){return {async order(user,input){if(!user)throw Error('unauthorized');if(db.stock<input.quantity)throw Error('out of stock');await Promise.resolve();db.stock-=input.quantity;return db.insert({tenant:input.tenant,quantity:input.quantity});},async list(user){return db.orders;}};}
++export function createApi(db) {
++  return {
++    async order(user, input) {
++      if (!user) throw Error('unauthorized');
++      const quantity = input?.quantity;
++      if (!Number.isInteger(quantity) || quantity <= 0) throw Error('invalid quantity');
++      // Check and reserve synchronously: no await between them, so concurrent
++      // callers cannot both pass the check and oversell the same stock.
++      if (db.stock < quantity) throw Error('out of stock');
++      db.stock -= quantity;
++      try {
++        return await db.insert({ tenant: user.tenant, quantity });
++      } catch (err) {
++        db.stock += quantity;
++        throw err;
++      }
++    },
++    async list(user) {
++      if (!user) throw Error('unauthorized');
++      return db.orders.filter(o => o.tenant === user.tenant);
++    },
++  };
++}
+--- baseline/app.regression.test.js
++++ agent/app.regression.test.js
+@@ -0,0 +1,174 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { Database } from './db.js';
++import { createApi } from './api.js';
++import { createClient } from './client.js';
++
++test('api: order stores the authenticated tenant, not the input tenant', async () => {
++  const db = new Database(), api = createApi(db);
++  const stored = await api.order({ tenant: 'a' }, { tenant: 'b', quantity: 1 });
++  assert.equal(stored.tenant, 'a');
++  assert.equal(db.orders[0].tenant, 'a');
++  assert.equal(db.orders[0].quantity, 1);
++});
++
++test('api: list is scoped per tenant and requires auth', async () => {
++  const db = new Database(), api = createApi(db);
++  await api.order({ tenant: 'a' }, { quantity: 1 });
++  await api.order({ tenant: 'b' }, { quantity: 1 });
++  const a = await api.list({ tenant: 'a' });
++  assert.equal(a.length, 1);
++  assert.equal(a[0].tenant, 'a');
++  const b = await api.list({ tenant: 'b' });
++  assert.equal(b.length, 1);
++  assert.equal(b[0].tenant, 'b');
++  await assert.rejects(() => api.list(undefined));
++  await assert.rejects(() => api.order(undefined, { quantity: 1 }));
++});
++
++test('api: invalid quantities are rejected and leave stock untouched', async () => {
++  const db = new Database(), api = createApi(db);
++  for (const q of [0, -1, -2, 0.5, 2.5, NaN, Infinity, '1', null, undefined]) {
++    await assert.rejects(() => api.order({ tenant: 'a' }, { quantity: q }));
++  }
++  await assert.rejects(() => api.order({ tenant: 'a' }, {}));
++  await assert.rejects(() => api.order({ tenant: 'a' }));
++  assert.equal(db.stock, 3);
++  assert.equal(db.orders.length, 0);
++  await api.order({ tenant: 'a' }, { quantity: 3 });
++  assert.equal(db.stock, 0);
++});
++
++test('api: high concurrency cannot oversell stock', async () => {
++  const db = new Database();
++  db.stock = 5;
++  const api = createApi(db);
++  const results = await Promise.allSettled(
++    Array.from({ length: 20 }, () => api.order({ tenant: 'a' }, { quantity: 1 }))
++  );
++  assert.equal(results.filter(r => r.status === 'fulfilled').length, 5);
++  assert.equal(results.filter(r => r.status === 'rejected').length, 15);
++  assert.equal(db.stock, 0);
++  assert.equal(db.orders.length, 5);
++});
++
++test('api: mixed concurrent quantities never exceed stock', async () => {
++  const db = new Database();
++  db.stock = 4;
++  const api = createApi(db);
++  const quantities = [3, 3, 2, 2, 1, 4, 5];
++  const results = await Promise.allSettled(
++    quantities.map(quantity => api.order({ tenant: 'a' }, { quantity }))
++  );
++  const sold = results.filter(r => r.status === 'fulfilled')
++    .reduce((sum, r) => sum + r.value.quantity, 0);
++  assert.equal(sold <= 4, true);
++  assert.equal(db.stock, 4 - sold);
++  assert.equal(db.stock >= 0, true);
++});
++
++test('api: failed inserts roll back reservations with concurrent load', async () => {
++  const db = new Database(), api = createApi(db);
++  db.fail = true;
++  const results = await Promise.allSettled(
++    Array.from({ length: 6 }, () => api.order({ tenant: 'a' }, { quantity: 1 }))
++  );
++  assert.equal(results.filter(r => r.status === 'fulfilled').length, 0);
++  assert.equal(db.stock, 3);
++  assert.equal(db.orders.length, 0);
++
++  db.fail = false;
++  await api.order({ tenant: 'a' }, { quantity: 3 });
++  assert.equal(db.stock, 0);
++
++  db.fail = true;
++  await assert.rejects(() => api.order({ tenant: 'a' }, { quantity: 5 }));
++  assert.equal(db.stock, 0);
++});
++
++test('client: stale success cannot clobber the latest refresh', async () => {
++  let resolveOld;
++  let calls = 0;
++  const fetchOrders = () => {
++    calls++;
++    if (calls === 1) return new Promise(res => { resolveOld = res; });
++    return Promise.resolve(['new']);
++  };
++  const c = createClient(fetchOrders);
++  const old = c.refresh();
++  await c.refresh();
++  assert.deepEqual(c.state.orders, ['new']);
++  resolveOld(['stale']);
++  await old;
++  assert.deepEqual(c.state.orders, ['new']);
++  assert.equal(c.state.error, null);
++  assert.equal(c.state.loading, false);
++});
++
++test('client: stale error cannot clobber the latest refresh', async () => {
++  let rejectOld;
++  let calls = 0;
++  const fetchOrders = () => {
++    calls++;
++    if (calls === 1) return new Promise((_, rej) => { rejectOld = rej; });
++    return Promise.resolve(['new']);
++  };
++  const c = createClient(fetchOrders);
++  const old = c.refresh();
++  await c.refresh();
++  rejectOld(Error('stale failure'));
++  await old;
++  assert.deepEqual(c.state.orders, ['new']);
++  assert.equal(c.state.error, null);
++  assert.equal(c.state.loading, false);
++});
++
++test('client: error from the latest request survives a later stale success', async () => {
++  let resolveOld;
++  let calls = 0;
++  const fetchOrders = () => {
++    calls++;
++    if (calls === 1) return new Promise(res => { resolveOld = res; });
++    return Promise.reject(Error('latest failure'));
++  };
++  const c = createClient(fetchOrders);
++  const old = c.refresh();
++  await c.refresh();
++  assert.equal(c.state.error, 'latest failure');
++  resolveOld(['stale']);
++  await old;
++  assert.equal(c.state.error, 'latest failure');
++  assert.deepEqual(c.state.orders, []);
++  assert.equal(c.state.loading, false);
++});
++
++test('client: failed latest refresh clears loading and sets error', async () => {
++  const c = createClient(() => Promise.reject(Error('boom')));
++  await c.refresh();
++  assert.equal(c.state.loading, false);
++  assert.equal(c.state.error, 'boom');
++  assert.deepEqual(c.state.orders, []);
++});
++
++test('client: out-of-order completions, last request wins', async () => {
++  const gates = [];
++  let calls = 0;
++  const fetchOrders = () =>
++    new Promise((res, rej) => gates.push({ calls: ++calls, res, rej }));
++  const c = createClient(fetchOrders);
++  const r1 = c.refresh();
++  const r2 = c.refresh();
++  const r3 = c.refresh();
++  assert.equal(gates.length, 3);
++  gates[1].res(['second']);
++  await r2;
++  // Request 3 is the newest and still pending, so response 2 is stale.
++  assert.deepEqual(c.state.orders, []);
++  assert.equal(c.state.loading, true);
++  gates[0].rej(Error('first failed'));
++  gates[2].res(['third']);
++  await Promise.all([r1, r2, r3]);
++  assert.deepEqual(c.state.orders, ['third']);
++  assert.equal(c.state.error, null);
++  assert.equal(c.state.loading, false);
++});
+--- baseline/client.js
++++ agent/client.js
+@@ -1 +1,23 @@
+-export function createClient(fetchOrders){const state={orders:[],loading:false,error:null};return {state,async refresh(){state.loading=true;try{state.orders=await fetchOrders();}catch(e){state.error=e.message;}state.loading=false;}};}
++export function createClient(fetchOrders) {
++  const state = { orders: [], loading: false, error: null };
++  let seq = 0;
++  return {
++    state,
++    async refresh() {
++      const current = ++seq;
++      state.loading = true;
++      try {
++        const orders = await fetchOrders();
++        // Only the latest refresh may write state; a stale response arriving
++        // after a newer one completed must not overwrite or clear its result.
++        if (current === seq) {
++          state.orders = orders;
++          state.error = null;
++        }
++      } catch (e) {
++        if (current === seq) state.error = e.message;
++      }
++      if (current === seq) state.loading = false;
++    },
++  };
++}

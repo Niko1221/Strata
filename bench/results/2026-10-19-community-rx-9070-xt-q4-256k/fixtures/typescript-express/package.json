@@ -1,0 +1,1 @@
+{"type":"module","scripts":{"test":"node --experimental-strip-types --test"},"dependencies":{"express":"5.1.0"}}
