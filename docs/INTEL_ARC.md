@@ -5,16 +5,16 @@ maxfridbe wrote it in [#423](https://github.com/Niko1221/Strata/pull/423), with 
 The code is in `sycl/`, and the port's own notes, measurements and maintenance procedure are in
 [docs/INTEL.md](INTEL.md). This page covers what you need, how to build it, and what has been tested.
 
-**Experimental means:** the Intel engine is still young and Linux only. When the port arrived (0.1.39) the maintainers had no
+**Experimental means:** the Intel engine is still young. When the port arrived (0.1.39) the maintainers had no
 Intel GPU and every result on Arc hardware came from the community. Since 0.1.40.2 the maintainers also test on an Arc Pro B70
 (32 GB, `xe`) and an Arc A750 (8 GB, `i915`); the results from those two cards are marked in the table below. Other cards
 are still community reports. The NVIDIA and AMD engines are unchanged: the Intel build is a separate CMake target, off by default.
 
 **Where the engine comes from.** There is **no Intel engine in the release zips** (the ones `START-HERE.bat` and `setup.sh`
-use): you build it from source on Linux, as described below. The Docker route is a ready-made image,
+use): you build it from source on Linux or [native Windows](#windows). The Docker route is a ready-made image,
 `ghcr.io/niko1221/strata:0.2.1-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build
 the image yourself](DOCKER.md#build-it-yourself) from the engine you built (the image needs prepared model files; see
-[Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
+[Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows release packages have no Intel engine.
 
 ## What has been run, and by whom
 
@@ -53,7 +53,7 @@ Full flags, per-request timings and engine logs are in the report linked in the 
 - **Unchanged:** the CUDA engine's greedy output, checked byte-identical against the gated 0.1.39 build (Q2_0 and Coder).
   The HIP build is not affected (the option is off by default).
 
-**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, integrated Arc
+**Not covered by those 0.1.39 checks:** native Windows (tested later; see below), Arc on WSL2 for the 0.1.39 port, integrated Arc
 GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and pictures on a Battlemage card
 (the first picture on the Arc Pro B70 reset the GPU; they are off by default there, [INTEL.md](INTEL.md#pictures-on-an-arc-2026-10-19-branch-f-021-arcvis)).
 Pictures work on the A750 (on by default, read on the CPU). The Alchemist A-series was tested later, on an A750 (rows above and
@@ -170,11 +170,52 @@ Things that matter on an Arc (details in INTEL.md):
 
 ## Windows
 
-There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,
-but `sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a
-bash/Docker script, so a native Windows build would need work. Nobody has tried it. WSL2 with an Arc has been
-used by one tester (the B580 row above), but setup cannot detect the card there, because it reads `/sys/class/drm`,
-which WSL2 does not have.
+Windows has a native SYCL build and server path; Docker and WSL2 are not needed. Install:
+
+- **Visual Studio 2022 or its Build Tools**, with the **Desktop development with C++** workload, MSVC x64 tools
+  and a Windows SDK. The build script finds Visual Studio with `vswhere` and loads `vcvars64.bat`.
+- **Intel oneAPI DPC++ and oneMKL**, including their runtime dependencies (TBB and TCM's `libhwloc-15.dll`).
+  The tested compiler was 2026.1.1 with oneMKL 2026.1.0; use matching compiler/runtime versions.
+- **An Intel GPU driver with Level Zero**, GPU free-memory queries and command graphs. OpenCL enumeration alone
+  is not enough: setup and the engine reject it before loading the model.
+- **CMake 3.24+, Ninja, Git and Python 3**.
+
+The **Level Zero SDK** supplies `level_zero/ze_api.h` and `ze_loader.lib` for direct Level Zero host allocations.
+It is optional: CMake enables that path only when both are found, otherwise it uses SYCL host allocations.
+For a nonstandard SDK location, pass `-DSTRATA_ZE_INCLUDE_DIR=<include directory>` and
+`-DSTRATA_ZE_LOADER=<full path to ze_loader.lib>` to the build script. A working Level Zero runtime is required
+either way.
+
+From the checkout, in Command Prompt:
+
+```bat
+sycl\tools\build_windows.bat
+START-HERE.bat --backend sycl --setup
+```
+
+The engine is `build-sycl-win\strata.exe`. Setup builds it if missing; `--build` rebuilds it. On an Intel-only PC,
+`START-HERE.bat` selects Intel automatically; with other usable GPUs, the original backend remains the default.
+Model selection, downloads and packing use the usual setup flow, and the native server uses the saved config.
+The script loads the standard oneAPI installation; `STRATA_ONEAPI_ROOT` can instead name a directory containing
+`bin\icx.exe`, `include` and `lib` (the tested local layout was `%LOCALAPPDATA%\Strata-tools\oneapi\Library`).
+
+Setup defaults to `ONEAPI_DEVICE_SELECTOR=level_zero:gpu` and preserves an explicit selector. If the GPU probe
+fails, check the driver and runtime DLL paths, including oneAPI's `tcm\latest\bin` when an adapter cannot load
+`libhwloc-15.dll`. Seeing an OpenCL GPU in `sycl-ls` does not confirm Level Zero is working.
+
+**Validated in #2079:** Windows 11 Pro for Workstations Insider build 26220, Core i9-13900KF, 64 GB RAM,
+Arc Pro B70 32 GB, driver 32.0.101.9034, Visual Studio 2022 17.14.40 and the oneAPI versions above. The merged
+`ac9d0800` build completed all native SYCL targets; setup ran 594 tests with no failures and 2 skips, and 31 GPU
+regressions passed. Three existing tests were excluded: `gr_parity` (unsupported QFUSE), `ple_parity` (missing
+external fixtures) and `s2_expert_grouped_parity` (bitwise differences). Level Zero capability reporting and
+OpenCL rejection were also checked on the card.
+
+Earlier measurements on the 0.1.43-based Windows branch used IQ2_XS, native INT8 KV, 262,144-token capacity,
+full-GPU KV, prefill chunks of 4,096, greedy sampling and MTP 4: one warmed run with 131,072 uncached prompt
+tokens and 256 generated tokens measured 1,018.1 tok/s prompt and 57.6 tok/s decode. Experts were split between
+VRAM and GPU-readable system RAM; this was not an all-weights-in-VRAM run. These are not performance
+measurements of the later merge. Other Windows GPUs, native Windows multi-GPU and images were not validated
+by this PR.
 
 ## Reporting a problem
 

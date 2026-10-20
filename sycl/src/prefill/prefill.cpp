@@ -48,6 +48,9 @@
 #include <chrono>
 #include <stdexcept>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 #include <tuple>
 #include <chrono>
 #include <cmath>
@@ -889,7 +892,11 @@ void i8_cache_write(const std::string& key, const I8Cross& c) {
     }
     std::FILE* f = std::fopen(path.c_str(), "w");
     if (!f) {
+    #ifdef _WIN32
+        ::_mkdir(dir.c_str());
+    #else
         ::mkdir(dir.c_str(), 0755);
+    #endif
         f = std::fopen(path.c_str(), "w");
         if (!f) return;
     }
