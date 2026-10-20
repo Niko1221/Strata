@@ -22,6 +22,8 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 
 #if defined(__HIPCC__)
 #include "moe_f16_common.cuh"
@@ -857,10 +859,10 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
         const uint8_t* wrow = GU ? blob + ((ur & 1) ? geo.up_off : 0) + (size_t) (fb * (NW_ROWS / 2) + (ur >> 1)) * geo.gu_row
                                  : blob + geo.down_off + (size_t) (rbase + ur) * geo.d_row;
         auto unit = [&](int s) -> const uint8_t* {
-            if (GU) return wrow + (s >> 2) * BS;
+            if (GU && WT != T_Q2_0) return wrow + (s >> 2) * BS;   // (Q2_0 gate/up: 64-value blocks, one a stage, like its down)
             return (WT == T_IQ4_NL || WT == T_Q5_1 || WT == T_Q8_0) ? wrow + (2 * s + uj) * BS : wrow + s * BS;
         };
-        auto sub = [&](int s) { return GU ? 2 * (s & 3) + uj : uj; };
+        auto sub = [&](int s) { return GU && WT != T_Q2_0 ? 2 * (s & 3) + uj : uj; };
         auto put = [&](const uint32_t (&raw)[raw_words(WT)], int buf) {
             uint32_t q[8];
             float s0, s1;
@@ -1186,6 +1188,7 @@ struct DevInfo {
     bool done = false, ok = false;
     bool w12 = false;   // gfx12 (RDNA4): the native kernels only - the Q2_0 pack's (moe_fused.cu) are not ported there
     bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
+    bool s120 = false;  // compute capability 12.0 (sm120_series.hpp): the default for the formats measured there
     int sms = 0, occ = 1;
 };
 std::mutex g_mu;
@@ -1288,6 +1291,7 @@ const DevInfo& dev_info() {
     int major = 0, minor = 0;
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    d.s120 = strata::sm120_default(major, minor);   // (takes the raw attributes, as is_sm120 does)
     major = strata::cc_major_of(major);   // STRATA_EMULATE_CC counts (tests)
     minor = strata::cc_minor_of(minor);
     cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
@@ -1331,6 +1335,7 @@ bool gu_covered(int t) {
            || (t == T_Q2_0 && dev_info().t75)   // the canonical Q2_0 pack's gate/up: Turing opt-in only (sm_80+ keeps MMQ for it)
 #endif
 #if defined(__HIPCC__)
+           || (t == T_Q2_0 && dev_info().w12)   // gfx12: the native Q2_0 pack's gate/up on native_w11_kernel (64-value blocks)
            || ((t == T_Q4_K || t == T_Q5_K) && kq_on())   // the gfx11 kernels only
 #endif
         ;
@@ -1390,17 +1395,31 @@ bool native_supported(int gu_type, int d_type) {
     }();
     // gfx12: fused::available() (the Q2_0 pack's expert_w11_kernel, not ported) stays false, so requested() does too; the
     // same opt-in (STRATA_PF_FUSED=1) is read here.  Every other device: requested() as before.
-    // unset: on by default on gfx12 for IQ3_S and IQ3_XXS gate/up only (R9700: prompt +13..+20%, first-token KL against the FP16 prompt
-    // path equal to MMQ's within noise, 96 prompts each); STRATA_PF_FUSED=0 turns it off, =1 keeps the opt-in for every covered format
+    // unset: on by default on gfx12 for IQ3_S, IQ3_XXS and (148-amd) Q2_0 gate/up (R9700: prompt +13..+20%, first-token KL against the FP16
+    // prompt path equal to MMQ's within noise, 96 prompts each; Q2_0: prompt 4K +16.7%, 20K +19.0%, teacher-forced KL 0.0004 / 0.0016,
+    // tasks equal to MMQ's); STRATA_PF_FUSED=0 turns it off, =1 keeps the opt-in for every covered format
     static const int env = [] {
         const char* v = std::getenv("STRATA_PF_FUSED");
         return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0);
     }();
     if (off || env == 0 || !gu_covered(gu_type)) return false;
 #if !defined(__HIPCC__)
-    if (env < 0) return false;   // the default is gfx12 (HIP) only
+    // CUDA: unset, on by default on a compute capability 12.0 card with 80+ SMs (sm120_series.hpp, STRATA_SM120_PERF=0 off) for the gate/up
+    // formats measured there - the IQ3_S pack's IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS layers with IQ4_NL / Q2_0 down (RTX PRO 5000:
+    // prompt +7.0% 4K, +5.2% 20K, +3.4% 98K; teacher-forced KL against MMQ 0.0002 over 5998 positions, 0.0010 over 1760 long
+    // ones; first-token KL against the FP16 prompt path 0.01181 vs MMQ's 0.01236 over 48 prompts; HumanEval, reasoning,
+    // agent, needles, CJK and tool calls the same).  IQ2_XXS / IQ2_XS gate/up (the IQ3_XXS and IQ2_XS packs) keep MMQ until
+    // measured.  Every other CUDA card: opt-in as before.
+    if (env < 0) {
+        if (gu_type != T_IQ2_S && gu_type != T_IQ3_XXS && gu_type != T_IQ3_S && gu_type != T_IQ4_XS) return false;
+        const DevInfo& d = dev_info();
+        // 12.0 cards with 80+ SMs only (RTX PRO 5000 / 6000, RTX 5080 / 5090): on an RTX 5070 (48 SMs, IQ2_XS pack, experts
+        // partly in RAM) the fused kernels were 4.7% slower on 20K prompts (0/6 pairs) - it keeps MMQ unless STRATA_PF_FUSED=1
+        return d.ok && d.s120 && d.sms >= 80 && !d.t75 && d_covered_on(d_type, d);
+    }
 #endif
-    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS) return false;   // default: only these two
+    // default: only these three; the Q2_0 one (148-amd) is on Linux only: on Windows it is opt-in (STRATA_PF_FUSED=1) until tested there
+    if (env < 0 && gu_type != T_IQ3_S && gu_type != T_IQ3_XXS && !(gu_type == T_Q2_0 && strata::core::kGfx12PromptDefaultsOn)) return false;
     const DevInfo& d = dev_info();
     if (!d.ok || !d_covered_on(d_type, d)) return false;
     if (d.t75 && (gu_type != T_Q2_0 || d_type != T_Q2_0)) return false;
@@ -1437,7 +1456,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         const bool occ_gu = false, occ_d = false;
 #else
         const bool occ_gu = g.gu_type == T_IQ2_XXS || g.gu_type == T_IQ2_XS || g.gu_type == T_IQ2_S ||
-                            g.gu_type == T_IQ3_XXS || g.gu_type == T_IQ3_S || g.gu_type == T_IQ4_XS;
+                            g.gu_type == T_IQ3_XXS || g.gu_type == T_IQ3_S || g.gu_type == T_IQ4_XS || g.gu_type == T_Q2_0;
         const bool occ_d = g.d_type == T_Q2_0 || g.d_type == T_Q8_0 || g.d_type == T_IQ4_NL;
 #endif
         if (d.w12 && (reinterpret_cast<uintptr_t>(dm) & 15) != 0) {   // gfx12's down store: two float4 per lane
@@ -1479,6 +1498,7 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
             case T_IQ2_S: STRATA_NW_GU(T_IQ2_S); break;
             case T_IQ3_XXS: STRATA_NW_GU(T_IQ3_XXS); break;
             case T_IQ3_S: STRATA_NW_GU(T_IQ3_S); break;
+            case T_Q2_0: STRATA_NW_GU(T_Q2_0); break;
             case T_Q4_K: STRATA_NW_GU(T_Q4_K); break;
             case T_Q5_K: STRATA_NW_GU(T_Q5_K); break;
             default: STRATA_NW_GU(T_IQ4_XS); break;

@@ -423,6 +423,47 @@ def free_vram_mib(index=0, amd=False):
 
 
 # ------------------------------------------------------------------------------------------------ CPU / RAM
+def _cpu_topology(root: str = "/sys/devices/system"):
+    """(sockets, NUMA nodes) of this computer: how many CPU packages it has and how many memory nodes (None where it cannot be read).
+    Linux reads /sys, Windows asks GetLogicalProcessorInformationEx / GetNumaHighestNodeNumber, macOS asks sysctl (Apple silicon and every Mac
+    sold so far: one package, no NUMA)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            needed = ctypes.c_ulong(0)
+            kernel32.GetLogicalProcessorInformationEx(3, None, ctypes.byref(needed))          # RelationProcessorPackage
+            buf = ctypes.create_string_buffer(needed.value)
+            sockets = None
+            if needed.value and kernel32.GetLogicalProcessorInformationEx(3, buf, ctypes.byref(needed)):
+                sockets, offset = 0, 0
+                while offset + 8 <= needed.value:
+                    relationship = int.from_bytes(buf.raw[offset:offset + 4], "little")
+                    size = int.from_bytes(buf.raw[offset + 4:offset + 8], "little")
+                    if size <= 0:
+                        break
+                    sockets += 1 if relationship == 3 else 0
+                    offset += size
+            high = ctypes.c_ulong(0)
+            numa = high.value + 1 if kernel32.GetNumaHighestNodeNumber(ctypes.byref(high)) else None
+            return (sockets or None), numa
+        if sys.platform == "darwin":
+            import subprocess
+            out = subprocess.run(["sysctl", "-n", "hw.packages"], capture_output=True, text=True, timeout=5).stdout.strip()
+            return (int(out) if out.isdigit() else 1), None
+        import glob
+        packages = set()
+        for f in glob.glob(os.path.join(root, "cpu", "cpu[0-9]*", "topology", "physical_package_id")):
+            try:
+                packages.add(open(f, encoding="utf-8").read().strip())
+            except OSError:
+                continue
+        nodes = len(glob.glob(os.path.join(root, "node", "node[0-9]*")))
+        return (len(packages) or None), (nodes or None)
+    except Exception:                                        # noqa: BLE001 - a missing figure is shown as missing, never guessed
+        return None, None
+
+
 def _cpu_name():
     if os.name == "nt":
         try:
@@ -534,6 +575,8 @@ class Telemetry:
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
+            "sockets": _cpu_topology()[0],
+            "numa_nodes": _cpu_topology()[1],
             "psutil": self.ps is not None,
         }
         self._disk_prev = None
@@ -571,9 +614,9 @@ class Telemetry:
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
-                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
+                s["gpus"] = [{"index": i, "name": reader.name(), "util": r.get("util"), "mem_used": r.get("mem_used"),
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
-                             for i, r in reads]
+                             for (i, r), (_, reader) in zip(reads, self.gpus)]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
             try:

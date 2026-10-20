@@ -237,6 +237,55 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
                                   {**headers, "Authorization": "Bearer s3cret"})[0], 200)
 
+    def test_terminal_telemetry_requires_the_existing_key(self):
+        self.start(api_key="s3cret")
+        self.assertEqual(self.req("GET", "/v1/telemetry")[0], 401)
+        code, body, _ = self.req("GET", "/v1/telemetry", headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(code, 200)
+        self.assertEqual(body["schema_version"], 1)
+        self.assertNotIn("input", json.dumps(body))
+
+    def test_read_only_telemetry_key_does_not_authorize_inference_or_management(self):
+        self.start(api_key="inference-secret", telemetry_key="read-secret")
+        header = {"Authorization": "Bearer read-secret"}
+        self.assertEqual(self.req("GET", "/v1/telemetry", headers=header)[0], 200)
+        self.assertEqual(self.req("GET", "/metrics", headers=header)[0], 401)
+        self.assertEqual(self.req("GET", "/v1/models", headers=header)[0], 401)
+        self.assertEqual(self.req("POST", "/v1/chat/completions", self.chat_body(),
+                                  {**header, "Content-Type": "application/json"})[0], 401)
+        self.assertEqual(self.req("POST", "/unload", {},
+                                  {**header, "Content-Type": "application/json"})[0], 401)
+
+    def test_read_only_key_gets_bounded_redacted_request_activity(self):
+        self.start(api_key="inference-secret", telemetry_key="read-secret")
+        prompt = "DO_NOT_LEAK_PROMPT_ACTIVITY"
+        request = {**self.chat_body(), "messages": [{"role": "user", "content": prompt}]}
+        self.assertEqual(self.req("POST", "/v1/chat/completions", request,
+                                  {"Authorization": "Bearer inference-secret",
+                                   "Content-Type": "application/json"})[0], 200)
+        code, body, _ = self.req("GET", "/v1/telemetry",
+                                 headers={"Authorization": "Bearer read-secret"})
+        self.assertEqual(code, 200)
+        activity = body["activity"]
+        self.assertEqual(activity["last_seq"], len(activity["events"]))
+        self.assertLessEqual(len(activity["events"]), 32)
+        self.assertEqual(activity["events"][0]["event"], "queued")
+        self.assertEqual(activity["events"][-1]["event"], "finished")
+        self.assertEqual([e["seq"] for e in activity["events"]],
+                         list(range(1, activity["last_seq"] + 1)))
+        self.assertEqual(len({e["request_id"] for e in activity["events"]}), 1)
+        serialized = json.dumps(activity)
+        for secret in (prompt, "inference-secret", "read-secret", "</think>"):
+            self.assertNotIn(secret, serialized)
+        with self.svc.status_lock:
+            for i in range(140):
+                self.svc._terminal_event_locked(f"{i:012x}", "queued")
+        bounded = self.req("GET", "/v1/telemetry",
+                           headers={"Authorization": "Bearer read-secret"})[1]["activity"]
+        self.assertEqual(len(self.svc.terminal_events), 128)
+        self.assertEqual(len(bounded["events"]), 32)
+        self.assertEqual(bounded["events"][-1]["seq"], bounded["last_seq"])
+
     # --- /unload and /load
     def test_control_body_arrives_before_the_operation_and_reply(self):
         self.start()

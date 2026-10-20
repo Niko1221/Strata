@@ -23,7 +23,7 @@ EDITABLE = [
     ("sampling.top_k", ("sampling", "1..64"), "Default top_k for requests that send none (1-64)"),
     ("sampling.min_p", ("sampling", "0<=x<=1"), "Default min_p for requests that send none"),
     ("reasoning_budget_tokens", "int>=0", "Cap the thinking of every request at this many tokens (0 or empty: no cap)"),
-    ("fit_max_tokens", "bool", "Shorten a max_tokens that does not fit the context instead of answering 400"),
+    ("fit_max_tokens", "bool", "Shorten a max_tokens that does not fit the context (on by default); off: answer 400 like llama.cpp"),
     ("anthropic_thinking", ("enum", ["model", "on_request"]),
      "Anthropic requests that do not ask for thinking: think as the model does (model) or not (on_request)"),
     ("effort_position", ("enum", ["start", "end"]),

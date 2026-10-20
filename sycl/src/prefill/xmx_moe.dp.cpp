@@ -150,7 +150,11 @@ int mode() {
     // sub-group 16 (Xe2, Battlemage).
     static const int v = [] {
         const char* e = std::getenv("STRATA_PF_XMX");
-        const int want = e ? std::atoi(e) : 0;
+        // 0.1.48 (owner approved 2026-10-18): mode 2 (the fused grouped XMX launch) is the default on Arc Alchemist (A-series): A750 prompts +30..39% (4K), +32..35% (1-2K tokens),
+        // first-token KL 0.002 against a 0.0005 floor, HumanEval / reasoning / agent / CJK / needles inside the run-to-run spread; Battlemage is
+        // 7-11% slower with it, so it stays off there.  STRATA_PF_XMX=0 turns it off, 1 is the dequantize + grouped XMX variant.
+        const bool alchemist = strata::intel_gpu_gen(strata::q_of(nullptr)->get_device()) == strata::IntelGpuGen::Alchemist;
+        const int want = e ? std::atoi(e) : alchemist ? 2 : 0;
         if (want == 0) return 0;
 #ifdef STRATA_NO_DG2_XMX
         std::fprintf(stderr, "STRATA_PF_XMX ignored: this build is AOT for a device without the sub-group 8 XMX kernels\n");

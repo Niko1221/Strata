@@ -108,8 +108,8 @@ doubled by the proposals). Nothing changes for 8 slots or fewer. Every slot of a
 exactly the tokens it decodes alone (`tools/batch_test.py --n 16`, which now takes up to 32 prompts).
 
 **Opt-in switches** (environment of the engine, i.e. `"env"` in the config; none is on by default). Each one changes
-how the work is scheduled or copied, not what is computed; the identity gates and `tools/batch_test.py` are in
-`phaseA-tests/review-havok.md`.
+how the work is scheduled or copied, not what is computed; `tools/batch_test.py` checks that every slot decodes the tokens it
+decodes alone.
 
 | Switch | What it does |
 |---|---|

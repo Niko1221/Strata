@@ -18,6 +18,16 @@
 #include <cstring>
 
 namespace strata::prefill::mmq {
+namespace {
+// The Gyro trellis types (ids 144-146) are outside the type table of an upstream ggml (indexed by the id): their block
+// geometry is known here (128 weights; 34 / 26 / 30 bytes), everything else asks ggml.
+inline bool is_tq(int t) { return t >= 144 && t <= 146; }
+inline int64_t type_blck(int t) { return is_tq(t) ? 128 : (int64_t) ggml_blck_size((ggml_type) t); }
+inline size_t type_bytes(int t) { return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : ggml_type_size((ggml_type) t); }
+inline const char* type_label(int t) {
+    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7" : ggml_type_name((ggml_type) t);
+}
+}  // namespace
 #if defined(STRATA_KQ_DSO)
 namespace kq {
 int abi_args_size() { return (int) sizeof(mmq_args); }
@@ -263,6 +273,9 @@ bool supported(int t) {
         case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
+#ifdef STRATA_MMQ_TQ
+        case GGML_TYPE_TQ2_T: case GGML_TYPE_TQK6: case GGML_TYPE_TQK7:   // APR experts (agention fork's MMQ)
+#endif
             return true;
 #ifdef STRATA_MMQ_KQUANTS
         // Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF projections (STRATA_DENSE_MMQ)
@@ -298,7 +311,7 @@ bool fits(int t, int64_t w_rows) {
                 said[t] = true;
                 std::fprintf(stderr, "strata: prompt kernels: llama.cpp's MMQ has no tile for %s (%lld rows) on GPU %d "
                                      "(cc %d, %zu bytes of shared memory per block): that product takes the non-MMQ path "
-                                     "(#420)\n", ggml_type_name((ggml_type) t), (long long) w_rows, id, cc, smpbo);
+                                     "(#420)\n", type_label((int) t), (long long) w_rows, id, cc, smpbo);
             }
             return false;
         }
@@ -307,7 +320,7 @@ bool fits(int t, int64_t w_rows) {
 }
 
 size_t matrix_bytes(int t, int64_t rows, int64_t cols) {
-    return (size_t) rows * (size_t) (cols / ggml_blck_size((ggml_type) t)) * ggml_type_size((ggml_type) t);
+    return (size_t) rows * (size_t) (cols / type_blck((int) t)) * type_bytes((int) t);
 }
 
 size_t q8_bytes(int64_t rows, int64_t cols) {
@@ -404,10 +417,10 @@ Context::~Context() { delete (ggml_backend_cuda_context*) ctx_; }
 void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
     const ggml_type t = (ggml_type) p.type;
-    const int64_t qk = ggml_blck_size(t), bpr = p.w_cols / qk;
+    const int64_t qk = type_blck((int) t), bpr = p.w_cols / qk;
     const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst, p.y_scale,
                         p.w_cols, p.w_rows, p.total_rows, bpr, p.total_rows, p.ld_dst,
-                        p.n, p.n, p.tab ? 0 : (int64_t) (p.expert_bytes / ggml_type_size(t)), 0, 0,
+                        p.n, p.n, p.tab ? 0 : (int64_t) (p.expert_bytes / type_bytes((int) t)), 0, 0,
                         1, 1, 0, 0, 0,
                         p.max_rows, p.max_rows};
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
@@ -421,7 +434,7 @@ void Context::run(const Product& p, void* stream) {
         mmq_x_tab tab{};
         for (int z = 0; z < p.n; ++z) tab.p[z] = (const char*) p.tab->p[z];
         if (!run_tab(&ctx, &a, &tab, s)) {
-            std::fprintf(stderr, "prefill mmq: no pointer-table MMQ for %s with %lld rows\n", ggml_type_name(t),
+            std::fprintf(stderr, "prefill mmq: no pointer-table MMQ for %s with %lld rows\n", type_label((int) t),
                          (long long) p.w_rows);
             std::exit(1);
         }
@@ -444,6 +457,11 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_IQ4_NL: mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, a, s); break;
         case GGML_TYPE_IQ4_XS: mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, a, s); break;
         case GGML_TYPE_Q8_0: mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, a, s); break;
+#ifdef STRATA_MMQ_TQ
+        case GGML_TYPE_TQ2_T: mul_mat_q_case<GGML_TYPE_TQ2_T>(ctx, a, s); break;
+        case GGML_TYPE_TQK6: mul_mat_q_case<GGML_TYPE_TQK6>(ctx, a, s); break;
+        case GGML_TYPE_TQK7: mul_mat_q_case<GGML_TYPE_TQK7>(ctx, a, s); break;
+#endif
 #if defined(STRATA_MMQ_KQUANTS) && defined(STRATA_KQ_DSO)
         case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_1: {
             const int e = kq::run((int) t, &a, s);
@@ -490,7 +508,7 @@ size_t overread_bytes(int t, int64_t cols) {
     // the K tile's over-read for each (fallback=false) config on any visible GPU, the largest of them: the over-read
     // is not monotonic in the tile length (20 blocks: 12 more with a 16-block tile, 4 with a 24-block one), so each
     // config's own; MMQ_ITER_K's is the floor (it is the tile when no config is known)
-    const int64_t qk = ggml_blck_size((ggml_type) t), bpn = cols / qk;
+    const int64_t qk = type_blck((int) t), bpn = cols / qk;
     auto over = [&](int64_t k_vram) -> int64_t {
         const int64_t bpi = k_vram / qk;
         return bpi > 0 ? (bpi - bpn % bpi) % bpi : 0;
@@ -502,7 +520,7 @@ size_t overread_bytes(int t, int64_t cols) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, info.devices[id].cc);
             if (c.type != GGML_TYPE_COUNT) blocks = std::max<int64_t>(blocks, over(c.K_vram));
         }
-    return (size_t) blocks * ggml_type_size((ggml_type) t);
+    return (size_t) blocks * type_bytes((int) t);
 }
 
 bool whole_tiles(int t, int64_t w_rows, int n_experts) {

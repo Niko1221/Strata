@@ -1,6 +1,7 @@
 // src/kernels/cuda/fused_gr.cu - see include/strata/kernels/fused_gr.hpp.
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm75_series.hpp"
+#include "strata/core/sm120_series.hpp"
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/fused_gr.hpp"
@@ -1161,7 +1162,7 @@ bool gr_down_max4() {
     return on;
 }
 
-// the split norm with registers (gr_norm_split_fast_kernel): gfx12 only until another arch is measured;
+// the split norm with registers (gr_norm_split_fast_kernel): on by default on gfx12; CUDA opt-in (measured on sm_70 only);
 // STRATA_GR_NORM_FAST=0 / 1 forces it off / on
 bool norm_fast_on() {
 #if defined(__HIPCC__)
@@ -1176,7 +1177,9 @@ bool norm_fast_on() {
     }
     return per_dev[dev] == 2;
 #else
-    return false;
+    // CUDA: opt-in with STRATA_GR_NORM_FAST=1 (measured on sm_70 only)
+    static const bool on = [] { const char* e = std::getenv("STRATA_GR_NORM_FAST"); return e != nullptr && std::atoi(e) != 0; }();
+    return on;
 #endif
 }
 
@@ -1200,12 +1203,13 @@ bool up75_on() {
         int major = 0, minor = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        per_dev[dev] = strata::sm75_default(major, minor) ? 2 : 1;   // Turing, STRATA_SM75_PERF=1
+        // Turing (STRATA_SM75_PERF=1), and a 12.0 card (sm120_series.hpp: RTX PRO 5000, a 4-token verify round -1.7%)
+        per_dev[dev] = strata::sm75_default(major, minor) || strata::sm120_default(major, minor) ? 2 : 1;
     }
     return per_dev[dev] == 2;
 #endif
 }
-// sm_75: the staged down kernel's tokens per block (gridDim.y = ct / tg), 0 = one block row for all of them.
+// sm_75 / a 12.0 card: the staged down kernel's tokens per block (gridDim.y = ct / tg), 0 = one block row for all of them.
 // STRATA_GR_DOWN_TG=n forces n where it divides the launch (0 = off).
 int down_tg(int ct) {
 #if defined(__HIPCC__)
@@ -1217,15 +1221,21 @@ int down_tg(int ct) {
     if (env >= 0) return env > 0 && env <= 3 && ct % env == 0 ? env : 0;
     // fused_gr_bench cold on an RTX 2080 Ti (down incl. a stamp): T 4 29.1 -> 27.3 us, T 6 38.5 -> 32.2 with pairs;
     // one token per block is slower at every T (the weights are read from L2 once per group)
-    static int per_dev[64];   // 0 unknown, 1 no, 2 sm_75
+    static int per_dev[64];   // 0 unknown, 1 no, 2 sm_75, 3 a 12.0 card with 80+ SMs, 4 a smaller 12.0 card
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return 0;
     if (!per_dev[dev]) {
-        int major = 0, minor = 0;
+        int major = 0, minor = 0, sms = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
-        per_dev[dev] = strata::sm75_default(major, minor) ? 2 : 1;   // Turing, STRATA_SM75_PERF=1
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+        per_dev[dev] = strata::sm75_default(major, minor) ? 2 : strata::sm120_default(major, minor) ? (sms >= 80 ? 3 : 4) : 1;   // Turing, STRATA_SM75_PERF=1
     }
+    // a 12.0 card (sm120_series.hpp) with 80+ SMs: one token a block row for every launch of 2+ tokens (RTX PRO 5000, fixed
+    // rounds against token pairs: 2 tokens -2.1%, 3 -2.3%, 4 -0.2%, 5 -2.5%; pairs against no split at 4 tokens -2.4%); a
+    // smaller one (RTX 5070, 48 SMs: 1 and 2 could not be told apart, an earlier run leaned to 2) token pairs at every even launch
+    if (per_dev[dev] == 3) return ct >= 2 ? 1 : 0;
+    if (per_dev[dev] == 4) return ct % 2 == 0 ? 2 : 0;
     return per_dev[dev] == 2 && (ct == 4 || ct == 6) ? 2 : 0;
 #endif
 }

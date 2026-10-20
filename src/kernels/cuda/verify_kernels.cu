@@ -959,11 +959,15 @@ bool argmax_rows_wanted() {
 #if defined(__HIPCC__)
     return false;
 #else
-    // sm_80 to sm_89: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
+    // sm_80 to sm_89, and sm_7x with STRATA_ARGMAX_ROWS_SM70=1: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
         int dev = 0, major = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess)
             return false;
+        if (major == 7) {   // STRATA_ARGMAX_ROWS_SM70=1: opt-in on Volta (measured on sm_70 only)
+            const char* e = std::getenv("STRATA_ARGMAX_ROWS_SM70");
+            return e != nullptr && std::atoi(e) != 0;
+        }
         return major == 8;
     }();
     return want && multi_block_head_ops();

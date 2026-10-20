@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from pathlib import Path
@@ -80,6 +81,9 @@ class FakeEngine:
     def alive(self):
         return self.up
 
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        yield 7
+
 
 class RouteChoice(unittest.TestCase):
     def test_least_loaded_then_affinity(self):
@@ -142,6 +146,15 @@ class RouteChoice(unittest.TestCase):
     def test_batch_is_the_sum(self):
         self.assertEqual(ReplicaEngine([FakeEngine(4), FakeEngine(4)]).batch, 8)
         self.assertEqual(ReplicaEngine([FakeEngine(0), FakeEngine(0)]).batch, 2)
+
+    def test_selected_replica_is_reported_for_solo_requests_too(self):
+        engine = ReplicaEngine([FakeEngine(), FakeEngine()])
+        engine.inflight[0] = 1
+        cancel = threading.Event()
+        selected = []
+        cancel._strata_replica_selected = selected.append
+        self.assertEqual(list(engine.generate([1, 2], 1, {}, cancel)), [7])
+        self.assertEqual(selected, [1])
 
 
 class ReplicaService(unittest.TestCase):
@@ -214,6 +227,61 @@ class ReplicaService(unittest.TestCase):
         self.assertEqual(len(m["live"]["slots"]), 8)
         self.assertEqual([r["replica"] for r in m["live"]["replicas"]], [0, 1])
         self.assertEqual(m["engine"]["replicas"], 2)
+
+    def test_terminal_telemetry_correlates_second_replica_without_global_sample_claim(self):
+        self.start()
+        self.svc.replica_gpu_groups = [[0, 1], [2, 3]]
+        second = self.engine.engines[1]
+        request_id = "abcdef012345"
+        second.slot_live[1] = {"request_id": request_id, "state": "reading", "prompt_tokens": 100,
+                               "prompt_read": 12, "generated": 0, "started": time.time(), "first_token": None}
+        first = self.engine.engines[0]
+        first.terminal_batch_sample = {"windows": 2, "processed_rows": 8, "active_rows": 4,
+                                       "elapsed_ms": 1000, "observed_monotonic": time.monotonic()}
+        second.terminal_batch_sample = {"windows": 2, "processed_rows": 6, "active_rows": 4,
+                                        "elapsed_ms": 1000, "observed_monotonic": time.monotonic()}
+        first.terminal_stage_sample = {"elapsed_us": 1_000_000, "in_flight_us": [800_000, 600_000],
+                                       "observed_monotonic": time.monotonic()}
+        second.terminal_stage_sample = {"elapsed_us": 1_000_000, "in_flight_us": [700_000, 500_000],
+                                        "observed_monotonic": time.monotonic()}
+        self.svc.backend = "cuda"
+        for child, cards in ((first, [0, 1]), (second, [2, 3])):
+            child.spawn = (*child.spawn[:4], {"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                                              "CUDA_VISIBLE_DEVICES": ",".join(map(str, cards))},
+                           *child.spawn[5:])
+            child.terminal_stages = [
+                {"stage": 0, "layer_start": 0, "layer_end": 19, "engine_ordinal": 0},
+                {"stage": 1, "layer_start": 20, "layer_end": 39, "engine_ordinal": 1}]
+        with self.svc.status_lock:
+            self.svc.terminal_requests[request_id] = {"id": request_id, "state": "waiting",
+                                                       "queued_at": time.time(), "admitted_at": time.time(),
+                                                       "prompt_tokens": 100}
+        with urllib.request.urlopen(self.base + "/v1/telemetry", timeout=10) as response:
+            snapshot = json.load(response)
+        slot = snapshot["work"]["slots"][5]
+        self.assertEqual((slot["slot"], slot["replica"], slot["group"], slot["request_id"]),
+                         (5, 1, 1, request_id))
+        request = snapshot["work"]["requests"][0]
+        self.assertEqual((request["slot"], request["replica"], request["group"], request["state"]),
+                         (5, 1, 1, "reading"))
+        self.assertEqual(snapshot["work"]["groups"], 2)
+        self.assertIsNone(snapshot["work"]["effective_rows_window"])
+        self.assertEqual([(row["replica"], row["batch_sample_rows"], row["batch_sample_active_rows"])
+                          for row in snapshot["work"]["replica_batches"]], [(0, 8, 4), (1, 6, 4)])
+        self.assertEqual([(row["replica"], row["stage_in_flight_us"])
+                          for row in snapshot["work"]["replica_stage_samples"]],
+                         [(0, [800_000, 600_000]), (1, [700_000, 500_000])])
+        self.assertNotIn("stage_in_flight_us", snapshot["work"])
+        self.assertEqual(snapshot["topology"]["stages"], [])
+        self.assertEqual(snapshot["topology"]["replica_stages"][1]["stages"][1]["device_index"], 3)
+        self.assertEqual(snapshot["topology"]["replica_devices"],
+                         [{"replica": 0, "devices": [0, 1]}, {"replica": 1, "devices": [2, 3]}])
+        second.spawn = (*second.spawn[:4], {"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                                            "CUDA_VISIBLE_DEVICES": "9,3"}, *second.spawn[5:])
+        with urllib.request.urlopen(self.base + "/v1/telemetry", timeout=10) as response:
+            mismatch = json.load(response)
+        self.assertIsNone(mismatch["topology"]["replica_stages"][1]["stages"][0]["device_index"])
+        self.assertEqual(mismatch["topology"]["replica_stages"][1]["stages"][1]["device_index"], 3)
 
     def test_engines_without_slots_run_one_each_at_once(self):
         self.start(slots=0)

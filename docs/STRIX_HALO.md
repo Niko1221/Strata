@@ -1,13 +1,11 @@
-# Strix Halo (Ryzen AI Max, gfx1151): build from source on Linux
+# Strix Halo (Ryzen AI Max, gfx1151)
 
 Strata runs on the Ryzen AI Max "Strix Halo" APUs (Radeon 8060S / 8050S, RDNA3.5, `gfx1151`, one pool of LPDDR5X shared by the
 CPU and the GPU) through the same HIP backend as the Radeon cards in [AMD_HIP.md](AMD_HIP.md). **Status: experimental.**
 Everything here was built and measured on one machine, the maintainers' Strix Halo box (Ryzen AI Max+ 395, 128 GB,
 Ubuntu 26.04, kernel 7.0, ROCm 7.14.1). Setup (`setup.sh`, `START-HERE.bat`) recognizes it from 0.1.40, by its PCI id (`1002:1586`, one id for the 8060S, 8050S and 8040S) and by
 `gfx1151` exactly: a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is
-named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). On
-Windows the ready-made `strata-windows-x64-hip.zip` carries gfx1151 code from 0.1.40 (untested on a Windows Strix Halo so far); a zip
-without it is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
+named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). The 0.2.0-beta release also has ready-made packages: `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` (engine `halo`, gfx1151, ROCm 7.14.1) and, on Windows, `Strata-0.2.0-beta-windows-hip-rdna3.exe` (engine `rdna3`: gfx1100, gfx1101, gfx1102 and gfx1151, ROCm 10.2.0a20260930); any app installer plus **Update engine** (or `strata update`) fetches the same package. What was run: both packages were built, linked and scanned, and the Linux package refuses to start on a card of another family (tried on an RX 9000 card); the maintainers have no Strix Halo and ran neither on one. The measurements on this page come from source builds on Linux (the maintainers' earlier box and community machines). Nobody has run a Strix Halo on Windows. The packaged engines do not carry the hipBLASLt table of section 3 yet (planned for 0.2.1), so their prompt reading is slower than the numbers below until then. A Windows zip of the 0.1.x START-HERE route without gfx1151 code is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
 (the GTT pool; on Windows half the RAM) and recommends UD-IQ4_XS from about 80 GB of memory; it changes no BIOS or kernel setting.
 
 What the engine does differently on this chip:

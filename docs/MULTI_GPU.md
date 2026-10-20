@@ -11,6 +11,18 @@ verify window (a few hundred KB through pinned RAM), not twice per layer. No NVL
 needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
 is every card's share and skips those probes; there is no per-card setting yet.
 
+**Two models on two cards (the app).** A layer split puts one model on several cards. The other way to use two cards is two
+models, one per card, each answering on its own. In the app, turn on **Run multiple models** on the Models page: the card
+list then says which card a loaded model uses ("Already used by ..."), preselects a free card for the next model, and
+explains a failed start on a card that is taken. Measured on a PC with Radeon AI PRO R9700 cards (two of four, Linux): Q2_0 on
+one card and IQ3_XXS on another both loaded (33 s and 59 s with the files cached, 114 s the first time), both answered chats
+(about 60 tokens/s each), the Monitor listed both, and unloading one left the other answering. This was run with the AMD build only;
+the same app code drives NVIDIA cards, but we have not run two models on two NVIDIA cards.
+
+**One make of card per engine.** An engine drives one make of card (NVIDIA, AMD or Intel). The app, `strata launch` and setup
+offer only the cards the engine can drive, never split a model across two makes, say in one plain line when the other make has
+the bigger card, and say that two models at once on two makes is not supported.
+
 ## Using it
 
 **Nothing to type.** `START-HERE.bat` (Linux: `./setup.sh`) lists your NVIDIA cards and says for each one whether
@@ -22,15 +34,21 @@ Strata can use it:
     GPU 1: NVIDIA GeForce GTX 1080 Ti, 11 GB VRAM - not supported - older than the RTX 20 series (compute capability 6.1; Strata needs 7.5 or newer)
     GPU 2: NVIDIA GeForce RTX 3090, 24 GB VRAM - can be used
   ...
-  1) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) + GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) together   (recommended)
-  2) GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) only
-  3) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) only
+  1) RTX 3090 + RAM: fits: needs 44 GB of the 70 GB available   (recommended)
+  2) RTX 3090 + RTX 5080 + RAM (layer split): fits: needs 44 GB of the 84 GB available
+       prompts are read about 20% faster; the cards share the layers (docs/MULTI_GPU.md)
+  3) RTX 5080 + RAM: fits: needs 44 GB of the 66 GB available
 Which GPUs? [1]:
 ```
 
-When two or more cards can share the model, the two best together are recommended (the newest generation first:
-it becomes the main card). A model installed on one card asks once, at its next start, whether to use both from
-now on; the answer is kept.
+**Which cards a model uses (one rule, in setup, `strata launch` and the app).** Strata first tries the model on your
+**largest** card plus the computer's memory, the normal hybrid mode, and recommends that when it fits (with some RAM to
+spare). Only when it does not fit one card, or would be too tight, the layer split over the two largest cards is
+recommended instead. Every option is listed with plain numbers (what the model needs and what the cards and RAM give;
+how much would be read from the SSD when it does not fit) and the choice is yours. The cards that count: not an
+integrated chip (it shares the system memory and adds nothing beside a real card), at least 4 GB of graphics memory, and
+8 GB or more to share a model. The arithmetic is the app's `fitOn` (strata_control/gpu_fit.py keeps its constants equal);
+each extra card of a split costs an estimated 2 GB of its own buffers.
 
 **Choosing yourself** (at setup or at any start):
 
@@ -111,6 +129,10 @@ helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
 `STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
 `STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+On two Radeon AI PRO R9700 (each limited to 16 GB with `--vram-reserve-mib 17084`, Q2_0 pack, layer split auto, 5 interleaved pairs,
+noise arm within 0.2%), `STRATA_PREFILL_HELP=1` gave prompt tok/s without -> with: 700 tokens 638 -> 672 (x1.053, 5/5), 1.5K 839 -> 809
+(x0.964), 3K 1,105 -> 929 (x0.840), 6K 1,284 -> 1,211 (x0.943): the PCIe 4.0 x16 links of this box (28.4 GB/s each) make the share lose
+from 1.5K tokens up, so it stays off (`STRATA_PREFILL_HELP_FRAC` was not tuned for it).
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing

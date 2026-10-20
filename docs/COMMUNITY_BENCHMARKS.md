@@ -5,6 +5,8 @@ might run on a similar machine. This guide suggests a report format and a pull
 request workflow; a single model, GPU, or context length is enough to contribute.
 The quickest way is the built-in benchmark: [`BENCH.bat` / `./bench.sh`](#run-the-benchmark) writes a report in this format.
 
+A standard benchmark protocol for future submissions exists only as a **draft**: [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md). The tools described on this page do not implement it, and the reports below are not standard results; keep using this guide for now.
+
 Existing [benchmark reports](../bench/results/) provide examples. The
 [engine 0.1.26 speed report](../bench/results/2026-09-29-speed-0126/README.md)
 includes hardware, settings, and per-run JSON. The
@@ -71,7 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
 `python tools/strata_bench.py` from the Strata folder. Setup also offers it at the end of an interactive install
-(default no).
+(default no). The Terminal's `strata bench run` ([TERMINAL.md](TERMINAL.md)) is a different tool: it measures serving suites and
+writes JSON evidence for your own comparisons, but not the `README.md` report in this format and not the draft standard protocol.
 
 It starts the model with the settings you already have (the newest `strata-*.json`; `--config FILE` picks another one),
 or uses a Strata server that is already running on that port (`--url http://127.0.0.1:8080` for another address). It then

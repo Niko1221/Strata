@@ -1,5 +1,6 @@
 // src/core/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/core/session.hpp"
+#include "strata/core/pin_budget.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
 
@@ -541,7 +542,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     }
     parts_bytes = parts_bytes_in;
     // MAPPED as well as pinned: the token graph's handoff kernel reads it through its device pointer.
-    if (cudaHostAlloc((void**) &y_miss, parts_bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+    if (strata::core::host_alloc_guarded((void**) &y_miss, parts_bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
         err = "SessionLoopScratch: cudaHostAlloc for the pool's staging failed";
         return false;
     }

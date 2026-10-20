@@ -1,9 +1,18 @@
 # Strata on a Mac (Apple Silicon, Metal)
 
 Strata runs on Apple Silicon Macs through its own engine on Metal. This is the same engine as on a PC. The NVIDIA
-kernels are replaced by Metal ones (`metal/`), and the host code and the server are the PC's. `./setup.sh` sets it up the way
-`START-HERE.bat` does on Windows. There is no ready-made Mac engine: setup builds it from source on your Mac
-(about 1-15 minutes). The NVIDIA, AMD and Intel engines are unchanged.
+kernels are replaced by Metal ones (`metal/`), and the host code and the server are the PC's. There are two ways in:
+
+- **The Strata app (`.dmg`) and the Terminal (`strata launch`).** The Metal engine comes ready-made: the `.dmg` has it
+  inside, and the Terminal fetches it as an engine component. Nothing is built on your Mac and you need no Command Line
+  Tools ([below](#the-desktop-app-and-strata-launch-on-a-mac)). macOS 15 or newer, as for the source build. If macOS says the
+  app is "damaged", see [Troubleshooting](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal); how the builds are signed:
+  [packaging/mac/README.md](../packaging/mac/README.md).
+- **From source: `./setup.sh`.** It sets things up the way `START-HERE.bat` does on Windows and builds the engine on your Mac
+  (about 1-15 minutes).
+
+**Pictures:** the app and the Terminal have no picture reader on the Mac yet. Only the source build can read pictures
+([Limits](#limits-this-version)). The NVIDIA, AMD and Intel engines are unchanged.
 
 **Status:** new. It is measured on three Macs: an M5 Max with 128 GB, where the model stays in memory; and an M4 Mac mini
 with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the M1 Max: 7.9 tok/s decode, 186 tok/s on a
@@ -61,6 +70,12 @@ The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read 
 Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--vision yes|no`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
 `--data-dir`, `--models-dir`, `--gguf-dir`, `--setup` (another model or new settings), `--no-start`, `--check` (only
 check the Mac), `--build` (build the engine again).
+
+### The desktop app and `strata launch` on a Mac
+
+The Strata app (and the Terminal's `strata launch`) do not build anything on your Mac. The Metal engine comes ready-made, as an engine component: from the update feed, or inside the app's installer. The model install is `setup.py` in its Control mode (`STRATA_CONTROL_INSTALL=1`): it downloads (or uses with `--gguf-dir`) and prepares the model files and writes a run config whose engine is `component:strata-engine`. It does not run `metal/setup_mac.py`, needs no Command Line Tools, and writes the same Metal flags (`--mmap-experts`, `--spec 2`, no draft layer when the experts stream from the SSD).
+
+The model list and the recommendation judge a Mac by its unified memory with the rules of `strata_control/mac_fit.py`, the module `setup_mac.py` uses too: Q2_0, IQ3_XXS and IQ3_S are offered (the Unsloth many-shard files need the repack of `./setup.sh` for now); a pack that does not stay in memory is listed as "read from the SSD", and a Mac under 16 GB of unified memory is told the model does not fit.
 
 ## Measured (M5 Max, 128 GB, macOS 27.2)
 
@@ -173,13 +188,17 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 ## Limits (this version)
 
-- **Images (vision):** `--vision yes` in setup. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal the HIP engine's, and text output is unchanged with vision on. No other tests yet.
+- **Images (vision): the source build only.** `./setup.sh` asks "Should the model also read images?" (`--vision yes|no`) and
+  builds the picture reader (`strata-vision`) itself. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal
+  the HIP engine's, and text output is unchanged with vision on. No other tests yet. The app and the Terminal have no
+  picture reader on the Mac yet. They show models as text only and do not turn pictures on.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
 - **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
-- **Engine only from source.** There is no ready-made Mac engine in the release zips.
+- **The ready-made Mac engine is in the app and in the Terminal's engine component, not in the release zips.** The zips
+  (for `START-HERE.bat` and `setup.sh`) have no Mac engine: `./setup.sh` builds it.
 
 ## Switches (for testing; all off unless set, the defaults are above)
 

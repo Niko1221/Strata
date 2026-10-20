@@ -1,7 +1,52 @@
 # Something went wrong?
 
-The common problems and what to do. Back to the [README](../README.md#something-went-wrong). The full table of
+The common problems and what to do, for the desktop app, the Terminal (`strata launch`) and the installer. Back to the [README](../README.md#something-went-wrong). The full table of
 error messages, with the older engine fixes, is in the [details](DETAILS.md#troubleshooting).
+
+## The desktop app and the Terminal
+
+**A warning says Strata "couldn't find an engine for this computer".**
+The engine is the part that talks to your graphics card. Strata only warns and still downloads the
+model, and the model files stay on your computer, but the model may not run until the right engine is installed. The usual
+reasons are that no engine is installed yet and the update source has none for your card, that the engine found is for
+another make of card, or that the graphics driver is too old. In the app, open Settings, then Engine. In the Terminal, the
+message names the next step: run `strata update --feed <address>` with the update source you were given (or ask whoever sent
+you Strata for the engine that matches your card), then run `strata launch` again.
+
+**"This model needs a newer engine." (the app), or a button called Update engine.**
+Some models need an engine newer than the one installed: Gyro needs 0.1.45.1 or newer, NVFP4 needs 0.1.44, and NVFP4 (NVIDIA,
+trained for FP4) needs 0.1.45. In the app, open Settings, then Engine, and press Update engine. It asks first, keeps your
+model files and settings, and wants running models unloaded. In the Terminal: `strata update --check` says what would
+change, `strata update` installs it (it switches to the new engine only after a test start). If the engine you
+installed is the newest and the message stays, the update source has no newer engine for your card yet.
+
+**On a Mac: "Strata is damaged and can't be opened", "cannot be opened", or "unidentified developer".**
+Nothing is wrong with the file. macOS marks everything a browser downloads, and only lets a marked program run if Apple
+has checked it. Strata's release builds are checked by Apple ("notarised"): drag Strata onto Applications and open it; the
+first time, macOS asks "Are you sure you want to open it?" and you press Open. A test build that is not notarised says
+"damaged". Do not move it to the Trash. Open the Terminal app and remove the mark, with the line that matches what you have
+(drag the file from Finder into the Terminal window to type its path):
+
+    xattr -dr com.apple.quarantine ~/Downloads/<the .dmg file>        # the .dmg, before opening it
+    xattr -dr com.apple.quarantine /Applications/Strata.app           # the app, after dragging it over
+    xattr -dr com.apple.quarantine <the folder you unzipped>          # an unzipped Terminal folder
+
+Then open it again. If macOS says only "the developer cannot be verified", you can instead try to open it once, then open
+System Settings > Privacy & Security and press "Open Anyway" next to the message about Strata. Installs made with
+`curl ... | sh` carry no mark and need none of this. To see which kind you have: `spctl -a -vv /Applications/Strata.app`
+answers "accepted" and "Notarized Developer ID" for a notarised build. (How the builds are signed: `packaging/mac/README.md`.)
+
+**Checking what is installed: `strata doctor`.**
+It is a read-only check of the installed engine parts (it changes nothing): which engine and helper files a saved model
+needs, and whether they are there. `strata doctor --live` also asks the computer which graphics cards it sees and compares
+them with the cards the model is set to use; `--output json` prints the same as data. Put its output into a bug report.
+
+**Sending logs for a bug report.**
+In the app: Settings, Engine, Diagnostics, View logs, then Save logs. It writes one text file,
+`strata-diagnostics-<date>.txt`, into your Downloads folder and shows where. It holds the engine's messages, the failed
+steps and the end of each model's server log. In the Terminal, send the output of `strata doctor`. If the Linux app window
+crashes or will not open, run the AppImage with `--save-logs` in a terminal instead; it writes the crash log and the other
+logs to one file in Downloads. Look through a log before you send it, and never send an API key.
 
 ## While installing or starting
 
@@ -131,9 +176,14 @@ with 13.0. If you compile it yourself, use CUDA 13.0, 13.1 or 13.2.2 (13.2.2, nv
 setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 13.x when one is installed.
 
 **Pictures are refused, or slow.**
-"this server was started without the vision encoder": the model was set up for text only - run setup again with
-`--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
-(NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
+"this server was started without the vision encoder": the model was set up for text only (someone chose "No", or the
+engine has no picture reader) - run setup again with `--vision yes` (or `--vision gpu` / `--vision cpu`), or switch pictures
+on in the app or on the Pictures step of `strata launch`. Pictures are on by default wherever a model can read them. The
+reader runs on the CPU under 24 GB of graphics memory and on the card from 24 GB, on NVIDIA and AMD cards. Pictures that take
+several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU;
+`--vision gpu` (NVIDIA and AMD, ~1.4 GB of VRAM) makes it 0.1-0.5 s. On AMD the card's reader is `strata-vision-hip`; if it
+cannot start, the server prints "the GPU picture reader did not start (...); pictures are read on the CPU" and goes on with
+the CPU reader. The Mac app and the Mac Terminal have no picture reader yet. On Intel Arc, pictures are off by default for now (`--vision yes` turns them on).
 
 ## AMD cards
 
@@ -192,4 +242,7 @@ R9700) in the `env` block of the server JSON, then a restart. Experimental, one 
 ## Still stuck?
 
 Look in the [full troubleshooting table](DETAILS.md#troubleshooting), or open an
-[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder.
+[issue](https://github.com/Niko1221/Strata/issues) and attach the log: in the app, the file Save logs writes (see
+[above](#the-desktop-app-and-the-terminal)); in the Terminal, the output of `strata doctor`; with the installer,
+`strata-<model>.log` from the Strata folder. Say which one you use (app, Terminal or the installer), your Strata and
+engine versions and your card.

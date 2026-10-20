@@ -5,11 +5,15 @@ maxfridbe wrote it in [#423](https://github.com/Niko1221/Strata/pull/423), with 
 The code is in `sycl/`, and the port's own notes, measurements and maintenance procedure are in
 [docs/INTEL.md](INTEL.md). This page covers what you need, how to build it, and what has been tested.
 
-**Experimental means:** the Strata maintainers have no Intel GPU. We compile the port and run its kernel tests, but
-we have not run it on an Arc. Every result on Arc hardware below comes from the community. The NVIDIA and AMD
-engines are unchanged: the Intel build is a separate CMake target, off by default.
+**Experimental means:** the Intel engine is still young and Linux only. When the port arrived (0.1.39) the maintainers had no
+Intel GPU and every result on Arc hardware came from the community. Since 0.1.40.2 the maintainers also test on an Arc Pro B70
+(32 GB, `xe`) and an Arc A750 (8 GB, `i915`); the results from those two cards are marked in the table below. Other cards
+are still community reports. The NVIDIA and AMD engines are unchanged: the Intel build is a separate CMake target, off by default.
 
-There is **no ready-made Intel engine** in the release zips. You build it from source on Linux.
+**Where the engine comes from.** There is **no Intel engine in the release zips** (the ones `START-HERE.bat` and `setup.sh`
+use): you build it from source on Linux, as described below. A ready-made Intel engine does exist as a Docker image,
+`ghcr.io/niko1221/strata:0.2.0-sycl`, built for the 0.2.0 release (the image needs prepared model files; see
+[Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
 
 ## What has been run, and by whom
 
@@ -48,9 +52,10 @@ Full flags, per-request timings and engine logs are in the report linked in the 
 - **Unchanged:** the CUDA engine's greedy output, checked byte-identical against the gated 0.1.39 build (Q2_0 and Coder).
   The HIP build is not affected (the option is off by default).
 
-**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, the Alchemist
-A-series, integrated Arc GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and
-images (not wired on Intel).
+**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, integrated Arc
+GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and images (not wired on Intel: there
+is no picture reader for the Arc engine). The Alchemist A-series was tested later, on an A750 (rows above and
+[INTEL.md](INTEL.md), "Arc A750 and the other Alchemist cards").
 
 ## What you need
 
