@@ -1,0 +1,19 @@
+.remote-lifecycle .dialog-body { display: grid; gap: 20px; }
+.remote-lifecycle-target { display: flex; align-items: center; gap: 12px; }
+.remote-lifecycle-target > .st-icon { flex: none; color: var(--st-accent); }
+.remote-lifecycle-target > div { flex: 1; }
+.remote-lifecycle-target p { margin: 5px 0 0; }
+.remote-lifecycle-card { padding: 18px; border: 1px solid var(--st-line); border-radius: 12px; background: var(--st-surface); }
+.remote-lifecycle-card h3, .remote-lifecycle-card p { margin: 0; }
+.remote-lifecycle-choices { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+.remote-lifecycle-profile, .remote-lifecycle-job-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.remote-lifecycle-profile { padding-bottom: 16px; border-bottom: 1px solid var(--st-line); }
+.remote-lifecycle-profile:last-of-type { padding-bottom: 0; border-bottom: 0; }
+.remote-lifecycle-profile > div { flex: 1; min-width: 0; }
+.remote-lifecycle-profile p { margin-top: 6px; }
+.remote-lifecycle progress { width: 100%; height: 7px; accent-color: var(--st-accent); }
+.remote-lifecycle-review code { overflow-wrap: anywhere; }
+@media(max-width:560px) {
+  .remote-lifecycle-choices { grid-template-columns: 1fr; }
+  .remote-lifecycle-profile { flex-wrap: wrap; }
+}

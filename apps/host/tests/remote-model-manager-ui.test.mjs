@@ -159,7 +159,7 @@ test('saved connection manages remote downloads and existing GGUF files through 
     await page.getByTitle('Manage models on Garage server', { exact: true }).click();
     await dialog.getByRole('button', { name: 'Downloaded', exact: true }).waitFor();
     assert.equal(await dialog.getByRole('button', { name: 'Downloaded', exact: true }).isDisabled(), true);
-    await dialog.getByText('SSH manages files in a separate server library. Preparing and loading a model remain separate server actions. Existing serving models continue running.', { exact: true }).waitFor();
+    await dialog.getByText('SSH manages files in a separate server library. Use Prepare & serve to prepare supported files and switch a managed Strata API. Existing services stay separate.', { exact: true }).waitFor();
     await screenshot('ssh-files-library');
     await dialog.getByRole('button', { name: 'Close', exact: true }).click();
     assert.deepEqual(exceptions, []);

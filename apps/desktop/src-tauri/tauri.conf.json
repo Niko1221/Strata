@@ -33,6 +33,8 @@
       "../../host/dist": "host/dist",
       "../../host/server": "host/server",
       "../../host/python/remote_model_manager.py": "host/python/remote_model_manager.py",
+      "../../host/python/remote_model_lifecycle.py": "host/python/remote_model_lifecycle.py",
+      "../../host/python/remote-lifecycle-source.json.gz": "host/python/remote-lifecycle-source.json.gz",
       "../../host/package.json": "host/package.json",
       "resources/node": "node",
       "resources/control": "control",

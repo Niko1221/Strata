@@ -4,6 +4,7 @@ import { api } from '../lib/client';
 import { sizeGb } from '../lib/format';
 import { Btn, Dialog, ErrorNotice, Icon } from './ui';
 import './RemoteModelManager.css';
+import { RemoteModelLifecycle } from './RemoteModelLifecycle';
 
 interface Target { id: string; name: string; kind: string; connectionId?: string }
 interface ManagedModel { id: string; name: string; sizeGb?: number | null; state: string; detail?: string; readPictures?: boolean }
@@ -27,6 +28,7 @@ const gigabytes = (value: number | null | undefined) => typeof value === 'number
 
 /** Manage only the saved connection selected by the person; URLs and credentials stay on the host. */
 export function RemoteModelManager({ connectionId, name, onClose }: { connectionId: string; name: string; onClose: () => void }) {
+    const [lifecycle, setLifecycle] = useState(false);
     const [target, setTarget] = useState<Target | null>(null), [snapshot, setSnapshot] = useState<Snapshot | null>(null);
     const [loading, setLoading] = useState(true), [pending, setPending] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState('');
     const [attempt, setAttempt] = useState(0);
@@ -70,7 +72,7 @@ export function RemoteModelManager({ connectionId, name, onClose }: { connection
     }, [connectionId, attempt]);
 
     useEffect(() => {
-        if (!target || snapshot?.supported !== true) return;
+        if (!target || snapshot?.supported !== true || lifecycle) return;
         let cancelled = false;
         let timer: ReturnType<typeof setTimeout>;
         const poll = () => {
@@ -82,7 +84,7 @@ export function RemoteModelManager({ connectionId, name, onClose }: { connection
         };
         poll();
         return () => { cancelled = true; clearTimeout(timer); };
-    }, [target?.id, snapshot?.supported]);
+    }, [target?.id, snapshot?.supported, lifecycle]);
 
     async function perform(label: string, work: (id: string, version: number) => Promise<void>) {
         if (!target || pending) return;
@@ -148,16 +150,18 @@ export function RemoteModelManager({ connectionId, name, onClose }: { connection
         ? review.plan.diskShort : tr('There is not enough free disk space on this computer.');
     const visibleModels = snapshot?.models?.filter(model => `${model.name} ${model.detail ?? ''}`.toLowerCase().includes(filter.toLowerCase())) ?? [];
     const warnings = review?.plan.warnings ?? [];
+    if (lifecycle && target) return <RemoteModelLifecycle targetId={target.id} name={targetName} onClose={() => setLifecycle(false)}/>;
     return <Dialog open title={tr('Models on {0}', [targetName])} wide className="remote-model-manager" onClose={onClose}
         actions={review ? <><Btn disabled={!!pending} onClick={() => { setReview(null); setError(''); }}>{tr('Back')}</Btn><Btn variant="primary" disabled={!!pending || expired || diskShort} onClick={() => void confirm()}>{tr(pending === 'confirm' ? 'Working…' : review.kind === 'download' ? 'Download on {0}' : 'Import on {0}', pending === 'confirm' ? [] : [review.plan.targetName])}</Btn></> : <Btn onClick={onClose}>{tr('Close')}</Btn>}>
         <div className="remote-model-target"><Icon name="computer" size={20}/><div><strong>{targetName}</strong><p className="small muted">{tr('Downloads and imports happen on {0}.', [targetName])}</p></div></div>
-        {snapshot?.supported && snapshot.storageMode === 'files' ? <p className="small muted">{tr('SSH manages files in a separate server library. Preparing and loading a model remain separate server actions. Existing serving models continue running.')}</p> : null}
+        {snapshot?.supported && snapshot.storageMode === 'files' ? <p className="small muted">{tr('SSH manages files in a separate server library. Use Prepare & serve to prepare supported files and switch a managed Strata API. Existing services stay separate.')}</p> : null}
         {loading ? <p className="small muted" role="status">{tr('Checking model management…')}</p> : null}
         {!loading && snapshot?.supported === false ? <div className="remote-model-empty"><Icon name="info" size={25}/><strong>{tr('Model management is unavailable')}</strong><p className="small muted">{tr(snapshot.reason || 'Update Strata and enable remote model management under Serving on that computer, then try again.')}</p><Btn icon="refresh" onClick={() => setAttempt(value => value + 1)}>{tr('Try again')}</Btn></div> : null}
         {!loading && snapshot?.supported && !review ? <>
             <div className="remote-model-toolbar"><div className="remote-model-tabs" aria-label={tr('Model management')}>
                 <button type="button" aria-pressed={tab === 'download'} onClick={() => setTab('download')}>{tr('Download models')}</button>
                 <button type="button" aria-pressed={tab === 'import'} disabled={!snapshot.capabilities?.imports} onClick={() => setTab('import')}>{tr('Import GGUF')}</button>
+                {snapshot.storageMode === 'files' ? <button type="button" disabled={!!pending} onClick={() => setLifecycle(true)}>{tr('Prepare & serve')}</button> : null}
             </div><Btn size="sm" icon="refresh" disabled={!!pending} onClick={() => { setError(''); void refresh(target!.id); }}>{tr('Refresh')}</Btn></div>
             {tab === 'download' ? <div className="remote-model-catalog">
                 {!snapshot.capabilities?.downloads ? <p className="small muted">{tr('This server does not support model downloads.')}</p> : <>

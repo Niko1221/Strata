@@ -227,7 +227,7 @@ def identity(path):
     return file_identity(path, path.lstat())
 
 
-def inspect_gguf(path):
+def inspect_gguf(path, *, expected_architecture=None):
     """Bounded GGUF v2/v3 header and complete tensor extents; no payload loading."""
     before = identity(path)
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -270,7 +270,16 @@ def inspect_gguf(path):
             kind = integer(4)
             capture = key in ("general.architecture", "general.name", "general.type", "general.alignment", "split.count", "split.no", "split.tensors.count", "tokenizer.ggml.model")
             metadata[key] = value(kind, capture)
-        if not isinstance(metadata.get("general.architecture"),str) or not metadata["general.architecture"] or metadata.get("general.type") not in (None,"model"): raise ApiError(400, "Choose a complete model GGUF with architecture metadata.")
+        architecture = metadata.get("general.architecture")
+        # Standard split GGUFs keep the full model metadata in shard zero.
+        # Later shards may carry only split metadata, after shard zero has
+        # established the architecture for this complete, ordered file set.
+        if architecture is None and expected_architecture is not None:
+            architecture = expected_architecture
+        if not isinstance(architecture,str) or not architecture or metadata.get("general.type") not in (None,"model"):
+            raise ApiError(400, "Choose a complete model GGUF with architecture metadata.")
+        if expected_architecture is not None and architecture != expected_architecture:
+            raise ApiError(400, "Keep matching GGUF model shards together.")
         if path.name.lower().startswith("mmproj"): raise ApiError(400, "Choose the model GGUF, rather than its picture reader.")
         alignment = metadata.get("general.alignment", 32)
         if type(alignment) is not int or alignment < 1 or alignment > 4096 or alignment & (alignment-1): raise ApiError(400, "GGUF alignment is invalid.")
@@ -295,7 +304,7 @@ def inspect_gguf(path):
         if data_start + max(end for _,end in extents) > before["bytes"] or any(start < end for (_,end),(start,_) in zip(extents,extents[1:])):
             raise ApiError(400, "GGUF tensors are incomplete or overlap.")
         if identity(path) != before or file_identity(path, os.fstat(stream.fileno())) != before: raise ApiError(409, "The GGUF changed during inspection. Inspect it again.")
-        return {**before, "headerSha256": header.hexdigest(), "architecture": metadata["general.architecture"], "name": clean(metadata.get("general.name") or path.stem), "splitCount": metadata.get("split.count",1), "splitNo": metadata.get("split.no",0), "tensorCount": tensors, "splitTensors": metadata.get("split.tensors.count")}
+        return {**before, "headerSha256": header.hexdigest(), "architecture": architecture, "name": clean(metadata.get("general.name") or path.stem), "splitCount": metadata.get("split.count",1), "splitNo": metadata.get("split.no",0), "tensorCount": tensors, "splitTensors": metadata.get("split.tensors.count")}
 
 
 def inspect_files(raw):
@@ -308,7 +317,8 @@ def inspect_files(raw):
     count = int(match[3]) if match else 1
     if not 1 <= count <= 128: raise ApiError(400,"The model has too many GGUF shards.")
     paths = [path.with_name(f"{match[1]}-{i:05d}-of-{count:05d}.gguf") for i in range(1,count+1)] if match else [path]
-    files = [inspect_gguf(p) for p in paths]
+    first = inspect_gguf(paths[0])
+    files = [first] + [inspect_gguf(p, expected_architecture=first["architecture"]) for p in paths[1:]]
     if any(f["splitCount"] != count or (count > 1 and f["splitNo"] != i) or f["architecture"] != files[0]["architecture"] for i,f in enumerate(files)):
         raise ApiError(400,"Keep a matching, complete set of GGUF shards together.")
     if count > 1 and (files[0]["splitTensors"] is None or sum(f["tensorCount"] for f in files) != files[0]["splitTensors"] or any(f["splitTensors"] != files[0]["splitTensors"] for f in files)):

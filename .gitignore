@@ -73,6 +73,7 @@ node_modules/
 *.dmg
 /release/artifacts/
 /apps/host/dist/
+/apps/host/python/remote-lifecycle-source.json.gz
 /apps/desktop/build/
 /apps/desktop/src-tauri/resources/companion-bridge/*
 !/apps/desktop/src-tauri/resources/companion-bridge/.gitignore

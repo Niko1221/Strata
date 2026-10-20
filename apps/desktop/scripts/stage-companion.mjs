@@ -3,6 +3,7 @@ import { mkdirSync, copyFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { stageRemoteLifecycle } from './stage-remote-lifecycle.mjs';
 
 const desktop = fileURLToPath(new URL('..', import.meta.url));
 const source = resolve(desktop, '../companion-bridge');
@@ -16,3 +17,5 @@ if (process.platform === 'darwin') {
   if (sign.status !== 0) process.exit(sign.status ?? 1);
 }
 console.log('Staged the optional iPhone pairing service.');
+stageRemoteLifecycle();
+console.log('Staged the optional headless lifecycle source.');

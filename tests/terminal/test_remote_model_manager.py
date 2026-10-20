@@ -31,7 +31,7 @@ def gguf_fixture(architecture="llama", model_type=None, split=None):
         raw = value.encode("utf-8")
         return struct.pack("<Q", len(raw)) + raw
 
-    pairs = [("general.architecture", 8, string(architecture))]
+    pairs = [("general.architecture", 8, string(architecture))] if architecture is not None else []
     if model_type is not None:
         pairs.append(("general.type", 8, string(model_type)))
     if split is not None:
@@ -364,6 +364,27 @@ class RemoteModelManagerTests(unittest.TestCase):
         self.assertEqual(self.snapshot([self.active, self.settings]), before)
         self.assertEqual(list(self.source.glob("strata-*.json")), [self.active])
         self.assertEqual(list(self.home.rglob("strata-*.json")), [])
+
+    def test_later_standard_shards_inherit_only_the_validated_first_architecture(self):
+        folder = self.root / "standard-shards"
+        folder.mkdir()
+        first = folder / "model-00001-of-00002.gguf"
+        second = folder / "model-00002-of-00002.gguf"
+        first.write_bytes(gguf_fixture(architecture="qwen4exp", model_type="model", split=(2, 0, 2)))
+        second.write_bytes(gguf_fixture(architecture=None, split=(2, 1, 2)))
+        result = manager_module.inspect_files(str(first))
+        self.assertEqual([row["architecture"] for row in result["files"]], ["qwen4exp", "qwen4exp"])
+        self.assertEqual([row["splitNo"] for row in result["files"]], [0, 1])
+        with self.assertRaises(manager_module.ApiError):
+            manager_module.inspect_gguf(second)
+        for architecture, model_type in [("llama", None), (None, "adapter")]:
+            second.write_bytes(gguf_fixture(architecture=architecture, model_type=model_type, split=(2, 1, 2)))
+            with self.assertRaises(manager_module.ApiError):
+                manager_module.inspect_files(str(first))
+        first.write_bytes(gguf_fixture(architecture=None, split=(2, 0, 2)))
+        second.write_bytes(gguf_fixture(architecture=None, split=(2, 1, 2)))
+        with self.assertRaises(manager_module.ApiError):
+            manager_module.inspect_files(str(first))
 
     def accepted_job(self):
         plan = self.preview()
