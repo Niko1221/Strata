@@ -94,7 +94,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
         patches = [
             mock.patch.object(setup, "ROOT", t),
             mock.patch.object(setup, "GPU_PICK", None),
-            mock.patch.object(setup, "data_folder", lambda d: (t / "data", [])),
+            mock.patch.object(setup, "data_folder", lambda d, *a, **k: (t / "data", [])),
             mock.patch.object(setup, "load_settings", lambda: {}),
             mock.patch.object(setup, "save_settings", lambda s: None),
             mock.patch.object(setup, "gpus", lambda: found),
@@ -105,6 +105,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "is_wsl", lambda: False),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: the test PC's own disk
+            mock.patch.object(setup, "ple_ram_platform_ok", lambda: False),   # 147-verify: the golden configs as on Windows
             mock.patch.object(setup, "free_gb", lambda p: 900.0),
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: t / "llama.cpp"),
@@ -139,6 +140,8 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
         cfg = None
         if written and code == 0:
             cfg = normalize(json.loads(written[-1].read_text(encoding="utf-8")), t)
+            # "args_written" (strata_control/user_args.py): the arguments as setup wrote them, so a later hand edit can be told; the golden configs keep their own keys
+            assert cfg.pop("args_written", cfg.get("args")) == cfg.get("args"), "args_written is not the written args"
         return code, out.getvalue(), cfg, asked
 
 

@@ -13,8 +13,20 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   its use counts fade.  A PC whose CPU reads the missed experts slowly (DDR3, ~24 GB/s) gains from
                   swapping more: 160 swaps every window measured +7.9% over the default tier on a Xeon E5-2673 v3 (DDR3) with an
                   RTX 4060 Ti on PCIe 3.0 x8 (Q2_0; with the swaps taking effect a window later, #764).
-The first two are measured through one engine (per-request `strata_tune` keys); the worker count and the adaptive
-tier need a restart per value.  Decode speed only: the prompt path streams every expert whatever these settings say.
+  --prefill-pipe  a layer split only: the prompt chunks that keep the stages reading at once.  The best chunk count
+                  depends on b/a, the fixed cost of a chunk over that of a token, which differs by an order of
+                  magnitude between rigs (about 700 tokens on four GP100 dies, 5000 on two RTX 3090 Ti) and costs
+                  when it is wrong (a fixed 1024 read 22-36% slower on two RTX 4090) - so it is measured here, once,
+                  as the prompt read speed of fresh prompts, rather than guessed or learned while the PC serves.
+  STRATA_SH_STREAM (AMD only)
+                  the shared expert on its own stream.  Off by default on HIP (#816: an RX 6800 on Windows and 4x R9700
+                  decode 12-45% faster without it), but the same card family on another PC goes the other way (#1272:
+                  2x RX 6900 XT on Linux, 6-11% faster with it), so it is measured here, per PC, and written into the
+                  config's "env" only when it wins.  The output is identical either way (same token ids).
+
+The first two and the prompt chunks are measured through one engine (per-request `strata_tune` keys); the worker
+count, the adaptive tier and the shared-expert stream need a restart per value.  Those are decode speed: the prompt
+path streams every expert whatever they say.
 
 A setting is kept only when it beats the default by more than MIN_GAIN in an interleaved re-measurement - the
 adaptive expert tier and the OS make single measurements noisy by a few percent.
@@ -40,17 +52,36 @@ SPEC_MIN_PS = (0.3, 0.5, 0.7)
 SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
 # the adaptive tier's candidates (every, swaps, decay) against the engine's own (None): swapping more and remembering
 # longer, the rest of the set as the engine has it
+# HIP: the shared-expert stream fork, off (the HIP default) against on; an engine environment variable, not an argument
+SH_STREAM = "STRATA_SH_STREAM"
 ADAPT_CANDIDATES = (None, ("1", "80", "0.97"), ("1", "160", "0.97"))
 ADAPT_FLAGS = ("--adapt-every", "--adapt-swaps", "--adapt-decay")
 MAX_NEW = 128
 # the expert tier follows a text over some windows: 128-token answers end before it shows (on a Xeon E5-2673 v3 with
 # DDR3, every 1 / 160 / 0.97 measured +0.7% with 128 tokens and +7.9% with 512-token answers), so its step uses these
 TIER_MAX_NEW = 512
+# --prefill-pipe's values: 0 the buffers' chunks (the engine default), 1 their count evened out, then b/a in tokens
+PIPE_VALUES = (0, 1, 768, 1536, 3072, 6144)
+PIPE_TOKENS = (2048, 8192)        # fresh prompts read per value (their text: the install's docs/*.md)
 PROMPTS = (
     "Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
     "Explain in two paragraphs how a refrigerator moves heat from inside to outside.",
     "List twelve European capitals with one sentence about each.",
 )
+
+
+class CalibrationCancelled(RuntimeError):
+    """An operator requested a stop; no partial sample may enter the report."""
+
+
+def _check_cancel(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise CalibrationCancelled("calibration cancelled")
+
+
+def _progress(callback, stage: str, completed: int, total: int):
+    if callback is not None:
+        callback(stage, completed, total)
 
 
 def chat_ids(tok, text: str) -> list[int]:
@@ -99,6 +130,59 @@ def host_worker_extras() -> list[int]:
         return []
 
 
+def doc_prompt(tok):
+    """`make(i, n)`: a fresh prompt of about n tokens - the same stretch of the docs' text for every i, after a header
+    that differs for every i, so no read reuses an earlier one's cache and the reads differ only in their chunks (where
+    experts are streamed, the read speed depends on the text: a different stretch per read measured the text)."""
+    text = "\n\n".join(p.read_text(encoding="utf-8", errors="replace") for p in sorted((ROOT / "docs").glob("*.md")))
+    body = tok.encode(text, parse_special=False) or [0]
+    tail = tok.encode("<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n", parse_special=True)
+
+    def make(i: int, n: int) -> list[int]:
+        head = tok.encode(f"<|im_start|>user\n[calibration read {i}] Summarize:\n", parse_special=True)
+        return head + (body * (n // len(body) + 1))[:n] + tail
+    return make
+
+
+def measure_pipe(eng, make, say=print) -> tuple[float, dict]:
+    """--prefill-pipe on one running engine (a layer split): the prompt read speed of fresh prompts per value, then the
+    best against the default (0) in SWEEP_ROUNDS paired rounds (back to back, the order alternating).  It is kept only
+    when it is faster in every round and by more than MIN_GAIN in the median: on two RTX 3090 Ti one read can be 20%
+    off, and a b/a too small for the rig reads 19-24% slower there.  One pass over the values, not `sweep`'s rounds:
+    every value reads the same text (`doc_prompt`), and on four GP100 dies one pass already takes about 4 minutes."""
+    reads = [0]
+
+    def rate(v: float) -> float:
+        ms = toks = 0.0
+        for n in PIPE_TOKENS:
+            reads[0] += 1
+            sampling = {"temperature": 0, "strata_checkpoint": False, "strata_tune": {"prefill_pipe": v}}
+            for _ in eng.generate(make(reads[0], n), 1, sampling, threading.Event()):
+                pass
+            last = eng.last or {}
+            ms += float(last.get("prompt_ms") or 0.0)
+            toks += float(last.get("prompt_read") or (last.get("prompt_tokens") or 0) - (last.get("reused") or 0))
+        return toks / (ms / 1000.0) if ms > 0 and toks > 0 else 0.0
+
+    rate(0)                                            # the first long read after a start faults the weights in
+    by_value = {}
+    for v in PIPE_VALUES:
+        by_value[v] = [rate(v)]
+        say(f"    prompt chunks {'off' if v == 0 else 'evened out' if v == 1 else f'b/a {v}'}: {by_value[v][0]:.0f} tok/s")
+    best = max(by_value, key=lambda k: by_value[k][0])
+    confirm = {0: [], best: []}
+    chosen = 0
+    if best != 0:
+        for r in range(SWEEP_ROUNDS):
+            for k in ((0, best) if r % 2 == 0 else (best, 0)):
+                confirm[k].append(rate(k))
+        gains = [c / d - 1.0 for d, c in zip(confirm[0], confirm[best]) if d > 0]
+        if len(gains) == SWEEP_ROUNDS and min(gains) > 0.0 and statistics.median(gains) > MIN_GAIN:
+            chosen = best
+    return chosen, {"pipe_sweep": {str(k): v for k, v in by_value.items()},
+                    "pipe_confirm": {str(k): v for k, v in confirm.items()}}
+
+
 def pick(measured: dict, default_key, min_gain: float = MIN_GAIN):
     """The key with the best median tok/s, or `default_key` unless the best beats it by more than min_gain."""
     med = {k: statistics.median(v) for k, v in measured.items() if v}
@@ -111,18 +195,22 @@ def pick(measured: dict, default_key, min_gain: float = MIN_GAIN):
 class Session:
     """One running engine: measure decode tok/s for a setting (the median of the prompts' rates)."""
 
-    def __init__(self, engine, ids_list):
+    def __init__(self, engine, ids_list, cancel_event=None):
         self.engine = engine
         self.ids_list = ids_list
+        self.cancel_event = cancel_event
 
     def rate(self, tune: dict | None = None, max_new: int | None = None) -> float:
         rates = []
         for ids in self.ids_list:
+            _check_cancel(self.cancel_event)
             sampling = {"temperature": 0}
             if tune:
                 sampling["strata_tune"] = tune
-            n = sum(1 for t in self.engine.generate(ids, max_new or MAX_NEW, sampling, threading.Event())
+            n = sum(1 for t in self.engine.generate(ids, max_new or MAX_NEW, sampling,
+                                                   self.cancel_event or threading.Event())
                     if t is not None)
+            _check_cancel(self.cancel_event)
             ms = (self.engine.last or {}).get("decode_ms") or 0.0
             if n > 8 and ms > 0:
                 rates.append(n / (ms / 1000.0))
@@ -133,14 +221,16 @@ class Session:
             self.rate()
 
 
-def run(cfg: dict, say=print, start_engine=None) -> dict:
+def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=None) -> dict:
     """Measure on the engine `cfg` describes; returns {"settings": {flag: value}, "report": {...}}.
     `start_engine(args)` returns a started engine (serve.server.StrataEngine or a stand-in in tests)."""
     if start_engine is None:
         from serve.server import StrataEngine, child_env
 
-        def start_engine(args):
-            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg))
+        def start_engine(args, env=None):
+            e = child_env(cfg)
+            e.update(env or {})
+            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=e)
     import strata_tokenizer as ST
     tpath = Path(cfg["tokenizer"])
     vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
@@ -150,7 +240,11 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras())
+    if progress is None and cancel_event is None:
+        return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
+                       hip=cfg.get("backend") == "hip")
+    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
+                   hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event)
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -176,7 +270,8 @@ def engine_error(log: str | None, since: int = 0) -> str | None:
     return next((x for x in reversed(lines) if x.startswith(("strata", "ERR"))), lines[-1] if lines else None)
 
 
-def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
+def sweep(s, values: list, base_tune: dict, key: str, label: str, say,
+          progress=None, stage: str | None = None) -> dict:
     """Every value, `SWEEP_ROUNDS` times, one round visiting all of them and every other round in reverse order.
 
     A single rate per value cannot order neighbours.  #1332 has 0.75 to 0.95 inside each other's noise at 72.7,
@@ -187,9 +282,15 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
     medians, so every value keeps the same chance the others had.
     """
     out = {v: [] for v in values}
+    if stage is not None:
+        _progress(progress, stage, 0, len(values) * SWEEP_ROUNDS)
+    completed = 0
     for r in range(SWEEP_ROUNDS):
         for v in (values if r % 2 == 0 else values[::-1]):
             out[v].append(s.rate({**base_tune, key: v}))
+            completed += 1
+            if stage is not None:
+                _progress(progress, stage, completed, len(values) * SWEEP_ROUNDS)
         say(f"    round {r + 1}/{SWEEP_ROUNDS} {label}: " +
             "  ".join(f"{v:g} {out[v][-1]:.1f}" for v in values))
     med = {v: statistics.median(out[v]) for v in values}
@@ -199,9 +300,12 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
     return out
 
 
-def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=()) -> dict:
+def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), long_prompt=None, hip: bool = False,
+            *, progress=None, cancel_event=None) -> dict:
     t0 = time.time()
     report: dict = {}
+    _check_cancel(cancel_event)
+    _progress(progress, "loading", 0, 1)
     say("  Loading the model for the measurements ...")
     base_args = apply(base_args, {})                   # the product defaults: what the measurements must beat
     eng = start_engine(base_args)
@@ -210,23 +314,39 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         d_pcie = float(info.get("pcie_frac", 0.55))
         d_minp = float(info.get("spec_min_p", 0.5))
         d_workers = int(info.get("pool_workers", 0)) or None
-        s = Session(eng, ids_list)
+        s = Session(eng, ids_list, cancel_event)
         s.warm_up()
+        _progress(progress, "loading", 1, 1)
+        # 0. a layer split's prompt chunks (prompt read speed; independent of the decode settings below)
+        pipe = 0
+        # the engine's own count of prompt stages where it reports one (a split can leave one, e.g.
+        # --split-skip-if-fits), else the flag
+        stages = info.get("prefill_stages")
+        split = stages > 1 if isinstance(stages, int) else "--layer-split" in base_args
+        if long_prompt is not None and split:
+            say("  Measuring the prompt chunks of the layer split ...")
+            pipe, rep_pipe = measure_pipe(eng, long_prompt, say)
+            report.update(rep_pipe)
         # 1. the PCIe share, at the default draft floor
         by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}), {"spec_min_p": d_minp}, "pcie_frac",
-                        "PCIe share", say)
+                        "PCIe share", say, progress, "pcie_share")
         best_pcie = max(by_pcie, key=lambda k: statistics.median(by_pcie[k]))
         # 2. the draft floor, at that share
         by_minp = sweep(s, sorted(set(SPEC_MIN_PS) | {round(d_minp, 2)}), {"pcie_frac": best_pcie}, "spec_min_p",
-                        "draft floor", say)
+                        "draft floor", say, progress, "draft_floor")
         best_minp = max(by_minp, key=lambda k: statistics.median(by_minp[k]))
         # 3. the winner against the default, interleaved, the same number of rounds
         dflt, cand = (round(d_pcie, 2), round(d_minp, 2)), (best_pcie, best_minp)
         confirm = {dflt: [], cand: []}
+        confirm_total = SWEEP_ROUNDS * 2 if cand != dflt else 1
+        _progress(progress, "confirmation", 0, confirm_total)
         if cand != dflt:
             for _ in range(SWEEP_ROUNDS):
                 for k in (dflt, cand):
                     confirm[k].append(s.rate({"pcie_frac": k[0], "spec_min_p": k[1]}))
+                    _progress(progress, "confirmation", sum(map(len, confirm.values())), confirm_total)
+        else:
+            _progress(progress, "confirmation", 1, 1)
         chosen = pick(confirm, dflt) if cand != dflt else dflt
         report.update(default={"pcie_frac": dflt[0], "spec_min_p": dflt[1], "pool_workers": d_workers},
                       pcie_sweep={str(k): v for k, v in by_pcie.items()},
@@ -235,6 +355,8 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
     finally:
         close(eng)
     settings = {}
+    if pipe:
+        settings["--prefill-pipe"] = str(int(pipe))
     if chosen != dflt:
         settings["--pcie-frac"] = f"{chosen[0]:.2f}"
         settings["--spec-min-p"] = f"{chosen[1]:.2f}"
@@ -243,19 +365,24 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
     if d_workers and len(worker_candidates(d_workers, extra_workers)) > 1:
         tuned = with_arg(with_arg(base_args, "--pcie-frac", f"{chosen[0]:.2f}"), "--spec-min-p", f"{chosen[1]:.2f}")
         by_workers = {}
-        for w in worker_candidates(d_workers, extra_workers):
+        workers = worker_candidates(d_workers, extra_workers)
+        _progress(progress, "cpu_workers", 0, len(workers))
+        for index, w in enumerate(workers, 1):
+            _check_cancel(cancel_event)
             say(f"  Measuring with {w} CPU workers (restarts the engine) ...")
             e = restart(start_engine, with_arg(tuned, "--pool-workers", None if w == d_workers else str(w)), f"{w} workers",
                         say, report)
             if e is None:
+                _progress(progress, "cpu_workers", index, len(workers))
                 continue
             try:
-                sw = Session(e, ids_list)
+                sw = Session(e, ids_list, cancel_event)
                 sw.warm_up(1)
                 by_workers[w] = [sw.rate(), sw.rate()]
                 say(f"    {w} workers: {statistics.median(by_workers[w]):.1f} tok/s")
             finally:
                 close(e)
+            _progress(progress, "cpu_workers", index, len(workers))
         report["workers"] = {str(k): v for k, v in by_workers.items()}
         w_best = pick(by_workers, d_workers) if by_workers else d_workers
         if w_best != d_workers:
@@ -263,10 +390,14 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             base_rate = statistics.median(by_workers[w_best])
         elif by_workers.get(d_workers):
             base_rate = statistics.median(by_workers[d_workers])
+    else:
+        _progress(progress, "cpu_workers", 1, 1)
     # 5. the adaptive expert tier (a restart each), with everything chosen so far
     tuned = apply(base_args, settings)
     by_adapt = {}
-    for cand in ADAPT_CANDIDATES:
+    _progress(progress, "expert_tier", 0, len(ADAPT_CANDIDATES))
+    for index, cand in enumerate(ADAPT_CANDIDATES, 1):
+        _check_cancel(cancel_event)
         key = "default" if cand is None else "/".join(cand)
         args = tuned
         for flag, v in zip(ADAPT_FLAGS, cand or (None,) * len(ADAPT_FLAGS)):
@@ -274,14 +405,16 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         say(f"  Measuring the expert tier {'(the engine default)' if cand is None else 'every ' + cand[0] + ', ' + cand[1] + ' swaps, decay ' + cand[2]} (restarts the engine) ...")
         e = restart(start_engine, args, "the expert tier " + key, say, report)
         if e is None:
+            _progress(progress, "expert_tier", index, len(ADAPT_CANDIDATES))
             continue
         try:
-            sa = Session(e, ids_list)
+            sa = Session(e, ids_list, cancel_event)
             sa.warm_up(1)
             by_adapt[key] = [sa.rate(max_new=TIER_MAX_NEW), sa.rate(max_new=TIER_MAX_NEW)]
             say(f"    {statistics.median(by_adapt[key]):.1f} tok/s")
         finally:
             close(e)
+        _progress(progress, "expert_tier", index, len(ADAPT_CANDIDATES))
     a_best = pick(by_adapt, "default") if by_adapt else "default"
     report["adapt"] = by_adapt
     if a_best != "default":
@@ -290,9 +423,36 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         base_rate = statistics.median(by_adapt[a_best])
     elif by_adapt.get("default"):
         base_rate = statistics.median(by_adapt["default"])
+    # 6. HIP: the shared-expert stream fork (a restart each), with everything chosen so far.  Both values are set
+    # explicitly, so a value the config carried before does not decide the baseline.
+    env = {}
+    if hip:
+        tuned = apply(base_args, settings)
+        by_fork = {}
+        for v in ("0", "1"):
+            _check_cancel(cancel_event)
+            say(f"  Measuring the shared expert {'on its own stream' if v == '1' else 'on the main stream (the AMD default)'}"
+                " (restarts the engine) ...")
+            e = restart(lambda a: start_engine(a, {SH_STREAM: v}), tuned, f"{SH_STREAM}={v}", say, report)
+            if e is None:
+                continue
+            try:
+                sf = Session(e, ids_list, cancel_event)
+                sf.warm_up(1)
+                by_fork[v] = [sf.rate(), sf.rate()]
+                say(f"    {statistics.median(by_fork[v]):.1f} tok/s")
+            finally:
+                close(e)
+        report["sh_stream"] = by_fork
+        if pick(by_fork, "0") == "1":
+            env[SH_STREAM] = "1"
+            base_rate = statistics.median(by_fork["1"])
+        elif by_fork.get("0"):
+            base_rate = statistics.median(by_fork["0"])
     report["seconds"] = round(time.time() - t0)
     report["tok_s"] = round(base_rate, 1) if base_rate else None
-    return {"settings": settings, "report": report}
+    _check_cancel(cancel_event)
+    return {"settings": settings, "env": env, "report": report}
 
 
 def restart(start_engine, args, what, say, report):
@@ -323,7 +483,7 @@ def close(eng):
 
 
 DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None,   # None: the engine's own choice
-            "--adapt-every": None, "--adapt-swaps": None, "--adapt-decay": None}
+            "--adapt-every": None, "--adapt-swaps": None, "--adapt-decay": None, "--prefill-pipe": None}
 
 
 def apply(args: list[str], settings: dict) -> list[str]:
@@ -333,6 +493,17 @@ def apply(args: list[str], settings: dict) -> list[str]:
     out = list(args)
     for flag, default in DEFAULTS.items():
         out = with_arg(out, flag, settings.get(flag, default))
+    return out
+
+
+ENV_KEYS = (SH_STREAM,)
+
+
+def apply_env(env: dict | None, calibrated: dict | None) -> dict:
+    """The config's "env" with a calibration's engine variables: the ones it chose are set, the others in ENV_KEYS are
+    removed (back to the engine's default), so an older calibration's choice never lingers."""
+    out = {k: v for k, v in (env or {}).items() if k not in ENV_KEYS}
+    out.update(calibrated or {})
     return out
 
 

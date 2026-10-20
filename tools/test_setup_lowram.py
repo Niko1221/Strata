@@ -80,5 +80,23 @@ class PagingQuestion(unittest.TestCase):
                 self.assertIn("[y]" if choice == "off" else "[n]", asked[0])
 
 
+class DraftLayerCountsInTheFit(unittest.TestCase):
+    """The draft layer (MTP) takes about 1 GB of graphics memory out of the expert cache: every fit check counts it while it is on."""
+
+    def test_the_card_holds_one_gb_less_with_mtp_on(self):
+        on = setup.low_ram_gpu_gb("IQ3_XXS", 12.0)
+        off = setup.low_ram_gpu_gb("IQ3_XXS", 12.0, mtp=False)
+        self.assertAlmostEqual(off - on, setup.MTP_VRAM_GB)
+        self.assertEqual(setup.MTP_VRAM_GB, 1.0)
+        self.assertAlmostEqual(setup.low_ram_gpu_share("IQ3_XXS", 12.0, mtp=False) - setup.low_ram_gpu_share("IQ3_XXS", 12.0),
+                               1.0 / setup.MODELS["IQ3_XXS"]["arena_gb"])
+
+    def test_the_edge_of_what_fits_moves_by_the_draft_layer(self):
+        arena = setup.MODELS["IQ1_M"]["arena_gb"]
+        ram = arena + 6 - 7.0 + 0.5            # a card of 12 GB holds 7 GB beside the dense part; the draft layer needs one of them
+        self.assertFalse(setup.low_ram_fits("IQ1_M", ram, 12.0))
+        self.assertTrue(setup.low_ram_fits("IQ1_M", ram, 12.0, mtp=False))
+
+
 if __name__ == "__main__":
     unittest.main()

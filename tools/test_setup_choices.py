@@ -122,7 +122,7 @@ class GgufDirUnsupported(unittest.TestCase):
         self.assertEqual(msg, "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf is UD-IQ3_XXS, a GGUF Strata "
                               "cannot run")
         self.assertIn("ISTA-DASLab's GSQ-RCO files", hint)
-        self.assertIn("Unsloth's UD-Q4_K_XL and UD-IQ4_XS only", hint)
+        self.assertIn("Unsloth's UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 only", hint)
 
     def test_a_folder_without_the_choice_names_what_is_there(self):
         gsq = ["Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-%05d-of-00002.gguf" % i for i in (1, 2)]
@@ -145,7 +145,7 @@ class GgufDirUnsupported(unittest.TestCase):
             code, out, _, _ = install(ram, found, ["--gguf-dir", d, "--family", "unsloth", "--model", "IQ3_XXS"])
         self.assertEqual(code, 1)
         self.assertIn("has no IQ3_XXS model file", out)
-        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
+        self.assertIn("choose one of: UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL, Q8_0 (or IQ3_XXS: --family qwen --model IQ3_XXS, --family swift --model "
                       "IQ3_XXS)", out)
         self.assertIn("Strata runs ISTA-DASLab's GSQ-RCO files", out)
 
@@ -318,15 +318,13 @@ class ExperimentalSm60(unittest.TestCase):
 class HipVision(unittest.TestCase):
     """#304: --vision cpu with --backend hip builds the CPU image encoder beside the HIP engine."""
 
-    @mock.patch.object(setup, "WIN", False)            # Linux: compiled here (Windows has no AMD image encoder yet)
+    @mock.patch.object(setup, "WIN", False)
     def test_the_choice(self):
         self.assertEqual(quiet(setup.hip_vision, "cpu"), ("cpu", ""))
-        for asked in (None, "no", "none"):
+        for asked in ("no", "none"):
             self.assertEqual(quiet(setup.hip_vision, asked), ("none", ""))
-        for asked in ("yes", "gpu"):
-            got, out = quiet(setup.hip_vision, asked)
-            self.assertEqual(got, "none")
-            self.assertIn("--vision cpu", out)
+        for asked in (None, "yes", "gpu"):            # pictures are on by default; the engine folder's readers settle gpu vs cpu
+            self.assertEqual(quiet(setup.hip_vision, asked), ("gpu", ""))
 
     def build(self, meta, vision, vexe=False):
         """build_engine_hip with an engine that is already built: only the encoder can be missing."""
@@ -371,11 +369,12 @@ class HipVision(unittest.TestCase):
 class RotationalDisk(unittest.TestCase):
     """#605: a model on a rotational disk gets --ple-io ram when the n-gram table fits the RAM, else a warning."""
 
-    def install(self, ram, disk):
+    def install(self, ram, disk, platform_ok=False, model="Q2_0"):
         from test_setup_golden import PROFILES, install
         _, found = PROFILES["64GB-1x32GB"]
-        return install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                       extra=[mock.patch.object(setup, "rotational_disk", lambda p: disk)])
+        return install(ram, found, ["--family", "qwen", "--model", model, "--no-start"],
+                       extra=[mock.patch.object(setup, "rotational_disk", lambda p: disk),
+                              mock.patch.object(setup, "ple_ram_platform_ok", lambda: platform_ok)])
 
     def test_fits(self):
         code, out, cfg, _ = self.install(127.8, "sdb")
@@ -394,6 +393,29 @@ class RotationalDisk(unittest.TestCase):
         code, out, cfg, _ = self.install(127.8, None)
         self.assertNotIn("--ple-io", cfg["args"])
         self.assertNotIn("rotational", out)
+
+    def test_ssd_ram_to_spare(self):
+        # 147-verify (Linux): an SSD and RAM beyond the model's need + the table + 16 GB: the table in RAM too
+        code, out, cfg, _ = self.install(127.8, None, platform_ok=True)
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        self.assertEqual(a[a.index("--ple-io") + 1], "ram")
+        self.assertIn("kept in RAM (--ple-io ram)", out)
+        self.assertNotIn("rotational", out)
+
+    def test_ssd_little_ram_keeps_the_ssd(self):
+        # Q2_0 needs 48 GB + the 28.8 GB table + 16: a 64 GB / 92 GB PC keeps the SSD reads
+        for ram in (63.7, 92.0):
+            code, out, cfg, _ = self.install(ram, None, platform_ok=True)
+            self.assertEqual(code, 0, out)
+            self.assertNotIn("--ple-io", cfg["args"])
+
+    def test_ssd_ram_rule_follows_the_model(self):
+        # IQ3_S needs 62 GB: 96 GB is not enough to spare the table, 128 GB is
+        for ram, want in ((95.8, False), (127.8, True)):
+            code, out, cfg, _ = self.install(ram, None, platform_ok=True, model="IQ3_S")
+            self.assertEqual(code, 0, out)
+            self.assertEqual("--ple-io" in cfg["args"], want, (ram, cfg["args"]))
 
     def test_sysfs(self):
         if not sys.platform.startswith("linux"):
@@ -421,8 +443,12 @@ class VramReserve(unittest.TestCase):
         self.assertEqual(a.count("--vram-reserve-mib"), 1)
         self.assertEqual(a[a.index("--vram-reserve-mib") + 1], "2048")
         self.assertIn("VRAM kept free for other programs: 2048 MiB", out)
-        code, out, cfg, _ = self.install()
+        code, out, cfg, _ = self.install("--vision", "no")
         self.assertNotIn("--vram-reserve-mib", cfg["args"])          # not given: the engine's default, as before
+        code, out, cfg, _ = self.install("--vision", "cpu")
+        self.assertNotIn("--vram-reserve-mib", cfg["args"])          # the CPU reader needs no reserve
+        code, out, cfg, _ = self.install()
+        self.assertEqual(cfg["args"][cfg["args"].index("--vram-reserve-mib") + 1], "700")   # pictures on by default, GPU reader on a 32 GB card: its 700 MiB
 
     def test_with_images_one_value(self):
         code, out, cfg, _ = self.install("--vision", "cpu", "--vram-reserve-mib", "1500")
@@ -614,3 +640,50 @@ class HostCompilers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CalibrateWithModel(unittest.TestCase):
+    """#2036: --calibrate --model X tunes model X (it used to fall through to a plain re-setup); a model that is not
+    installed is an error that says so; --calibrate with --setup or --check says it does nothing."""
+
+    def run_main(self, *argv, installed=("iq3_xxs", "q2_0")):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfgs = []
+        for tag in installed:
+            p = Path(tmp.name) / f"strata-{tag}.json"
+            p.write_text(json.dumps({"exe": "x", "args": ["--max-context", "8192"], "model_name": tag}))
+            cfgs.append(p)
+        tuned = []
+        with mock.patch.object(sys, "argv", ["setup.py", *argv]), \
+                mock.patch.object(setup, "installed_configs", lambda: cfgs), \
+                mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None), \
+                mock.patch.object(setup, "calibrate_config", lambda c: tuned.append(c.name) or True), \
+                mock.patch.object(setup, "start", lambda *a, **k: 0), \
+                mock.patch.object(setup, "data_folder", lambda d, *a, **k: (Path(tmp.name), [])), \
+                mock.patch.object(setup, "step", side_effect=SystemExit("reached the plain setup")):
+            try:
+                code, out = quiet(setup.main)
+            except SystemExit as e:
+                code, out = e.code, ""
+        return code, tuned
+
+    def test_model_is_the_target(self):
+        code, tuned = self.run_main("--calibrate", "--model", "IQ3_XXS", "--yes", "--no-start")
+        self.assertEqual((code, tuned), (0, ["strata-iq3_xxs.json"]))
+
+    def test_a_model_not_installed_is_an_error(self):
+        code, tuned = self.run_main("--calibrate", "--model", "IQ3_S", "--yes", "--no-start")
+        self.assertEqual((code, tuned), (1, []))
+
+    def test_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            ps = []
+            for tag in ("iq3_xxs", "q2_0"):
+                p = Path(d) / f"strata-{tag}.json"
+                p.write_text(json.dumps({"args": []}))
+                ps.append(p)
+            self.assertEqual(setup.calibration_targets(ps, None, None), ps)
+            self.assertEqual(setup.calibration_targets(ps, "Q2_0", None), [ps[1]])
+            self.assertEqual(setup.calibration_targets(ps, "Q2_0", "qwen"), [ps[1]])
+            self.assertEqual(setup.calibration_targets(ps, "Q4_K_M", None), [])

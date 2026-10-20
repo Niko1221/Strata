@@ -1,5 +1,5 @@
 """Tests for setup.py's reproducible installs (#214): the engine of the checkout's own release first (the latest as
-the fallback), Hugging Face files at pinned revisions (the current files when a revision is gone), the pinned
+the fallback), Hugging Face files at pinned revisions (a gone revision stops the download), the pinned
 requirements file, and an existing install left as it is.  Mocked network - nothing is downloaded.
 
     python -m unittest tools.test_setup_pins
@@ -53,11 +53,40 @@ def quiet(fn, *args, **kw):
 class HuggingFacePins(unittest.TestCase):
     def test_every_model_url_is_pinned(self):
         for name, fam in setup.FAMILIES.items():
+            if fam.get("ready"):                       # ready-made packs: pinned per file (test_ready_packs_pinned)
+                continue
             for key in ("hf", "mmproj_hf"):
                 with self.subTest(family=name, key=key):
                     self.assertRegex(fam[key], SHA)
                     self.assertNotIn("/resolve/main/", fam[key])
         self.assertRegex(setup.HF, SHA)
+
+    def test_ready_packs_pinned(self):
+        """NVFP4: every size names a repository of NVFP4_REPOS, pinned by a commit; every file has a size and a
+        SHA-256, and the pack folder, dense GGUF, n-gram table and embedding are each there."""
+        sizes = [m for m, d in setup.MODELS.items() if d.get("repo")]
+        self.assertEqual(sorted(sizes), ["NVFP4", "NVFP4-NVIDIA", "NVFP4-QAD"])
+        for m in sizes:
+            if setup.MODELS[m].get("prepare"):         # NVIDIA's checkpoint: pinned files, prepared on the PC
+                t = setup.NVFP4_REPOS[setup.MODELS[m]["repo"]]
+                self.assertRegex(t["revision"], r"^[0-9a-f]{40}$")
+                for path, (role, size, sha) in t["files"].items():
+                    self.assertEqual(role, "src")
+                    self.assertGreater(size, 0)
+                    self.assertRegex(sha, r"^[0-9a-f]{64}$")
+                self.assertEqual(sorted(setup.ready_paths(m, setup.Path("M"))), ["dense", "mtp", "pack", "ple"])
+                continue
+            t = setup.NVFP4_REPOS[setup.MODELS[m]["repo"]]
+            self.assertRegex(t["revision"], r"^[0-9a-f]{40}$")
+            for path, (role, size, sha) in t["files"].items():
+                with self.subTest(model=m, path=path):
+                    self.assertIn(role, ("pack", "dense", "ple", "embd"))
+                    self.assertGreater(size, 0)
+                    self.assertRegex(sha, r"^[0-9a-f]{64}$")
+            p = setup.ready_paths(m, setup.Path("M"))
+            self.assertEqual(sorted(p), ["dense", "embd", "pack", "ple"])
+            self.assertEqual(p["pack"].name, "pack")
+            self.assertIn("experts.bin", t["files"] and [x.split("/")[-1] for x in t["files"]])
 
     def test_unpinned(self):
         url = setup.FAMILIES["swift"]["hf"] + "x.gguf"
@@ -65,7 +94,25 @@ class HuggingFacePins(unittest.TestCase):
                          "https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/main/x.gguf")
         self.assertEqual(setup.hf_unpinned("https://example.com/a/b"), "https://example.com/a/b")
 
-    def test_a_gone_revision_downloads_the_current_file(self):
+    def test_a_gone_revision_stops_the_download(self):
+        """The pinned commit answers 404: setup stops with a plain message and fetches no current file."""
+        seen = []
+
+        def urlopen(req, timeout=None):
+            seen.append((req.get_method(), req.full_url))
+            raise not_found(req.full_url)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen),                 mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface"}):
+            setup.os.environ.pop("STRATA_ALLOW_UNPINNED", None)
+            dst = Path(d) / "m.gguf"
+            with self.assertRaises(SystemExit):
+                _, out = quiet(setup.download, setup.FAMILIES["qwen"]["mmproj_hf"] + "m.gguf", dst)
+            self.assertFalse(dst.exists())
+        self.assertEqual([m for m, _ in seen], ["HEAD"])
+        self.assertTrue(all("/resolve/main/" not in u for _, u in seen))
+
+    def test_the_opt_out_downloads_the_current_file(self):
+        """STRATA_ALLOW_UNPINNED=1 (a tester's choice): the repository's current file, announced, off by default."""
         seen = []
 
         def urlopen(req, timeout=None):
@@ -75,11 +122,11 @@ class HuggingFacePins(unittest.TestCase):
             return Response(b"model bytes", status=200)
 
         # the pinned Hugging Face path itself (setup's --source huggingface; auto may pick ModelScope)
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
-                mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface"}):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen),                 mock.patch.dict(setup.os.environ, {"STRATA_SOURCE": "huggingface", "STRATA_ALLOW_UNPINNED": "1"}),                 mock.patch.object(setup, "_unpinned_said", []):
             dst = Path(d) / "m.gguf"
             _, out = quiet(setup.download, setup.FAMILIES["qwen"]["mmproj_hf"] + "m.gguf", dst)
             self.assertEqual(dst.read_bytes(), b"model bytes")
+        self.assertIn("STRATA_ALLOW_UNPINNED=1", out)
         self.assertIn("not at the pinned revision any more", out)
         self.assertEqual([m for m, _ in seen], ["HEAD", "HEAD", "GET"])
         self.assertTrue(all("/resolve/main/" in u for _, u in seen[1:]))
@@ -104,7 +151,7 @@ class HuggingFacePins(unittest.TestCase):
             self.assertTrue(setup.done(dst))
         self.assertEqual(seen, [("HEAD", None)])
 
-    def test_mtp_fetch_is_pinned_and_falls_back(self):
+    def test_mtp_fetch_is_pinned_and_stops_when_the_revision_is_gone(self):
         import mtp_fetch
         self.assertRegex(mtp_fetch.REPO, SHA)
         self.assertIn(mtp_fetch.REVISION, mtp_fetch.REPO)
@@ -114,10 +161,14 @@ class HuggingFacePins(unittest.TestCase):
             raise not_found(req.full_url)
 
         try:
-            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen), \
-                    contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": ""}):
+                with self.assertRaises(SystemExit) as stop:
+                    mtp_fetch.resolve_repo()
+                self.assertIn("no longer on Hugging Face", str(stop.exception))
+                self.assertEqual(mtp_fetch.REPO, pinned)
+            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": "1"}),                     contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(mtp_fetch.resolve_repo(), "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/main/")
-            self.assertIn("pinned revision", err.getvalue())
+            self.assertIn("STRATA_ALLOW_UNPINNED=1", err.getvalue())
         finally:
             mtp_fetch.REPO = pinned
 
@@ -298,6 +349,41 @@ class Requirements(unittest.TestCase):
             self.assertIn("==", x, x)
         self.assertEqual(setup.req_name('numpy==2.5.3; python_version >= "3.12"'), "numpy")
         self.assertEqual(setup.req_name("charset_normalizer==3"), "charset-normalizer")
+
+    def test_build_helpers_are_pinned_but_absent_from_runtime_install(self):
+        runtime = {setup.req_name(x) for x in setup.requirement_lines()}
+        build = setup.requirement_lines(setup.BUILD_REQUIREMENTS)
+        self.assertEqual({setup.req_name(x) for x in build}, {"cmake", "ninja"})
+        self.assertTrue(all("==" in x for x in build))
+        self.assertTrue(runtime.isdisjoint({"cmake", "ninja"}))
+
+    def test_local_build_installs_only_missing_helper(self):
+        installed = False
+        requests = []
+        commands = []
+
+        def find_tool(name):
+            if name == "cmake":
+                return "/usr/bin/cmake"
+            return "/venv/bin/ninja" if installed else None
+
+        def pip_install(packages, what):
+            nonlocal installed
+            requests.append((packages, what))
+            installed = True
+
+        def run(command, **kwargs):
+            commands.append(command)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(setup, "WIN", False), \
+                mock.patch.object(setup, "find_tool", side_effect=find_tool), \
+                mock.patch.object(setup, "pip_install", side_effect=pip_install), \
+                mock.patch.object(setup, "run", side_effect=run):
+            setup.cmake_build(ROOT, ROOT / "build-test", "strata", [], None, "unused.bat")
+        self.assertEqual(requests, [(["ninja==1.13.2"], "CMake and Ninja build tools")])
+        self.assertEqual(commands[0][:4], ["/usr/bin/cmake", "-G", "Ninja", "-DCMAKE_MAKE_PROGRAM=/venv/bin/ninja"])
+        self.assertEqual(commands[1][:3], ["/usr/bin/cmake", "--build", str(ROOT / "build-test")])
 
     def pip(self, stamp, packages, installed=()):
         ran = []

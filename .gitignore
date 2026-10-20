@@ -48,6 +48,7 @@ build-vision-cuda12.bat
 
 # setup.py outputs (engine, downloads) and release builds
 /engine/
+/engine-sycl/
 /engine-cuda12/
 /build-release*/
 /dist/
@@ -61,3 +62,26 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# local Windows HIP packaging output
+dist-hip/
+
+# Terminal / Desktop split: local venvs, build output and archives never enter git
+.terminal-venv/
+.terminal-test-venv/
+node_modules/
+*.dmg
+/release/artifacts/
+/apps/host/dist/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/resources/node/*
+!/apps/desktop/src-tauri/resources/node/.gitignore
+# the Control component (bundled CPython + wheels + strata_control) is built by apps/desktop/scripts/stage-control.py
+/apps/desktop/src-tauri/resources/control/*
+!/apps/desktop/src-tauri/resources/control/.gitignore
+# the pruned DeepSeek Harness (MIT) is built by apps/desktop/scripts/stage-harness.mjs
+/apps/desktop/src-tauri/resources/harness/*
+!/apps/desktop/src-tauri/resources/harness/.gitignore
+# screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
+/apps/host/docs/evidence/
+/apps/host/docs/checkpoints/
