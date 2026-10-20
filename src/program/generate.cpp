@@ -5835,7 +5835,7 @@ int main(int argc, char** argv) {
     }
     {   // where the threads run (--host-core)
         const strata::kernels::cpu::CpuTopology ht = strata::kernels::cpu::detect_cpu_topology(true, o.pool_affinity);
-        // the pool's own order, not a fresh detection's: STRATA_NUMA_SPLIT interleaves the sockets
+        // the pool's own order, not a fresh detection's: STRATA_NUMA_POOL interleaves the sockets
         const std::vector<int>& wc = pool.worker_cores();
         std::string on;
         for (int i = 0; i < pool.workers() && i < (int) wc.size(); ++i)
@@ -16323,7 +16323,7 @@ int main(int argc, char** argv) {
                         pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
                         (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down),
                         (drive.cpu_ms - pool_ms0) / rounds);
-        if (rounds > 0 && pool.numa_slices() == 2)   // STRATA_NUMA_SPLIT: each slice's drain, publish to its last task
+        if (rounds > 0 && pool.numa_slices() == 2)   // STRATA_NUMA_POOL: each slice's drain, publish to its last task
             std::printf("; numa slices: s0 %.3f ms  s1 %.3f ms", pool.numa_slice_ms(0) / rounds, pool.numa_slice_ms(1) / rounds);
         if (rounds > 0) std::printf("\n");
         if (rounds > 0)

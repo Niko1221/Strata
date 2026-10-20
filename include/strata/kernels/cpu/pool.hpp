@@ -154,15 +154,15 @@ struct ThreadAffinity {
 ThreadAffinity pin_current_thread(int core);
 void restore_thread_affinity(const ThreadAffinity& previous);
 
-/// STRATA_NUMA_SPLIT's decision for a pool (see `ExpertPool`'s NodeSync).  `1` splits on the real NUMA nodes of
+/// STRATA_NUMA_POOL's decision for a pool (see `ExpertPool`'s NodeSync).  Unset or `1` splits on the real NUMA nodes of
 /// the pinned threads (Linux, exactly 2 nodes); `test` splits by thread index (thread j -> slice j % 2) with no real
 /// node, for the parity test.
 struct NumaSplitPlan {
     bool on = false;                  ///< split enabled
-    bool test = false;                ///< STRATA_NUMA_SPLIT=test: no real nodes, never places memory
+    bool test = false;                ///< STRATA_NUMA_POOL=test: no real nodes, never places memory
     int nodes[2] = {-1, -1};          ///< real node id of slice 0 and 1 (ascending); -1 in test mode
     std::vector<int> cores[2];        ///< the cores the pool pinned for each slice (workers + host)
-    std::string why;                  ///< reason when off ("" when on, or when the env var is unset)
+    std::string why;                  ///< reason when off ("" when on)
 };
 /// The live pool's decision (set by the ExpertPool constructor, reset by its destructor); `on == false` when no
 /// pool exists or the split is off.
@@ -200,7 +200,7 @@ public:
     const char* plan_limit() const { return plan_limit_; }
     int plan_cores() const { return plan_cores_; }
     int plan_logical() const { return plan_logical_; }
-    /// STRATA_NUMA_SPLIT: 2 when the native row phases are split per NUMA node, 0 when off.
+    /// STRATA_NUMA_POOL: 2 when the native row phases are split per NUMA node, 0 when off.
     int numa_slices() const { return numa_n_; }
     /// Accumulated drain time of slice `s` over the mode-5/6 phases, ms: publish to the slice's last `done`.
     double numa_slice_ms(int s) const { return s >= 0 && s < numa_n_ ? slice_ms_[s] : 0.0; }
@@ -209,7 +209,7 @@ public:
     bool host_works() const { return host_works_; }
 
     bool is_hybrid() const { return topo_.is_hybrid; }
-    /// The CPUs worker i is pinned to, in worker order (STRATA_NUMA_SPLIT reorders them: interleave_packages).
+    /// The CPUs worker i is pinned to, in worker order (STRATA_NUMA_POOL reorders them: interleave_packages).
     const std::vector<int>& worker_cores() const { return topo_.worker_cores; }
     int p_cores() const { return topo_.p_cores; }
     int p_threads() const { return topo_.p_threads; }
@@ -347,10 +347,10 @@ private:
     };
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
-    // STRATA_NUMA_SPLIT=1 (opt-in, Linux, exactly 2 nodes): in the native row phases (modes 5/6) every expert's rows
-    // are cut into one slice per NUMA node (slice k = rows [per*k/2, per*(k+1)/2) of the gate/up or down matrix, the
-    // part the resident complement places on node k in step B), and each node's threads claim and count on their own
-    // slice's counters; in every mode they park on their own `parked`.  Off (`numa_n_ == 0`, the decision is final in
+    // STRATA_NUMA_POOL (on by default, Linux, exactly 2 nodes; 0 turns it off): in the native row phases (modes 5/6)
+    // every expert's rows are cut into one slice per NUMA node (slice k = rows [per*k/2, per*(k+1)/2) of the gate/up
+    // or down matrix, the part the resident complement places on node k in step B), and each node's threads claim and
+    // count on their own slice's counters; in every mode they park on their own `parked`.  Off (`numa_n_ == 0`, the decision is final in
     // the constructor): none of this is touched and the pool is as before.
     //
     // THE CLAIM PROTOCOL IS issue #29's, ONCE PER SLICE.  Each slice head packs `epoch | njobs | index` and is claimed

@@ -43,9 +43,9 @@ struct PoolPlanInput {
     /// +12.6% over the 19 of one-per-core, 24 workers -44%: notes-152-users.md).
     int p_cores = 0;
     int e_cores = 0;
-    /// STRATA_NUMA_SPLIT (opt-in): the split needs workers on both NUMA nodes, so the default may use the cores of
-    /// every package instead of the host's only, and a configured count above the host's socket is not warned about.
-    /// The other bounds (reserve, hybrid, quota, cap) stay.  False: the plan above, unchanged.
+    /// STRATA_NUMA_POOL (on by default on 2 NUMA nodes): the split needs workers on both NUMA nodes, so the default
+    /// may use the cores of every package instead of the host's only, and a configured count above the host's socket
+    /// is not warned about.  The other bounds (reserve, hybrid, quota, cap) stay.  False: the plan above, unchanged.
     bool span_packages = false;
 };
 
@@ -88,13 +88,13 @@ inline PoolPlan plan_pool_workers(const PoolPlanInput& in) {
         p.packages = 1;
     }
     const bool span = in.span_packages && p.topology_known && p.packages > 1;
-    if (span) local = cores;                              // STRATA_NUMA_SPLIT: every socket counts as local
+    if (span) local = cores;                              // STRATA_NUMA_POOL: every socket counts as local
     p.cores = cores;
     p.cores_local = local;
     p.limit = "every physical core but the host's";
     int n = std::max(1, local - 1);                       // the host thread has the first core
     if (!p.topology_known) p.limit = "half the logical processors (the OS gave no core layout)";
-    else if (span) p.limit = "every CPU socket (STRATA_NUMA_SPLIT)";
+    else if (span) p.limit = "every CPU socket (STRATA_NUMA_POOL)";
     else if (p.packages > 1) p.limit = "the host's CPU socket";
     if (n >= kPoolReserveFrom) {                          // a big CPU keeps a core for the engine's other threads
         n -= kPoolReserve;
@@ -145,11 +145,11 @@ inline std::string pool_workers_warning(int requested, const PoolPlanInput& in, 
            std::to_string(plan.workers) + " workers and the end of each layer waits for every one). " + rec;
 }
 
-/// STRATA_NUMA_SPLIT: whether two slices of `a` and `b` threads may split the rows 50/50 - a slice with under half
+/// STRATA_NUMA_POOL: whether two slices of `a` and `b` threads may split the rows 50/50 - a slice with under half
 /// the other's threads would be the straggler of every batch, so the pool refuses that split.
 inline bool numa_slices_balanced(int a, int b) { return std::min(a, b) * 2 >= std::max(a, b); }
 
-/// STRATA_NUMA_SPLIT: the order to take worker cores in so that a count below the core count (the default or a
+/// STRATA_NUMA_POOL: the order to take worker cores in so that a count below the core count (the default or a
 /// configured one) still spans the packages evenly - round-robin over the packages in their first-seen order (the
 /// host's first), stable inside each.
 /// `package[i]` is worker core i's package (-1: unknown, a package of its own); returns indices into it.

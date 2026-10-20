@@ -150,7 +150,7 @@ int main() {
     expect(cpu::pool_workers_warning(8, q, cpu::plan_pool_workers(q)).find("container") != std::string::npos,
            "8 workers under a 4-CPU quota: names the container limit");
 
-    // STRATA_NUMA_SPLIT (span_packages): the default spans every socket, the other bounds stay; off = the plan above
+    // STRATA_NUMA_POOL (span_packages): the default spans every socket, the other bounds stay; off = the plan above
     {
         auto x = xeon;   // 2 x 20 cores: 39 but the host's, one kept free -> 38, then the cap
         x.span_packages = true;
