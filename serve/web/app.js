@@ -655,7 +655,7 @@ let messages = store.get("chat", []);
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg}
 const WS_DEFAULTS = {engine: "duckduckgo", url: "http://127.0.0.1:8888", key: "", max: 6, read: true, readmax: 2, plim: true, plimchars: 5000, reader: "off", on: false, optimize: true};
-const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper"};
+const ENGINE_NAMES = {duckduckgo: "DuckDuckGo", searxng: "SearXNG", brave: "Brave Search", tavily: "Tavily", serper: "Serper", exa: "Exa", perplexity: "Perplexity"};
 let ws = {...WS_DEFAULTS, ...store.get("ws", {})};   // Web search: the composer's globe and the drawer's section
 // "Optimize search query": pull the actual search question out of the message first (local model,
 // reasoning off, greedy, one short call). Any error -> the original text: search never breaks on this.

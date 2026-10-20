@@ -14,6 +14,7 @@ and its combined both-paths-fail reason are pinned here too. Offline by design: 
 """
 from __future__ import annotations
 
+import json
 import unittest
 import urllib.error
 import urllib.request
@@ -205,6 +206,43 @@ class MaxResultsClampTests(WebSearchBase):
         w.search("q", {"engine": "duckduckgo", "max_results": "junk"})
         w.search("q", {"engine": "duckduckgo", "max_results": -5})
         self.assertEqual(seen, [6, 20, 6, 1])
+
+
+class KeyedEngineTests(WebSearchBase):
+    def test_exa_and_perplexity_demand_their_key(self):
+        for engine in ("exa", "perplexity"):
+            with self.subTest(engine=engine):
+                with self.assertRaises(w.SearchError) as cm:
+                    w.search("q", {"engine": engine})
+                self.assertIn("API key", str(cm.exception))
+
+    def test_exa_maps_results_and_highlights(self):
+        payload = json.dumps({"results": [
+            {"url": "https://a.example/1", "title": "A", "highlights": ["  ", "hit text"]},
+            {"url": "", "title": "skipped, no url", "highlights": ["x"]},
+            {"url": "https://b.example/2", "highlights": []}]})
+        self.patch_routes([("api.exa.ai", payload, "application/json")])
+        out = w.search("q", {"engine": "exa", "api_key": "k", "max_results": 3})
+        self.assertEqual([r["url"] for r in out], ["https://a.example/1", "https://b.example/2"])
+        self.assertEqual(out[0]["snippet"], "hit text")
+        self.assertEqual(out[1]["title"], "https://b.example/2")
+
+    def test_perplexity_maps_search_results(self):
+        payload = json.dumps({"search_results": [
+            {"url": "https://a.example/1", "title": "A", "snippet": "s1"},
+            {"url": "https://b.example/2"}]})
+        self.patch_routes([("api.perplexity.ai", payload, "application/json")])
+        out = w.search("q", {"engine": "perplexity", "api_key": "k", "max_results": 3})
+        self.assertEqual([r["url"] for r in out], ["https://a.example/1", "https://b.example/2"])
+        self.assertEqual(out[1]["title"], "https://b.example/2")
+
+    def test_perplexity_falls_back_to_bare_citations(self):
+        payload = json.dumps({"citations": ["https://a.example/1", "https://b.example/2"]})
+        self.patch_routes([("api.perplexity.ai", payload, "application/json")])
+        out = w.search("q", {"engine": "perplexity", "api_key": "k", "max_results": 3})
+        self.assertEqual([r["url"] for r in out], ["https://a.example/1", "https://b.example/2"])
+        self.assertEqual(out[0]["title"], "https://a.example/1")
+        self.assertEqual(out[0]["snippet"], "")
 
 
 if __name__ == "__main__":

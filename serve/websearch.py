@@ -166,6 +166,66 @@ def _serper(query, cfg, n):
              "snippet": r.get("snippet") or ""} for r in data.get("organic", [])[:n] if r.get("link")]
 
 
+def _exa(query, cfg, n):
+    # Exa (exa.ai): neural search API. Same endpoint/shape upstream's App uses (web-search-keyed.mjs).
+    key = (cfg.get("api_key") or "").strip()
+    if not key:
+        raise SearchError("Exa needs its API key (Chat Settings > Web search)")
+    try:
+        data = _post_json("https://api.exa.ai/search",
+                          {"query": query, "numResults": n, "type": "auto",
+                           "contents": {"highlights": {"highlightsPerUrl": 1}}},
+                          {"Authorization": f"Bearer {key}"})
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise SearchError("Exa rejected the API key (HTTP " + str(e.code) + ")") from e
+        raise SearchError(f"Exa is not reachable (HTTP {e.code})") from e
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        raise SearchError(f"Exa is not reachable ({e})") from e
+    out = []
+    for r in data.get("results") or []:
+        url = str(r.get("url") or "").strip()
+        if not url:
+            continue
+        snips = [str(h) for h in (r.get("highlights") or []) if str(h).strip()]
+        out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
+                    "snippet": snips[0].strip() if snips else ""})
+        if len(out) >= n:
+            break
+    return out
+
+
+def _perplexity(query, cfg, n):
+    # Perplexity (api.perplexity.ai, model sonar): answers with search grounding; the usable part
+    # for us is its source list (search_results, or bare citations when the plan omits them).
+    # Same endpoint/model upstream's App uses (web-search-keyed.mjs).
+    key = (cfg.get("api_key") or "").strip()
+    if not key:
+        raise SearchError("Perplexity needs its API key (Chat Settings > Web search)")
+    try:
+        data = _post_json("https://api.perplexity.ai/chat/completions",
+                          {"model": "sonar", "max_tokens": 1024,
+                           "messages": [{"role": "user", "content": query}]},
+                          {"Authorization": f"Bearer {key}"})
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise SearchError("Perplexity rejected the API key (HTTP " + str(e.code) + ")") from e
+        raise SearchError(f"Perplexity is not reachable (HTTP {e.code})") from e
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        raise SearchError(f"Perplexity is not reachable ({e})") from e
+    rows = data.get("search_results")
+    if rows is None:
+        rows = [{"url": u} for u in (data.get("citations") or [])]
+    out = []
+    for r in rows[:n]:
+        url = str(r.get("url") or "").strip()
+        if not url:
+            continue
+        out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
+                    "snippet": str(r.get("snippet") or "")})
+    return out
+
+
 PAGE_TIMEOUT_S = 10
 PAGE_MAX_BYTES = 2_000_000
 PAGE_CHARS = 5000
@@ -295,7 +355,7 @@ def _read_with_reader(result: dict, budget: int, reader: str) -> tuple[str, str 
 
 
 ENGINES = {"searxng": _searxng, "duckduckgo": _duckduckgo, "brave": _brave, "tavily": _tavily,
-           "serper": _serper}
+           "serper": _serper, "exa": _exa, "perplexity": _perplexity}
 
 
 def search(query: str, cfg: dict | None = None) -> list[dict]:
