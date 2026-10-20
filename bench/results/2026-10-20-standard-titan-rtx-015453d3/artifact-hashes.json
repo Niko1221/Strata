@@ -1,0 +1,41 @@
+{
+ "schema": "strata-artifact-hashes/1",
+ "files": {
+  "README.md": {
+   "bytes": 7122,
+   "sha256": "40c836e3bce85e19ba9cf186db1fd96a0b9664f7b0f547060c7b61675af50fe7"
+  },
+  "config.json": {
+   "bytes": 290,
+   "sha256": "cde6a66e6fcd83226c3897865f0423f66c610b80e559026da46cb5c3300afec9"
+  },
+  "engine.log": {
+   "bytes": 10472,
+   "sha256": "9fe64246542cdbbec06f19df1d35d20787857c7a49f4e23bba143e8783bc37c4"
+  },
+  "outputs.jsonl": {
+   "bytes": 498658,
+   "sha256": "21e4f7d77c1e884a324c464836b9dec00625c24769361d3c96482d2719fbb071"
+  },
+  "provenance/chat_template.jinja": {
+   "bytes": 9993,
+   "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+  },
+  "provenance/corpus-build.json": {
+   "bytes": 5160,
+   "sha256": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2"
+  },
+  "provenance/corpus-manifest.sha256": {
+   "bytes": 3356,
+   "sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407"
+  },
+  "results.json": {
+   "bytes": 58348,
+   "sha256": "f2a45b3da368064e784e29d5e1722bbae71089afbc42000ced81e8e4ee5a6c4f"
+  },
+  "server-config.json": {
+   "bytes": 1410,
+   "sha256": "8204303716e2b678657ac472eb1f4b9f8c53f1902b721162d58ba8ac6e4d5aed"
+  }
+ }
+}
