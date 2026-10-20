@@ -652,12 +652,12 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     path, saved, revision, cfg = _source(ref)
     values, origins = _effective(cfg, saved, cli)
     host = values["host"]
-    from serve.server import api_key_of, key_list
+    from serve.server import api_key_of, key_list, keyless_bind_allowed
     try:
         has_key = bool(key_list(api_key_of(os.environ.get("STRATA_API_KEY") or cfg.get("api_key", ""))))
     except ValueError:
         raise ProfileError("the inference API key is invalid", 5) from None
-    if host not in ("127.0.0.1", "localhost", "::1") and not has_key:
+    if host not in ("127.0.0.1", "localhost", "::1") and not (has_key or keyless_bind_allowed()):
         raise ProfileError("non-loopback serving requires an API key in the run config or STRATA_API_KEY")
     server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]

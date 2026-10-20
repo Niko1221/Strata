@@ -7095,6 +7095,12 @@ def api_key_of(value):
     return key.strip()
 
 
+def keyless_bind_allowed():
+    """The opt-out for the keyless non-loopback bind: an owner behind their own firewall on a trusted network sets
+    STRATA_ALLOW_KEYLESS_BIND=1 (also true/yes/on).  Unset or empty keeps the key required, the default path."""
+    return os.environ.get("STRATA_ALLOW_KEYLESS_BIND", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def key_matches(given: str, key) -> bool:
     """given: a header's value as http.server read it, each byte one character.  A key with characters outside ASCII
     arrives as UTF-8 from most clients and as Latin-1 from some; the right key passes in both forms (#725: the
@@ -7683,8 +7689,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print(f"[strata] {e}: set a key, or leave it out", file=sys.stderr)
         return 2
     if a.host not in ("127.0.0.1", "localhost", "::1") and not preflight_api_key:
-        print("[strata] a non-loopback bind requires an inference API key", file=sys.stderr, flush=True)
-        return 2
+        if not keyless_bind_allowed():
+            print("[strata] a non-loopback bind requires an inference API key", file=sys.stderr, flush=True)
+            return 2
+        print("[strata] STRATA_ALLOW_KEYLESS_BIND is set: anyone who can reach this port can use the model",
+              file=sys.stderr, flush=True)
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:

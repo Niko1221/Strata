@@ -443,6 +443,16 @@ class OperatorProfileTests(unittest.TestCase):
             from strata_cli.cli import _launch_plan
             _launch_plan("local")
 
+    def test_keyless_non_loopback_bind_needs_the_opt_in_env(self):
+        from strata_cli.cli import _launch_plan
+        profiles.create("open", str(self.config))
+        profiles.set_values("open", ["host=0.0.0.0"])
+        with self.assertRaisesRegex(profiles.ProfileError, "requires an API key"):
+            _launch_plan("open")
+        with mock.patch.dict(os.environ, {"STRATA_ALLOW_KEYLESS_BIND": "1"}):
+            plan, _ = _launch_plan("open")
+        self.assertEqual(plan["effective"]["host"], "0.0.0.0")
+
 
 if __name__ == "__main__":
     unittest.main()
