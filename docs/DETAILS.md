@@ -914,6 +914,15 @@ print(r.choices[0].message.content)
   `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. Off by default;
   Anthropic's `"thinking": {"budget_tokens": N}` chooses the level, as above, and since 0.1.45 is also the budget (a
   `reasoning_budget_tokens` in the same request wins).
+- **The reply's own token ids on the next turn (opt-in, `STRATA_REPLY_REUSE=1`).** After a request the engine holds
+  the prompt plus the ids it generated, and those are not always what the reply's text encodes to: a model writes a
+  Turkish word, a number or code in pieces BPE would merge. The next turn's prompt renders that text again, and a fresh
+  encode left the engine's ids at the first such piece, so the engine read the rest of the reply again from there.
+  With the variable the prompt encoder keeps the reply as an entry whose cuts are its own token boundaries, and the
+  next prompt takes the reply's ids up to where its text really differs (never across a split character or a tag; the
+  text the ids decode to is always the prompt's). The same switch keeps the few tokens the engine generated past a
+  thinking budget's stop (it holds them) when they are plain text, so the wrap-up continuation does not read the
+  thinking again. Off: every prompt is a fresh encode, as before.
 - **max_tokens counts the thinking, so the answer keeps its room (0.1.45).** A client that caps the whole reply (the
   desktop agent's harness sends `max_completion_tokens: 8192` on every request) and a task the model thinks long about
   used to be cut off in the middle of the thinking, with no answer. Now a request with thinking on, no budget of its
