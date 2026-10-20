@@ -109,7 +109,7 @@ __dpct_inline__ void load8(const QsaAttnPools &p, bool value, long long row,
     } else load8_q4(p, value, row, d0, out);
 }
 
-template <int KV_MODE, bool LANE_CELL = false>
+template <int KV_MODE, bool LANE_CELL = false, int RS = 0>
 /*
 DPCT1110: The total declared local variable size in device function
 attn_chunk_kernel exceeds 128 bytes and may cause high register pressure.
@@ -136,7 +136,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
             sycl::ext::oneapi::this_work_item::get_work_group<
                 3>()); // 12 KB: this KV head's query heads
     auto &sp =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[G][CHUNK]>(
+        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[G * CHUNK]>(
             sycl::ext::oneapi::this_work_item::get_work_group<
                 3>()); // scores, then probabilities
     auto &srow =
@@ -148,6 +148,8 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
     two expressions do not provide the exact same functionality. Check the
     generated code for potential precision and/or performance issues.
     */
+    // the scores and probabilities: [head][cell], or - RS - [cell][head] so the value phase reads a cell's 12 probabilities as 3 vectors
+    const auto spi = [](int h, int c) { return RS != 0 ? c * G + h : h * CHUNK + c; };
     const int n_ids = *(step + kStepWidth);
     const int chunk = item_ct1.get_group(2), kvh = item_ct1.get_group(1);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
@@ -187,7 +189,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
         const int c = t % CHUNK, h0 = (t / CHUNK) * HPT;
         if (c >= n_here || srow[c] < 0) {
 #pragma unroll
-            for (int j = 0; j < HPT; ++j) sp[h0 + j][c] = -FLT_MAX;
+            for (int j = 0; j < HPT; ++j) sp[spi(h0 + j, c)] = -FLT_MAX;
         } else {
             float a[HPT][32];
 #pragma unroll
@@ -214,18 +216,69 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
                 for (int o = 16; o > 0; o >>= 1)
 #pragma unroll
                     for (int l = 0; l < o; ++l) a[j][l] = a[j][l] + a[j][l + o];
-                sp[h0 + j][c] = a[j][0] * scale;
+                sp[spi(h0 + j, c)] = a[j][0] * scale;
             }
         }
     } else
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
         if (c >= n_here || srow[c] < 0) {
-            if (lane < G) sp[lane][c] = -FLT_MAX;
+            if (lane < G) sp[spi(lane, c)] = -FLT_MAX;
             continue;
         }
         float k8[8];
         load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+        if constexpr (RS == 1) {
+            // 151-b70: the 12 heads' 32-lane butterfly sums as ONE reduce-scatter - 16 shuffles instead of 60.  Each stage pairs the
+            // same lanes in the same order as warp_sum (xor 16, 8, 4, 2, 1) and adds own + partner, so every head's sum is the
+            // same tree and the same bits; the heads are padded to 16, halved at each stage (the lane keeps the half its bit
+            // selects, sends the other), and after the xor-2 stage lane 2h + {0, 1} holds head h's partial pair; xor 1 finishes it.
+            float part[16];
+#pragma unroll
+            for (int h = 0; h < G; ++h) {
+                const sycl::float4 qa =
+                    *reinterpret_cast<const sycl::float4 *>(&sq[h][lane * 8]);
+                const sycl::float4 qb =
+                    *reinterpret_cast<const sycl::float4 *>(&sq[h][lane * 8 + 4]);
+                part[h] = k8[0] * qa.x() + k8[1] * qa.y() + k8[2] * qa.z() +
+                          k8[3] * qa.w() + k8[4] * qb.x() + k8[5] * qb.y() +
+                          k8[6] * qb.z() + k8[7] * qb.w();
+            }
+#pragma unroll
+            for (int h = G; h < 16; ++h) part[h] = 0.0f;
+            const auto xr = [](float v, int o) {
+                return dpct::experimental::permute_sub_group_by_xor(
+                    0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
+            };
+            float c8[8];
+            const bool b16 = (lane & 16) != 0, b8 = (lane & 8) != 0, b4 = (lane & 4) != 0, b2 = (lane & 2) != 0;
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                const float send = b16 ? part[i] : part[8 + i];
+                const float keep = b16 ? part[8 + i] : part[i];
+                c8[i] = keep + xr(send, 16);
+            }
+            float c4[4];
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const float send = b8 ? c8[i] : c8[4 + i];
+                const float keep = b8 ? c8[4 + i] : c8[i];
+                c4[i] = keep + xr(send, 8);
+            }
+            float c2[2];
+#pragma unroll
+            for (int i = 0; i < 2; ++i) {
+                const float send = b4 ? c4[i] : c4[2 + i];
+                const float keep = b4 ? c4[2 + i] : c4[i];
+                c2[i] = keep + xr(send, 4);
+            }
+            const float send1 = b2 ? c2[0] : c2[1];
+            const float keep1 = b2 ? c2[1] : c2[0];
+            float s = keep1 + xr(send1, 2);
+            s = s + xr(s, 1);
+            const int head = (lane >> 1) & 15;
+            if ((lane & 1) == 0 && head < G) sp[spi(head, c)] = s * scale;
+        } else {
 #pragma unroll
         for (int h = 0; h < G; ++h) {
             const sycl::float4 qa =
@@ -236,7 +289,8 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
                       k8[3] * qa.w() + k8[4] * qb.x() + k8[5] * qb.y() +
                       k8[6] * qb.z() + k8[7] * qb.w();
             s = warp_sum(s);
-            if (lane == 0) sp[h][c] = s * scale;
+            if (lane == 0) sp[spi(h, c)] = s * scale;
+        }
         }
     }
     /*
@@ -247,7 +301,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
     item_ct1.barrier();
     // per-head chunk max and exp-sum: warp w handles heads w and w+8.
     for (int h = warp; h < G; h += WARPS) {
-        const float a = sp[h][lane], b = sp[h][lane + 32];
+        const float a = sp[spi(h, lane)], b = sp[spi(h, lane + 32)];
         const float m = warp_max(sycl::fmax(a, b));
         const float ea = (lane < n_here && srow[lane] >= 0)
                              ? sycl::native::exp(a - m)
@@ -255,8 +309,8 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
         const float eb = (lane + 32 < n_here && srow[lane + 32] >= 0)
                              ? sycl::native::exp(b - m)
                              : 0.0f;
-        sp[h][lane] = ea;
-        sp[h][lane + 32] = eb;
+        sp[spi(h, lane)] = ea;
+        sp[spi(h, lane + 32)] = eb;
         const float l = warp_sum(ea + eb);
         if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
     }
@@ -300,8 +354,20 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
             const int nibble = (rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8);
             v = (float) nibble * d;
         }
+        if constexpr (RS != 0) {
+            // the cell's 12 probabilities as three vector loads (the layout is [cell][head]); the same fma per head in the same order
 #pragma unroll
-        for (int h = 0; h < G; ++h) acc[h] = sycl::fma(sp[h][c], v, acc[h]);
+            for (int q4 = 0; q4 < G / 4; ++q4) {
+                const sycl::float4 pv = *reinterpret_cast<const sycl::float4 *>(&sp[c * G + 4 * q4]);
+                acc[4 * q4 + 0] = sycl::fma(pv.x(), v, acc[4 * q4 + 0]);
+                acc[4 * q4 + 1] = sycl::fma(pv.y(), v, acc[4 * q4 + 1]);
+                acc[4 * q4 + 2] = sycl::fma(pv.z(), v, acc[4 * q4 + 2]);
+                acc[4 * q4 + 3] = sycl::fma(pv.w(), v, acc[4 * q4 + 3]);
+            }
+        } else {
+#pragma unroll
+        for (int h = 0; h < G; ++h) acc[h] = sycl::fma(sp[spi(h, c)], v, acc[h]);
+        }
     }
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
@@ -638,13 +704,66 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                     });                                                        \
         });                                                                    \
     }
+#define STRATA_ATTN_RSK(M, V)                                                      \
+    {                                                                          \
+        auto exp_props = sycl::ext::oneapi::experimental::properties{          \
+            sycl::ext::oneapi::experimental::use_root_sync};                   \
+        dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});  \
+                                                                               \
+        st->submit([&](sycl::handler &cgh) {                                   \
+            auto q_ct0 = q;                                                    \
+            QsaAttnPools pools_ct1 = pools;                                    \
+            auto ids_ct2 = ids;                                                \
+            auto steps_ct3 = steps;                                            \
+            auto s_n_head_kv_ct4 = (int)s.n_head_kv;                           \
+            auto s_page_size_ct5 = (int)s.page_size;                           \
+            auto scale_ct6 = scale;                                            \
+            auto part_acc_ct7 = part_acc;                                      \
+            auto part_m_ct8 = part_m;                                          \
+            auto part_l_ct9 = part_l;                                          \
+            auto n_chunks_ct10 = n_chunks;                                     \
+            auto cap_ct11 = (int)cap;                                          \
+            auto stride_ct12 = stride;                                         \
+                                                                               \
+            cgh.parallel_for<dpct_kernel_name<class attn_chunk_kernel_rs_7c2a91,  \
+                                              dpct_kernel_scalar<M>,           \
+                                              dpct_kernel_scalar<V>>>(      \
+                sycl::nd_range<3>(grid * sycl::range(1, 1, THREADS),           \
+                                  sycl::range(1, 1, THREADS)),                 \
+                exp_props,                                                     \
+                [=](sycl::nd_item<3> item_ct1)                                 \
+                    [[sycl::reqd_sub_group_size(32)]] {                        \
+                        attn_chunk_kernel<M, false, V>(                            \
+                            q_ct0, pools_ct1, ids_ct2, steps_ct3,              \
+                            s_n_head_kv_ct4, s_page_size_ct5, scale_ct6,       \
+                            part_acc_ct7, part_m_ct8, part_l_ct9,              \
+                            n_chunks_ct10, cap_ct11, stride_ct12);             \
+                    });                                                        \
+        });                                                                    \
+    }
+#undef STRATA_ATTN_RSK_DEFINED
+    // 151-b70: STRATA_ATTN_RS=2 (default): the probabilities in [cell][head] order and the value phase reading a cell's 12 as three vectors - the same
+    // bits (first-token logits md5 equal at 4K and 16K), +0.8..0.9% prompt tok/s on the B70; =1 adds a 16-shuffle reduce-scatter for the scores
+    // (bit-exact too, but -1.5% here: the score phase is not shuffle bound); =0 the layout before
+    static const int rs_on = [] { const char* v = std::getenv("STRATA_ATTN_RS"); return v ? std::atoi(v) : 2; }();
     if (lane_cell) {
         if (kv_mode == 3) { STRATA_ATTN_LC(3); }
         else if (kv_mode == 2) { STRATA_ATTN_LC(2); }
         else if (kv_mode == 1) { STRATA_ATTN_LC(1); }
         else { STRATA_ATTN_LC(0); }
+    } else if (rs_on == 1) {
+        if (kv_mode == 3) { STRATA_ATTN_RSK(3, 1); }
+        else if (kv_mode == 2) { STRATA_ATTN_RSK(2, 1); }
+        else if (kv_mode == 1) { STRATA_ATTN_RSK(1, 1); }
+        else { STRATA_ATTN_RSK(0, 1); }
+    } else if (rs_on == 2) {
+        if (kv_mode == 3) { STRATA_ATTN_RSK(3, 2); }
+        else if (kv_mode == 2) { STRATA_ATTN_RSK(2, 2); }
+        else if (kv_mode == 1) { STRATA_ATTN_RSK(1, 2); }
+        else { STRATA_ATTN_RSK(0, 2); }
     } else
 #undef STRATA_ATTN_LC
+#undef STRATA_ATTN_RSK
     if (kv_mode == 3)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{

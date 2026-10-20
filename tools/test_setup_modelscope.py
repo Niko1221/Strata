@@ -99,6 +99,11 @@ class Download(Base):
         os.environ["MODELSCOPE_ENDPOINT"] = "http://127.0.0.1:%d" % self.server.server_address[1]
         os.environ["STRATA_SOURCE"] = "modelscope"
         self.dst = Path(self.tmp.name) / "out" / Path(PATH).name
+        # a file with no pin of its own (the hash ModelScope publishes is the check); the pinned case is below
+        pins = {**setup.REPO_PINS, REPO: {k: v for k, v in setup.REPO_PINS[REPO].items() if k != Path(PATH).name}}
+        patch = mock.patch.object(setup, "REPO_PINS", pins)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def api(self, sha):
         p = self.www / "api" / "v1" / "models" / REPO / "repo" / "files"
@@ -123,6 +128,19 @@ class Download(Base):
         setup.download(HF_URL, self.dst)              # no API file: the download is kept, as from Hugging Face
         self.assertEqual(self.dst.read_bytes(), self.data)
         self.assertTrue(self.dst.with_name(self.dst.name + ".done").exists())
+
+    def test_the_pin_decides_over_what_modelscope_publishes(self):
+        """A pinned file is checked against its fixed SHA-256 whatever the host says: ModelScope serves current files."""
+        sha = hashlib.sha256(self.data).hexdigest()
+        self.api(sha)                                  # ModelScope vouches for its own copy ...
+        pins = {**setup.REPO_PINS, REPO: {**setup.REPO_PINS[REPO], Path(PATH).name: (len(self.data), "1" * 64)}}
+        with mock.patch.object(setup, "REPO_PINS", pins), mock.patch.object(setup, "say"),                 self.assertRaises(SystemExit):         # ... but it is not the pinned file
+            setup.download(HF_URL, self.dst)
+        self.assertFalse(self.dst.exists())
+        pins[REPO][Path(PATH).name] = (len(self.data), sha)
+        with mock.patch.object(setup, "REPO_PINS", pins):
+            setup.download(HF_URL, self.dst)
+        self.assertIn("sha256 " + sha, self.dst.with_name(self.dst.name + ".done").read_text())
 
     def test_falls_back_when_modelscope_is_silent(self):
         calls = []

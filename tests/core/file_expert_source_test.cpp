@@ -433,18 +433,41 @@ void test_cgroup_memory_budget() {
     constexpr uint64_t GiB = 1ull << 30;
     uint64_t bytes = 0;
 
+    // the kernel keeps min(half the clean cache, limit / 64) of it: 56 GiB / 64 = 0.875 GiB here
+    const uint64_t keep56 = 56 * GiB / 64;
     CgroupMemoryStat clean_cache{40 * GiB, 32 * GiB, 0, 0, true};
     require(cgroup_available_bytes(56 * GiB, clean_cache, bytes), "valid cgroup memory.stat was rejected");
-    require(bytes == 48 * GiB, "clean inactive file cache was not credited against the cgroup cap");
+    require(bytes == 48 * GiB - keep56, "clean inactive file cache was not credited against the cgroup cap");
 
     CgroupMemoryStat dirty_cache{40 * GiB, 32 * GiB, 4 * GiB, 2 * GiB, true};
     require(cgroup_available_bytes(56 * GiB, dirty_cache, bytes), "valid dirty-cache counters were rejected");
-    require(bytes == 42 * GiB, "dirty/writeback pages were incorrectly counted as reclaimable");
+    require(bytes == 42 * GiB - keep56, "dirty/writeback pages were incorrectly counted as reclaimable");
 
     CgroupMemoryStat oversized_inactive{10 * GiB, 20 * GiB, 0, 0, true};
     require(cgroup_available_bytes(12 * GiB, oversized_inactive, bytes),
             "valid oversized inactive-file counter was rejected");
-    require(bytes == 12 * GiB, "inactive-file accounting exceeded charged current usage");
+    require(bytes == 12 * GiB - 12 * GiB / 64, "inactive-file accounting exceeded charged current usage");
+
+    // 149: the ACTIVE page cache is reclaimable too (memory.stat "file" = active + inactive), as MemAvailable counts
+    // it: a 32 GiB group whose own reads left 26 GiB of cache, 25 GiB of it active, and 4.5 GiB of anonymous memory
+    CgroupMemoryStat active_cache{30 * GiB + GiB / 2, 1 * GiB, 0, 0, true, 26 * GiB};
+    require(cgroup_available_bytes(32 * GiB, active_cache, bytes), "a memory.stat with file was rejected");
+    require(bytes == 32 * GiB - (4 * GiB + GiB / 2) - 32 * GiB / 64, "the active page cache was not credited");
+    // without "file" (an old kernel's stat): inactive_file alone, as before
+    CgroupMemoryStat no_file{30 * GiB + GiB / 2, 1 * GiB, 0, 0, true};
+    require(cgroup_available_bytes(32 * GiB, no_file, bytes) && bytes == 32 * GiB - (29 * GiB + GiB / 2) - GiB / 2,
+            "a stat without file did not fall back to inactive_file");
+    // dirty and writeback pages of the active cache stay charged; a small cache keeps half of itself
+    CgroupMemoryStat dirty_active{20 * GiB, 1 * GiB, 2 * GiB, 1 * GiB, true, 10 * GiB};
+    require(cgroup_available_bytes(32 * GiB, dirty_active, bytes) && bytes == 32 * GiB - (20 * GiB - 7 * GiB) - GiB / 2,
+            "dirty / writeback pages of the active cache were counted as reclaimable");
+    CgroupMemoryStat tiny_cache{8 * GiB, 0, 0, 0, true, 256ull << 20};
+    require(cgroup_available_bytes(32 * GiB, tiny_cache, bytes) && bytes == 32 * GiB - 8 * GiB + (128ull << 20),
+            "a small clean cache was not kept at half");
+    // "file" larger than what is charged (a racy read) is bounded by memory.current
+    CgroupMemoryStat racy{4 * GiB, 1 * GiB, 0, 0, true, 9 * GiB};
+    require(cgroup_available_bytes(32 * GiB, racy, bytes) && bytes == 32 * GiB - GiB / 2,
+            "a file counter above memory.current escaped the bound");
 
     const uint64_t max = std::numeric_limits<uint64_t>::max();
     CgroupMemoryStat large_counters{max, max, max - 1, max, true};
@@ -562,7 +585,13 @@ void test_host_memory() {
     put("fs/box/memory.max", std::to_string(48 * GiB) + "\n");
     put("fs/box/memory.current", std::to_string(16 * GiB) + "\n");
     put("fs/box/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nfile_dirty 0\nfile_writeback 0\n");
-    require(probe("0::/box\n") && m.available == 36 * GiB && m.cgroup_limit == 48 * GiB, "v2 limit");
+    require(probe("0::/box\n") && m.available == 36 * GiB - 48 * GiB / 64 && m.cgroup_limit == 48 * GiB, "v2 limit");
+    // 149: with "file" (active + inactive cache) the active part counts too: 12 GiB of cache, 4 GiB anonymous
+    put("fs/box/memory.stat", "file " + std::to_string(12 * GiB) + "\ninactive_file " + std::to_string(4 * GiB) +
+                              "\nfile_dirty 0\nfile_writeback 0\n");
+    require(probe("0::/box\n") && m.available == 44 * GiB - 48 * GiB / 64 && m.cgroup_limit == 48 * GiB,
+            "v2 limit, the active page cache credited");
+    put("fs/box/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nfile_dirty 0\nfile_writeback 0\n");
     put("fs/box/memory.max", "max\n");
     require(probe("0::/box\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v2 max");
     put("fs/box/memory.max", "48G\n");
@@ -830,6 +859,84 @@ void test_foresight_exchange(bool two_phase) {
     src.close();
 }
 
+// STRATA_RAM_ADAPT: an expert read from the file takes the RAM place of another of its layer.
+void test_replace_resident(bool pin) {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+#if defined(_WIN32)
+    _putenv_s("STRATA_EXCHANGE_ROTATE", "0");
+#else
+    setenv("STRATA_EXCHANGE_ROTATE", "0", 1);
+#endif
+    TempDirectory dir;
+    std::string err;
+    require(expert_layout_load(dir.path.string(), 1, 5, err), err);
+    const size_t bytes = (size_t)BLOB;
+    std::vector<std::vector<uint8_t>> truth(5, std::vector<uint8_t>(bytes));
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary);
+        for (size_t e = 0; e < truth.size(); ++e) {
+            for (size_t i = 0; i < bytes; ++i) truth[e][i] = (uint8_t)((i * 131u + e * 37u) ^ (i >> 8));
+            out.write((const char*)truth[e].data(), (std::streamsize)bytes);
+        }
+        require((bool)out, "fixture write failed");
+    }
+    FileExpertSource src;
+    ExpertCache cache;
+    require(src.open(dir.path.string(), 1, 5, err), err);
+    require(cache.open(2, 1, 5, BLOB, err), err);
+    for (int e : {2, 3}) {
+        const int slot = cache.admit(0, e);
+        require(slot >= 0 && cache.fill_slot_blocking(slot, truth[e].data(), err), err);
+    }
+    const std::vector<std::pair<int32_t, int32_t>> rank{{0,0},{0,1},{0,2},{0,3},{0,4}};
+    // experts 2 and 3 are in VRAM, the RAM budget holds 0 and 1, expert 4 stays on the file tier
+    require(src.pin_cache_complement(cache, err, pin, {}, -1, 0, 2 * bytes, &rank), err);
+    require(src.reserve_exchanges(1, err), err);
+    require(src.has_resident(0, 0) && src.has_resident(0, 1) && !src.has_resident(0, 4), "fixture residency wrong");
+    std::vector<uint8_t> actual(bytes);
+    auto holds = [&](int e) {
+        const uint8_t* b = src.blob(0, e);
+        return b != nullptr && !std::memcmp(b, truth[(size_t)e].data(), bytes);
+    };
+    require(!src.replace_resident(0, 1, 0), "an expert already in RAM accepted");
+    require(!src.replace_resident(0, 4, 2), "a place the RAM does not hold accepted");
+    require(!src.replace_resident(0, 4, 4) && !src.replace_resident(0, 5, 0) && !src.replace_resident(1, 4, 0),
+            "invalid arguments accepted");
+    require(src.ram_adapts() == 0 && holds(0) && holds(1) && holds(4), "a refused call changed the copy");
+    // a staged exchange owns the tables until it commits
+    require(cudaMemcpy(src.exchange_buffer(0), cache.device_slot(0), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+            "D2H eviction failed");
+    require(src.stage_exchange(0, 0, 2, 0), "stage rejected");
+    require(!src.replace_resident(0, 4, 1), "accepted beside a staged exchange");
+    require(cache.fill_slot_blocking(0, truth[0].data(), err), err);
+    require(src.commit_exchanges() == 1, "commit count wrong");   // RAM: 2 (in 0's place) and 1; VRAM: 0 and 3
+    const uint8_t* place = src.blob(0, 1);
+    require(src.replace_resident(0, 4, 1), "replace rejected");
+    require(src.ram_adapts() == 1 && src.has_resident(0, 4) && !src.has_resident(0, 1), "residency wrong");
+    require(src.blob(0, 4) == place && holds(4), "the incoming expert is not in the outgoing one's place");
+    require(holds(1) && holds(2), "another expert's bytes changed");
+    require(src.copy_blob(0, 1, actual.data()) && actual == truth[1], "the outgoing expert is not read from the file");
+    require(!src.transient(0, 4), "resident became transient");
+    if (pin) {
+        require(src.pinned(0, 4) && src.device_alias(0, 4), "mapping lost");
+        require(cudaMemcpy(actual.data(), src.device_alias(0, 4), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+                "device alias read failed");
+        require(actual == truth[4], "CUDA alias points at the old expert");
+    }
+    // and back, then an exchange with the VRAM tier still works on the moved place
+    require(src.replace_resident(0, 1, 4) && holds(1) && src.blob(0, 1) == place && !src.has_resident(0, 4),
+            "replace back wrong");
+    require(cudaMemcpy(src.exchange_buffer(0), cache.device_slot(1), bytes, cudaMemcpyDeviceToHost) == cudaSuccess,
+            "D2H eviction failed");
+    require(src.stage_exchange(0, 1, 3, 0), "stage after replace rejected");
+    require(cache.fill_slot_blocking(1, truth[1].data(), err), err);
+    require(src.commit_exchanges() == 1 && src.has_resident(0, 3) && holds(3) && !src.has_resident(0, 1),
+            "exchange after replace wrong");
+    require(src.ram_adapts() == 2, "accounting wrong");
+    std::cout << "replace_resident: pinned=" << pin << " exact_bytes=PASS\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -854,6 +961,8 @@ int main(int argc, char** argv) {
             test_rotating_source(true, false);
             test_foresight_exchange(false);
             test_foresight_exchange(true);
+            test_replace_resident(true);
+            test_replace_resident(false);
         }
         std::cout << "file_expert_source_test: PASS\n";
         return 0;

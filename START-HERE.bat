@@ -4,6 +4,9 @@ rem Needs only an NVIDIA or AMD graphics driver. Python is installed for your us
 setlocal
 title Strata
 cd /d "%~dp0"
+rem A bundled Python runtime (the python\ folder of the terminal archive) is used when it is there: nothing to find,
+rem install or download. SETUP.bat and UPDATE.bat run this file, so they use it too.
+if exist "python\python.exe" goto bundled
 if exist ".venv\Scripts\python.exe" goto run
 
 call :findpy
@@ -35,6 +38,14 @@ if exist ".venv\Scripts\python.exe" goto run
 echo  Could not create the Python environment in .venv
 pause
 exit /b 1
+
+:bundled
+set "PYTHONNOUSERSITE=1"
+set "PYTHONHOME="
+set "PYTHONPATH="
+"python\python.exe" setup.py %*
+if errorlevel 1 pause
+exit /b
 
 :run
 ".venv\Scripts\python.exe" setup.py %*
