@@ -9,7 +9,7 @@
 
 > **Fork personnel (c-OOL-io/Strata-WebSearch).** Ce fork ajoute **la recherche web et la lecture complète des pages au chat intégré et au frontend serve** : la web app légère du terminal, où l'amont n'a pas de recherche (la recherche amont vit dans l'App). Construit comme le chat de Strata lui-même : **entièrement désactivé par défaut** (tant que vous ne l'activez pas, rien en rapport avec la recherche ne quitte le PC), **aucun token ajouté** pour les chats qui ne l'activent pas, et le texte de recherche est plafonné à une petite part de la fenêtre de contexte du modèle (les valeurs par défaut suivent `max_context`, les instances à petit contexte restent sûres).
 >
-> - **Moteurs :** DuckDuckGo par défaut (sans clé), SearXNG (votre instance auto-hébergée), Brave, Tavily et Serper (Google) avec vos propres clés. Les clés restent dans le navigateur ; rien en rapport avec la recherche n'est stocké sur le serveur.
+> - **Moteurs :** DuckDuckGo par défaut (sans clé), SearXNG (votre instance auto-hébergée), Brave, Tavily, Serper (Google), Exa et Perplexity avec vos propres clés. Les clés restent dans le navigateur ; rien en rapport avec la recherche n'est stocké sur le serveur.
 > - **Optimiseur de requête :** une formulation conversationnelle est réécrite en une requête de recherche propre par un appel rapide à votre propre modèle local, dans la langue où vous avez écrit. En cas d'échec, le message brut est recherché à la place. Si ce qui a été cherché diffère de ce que vous avez tapé, la ligne Sources l'affiche.
 > - **Lecture des pages de résultats :** les meilleures pages de résultats sont récupérées et injectées en texte extrait (nav/pied/scripts retirés, `main`/`article` privilégiés), avec les modes de lecture Direct / Jina en repli / Jina pour toutes, et un avertissement explicite dès qu'un tiers pourrait voir vos URL.
 > - **Réponses auditable :** chaque réponse reçoit une ligne `Sources` (moteur, requête exacte, liens cliquables, badges `read`) qui suit l'export Markdown, et une recherche échouée laisse un avertissement nommé par cause (clé manquante, moteur injoignable, contrôle bot) au lieu d'échouer silencieusement.
@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Recherche web dans le chat Strata">
   <img src="docs/media/web-search-settings.png" width="360" alt="Réglages de recherche web : moteurs et clés">
 </p>
-<p align="center"><sub>À gauche: chat répondu avec la ligne Sources sous la réponse (moteur utilisé, requête réellement cherchée), activable via le globe du composeur.<br>À droite: section Web search des réglages: activation, optimisation de la requête, choix du moteur (DuckDuckGo / SearXNG / Brave / Tavily / Serper), champ de clé, lecture des pages.</sub></p>
+<p align="center"><sub>À gauche: chat répondu avec la ligne Sources sous la réponse (moteur utilisé, requête réellement cherchée), activable via le globe du composeur.<br>À droite: section Web search des réglages: activation, optimisation de la requête, choix du moteur, champ de clé, lecture des pages.</sub></p>
 
 
 <h3 align="center">Faites tourner un modèle de pointe sur votre propre PC de jeu</h3>

@@ -9,7 +9,7 @@
 
 > **Fork pessoal (c-OOL-io/Strata-WebSearch).** Este fork adiciona **busca web e leitura completa de páginas ao chat embutido e ao frontend serve**: a aplicação web enxuta do terminal, onde o upstream não tem busca (a busca do upstream vive no App). Construído como o próprio chat do Strata: **completamente desligado por padrão** (até você ligar, nada relacionado à busca sai do PC), **sem tokens adicionados** para chats que não a ativam, e o texto da busca é limitado a uma pequena fatia da janela de contexto do modelo (os padrões escalam com `max_context`, instâncias de contexto pequeno continuam seguras).
 >
-> - **Motores:** DuckDuckGo por padrão (sem chave), SearXNG (sua própria instância self-hosted), Brave, Tavily e Serper (Google) com suas próprias chaves. As chaves ficam no navegador; nada relacionado à busca é armazenado no servidor.
+> - **Motores:** DuckDuckGo por padrão (sem chave), SearXNG (sua própria instância self-hosted), Brave, Tavily, Serper (Google), Exa e Perplexity com suas próprias chaves. As chaves ficam no navegador; nada relacionado à busca é armazenado no servidor.
 > - **Otimizador de consulta:** formulações conversacionais são reescritas em uma consulta de busca limpa por uma chamada rápida ao seu próprio modelo local, no idioma em que você escreveu. Se falhar, a mensagem bruta é buscada no lugar. Quando o que foi buscado difere do que você digitou, a linha Sources mostra isso.
 > - **Ler páginas de resultado:** as melhores páginas de resultado são obtidas e injetadas como texto extraído (nav/rodapé/scripts removidos, `main`/`article` preferidos), com modos de leitura Direct / Jina como reserva / Jina para todas e aviso explícito sempre que um terceiro pudesse ver suas URLs.
 > - **Respostas auditáveis:** cada resposta ganha uma linha `Sources` (motor, consulta exata, links clicáveis, selos `read`) que acompanha a exportação em Markdown, e uma busca que falha deixa um aviso nomeado por causa (chave ausente, motor inacessível, checagem bot) em vez de falhar em silêncio.
@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Busca web no chat do Strata">
   <img src="docs/media/web-search-settings.png" width="360" alt="Configurações de busca web: mecanismos e chaves">
 </p>
-<p align="center"><sub>Esquerda: chat respondido com a linha Sources sob a resposta (mecanismo usado e a consulta realmente pesquisada), ativável pelo globo do compositor.<br>Direita: seção Web search das configurações: liga/desliga, otimização da consulta, escolha de mecanismo (DuckDuckGo / SearXNG / Brave / Tavily / Serper), campo de chave, leitura das páginas.</sub></p>
+<p align="center"><sub>Esquerda: chat respondido com a linha Sources sob a resposta (mecanismo usado e a consulta realmente pesquisada), ativável pelo globo do compositor.<br>Direita: seção Web search das configurações: liga/desliga, otimização da consulta, escolha de mecanismo, campo de chave, leitura das páginas.</sub></p>
 
 
 <h3 align="center">Rode um modelo de ponta no seu próprio PC gamer</h3>

@@ -9,7 +9,7 @@
 
 > **Personal fork (c-OOL-io/Strata-WebSearch).** This fork adds **web search and full page reading to the built-in Chat and the serve frontend**: the lean terminal web app, where upstream has no search (upstream's search lives in the App). It is built the way Strata's Chat itself is built: **completely off by default** (until you turn it on, nothing search-related leaves the PC), **no added tokens** for chats that don't enable it, and search text budget-capped to a small slice of the model's context window (defaults scale with `max_context`, so small-context instances stay safe).
 >
-> - **Engines:** DuckDuckGo by default (no key), SearXNG (your own self-hosted instance), Brave, Tavily and Serper (Google) with your own keys. Keys stay in the browser; nothing search-related is stored on the server.
+> - **Engines:** DuckDuckGo by default (no key), SearXNG (your own self-hosted instance), Brave, Tavily, Serper (Google), Exa and Perplexity with your own keys. Keys stay in the browser; nothing search-related is stored on the server.
 > - **Query optimizer:** conversational wording is rewritten into a clean search query by one fast call to your own local model, kept in the language you wrote in. If it fails, the raw message is searched instead. Whenever what was searched differs from what you typed, the Sources line shows it.
 > - **Read result pages:** the top result pages are fetched and injected as extracted text (nav/footer/scripts stripped, `main`/`article` preferred), with Direct / Jina-fallback / Jina-for-all reader modes and an explicit warning whenever a third party could see your URLs.
 > - **Auditable answers:** every reply gets a `Sources` line (engine, exact query, clickable links, `read` badges) that rides along into the Markdown export, and a failed search leaves a named per-cause warning (missing key, unreachable engine, bot check) instead of failing silently.
@@ -29,7 +29,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Web search in the Strata chat">
   <img src="docs/media/web-search-settings.png" width="360" alt="Search settings: engines and API keys">
 </p>
-<p align="center"><sub>Left: an answered chat with the Sources line under the reply (engine used, the exact query that was searched). Web search switches on/off via the globe in the composer.<br>Right: the Settings panel's Web search section: on/off, query optimization, engine picker (DuckDuckGo / SearXNG / Brave / Tavily / Serper), key field, page reading.</sub></p>
+<p align="center"><sub>Left: an answered chat with the Sources line under the reply (engine used, the exact query that was searched). Web search switches on/off via the globe in the composer.<br>Right: the Settings panel's Web search section: on/off, query optimization, engine picker, key field, page reading.</sub></p>
 
 <h3 align="center">Run a state-of-the-art model on your own gaming PC</h3>
 
