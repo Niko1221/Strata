@@ -21,7 +21,7 @@
 
 <p align="center">
   <img src="docs/media/web-search-chat.png" width="360" alt="Web search in the Strata chat">
-  <img src="docs/media/web-search-settings.png" width="360" alt="Search engines and keys in the settings">
+  <img src="docs/media/web-search-settings.png" width="360" alt="Search settings: engines and API keys">
 </p>
 <p align="center"><sub>Left: an answered chat with the Sources line under the reply (engine used, the exact query that was searched). Web search switches on/off via the globe in the composer.<br>Right: the Settings panel's Web search section: on/off, query optimization, engine picker (DuckDuckGo / SearXNG / Brave / Tavily / Serper), key field, page reading.</sub></p>
 

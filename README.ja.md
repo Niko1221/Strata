@@ -7,6 +7,21 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <b>日本語</b> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a></p>
 
+> **個人フォーク (c-OOL-io/Strata-WebSearch)。** このフォークは内蔵チャットと serve フロントエンドに**ウェブ検索とページ読み取り**を追加します (エンジン DuckDuckGo、SearXNG、Brave、Tavily、Serper;既定オフ、APIキーはブラウザ内にのみ保存)。
+> ダウンロード前に 2 つの注意点:
+>
+> 1. **下のダウンロードリンクは Niko1221/Strata の素のアップストリームアプリ**です。プリビルドバイナリにこのフォークの検索は**入りません**。検索付きの版はソースのみ:`git clone`、ブランチ `web-search`、その後 START-HERE.bat / setup.sh。
+> 2. **このフォークは軽量な Terminal 経路のためでもある**:ヘッドレスサーバーで簡素な serve/CLI だけを使う人 (アプリなし、チャット UI なし) も同じソースから使えます。検索は serve フロントエンド内蔵。
+>
+> RTX 4080 SUPER / Ryzen 9 7950X3D のベンチ結果は `bench/` にあります。
+
+<p align="center">
+  <img src="docs/media/web-search-chat.png" width="360" alt="Strata チャット内のウェブ検索">
+  <img src="docs/media/web-search-settings.png" width="360" alt="設定のウェブ検索:エンジンとキー">
+</p>
+<p align="center"><sub>左:回答の下の Sources 行(使用エンジンと実際に検索したクエリ)付きのチャット。入力欄(composer)の地球アイコンで切り替え。<br>右:設定の Web search 区:オン/オフ、クエリの最適化、エンジン選択(DuckDuckGo / SearXNG / Brave / Tavily / Serper)、キー入力、ページ読み取り。</sub></p>
+
+
 <h3 align="center">最先端のモデルを、手元のゲーミングPCで動かす</h3>
 
 <p align="center">NVIDIA、AMD、Intel に対応 · Windows、Linux、Mac · 無料のオープンソース</p>

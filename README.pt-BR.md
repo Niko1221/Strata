@@ -7,6 +7,21 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <b>Português</b></p>
 
+> **Fork pessoal (c-OOL-io/Strata-WebSearch).** Este fork adiciona **busca web e leitura de páginas ao chat embutido e ao frontend serve** (mecanismos DuckDuckGo, SearXNG, Brave, Tavily, Serper; desligado por padrão, as chaves de API ficam só no navegador).
+> Duas coisas antes de baixar:
+>
+> 1. **Os links de download abaixo são o app upstream original** do Niko1221/Strata. Os binários prontos **não** contêm a busca deste fork. A versão com busca só existe no código-fonte: `git clone`, branch `web-search`, depois START-HERE.bat / setup.sh.
+> 2. **Este fork também é para a rota Terminal econômica**: quem só quer o serve/CLI leve num servidor headless (sem app, sem UI de chat) recebe-o deste mesmo código-fonte, com a busca embutida no frontend serve.
+>
+> Resultados de bench com RTX 4080 SUPER / Ryzen 9 7950X3D estão em `bench/`.
+
+<p align="center">
+  <img src="docs/media/web-search-chat.png" width="360" alt="Busca web no chat do Strata">
+  <img src="docs/media/web-search-settings.png" width="360" alt="Configurações de busca web: mecanismos e chaves">
+</p>
+<p align="center"><sub>Esquerda: chat respondido com a linha Sources sob a resposta (mecanismo usado e a consulta realmente pesquisada), ativável pelo globo do compositor.<br>Direita: seção Web search das configurações: liga/desliga, otimização da consulta, escolha de mecanismo (DuckDuckGo / SearXNG / Brave / Tavily / Serper), campo de chave, leitura das páginas.</sub></p>
+
+
 <h3 align="center">Rode um modelo de ponta no seu próprio PC gamer</h3>
 
 <p align="center">Suporte a NVIDIA, AMD, Intel · Windows, Linux, Mac · gratuito e de código aberto</p>
