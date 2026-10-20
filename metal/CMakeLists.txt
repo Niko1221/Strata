@@ -122,3 +122,10 @@ target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
 add_executable(strata ${S}/program/generate.cpp)
 target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)
+
+# The host sampler (src/engine/host_sampler.cpp: the request's sampling over the window's head logits) against a serial
+# transcription of the CUDA sampler, draw for draw; --bench times it per row.  CPU only: no GPU, no model.  In its own
+# folder: tests/*.cpp above are the kernel tree's mtl_rt-only programs.
+add_executable(host_sampler_parity tests/engine/host_sampler_parity.cpp)
+target_link_libraries(host_sampler_parity PRIVATE strata_metal_kernels)
+add_test(NAME host_sampler_parity COMMAND host_sampler_parity)
