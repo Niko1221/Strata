@@ -32,9 +32,25 @@ DFlash2 currently requires one NVIDIA GPU and serial requests. HIP and SYCL cann
 build the DFlash2 extension. Compilation and hardware execution of the shared DFlash
 prerequisite on those backends still require validation. Windows was not tested.
 
-`./setup.sh --calibrate` measures runtime settings for the selected artifact: draft
-block length, probability floor and PCIe share. It does not select a weight format or
-calibrate a separate head. Change `--dflash2-quant` through setup to compare formats.
+`./setup.sh --calibrate` measures settings for the installed artifact on this PC.
+After the decode sweep, DFlash2 also compares fresh short and long requests. It tries
+prefill sizes 256, 512 and 1024, checks startup VRAM headroom and measures block length
+and probability floor together. It records the actual expert-cache size for every
+profile. A larger prefill is not assumed to be faster.
+
+The two best prompt profiles and the baseline enter the joint search. The winner is
+restarted against the baseline in three alternating pairs, including extra prompt
+cases. It is saved only when every pair improves and the median balanced request
+score improves by more than 3%. Prompt and decode times stay separate in the report.
+Short and long workloads have equal weight; early EOS is normalized to the same output
+budget. This is a bounded search, not a guarantee of the best settings for every task.
+Allow roughly 30–90 minutes for the full DFlash2 calibration. A failed candidate is
+skipped; cancellation leaves the installed configuration unchanged.
+
+The calibration does not choose a weight format or a separate head. Change
+`--dflash2-quant` through setup to compare formats. Its saved result is specific to the
+card, CPU, RAM, model, artifact, draft capacity and context; changing the calibrated
+block itself does not hide the result from a reinstall.
 
 ## Build and manual use
 
@@ -174,3 +190,19 @@ The same change reuses attention's K/V addresses, specializes official power-of-
 page indexing and pairs adjacent values in long windows. The original ordered
 sums and masks remain unchanged. General geometry and unaligned buffers retain
 a scalar path. The report includes bitwise comparisons and the whole-model limits.
+
+## Fresh long-prompt latency profile
+
+On RTX 4070 Ti SUPER 16 GiB / Ryzen 9 5900X, the measured 2425-token fixture with
+96 output tokens took 11.42 s with batched prefill 256 and 7.76 s with the selected
+prefill-512 profile (three repeats, -32.04%). That profile uses Q8_0 DFlash2,
+block 6, floor 0.85, 2900 actual expert slots and `--short-read 64`. It decodes at
+51.95 versus same-day MTP's 50.35 tok/s (+3.18%); whole-request latency is tied.
+
+These counts are for that machine. Let calibration measure another PC. The
+[report and raw runs](../bench/results/2026-10-20-dflash2-fast-prompt/README.md)
+include the slower prefill-1024 profile, controls and limits. The engine executable
+is unchanged; this is a profile improvement. The earlier controlled benchmark's
+`--short-read 4096` deliberately bypasses batched prefill for that prompt. It remains
+appropriate for reproducing that decode table, but is not the normal prompt path.
+Strata already defaults to `--short-read 64`.

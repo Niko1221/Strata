@@ -6636,8 +6636,12 @@ def hardware_key(cfg: dict) -> str:
     if cfg.get("drafter") == "dflash2":
         def value(flag):
             return str(a[a.index(flag) + 1]) if flag in a and a.index(flag) + 1 < len(a) else ""
-        return key + "|dflash2|" + str(cfg.get("dflash2_quant", "q8")) + "|" + "|".join(
-            value(f) for f in ("--dflash", "--mtp", "--spec", "--dflash-block", "--dflash-window"))
+        performance_env = {k: (cfg.get("env") or {}).get(k) for k in
+                           ("STRATA_DFLASH_HEAD_IL", "STRATA_MMVQ_IL_Q8_HEAD", "STRATA_DFLASH_GRAPH_BUCKET",
+                            "STRATA_PREFILL_CPU_SHARE")}
+        return key + "|dflash2-profile-v2|" + str(cfg.get("dflash2_quant", "q8")) + "|" + "|".join(
+            value(f) for f in ("--dflash", "--mtp", "--spec", "--dflash-window")) + "|" + json.dumps(
+                performance_env, sort_keys=True, separators=(",", ":"))
     if "--dflash" in a:
         def value(flag):
             return str(a[a.index(flag) + 1]) if flag in a and a.index(flag) + 1 < len(a) else ""
@@ -6659,6 +6663,9 @@ def calibrate_config(cfg_path: Path) -> bool:
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
     say("  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes")
     say("  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
+    if cfg.get("drafter") == "dflash2":
+        say("  DFlash2 also compares fresh short/long requests, prefill chunks, VRAM headroom and joint block/floor")
+        say("  profiles, with separate restarts for confirmation. Allow roughly 30-90 minutes in total.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -6678,7 +6685,7 @@ def calibrate_config(cfg_path: Path) -> bool:
     st = load_settings()
     st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "env": res.get("env") or {},
                                                            "tok_s": res["report"].get("tok_s"),
-                                                           "date": time.strftime("%Y-%m-%d")}
+                                                           "date": time.strftime("%Y-%m-%d"), "report": res["report"]}
     save_settings(st)
     chosen = {**res["settings"], **(res.get("env") or {})}
     if chosen:

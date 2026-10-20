@@ -1,6 +1,7 @@
 """Explicit measure, review and apply steps around Strata's existing calibration.
 
-The current suite measures decode speed. It is not a four-GPU serving benchmark.
+The legacy suite measures decode speed. DFlash2 also confirms fresh-request
+profiles across short and long prompts. Neither is a four-GPU serving benchmark.
 Its report binds a candidate to the run config, engine binary and observed local
 hardware; applying it is a separate operation with a backup and smoke generation.
 """
@@ -31,11 +32,13 @@ from strata_control import posix_owner
 
 
 SUITE = "legacy-decode-v1"
+DFLASH2_SUITE = "dflash2-fresh-profile-v2"
+PROFILE_SETTINGS = {"--prefill", "--short-read", "--vram-reserve-mib", "--expert-cache", "--dflash-block"}
 MAX_REPORT_BYTES = 2 * 1024 * 1024
 MAX_APPLICATION_BYTES = 8 * 1024
 MAX_AGE_SECONDS = 30 * 24 * 3600
 ALLOWED_SETTINGS = {"--pcie-frac", "--spec-min-p", "--pool-workers",
-                    "--adapt-every", "--adapt-swaps", "--adapt-decay"}
+                    "--adapt-every", "--adapt-swaps", "--adapt-decay"} | PROFILE_SETTINGS
 
 
 def _full_folder(name: str):
@@ -104,9 +107,10 @@ def preview(ref: str) -> dict:
             "model_name": cfg.get("model_name"), "backend": cfg.get("backend") or "unverified",
             "devices_selected": cfg.get("gpu"), "tool": "tools/calibrate.py",
             "tool_available": _tools_available(),
-            "estimated_minutes": [15, 30], "requires_exclusive_engine": True,
+            "estimated_minutes": [30, 90] if cfg.get("drafter") == "dflash2" else [15, 30], "requires_exclusive_engine": True,
             "settings_measured": ["--pcie-frac", "--spec-min-p", "--pool-workers",
-                                  "--adapt-every", "--adapt-swaps", "--adapt-decay"],
+                                  "--adapt-every", "--adapt-swaps", "--adapt-decay"] +
+                                 (sorted(PROFILE_SETTINGS) if cfg.get("drafter") == "dflash2" else []),
             "component_preflight": components, "hardware_identity": "unverified_until_measurement",
             "would_start_engine": False, "would_write_config": False}
 
@@ -173,6 +177,9 @@ def _validate_settings(settings: object) -> dict[str, str]:
     for flag, raw in settings.items():
         if not isinstance(raw, str) or len(raw) > 32:
             raise ProfileError(f"calibration setting {flag} must be a short string", 5)
+        if flag == "--prefill" and raw == "auto":
+            out[flag] = raw
+            continue
         try:
             number = float(raw)
         except ValueError:
@@ -183,8 +190,16 @@ def _validate_settings(settings: object) -> dict[str, str]:
             if not 0 <= number <= 1:
                 raise ProfileError(f"calibration setting {flag} must be in 0..1", 5)
         else:
-            if not raw.isdecimal() or not 1 <= int(raw) <= 8192:
-                raise ProfileError(f"calibration setting {flag} must be a positive whole number", 5)
+            lower, upper = (0, 262144) if flag == "--short-read" else (1, 8192)
+            if flag == "--dflash-block":
+                upper = 7
+            elif flag in ("--expert-cache", "--vram-reserve-mib"):
+                lower, upper = 0, 1048576
+            elif flag in ("--adapt-every", "--adapt-swaps"):
+                lower = 0
+            if not raw.isdecimal() or not lower <= int(raw) <= upper:
+                message = (f"a whole number in {lower}..{upper}" if flag in PROFILE_SETTINGS else "a positive whole number")
+                raise ProfileError(f"calibration setting {flag} must be {message}", 5)
         out[flag] = raw
     return out
 
@@ -319,7 +334,7 @@ def _measure_locked(ref: str, path: Path, profile: dict | None, revision: str | 
         unchanged = path == end_path and identity == _identity(end_path, end_cfg, end_profile, end_revision)
     except ProfileError:
         unchanged = False
-    report = {"schema_version": 1, "kind": "strata.engine.calibration", "suite": SUITE,
+    report = {"schema_version": 1, "kind": "strata.engine.calibration", "suite": DFLASH2_SUITE if cfg.get("drafter") == "dflash2" else SUITE,
               "report_id": uuid.uuid4().hex, "created_at": time.time(), "source_config": str(path),
               "identity": identity, "applicable": unchanged, "settings": settings,
               "measurements": result["report"]}
@@ -347,7 +362,7 @@ def load_report(path: Path) -> dict:
         raise ProfileError(f"cannot read calibration report ({type(exc).__name__})", 5) from None
     if not isinstance(report, dict) or type(report.get("schema_version")) is not int or \
             report["schema_version"] != 1 or \
-            report.get("kind") != "strata.engine.calibration" or report.get("suite") != SUITE or \
+            report.get("kind") != "strata.engine.calibration" or report.get("suite") not in (SUITE, DFLASH2_SUITE) or \
             not isinstance(report.get("identity"), dict) or not isinstance(report.get("measurements"), dict) or \
             not isinstance(report.get("source_config"), str) or \
             type(report.get("created_at")) not in (int, float) or \

@@ -26,6 +26,11 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
 
   --dflash-block   the actual DFlash forward length, capped by the loaded artifact and --spec.
 
+DFlash2 additionally measures fresh-request profiles (calibrate_dflash2.py): prompt chunks,
+startup memory headroom and a joint block/floor grid, with short/long request costs recorded
+separately. This explicit calibration can take 30-90 minutes. It never changes uncalibrated
+MTP/plain-DFlash defaults and does not select a drafter quantization.
+
 The PCIe share, probability floor, DFlash block and prompt chunks are measured through one engine (per-request `strata_tune` keys); the worker
 count, the adaptive tier and the shared-expert stream need a restart per value.  Those are decode speed: the prompt
 path streams every expert whatever they say.
@@ -243,11 +248,12 @@ def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
+    profile_options = {"dflash2": True} if cfg.get("drafter") == "dflash2" else {}
     if progress is None and cancel_event is None:
         return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
-                       hip=cfg.get("backend") == "hip")
+                       hip=cfg.get("backend") == "hip", **profile_options)
     return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
-                   hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event)
+                   hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event, **profile_options)
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -304,12 +310,13 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say,
 
 
 def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), long_prompt=None, hip: bool = False,
-            *, progress=None, cancel_event=None) -> dict:
+            *, progress=None, cancel_event=None, dflash2=False) -> dict:
     t0 = time.time()
     report: dict = {}
     _check_cancel(cancel_event)
     _progress(progress, "loading", 0, 1)
     say("  Loading the model for the measurements ...")
+    original_args = list(base_args)
     base_args = apply(base_args, {})                   # the product defaults: what the measurements must beat
     eng = start_engine(base_args)
     try:
@@ -486,6 +493,22 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             base_rate = statistics.median(by_fork["1"])
         elif by_fork.get("0"):
             base_rate = statistics.median(by_fork["0"])
+    if dflash2 and not hip and long_prompt is not None and not split:
+        from calibrate_dflash2 import measure_profiles
+        profile_settings, profile_report = measure_profiles(
+            base_args, settings, ids_list, long_prompt, start_engine,
+            say=say, progress=progress, cancel_event=cancel_event, baseline_args=original_args, calibration=sys.modules[__name__])
+        report["dflash2_profiles"] = profile_report
+        if profile_settings:
+            settings = profile_settings
+            # The earlier short-decode rate describes different allocations/settings.
+            base_rate = None
+        elif not profile_report.get("skipped"):
+            # A failed fresh-request confirmation must not replace the user's
+            # previous balanced profile with the short-decode proposal.
+            settings = {flag: value for flag in (*DEFAULTS, "--dflash-block")
+                        if (value := arg_value(original_args, flag)) is not None}
+            base_rate = None
     report["seconds"] = round(time.time() - t0)
     report["tok_s"] = round(base_rate, 1) if base_rate else None
     _check_cancel(cancel_event)
@@ -534,6 +557,9 @@ def apply(args: list[str], settings: dict) -> list[str]:
         defaults["--dflash-block"] = None
     for flag, default in defaults.items():
         out = with_arg(out, flag, settings.get(flag, default))
+    for flag in ("--prefill", "--short-read", "--vram-reserve-mib", "--expert-cache"):
+        if flag in settings:
+            out = with_arg(out, flag, settings[flag])
     return out
 
 

@@ -488,6 +488,28 @@ class SetupIntegration(unittest.TestCase):
         # The calibrated width itself is not part of its cache key.
         self.assertEqual(keys[1], self.S.hardware_key(dict(df, args=df["args"] + ["--dflash-block", "4"])))
 
+    def test_dflash2_profile_survives_reinstall_and_keeps_measurements(self):
+        cfg_path = Path(self.tmp.name) / "strata-dflash2.json"
+        cfg = {"exe": "x", "args": BASE + ["--dflash", "q8.gguf", "--dflash-block", "3"],
+               "model_name": "m", "drafter": "dflash2", "dflash2_quant": "q8"}
+        settings = {"--prefill": "512", "--short-read": "64", "--dflash-block": "6",
+                    "--spec-min-p": "0.85", "--vram-reserve-mib": "1024"}
+        report = {"tok_s": None, "dflash2_profiles": {"selected": "prefill-512", "confirmation_gain": .15}}
+        cfg_path.write_text(json.dumps(cfg))
+        CAL.run = lambda *a, **k: {"settings": settings, "report": report}
+        self.assertTrue(self.S.calibrate_config(cfg_path))
+        written = json.loads(cfg_path.read_text())
+        self.assertEqual(self.S.hardware_key(cfg), self.S.hardware_key(written))
+        self.assertEqual(self.S.saved_calibration(cfg)["settings"], settings)
+        self.assertEqual(self.S.saved_calibration(cfg)["report"], report)
+        restored = CAL.apply(cfg["args"], self.S.saved_calibration(cfg)["settings"])
+        self.assertEqual(CAL.arg_value(restored, "--prefill"), "512")
+        self.assertEqual(CAL.arg_value(restored, "--dflash-block"), "6")
+        changed = dict(cfg, args=CAL.with_arg(cfg["args"], "--dflash", "q4.gguf"))
+        self.assertIsNone(self.S.saved_calibration(changed))
+        changed_env = dict(cfg, env={"STRATA_DFLASH_HEAD_IL": "1"})
+        self.assertIsNone(self.S.saved_calibration(changed_env))
+
     def test_failed_calibration_keeps_defaults(self):
         cfg_path = Path(self.tmp.name) / "strata-q2_0.json"
         cfg_path.write_text(json.dumps({"exe": "x", "args": list(BASE), "model_name": "m"}))
