@@ -5538,8 +5538,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // decode kernel, 32 queries at a time (K8V4 runs the tensor kernel's mode 3: INT8 K,
                     // V dequantized from its q4_0 blocks to fp16 at gather)
                     static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
+                    // STRATA_PROMPT_ATTN_RDNA2=1 (HIP gfx103x, INT8 K/V): one block per query and KV head, no split and merge
+#if defined(STRATA_USE_HIP)
+                    const bool rdna2_attn = !old_attn && strata::kernels::qsa_prompt_attn_rdna2(m.q, pools, m.sel_ids, m.steps_dev,
+                                                                                               m.cap, s, m.attn, T, m.cs);
+#else
+                    const bool rdna2_attn = false;   // HIP only (the CUDA, SYCL and Metal builds never reference it)
+#endif
                     const int64_t ld_a = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
-                    const bool gated = !old_attn && !st.kv_rot && !st.kv_hybrid && qsa_fuse_gate() &&
+                    // the gfx103x kernel writes the ungated output (m.attn), so the separate gate pass below runs after it
+                    const bool gated = !rdna2_attn && !old_attn && !st.kv_rot && !st.kv_hybrid && qsa_fuse_gate() &&
                                        strata::kernels::qsa_prompt_attn_batch_gated(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s, m.Qf,
                                                                                     m.attn_h, ld_a > 0 ? ld_a : ZV, T, m.cs);
                     {
@@ -5553,7 +5561,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // STRATA_PATTN_SM60=1 (qsa_pattn.hpp, sm_6x, int8 K/V): the decode kernels' output bit for bit from a
                     // score kernel and a value kernel that merges as it folds (no partials, no merge kernel), ~100
                     // queries a batch in the same scratch; any refusal or launch failure runs the loop below
-                    if (!gated && (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
+                    if (!gated && !rdna2_attn && (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
                                                                                         m.attn, T, m.cs)))
 #if !defined(STRATA_GPU_METAL)   // qsa_pattn.cu is in the CUDA / HIP kernel library only
                         if (!(strata::kernels::pattn_mode() != 0 &&

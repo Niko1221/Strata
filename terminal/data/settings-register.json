@@ -36645,6 +36645,34 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PROMPT_ATTN_RDNA2",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "engine/src/kernels/cuda/qsa_decode_attn.cu",
+     "line": 1264,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "kernels",
+   "note": "[reviewed] =1 (HIP gfx103x, INT8 K/V): the prompt's QSA attention runs one block per (query, KV head) with an online softmax instead of the decode kernel's split and merge (#3381).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PROMPT_ATTN_Q4",
    "backends": [
     "cuda-hip",
