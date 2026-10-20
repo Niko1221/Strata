@@ -7,7 +7,13 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <b>Deutsch</b> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a></p>
 
-> **Persönlicher Fork (c-OOL-io/Strata-WebSearch).** Dieser Fork fügt **Websuche und Seitenlesen in Chat und serve-Frontend** ein (Engines DuckDuckGo, SearXNG, Brave, Tavily, Serper; standardmäßig aus, API-Keys bleiben im Browser).
+> **Persönlicher Fork (c-OOL-io/Strata-WebSearch).** Dieser Fork ergänzt den eingebauten Chat und das serve-Frontend um **Websuche und vollständiges Seitenlesen**: die schlanke Terminal-Web-App, bei der Upstream keine Suche hat (Upstreams Suche steckt in der App). Er ist so gebaut wie Stratas Chat selbst: **standardmäßig komplett aus** (bis du sie einschaltest, verlässt nichts Suchbezogenes den PC), **keine zusätzlichen Tokens** für Chats, die sie nicht aktivieren, und Suchtext ist auf einen kleinen Anteil des Kontextfensters des Modells begrenzt (Defaults skalieren mit `max_context`, kleine Kontext-Instanzen bleiben sicher).
+>
+> - **Engines:** standardmäßig DuckDuckGo (ohne Key), SearXNG (eigene selbst gehostete Instanz), Brave, Tavily und Serper (Google) mit eigenen Keys. Keys bleiben im Browser; nichts Suchbezogenes wird auf dem Server gespeichert.
+> - **Query-Optimierer:** umständliche Formulierung wird per einem schnellen Anruf beim eigenen lokalen Modell in eine saubere Suchanfrage umgeschrieben, in der Sprache, in der du geschrieben hast. Schlägt er fehl, wird die Originalnachricht gesucht. Wenn das tatsächlich Gesuchte sich vom Getippten unterscheidet, zeigt es die Sources-Zeile.
+> - **Ergebnisseiten lesen:** die besten Ergebnisseiten werden geholt und als extrahierter Text injiziert (Nav/Footer/Skripte entfernt, `main`/`article` bevorzugt), mit Direct- / Jina-Fallback- / Jina-für-alle-Lesemodus und explizitem Warnhinweis, sobald ein Dritter deine URLs sehen könnte.
+> - **Nachvollziehbare Antworten:** jede Antwort bekommt eine `Sources`-Zeile (Engine, exakte Query, klickbare Links, `read`-Badges), die auch im Markdown-Export mitfährt, und eine fehlgeschlagene Suche hinterlässt eine benannte Ursache-Warnung (fehlender Key, Engine nicht erreichbar, Bot-Check) statt still zu scheitern.
+> - **Abgehärtet:** `/search` sitzt hinter dem Own-Page-Schutz der App (fremde Origins abgelehnt), http(s)-only-URL-Prüfungen, damit Seitenlesen nie ein lokaler Datei-Leser wird, injizierter Webtext wird als nicht vertrauenswürdig markiert, und das Backend (`serve/websearch.py`) ist stdlib-only, keine neuen Abhängigkeiten, Windows/Linux/macOS.
 > Zwei Dinge vor dem Download:
 >
 > 1. **Die Download-Links unten sind die Vanilla-Upstream-App** von Niko1221/Strata. Die fertigen Binaries enthalten **nicht** die Suche dieses Forks. Die Version mit Suche gibt es nur aus dem Source: `git clone`, Branch `web-search`, dann START-HERE.bat / setup.sh.
