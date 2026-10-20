@@ -775,6 +775,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata PRIVATE delayimp)
     target_link_options(strata PRIVATE "LINKER:/DELAYLOAD:hipblas.dll" "LINKER:/DELAYLOAD:libhipblaslt.dll" "LINKER:/DELAYLOAD:rocblas.dll")
   endif()
+  # --pipeline-windows: the new pipelined decode loop's scheduler (pl_sched, host code; its test is pl_sched_test)
+  target_sources(strata PRIVATE src/program/pl_sched.cpp)
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked
   # against llama.cpp by tools/qwen35/; the engine itself does not run the family yet
