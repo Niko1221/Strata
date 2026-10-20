@@ -147,5 +147,9 @@ namespace strata::kernels { bool gemm_iq_f16_grouped(int p0, void const* p1, uns
 // STRATA_Q8_SM60 (Pascal GP100, opt-in): a no-op on Metal; NativeHead::load()/unload() call these for a Q8_0 head, so they must exist and answer "nothing packed".
 namespace strata::kernels { bool native_q8_0_sm60_pack(void const* p0, int p1, int p2, char const* p3) { return false; } }
 namespace strata::kernels { void native_q8_0_sm60_release(void const* p0) { } }
+// STRATA_SELECT_LONG (verify.cpp's long-context decode select): CUDA only; never reached on Metal (no scratch asked for)
+namespace strata::kernels { long long qsa_topk_multi_scratch_ints(long long p0) { return 0; } }
+namespace strata::kernels { void qsa_block_topk_long(float const* p0, int const* p1, long long p2, long long p3, long long p4, strata::kernels::QsaShapes const& p5, int* p6, void* p7, long long p8, int* p9) { strata::metal_engine::missing("strata::kernels::qsa_block_topk_long"); } }
+namespace strata::kernels { void qsa_block_scores_long(float const* p0, float const* p1, float const* p2, int const* p3, long long p4, long long p5, strata::kernels::QsaShapes const& p6, float* p7, void* p8, long long p9) { strata::metal_engine::missing("strata::kernels::qsa_block_scores_long"); } }
 // only reached with pf_wmma (off on Metal)
 namespace strata::prefill { void swiglu_split_f16(float const* p0, unsigned short* p1, long long p2, int p3, bool p4, void* p5) { } }
