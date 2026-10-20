@@ -29,16 +29,6 @@ void missing(const char* name) {
 
 }  // namespace strata::metal_engine
 
-// ---- entry points the shared host loop asks every request, with nothing to do on Metal yet
-#include "strata/kernels/cvec.hpp"
-namespace strata::kernels {
-// no control vector on Metal (--control-vector-scaled is not ported): the empty one, `loaded()` false
-const Cvec& cvec() {
-    static const Cvec none{};
-    return none;
-}
-}  // namespace strata::kernels
-
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
 // lldb needs a debugging permission a user's session may not have)
 #include <csignal>
