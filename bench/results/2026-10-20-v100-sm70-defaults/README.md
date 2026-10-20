@@ -59,3 +59,9 @@ With the stack on: two simultaneous requests, each 32,000 uncached prompt tokens
 The proposed sm70 table enables the tested combined stack automatically, keeps explicit per-switch environment settings, and supports `STRATA_SM70_PERF=0`. Existing startup logic limits automatic tables to homogeneous visible compute capabilities.
 
 Evidence is limited to dual **32 GB PCIe V100**, this model/quantization, MTP4, 32K context and two slots. Single GPU, 16 GB V100, SXM2, other models, mixed GPUs and prolonged endurance were not tested. GPU1 memory headroom is narrow; this does not validate extra slots/vision/co-resident workloads. Maintainers may want those additional hardware checks before broad rollout. The source change is based on current main; GPU measurements above were on the stated release, not a rebuild of current main.
+
+## Extended candidate sweep (2026-10-20/21)
+
+[Extended report and raw results](extended/README.md) evaluate the applicable historical optimizations and record rejected candidates as well as the selected stack. Seven additional switches improve Japanese/code decode from 78.7/116.8 to 82.4/122.4 tok/s in the paired trial, with 10/10 decoded texts matching. Final restart check: 82.5/122.6 tok/s. These are additional gains over the six-switch baseline above, not a new paired comparison against the original untuned engine. The proposed table now contains all 13 switches.
+
+The selected stack passed four 32,000-input/512-output requests in two simultaneous pairs (43.55/43.58 s), with both sentinels present. The output-changing FP16/recurrence candidates, slower exact recurrence and one-group batching are excluded. This is a proposed default pending maintainer scope agreement and current-main GPU validation; no broad hardware compatibility is claimed.

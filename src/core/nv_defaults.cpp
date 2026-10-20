@@ -36,14 +36,22 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
     } else if (mj == 7 && mn == 0) {
         if (off("STRATA_SM70_PERF")) return t;
         t = {
-            // Dual V100 PCIe 32 GB, IQ3_S, MTP4: +5.8% Japanese / +7.6% code decode.
-            // Combined stack; output text matched all nine cases. See bench/results/2026-10-20-v100-sm70-defaults/.
+            // Dual V100 PCIe 32 GB, IQ3_S, MTP4: initial six-switch stack +5.8%/+7.6% decode;
+            // seven additions +4.7%/+4.8% against that stack. Ten decoded texts matched.
+            // Combined-stack evidence, not a token-id gate: bench/results/2026-10-20-v100-sm70-defaults/.
             {"STRATA_SIDE_MIXER", "2"},
             {"STRATA_GR_UP75", "1"},
             {"STRATA_B6_MMVQ_ROWS", "1"},
             {"STRATA_GU_SWIGLU", "1"},
             {"STRATA_QSA_ROWS", "1"},
             {"STRATA_ATTN_DAILY", "1"},
+            {"STRATA_SM70_TABLE", "1"},
+            {"STRATA_GR_NORM_FAST", "1"},
+            {"STRATA_ARGMAX_ROWS_SM70", "1"},
+            {"STRATA_QIL", "1"},
+            {"STRATA_EXPDEC", "1"},
+            {"STRATA_GR_DOWN_TG", "1"},
+            {"STRATA_DEQUANT_WIDE", "1"},
         };
     } else if (mj == 6 && mn == 0) {
         if (off("STRATA_SM60_PERF")) return t;

@@ -17,7 +17,7 @@ int main() {
     put("STRATA_EMULATE_CC", nullptr);
     for (const char* k : {"STRATA_SM70_PERF", "STRATA_SM60_PERF", "STRATA_SM86_PERF"}) put(k, nullptr);
     const auto table = nv_default_env(7, 0);
-    CHECK(table.size() == 6);
+    CHECK(table.size() == 13);
     for (const auto& kv : table) put(kv.first.c_str(), nullptr);
     CHECK(nv_default_env(7, 5).empty());
     CHECK(nv_default_env(7, 2).empty());
@@ -33,7 +33,7 @@ int main() {
     put("STRATA_SIDE_MIXER", "0");
     put("STRATA_GR_UP75", "custom");
     const auto set = apply_nv_defaults(7, 0);
-    CHECK(set.size() == 4);
+    CHECK(set.size() == 11);
     CHECK(std::string(std::getenv("STRATA_SIDE_MIXER")) == "0");
     CHECK(std::string(std::getenv("STRATA_GR_UP75")) == "custom");
     for (const auto& kv : table) {

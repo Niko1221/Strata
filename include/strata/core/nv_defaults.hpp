@@ -6,7 +6,7 @@
 // (10 prompts + exact_pp 4K/20K, fixed flags) is IDENTICAL with the whole table on.  Switches that change bits, hang or lost speed
 // on a card (STRATA_EXCHANGE_ROTATE, STRATA_PCIE_BALANCE, STRATA_QSA_WARP, ...) are not in any table.
 //
-// The sm_70 table was measured as a combined stack on dual V100 PCIe 32 GB with IQ3_S/MTP4: nine output texts matched,
+// The sm_70 table was measured as a combined stack on dual V100 PCIe 32 GB with IQ3_S/MTP4: ten output texts matched in the extended trial,
 // and repeated 32K/two-stream checks passed. This is not the broader token-id/exact_pp gate above; single V100, 16 GB,
 // SXM2 and other models remain unmeasured. See bench/results/2026-10-20-v100-sm70-defaults/README.md.
 //

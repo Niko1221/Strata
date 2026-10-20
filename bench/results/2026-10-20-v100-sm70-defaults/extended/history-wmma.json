@@ -1,0 +1,275 @@
+{
+  "label": "history-wmma",
+  "rows": [
+    {
+      "ttft_ms": 280.52,
+      "wall_s": 3.549,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "262",
+          "156.3",
+          "256",
+          "3285",
+          "77.9"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 0,
+      "output_utf8_sha256": "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e"
+    },
+    {
+      "ttft_ms": 279.1,
+      "wall_s": 3.374,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "261",
+          "156.9",
+          "256",
+          "3110",
+          "82.3"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 1,
+      "output_utf8_sha256": "5ddaa59637ace2789e2ba7c0a497325b150392cdd36ba7548c40496f410ff904"
+    },
+    {
+      "ttft_ms": 279.63,
+      "wall_s": 3.637,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "262",
+          "156.6",
+          "256",
+          "3373",
+          "75.9"
+        ]
+      ],
+      "kind": "japanese",
+      "repeat": 2,
+      "output_utf8_sha256": "85de2f18f3c5dedb5b5d675cf61944049e9b74bb7756b00e8ebfed6a04c43c69"
+    },
+    {
+      "ttft_ms": 381.75,
+      "wall_s": 2.559,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "364",
+          "162.2",
+          "256",
+          "2194",
+          "116.7"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 0,
+      "output_utf8_sha256": "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101"
+    },
+    {
+      "ttft_ms": 382.12,
+      "wall_s": 2.541,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "364",
+          "162.1",
+          "256",
+          "2175",
+          "117.7"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 1,
+      "output_utf8_sha256": "70020e0688fa8230d5c513b55c342f36d975bf83f45cca021fd871153589025a"
+    },
+    {
+      "ttft_ms": 381.55,
+      "wall_s": 2.563,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "364",
+          "161.9",
+          "256",
+          "2197",
+          "116.5"
+        ]
+      ],
+      "kind": "code",
+      "repeat": 2,
+      "output_utf8_sha256": "7003adf89c47f3d2a760de8e970cbdc5169bb0911a70e2c02d5530463ca054e4"
+    },
+    {
+      "ttft_ms": 1963.52,
+      "wall_s": 2.791,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "1944",
+          "797.7",
+          "64",
+          "844",
+          "75.8"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 0,
+      "output_utf8_sha256": "259d37accd9e6888b522e5f8adfc238a59fe16707838af525320b82bbc981637"
+    },
+    {
+      "ttft_ms": 1940.33,
+      "wall_s": 2.624,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "1922",
+          "807.0",
+          "64",
+          "700",
+          "91.5"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 1,
+      "output_utf8_sha256": "e65a56393b34e4e338e6585e9dd25f0da938030ca1089836cab5275dbb357e66"
+    },
+    {
+      "ttft_ms": 1949.09,
+      "wall_s": 2.674,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "1931",
+          "803.4",
+          "64",
+          "741",
+          "86.4"
+        ]
+      ],
+      "kind": "long",
+      "repeat": 2,
+      "output_utf8_sha256": "4c14b66c91323138f411809c1470aa8aaafd599a4f1a0010d8cea698a7957332"
+    },
+    {
+      "ttft_ms": 9463.53,
+      "wall_s": 10.172,
+      "usage": {
+        "prompt_tokens": 15352,
+        "completion_tokens": 64,
+        "total_tokens": 15416,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "15352",
+          "0",
+          "15352",
+          "9442",
+          "1625.9",
+          "64",
+          "724",
+          "88.3"
+        ]
+      ],
+      "kind": "prefill16k",
+      "repeat": 0,
+      "output_utf8_sha256": "a499a56a55900bfe98e601651f6fa67c15985f01abdb1debf5faf457a9b570a4"
+    }
+  ]
+}
