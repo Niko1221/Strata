@@ -92,6 +92,41 @@ bool Sched::in_flight() const {
     return false;
 }
 
+std::string Sched::dump() const {
+    char b[256];
+    std::string s;
+    std::snprintf(b, sizeof b, "pl_sched state: mode %s ns %d end %lld nwin %d ndoom %d ending %d", mode_name(c_.mode),
+                  c_.ns(), (long long) end_, nwin_, ndoom_, ending_ ? 1 : 0);
+    s += b;
+    std::snprintf(b, sizeof b, " | undo active %d seq %d slot %d keep %d pending 0x%x", undo_.active ? 1 : 0, undo_.seq,
+                  undo_.slot, undo_.keep, (unsigned) undo_.pending);
+    s += b;
+    auto pw = [&](const char* name, int k, const PW& w) {
+        std::snprintf(b, sizeof b, " | %s[%d] seq %d uid %llu slot %d T %d p %lld fr %d fl %d com 0x%x rdy %d l %d fin %d "
+                                   "s1 %d/%d gated %d", name, k, w.seq, (unsigned long long) w.uid, w.slot, w.T,
+                      (long long) w.p, w.fr, w.fl ? 1 : 0, (unsigned) w.com, w.ready ? 1 : 0, w.launched ? 1 : 0,
+                      w.finished ? 1 : 0, w.s1 ? 1 : 0, w.s1_done ? 1 : 0, w.gated ? 1 : 0);
+        s += b;
+    };
+    for (int k = 0; k < nwin_; ++k) pw("win", k, win_[k]);
+    for (int k = 0; k < ndoom_; ++k) pw("doom", k, doom_[k]);
+    for (int h = 0; h < nheld_; ++h) {
+        std::snprintf(b, sizeof b, " | held uid %llu slot %d undo %d chain %d", (unsigned long long) held_[h].uid,
+                      held_[h].slot, held_[h].need_undo ? 1 : 0, held_[h].need_chain ? 1 : 0);
+        s += b;
+    }
+    std::snprintf(b, sizeof b, " | chain kind %d n %d open %d queued %d asked %d targets %d cancelled %d | request %d kind %d",
+                  ch_.kind, ch_.n, ch_.open ? 1 : 0, ch_.queued, ch_.asked, ch_.targets, ch_.cancelled ? 1 : 0,
+                  req_.pending ? 1 : 0, req_.kind);
+    s += b;
+    s += " | owner";
+    for (int q = 0; q < c_.ns() && q < kMaxSlots; ++q) {
+        std::snprintf(b, sizeof b, " %d:%llu%s", q, (unsigned long long) owner_[q], src_armed_[q] ? "*" : "");
+        s += b;
+    }
+    return s;
+}
+
 // the serial loop's window size over the chain's outputs from index `from` (`avail` of them) - today's t_rule
 int Sched::t_rule(const float* pr, int from, int avail) const {
     int T = c_.S_mtp;
@@ -102,18 +137,24 @@ int Sched::t_rule(const float* pr, int from, int avail) const {
     return std::max(1, std::min(T, 1 + avail - from));
 }
 
-bool Sched::begin(const Config& c, int64_t p, int32_t x, const int32_t ple_prev[2], double t0_ms, std::string& err) {
-    c_ = c;
-    if (c_.n_front < 1 || c_.n_front > kMaxFront) { err = "pl_sched: front stages out of range"; return false; }
-    if (c_.ns() < 2 || c_.ns() > kMaxSlots || (c_.mode != Mode::N2 && c_.ns() < c_.depth() + 1)) {
-        err = "pl_sched: slots out of range";
+bool Sched::check(const Config& c, std::string& err) {
+    if (c.n_front < 1 || c.n_front > kMaxFront) { err = "pl_sched: front stages out of range"; return false; }
+    if (c.ns() < 2 || c.ns() > kMaxSlots || (c.mode != Mode::N2 && c.ns() < c.depth() + 1)) {
+        err = "pl_sched: slots out of range (mode " + std::string(mode_name(c.mode)) + " needs " +
+              std::to_string(c.mode == Mode::N2 ? 2 : c.depth() + 1) + ", has " + std::to_string(c.ns()) + ")";
         return false;
     }
-    if (c_.S < 1 || c_.S > kMaxRows || c_.S_mtp < 1 || c_.S_mtp > c_.S) { err = "pl_sched: window size out of range"; return false; }
-    if (c_.chain_out2 < 1 || c_.chain_out2 > kChainMax || c_.chain_max < 1 || c_.chain_max > kChainMax) {
+    if (c.S < 1 || c.S > kMaxRows || c.S_mtp < 1 || c.S_mtp > c.S) { err = "pl_sched: window size out of range"; return false; }
+    if (c.chain_out2 < 1 || c.chain_out2 > kChainMax || c.chain_max < 1 || c.chain_max > kChainMax) {
         err = "pl_sched: chain outputs out of range";
         return false;
     }
+    return true;
+}
+
+bool Sched::begin(const Config& c, int64_t p, int32_t x, const int32_t ple_prev[2], double t0_ms, std::string& err) {
+    if (!check(c, err)) return false;
+    c_ = c;
     err_.clear();
     st_ = Stats{};
     nwin_ = ndoom_ = nheld_ = 0;
@@ -483,6 +524,8 @@ bool Sched::chain_round(PlIo& io) {
     }
     const int r = io.chain_poll();
     if (r < 0) return fail("pipelined decode: the drafter's chain failed");
+    // done: the outputs it really has - all it may queue, or (chain_stop) as many as were queued before it closed
+    if (r == 1) ch_.n = std::min(ch_.n, io.chain_n());
     const int k = r == 1 ? ch_.n : k_ready;
     if (r == 1 && ch_.kind == 2 && !ch_.early_used) {
         if (A == nullptr) return fail("pl_sched: the fresh window of the chain is gone");
@@ -570,7 +613,7 @@ bool Sched::launch_chain(PlIo& io, const ChainReq& r) {
     o.n_queue = c_.mode == Mode::B && c_.chain_stop ? std::min(n_out, ch_.n_force + 2) : 0;
     if (o.n_queue >= n_out) o.n_queue = 0;
     if (!run(io, o)) return false;
-    ch_.n = io.chain_n();
+    ch_.n = io.chain_cap();   // n_out after the cell clamp (chain_n: only what is queued so far)
     if (ch_.n < n_out) ++st_.case_hits[kCase10];
     ch_.open = o.n_queue > 0 && o.n_queue < ch_.n;
     ch_.asked = o.n_queue - 1;
