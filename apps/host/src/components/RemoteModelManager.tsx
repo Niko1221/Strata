@@ -10,6 +10,7 @@ interface ManagedModel { id: string; name: string; sizeGb?: number | null; state
 interface DownloadJob { id: string; modelId?: string; name: string; kind: string; state: string; summary: string; percent?: number; doneGb?: number; totalGb?: number; error?: string }
 interface Snapshot {
     supported: boolean; reason?: string; targetName: string;
+    storageMode?: 'files';
     capabilities?: { downloads?: boolean; imports?: boolean };
     models: ManagedModel[]; jobs: DownloadJob[];
 }
@@ -125,7 +126,7 @@ export function RemoteModelManager({ connectionId, name, onClose }: { connection
             } else {
                 const result = await api.post<{ model: { id: string; name: string } }>(endpoint(id) + '/imports', { planId: selected.plan.planId });
                 if (isCurrent(version, id)) {
-                    setReview(null); setNotice(tr('{0} was imported on {1}. Load it there to make it available through the API.', [result.model.name, selected.plan.targetName]));
+                    setReview(null); setNotice(tr(snapshot?.storageMode === 'files' ? '{0} was referenced on {1}. Preparation and loading remain separate server actions; compatibility is unverified.' : '{0} was imported on {1}. Load it there to make it available through the API.', [result.model.name, selected.plan.targetName]));
                 }
             }
             if (isCurrent(version, id)) await refresh(id);
@@ -150,6 +151,7 @@ export function RemoteModelManager({ connectionId, name, onClose }: { connection
     return <Dialog open title={tr('Models on {0}', [targetName])} wide className="remote-model-manager" onClose={onClose}
         actions={review ? <><Btn disabled={!!pending} onClick={() => { setReview(null); setError(''); }}>{tr('Back')}</Btn><Btn variant="primary" disabled={!!pending || expired || diskShort} onClick={() => void confirm()}>{tr(pending === 'confirm' ? 'Working…' : review.kind === 'download' ? 'Download on {0}' : 'Import on {0}', pending === 'confirm' ? [] : [review.plan.targetName])}</Btn></> : <Btn onClick={onClose}>{tr('Close')}</Btn>}>
         <div className="remote-model-target"><Icon name="computer" size={20}/><div><strong>{targetName}</strong><p className="small muted">{tr('Downloads and imports happen on {0}.', [targetName])}</p></div></div>
+        {snapshot?.supported && snapshot.storageMode === 'files' ? <p className="small muted">{tr('SSH manages files in a separate server library. Preparing and loading a model remain separate server actions. Existing serving models continue running.')}</p> : null}
         {loading ? <p className="small muted" role="status">{tr('Checking model management…')}</p> : null}
         {!loading && snapshot?.supported === false ? <div className="remote-model-empty"><Icon name="info" size={25}/><strong>{tr('Model management is unavailable')}</strong><p className="small muted">{tr(snapshot.reason || 'Update Strata and enable remote model management under Serving on that computer, then try again.')}</p><Btn icon="refresh" onClick={() => setAttempt(value => value + 1)}>{tr('Try again')}</Btn></div> : null}
         {!loading && snapshot?.supported && !review ? <>
@@ -161,7 +163,7 @@ export function RemoteModelManager({ connectionId, name, onClose }: { connection
                 {!snapshot.capabilities?.downloads ? <p className="small muted">{tr('This server does not support model downloads.')}</p> : <>
                     <label className="sr-only" htmlFor="remote-model-filter">{tr('Find a model')}</label><input id="remote-model-filter" className="st-input" type="search" placeholder={tr('Find a model…')} value={filter} onChange={event => setFilter(event.target.value)}/>
                     {visibleModels.length ? visibleModels.map(model => {
-                        const installed = ['installed', 'loaded', 'ready', 'imported'].includes(model.state);
+                        const installed = ['installed', 'loaded', 'ready', 'imported', 'downloaded'].includes(model.state);
                         return <div className="remote-model-row" key={model.id}><Icon name="models" size={21}/><div className="remote-model-row__body"><strong>{model.name}</strong><p className="small muted">{tr(gigabytes(model.sizeGb))}{model.detail ? ' · ' + tr(model.detail) : ''}</p>
                             {model.readPictures && !installed ? <label className="remote-model-pictures small"><input type="checkbox" checked={pictures[model.id] ?? true} disabled={!!pending || hasRunningJob} onChange={event => setPictures(value => ({ ...value, [model.id]: event.target.checked }))}/>{tr('Include picture reading')}</label> : null}</div>
                             <Btn size="sm" icon={installed ? 'check' : 'download'} disabled={!!pending || hasRunningJob || installed} onClick={() => void planDownload(model)}>{tr(installed ? model.state === 'loaded' ? 'In use' : model.state === 'imported' ? 'Imported' : 'Downloaded' : 'Review download')}</Btn></div>;

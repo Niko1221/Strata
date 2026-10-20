@@ -1,7 +1,7 @@
 import { tr } from '../lib/i18n';
 import { useEffect, useRef, useState } from 'react';
 import { removeModelConnection, saveModelConnection, useStore } from '../lib/store';
-import type { ApiModel, ModelConnection, ModelConnectionDraft, ModelProtocol } from '../lib/types';
+import type { ApiModel, ModelConnection, ModelConnectionDraft, ModelProtocol, SSHModelManagement } from '../lib/types';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
 import { RemoteModelManager } from './RemoteModelManager';
 const protocols: {
@@ -25,6 +25,8 @@ export function SettingsModels() {
     useEffect(() => () => discovery.current?.abort(), []);
     const saved = providers?.connections.find(c => c.id === draft?.id);
     const preset = providers?.catalog.find(p => p.id === draft?.provider);
+    const ssh = draft?.modelManagement;
+    const invalidSSH = !!ssh && (!ssh.host.trim() || ssh.port !== undefined && (!Number.isInteger(ssh.port) || ssh.port < 1 || ssh.port > 65535));
     function reset() { discovery.current?.abort(); setFetching(false); setAvailable([]); setFilter(''); setModelId(''); setModelName(''); setError(''); setNotice(''); }
     function add() {
         reset();
@@ -40,6 +42,9 @@ export function SettingsModels() {
         setDraft(d => d ? { ...d, ...patch } : null);
         if (patch.provider !== undefined || patch.baseUrl !== undefined || patch.protocol !== undefined || patch.apiKey !== undefined)
             setAvailable([]);
+    }
+    function updateSSH(patch: Partial<SSHModelManagement>) {
+        if (ssh) update({ modelManagement: { ...ssh, ...patch } });
     }
     useEffect(() => {
         if (draft)
@@ -103,7 +108,7 @@ export function SettingsModels() {
     {tr(providers?.connections.length ? <div className="stack stack--sm">{tr(providers.connections.map(connection => <div className="st-card provider-card" key={connection.id}>
       <Icon name={connection.kind === 'custom' ? 'computer' : 'models'} size={22}/>
       <div className="provider-card__text"><strong>{connection.name}</strong><p className="small muted">{tr(connection.models.length)} {tr(connection.models.length === 1 ? 'model' : 'models')} · {tr(connection.apiKeySet ? 'API key saved' : 'No API key')}</p><p className="xs muted provider-address" title={connection.baseUrl}>{connection.baseUrl}</p></div>
-      <div className="provider-card__actions"><Btn size="sm" icon="models" disabled={pending || fetching} onClick={() => setManaging({ id: connection.id, name: connection.name })} title={tr("Manage models on {0}", [connection.name])}>{tr("Manage models")}</Btn><Btn size="sm" disabled={pending || fetching} onClick={() => edit(connection)} title={tr("Edit {0}", [connection.name])}>{tr("Edit")}</Btn></div>
+      <div className="provider-card__actions">{connection.kind === 'custom' ? <Btn size="sm" icon="models" disabled={pending || fetching || !!draft} onClick={() => setManaging({ id: connection.id, name: connection.name })} title={tr("Manage models on {0}", [connection.name])}>{tr("Manage models")}</Btn> : null}<Btn size="sm" disabled={pending || fetching} onClick={() => edit(connection)} title={tr("Edit {0}", [connection.name])}>{tr("Edit")}</Btn></div>
     </div>))}</div> : !draft ? <div className="provider-empty"><Icon name="models" size={26}/><strong>{tr("Add models to your chat picker")}</strong><p className="small muted">{tr("Your local model stays available. Add an API connection to use more models in Strata.")}</p></div> : null)}
     {tr(!draft ? <Btn icon="plus" block disabled={!providers} onClick={add}>{tr("Add model provider")}</Btn> : <div className="st-card provider-editor" ref={editor}>
       <div className="provider-kind" aria-label={tr("Connection type")}>
@@ -117,6 +122,20 @@ export function SettingsModels() {
         <label className="input-field"><span>{tr("API key ")}{tr(draft.kind === 'custom' ? <span className="muted">{tr("(optional)")}</span> : null)}</span><input className="st-input" type="password" value={draft.apiKey} autoComplete="new-password" placeholder={tr(saved?.apiKeySet && !draft.clearKey ? 'Leave blank to keep the saved key' : 'Enter API key')} spellCheck={false} onChange={e => update({ apiKey: e.target.value, clearKey: false })}/><small className="muted">{tr("Saved on the Strata host, never in browser storage.")}</small></label>
         {tr(draft.kind === 'provider' ? <details className="provider-options" key={draft.provider} open={!preset?.baseUrl}><summary>{tr("Connection settings")}</summary>{tr(connectionFields)}</details> : null)}
         {tr(saved?.apiKeySet && draft.kind === 'custom' ? <label className="row small"><input type="checkbox" checked={draft.clearKey ?? false} onChange={e => update({ clearKey: e.target.checked, apiKey: '' })}/>{tr("Remove saved API key")}</label> : null)}
+        {draft.kind === 'custom' ? <div className="provider-ssh-settings">
+          <div className="input-field"><span>{tr('Model management')}</span><Select ariaLabel={tr('Model management')} value={ssh ? 'ssh' : 'api'} options={[{ value: 'api', label: 'Strata desktop API' }, { value: 'ssh', label: 'Terminal server over SSH' }]} onChange={value => update({ modelManagement: value === 'ssh' ? { transport: 'ssh', host: '' } : null })}/></div>
+          <p className="small muted">{tr(ssh ? 'Download and reference existing GGUF files on this server. Chat continues to use the API address above.' : 'For another Strata desktop app, enable remote model management in its Serving settings. Choose SSH for a Terminal server.')}</p>
+          {ssh ? <>
+            <label className="input-field"><span>{tr('SSH host or alias')}</span><input className="st-input" autoComplete="off" spellCheck={false} value={ssh.host} placeholder={tr('Host from your SSH configuration')} onChange={event => updateSSH({ host: event.target.value })}/></label>
+            <div className="provider-ssh-fields">
+              <label className="input-field"><span>{tr('SSH username (optional)')}</span><input className="st-input" autoComplete="off" spellCheck={false} value={ssh.user ?? ''} placeholder={tr('Use SSH configuration')} onChange={event => updateSSH({ user: event.target.value })}/></label>
+              <label className="input-field"><span>{tr('SSH port (optional)')}</span><input className="st-input" type="number" min={1} max={65535} step={1} value={ssh.port ?? ''} placeholder={tr('SSH configuration or 22')} onChange={event => updateSSH({ port: event.target.value ? Number(event.target.value) : undefined })}/></label>
+            </div>
+            <label className="input-field"><span>{tr('Strata source folder (optional)')}</span><input className="st-input" autoComplete="off" spellCheck={false} value={ssh.sourcePath ?? ''} placeholder={tr('Detect automatically')} onChange={event => updateSSH({ sourcePath: event.target.value })}/><small className="muted">{tr('Folder containing setup.py on the server. Use an absolute path or ~/.')}</small></label>
+            <p className="small muted">{tr('Uses this Mac’s SSH keys, agent and configuration. First connect in Terminal to verify the server’s host key. The server needs Python 3.10 or newer. No password or private key is stored in Strata.')}</p>
+            <p className="small muted">{tr('Opening Manage models installs a small helper in your server account. Downloads and GGUF references are kept separately; preparing and loading a model remain separate server actions.')}</p>
+          </> : null}
+        </div> : null}
         <div className="provider-models">
           <div className="provider-models__head"><h3 className="h4">{tr("Models in chat")}</h3><Btn size="sm" icon="refresh" disabled={fetching || !draft.baseUrl.trim() || (draft.kind === 'provider' && !draft.apiKey.trim() && (!saved?.apiKeySet || !!draft.clearKey))} onClick={() => void fetchModels()}>{tr(fetching ? 'Fetching…' : 'Fetch available models')}</Btn></div>
           {tr(notice ? <p className="small muted" role="status">{tr(notice)}</p> : null)}
@@ -135,7 +154,7 @@ export function SettingsModels() {
         </div>
       </fieldset>
       {tr(error ? <ErrorNotice message={error}/> : null)}
-      <div className="provider-actions">{tr(draft.id ? <Btn variant="ghost" size="sm" disabled={pending || streaming} onClick={() => setRemove(true)}>{tr("Remove connection")}</Btn> : null)}<span className="spacer"/><Btn disabled={pending} onClick={() => { reset(); setDraft(null); }}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || fetching || draft.kind === 'provider' && !draft.models.length || !draft.name.trim() || !draft.baseUrl.trim()} onClick={() => void apply()}>{tr(pending ? 'Saving…' : 'Apply')}</Btn></div>
+      <div className="provider-actions">{tr(draft.id ? <Btn variant="ghost" size="sm" disabled={pending || streaming} onClick={() => setRemove(true)}>{tr("Remove connection")}</Btn> : null)}<span className="spacer"/><Btn disabled={pending} onClick={() => { reset(); setDraft(null); }}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || fetching || invalidSSH || draft.kind === 'provider' && !draft.models.length || !draft.name.trim() || !draft.baseUrl.trim()} onClick={() => void apply()}>{tr(pending ? 'Saving…' : 'Apply')}</Btn></div>
     </div>)}
     {tr(!draft && notice ? <p role="status" className="small muted">{tr(notice)}</p> : null)}
     {tr(!draft && error ? <ErrorNotice message={error}/> : null)}

@@ -65,6 +65,20 @@ test('management capabilities, plan preview, explicit start and exact cancellati
   for (const secret of ['PRIVATE-CONNECTION', 'PRIVATE-HOST', 'PRIVATE-KEY', '/private/models', 'setup_command', './setup.sh']) assert.ok(![targets, catalog, plan, startedJob, cancelled].some(response => response.text.includes(secret)), secret);
 });
 
+test('SSH file downloads keep their truthful state while transport configuration stays on the Mac', async t => {
+  const { bridge, token } = await fixture(t, async () => ({
+    supported: true, targetName: 'Terminal server', storageMode: 'files', downloadDirectory: '/PRIVATE-FOLDER',
+    modelManagement: { transport: 'ssh', host: 'PRIVATE-SSH-HOST', user: 'PRIVATE-SSH-USER', sourcePath: '/PRIVATE-SOURCE' },
+    capabilities: { downloads: true, imports: true }, jobs: [],
+    models: [{ id: 'files-q2', name: 'Catalog model', state: 'downloaded', readPictures: false, detail: 'Files downloaded. Preparation and loading remain separate server actions.' }],
+  }));
+  const result = await request(bridge, `${root}/${remoteId}`, { token });
+  assert.equal(result.status, 200);
+  assert.equal(result.json.models[0].state, 'downloaded');
+  assert.equal(result.json.capabilities.imports, false);
+  for (const value of ['PRIVATE-FOLDER', 'PRIVATE-SSH-HOST', 'PRIVATE-SSH-USER', 'PRIVATE-SOURCE', 'modelManagement']) assert.equal(result.text.includes(value), false);
+});
+
 test('management rejects unpaired access, browser origins and arbitrary controls before calling the host', async t => {
   const { bridge, token, calls } = await fixture(t);
   for (const [path, method, body] of [[root, 'GET'], [local, 'GET'], [`${local}/plan`, 'POST', { modelId: 'q2_0', readPictures: false }], [`${local}/downloads`, 'POST', { planId: 'plan-1' }], [`${local}/downloads/download-1/cancel`, 'POST', {}]]) {

@@ -32,6 +32,7 @@
     "resources": {
       "../../host/dist": "host/dist",
       "../../host/server": "host/server",
+      "../../host/python/remote_model_manager.py": "host/python/remote_model_manager.py",
       "../../host/package.json": "host/package.json",
       "resources/node": "node",
       "resources/control": "control",

@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { json, error, readBody } from './util.mjs';
 import { isLocalCompanionRequest } from './companion-routes.mjs';
+import { createRemoteModelSSH, sshManagementDestination } from './remote-model-ssh.mjs';
 
 const fail = (status, message) => Object.assign(new Error(message), { status });
 const text = value => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1000) : '';
@@ -129,43 +130,61 @@ export function createModelManagement({ native, name, modelsDirectory, browse, i
 }
 
 /** A fixed administration subtree on a saved custom connection; no arbitrary proxy URL. */
-export function createModelManagementProxy({ providers, fetcher = fetch }) {
+export function createModelManagementProxy({ providers, fetcher = fetch, sshCall = createRemoteModelSSH() }) {
   const plans = new Map(), jobs = new Map(), starts = new Map();
   const connections = () => providers.withSecrets().filter(connection => connection.kind === 'custom');
   function targets() { return { targets: [{ id: 'local', name: 'This Mac', kind: 'local' }, ...connections().map(connection => ({ id: remoteTargetId(connection), name: connection.name, kind: 'remote', connectionId: connection.id }))] }; }
+  const apiBase = connection => connection.protocol === 'anthropic' ? connection.baseUrl.replace(/\/v1\/?$/, '') + '/v1' : connection.baseUrl.replace(/\/$/, '');
+  const destinationOf = connection => connection?.modelManagement?.transport === 'ssh'
+    ? `ssh:${sshManagementDestination(connection)}`
+    : connection ? createHash('sha256').update(`${apiBase(connection)}\0${connection.apiKey}`).digest('hex') : null;
   async function call(targetId, suffix, method, body, owner = 'desktop', { signal } = {}) {
     const connection = connections().find(connection => remoteTargetId(connection) === targetId);
     if (!connection) throw fail(404, 'This Strata connection is no longer available.');
     const path = `/v1/strata/models${suffix}`;
     if (!managementPath(path)) throw fail(403, 'Unsupported remote model action.');
-    if (!connection.apiKey) {
-      if (method === 'GET') return unsupported('Set an API key on the destination Strata computer and save it in this connection.');
+    const ssh = connection.modelManagement?.transport === 'ssh';
+    if (!ssh && !connection.apiKey) {
+      if (method === 'GET') return unsupported('Set an API key on the destination Strata computer and save it in this connection. For a Terminal server, edit this connection and choose Terminal server over SSH.');
       throw fail(403, 'Set an API key on the destination Strata computer and save it in this connection.');
     }
-    const base = connection.protocol === 'anthropic' ? connection.baseUrl.replace(/\/v1\/?$/, '') + '/v1' : connection.baseUrl.replace(/\/$/, '');
-    const destination = createHash('sha256').update(`${base}\0${connection.apiKey}`).digest('hex');
+    const destination = destinationOf(connection);
+    const unchanged = () => {
+      const saved = providers.withSecrets().find(saved => saved.id === connection.id);
+      return saved && destinationOf(saved) === destination && (ssh || saved.baseUrl === connection.baseUrl && saved.apiKey === connection.apiKey && saved.protocol === connection.protocol);
+    };
+    let requestId;
     if (method === 'POST' && ['/downloads','/imports'].includes(suffix)) {
       exact(body, ['planId']);
       const plan = plans.get(body.planId);
       if (!plan || plan.owner !== owner || plan.targetId !== targetId || plan.destination !== destination || plan.expiresAt <= Date.now() || plan.kind !== suffix) throw fail(409, 'This preview expired. Review the model again.');
       plans.delete(body.planId); body = { planId: plan.remoteId };
-      if (suffix === '/downloads') starts.set(`${targetId}:${plan.remoteId}`, { owner, destination });
+      if (suffix === '/downloads') { starts.set(`${targetId}:${plan.remoteId}`, { owner, destination }); requestId = plan.remoteId; }
     }
     const cancelId = /^\/downloads\/([a-zA-Z0-9_-]+)\/cancel$/.exec(suffix)?.[1];
     const owns = jobId => { const receipt = jobs.get(`${targetId}:${jobId}`); return receipt?.owner === owner && receipt.destination === destination; };
     if (cancelId && owner.startsWith('phone:') && !owns(cancelId)) throw fail(403, 'Stop this download from the computer that started it.');
     let response;
     try {
-      response = await fetcher(`${base}/strata/models${suffix}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${connection.apiKey}` }, redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(150_000)]) : AbortSignal.timeout(150_000), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    } catch { throw fail(503, 'Could not reach this Strata computer. Check its connection and try again.'); }
-    const saved = providers.withSecrets().find(saved => saved.id === connection.id);
-    if (saved?.baseUrl !== connection.baseUrl || saved?.apiKey !== connection.apiKey || saved?.protocol !== connection.protocol) { await response.body?.cancel(); throw fail(409, 'This connection changed. Reopen model management.'); }
-    if ([403,404,405,501].includes(response.status) && method === 'GET') { await response.body?.cancel(); return unsupported('Update Strata on this computer, then enable Serving → Allow remote model management.'); }
+      if (ssh) {
+        const packet = await sshCall(connection, suffix, method, body, owner, { signal, requestId });
+        response = { status: packet.status, ok: packet.status >= 200 && packet.status < 300, text: async () => JSON.stringify(packet.body), body: null, helperBody: packet.body };
+      } else {
+        response = await fetcher(`${apiBase(connection)}/strata/models${suffix}`, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${connection.apiKey}` }, redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(150_000)]) : AbortSignal.timeout(150_000), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      }
+    } catch (cause) { if (ssh) throw cause; throw fail(503, 'Could not reach this Strata computer. Check its connection and try again.'); }
+    if (!unchanged()) { await response.body?.cancel(); throw fail(409, 'This connection changed. Reopen model management.'); }
+    if (!ssh && [403,404,405,501].includes(response.status) && method === 'GET') { await response.body?.cancel(); return unsupported('For a Strata desktop app, update it and enable Serving → Allow remote model management. For a Terminal server, edit this connection and choose Terminal server over SSH.'); }
+    if (ssh && !response.ok) {
+      const message = response.helperBody?.error;
+      throw fail(response.status, typeof message === 'string' && message.length <= 1000 && !/https?:\/\/|(?:^|\s)\/[\w.-]+\/|[\x00-\x1f]/.test(message) ? message : 'SSH model management could not finish this action. Check the Strata source folder and SSH account permissions.');
+    }
     if (!response.ok) { await response.body?.cancel(); throw fail(response.status === 401 ? 401 : response.status === 409 ? 409 : 400, response.status === 401 ? 'This Strata computer rejected the API key.' : response.status === 409 ? 'The destination is busy or this preview expired. Refresh and review again.' : 'The destination could not finish this model action. Check its model status and try again.'); }
     const raw = await response.text();
+    if (!unchanged()) throw fail(409, 'This connection changed. Reopen model management.');
     if (raw.length > 2 * 1024 * 1024) throw fail(502, 'The destination sent an oversized model response.');
     let result; try { result = JSON.parse(raw); } catch { throw fail(502, 'This server did not return a Strata model response.'); }
-    if (method === 'GET' && (result.supported !== true || !Array.isArray(result.models) || !result.capabilities)) return unsupported('This API server does not support Strata model management.');
+    if (method === 'GET' && (result.supported !== true || !Array.isArray(result.models) || !result.capabilities)) return unsupported('This API server does not support Strata model management. For a Terminal server, edit this connection and choose Terminal server over SSH.');
     if (method === 'POST' && ['/plan','/imports/inspect'].includes(suffix)) {
       if (!id(result.planId) || !Number.isFinite(result.expiresAt)) throw fail(502, 'The destination did not return a valid model preview.');
       for (const [key, value] of plans) if (value.expiresAt <= Date.now()) plans.delete(key);
@@ -178,6 +197,9 @@ export function createModelManagementProxy({ providers, fetcher = fetch }) {
     if (Array.isArray(result.jobs)) result.jobs = result.jobs.map(job => {
       const receipt = starts.get(`${targetId}:${job.requestId}`);
       if (receipt?.owner === owner && receipt.destination === destination) jobs.set(`${targetId}:${job.id}`, receipt);
+      // The private SSH helper persists ownership across host restarts. Its
+      // owner-specific snapshot can restore a phone receipt for this destination.
+      if (ssh && method === 'GET' && owner.startsWith('phone:') && job.canCancel === true && id(job.id)) jobs.set(`${targetId}:${job.id}`, { owner, destination });
       return { ...job, canCancel: !owner.startsWith('phone:') || owns(job.id) };
     });
     if (result.job && owner.startsWith('phone:')) result.job.canCancel = owns(result.job.id);

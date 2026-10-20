@@ -17,12 +17,12 @@ test('saved connection manages remote downloads and existing GGUF files through 
     const entry = `import React from 'react'; import {createRoot} from 'react-dom/client'; import {SettingsModels} from ${JSON.stringify(join(source, 'components/SettingsModels.tsx'))}; createRoot(document.getElementById('root')).render(<SettingsModels/>);`;
     const { outputFiles } = await build({ stdin: { contents: entry, resolveDir: source, loader: 'tsx' }, bundle: true, write: false, outfile: 'harness.js', format: 'iife', platform: 'browser', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, plugins: [{ name: 'isolated-settings-state', setup(builder) {
         builder.onResolve({ filter: /(?:^|\/)store$/ }, args => args.importer.includes('/src/') ? { path: 'isolated-store', namespace: 'isolated-store' } : undefined);
-        builder.onLoad({ filter: /.*/, namespace: 'isolated-store' }, () => ({ contents: `const state={streaming:false,providers:{catalog:[{id:'fixture-provider',name:'Fixture provider',baseUrl:'https://provider.invalid/v1',protocol:'openai-chat'}],connections:[{id:'saved-connection',kind:'custom',name:'Garage server',baseUrl:'http://fixture.invalid/v1',protocol:'openai-chat',apiKeySet:true,models:[{id:'existing-model',name:'Existing model'}]}]}}; export const useStore=selector=>selector(state); export const removeModelConnection=async()=>{throw Error('Unexpected connection removal')}; export const saveModelConnection=async draft=>{const response=await fetch('/fixture-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(draft)});if(!response.ok)throw Error('Fixture save failed')}; export const dismissActionError=()=>{}; export const dismissToast=()=>{}; export const holdToast=()=>{}; export const releaseToast=()=>{};`, loader: 'js' }));
+        builder.onLoad({ filter: /.*/, namespace: 'isolated-store' }, () => ({ contents: `const state={streaming:false,providers:{catalog:[{id:'fixture-provider',name:'Fixture provider',baseUrl:'https://provider.invalid/v1',protocol:'openai-chat'}],connections:[{id:'saved-connection',kind:'custom',name:'Garage server',baseUrl:'http://fixture.invalid/v1',protocol:'openai-chat',apiKeySet:true,models:[{id:'existing-model',name:'Existing model'}]}]}}; export const useStore=selector=>selector(state); export const removeModelConnection=async()=>{throw Error('Unexpected connection removal')}; export const saveModelConnection=async draft=>{const response=await fetch('/fixture-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(draft)});if(!response.ok)throw Error('Fixture save failed'); const connection={...draft,id:draft.id||'new-connection',apiKeySet:false}; state.providers.connections=state.providers.connections.some(c=>c.id===connection.id)?state.providers.connections.map(c=>c.id===connection.id?connection:c):[...state.providers.connections,connection]}; export const dismissActionError=()=>{}; export const dismissToast=()=>{}; export const holdToast=()=>{}; export const releaseToast=()=>{};`, loader: 'js' }));
     } }] });
     const script = outputFiles.find(file => file.path.endsWith('.js')).text;
     const css = ['styles/kit/tokens.css', 'styles/kit/components.css', 'styles/app.css', 'styles/annotation-fixes.css'].map(path => readFileSync(join(source, path), 'utf8')).join('\n') + '\n' + (outputFiles.find(file => file.path.endsWith('.css'))?.text ?? '');
     const calls = [], exceptions = [], blocked = [];
-    let job = null, imported = false, planMode = 'valid';
+    let job = null, imported = false, planMode = 'valid', sshMode = false;
     const response = (res, value, status = 200, type = 'application/json') => { res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' }); res.end(type === 'application/json' ? JSON.stringify(value) : value); };
     const server = http.createServer(async (req, res) => {
         const path = new URL(req.url, 'http://fixture').pathname;
@@ -38,8 +38,8 @@ test('saved connection manages remote downloads and existing GGUF files through 
         if (path === '/fixture-save' && req.method === 'POST') return response(res, { saved: true });
         const target = '/api/model-management/targets/target-fixture';
         if (path === '/api/model-management/targets' && req.method === 'GET') return response(res, { targets: [{ id: 'target-fixture', name: 'Garage server', kind: 'connection', connectionId: 'saved-connection' }] });
-        if (path === target && req.method === 'GET') return response(res, { supported: true, targetName: 'Garage server', capabilities: { downloads: true, imports: true }, models: [
-            { id: 'native-compact', name: 'Qwen Compact', sizeGb: 4, state: 'available', readPictures: true },
+        if (path === target && req.method === 'GET') return response(res, { supported: true, targetName: 'Garage server', ...(sshMode ? { storageMode: 'files' } : {}), capabilities: { downloads: true, imports: true }, models: [
+            { id: 'native-compact', name: 'Qwen Compact', sizeGb: 4, state: sshMode ? 'downloaded' : 'available', readPictures: true },
             { id: 'local-existing', name: 'Existing GGUF', sizeGb: 2, state: 'imported', readPictures: false },
             ...(imported ? [{ id: 'local-imported', name: 'Text model', sizeGb: 2, state: 'imported', readPictures: false }] : []),
         ], jobs: job ? [job] : [] });
@@ -125,6 +125,43 @@ test('saved connection manages remote downloads and existing GGUF files through 
     await page.getByText('Connection saved. Use Manage models to download or import models on that computer.', { exact: true }).waitFor();
     const saved = calls.find(call => call.path === '/fixture-save').body;
     assert.equal(saved.kind, 'custom'); assert.equal(saved.name, 'Empty Strata server'); assert.deepEqual(saved.models, []);
+    // Configure SSH on the existing empty connection, with no static login defaults.
+    await page.getByTitle('Edit Empty Strata server', { exact: true }).click();
+    const management = page.getByRole('combobox', { name: 'Model management', exact: true });
+    await management.click();
+    await page.getByRole('option', { name: 'Terminal server over SSH', exact: true }).click();
+    assert.equal(await page.getByLabel('SSH username (optional)', { exact: true }).inputValue(), '');
+    assert.equal(await page.getByLabel('SSH port (optional)', { exact: true }).inputValue(), '');
+    assert.equal(await page.getByRole('button', { name: 'Apply', exact: true }).isDisabled(), true);
+    await page.getByLabel('SSH host or alias', { exact: true }).fill('garage-ssh');
+    await page.getByLabel('SSH username (optional)', { exact: true }).fill('alice');
+    await page.getByLabel('SSH port (optional)', { exact: true }).fill('70000');
+    assert.equal(await page.getByRole('button', { name: 'Apply', exact: true }).isDisabled(), true);
+    await page.getByLabel('SSH port (optional)', { exact: true }).fill('2202');
+    await page.getByLabel(/^Strata source folder/).fill('/opt/Strata');
+    await screenshot('ssh-connection-settings');
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.getByTitle('Edit Empty Strata server', { exact: true }).waitFor();
+    const sshSaved = calls.filter(call => call.path === '/fixture-save').at(-1).body;
+    assert.deepEqual(sshSaved.modelManagement, { transport: 'ssh', host: 'garage-ssh', user: 'alice', port: 2202, sourcePath: '/opt/Strata' });
+    assert.equal(sshSaved.apiKey, '');
+    await page.getByTitle('Edit Empty Strata server', { exact: true }).click();
+    assert.equal(await page.getByLabel('SSH host or alias', { exact: true }).inputValue(), 'garage-ssh');
+    assert.equal(await page.getByLabel('SSH username (optional)', { exact: true }).inputValue(), 'alice');
+    assert.equal(await page.getByLabel('SSH port (optional)', { exact: true }).inputValue(), '2202');
+    await management.click();
+    await page.getByRole('option', { name: 'Strata desktop API', exact: true }).click();
+    assert.equal(await page.getByLabel('SSH host or alias', { exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.getByTitle('Edit Empty Strata server', { exact: true }).waitFor();
+    assert.equal(calls.filter(call => call.path === '/fixture-save').at(-1).body.modelManagement, null);
+    sshMode = true;
+    await page.getByTitle('Manage models on Garage server', { exact: true }).click();
+    await dialog.getByRole('button', { name: 'Downloaded', exact: true }).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: 'Downloaded', exact: true }).isDisabled(), true);
+    await dialog.getByText('SSH manages files in a separate server library. Preparing and loading a model remain separate server actions. Existing serving models continue running.', { exact: true }).waitFor();
+    await screenshot('ssh-files-library');
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
     assert.deepEqual(exceptions, []);
     assert.deepEqual(blocked, [], 'The UI must never contact the configured fixture API address directly.');
 });

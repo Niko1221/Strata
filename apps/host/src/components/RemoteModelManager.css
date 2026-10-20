@@ -42,6 +42,9 @@
 .remote-model-notice { display: flex; align-items: flex-start; gap: 8px; margin: 0; }
 .remote-model-notice > .st-icon { flex: none; color: var(--st-accent); }
 .provider-card__actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.provider-ssh-settings { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--st-line); border-radius: 12px; }
+.provider-ssh-settings > p { margin: 0; }
+.provider-ssh-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 560px) {
   .remote-model-row { flex-wrap: wrap; }
   .remote-model-row > .st-btn { margin-left: 33px; }
@@ -49,4 +52,5 @@
   .remote-model-toolbar > .st-btn { margin-left: auto; }
   .remote-model-facts { grid-template-columns: 1fr; }
   .provider-card__actions { flex-direction: column; }
+  .provider-ssh-fields { grid-template-columns: 1fr; }
 }

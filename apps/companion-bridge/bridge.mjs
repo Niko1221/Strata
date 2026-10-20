@@ -298,7 +298,7 @@ function publicManagement(body, { targetId, action, jobId }) {
     capabilities: { downloads: body.capabilities?.downloads === true, imports: false },
     models: (Array.isArray(body.models) ? body.models : []).slice(0, 500).filter(model => model && safeId(model.id)).map(model => ({
       id: model.id, name: managementText(model.name, 'Catalog model', 200),
-      state: ['available', 'installed', 'loaded', 'imported', 'downloading', 'loading', 'unloading', 'error'].includes(model.state) ? model.state : 'unknown', readPictures: model.readPictures === true,
+      state: ['available', 'downloaded', 'installed', 'loaded', 'imported', 'downloading', 'loading', 'unloading', 'error'].includes(model.state) ? model.state : 'unknown', readPictures: model.readPictures === true,
       ...(managementNumber(model.sizeGb) !== undefined ? { sizeGb: model.sizeGb } : {}),
       ...(typeof model.detail === 'string' ? { detail: managementText(model.detail, 'Available from the target computer’s catalog.') } : {}),
     })),

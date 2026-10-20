@@ -127,15 +127,19 @@ export interface ImageModelLibrary {
 export type ModelProtocol = 'openai-chat' | 'openai-responses' | 'anthropic';
 export interface ApiModel { id: string; name: string; contextMax?: number | null; /** What the person ticked ("This model reads pictures"): true, false, or null for not set. */ vision?: boolean | null; /** The answer in use: the tick, else what the server said; null when nobody knows. */ reads?: boolean | null; /** The provider says the model can think (OpenRouter's supported_parameters): the Reasoning menu then works. */ reasoning?: boolean | null; thinks?: boolean | null }
 export interface ModelProviderPreset { id: string; name: string; baseUrl: string; protocol: ModelProtocol; baseUrlHint?: string }
+export interface SSHModelManagement { transport: 'ssh'; host: string; user?: string; port?: number; sourcePath?: string }
 export interface ModelConnection {
   id: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
   baseUrl: string; protocol: ModelProtocol; apiKeySet: boolean; models: ApiModel[];
+  modelManagement?: SSHModelManagement;
 }
 export interface ModelProviders { catalog: ModelProviderPreset[]; connections: ModelConnection[] }
 export interface RemoteModelSelection { connectionId: string; modelId: string }
 export interface ModelConnectionDraft {
   id?: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
   baseUrl: string; protocol: ModelProtocol; apiKey: string; clearKey?: boolean; models: ApiModel[];
+  /** null explicitly returns an existing connection to API management. */
+  modelManagement?: SSHModelManagement | null;
 }
 
 export type Effort = 'fastest' | 'balanced' | 'quality' | 'max';
