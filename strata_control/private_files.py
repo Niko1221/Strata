@@ -271,8 +271,11 @@ def adopt_user_defaults() -> bool:
             ok_owner = bool(_advapi.SetTokenInformation(token, _TOKEN_OWNER, ctypes.byref(_Owner(psid)),
                                                         ctypes.sizeof(_Owner)))
             descriptor = ctypes.c_void_p()
+            # A token default DACL also applies to process/thread objects. FA is
+            # FILE_ALL_ACCESS and omits process query rights; GA is mapped to
+            # the newly created object's own full-access mask.
             if not _advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    f"D:(A;;FA;;;{sid})(A;;FA;;;SY)(A;;FA;;;BA)", _SDDL_REVISION_1, ctypes.byref(descriptor), None):
+                    f"D:(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)", _SDDL_REVISION_1, ctypes.byref(descriptor), None):
                 return False
             present, defaulted, dacl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
             if not _advapi.GetSecurityDescriptorDacl(descriptor, ctypes.byref(present), ctypes.byref(dacl),
