@@ -33,6 +33,18 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             {"STRATA_QSA_ROWS", "1"},            // -0.5, -1.2
             {"STRATA_B6_MMVQ_ROWS", "1"},        // A4000 0, 3060 -1.7
         };
+    } else if (mj == 7 && mn == 0) {
+        if (off("STRATA_SM70_PERF")) return t;
+        t = {
+            // Dual V100 PCIe 32 GB, IQ3_S, MTP4: +5.8% Japanese / +7.6% code decode.
+            // Combined stack; output text matched all nine cases. See bench/results/2026-10-20-v100-sm70-defaults/.
+            {"STRATA_SIDE_MIXER", "2"},
+            {"STRATA_GR_UP75", "1"},
+            {"STRATA_B6_MMVQ_ROWS", "1"},
+            {"STRATA_GU_SWIGLU", "1"},
+            {"STRATA_QSA_ROWS", "1"},
+            {"STRATA_ATTN_DAILY", "1"},
+        };
     } else if (mj == 6 && mn == 0) {
         if (off("STRATA_SM60_PERF")) return t;
         t = {
@@ -61,9 +73,11 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
         set.push_back(kv.first);
     }
     if (!set.empty()) {
-        const bool sm86 = strata::cc_major_of(major) == 8;
+        const int mj = strata::cc_major_of(major);
+        const char* arch = mj == 8 ? "sm_86 (Ampere)" : mj == 7 ? "sm_70 (Volta)" : "sm_60 (Pascal)";
+        const char* opt_out = mj == 8 ? "STRATA_SM86_PERF" : mj == 7 ? "STRATA_SM70_PERF" : "STRATA_SM60_PERF";
         std::fprintf(stderr, "strata: %s: %zu exact speed switches on by default (%s=0 turns them off; a switch you set is kept): ",
-                     sm86 ? "sm_86 (Ampere)" : "sm_60 (Pascal)", set.size(), sm86 ? "STRATA_SM86_PERF" : "STRATA_SM60_PERF");
+                     arch, set.size(), opt_out);
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
     }
