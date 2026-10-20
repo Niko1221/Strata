@@ -31,6 +31,7 @@ import sys
 # (cpu_avx512_ok / cpu_avxvnni_ok), or reaches them only after cpu_require_expert_support().
 WIDE_PUBLIC = {
     "nvfp4_512_gu_rows", "nvfp4_512_rows",   # NVFP4 (native_expert.cpp: both behind cpu_avx512_ok())
+    "tq_rows_avx512",   # trellis rows (tq_cpu.cpp: TqIsa::avx512 is granted behind cpu_avx512_ok())
     "act_quant_q8_1", "q2_0_gguf_rows_multi", "s2_expert_vnni", "s2_expert_vnni_q", "s2_expert_gu_rows",
     "s2_expert_down_rows", "s2_expert_gu_rows_multi", "s2_expert_down_rows_multi", "s2_expert_vnni_multi",
     "s2_expert_scalar", "iq512_gu_rows", "iq512_rows", "iq256_gu_rows", "iq256_rows", "iq256_gu_rows_v",
@@ -38,13 +39,14 @@ WIDE_PUBLIC = {
     "q2_0_gguf_rows_multi_avx2_v", "q2_0_gguf_rows_multi_avx2_legacy", "q2_0_gguf_rows_multi_avx2_bitplane",
     "act_quant_q8_1_avx2", "q8k_quant_avx2", "kq256_gu_rows", "kq256_rows", "bf16_rows_dot_multi",
 }
-WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp")
+WIDE_OBJECTS = ("expert.cpp", "iq_avx512.cpp", "iq_avx2.cpp", "q2_avx2.cpp", "kq_avx2.cpp", "nvfp4_avx512.cpp",
+                "tq_avx512.cpp")
 # Also compiled above the baseline (AVX2/FMA for nvfp4_avx2, AVX for the older CPUs' rows) and reached only behind a CPU
 # check.  STATIC INITIALISERS in any of these run on EVERY CPU at program start (#2324: nvfp4_avx2.cpp / nvfp4_avx512.cpp
 # built a table in a constructor, the compiler used AVX/FMA for it, and a Westmere / Sandy Bridge Xeon died with an
 # illegal instruction before main, with nothing in the log).  The initialisers must not exist: constexpr tables, or
 # function-local statics read behind the CPU check.
-INIT_FREE_OBJECTS = WIDE_OBJECTS + ("nvfp4_avx2.cpp", "kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
+INIT_FREE_OBJECTS = WIDE_OBJECTS + ("nvfp4_avx2.cpp", "tq_avx2.cpp", "kq_avx1.cpp", "q2_avx1.cpp", "iq_avx1.cpp")
 
 # An instruction is "wide" if it is EVEX encoded (first byte 0x62 in 64-bit mode), or one of these VEX / legacy
 # extensions that an AVX2 CPU may lack.  AVX-VNNI is VEX encoded (vpdpbusd, vpdpwssd ...).
