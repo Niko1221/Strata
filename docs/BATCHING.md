@@ -189,7 +189,8 @@ chunks its conversation has reached.
   (engine 0.1.44.1 plus the pool and the separately proposed slot choice that counts a prompt sharing three quarters of
   a slot's tokens as that conversation's next turn; without that rule the changed request can take the other lane's slot
   and these figures do not apply).
-  At 256k per lane both lanes reuse (225,792 tokens) only with `--conversation-cache-mib` of at least 4528 (one parked
+  At 256k per lane both lanes reuse (225,792 tokens; the same older setup, not re-measured on 0.2.0-beta) only with
+  `--conversation-cache-mib` of at least 4528 (one parked
   image with its 6 checkpoints; 4608 tested); at 4096 one lane reads its 256k again. Each cached slot now keeps up to
   `--prompt-cache` (6) checkpoints, about 0.7 GB of host RAM per slot; they are moved from the main session, not
   copied. A turn that only appends to the history needs none of this (133k per lane: 133,287 and 133,306 tokens
@@ -214,9 +215,57 @@ chunks its conversation has reached.
 Measured on 2 x RTX 3080 20 GB (PCIe 3.0, no NVLink), a layer split, UD-Q4_K_XL, with
 `--max-context 262144 --kv int8 --kv-resident 32768 --kv-pool-tokens 524288`.
 
-Pool against per-session buffers, the same binary with and without `--kv-pool-tokens` (engine 0.1.41 plus our patches
-including the pool; `"parallel": 2`, `--batch-mtp`, a 90 GiB container; 3 restarts with the pool, 2 without, each
-restart measured separately):
+On 0.2.0-beta (upstream main `e88ee39d` = `v0.2.0-beta-12`, engine 0.1.45.3; binary `strata-w14` = branch
+`pr/kv-pool-144` up to commit `eeaf7b3c`, the same binary in every arm, only `--kv-pool-tokens 524288` present or
+removed; `"parallel": 2`, `--batch-mtp` with `STRATA_BATCH_MTP_SERIAL=1`, a 90 GiB container, 0.2.0 defaults left on in
+all arms; 3 restarts with the pool, 3 without for the memory and short-context rows). The serve layer in these runs had
+no `pick_slot` rule beyond main's own turn-start rule (#2518): every appended turn is a request whose prefix is exactly
+one lane's history, so no run here depends on it. The branch's last commit (`9a5dcb4b`) adds a guard that matters only
+with `STRATA_SLOT_CKPT_MOVE=1` and a pool; that variable was not set and the guard was not exercised.
+
+Two lanes of about 256k tokens (245k-token needle prompts, 256,09x tokens each), then an appended turn on both lanes at
+once (300 tokens out), then a short appended question on each lane:
+
+| | with the pool | without the pool |
+|---|---|---|
+| Moving a ~256k conversation between its parked place and a slot | 0.36-0.5 s (`moved`, a chunk-table swap) | 3.5-5.2 s (`copied`) |
+| First token of the appended short question (both lanes) | 1.1-1.2 s | 2.3-6.7 s |
+| Both lanes decoding an appended turn (aggregate) | 59.1 and 61.5 tok/s | 25.5 and 37.7 tok/s |
+| Host memory guard (stops the engine below 1.5 GiB host `MemAvailable`) | never fired | stopped the engine twice |
+| Same at ~133k per lane: move time | 0.1-0.25 s | 0.9-2.0 s (one start) |
+
+Every request reused 256,098-256,434 tokens and read 28-31 in both arms; the difference is the cost of moving the
+conversation. All needle checks of the requests that completed were correct. The pool arms are two starts; of the three
+no-pool starts one completed the 256k run, one was stopped by the host guard during the appended turn, and one completed
+the first read, the appended turn and the first short question and was stopped during the second: **the no-pool 256k
+timings are one full run and two partial ones**, and they were taken while the host had 1.1-1.8 GiB available and no
+free swap, which may add to the copy times (pool arms: host minimum 2.0-5.6 GiB). The two guard stops were a stop by the
+guard, not the kernel's out-of-memory killer, and both happened without the pool. The 133k follow-up runs of those two
+starts therefore have no data.
+
+| Memory, two lanes, idle after load (3 starts each) | with the pool | without the pool |
+|---|---|---|
+| `MemAvailable` (mean) | 14.5 GiB | 11.4 GiB (3.2 GiB less) |
+| Lowest `MemAvailable` during the run (mean) | 10.4 GiB | 7.6 GiB |
+| Pinned shared memory | 71.8 GiB | 74.9 GiB (3.06 GiB more; 5 comparable starts) |
+
+The pool is 6.24 GiB for 524,288 cells whatever the number of lanes (start log: `KV pool: 524288 cells shared by the
+sessions and the stages of the layer split, 6.24 GiB of pinned RAM`). Speed on short context did not change: one
+stream 84.5 tok/s with the pool against 81.9 (means of the medians of three starts each), two streams 93.7 against 89.8,
+prompt reads at 25k / 51k / 104k within 1-3%. The +3-4% is smaller than the round-to-round spread (58-103 tok/s), so
+there is no speed claim: the pool is a memory and long-context lane-handling feature, not a decode-speed one.
+
+Three lanes with the pool (`"parallel": 3`, three conversations of about 104k tokens, 312K tokens in the 524,288-cell
+pool, two starts): all started, every needle was right, 13.1-13.2 GiB `MemAvailable` idle, 8.3-8.6 GiB at the run
+minimum, slot moves 89-326 ms, 72.4 and 69.7 tok/s aggregate for the appended turn on three lanes. Three lanes without
+the pool were **not run** (the two-lane no-pool run was already at 7.4-7.9 GiB minimum `MemAvailable`; about 3.1 GiB more
+per slot would have reached the 4 GiB abort line), so this shows that a third lane fits with the pool, not that it fails
+without it. All on one box (2 x RTX 3080 20 GB, 220 W). The move-time ratio was about 8x at 133k per lane and about
+10x at 256k, so the gain is a long-context one (the no-pool side at 133k is one start).
+
+Older measurement, engine 0.1.41: pool against per-session buffers, the same binary with and without
+`--kv-pool-tokens` (our patches including the pool; `"parallel": 2`, `--batch-mtp`, a 90 GiB container; 3 restarts
+with the pool, 2 without, each restart measured separately):
 
 | | with the pool | without the pool |
 |---|---|---|
@@ -231,8 +280,8 @@ slots (4,209-4,211 on the second card; 4,136 in one restart with the pool). The 
 difference is 1.7% (95% interval 0% to 3.6%) in favour of the pool and lies within the 2-3% spread of the same
 configuration across restarts: no change in speed was measured, in either direction. The 3.1 GiB is what the arithmetic
 gives for two slots and the main session: three sessions of 262,144 cells are 1.5 times the pool's 524,288 cells
-(6.24 GiB). Each further slot adds about that much without the pool and nothing with it (arithmetic; no run with three
-or more slots was made).
+(6.24 GiB). Each further slot adds about that much without the pool and nothing with it (arithmetic; the 0.2.0-beta
+runs above ran three slots with the pool only, none without it).
 
 Pool behaviour, measured earlier on engine 0.1.40.3 plus the pool (one run each):
 
@@ -243,9 +292,11 @@ Pool behaviour, measured earlier on engine 0.1.40.3 plus the pool (one run each)
 | Four lanes (`"parallel": 4`), four concurrent 133,865-token prompts (556K tokens against the 524K pool, a 233K conversation already held) | all answered 200, each lane returned its own needle; the "KV pool full: slot N gives back its cached conversation" path ran |
 | A 134K-token conversation moved between the main session and a slot | about 0.2 s (chunk-table swap, no copy) |
 
-Not measured: the move time and the pool-full paths on engine 0.1.41 (the comparison above did not exercise them),
-requests near 262K tokens in both lanes at once in the comparison, three or more slots, HIP, SYCL, three or more cards,
-a single 512K conversation (it needs `--rope-scaling yarn --rope-scale 2`).
+Not measured: on engine 0.1.41 the move time and the pool-full paths (the comparison above did not exercise them); on
+0.2.0-beta the pool-full paths (no run filled the pool: no `kv_pool_full` line in the logs), three or more slots
+without the pool, two lanes beyond 256k, four or more lanes, a single 512K conversation (it needs
+`--rope-scaling yarn --rope-scale 2`), HIP, SYCL, three or more cards, and `STRATA_SLOT_CKPT_MOVE=1` or
+`STRATA_SLOT_COPY_DIRECT` end to end.
 
 ## How the server uses the slots
 
