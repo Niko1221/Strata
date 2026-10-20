@@ -3,6 +3,7 @@
 #include "strata/kernels/kv_q4.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <string>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <vector>
 
 using namespace strata::core;
@@ -89,11 +91,48 @@ struct Fixture {
             kv_ring_table(st.page_table,st.n_pages,st.n_slots,nullptr);
         }
     }
+    // --kv-pool-tokens: the host copy of a streamed state lives in chunks of a pool shared with other states: block b of
+    // this state is block (table[b >> 2] << 2 | b & 3) of the arrays (KvHostPools::chunk_host)
+    static constexpr int kLanes = 3, kShift = 2;
+    std::vector<int32_t> table;
+    void make_pooled(Fixture* owner, int lane) {
+        auto& h = state.host;
+        if (owner == nullptr) {   // the pool: kLanes states' worth of blocks, in every host array
+            const size_t n = size_t(kLanes);
+            if (h.k_pool) { alloc(h.k_pool, sizes[0]*n, true); alloc(h.v_pool, sizes[1]*n, true); }
+            if (h.k_q4) { alloc(h.k_q4, sizes[0]*n, true); alloc(h.v_q4, sizes[1]*n, true); }
+            if (h.k_q) {
+                alloc(h.k_q, sizes[0]*n, true); alloc(h.v_q, sizes[1]*n, true);
+                alloc(h.k_scale, sizes[2]*n, true); alloc(h.v_scale, sizes[3]*n, true);
+            }
+        } else {
+            h = owner->state.host;
+        }
+        if (h.k_pool) { sources[0] = h.k_pool; sources[1] = h.v_pool; }
+        if (h.k_q4) { sources[0] = h.k_q4; sources[1] = h.v_q4; }
+        if (h.k_q) { sources[0] = h.k_q; sources[1] = h.v_q; sources[2] = h.k_scale; sources[3] = h.v_scale; }
+        table.resize(size_t(state.n_pages) >> kShift);
+        for (size_t c = 0; c < table.size(); ++c) table[c] = int32_t(c * kLanes + size_t(lane));   // interleaved: no two chunks adjacent
+        h.chunk_host = table.data();
+        h.chunk_shift = kShift;
+    }
+    // bytes [off, off + n) of array i of THIS state, written where its chunk table puts them
+    void put(size_t i, size_t off, const uint8_t* p, size_t n) {
+        if (table.empty() || i >= 4) { cuda_check(cudaMemcpy(static_cast<uint8_t*>(sources[i])+off,p,n,cudaMemcpyDefault)); return; }
+        const size_t block = sizes[i] / size_t(state.n_pages);
+        for (size_t done = 0; done < n;) {
+            const size_t pos = off + done, b = pos / block, in = pos % block;
+            const size_t len = std::min(block - in, n - done);
+            const size_t phys = (size_t(table[b >> kShift]) << kShift | (b & ((1u << kShift) - 1))) * block + in;
+            cuda_check(cudaMemcpy(static_cast<uint8_t*>(sources[i])+phys,p+done,len,cudaMemcpyDefault));
+            done += len;
+        }
+    }
     void fill(uint8_t salt) {
         for (size_t i=0;i<sources.size();++i) {
             std::vector<uint8_t> data(sizes[i]);
             for (size_t j=0;j<data.size();++j) data[j]=(uint8_t)(salt+i*31+j*7+j/257);
-            if (!data.empty()) cuda_check(cudaMemcpy(sources[i],data.data(),data.size(),cudaMemcpyDefault));
+            if (!data.empty()) put(i,0,data.data(),data.size());
         }
     }
     void fill_after(uint8_t salt, int64_t first_dirty) {
@@ -305,9 +344,18 @@ void full_session(int fmt, int mode, int experts) {
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
-    for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
-        if (fmt==3 && mode!=0) continue;
+    for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode_id : {0,1,2,3}) {
+        // mode_id 3: a streamed state whose host copy is a chunk of a pool shared with `other` (--kv-pool-tokens)
+        const bool pooled = mode_id == 3;
+        const int mode = pooled ? 1 : mode_id;
+        if (fmt==3 && mode_id!=0) continue;
         Fixture f(fmt,mode);
+        std::unique_ptr<Fixture> other;
+        if (pooled) {
+            f.make_pooled(nullptr,0);
+            other = std::make_unique<Fixture>(fmt,mode);
+            other->make_pooled(&f,1);
+        }
         if (fmt==3) {
             std::string err;
             ConversationKv invalid;
@@ -344,6 +392,26 @@ int main() {
             check(equal(a,restored),"A/B/A byte-exact K/V and indexer state");
             uint64_t fingerprint = 0;
             check(conversation_kv_verify(a,f.state,f.g,upto,index,fingerprint,err),"verify restored authoritative and resident bytes without rewriting them");
+            if (pooled) {
+                // a second state in the same pool, its chunks interleaved with f's (--kv-pool-tokens): the direct copy
+                // between two chunk tables, a neighbour's writes, and a prefix restore all go through the tables
+                ConversationKv theirs, after, want, got;
+                other->fill(99);
+                check(conversation_kv_copy(f.state,other->state,f.g,upto,index,err,false),"direct copy between two pooled states");
+                cuda_check(cudaDeviceSynchronize());
+                check(conversation_kv_save(theirs,other->state,f.g,upto,index,err) && equal(a,theirs),
+                      "the direct copy between two pooled states is byte-exact");
+                other->fill(55);
+                check(conversation_kv_save(after,f.state,f.g,upto,index,err) && equal(a,after),
+                      "a neighbour's writes do not reach this state's chunks");
+                const int64_t part = upto / 2;
+                if (part > 0) {
+                    check(conversation_kv_restore_prefix(a,other->state,f.g,upto,part,index,err),"prefix restore into a pooled state");
+                    cuda_check(cudaDeviceSynchronize());
+                    check(conversation_kv_save(want,f.state,f.g,part,index,err) && conversation_kv_save(got,other->state,f.g,part,index,err) &&
+                          equal(want,got),"the prefix restored through the chunk table equals the source's prefix");
+                }
+            }
             {
                 // disk save streams the same bytes as a captured image, without the host copy
                 SessionKvSource src;
