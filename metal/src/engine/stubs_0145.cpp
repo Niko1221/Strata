@@ -147,5 +147,8 @@ namespace strata::kernels { bool gemm_iq_f16_grouped(int p0, void const* p1, uns
 // STRATA_Q8_SM60 (Pascal GP100, opt-in): a no-op on Metal; NativeHead::load()/unload() call these for a Q8_0 head, so they must exist and answer "nothing packed".
 namespace strata::kernels { bool native_q8_0_sm60_pack(void const* p0, int p1, int p2, char const* p3) { return false; } }
 namespace strata::kernels { void native_q8_0_sm60_release(void const* p0) { } }
+// the MTP drafter's STRATA_MTP_Q8_SM60 packing (mtp.cpp): nothing packed on Metal
+namespace strata::kernels { bool native_q8_0_sm60_pack_quiet(void const* p0, int p1, int p2, char const* p3) { return false; } }
+namespace strata::kernels { bool native_q8_0_sm60_pack_in_place(void* p0, int p1, int p2, char const* p3) { return false; } }
 // only reached with pf_wmma (off on Metal)
 namespace strata::prefill { void swiglu_split_f16(float const* p0, unsigned short* p1, long long p2, int p3, bool p4, void* p5) { } }
