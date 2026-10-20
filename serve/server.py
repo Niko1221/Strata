@@ -7631,6 +7631,53 @@ def serve(svc: Service, host="127.0.0.1", port=8095) -> ThreadingHTTPServer:
     return httpd
 
 
+def make_dedicated_handler(svc: Service, index: int):
+    """The same HTTP API, but every request that comes through it is generated on replica `index`.
+
+    The engine's router still chooses when a request has no pin; this handler only sets the pin for the
+    request it is serving (a thread-local, so concurrent requests do not move each other)."""
+    base = make_handler(svc)
+
+    class Dedicated(base):
+        def handle_one_request(self):
+            engine = getattr(svc, "engine", None)
+            pin = getattr(engine, "pin", None)
+            if pin is not None:
+                pin.index = index
+            try:
+                super().handle_one_request()
+            finally:
+                if pin is not None:
+                    pin.index = None
+
+    return Dedicated
+
+
+def serve_dedicated(svc: Service, host: str, port: int, index: int) -> ThreadingHTTPServer:
+    """One extra port that always answers on replica `index` (see make_dedicated_handler)."""
+    httpd = Server((host, port), make_dedicated_handler(svc, index))
+    httpd.svc = svc
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return httpd
+
+
+def dedicated_ports_from_env(svc: Service) -> list[int]:
+    """STRATA_DEDICATED_PORTS=8081,8082: one port per replica, in replica order."""
+    raw = (os.environ.get("STRATA_DEDICATED_PORTS") or "").strip()
+    if not raw:
+        return []
+    try:
+        ports = [int(x) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        raise SystemExit(f"[strata] STRATA_DEDICATED_PORTS: expected port numbers, not {raw!r}") from None
+    engines = getattr(getattr(svc, "engine", None), "engines", None)
+    if not engines:
+        raise SystemExit("[strata] STRATA_DEDICATED_PORTS needs \"replicas\": this model has one engine")
+    if len(ports) != len(engines):
+        raise SystemExit(f"[strata] STRATA_DEDICATED_PORTS names {len(ports)} ports for {len(engines)} replicas")
+    return ports
+
+
 def origins_of(value, key: str, wildcard: bool) -> list[str]:
     """#321: a config's origin list ("https://chat.example.com" or a list of them) - scheme://host[:port], no path;
     "*" only where `wildcard` allows it.  A wrong entry stops the start rather than opening less or more than meant."""
@@ -8503,6 +8550,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
+    for _index, _port in enumerate(dedicated_ports_from_env(svc)):
+        serve_dedicated(svc, a.host, _port, _index)
+        print(f"[strata] replica {_index} also answers on {a.host or '127.0.0.1'}:{_port}", flush=True)
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()

@@ -187,6 +187,7 @@ class ReplicaEngine:
         d["run_locks"] = [threading.Lock() for _ in engines]    # an engine without batch slots: one request at a time
         d["lock"] = threading.Lock()
         d["tl"] = threading.local()
+        d["pin"] = threading.local()          # a dedicated port sets "index": that replica, whatever the cost
         d["healing"] = {}
         d["heal_at"] = [0.0] * len(engines)
         d["routed"] = [0] * len(engines)
@@ -342,15 +343,22 @@ class ReplicaEngine:
 
     # ---- routing
     def route(self, ids) -> int:
-        """The replica for this prompt (and its running count raised): lowest cost among the living ones."""
+        """The replica for this prompt (and its running count raised): lowest cost among the living ones.
+
+        A dedicated port (STRATA_DEDICATED_PORTS in server.py, this module's "pin") names its replica and
+        skips the cost: the client asked for that card, and prefix caching must not move it elsewhere."""
+        pinned = getattr(self.pin, "index", None)
         got = self.router.matched(ids)
         with self.lock:
             alive = [k for k, e in enumerate(self.engines) if e.alive()]
             if not alive:
                 return -1
-            cost = {k: (len(ids) - got[k]) + self.load_tokens * self.inflight[k] for k in alive}
-            # the least loaded wins a tie of cost (equal cards, nothing cached): spread, do not pile on replica 0
-            k = min(alive, key=lambda k: (cost[k], self.inflight[k], self.routed[k]))
+            if pinned in alive:
+                k = pinned
+            else:
+                cost = {k: (len(ids) - got[k]) + self.load_tokens * self.inflight[k] for k in alive}
+                # the least loaded wins a tie of cost (equal cards, nothing cached): spread, do not pile on replica 0
+                k = min(alive, key=lambda k: (cost[k], self.inflight[k], self.routed[k]))
             self.inflight[k] += 1
             self.routed[k] += 1
         if len(alive) < len(self.engines):
