@@ -2538,6 +2538,11 @@ class Vision:
         """Start the reader.  When a GPU reader that has a CPU reader to fall back on does not start (the GPU runtime does not
         load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
         and no question."""
+        if not self.dir.exists():                       # a temp cleaner (Windows' Storage Sense, systemd-tmpfiles)
+            self.dir = self.work_dir()                  # can remove the idle encoder's dir while the model is
+            self.cache.clear()                          # unloaded: every start would then fail on the cwd (Windows
+                                                        # "[WinError 267] The directory name is invalid"), and the
+                                                        # cache's files went with the dir
         try:
             self._start_reader()
         except (RuntimeError, OSError) as e:
