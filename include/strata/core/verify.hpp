@@ -544,9 +544,12 @@ private:
     cudaStream_t df_side_[2] = {};
     cudaEvent_t df_fork_ = nullptr;
     cudaEvent_t df_join_[2] = {};
-    cudaGraphExec_t exec_[9] = {};
-    cudaGraphExec_t exec_nr_[9] = {};   // #871: the doorbell variant of a stage that is all-resident otherwise
-    bool launched_[9] = {}, launched_nr_[9] = {};   ///< this graph has been launched once (early_ple_flag: a cold first launch raises the PLE flag first)
+    // [sel_long_][T]: 1 is the long-context QSA select (STRATA_SELECT_LONG=1: multi-CTA top-k, shuffle-free decode
+    // scores; see run()); without it only [0] is ever captured
+    cudaGraphExec_t exec_[2][9] = {};
+    cudaGraphExec_t exec_nr_[2][9] = {};   // #871: the doorbell variant of a stage that is all-resident otherwise
+    bool launched_[2][9] = {}, launched_nr_[2][9] = {};   ///< this graph has been launched once (early_ple_flag: a cold first launch raises the PLE flag first)
+    int sel_long_ = 0;
     // fork 34a35db (STRATA_SIDE_MIXER=1): the GDN gates and the QSA indexer on a branch of the window's graph beside the
     // mixer's projections, joined before the recurrence / the attention
     cudaStream_t side_ = nullptr;
@@ -630,6 +633,7 @@ private:
     float *qidx_ = nullptr, *scores_ = nullptr, *attn_ = nullptr, *attn32_ = nullptr, *attn_scratch_ = nullptr;
     float* tail_snap_ = nullptr;                              // per QSA layer
     int32_t* sel_ = nullptr;
+    int32_t* topk_scratch_ = nullptr;   // qsa_block_topk_long's multi-CTA exchange (STRATA_SELECT_LONG=1 only)
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
