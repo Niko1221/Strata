@@ -3704,6 +3704,17 @@ bool FileExpertSource::pin_cache_complement(
         };
         if (maps_.empty()) drop(base_, mapped_bytes_, fd_);
         else for (const Map& m : maps_) drop(m.closed ? nullptr : m.base, m.bytes, m.fd);
+        // the files read at start outside this source (set_extra_drop_files): their pages are already copied to VRAM
+        // or RAM, and they sat on whichever node read them (~2.2 GiB on node 0 measured on the 3090 box)
+        // CBA: whole files by path; a file read at start but not listed stays cached (the per-node free line shows
+        // it), a registry of the files the loaders open if that ever bites
+        for (const std::string& p : extra_drop_files_) {
+            const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                (void) posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+                ::close(fd);
+            }
+        }
     };
 #endif
     if (bytes > 0) {

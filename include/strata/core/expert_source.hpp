@@ -716,6 +716,9 @@ public:
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
     /// CS-T: the --native shard (native_experts.txt names the other files beside it); see `open`.
     void set_gguf(const std::string& native) { gguf_ = native; }
+    /// STRATA_NUMA_SPLIT: files the engine read at start outside this source (the pack's dense.bin, the MTP head),
+    /// whose cached pages the placement's drop gives back too.  Set BEFORE `pin_cache_complement`.
+    void set_extra_drop_files(std::vector<std::string> paths) { extra_drop_files_ = std::move(paths); }
     /// Whether the experts are read from the GGUF shards in place (no experts.bin).
     bool gguf_mode() const { return !role_ptr_.empty(); }
     /// Pin a compact host mirror of experts absent from a fully filled static GPU cache. The mmap remains open
@@ -1062,6 +1065,7 @@ private:
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
+    std::vector<std::string> extra_drop_files_;   ///< set_extra_drop_files
     struct Map {
         const uint8_t* base = nullptr;
         uint64_t bytes = 0;
