@@ -4209,9 +4209,14 @@ bool Verifier::capture_all(std::string& err) {
     if (g_ == nullptr) { err = "verify: capture_all before init"; return false; }
     if (remote_opt_ != nullptr) { err = "verify: pipelined windows do not serve --remote-expert-opt"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
-    sel_long_ = 0;   // the pipelined windows keep the one-CTA select (pl_launch runs exec_[0])
-    for (int T = 1; T <= max_t_; ++T)
-        if (!capture(T, err)) return false;
+    // STRATA_SELECT_LONG: both select variants (see select_long_at): pl_launch takes the one its window's context
+    // needs, and nothing can be captured once pipelined windows are in flight.  Without it only [0]
+    for (int sl = 0; sl < (select_long_on() ? 2 : 1); ++sl) {
+        sel_long_ = sl;
+        for (int T = 1; T <= max_t_; ++T)
+            if (!capture(T, err)) return false;
+    }
+    sel_long_ = 0;
     if (!capture_commit(err)) return false;
     if ((ev_done_ == nullptr && cudaEventCreateWithFlags(&ev_done_, cudaEventDisableTiming) != cudaSuccess) ||
         (ev_commit_ == nullptr && cudaEventCreateWithFlags(&ev_commit_, cudaEventDisableTiming) != cudaSuccess)) {
@@ -4266,7 +4271,8 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
-    if (exec_[0][T] == nullptr || commit_exec_ == nullptr || ev_done_ == nullptr || pl_ple_rows_.empty()) {
+    const int sl = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;   // the variant this window's context pays off with
+    if (exec_[sl][T] == nullptr || commit_exec_ == nullptr || ev_done_ == nullptr || pl_ple_rows_.empty()) {
         err = "verify: pipelined window not prepared (capture_all)";
         return false;
     }
@@ -4288,7 +4294,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW (pipelined)", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
-    const cudaError_t le = cudaGraphLaunch(exec_[0][T], cs_);
+    const cudaError_t le = cudaGraphLaunch(exec_[sl][T], cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
     if (fl_prof_) cudaMemcpyAsync(prof_pin_, prof_, prof_h_.size() * 8, cudaMemcpyDeviceToHost, cs_);
