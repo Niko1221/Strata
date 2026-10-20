@@ -15,11 +15,12 @@ Which table a card gets:
 |---|---|
 | sm_86 (Ampere consumer) and sm_120 cards with fewer than 80 SMs (RTX 5070 and smaller) | `kIlRowsShared`, measured on an RTX 3060 and an RTX 5070 together (a cell is non-zero only if the worse of the two cards still gains 3%) |
 | sm_120 cards with 80 or more SMs (RTX PRO 5000 / 6000 Blackwell, RTX 5080 / 5090) | `kIlRows_120`, measured on an RTX PRO 5000 Blackwell (110 SMs); `STRATA_MMVQ_IL_120=0` gives them the shared table |
-| sm_89 (Ada) and every other sm_80+ card | `kIlRowsShared` too. Nobody has measured sm_89 yet (we have no such card). |
+| sm_89 (Ada) | `kIlRows_89`, measured on an RTX 4070 (46 SMs): a community report (2026-10-20), with the 5-8 column table and the one-column Q3_K row |
+| every other sm_80+ card | `kIlRowsShared` |
 | sm_75 and older | the path is off; the plain kernels run |
 | a card listed in `kIlArch` | its own table |
 
-## Measuring sm_89 (or any other card)
+## Measuring a card that has no table yet
 
 1. Build with tests: `cmake -S . -B build -DSTRATA_BUILD_TESTS=ON` and `cmake --build build --target mmvq_il_parity`.
 2. Close everything else on the GPU, then run `build/mmvq_il_parity --bench --emit-table` (a few minutes).

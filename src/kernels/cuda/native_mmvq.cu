@@ -2991,8 +2991,8 @@ constexpr IlRows kIlRowsShared[] = {   // sm_86 + sm_120, and the fallback for e
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
 };
 // Per-architecture tables (P10).  A card whose compute capability (major * 10 + minor) is listed here uses its own table;
-// every other sm_80+ card uses kIlRowsShared.  sm_89 (Ada) has none yet: nobody measured it (we have no such card), so
-// it takes the shared table, which sits between the measured sm_86 and sm_120.  To add one, run
+// every other sm_80+ card uses kIlRowsShared.  sm_89 (Ada) has its own table now, measured on an RTX 4070 (46 SMs).
+// To add one, run
 // `mmvq_il_parity --bench --emit-table` on the card (docs/MMVQ_IL_TABLE.md), paste the printed block as a
 // `constexpr IlRows kIlRows_89[]` and add {89, kIlRows_89, sizeof(kIlRows_89) / sizeof(IlRows)} below.  Each choice
 // is bitwise the same output, so a table is only speed.  Without a rebuild: STRATA_MMVQ_IL_ROWS (see il_env_rows).
@@ -3045,6 +3045,17 @@ constexpr IlRows kIlRows_120[] = {
     {14, {{0, 0, 2, 1, 1}, {0, 0, 4, 2, 4}, {0, 2, 2, 2, 2}}},   // Q6_K
     {11, {{0, 1, 2, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q3_K
 };
+// Ada (sm_89), read off mmvq_il_parity --bench --emit-table on an RTX 4070 (46 SMs, sm_89), the same 3% rule
+// (a cell is non-zero only if the fastest rows count takes at least 3% off native_mmvq's time in every measured shape
+// of that class).  Bitwise equal to native_mmvq, so the table is only speed.  It differs from the shared table in
+// every type, and the shared table has no Q3_K row at all (so Q3_K shapes ran the plain kernel).
+constexpr IlRows kIlRows_89[] = {
+    {23, {{0, 0, 0, 1, 0}, {1, 1, 1, 1, 1}, {2, 2, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // Q4_K
+    {13, {{0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}, {1, 2, 1, 2, 2}}},   // Q5_K
+    {14, {{0, 0, 0, 0, 0}, {0, 0, 1, 2, 2}, {0, 1, 4, 1, 1}}},   // Q6_K
+    {11, {{1, 1, 1, 2, 1}, {1, 1, 1, 1, 1}, {2, 1, 1, 1, 1}}},   // Q3_K
+};
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on an RTX 2080 Ti 22 GB (SM 1650 MHz), the same 3% rule.
 // The plain multi-column kernels are bound by dp4a throughput on Turing from 2 columns on (IQ4_XS 2560x10240 at 4
 // columns 81.1 -> 37.4 us, the Q5_K head 1671 -> 1045 us); bitwise equal to native_mmvq.  No one-column table here:
@@ -3068,15 +3079,29 @@ constexpr IlRows58 kIlRows58_120[] = {   // 4 = 2 rows a warp here (launch_il_ro
     {14, {{0, 2, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 4, 4, 4, 2}}},   // Q6_K
     {11, {{0, 2, 4, 2, 4}, {0, 2, 2, 4, 4}, {0, 2, 2, 2, 4}, {0, 4, 2, 2, 2}}},   // Q3_K
 };
+// Ada (sm_89), the same card and the same tool run: the 5-8 column path, the second table (4 = 2 rows a warp
+// here, as in kIlRows58_120).
+constexpr IlRows58 kIlRows58_89[] = {
+    {23, {{2, 4, 2, 4, 2}, {2, 2, 4, 2, 4}, {1, 4, 2, 2, 4}, {1, 1, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 4, 4, 4, 4}, {4, 4, 4, 2, 2}, {1, 4, 2, 2, 2}, {1, 4, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 2, 2, 2, 2}, {1, 4, 4, 4, 2}, {2, 4, 2, 2, 4}, {1, 1, 2, 4, 4}}},   // Q5_K
+    {14, {{0, 2, 2, 2, 4}, {4, 2, 4, 2, 2}, {4, 4, 1, 4, 4}, {1, 1, 1, 1, 1}}},   // Q6_K
+    {11, {{2, 4, 2, 4, 4}, {1, 4, 1, 1, 1}, {4, 4, 4, 4, 4}, {2, 4, 4, 4, 4}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
+    {89, kIlRows58_89, sizeof(kIlRows58_89) / sizeof(IlRows58)},   // Ada: measured on an RTX 4070 (46 SMs)
 };
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).
 struct Il1Rows { int type; uint8_t r[5]; };
 constexpr Il1Rows kIl1Rows_86[] = {
     {11, {0, 1, 1, 1, 1}},   // Q3_K: 2560x10240 60 -> 43 us, 6144x2560 30 -> 26 us on the A4000
+};
+// Ada (sm_89), the same card and the same tool run: only Q3_K takes the interleaved kernel at one column.
+constexpr Il1Rows kIl1Rows_89[] = {
+    {11, {0, 0, 1, 1, 1}},   // Q3_K
 };
 // Tesla P40 (sm_61), the same three runs: IQ4_XS 2560x10240 102 -> 58 us, the Q5_K head 1754 -> 1507 us
 constexpr Il1Rows kIl1Rows_61[] = {
@@ -3088,6 +3113,7 @@ struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
+    {89, kIl1Rows_89, sizeof(kIl1Rows_89) / sizeof(Il1Rows)},   // Ada: measured on an RTX 4070 (46 SMs)
 };
 bool il_env_on(const char* name) {
     const char* v = std::getenv(name);
@@ -3102,6 +3128,7 @@ constexpr IlArch kIlArch[] = {
     {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on an RTX 2080 Ti
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
+    {89, kIlRows_89, sizeof(kIlRows_89) / sizeof(IlRows)},   // Ada: measured on an RTX 4070 (46 SMs)
     // 147-verify: RTX PRO 5000 Blackwell (110 SMs).  Only 12.0 cards with 80+ SMs (il_cc's 1201) take it: the shared table
     // was measured on an RTX 5070 (48 SMs) and stays that card's
     {1201, kIlRows_120, sizeof(kIlRows_120) / sizeof(IlRows)},
