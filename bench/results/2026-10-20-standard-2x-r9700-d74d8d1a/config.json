@@ -1,0 +1,13 @@
+{
+  "engine_options": null,
+  "other_engine_options": {},
+  "server_defaults": {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 131072,
+  "source": "the server was already running; its engine options are not exposed"
+}
