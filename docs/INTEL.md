@@ -90,7 +90,7 @@ community llama.cpp SYCL image), so the PC needs no oneAPI. From the checkout (i
 folder above it is what the container mounts at `/work`):
 
     cd Strata
-    docker build -t strata-sycl-dev sycl/tools          # once: about 6 minutes, a 13 GB image
+    docker build --pull -t strata-sycl-dev sycl/tools   # once: about 6 minutes, a 13 GB image
     H=$(basename "$PWD")
 
 **Arc B-series** (Pro B70: `bmg-g31`; B580, B570 and Pro B60: `bmg-g21`; `ocloc ids bmg-g21` in the image lists the
@@ -104,6 +104,13 @@ device ids). Ahead-of-time code, no compile at the first start:
 
     docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e REPO=/work/$H \
         -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+
+`--pull` matters: the image starts from a community image whose tag moves, and `docker build` reuses a copy of it from an earlier
+build unless it is told to fetch the current one. An old copy can hold a device compiler (ocloc from Compute Runtime
+26.22.38646, IGC 2.36.3) that crashes on the Battlemage kernels ("IGC: Internal Compiler Error: Floating point exception", 77 device
+images, then `gen compiler command failed with exit code 245` at the last link, #3219). `sycl/tools/build.sh` checks the
+version before the compile and stops with the fix. If you cannot update the image, `-e I8_ESIMD=OFF` builds without the fused int8
+kernels (stubs: the prompt's experts take the slower XMX path, the answers do not change); `-e ALLOW_BAD_OCLOC=1` builds anyway.
 
 The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. The binary is `build-sycl-aot/strata`
 (B-series) or `build-sycl/strata` (A-series); setup finds either one. Run the `docker build` again after pulling a
@@ -789,16 +796,38 @@ the fix).
 
 ## Not done
 
-- Images on the llama.cpp config: not wired. On the SYCL port pictures are wired but opt-in (`setup --backend sycl --vision yes`):
-  setup compiles the portable CPU reader `strata-vision` (the program the AMD packages carry beside their engine) into `engine-sycl/`,
-  the server runs it on the host, and the engine in the container reads its embeddings from the host's `/dev/shm`, which
-  `strata-sycl.sh` shares (`STRATA_SYCL_SHM=0` keeps a private one). A SYCL GPU reader does not exist yet, so every Arc reads
-  pictures on the CPU (a few seconds each). They are not on by default because the first picture request on the Arc Pro B70
-  (engine 0.1.45, IQ3_S, 2026-10-19) hung the GPU: the xe driver logged an engine reset and `Fault response: Unsuccessful -EINVAL`
-  and the request ended 503. Text was not affected by this wiring (the reader and the shared `/dev/shm` are only used for pictures);
-  the engine's vision path on SYCL needs a look first (`setup_intel.PICTURES_ON_BY_DEFAULT` flips the default).
+- Images on the llama.cpp config: not wired. On the SYCL port they are wired, see "Pictures on an Arc" below. Open there: a
+  Battlemage card (the B-series) keeps pictures opt-in because of the Arc Pro B70 fault, and nobody has run the SYCL picture reader
+  on a card of 24 GB or more.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
+
+## Pictures on an Arc (2026-10-19, branch f-021-arcvis)
+
+Pictures follow the rule of every other card ([MODELS.md](MODELS.md#the-versions)): a picture reader on the CPU under 24 GB of VRAM, on
+the card from 24 GB. `strata_control/vision_reader.py` is the one place for it. On an Arc:
+
+- **The CPU reader** is `strata-vision` (llama.cpp's mtmd). Setup compiles it into `engine-sycl/`, the server runs it on the host, and the
+  engine in the container reads the picture's embeddings from the host's `/dev/shm`, which `strata-sycl.sh` shares
+  (`STRATA_SYCL_SHM=0` keeps a private one). On the A750 a 448x448 picture takes 1.73 s.
+- **The SYCL reader** is `strata-vision-sycl`, the same program on llama.cpp's SYCL backend (`tools/vision`, `STRATA_VISION_SYCL=ON`).
+  `setup --backend sycl --vision gpu` compiles it on the host when the oneAPI compiler (`icx`, `icpx`, `intel-oneapi-mkl-devel`) is
+  installed; without it setup says so and keeps the CPU reader. It needs the PC's oneAPI runtime, not the container. If it does not
+  start, the server falls back to the CPU reader with one log line. On the A750: 0.16 s per picture instead of 1.73 s (after a 30 s
+  first start that compiles the kernels), and the embeddings match the CPU reader's (cosine 0.9959 to 0.9999 over 8 pictures). It takes
+  VRAM the experts would use, which is why the rule gives it to 24 GB cards only.
+- **Default.** On for an Alchemist card (A750, A770, ...) with the CPU reader. An Arc of 24 GB or more also keeps the CPU reader by
+  default: the SYCL reader has not run on such a card (the B70 is gone), so `--vision gpu` asks for it and
+  `vision_reader.INTEL_GPU_READER_BY_DEFAULT` is the switch to flip once one has. A Battlemage card (B580, B70, ...) keeps pictures
+  **off** by default: the first picture on the Arc Pro B70 (engine 0.1.45, IQ3_S, 2026-10-19, CPU reader) logged an xe engine reset
+  (ccs + bcs) and `Fault response: Unsuccessful -EINVAL`, and the request ended 503. The CPU reader was in use, so the fault is in the engine on xe, not in a GPU reader; it
+  has not been looked at since. `--vision yes` turns pictures on there; setup says so.
+
+Tested on the A750 (IQ3_XXS, 8K context, engine from f-021-int, JIT build, 2026-10-19): a picture with a red circle, a blue square and the
+words "STRATA 42", 8 variants, answered correctly by the CPU reader 10 of 10 (a first set with smaller text read "42" as "412"), and
+by the SYCL reader 10 of 10; two pictures in one request, a picture kept in the history of a second turn, and a long text prompt after the
+pictures all answered; a text request after every picture answered; 47 picture requests, outside and inside the container (inside, one
+answer was cut off by the 200-token limit of the test), no GPU fault in the kernel log, no 503.
 
 ## Arc Pro B70 with a model that does not fit: Flash-Next IQ3_S (2026-10-07, branch f-141-intel)
 

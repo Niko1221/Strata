@@ -45,8 +45,23 @@ struct PoolPlanInput {
     int e_cores = 0;
 };
 
+/// #3262: is a CPU an efficiency-class core?  `pmu_core` / `pmu_atom` / `pmu_lowpower` are Intel's hybrid PMU lists
+/// (/sys/devices/cpu_core/cpus, cpu_atom/cpus, cpu_lowpower/cpus; the last exists on Meteor Lake and Arrow Lake-H, where
+/// the LP-E cores of the SoC tile are in neither of the other two).  A CPU in the P list is a P-core; one in the atom
+/// or low-power list is an E-core (the LP-E cores sort last by capacity).  A CPU in no list falls back to its capacity
+/// (an E-core under 90% of the largest).  `pmu`: both the core and the atom list were read.
+inline bool hybrid_cpu_is_efficiency(int cpu, long cap, long max_cap, bool pmu, const std::vector<int>& pmu_core,
+                                     const std::vector<int>& pmu_atom, const std::vector<int>& pmu_lowpower) {
+    auto in = [&](const std::vector<int>& v) { return std::find(v.begin(), v.end(), cpu) != v.end(); };
+    if (pmu) {
+        if (in(pmu_atom) || in(pmu_lowpower)) return true;
+        if (in(pmu_core)) return false;
+    }
+    return max_cap > 0 && cap > 0 && cap * 10 < max_cap * 9;
+}
+
 struct PoolPlan {
-    int workers = 1;                    ///< the default count of pool workers (the host thread works beside them)
+    int workers = 1;                   ///< the default count of pool workers (the host thread works beside them)
     int cores = 0;                      ///< physical cores counted (all packages)
     int cores_local = 0;                ///< ... on the host's package
     int packages = 1;

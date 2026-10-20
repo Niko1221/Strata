@@ -96,13 +96,26 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def in_trash(path: str | os.PathLike) -> bool:
+    """#3410: True when ``path`` is inside a Trash / Recycle Bin folder (a Strata folder that was deleted with the file manager
+    is still a folder there, and was remembered as an install): ~/.local/share/Trash/files/.., /.Trash-1000/.., ~/.Trash/..,
+    $RECYCLE.BIN\\.."""
+    parts = [x.lower() for x in Path(path).parts]
+    for i, x in enumerate(parts):
+        if x in (".trash", "$recycle.bin", "recycler", "$recycle.bin.old") or x.startswith(".trash-"):
+            return True
+        if x == "trash" and i + 1 < len(parts) and parts[i + 1] in ("files", "info", "expunged"):
+            return True                                  # the XDG Trash: ~/.local/share/Trash/files
+    return False
+
+
 def _installs_in(settings: dict) -> list[Path]:
     items = settings.get("installs")
     found: list[Path] = []
     for raw in (items if isinstance(items, list) else [])[:20]:
         if isinstance(raw, str) and raw:
             p = Path(raw).expanduser()
-            if p.is_absolute() and p not in found:
+            if p.is_absolute() and p not in found and not in_trash(p):
                 found.append(p)
     return found
 

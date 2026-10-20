@@ -128,6 +128,7 @@ export function Seg<T extends string>({ value, options, onChange, ariaLabel, pan
     options: {
         value: T;
         label: string;
+        icon?: IconName;
         title?: string;
         disabled?: boolean;
     }[];
@@ -150,7 +151,7 @@ export function Seg<T extends string>({ value, options, onChange, ariaLabel, pan
                 onChange(options[next].value);
                 (e.currentTarget.parentElement?.children[next] as HTMLElement)?.focus();
             }} title={tr(o.title)} onClick={() => onChange(o.value)}>
-          {tr(o.label)}
+          {tr(o.icon ? <Icon name={o.icon}/> : null)}{tr(o.label)}
         </button>)))}
     </div>);
 }

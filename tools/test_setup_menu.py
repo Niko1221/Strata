@@ -6,6 +6,7 @@ install removing a stale strata_kq library.
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import unittest
@@ -155,7 +156,12 @@ class EnginePlaceholders(unittest.TestCase):
         self.assertEqual(setup.MIN_ENGINE, (0, 1, 45))
         for m in ("UD-Q5_K_XL", "UD-Q6_K_XL", "NVFP4", "NVFP4-NVIDIA"):
             self.assertEqual(setup.MODELS[m]["engine"], (0, 1, 44), m)
-        self.assertIn("0.1.45", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").split("project(strata VERSION", 1)[1][:12])
+        # No minimum may name an engine newer than this tree (a placeholder for a release that does not exist yet would make setup
+        # ask for an engine nobody can download). The tree's version is read from CMakeLists.txt, so this does not go stale each release.
+        text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        tree = tuple(int(n) for n in re.search(r"project\(strata VERSION ([0-9.]+)", text).group(1).split("."))
+        for what, minimum in [("MIN_ENGINE", setup.MIN_ENGINE), ("NVFP4_ENGINE", setup.NVFP4_ENGINE)] + [(m, setup.MODELS[m]["engine"]) for m in setup.MODELS if "engine" in setup.MODELS[m]]:
+            self.assertLessEqual(tuple(minimum), tree[:len(minimum)], f"{what} {minimum} is ahead of the tree {tree}")
 
 
 class KqLibrary(unittest.TestCase):

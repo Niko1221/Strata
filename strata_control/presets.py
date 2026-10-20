@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from strata_control import tune_knobs, tune_machine
+from strata_control import atomic as _atomic_mod
 
 SCHEMA = "strata.preset/1"
 RECHECK_SET = "recheck/1"
@@ -57,7 +58,7 @@ def _atomic(path: Path, payload: bytes) -> None:
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

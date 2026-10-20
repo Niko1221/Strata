@@ -71,6 +71,30 @@ class PictureDefaults(unittest.TestCase):
         self.assertEqual(setup.hip_vision(None, 16.0), "cpu")
         self.assertEqual(setup.hip_vision("gpu", 16.0), "gpu")
 
+class MacPictureDefaults(unittest.TestCase):
+    """setup.py on a Mac: pictures on by default, on the Metal reader (strata_control/vision_reader.py)."""
+
+    def test_nothing_asked_means_the_gpu_reader_for_every_mac_size(self):
+        from strata_control import mac_fit as MF
+        for model in MF.MAC_MODELS:
+            for ram in (32.0, 64.0, 128.0):
+                self.assertEqual(setup.mac_vision(None, model, ram), "gpu", (model, ram))
+                self.assertEqual(setup.mac_vision("yes", model, ram), "gpu", (model, ram))
+
+    def test_off_and_cpu_are_kept_as_asked(self):
+        for off in ("no", "none", "off"):
+            self.assertEqual(setup.mac_vision(off, "Q2_0", 32.0), "none")
+        self.assertEqual(setup.mac_vision("cpu", "Q2_0", 32.0), "cpu")
+
+    def test_a_folder_without_the_reader_turns_pictures_off(self):
+        import tempfile
+        d = Path(tempfile.mkdtemp(prefix="macvis-"))
+        (d / "strata").write_bytes(b"x")
+        self.assertEqual(setup.mac_reader(d, "gpu").mode, "none")
+        (d / "strata-vision").write_bytes(b"x")
+        r = setup.mac_reader(d, "gpu")
+        self.assertEqual((r.mode, r.exe.name), ("gpu", "strata-vision"))
+
 
 if __name__ == "__main__":
     unittest.main()

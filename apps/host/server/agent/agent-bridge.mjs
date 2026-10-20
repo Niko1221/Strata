@@ -1180,6 +1180,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       .map(p => (p.sessionId === sessionId ? p : { ...p, callId: `${p.sessionId}:${p.callId}` })).map(({ callId, tool, reason, at }) => ({ callId, tool, reason, at }));
   }
 
+  /** Every chat that has an approval waiting, for the task board: the chat, its working folder and what is waiting (same items as pendingFor). */
+  function pendingAll() {
+    if (!pending.size) return [];
+    return Object.keys(sessionMap).map(chatId => ({ chatId, folder: sessionMap[chatId]?.cwd ?? null, pending: pendingFor(chatId) })).filter(c => c.pending.length);
+  }
+
   async function close() {
     const r = rt; rt = null;
     if (r) { r.events?.close(); r.gw.close(); await r.hp.stop(); }
@@ -1188,7 +1194,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

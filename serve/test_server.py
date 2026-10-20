@@ -74,7 +74,8 @@ class MaxTokens(unittest.TestCase):
             return s, b, u.get("prompt_tokens"), u.get("completion_tokens")
         s, b = self.post("/v1/messages", {"model": "m", "messages": msgs, **budget})
         u = b.get("usage", {})
-        return s, b, u.get("input_tokens"), u.get("output_tokens")
+        prompt = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        return s, b, prompt if u else None, u.get("output_tokens")
 
     def test_anthropic_thinks_only_when_asked(self):
         # #278: Anthropic's thinking is opt-in; "thinking", an effort or a reasoning_budget_tokens (#123) asks for it
@@ -1770,6 +1771,67 @@ class GpuChoice(unittest.TestCase):
             sc = hip_speed_scores([0, 1, 2], root=d)
             self.assertEqual(sc, {0: 128 * 2350.0, 1: 64 * 2000.0, 2: 128 * 2350.0})
             self.assertIsNone(hip_speed_scores([0, 1, 2, 3], root=d))      # a card the topology does not have
+
+    DEVICES_MINI_PC = (
+        "device 0: AMD Radeon 760M Graphics\n  arch gfx1103, 8.0 GiB, wave32\n  cannot run: GPU 0 (AMD Radeon 760M Graphics, gfx1103) is not an "
+        "architecture this Strata engine was compiled for (gfx1200,gfx1201); compile it\n"
+        "device 1: AMD Radeon RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n")
+
+    def test_automatic_card_skips_what_the_engine_cannot_run(self):
+        """#3203: a mini PC's Radeon 760M is HIP's device 0 and has no code in the engine; Automatic must run on the card behind it."""
+        from serve.server import hip_auto_devices, parse_hip_devices, pick_hip_devices
+        devices = parse_hip_devices(self.DEVICES_MINI_PC)
+        self.assertEqual([(d["index"], d["arch"], d["integrated"], bool(d["cannot_run"])) for d in devices],
+                         [(0, "gfx1103", True, True), (1, "gfx1201", False, False)])
+        self.assertEqual(pick_hip_devices(devices), ([1], None))
+        # an integrated chip that does have code loses to a card of its own; the card of its own wins even when it is device 1
+        both = parse_hip_devices("device 0: Radeon 890M\n  arch gfx1150, 16.0 GiB, wave32\ndevice 1: RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n")
+        self.assertEqual(pick_hip_devices(both), ([1], None))
+        # an integrated chip alone stays the choice; device 0 already right: nothing is changed
+        self.assertEqual(pick_hip_devices(parse_hip_devices("device 0: Radeon 8060S\n  arch gfx1151, 64.0 GiB, wave32\n")), (None, None))
+        self.assertEqual(pick_hip_devices(parse_hip_devices("device 0: R9700\n  arch gfx1201, 31.9 GiB, wave32\ndevice 1: R9700\n  arch gfx1201, 31.9 GiB, wave32\n")), (None, None))
+        self.assertEqual(pick_hip_devices([]), (None, None))
+        # the engine's own flag for an integrated chip is honoured as well
+        flagged = parse_hip_devices("device 0: X\n  arch gfx1300, 8.0 GiB, wave32, integrated\ndevice 1: Y\n  arch gfx1201, 4.0 GiB, wave32\n")
+        self.assertEqual(pick_hip_devices(flagged), ([1], None))
+        # nothing runnable: the plain line names the cards, what the engine is built for and, for the RX 6800 XT, that no package exists
+        nothing = parse_hip_devices(
+            "device 0: AMD Radeon 760M Graphics\n  arch gfx1103, 8.0 GiB, wave32\n  cannot run: x is not an architecture this Strata engine was compiled for "
+            "(gfx1200,gfx1201); y\ndevice 1: AMD Radeon RX 6800 XT\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: z compiled for (gfx1200,gfx1201); y\n")
+        picked, problem = pick_hip_devices(nothing)
+        self.assertIsNone(picked)
+        self.assertIn("none of this computer's graphics cards has code in this Strata engine (it is built for gfx1200,gfx1201)", problem)
+        self.assertIn("AMD Radeon RX 6800 XT (gfx1030)", problem)
+        self.assertIn("760M Graphics (gfx1103, integrated)", problem)
+        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", problem)
+        # through the engine's own program, and never over a card the config or the environment names
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / ("strata.exe" if os.name == "nt" else "strata")
+            probe = Path(d) / ("strata-device.exe" if os.name == "nt" else "strata-device")
+            exe.write_text("")
+            probe.write_text("")
+            cfg = {"backend": "hip", "exe": str(exe), "args": []}
+            done = SimpleNamespace(returncode=0, stdout=self.DEVICES_MINI_PC)
+            with mock.patch("serve.server.subprocess.run", return_value=done) as run, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(hip_auto_devices(cfg, {}), [1])
+                self.assertEqual(run.call_args[0][0], [str(probe), "--list-devices"])
+                self.assertIn("automatic GPU choice: GPU 1", out.getvalue())
+            with mock.patch("serve.server.subprocess.run", return_value=done) as run:
+                self.assertIsNone(hip_auto_devices({**cfg, "gpu": 0}, {}))
+                self.assertIsNone(hip_auto_devices({**cfg, "hip_ordinal": 2}, {}))
+                self.assertIsNone(hip_auto_devices(cfg, {"HIP_VISIBLE_DEVICES": "0"}))
+                self.assertIsNone(hip_auto_devices({**cfg, "backend": "cuda"}, {}))
+                run.assert_not_called()
+            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="")):
+                self.assertIsNone(hip_auto_devices(cfg, {}))                         # a probe that fails changes nothing
+            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=(
+                            "device 0: A\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: compiled for (gfx1200)\n"))):
+                with self.assertRaises(SystemExit) as stop:
+                    hip_auto_devices(cfg, {})
+                self.assertIn("none of this computer's graphics cards", str(stop.exception))
+            exe.unlink()
+            probe.unlink()
+            self.assertIsNone(hip_auto_devices(cfg, {}))                            # no probe next to the engine: as before
 
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
@@ -3652,7 +3714,9 @@ class UsageAndStatus(unittest.TestCase):
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
-        self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], len(self.engine.last_prompt))
+        self.assertEqual(u["input_tokens"], 1)                     # what was read now is kept: written to the cache
+        self.assertEqual(u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"],
+                         len(self.engine.last_prompt))
         self.assertGreater(u["output_tokens"], 0)
 
     def test_v1_status(self):
@@ -4067,6 +4131,17 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)   # a prefix + more
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
+
+    def test_llama_cpp_thinking_budget_tokens_is_the_same_budget(self):
+        """llama.cpp's name (pi-llama-cpp sends it): the same wrap-up; reasoning_budget_tokens wins when both are set."""
+        from serve.server import REASONING_WRAP_UP
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        code, b = self.openai(thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20] + wrap)
+        code, b = self.openai(reasoning_budget_tokens=10, thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:10] + wrap)
 
     def test_a_stop_string_is_found_in_the_answer_after_the_wrap_up(self):
         """#454: the continuation after the thinking budget is cut at a stop string too."""
@@ -4984,6 +5059,29 @@ class SilentEngine(unittest.TestCase):
                 f.write("strata verify trace: dump\n" * 1500)
             engine.proc.poll.return_value = -6
             self.assertIn("a hang it caught", engine.death_note())
+
+    def test_death_note_names_a_finite_rttime_limit_on_signal_9(self):
+        # #3238: a hard RLIMIT_RTTIME of 0 (PipeWire without rtkit) kills with -9 and no OOM; say so, not "out of RAM"
+        import sys
+        import tempfile
+        from unittest import mock
+        engine = self.bare(0.3)
+        fake = mock.MagicMock()
+        fake.RLIMIT_RTTIME = 15
+        fake.RLIM_INFINITY = -1
+        fake.getrlimit.return_value = (0, 0)
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(sys.modules, {"resource": fake}):
+            engine.log_path = os.path.join(d, "e.log")
+            open(engine.log_path, "w").close()
+            engine.proc.poll.return_value = -9
+            note = engine.death_note()
+            self.assertIn("RLIMIT_RTTIME", note)
+            self.assertIn("rtkit", note)
+            fake.getrlimit.return_value = (-1, -1)               # unlimited: the old RAM hint stays
+            self.assertIn("running out of RAM", engine.death_note())
+            fake.getrlimit.return_value = (0, 0)
+            engine.proc.poll.return_value = -11                  # another signal: not this cause
+            self.assertIn("running out of RAM", engine.death_note())
 
     def test_prompt_chunks_set_the_wait(self):
         # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size

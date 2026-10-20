@@ -8,6 +8,8 @@ Ubuntu 26.04, kernel 7.0, ROCm 7.14.1). Setup (`setup.sh`, `START-HERE.bat`) rec
 named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). The 0.2.0-beta release also has ready-made packages: `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` (engine `halo`, gfx1151, ROCm 7.14.1) and, on Windows, `Strata-0.2.0-beta-windows-hip-rdna3.exe` (engine `rdna3`: gfx1100, gfx1101, gfx1102 and gfx1151, ROCm 10.2.0a20260930); any app installer plus **Update engine** (or `strata update`) fetches the same package. What was run: both packages were built, linked and scanned, and the Linux package refuses to start on a card of another family (tried on an RX 9000 card); the maintainers have no Strix Halo and ran neither on one. The measurements on this page come from source builds on Linux (the maintainers' earlier box and community machines). Nobody has run a Strix Halo on Windows. The packaged engines do not carry the hipBLASLt table of section 3 yet (planned for 0.2.1), so their prompt reading is slower than the numbers below until then. A Windows zip of the 0.1.x START-HERE route without gfx1151 code is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
 (the GTT pool; on Windows half the RAM) and recommends UD-IQ4_XS from about 80 GB of memory; it changes no BIOS or kernel setting.
 
+**Windows start-up (0.2.1.2).** On a Strix Halo under Windows the engine no longer registers the expert arena with the GPU driver: registering it took all free VRAM (91 GiB before, 0 after, on a 64 GB carve-out + 32 GB shared PC), the expert cache got no slots and the engine stopped with "the embedding buffer failed" (0.2.1 and earlier). The arena stays in RAM, held by the working-set lock, and the cache gets its normal slots. `STRATA_ARENA_PIN_GIB=N` (or `0`) registers it as before, `STRATA_UMA_REGISTER=1` too. Linux is unchanged.
+
 What the engine does differently on this chip:
 
 - **Unified memory.** The GPU's "VRAM" is the GTT pool of the same RAM. `device_free_bytes()` (the figure `--expert-cache auto` and
@@ -97,6 +99,8 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 | `STRATA_SH_STREAM=1` | the shared expert on a second stream beside the routed experts. It is off by default on other AMD cards (#816), but it pays on gfx1151: decode +1.8% (UD-IQ4_XS) and +6.7% (UD-Q4_K_XL) at 8K |
 
 ## 5. What is not on by default (it changes bits)
+
+**Five of the switches below (`STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA`, `STRATA_SELECT_WMMA`) are one opt-in on an integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"). It was measured on a Radeon 780M only, where it is the default.** `STRATA_PF_FUSED`, `STRATA_HC_Q8`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well.
 
 These are faster on gfx1151 and **round differently** from the default path (a different summation order or a half-precision
 intermediate), so they are opt-in and the maintainers gate them with KL against the default (`STRATA_PF_SWITCH_MIN_T=4096` keeps

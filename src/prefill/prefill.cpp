@@ -1,6 +1,7 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/prefill/warm_policy.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
 #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
@@ -1286,6 +1287,24 @@ void warm_gemm_libraries(int device) {
     static const bool off = [] { const char* e = std::getenv("STRATA_PREFILL_WARM"); return e != nullptr && e[0] == '0'; }();
     if (off) return;
 #if defined(STRATA_USE_HIP)
+    // #3204: not when the process sees cards of more than one architecture (gfx1151 + gfx1201: prompts -25%); see
+    // warm_policy.hpp.  STRATA_PREFILL_WARM=1 asks for it anyway.
+    static const bool arch_ok = [] {
+        std::vector<std::string> archs;
+        int n = 0;
+        if (cudaGetDeviceCount(&n) != cudaSuccess) { (void) cudaGetLastError(); return true; }
+        for (int i = 0; i < n && i < 32; ++i) {
+            cudaDeviceProp p{};
+            if (cudaGetDeviceProperties(&p, i) == cudaSuccess) archs.emplace_back(p.gcnArchName);
+            else (void) cudaGetLastError();
+        }
+        const bool wanted = warm_gemm_wanted(archs, std::getenv("STRATA_PREFILL_WARM"));
+        if (!wanted)
+            std::fprintf(stderr, "strata prefill: no hipBLAS warm-up: the cards are of more than one architecture "
+                                 "(it slows prompts there, #3204); the first prompt loads the libraries (STRATA_PREFILL_WARM=1 asks for it)\n");
+        return wanted;
+    }();
+    if (!arch_ok) return;
     static std::mutex mu;
     static unsigned done_mask = 0;   // per device: each card loads its own code objects
     if (device < 0 || device >= 32) return;

@@ -96,6 +96,21 @@ class EngineBeforeModel(unittest.TestCase):
         self.assertIn(NO_ENGINE_STEP, warning)
         self.assertNotIn("The app never downloads", warning)          # not the generic line
 
+    def test_no_graphics_card_is_said_plainly_with_no_feed_address(self):
+        report = dict(UNUSABLE, backend=None)
+        spawns, err, r = self.run_ensure_runner([report, report], update_events("none-for-this-pc"))
+        self.assertIsNone(err)
+        self.assertTrue(r.engine_problem.startswith("no graphics card that Strata can use was found"))
+        text = r.events[-1].text
+        self.assertIn("Strata needs an NVIDIA or AMD graphics card", text)
+        self.assertNotIn("--feed", text)
+        self.assertNotIn("<address>", text)
+        self.assertNotIn("--feed", no_engine_final(r.engine_problem))
+
+    def test_the_other_no_engine_texts_do_not_ask_for_a_feed_address_either(self):
+        self.assertNotIn("<address>", NO_ENGINE_STEP)
+        self.assertNotIn("--feed", no_engine_warning("The feed has no engine package for this PC."))
+
     def test_wrong_family_names_the_plain_reason_in_the_warning(self):
         spawns, err, r = self.run_ensure_runner([UNUSABLE, UNUSABLE], update_events("none-for-this-pc", WRONG_FAMILY))
         self.assertIsNone(err)

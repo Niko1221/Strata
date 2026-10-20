@@ -120,6 +120,22 @@ class ReleaseSelection(unittest.TestCase):
         self.assertEqual(ec.arch_notice(("gfx1151",), ["gfx1201"]),
                          "This build of Strata is for AMD Ryzen AI Max cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
 
+    def test_rx6000_has_no_ready_made_package_and_the_notice_says_so_instead_of_naming_a_build_that_does_not_exist(self):
+        """#3203: an RX 6800 XT (gfx1030) is in none of the release's engine packages on either OS; the line must not say "Ask for the RX 6000 build"."""
+        from strata_control import engine_component as ec
+        covered = {a for p in RELEASE if p["backend"] == "hip" for a in p["archs"]}
+        for gfx in ec.NO_PACKAGE_HIP:
+            self.assertNotIn(gfx, covered, f"{gfx} is in a package now: drop it from NO_PACKAGE_HIP")
+        for platform in ("windows-x86_64", "linux-x86_64"):
+            self.assertIsNone(self.pick(pc(platform, "hip", gfx=["gfx1030"]))[0])
+        text = ec.arch_notice(("gfx1200", "gfx1201"), ["gfx1030"])
+        self.assertIn("This computer has an AMD RX 6000 card (gfx1030).", text)
+        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", text)
+        self.assertNotIn("Ask for", text)
+        self.assertIsNone(ec.no_package_note(["gfx1201", "gfx1100"]))
+        # a PC with an RX 9000 card next to the RX 6000 one is told the ordinary way (a build exists for one of them)
+        self.assertIn("Ask for the", ec.arch_notice(("gfx1100",), ["gfx1201", "gfx1030"]))
+
     def test_the_platform_decides_first(self):
         self.assertIsNone(self.pick(pc("macos-arm64", "cuda", "590.10", ["sm_86"]))[0])
         self.assertEqual(self.pick(pc("macos-arm64", "metal"))[0], ("macos-arm64", "metal", ""))

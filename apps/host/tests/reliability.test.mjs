@@ -15,7 +15,7 @@ const root = resolve(import.meta.dirname, '..');
 test('Markdown renders every incomplete stream prefix without looping', { timeout: 15000 }, async () => {
   const bundle = await build({
     stdin: { contents: `import React from 'react'; import { renderToStaticMarkup } from 'react-dom/server'; import { Markdown } from './src/components/Markdown.tsx'; export {setTranslationLanguage as setLanguage} from './src/lib/i18n.ts'; export const render = text => renderToStaticMarkup(React.createElement(Markdown, { text }));`, resolveDir: root },
-    bundle: true, write: false, platform: 'node', format: 'cjs', jsx: 'automatic',
+    bundle: true, write: false, platform: 'node', format: 'cjs', jsx: 'automatic', external: ['katex', 'katex/dist/katex.min.css'],   // math loads on demand in the browser
     plugins: [{ name: 'copy-control-stub', setup(b) {
       b.onResolve({ filter: /^\.\/ui$/ }, () => ({ path: 'ui', namespace: 'test-stub' }));
       b.onLoad({ filter: /.*/, namespace: 'test-stub' }, () => ({ contents: 'export const IconBtn = () => null; export const Btn = () => null;' }));
@@ -32,6 +32,11 @@ test('Markdown renders every incomplete stream prefix without looping', { timeou
   for (let i = 0; i <= text.length; i++) assert.equal(typeof render(text.slice(0, i)), 'string');
   assert.match(render(text), /<ul>/); assert.match(render(text), /<ol>/); assert.match(render(text), /<table/);
   assert.ok(!render('<script>alert(1)</script>').includes('<script>'));
+  // #3268: math is found in a paragraph and as a block; until KaTeX is loaded it shows as source, and money is plain text
+  assert.match(render('Radius $r = 2$ here'), /md-math md-math--source/);
+  assert.match(render('$$\nx = 1\n$$'), /md-math-block/);
+  assert.ok(!render('costs $5 and $10').includes('md-math'));
+  for (let i = 0; i <= 40; i++) assert.equal(typeof render('A $$x^2 + y$$ and $q$ b'.slice(0, i)), 'string');
 });
 
 test('setup, config and lifecycle preserve truthful outcomes in the demo host', { timeout: 30000 }, async () => {

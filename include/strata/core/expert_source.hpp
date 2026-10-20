@@ -997,6 +997,20 @@ public:
 #if defined(__linux__)
     bool linux_file_defaults() const override { return !role_ptr_.empty(); }   // the GGUF in place only (measured)
 #endif
+    /// 0.2.1: io prefetch + the decode gate by default also for an experts.bin pack (zero-copy is moot there: its blob is one
+    /// contiguous range the kernels already read from the mapping; the COLD_OVERLAP default stays with the GGUF in place).
+    /// Measured (RTX 3060, 43 GB pack): 32 GB of RAM decode +20..+34%, 16 GB decode +3..+8% but the cold 4K prompt -4..-6%, so
+    /// below the gate's room test the pack keeps reading as before
+    bool linux_io_defaults() const {
+#if defined(__linux__)
+        return role_ptr_.empty() ? cache_room_ratio() >= 0.55 : true;   // experts.bin: only while the page cache has room for it
+#else
+        return false;
+#endif
+    }
+    /// the memory the page cache can use (the tightest cgroup limit less what is not page cache, else MemAvailable) over the
+    /// experts' bytes; 0 when unknown.  The decode gate's room test (STRATA_IO_PF_GATE_LO), asked once at start.
+    double cache_room_ratio() const;
     bool gate_on() const { return gate_on_; }
     double gate_held() const { return gate_ewma_; }
     int64_t gate_closed_windows() const { return gate_closed_w_; }

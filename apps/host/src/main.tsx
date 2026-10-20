@@ -24,3 +24,5 @@ import './styles/time-skip.css';
 import './styles/model-run.css';
 
 import './styles/onboarding.css';
+
+import './styles/board.css';

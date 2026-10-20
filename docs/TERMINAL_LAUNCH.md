@@ -38,7 +38,7 @@ The release folder is the latest GitHub release of Niko1221/Strata (`https://git
 8. **Advanced** (optional): every engine setting with default, tuned value and your value; edit, reset, add a setting by name (checked against the engine's own list; a warning, not a refusal);
    the exact command (it includes the context, memory format and picture choice you made above; it has its own scroll area: Tab, then the arrows) and the matching `strata launch` flags.
 9. **Access**: this computer only (127.0.0.1), your network (LAN address, key), Cloudflare quick tunnel (needs `cloudflared`), Tailscale (needs it installed and connected); port; API key
-   (made for you beyond this computer: the server will not start on a network without one).
+   (optional, recommended beyond this computer: Strata makes one for you, and one keypress (`t`) turns it off. Without a key the server still starts and warns that anyone who can reach the port can use the model and its tools; `--no-api-key` does the same without the screens, and on a Cloudflare tunnel the warning is stronger. This computer only never needs a key).
 10. **Save as preset** and launch. Then downloads (with progress), engine start, and the monitor. In a small window the summary shrinks so the three choices stay on screen,
     and the key line says what Enter will do. No web page opens by itself; only `--open` opens one.
 
@@ -70,7 +70,7 @@ strata launch --list-presets | --delete-preset NAME | --status | --stop [--prese
 
 `strata launch --help` lists everything with examples. An unknown model or flag gets a plain message with the closest match. Presets are small files in `launch-presets/` beside the profiles
 folder; the run uses the shared profile `launch-<name>` and the shared tuning presets (`strata presets`), so the app sees them too. Flags next to `--preset` change that start only
-(add `--save-preset` to keep them).
+(add `--save-preset` to keep them). `--plan` shows the model (also for your own files, which it recognises), the context, the picture setting and what would be downloaded and how big (0 when everything is already here). A model that was tuned before for the same choices on the same computer is not measured again by `--tune quick`; the stored result is used and the run says so. Add `--retune` to measure again.
 
 ## Connect your apps: `strata connect`
 
