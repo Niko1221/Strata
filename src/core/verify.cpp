@@ -4675,6 +4675,8 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
             if (!strata::metal_engine::window_sample_slot_row(metal_, t, sp, hist, hlen, &out[t], err)) return false;
         }
     }
+    progress_at("decode");   // the serve watchdog: slots decoding with no request reading beat only here, as on CUDA
+    progress_beat();
     return true;
 #endif
     using namespace strata::kernels;
