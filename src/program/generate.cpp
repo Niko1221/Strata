@@ -10214,9 +10214,23 @@ int main(int argc, char** argv) {
         auto pl_pool_shrink = [&](const std::string& why) {
             std::fprintf(stderr, "strata serve: --pipeline-windows: the slot pool stays at two slots: %s%s\n", why.c_str(),
                          vram_free_note().c_str());
+            // the expert caches were sized with pl_ns slots' room kept out (kPipeWindowMib, pipe_first); it stays out
+            // until a restart - said, so a VRAM count later adds up
+            if (pl_ns > 2) {
+                const int64_t win_x = kPipeWindowMib / (pl_ns - 1) * (pl_ns - 2);
+                const int64_t snap_x = (int64_t) (pl_ns - 2) * (int64_t) gdn_snapshot_bytes(ss) >> 20;
+                std::fprintf(stderr, "strata serve: --pipeline-windows: %lld MiB of CUDA0 and %lld MiB of every later "
+                                     "stage's card stay kept out of the expert caches for the %d slots it does not hold "
+                                     "(until a restart)\n", (long long) (win_x + snap_x), (long long) win_x, pl_ns - 2);
+            }
             cudaGetLastError();
+            for (auto& vs : g_pl_diag.v)
+                for (int q = 2; q < strata::pl::kMaxSlots; ++q) vs[q] = nullptr;
             for (int q = 2; q < strata::pl::kMaxSlots; ++q) {
-                ver_x[q - 2].reset();
+                {
+                    const strata::core::OnDevice on0(stage_ver_p(0, 0).device());
+                    ver_x[q - 2].reset();
+                }
                 for (auto& st : stages) {
                     const strata::core::OnDevice on(st->dev);
                     st->ver_x[q - 2].reset();
@@ -10421,6 +10435,19 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // the slot pool's snapshots past the second, released (the pool goes back to two slots)
+        auto pl_snaps_drop_x = [&]() {
+            for (PlSnap& sn : pl_snaps) {
+                const strata::core::OnDevice on(sn.dev);
+                for (int q = 2; q < strata::pl::kMaxSlots; ++q) {
+                    if (sn.buf[q] != nullptr) (void) cudaFree(sn.buf[q]);
+                    if (sn.pre[q] != nullptr) (void) cudaEventDestroy(sn.pre[q]);
+                    if (sn.ev[q] != nullptr) (void) cudaEventDestroy(sn.ev[q]);
+                    sn.buf[q] = nullptr;
+                    sn.pre[q] = sn.ev[q] = nullptr;
+                }
+            }
+        };
         // the slot pool: a snapshot (and its events) per slot past the second on every front stage, beside the window
         // only (the new loop takes every snapshot on the side stream)
         if (pipe && pl_ns > 2) {
@@ -10438,16 +10465,7 @@ int main(int argc, char** argv) {
                               " does not fit";
             }
             if (!why.empty()) {
-                for (PlSnap& sn : pl_snaps) {
-                    const strata::core::OnDevice on(sn.dev);
-                    for (int q = 2; q < strata::pl::kMaxSlots; ++q) {
-                        if (sn.buf[q] != nullptr) (void) cudaFree(sn.buf[q]);
-                        if (sn.pre[q] != nullptr) (void) cudaEventDestroy(sn.pre[q]);
-                        if (sn.ev[q] != nullptr) (void) cudaEventDestroy(sn.ev[q]);
-                        sn.buf[q] = nullptr;
-                        sn.pre[q] = sn.ev[q] = nullptr;
-                    }
-                }
+                pl_snaps_drop_x();
                 pl_pool_shrink(why);
             }
         }
@@ -10475,11 +10493,35 @@ int main(int argc, char** argv) {
         auto pl_prepare = [&](std::string& e) -> bool {
             if (pl_prepared) return true;
             for (int st = 0; st < n_stages; ++st)
-                for (int par = 0; par < pl_ns; ++par) {   // every slot (two: the parities)
+                for (int par = 0; par < std::min(pl_ns, 2); ++par) {   // the two parities' (today's) slots
                     strata::core::Verifier& v = stage_ver_q(st, par);
                     const strata::core::OnDevice on(v.device());
                     if (!v.capture_all(e)) return false;
                 }
+            // the slot pool's other slots (~13 graphs per verifier, captured after the expert caches were sized): one
+            // that does not capture gives the pool back to two slots, said once, as an allocation at the start does
+            // (today's loop and the N2 arm need only two; B0/B then run today's loop, see pl_mode)
+            if (pl_ns > 2) {
+                // STRATA_PIPELINE_POOL_FAIL=capture (testing, STRATA_PIPELINE_DEBUG=1): as if a capture failed here
+                static const bool pool_fail = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_POOL_FAIL"); return v != nullptr && std::string(v) == "capture"; }();
+                std::string why = pool_fail ? "STRATA_PIPELINE_POOL_FAIL=capture (testing)" : "";
+                for (int st = 0; st < n_stages && why.empty(); ++st)
+                    for (int q = 2; q < pl_ns && why.empty(); ++q) {
+                        strata::core::Verifier& v = stage_ver_q(st, q);
+                        const strata::core::OnDevice on(v.device());
+                        std::string e2;
+                        if (!v.capture_all(e2))
+                            why = "slot " + std::to_string(q) + "'s graphs on stage " + std::to_string(st + 1) + ": " + e2;
+                    }
+                if (!why.empty()) {
+                    for (int st = 0; st < n_stages; ++st) {   // nothing of theirs may still run (a capture syncs its stream)
+                        const strata::core::OnDevice on(stage_ver_p(st, 0).device());
+                        cudaStreamSynchronize(stage_ver_p(st, 0).stream());
+                    }
+                    pl_snaps_drop_x();
+                    pl_pool_shrink(why);
+                }
+            }
             if (!mtp.prepare_prefill(e)) return false;
             if (o.pipeline_windows >= 2 && pl_snap_ok && !mtp.prepare_chain(e)) return false;
             const strata::core::OnDevice on(mtp.device());
@@ -15022,12 +15064,19 @@ int main(int argc, char** argv) {
                     note = "--pipeline-windows 3: depth 3 is not wired yet; the windows run as B0 (depth 2, per-stage undo)";
                     m = strata::pl::Mode::B0;
                 }
+                // the slots a mode needs by its depth (depth + 1: B 4, B0 3; N2 today's 2), against the pool the server
+                // holds (a capture that failed may have given it back to two, see pl_prepare)
+                strata::pl::Config pl_need;
+                pl_need.mode = m;
+                const int pl_slots_need = m == strata::pl::Mode::N2 ? 2 : pl_need.depth() + 1;
                 if (mtp_first) {
                     note = "the new pipelined loop does not run with the draft layer on the first stage "
                            "(STRATA_MTP_STAGE0); today's loop";
                     pl_mode = -1;
-                } else if (m != strata::pl::Mode::N2 && pl_ns < 3) {
-                    note = "the per-stage undo needs 3 slots (start with STRATA_PIPELINE_UNDO_PER_STAGE=1, "
+                } else if (pl_ns < pl_slots_need) {
+                    note = m == strata::pl::Mode::B
+                         ? "depth 3 needs 4 slots (start with --pipeline-windows 3 or STRATA_PIPELINE_SLOTS=4); today's loop"
+                         : "the per-stage undo needs 3 slots (start with STRATA_PIPELINE_UNDO_PER_STAGE=1, "
                            "STRATA_PIPELINE_SLOTS=3 or --pipeline-windows 3); today's loop";
                     pl_mode = -1;
                 } else if (!pl_snap_ok || !pl_snap_overlap) {
@@ -16194,7 +16243,7 @@ int main(int argc, char** argv) {
             // the new loop decodes (see pl_mode); not a first window merged with the prompt's last tokens
             // (STRATA_ADMIT_MERGE_FIRST), which today's loop takes
             const bool pl_new = pipe && pl_pw >= 2 && pl_snap_ok && pl_mode >= 0 && merge_T == 0;
-            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok && !pl_new;
+            bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok && !pl_new;   // (also when the new loop cannot run it, below)
             const char* pl_serial = !pl_want && !pl_new ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
                                   : mtp.coupled() ? "coupled draft sampling" : nullptr;
@@ -16214,13 +16263,53 @@ int main(int argc, char** argv) {
             // guess is undone per stage (the snapshot of the verified window restored, its commit replayed with the real
             // count); a slot - its verifier on every stage, its hand-offs, plan sink and snapshots - is not reused before
             // its last reader is done with it.
+            // The new loop's configuration, checked before anything is queued: one the scheduler cannot run (the slots
+            // its mode needs, after a capture that failed gave the pool back to two - see pl_prepare) runs today's loop
+            // for this request, said once per reason, instead of ending the engine.
+            bool pl_go = false;
+            strata::pl::Config cfg;
             if (pl_new && pl_serial == nullptr && !cancelled && produced_n < max_new) {
-                pl_ran = true;
                 if (!pl_prepare(err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
                 const strata::pl::Mode pl_m = (strata::pl::Mode) pl_mode;
+                // the scheduler's configuration: today's switches, and the new loop's
+                cfg.mode = pl_m;
+                cfg.n_front = pl_nf;
+                // N2 two (today's parities); B0 three unless STRATA_PIPELINE_SLOTS asks more; B four
+                cfg.slots = pl_m == strata::pl::Mode::N2 ? 2
+                          : std::min(pl_ns, std::max(pl_m == strata::pl::Mode::B0 ? 3 : 4, pl_slots_env));
+                cfg.S = S;
+                cfg.S_mtp = S_mtp;
+                cfg.spec_min_p = req_spec_min_p;
+                cfg.theta = pl_theta;
+                cfg.theta3 = pl_theta3;
+                cfg.max_context = o.max_context;
+                cfg.chain_out2 = strata::kernels::kVerifyMaxT - 1;
+                cfg.chain_max = strata::core::MtpDrafter::kChainMax;
+                cfg.chain_stop = false;   // depth 3 only
+                cfg.force_miss = pl_force_miss;
+                cfg.force_miss_c = pl_force_miss_c;
+                cfg.prestage = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_PRESTAGE"); return v == nullptr || std::atoi(v) != 0; }();
+                cfg.agree = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_AGREE"); return v == nullptr || std::atoi(v) != 0; }();
+                cfg.suffix = o.suffix_draft > 0;
+                cfg.lookup_pon = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_LOOKUP_PON"); return v ? (float) std::atof(v) : 0.75f; }();
+                cfg.spec_depth = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_SPEC_DEPTH"); return v ? std::max(1, std::atoi(v)) : 1 << 20; }();
+                std::string cerr;
+                if (strata::pl::Sched::check(cfg, cerr)) {
+                    pl_go = true;
+                } else {
+                    pl_want = true;
+                    static std::set<std::string> said;
+                    if (said.insert(cerr).second)
+                        std::fprintf(stderr, "strata serve: the new pipelined loop cannot run this request (%s); today's "
+                                             "loop\n", cerr.c_str());
+                }
+            }
+            if (pl_go) {
+                pl_ran = true;
+                const strata::pl::Mode pl_m = cfg.mode;
                 // stage st's verifier of slot q (st == pl_nf: the last stage)
                 auto SV = [&](int st, int q) -> strata::core::Verifier& { return stage_ver_q(st, q); };
                 static const bool pl_log = pipe_dbg_env("STRATA_PIPELINE_LOG") != nullptr;
@@ -16231,10 +16320,15 @@ int main(int argc, char** argv) {
                 std::thread pl_adapt_thr;
                 std::atomic<bool> pl_adapt_done{true};
                 bool pl_adapt_ok = true;
+                const strata::pl::Sched* pl_sched_live = nullptr;   // set once the scheduler has begun (its state at an error)
                 auto die = [&](const std::string& m) -> int {
                     std::fprintf(stderr, "strata serve: pipelined decode: %s\n", m.c_str());
+                    if (pl_sched_live != nullptr)
+                        std::fprintf(stderr, "strata serve: pipelined decode: %s\n", pl_sched_live->dump().c_str());
                     strata::core::diag_pipeline_fn().store(nullptr);
                     g_pl_diag.nl_mode.store(-1);
+                    for (auto& vs : g_pl_diag.v)
+                        for (int q = 2; q < strata::pl::kMaxSlots; ++q) vs[q] = nullptr;
                     strata::core::release_gpu_waits(stderr);
                     if (pl_adapt_thr.joinable()) pl_adapt_thr.join();
                     if (ajob) {
@@ -16332,29 +16426,6 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 };
-                // the scheduler's configuration: today's switches, and the new loop's
-                strata::pl::Config cfg;
-                cfg.mode = pl_m;
-                cfg.n_front = pl_nf;
-                // N2 two (today's parities); B0 three unless STRATA_PIPELINE_SLOTS asks more; B four
-                cfg.slots = pl_m == strata::pl::Mode::N2 ? 2
-                          : std::min(pl_ns, std::max(pl_m == strata::pl::Mode::B0 ? 3 : 4, pl_slots_env));
-                cfg.S = S;
-                cfg.S_mtp = S_mtp;
-                cfg.spec_min_p = req_spec_min_p;
-                cfg.theta = pl_theta;
-                cfg.theta3 = pl_theta3;
-                cfg.max_context = o.max_context;
-                cfg.chain_out2 = strata::kernels::kVerifyMaxT - 1;
-                cfg.chain_max = strata::core::MtpDrafter::kChainMax;
-                cfg.chain_stop = false;   // depth 3 only
-                cfg.force_miss = pl_force_miss;
-                cfg.force_miss_c = pl_force_miss_c;
-                cfg.prestage = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_PRESTAGE"); return v == nullptr || std::atoi(v) != 0; }();
-                cfg.agree = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_AGREE"); return v == nullptr || std::atoi(v) != 0; }();
-                cfg.suffix = o.suffix_draft > 0;
-                cfg.lookup_pon = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_LOOKUP_PON"); return v ? (float) std::atof(v) : 0.75f; }();
-                cfg.spec_depth = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_SPEC_DEPTH"); return v ? std::max(1, std::atoi(v)) : 1 << 20; }();
                 // a doomed window served without its pool work (today's STRATA_PIPELINE_DOOM_SKIP; the zero-doorbell
                 // graphs do not read the plans, but N2 keeps today's calls)
                 static const bool doom_skip = [] { const char* e = pipe_dbg_env("STRATA_PIPELINE_DOOM_SKIP"); return e == nullptr || std::atoi(e) != 0; }();
@@ -16379,7 +16450,7 @@ int main(int argc, char** argv) {
                 io.f_chain_poll = [&]() { return mtp.chain_poll(err); };
                 io.f_chain_live = [&]() { return mtp.chain_live(); };
                 io.f_chain_cap = [&]() { return mtp.chain_cap(); };   // what the chain may queue (n_out, clamped)
-                io.f_chain_n = [&]() { return mtp.chain_n(); };
+                io.f_chain_n = [&]() { return mtp.chain_n(); };       // what it has queued so far
                 io.f_chain_tok = [&]() { return mtp.chain_tok(); };
                 io.f_chain_prob = [&]() { return mtp.chain_prob(); };
                 io.f_ple_prev = [&](int32_t* out) {
@@ -16524,9 +16595,10 @@ int main(int argc, char** argv) {
                 io.f_trace = [&](const char* ev, int seq, int x0, int x1) { tre(ev, seq, x0, x1); };
                 strata::pl::Sched sched;
                 {
-                    std::string serr;
+                    std::string serr;   // (the configuration passed Sched::check above: what is left is not expected)
                     if (!sched.begin(cfg, p, x, ss.ple_prev, 0.0, serr)) return die(serr);
                 }
+                pl_sched_live = &sched;
                 // the chain records its source copy (the slot's next window on the last stage waits for it there)
                 mtp.set_source_done(pl_m != strata::pl::Mode::N2);
                 for (int st = 0; st < 2; ++st)
@@ -16567,6 +16639,8 @@ int main(int argc, char** argv) {
                 pl_drain();   // nothing in flight: every stage's commits and the drafter have landed
                 strata::core::diag_pipeline_fn().store(nullptr);
                 g_pl_diag.nl_mode.store(-1);
+                for (auto& vs : g_pl_diag.v)   // the slot pool's entries: today's loop sets only [0] and [1]
+                    for (int q = 2; q < strata::pl::kMaxSlots; ++q) vs[q] = nullptr;
                 if (pl_adapt_thr.joinable()) pl_adapt_thr.join();
                 adapt_fence = nullptr;
                 if (exch_wait) pl_release();
@@ -17683,7 +17757,7 @@ int main(int argc, char** argv) {
             // STRATA_PIPELINE_CHECK_STATE=1: every stage's state over the committed tokens, whichever loop decoded
             if (pl_check_state && !cancelled &&
                 !pl_state_dump((int64_t) consumed.size(),
-                               !pl_ran ? "serial" : pl_new ? strata::pl::mode_name((strata::pl::Mode) pl_mode) : "pw2")) {
+                               !pl_ran ? "serial" : pl_go ? strata::pl::mode_name((strata::pl::Mode) pl_mode) : "pw2")) {
                 std::printf("ERR reading the pipeline state\n");
                 return 1;
             }
