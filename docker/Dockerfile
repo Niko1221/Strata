@@ -31,6 +31,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY terminal-src/ /src/
+# the sources have no .git here (and the image has no git): build.sh passes the commit they are from, package_terminal.py writes it to COMMIT
+ARG STRATA_COMMIT=
+ENV STRATA_BUILD_COMMIT=${STRATA_COMMIT}
 RUN python3 /src/packaging/package_terminal.py --out /out --cache /cache \
  && mkdir -p /opt/strata \
  && tar -xzf /out/strata-terminal-*-linux-x86_64.tar.gz -C /opt/strata \

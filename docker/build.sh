@@ -56,6 +56,10 @@ mkdir -p "$ctx/terminal-src" "$ctx/engine" "$ctx/docker"
 cleanup() { if [ -n "$own_ctx" ] && [ -z "$ctxonly" ]; then rm -rf "$ctx"; fi; }
 trap cleanup EXIT
 
+# the commit the sources are from (the build context has no .git; package_terminal.py writes it into the archive's COMMIT)
+commit=${STRATA_BUILD_COMMIT:-$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)}
+case "$commit" in *[!0-9a-f]*|"") commit="" ;; esac
+
 # 1. the Terminal's sources: exactly what packaging/package_terminal.py copies (the working tree, so local edits are in the image)
 cd "$repo"
 paths="packaging bin strata.py strata_control strata_cli serve requirements.txt requirements-monitor.txt docs/MANAGEMENT_PROTOCOL.md docs/TERMINAL_LAUNCH.md data bench/prompts/standard-v1 setup.py ref/load.py CMakeLists.txt"
@@ -98,7 +102,7 @@ echo "flavor $flavor, base $base, engine(s): $engine_label, tag $tag"
 # shellcheck disable=SC2086
 docker build $nocache ${STRATA_DOCKER_BUILD_OPTS:-} \
   --build-arg "BASE_IMAGE=$base" --build-arg "FLAVOR=$flavor" \
-  --build-arg "STRATA_VERSION=$version" --build-arg "ENGINE_LABEL=$engine_label" \
+  --build-arg "STRATA_COMMIT=$commit" --build-arg "STRATA_VERSION=$version" --build-arg "ENGINE_LABEL=$engine_label" \
   -t "$tag" "$ctx"
 docker image inspect "$tag" --format 'built {{.RepoTags}} {{.Size}} bytes'
 echo "Not pushed anywhere. Size on disk: $(docker image inspect "$tag" --format '{{.Size}}') bytes."
