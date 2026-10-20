@@ -3,7 +3,10 @@
 Measured on 2026-10-20 by loeeeee. The same machine, model and run configuration, measured twice the same day with
 `tools/strata_bench.py --runs 3 --long`: once on v0.1.44.1 (the build from
 [the 2026-10-15 report](../2026-10-15-community-rx-7900-xt-ud-q5-k-xl/README.md)), then after updating the source
-build to the v0.2.0-beta tag (engine 0.1.45.3). Speed only: no correctness or needle check was run on 0.2.0-beta.
+build to the v0.2.0-beta tag (engine 0.1.45.3). The before/after comparison below is speed only. A separate
+[hand-run pilot of the draft benchmark protocol](protocol-pilot/README.md) (thinking profile, 12 sanity checks, optional
+concurrency, needle recall at 32K and 124K, memory/clock telemetry) was run on v0.2.0-beta only: 12/12 sanity and 6/6 needles
+in each of two runs. It is nonconforming and makes no before/after claim.
 
 ## Hardware and software
 
@@ -59,6 +62,8 @@ No failed requests in either run.
   v0.2.0-beta engine failed (`undefined reference: sqrtf@GLIBC_2.43` from librocblas). Moving the `build-hip` directory
   aside and rerunning setup fixed it. Only relevant to a toolchain change between builds, noted for anyone who updates
   ROCm and Strata together.
-- Not measured: needle recall on 0.2.0-beta, long (128K+) prompts, concurrency, memory and clocks, power limits, storage.
+- Measured only in the protocol pilot, on v0.2.0-beta only: needle recall (6/6 at 32K and 124K), concurrency (capacity 1, queued),
+  VRAM/RAM/clock/power telemetry. Not measured on v0.1.44.1, so none of it supports a version comparison. Still not measured:
+  262K prompts, storage, and any of these on other backends.
   The report's tool left the GPU name as "AMD Radeon" and replaced the service user name in the Strata version line; both
   were corrected by hand in the copied reports. Nothing else was edited.

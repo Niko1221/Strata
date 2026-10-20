@@ -1,0 +1,13 @@
+{
+ "4096": {
+  "records": 211,
+  "prompt_tokens": 4091,
+  "error_pct": -0.12
+ },
+ "16384": {
+  "records": 858,
+  "prompt_tokens": 16384,
+  "error_pct": 0.0
+ },
+ "method": "server prompt_tokens for the full rendered request incl. the chat template; closest record count"
+}
