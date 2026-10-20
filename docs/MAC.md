@@ -105,7 +105,7 @@ API on `http://127.0.0.1:8080/v1`, the Anthropic API on `/v1/messages`, and the 
 | Option | Meaning |
 | --- | --- |
 | `--model Q2_0\|IQ3_XXS\|IQ3_S\|UD-Q4_K_XL\|UD-Q5_K_XL\|UD-Q6_K_XL\|Gyro-S\|Gyro-M` | The pack. The `UD-` files are Unsloth's. |
-| `--family qwen\|unsloth\|gyro` | The model family. |
+| `--family qwen\|unsloth\|gyro\|swift` | The model family. `swift`: Swift 1.5 IQ3_S, opt-in ([below](#swift-15-opt-in)). |
 | `--vision yes\|no\|gpu\|cpu` | Picture reader. |
 | `--context N`, `--port`, `--host`, `--api-key` | Server settings. |
 | `--draft-vocab`, `--no-browser` | Draft vocabulary; do not open the browser. |
@@ -144,6 +144,35 @@ like every other pack's, so Gyro-S needs 58.5 GB of disk and about 38 GB of memo
 Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac tested here could hold it. `metal/tests/gyro_parity.sh`
 checks the decoder against the format definition and the expert kernels against a double-precision reference.
 `STRATA_METAL_GYRO_TILES=0` turns off the dense-weight tiles.
+
+### Swift 1.5 (opt-in)
+
+`./setup.sh --family swift` sets up Swift 1.5 IQ3_S. Nothing else changes: without `--family swift` the size menu and every other
+model are set up as before.
+
+- **Why setup repacks it:** Swift's two shards cut through a layer (IQ3_S: layer 14's gate is in shard 1, its up and down in shard 2), and the
+  Metal engine maps one file. Setup writes the experts and dense tensors into one GGUF with `metal/tools/metal_repack.py`, as it
+  does for Unsloth's files (54.8 GB, 1,223 tensors, every one checked by SHA-256 against its shard). The n-gram table stays in
+  Swift's shard 1 and is read from the SSD.
+- **The pack:** `tools/iq_pack.py` writes Swift's 96 router tensors, stored as F32, as BF16. All 96 are exact (max error 0).
+- **The draft layer:** the original model's MTP layer, as on a PC.
+- **The engine:** no change. The decode window maps the repacked file (`PLE on`).
+- **Images:** off. The image encoder is checked on the Mac with the original model only.
+- **Sizes:** IQ3_S only. IQ2_XS and IQ3_XXS are not measured on a Mac, so setup does not offer them.
+
+Measured with SC117's abliterated Swift 1.5 IQ3_S (`SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`, the same file
+layout as UkisAI's release), resident, `--spec 2` with MTP, engine 0.1.45 with the Mac build fix (the one 0.2.0 carries). UkisAI's own files are not measured.
+
+| | Swift 1.5 IQ3_S | Qwen3.8-Flash-Next IQ3_S (SC117 abliterated), the same Mac |
+|---|---|---|
+| Decode, 4 prompts up to 200 tokens (story, Chinese, code, primes), greedy | 93.1 / 97.2 / 110.4 / 104.6 tok/s | 94.3 / 95.1 / 109.2 / 108.5 tok/s |
+| 6.8K-token needle, 3 documents | 3 of 3 found | 3 of 3 found |
+| Prompt, 6.8K tokens | 1,636-1,731 tok/s | 1,651-1,767 tok/s |
+| 3 short reasoning questions, thinking on | 3 of 3 right, 73-136 tokens | 3 of 3 right, 74-76 tokens |
+
+The answers read correctly. Swift's are worded differently from the original's, as a fine-tune's are. Not measured: a
+comparison with the CUDA or HIP engine on the same Swift file, the KL harness, contexts over 8K, streaming from the SSD on a
+smaller Mac, and a long server run. The three reasoning questions are too easy to show Swift's shorter thinking.
 
 ## Measured (M5 Max, 128 GB)
 
@@ -225,9 +254,10 @@ from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming** is measured at 32 GB only.
-- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured. Setup repacks
-  Unsloth's shards into one file for the GPU; a Gyro file is used as it is. The Swift and Coder releases are not set up on Mac
-  yet, and Qwen3.6 does not run on the Mac engine.
+- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured. Swift 1.5
+  IQ3_S is opt-in (`--family swift`) and measured with SC117's abliterated build only (above). Setup repacks Unsloth's and
+  Swift's shards into one file for the GPU; a Gyro file is used as it is. The Coder release is not set up on Mac yet, and
+  Qwen3.6 does not run on the Mac engine.
 
 ### Quality
 
