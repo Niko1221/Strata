@@ -82,6 +82,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--family", metavar="NAME", help="the model family when a size is offered by several (qwen, swift, coder, ...)")
     g.add_argument("--model-path", metavar="PATH", help="use model files you already have: a folder of shards or one .gguf file")
     g.add_argument("--data-dir", metavar="DIR", help="where downloaded model files are stored (default: Strata's data folder)")
+    g.add_argument("--move-data", action="store_true",
+                   help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
+                        "where they are and stay usable, and the new folder gets the new downloads")
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens")
     g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
@@ -89,6 +92,9 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
                         "gpu / cpu choose one; off turns pictures off")
     g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
+    g.add_argument("--mtp", type=_choice("a draft layer setting", S.MTP_MODES), metavar="on|off",
+                   help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
+                        "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
@@ -194,6 +200,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.vision = a.vision
     if a.parallel:
         s.parallel = a.parallel
+    if a.mtp:
+        s.mtp = a.mtp
     if a.gpu:
         s.gpus = _gpus(a.gpu)
     if a.tune:
@@ -355,6 +363,23 @@ def _ask_yes(title: str, text: str) -> bool:
     except EOFError:
         return True
     return answer in ("", "y", "yes")
+
+
+def _move_data_choice(a: argparse.Namespace, s: S.LaunchSettings, catalog, machine: bool) -> bool:
+    """Whether the models already on this computer move into --data-dir.  Only --move-data or the answer "move" says yes; --yes, --plan,
+    --output json and a run with no keyboard keep the old library where it is (it stays usable; the new folder gets new downloads)."""
+    if not a.data_dir:
+        return False
+    if a.move_data:
+        return True
+    if a.yes or machine or a.plan:
+        return False
+    from strata_cli.launch import library
+    try:
+        gb = library.movable_library(catalog.data_dir(), Path(a.data_dir).expanduser())
+    except Exception:                                        # noqa: BLE001 - no answer to "where are my models": nothing to ask about
+        return False
+    return library.ask_move(gb, Path(a.data_dir).expanduser()) if gb > 0 else False
 
 
 def open_page(url: str) -> bool:
@@ -519,7 +544,9 @@ def run_launch(a: argparse.Namespace) -> int:
             s.api_key = access.new_key()
         if not s.name:
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
-        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes)
+        move_data = _move_data_choice(a, s, catalog, machine)
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes,
+                        move_data=move_data)
         if a.plan:
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]
@@ -545,7 +572,8 @@ def run_launch(a: argparse.Namespace) -> int:
             _say(f"[!] {fw}")
         if interactive and have_choices:
             from strata_cli.launch import app
-            return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open))
+            return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open),
+                         move_data=move_data)
         try:
             result = runner.run()
         except LaunchError as e:
@@ -698,7 +726,10 @@ def run_connect(a: argparse.Namespace) -> int:
             if not sys.stdin.isatty():
                 print("strata: --write asks first; run it in a terminal or add --yes.", file=sys.stderr)
                 return 2
-            ans = input("\nWrite these files now? A file that exists is copied to a backup first. [y/N] ").strip().lower()
+            try:
+                ans = input("\nWrite these files now? A file that exists is copied to a backup first. [y/N] ").strip().lower()
+            except EOFError:                                 # the input ended: that is a no
+                ans = ""
             if ans not in ("y", "yes"):
                 _say("Nothing was written.")
                 return 0

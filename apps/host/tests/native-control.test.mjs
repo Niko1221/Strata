@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync,readdirSync} from 'node:fs';
+import {readFileSync,readdirSync,mkdirSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {nativeFixture,finishJob} from './helpers/native-fixture.mjs';
 test('native instances isolate devices, ports, IDs and private keys; default loading switches one model',async()=>{
@@ -35,3 +35,11 @@ test('native update refuses local edits; calibration targets the chosen installe
 test('cancelling a native load before dispatch preserves the running instance',async()=>{const f=nativeFixture();try{await f.control.refresh();const first=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',gpus:[0]}).id);const job=f.control.operation('load',{model:'iq3_s',gpus:[1]});await f.control.cancel(job.id);await new Promise(r=>setTimeout(r,20));assert.equal(f.control.state().instances.length,1);assert.equal(f.control.state().instances[0].id,first.result.instanceId);assert.equal(f.control.state().jobs.find(j=>j.id===job.id).state,'cancelled');}finally{await f.cleanup();}});
 
 test('retuning or repairing an installed native model reuses its original data folder',async()=>{const f=nativeFixture();try{await f.control.refresh();await f.control.plan({family:'qwen',model:'IQ2_XS',context:131072});const call=f.rpcCalls.find(c=>c.name==='strata_install');assert.equal(call.arguments.data_dir,f.installed.data_folder);assert.equal(call.arguments.confirm,false);}finally{await f.cleanup();}});
+
+test('a model the person pointed at their own GGUF folder keeps that folder for the next load: setup is not asked to download it again (#3199)',async()=>{const f=nativeFixture();try{
+ const own=join(f.directory,'my-ggufs');mkdirSync(own,{recursive:true});const shard=join(own,'Qwen3.8-Flash-Next-IQ2_XS-00001-of-00002.gguf');writeFileSync(shard,'x');
+ const path=join(f.repo,'strata-iq2_xs.json'),config=JSON.parse(readFileSync(path));config.args=['--native',shard,'--max-context','32768'];writeFileSync(path,JSON.stringify(config));
+ await f.control.refresh(true);await f.control.plan({family:'qwen',model:'IQ2_XS',context:131072});
+ const call=f.rpcCalls.filter(c=>c.name==='strata_install').pop();assert.equal(call.arguments.gguf_dir,own);assert.equal(call.arguments.data_dir,undefined,'the person\'s folder is not the data folder');
+ await f.control.plan({family:'qwen',model:'IQ3_S',context:131072});const other=f.rpcCalls.filter(c=>c.name==='strata_install').pop();assert.equal(other.arguments.gguf_dir,undefined,'a model Strata downloaded itself keeps its normal folders');
+}finally{await f.cleanup();}});

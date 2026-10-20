@@ -59,15 +59,60 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
     return t;
 }
 
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch) {
+bool igpu_prompt_defaults_arch(const char* gcn_arch) {
+    return strata::kernels::gfx_arch_is(gcn_arch, "gfx1103") || strata::kernels::gfx_arch_is(gcn_arch, "gfx1150") ||
+           strata::kernels::gfx_arch_is(gcn_arch, "gfx1151");
+}
+
+bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows) {
+    const char* off = std::getenv("STRATA_IGPU_DEFAULTS");
+    if (off != nullptr && off[0] == '0') return false;
+    const char* e = std::getenv("STRATA_IGPU_PROMPT_SET");
+    if (e != nullptr && e[0] == '1') return true;
+    if (e != nullptr && e[0] == '0') return false;
+    return kIgpuPromptSetDefaultOn && !windows && strata::kernels::gfx_arch_is(gcn_arch, "gfx1103");
+}
+
+bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on) {
+    if (!on || windows || !integrated || !strata::kernels::gfx_arch_is(gcn_arch, "gfx1103")) return false;
+    const char* reg = std::getenv("STRATA_UMA_REGISTER");
+    return !(reg != nullptr && reg[0] == '1');
+}
+
+std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (!integrated || !igpu_prompt_defaults_arch(gcn_arch)) return t;
+#if defined(_WIN32)
+    const bool win = true;
+#else
+    const bool win = false;
+#endif
+    if (!igpu_prompt_set_enabled(gcn_arch, win)) return t;
+    // Measured on a Radeon 780M (gfx1103, P2006, Q2_0, notes-153-igpu.md / notes-148-amd.md): prompts 109.5 -> 214.7 tok/s
+    // with the first four, 233 with HC_UPMIX, decode unchanged.  Dense projections are 63% of a prompt's GPU time there.
+    t = {
+        {"STRATA_HIP_WMMA", "1"},      // the prompt attention on matrix cores
+        {"STRATA_PF_GEMM", "1"},       // the prompt's FP16 projections on the 128 x 256 WMMA GEMM
+        {"STRATA_PA_FAST", "1"},       // the prompt attention with single FP16 q and p
+        {"STRATA_SELECT_WMMA", "1"},   // the block scorer on matrix cores
+        {"STRATA_HC_UPMIX", "1"},      // the hyper-connection up projection with its epilogue
+    };
+    return t;
+}
+
+static void set_default(const std::pair<std::string, std::string>& kv) {
+#if defined(_WIN32)
+    _putenv_s(kv.first.c_str(), kv.second.c_str());
+#else
+    setenv(kv.first.c_str(), kv.second.c_str(), 0);
+#endif
+}
+
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated) {
     std::vector<std::string> set;
     for (const auto& kv : arch_default_env(gcn_arch)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
-#if defined(_WIN32)
-        _putenv_s(kv.first.c_str(), kv.second.c_str());
-#else
-        setenv(kv.first.c_str(), kv.second.c_str(), 0);
-#endif
+        set_default(kv);
         set.push_back(kv.first);
     }
     if (!set.empty()) {
@@ -78,6 +123,23 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch) {
                      g12 ? "STRATA_GFX12_DEFAULTS" : "STRATA_GFX1151_DEFAULTS");
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
+    }
+    std::vector<std::string> igpu;
+    for (const auto& kv : igpu_default_env(gcn_arch, integrated)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;
+        set_default(kv);
+        igpu.push_back(kv.first);
+    }
+    if (!igpu.empty()) {
+        std::fprintf(stderr, "strata: integrated GPU (%s): the matrix-core prompt set is on (1.6x to 2x faster prompts on a "
+                             "Radeon 780M, the answers differ in the last bits): ", gcn_arch);
+        for (size_t i = 0; i < igpu.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", igpu[i].c_str() + 7);
+        std::fprintf(stderr, ".  Turn one off with NAME=0 (for example STRATA_HC_UPMIX=0), all of them with STRATA_IGPU_PROMPT_SET=0");
+#if defined(_WIN32)
+        std::fprintf(stderr, ".  Not yet tested on Windows");
+#endif
+        std::fprintf(stderr, "\n");
+        set.insert(set.end(), igpu.begin(), igpu.end());
     }
     return set;
 }

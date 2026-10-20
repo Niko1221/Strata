@@ -15,6 +15,8 @@ tools/hip/build_windows.bat runs it after the build.  The zip holds:
                                                    through the ROCm DLLs, + amd_comgr.dll, which the HIP runtime loads
                                                    by name) and the Microsoft C++ runtime they import
     rocm/bin/rocblas/library, rocm/bin/hipblaslt/library   the GEMM kernels, for these archs only
+    tuning/<arch>-hipblaslt-<version>.txt          the hipBLASLt tuning tables of tools/hip for these archs and this hipBLASLt version
+                                                   (BUILD.json hipblaslt_version); the engine start uses the one for the card
     rocm/.kpack/                                   rocBLAS's own device code for these archs (rocblas.dll finds it at
                                                    ../.kpack from its folder)
     rocm/licenses/                                 the shipped components' licenses, and NOTICE.txt
@@ -35,6 +37,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from strata_control import hipblaslt_tuning as ht  # noqa: E402
+
 ASSET = "strata-windows-x64-hip.zip"
 PROGRAMS = ("strata.exe", "strata-device.exe")
 DYNAMIC = ("amd_comgr.dll",)                     # LoadLibrary'd by amdhip64_7.dll: not in any import table
@@ -170,6 +175,12 @@ def main() -> int:
     if a.vision_hip is not None:
         meta.update({"vision": "gpu", "vision_gpu": a.vision_hip.name, "vision_archs": archs})
     (stage / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    # the hipBLASLt tuning tables of tools/hip for these archs and exactly this hipBLASLt version, in tuning/ (strata_control/hipblaslt_tuning.py):
+    # the engine start points STRATA_HIPBLASLT_TUNING at the one for the card; an arch without a table keeps plain hipBLAS
+    tables = ht.stage_tables(stage, archs, meta["hipblaslt_version"], ROOT / "tools" / "hip")
+    for arch, have in ht.missing_report(archs, meta["hipblaslt_version"], ROOT / "tools" / "hip").items():
+        print(f"no hipBLASLt table for {arch} with hipBLASLt {meta['hipblaslt_version']} (the repo has: {', '.join(map(str, have)) or 'none'}): plain hipBLAS there")
+    print("hipBLASLt tuning tables:", ", ".join(tables) or "none")
 
     z = a.out / ASSET
     z.unlink(missing_ok=True)

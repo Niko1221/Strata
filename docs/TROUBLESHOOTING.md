@@ -46,7 +46,8 @@ In the app: Settings, Engine, Diagnostics, View logs, then Save logs. It writes 
 `strata-diagnostics-<date>.txt`, into your Downloads folder and shows where. It holds the engine's messages, the failed
 steps and the end of each model's server log. In the Terminal, send the output of `strata doctor`. If the Linux app window
 crashes or will not open, run the AppImage with `--save-logs` in a terminal instead; it writes the crash log and the other
-logs to one file in Downloads. Look through a log before you send it, and never send an API key.
+logs to one file in Downloads. If the Windows app closes right after you start it, it shows a message with the reason and writes
+`desktop-crash-<date>.log` in `%LOCALAPPDATA%\Strata\logs`; Save logs includes it, and so can you, by hand. Look through a log before you send it, and never send an API key.
 
 ## While installing or starting
 
@@ -56,6 +57,32 @@ the graphics card, and works out how much of the model fits on your GPU. The mou
 **Wait, and don't close the window.** The next starts are much faster. Still frozen after 10 minutes? Restart the
 PC, close other programs (browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0
 or IQ2_XS).
+
+**The engine stops while it starts, on a small graphics card or a PC with little RAM. Can I turn the draft layer (MTP) off?**
+Yes. The draft layer is what makes answers faster, and it takes about 1 GB of graphics memory (plus some RAM and a memory
+copy that grows with the context). Without it the expert cache gets that memory back and answers are slower. Turn it off
+for one model: in the app, Models, Expert settings, "Draft layer (MTP)": Off; in the Terminal,
+`strata launch --model q2_0 --mtp off` (older Terminals: `--set mtp=off --set spec-min-p=off`); by hand, add `"mtp": false` to the
+model's `strata-<model>.json`. The choice is kept per model and applied on every start.
+
+**I changed `strata-<model>.json` by hand and the change came back.**
+Engine options you add to `args` by hand (control vectors, `--spec`, `--vram-reserve-mib 0`, anything the app does not offer)
+are kept. The file has two helper keys for this. `user_args` lists your options; every start and every setup run puts them
+over the ones the app generates, and for the same option your value wins. `args_written` is a copy of `args` as the app last
+wrote it, so an option you added or changed in `args` is noticed and moved into `user_args` the next time the app or setup
+touches the file. To undo one, delete it from both `args` and `user_args`. A value you save in the app's Expert settings
+("GPU memory for other apps") is put in `user_args` for you.
+
+Two things the app still chooses itself: the context size, KV type, picture reading and draft layer. Set them in the Models
+screen, or with `"mtp": false` (draft layer). The app keeps the earlier file as `strata-<model>.json.bak`.
+
+**The app keeps more graphics memory free than I want (decode is slower than in 0.1.45).**
+Without a value of yours the app keeps 1536 MiB free (2048 with picture reading) on a card that drives a display, and 512 MiB
+(700 with pictures) on a card that has no display attached, such as a second GPU with the screen on the integrated one. It
+reads that from the driver (nvidia-smi `display_active`, or the Windows adapter that has the desktop); when it cannot tell, it
+assumes a display. Your own value is never raised or lowered: set "GPU memory for other apps" in Expert settings, or
+`--vram-reserve-mib 0` in `args`. The engine's own warning about low free memory stays; a card that also draws the desktop
+can freeze or slow to a few tokens a second with a very small reserve.
 
 **It stopped while downloading or installing.**
 Run `START-HERE.bat` (Linux: `./setup.sh`) again. It continues where it stopped.
@@ -123,6 +150,9 @@ Your PC is out of free RAM. Close other programs, or pick a smaller size (Q2_0 o
 Usually not enough RAM (on Linux the system then stops the engine). Just send your message again: Strata starts the
 engine by itself. If it keeps happening, close other programs or pick a smaller size.
 
+**On Linux the engine stops with "exit code -9", but nothing ran out of RAM.**
+Check `ulimit -R`. If it prints 0 (or any number), the desktop session sets a real-time CPU limit: the audio system (PipeWire) does that when rtkit is not installed, and every program started from the desktop inherits it. The kernel can then end a program with signal 9 and no message. Install `rtkit`, or start Strata outside the session's limits, for example `systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...`. Strata prints a warning at start when it sees this limit.
+
 **It says the prompt exceeds the context.**
 The conversation is longer than the context you chose. Start a new chat, or run `SETUP.bat` and pick more
 context.
@@ -183,7 +213,7 @@ reader runs on the CPU under 24 GB of graphics memory and on the card from 24 GB
 several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU;
 `--vision gpu` (NVIDIA and AMD, ~1.4 GB of VRAM) makes it 0.1-0.5 s. On AMD the card's reader is `strata-vision-hip`; if it
 cannot start, the server prints "the GPU picture reader did not start (...); pictures are read on the CPU" and goes on with
-the CPU reader. The Mac app and the Mac Terminal have no picture reader yet. On Intel Arc, pictures are off by default for now (`--vision yes` turns them on).
+the CPU reader. On a Mac the reader runs on the GPU; `--vision cpu` takes about 50 s per picture there. On Intel Arc, pictures are off by default for now (`--vision yes` turns them on).
 
 ## AMD cards
 

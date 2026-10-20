@@ -18,21 +18,24 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 
 | Your graphics card | Image tag | Needs on the computer |
 | --- | --- | --- |
-| NVIDIA **RTX 20, 30, 40, 50** series (and the matching RTX A / Quadro cards) | `0.2.0-cuda13` | NVIDIA driver **580 or newer**, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
-| NVIDIA **GTX 10 (Pascal), Tesla P100, V100 (Volta)**, or any NVIDIA card whose driver is **575 to 579** | `0.2.0-cuda12` | NVIDIA driver **575 or newer**, the same toolkit |
-| AMD **RX 9000** series and Radeon AI PRO R9700 (RDNA 4, gfx1200 / gfx1201) | `0.2.0-rocm-gfx120x` | the `amdgpu` kernel driver (Linux 6.8+) |
-| AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.0-rocm-gfx110x` | the `amdgpu` kernel driver |
-| Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.0-sycl` | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
+| NVIDIA **RTX 20, 30, 40, 50** series (and the matching RTX A / Quadro cards) | `0.2.1-cuda13` | NVIDIA driver **580 or newer**, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
+| NVIDIA **GTX 10 (Pascal), Tesla P100, V100 (Volta)**, or any NVIDIA card whose driver is **575 to 579** | `0.2.1-cuda12` | NVIDIA driver **575 or newer**, the same toolkit |
+| AMD **RX 9000** series and Radeon AI PRO R9700 (RDNA 4, gfx1200 / gfx1201) | `0.2.1-rocm-gfx120x` | the `amdgpu` kernel driver (Linux 6.8+) |
+| AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.1-rocm-gfx110x` | the `amdgpu` kernel driver |
+| AMD **Ryzen AI Max** ("Strix Halo", Radeon 8060S, gfx1151) | `0.2.1-rocm-gfx1151` | the `amdgpu` kernel driver |
+| Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.1-sycl` (only for a release that carries the Intel engine package; otherwise [build it](#build-it-yourself)) | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
 
-Size of the images (0.1.45 packages as measured; 0.2.0 ones may differ a little): `cuda13` 640 MB download / 2.0 GB on disk, `cuda12`
-845 MB / 2.6 GB, `rocm-gfx120x` 505 MB / 2.2 GB, `rocm-gfx110x` 330 MB / 1.6 GB, `sycl` 450 MB / 1.9 GB. The model comes on top, on the first start.
+Size of the images on disk (built from the engine packages of the 0.2.0-beta release): `cuda13` 2.2 GB, `cuda12` 2.9 GB, `rocm-gfx120x` 2.8 GB,
+`rocm-gfx110x` 2.4 GB, `rocm-gfx1151` 1.5 GB; the download is about a third of that (measured on the 0.1.45 packages: `cuda13` 640 MB, `cuda12` 845 MB,
+`rocm-gfx120x` 505 MB, `rocm-gfx110x` 330 MB, `sycl` 450 MB). The model comes on top, on the first start.
 
 Not sure which NVIDIA image? Take `cuda13` when `nvidia-smi` shows driver 580 or newer and the card is an RTX; otherwise `cuda12`.
 A wrong pick does no harm: the container starts, says in plain words that the engine does not fit this card, and stops.
 
-**Ready-made images are not available yet.** No image has been published, so [build one yourself](#build-it-yourself) (one command
-per card, from the engine package). The examples below name the images `ghcr.io/niko1221/strata:0.2.0-cuda13` and so on, after the
-tags in the table; if you built the image yourself, use the tag you gave it (for example `strata:0.2.0-cuda13`) in their place.
+**Ready-made images are published from version 0.2.1 on**, to the GitHub Container Registry: `ghcr.io/niko1221/strata:<version>-<flavor>`
+(for example `0.2.1-cuda13`), and `ghcr.io/niko1221/strata:latest-<flavor>` for the newest release of that flavor. Pin the version
+tag if you want updates only when you decide. The examples below use these images. If you built an image yourself
+([Build it yourself](#build-it-yourself)), use the tag you gave it (for example `strata:0.2.1-cuda13`) in their place.
 
 ## One command per card
 
@@ -46,7 +49,7 @@ Each command runs Strata in the background, keeps your files in the volume `stra
 docker run -d --name strata --gpus all -p 127.0.0.1:8080:8080 \
   --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
   -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
-  ghcr.io/niko1221/strata:0.2.0-cuda13
+  ghcr.io/niko1221/strata:0.2.1-cuda13
 ```
 
 **AMD**
@@ -56,7 +59,7 @@ docker run -d --name strata --device /dev/kfd --device /dev/dri \
   --group-add video --group-add $(getent group render | cut -d: -f3) -p 127.0.0.1:8080:8080 \
   --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
   -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
-  ghcr.io/niko1221/strata:0.2.0-rocm-gfx120x
+  ghcr.io/niko1221/strata:0.2.1-rocm-gfx120x
 ```
 
 **Intel Arc**
@@ -65,7 +68,7 @@ docker run -d --name strata --device /dev/kfd --device /dev/dri \
 docker run -d --name strata --device /dev/dri --group-add $(getent group render | cut -d: -f3) \
   -p 127.0.0.1:8080:8080 --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
   -v strata-data:/data -e MODEL=IQ3_S -e MODEL_PATH=/models -v /srv/gguf/IQ3_S:/models:ro \
-  -e API_KEY=$(openssl rand -hex 24) ghcr.io/niko1221/strata:0.2.0-sycl
+  -e API_KEY=$(openssl rand -hex 24) ghcr.io/niko1221/strata:0.2.1-sycl
 ```
 
 What the options are for: `--ulimit memlock=-1:-1` lets the engine pin the RAM it uses for the model, `--shm-size 2g` gives
@@ -186,7 +189,7 @@ The health check asks `GET /v1/models` with the key. During the first download t
 ## Updating
 
 ```sh
-docker pull ghcr.io/niko1221/strata:0.2.0-cuda13      # the new tag (not available yet; with a self-built image, build it again instead)
+docker pull ghcr.io/niko1221/strata:0.2.1-cuda13      # the new tag (with a self-built image, build it again instead)
 docker stop strata && docker rm strata
 # run the same docker run command again with the new tag (compose: docker compose pull && docker compose up -d)
 ```
@@ -259,14 +262,13 @@ the old model folder. The container name, the volume and the port can stay as th
 
 ## Build it yourself
 
-Until ready-made images are available this is the way to get one, and it stays the way for a computer without
-registry access or after changing Strata. You need an engine package folder (made by `packaging/package_engine.py`, or fetched
-by `strata update` into a components folder) and Docker on Linux:
+This is the way to get an image for a computer without registry access or after changing Strata. You need an engine package
+folder (made by `packaging/package_engine.py`, or fetched by `strata update` into a components folder) and Docker on Linux:
 
 ```sh
-docker/build.sh --flavor cuda --engine ~/components/engine/0.2.0-linux-x86_64-cuda-cuda13 --tag strata:0.2.0-cuda13
-docker/build.sh --flavor hip  --engine ~/components/engine/0.2.0-linux-x86_64-hip-gfx120X  --tag strata:0.2.0-rocm-gfx120x
-docker/build.sh --flavor sycl --engine ~/components/engine/0.2.0-linux-x86_64-sycl         --tag strata:0.2.0-sycl
+docker/build.sh --flavor cuda --engine ~/components/engine/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.1-cuda13
+docker/build.sh --flavor hip  --engine ~/components/engine/0.1.45.3-linux-x86_64-hip-rx9070 --tag strata:0.2.1-rocm-gfx120x
+docker/build.sh --flavor sycl --engine ~/components/engine/<a-sycl-package-folder> --tag strata:0.2.1-sycl
 ```
 
 `build.sh` assembles the build context (the Terminal's files and the package) and runs `docker build`. The build makes the
@@ -281,9 +283,50 @@ and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for o
 builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result with
 `packaging/package_engine.py` and use `docker/build.sh`.
 
+## Publishing the images (for maintainers)
+
+The images are built from the **engine packages of a release**, never from a build on the runner, so an image holds exactly the
+files the signed update feed names. Nothing publishes by itself: a maintainer starts the workflow, after the owner's OK.
+
+1. Make the release first (its `strata-feed.json`, `strata-feed.json.sig` and the engine archives must be on the GitHub release).
+2. GitHub, **Actions, Docker images, Run workflow** ([.github/workflows/docker-images.yml](../.github/workflows/docker-images.yml); the file has to be on
+   the default branch to show up). Inputs: the release tag (`v0.2.1`), the flavors (empty: every flavor the release has a package
+   for), **push** and **latest**. Run it once with **push off**: it builds every image and publishes nothing (a dry run).
+3. Run it again with **push on**. It logs in to `ghcr.io` with the job's `GITHUB_TOKEN` (`packages: write`) and pushes
+   `ghcr.io/niko1221/strata:0.2.1-<flavor>` and `latest-<flavor>`. Turn **latest** off for a pre-release.
+4. The first push creates each package as private. In the repository's Packages, open every package, **Package settings, Change
+   visibility, Public**, and check it is linked to the repository (the image carries the `org.opencontainers.image.source` label).
+5. Check one pull from a computer that is not logged in: `docker pull ghcr.io/niko1221/strata:0.2.1-cuda13`.
+
+For each flavor the job runs [docker/fetch-engines.py](../docker/fetch-engines.py), which reads the release's signed feed (the
+Ed25519 key in `strata_control/update_keys.json`), downloads the package, and checks the archive's size and SHA-256, the manifest
+hash, the package signature and every file's hash, exactly as `strata update` does; a package that fails stops the job before
+anything is built. [docker/build.sh](../docker/build.sh) then builds the image (and checks the package again inside the build), and
+the job starts the image once to see that the Terminal inside it runs.
+
+| Flavor (tag suffix) | Engine package in the release feed |
+| --- | --- |
+| `cuda13` | `linux-x86_64`, cuda, variant `cuda13` |
+| `cuda12` | `linux-x86_64`, cuda, variant `cuda12` |
+| `rocm-gfx120x` | `linux-x86_64`, hip, variant `rx9070` (gfx1200 / gfx1201) |
+| `rocm-gfx110x` | `linux-x86_64`, hip, variant `rx7900` (gfx1100 / gfx1101 / gfx1102) |
+| `rocm-gfx1151` | `linux-x86_64`, hip, variant `halo` (Strix Halo, gfx1151) |
+| `sycl` | `linux-x86_64`, sycl; **only when the feed lists one** (the 0.2.0-beta feed has none, so no Intel image is built from it) |
+
+A flavor the feed has no package for is left out, with a line in the log. The same steps run from a Linux computer with Docker:
+`docker/publish.sh --release-tag v0.2.1` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
+The images run on the runner without a graphics card, so the card checks (`docker/smoke-test.sh`) stay a manual step on a computer with the card.
+
 ## Tested
 
-2026-10-17, images built from the 0.1.45 engine packages (images from the 0.2.0 packages have not been run on a card), on real cards: NVIDIA RTX 3060 (`cuda13`
+2026-10-19, images built from the engine packages of the 0.2.0-beta release (engine 0.1.45.3), fetched and checked against the signed feed by
+`docker/fetch-engines.py` (the packages are the ones `strata update` installs). Run on real cards with the checks below (`docker/smoke-test.sh`): `cuda13`
+and `cuda12` on one RTX A4000 (driver 580), `rocm-gfx120x` on one Radeon AI PRO R9700. All passed: serving 71-161 s after `docker run` with the prepared
+files, `docker stop` took 4-5 s with exit code 0, the card's memory was free again, and the second start reused the saved preset. `rocm-gfx110x` and
+`rocm-gfx1151` (Strix Halo) were built and passed the package and library checks but have not run on a card. On a computer without an AMD card the
+`rocm-gfx120x` container says in plain words that the engine does not match the card and exits with code 3.
+
+2026-10-17, images built from the 0.1.45 engine packages, on real cards: NVIDIA RTX 3060 (`cuda13`
 and `cuda12`), Radeon AI PRO R9700 (`rocm-gfx120x`), Intel Arc Pro B70 (`sycl`). On each: the container serves, `GET /v1/models` answers (and
 refuses a request without the key), a one-word chat and a tool call work, `docker exec strata monitor --once` works,
 `docker stop` ends it with exit code 0 and the graphics memory is free again, and a second start reuses the saved preset.

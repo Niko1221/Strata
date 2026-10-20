@@ -11,6 +11,7 @@ import { parseCpuTopology, parseWindowsProcessors, parseNvidiaDevices, detectDrm
 import { CONTEXT_TOKENS, VARIANTS, footprint } from './catalog.mjs';
 import { MODELS_DIR, diskFreeGb, diskTotalGb } from './store.mjs';
 import { probe, round } from './util.mjs';
+import { utf8Script } from './powershell-utf8.mjs';
 
 let cached = null;
 let cachedAt = 0;
@@ -126,7 +127,7 @@ async function detectCpu(platform) {
     }}catch{}
     processors=parseCpuTopology(raw,model,process.arch,ghz,names);
   } else if(platform==='win32') {
-    const raw=await probe('powershell.exe',['-NoProfile','-NonInteractive','-Command','Get-CimInstance Win32_Processor | Select-Object DeviceID,SocketDesignation,Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | ConvertTo-Json -Compress']);
+    const raw=await probe('powershell.exe',['-NoProfile','-NonInteractive','-Command',utf8Script('Get-CimInstance Win32_Processor | Select-Object DeviceID,SocketDesignation,Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | ConvertTo-Json -Compress')]);
     processors=parseWindowsProcessors(raw,process.arch);
   }
   const names=[...new Set(processors.map(p=>p.model))];
@@ -185,7 +186,7 @@ async function detectGpus(platform, totalGb) {
     }
   }
   if(platform==='win32') {
-    const raw=await probe('powershell.exe',['-NoProfile','-NonInteractive','-Command','Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID | ConvertTo-Json -Compress']);
+    const raw=await probe('powershell.exe',['-NoProfile','-NonInteractive','-Command',utf8Script('Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID | ConvertTo-Json -Compress')]);
     try {const parsed=JSON.parse(raw);for(const row of Array.isArray(parsed)?parsed:[parsed]) {
       if(!row?.Name||(/nvidia/i.test(row.Name)&&gpus.some(g=>g.vendor==='nvidia')))continue;
       const vendor=/amd|radeon/i.test(row.Name)?'amd':/intel/i.test(row.Name)?'intel':'unknown';

@@ -109,6 +109,17 @@ the manifest file (which holds every file's hash), used as the package's digest 
 GPU architecture) into the folder `package_engine.py` packages; libraries the distribution provides are listed in
 `SYSTEM-LIBS.txt` inside the package so a missing one can be named on a target PC.
 
+## hipBLASLt tuning tables in an AMD package
+
+An AMD package records the hipBLASLt it bundles (`hipblaslt_version` in BUILD.json, 1.5.0 is `100500`) and carries the tables of `tools/hip`
+for exactly that version and its `archs` as `tuning/<arch>-hipblaslt-<version>.txt`. They are ordinary files of the manifest (hashed and signed
+with the package). `packaging/stage_tuning.py` does it for the Linux build script, `tools/hip/package_windows.py` for the Windows zip, and
+`package_engine.py` refuses an AMD stage without `hipblaslt_version` or with a table for another version or architecture. The server's start
+(`serve/server.py with_component_engine`, rule in `strata_control/hipblaslt_tuning.py`) picks the table of the card and sets
+`STRATA_HIPBLASLT_TUNING` for the engine; a version mismatch, an unreadable card or a missing version are one log line and plain hipBLAS.
+`STRATA_HIPBLASLT_TABLE=on|off` (or `"hipblaslt_table"` in the run config) overrides; unset it follows `AUTO_USES_TABLE`, which is off until the
+owner decides, because a table changes the rounding of the prompt's GEMMs (docs/AMD_HIP.md, Tuning table). Tests: `tests/terminal/test_hipblaslt_tuning.py`.
+
 ## Picture readers in an AMD package
 
 A HIP package carries two programs for pictures next to `strata` (`vision` in its BUILD.json): `strata-vision` is the CPU reader, which

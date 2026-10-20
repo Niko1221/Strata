@@ -291,7 +291,7 @@ class Validation(FakeRoot):
     def test_install_arguments(self):
         self.assertRejected("strata_install", {"model": "Q9_X"}, "model must be one of")
         self.assertRejected("strata_install", {"family": "llama"}, "family must be one of")
-        self.assertRejected("strata_install", {"context": 12345}, "context must be one of")
+        self.assertRejected("strata_install", {"context": 100}, "context must be between")
         self.assertRejected("strata_install", {"gpus": "0;rm -rf /"}, "gpus=")
         self.assertRejected("strata_install", {"gpus": "0 && calc"}, "gpus=")
         self.assertRejected("strata_install", {"gpu": -1}, "between")
@@ -706,7 +706,7 @@ class MacCatalog(unittest.TestCase):
         self.assertIn("slower", by["Q2_0"]["on_this_pc"])
         self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
-        self.assertFalse(any(x["images"] for x in by.values()))
+        self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
         self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"fits"})
         s, hw = self.hw(8)
@@ -723,6 +723,9 @@ class MacCatalog(unittest.TestCase):
         for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
             self.assertNotIn(flag, args)
         self.assertIn("--gguf-dir", args)
+        with tempfile.TemporaryDirectory() as own:      # nothing said about pictures: on, as everywhere (the Mac's reader is the Metal one)
+            _plan, args = M.Tools(s).install_plan("qwen", "Q2_0", None, None, "int8", 0, None, None, "auto", None, None, own)
+        self.assertEqual(args[args.index("--vision") + 1], "yes")
         with self.assertRaises(M.ToolError):
             s2, hw2 = self.hw(8)
             s2.hardware = lambda fresh=False: hw2
@@ -753,6 +756,28 @@ class MixedGraphics(unittest.TestCase):
         # with no NVIDIA card the integrated GPU stays what it was
         with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
             self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+    def test_an_amd_card_the_installed_engine_has_no_code_for_is_not_usable(self):
+        """#3203: the engine package lists its GPU code; a card outside it is flagged unusable with the plain reason, so no list offers it."""
+        status = {"usable": True, "engine": {"backend": "hip", "archs": ["gfx1200", "gfx1201"]}}
+        hw = {"gpus": [{"vendor": "amd", "index": 0, "name": "AMD Radeon 760M", "arch": "gfx1103", "usable": False, "problem": "integrated"},
+                       {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 6800 XT", "arch": "gfx1030", "usable": True, "problem": None},
+                       {"vendor": "amd", "index": 2, "name": "AMD Radeon RX 9070 XT", "arch": "gfx1201", "usable": True, "problem": None},
+                       {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060", "arch": "86", "usable": True, "problem": None}]}
+        with mock.patch("strata_control.engine_component.status", lambda: status):
+            M.Strata._engine_code(hw)
+        by = {g["name"]: g for g in hw["gpus"]}
+        self.assertFalse(by["AMD Radeon RX 6800 XT"]["usable"])
+        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", by["AMD Radeon RX 6800 XT"]["problem"])
+        self.assertEqual(by["AMD Radeon 760M"]["problem"], "integrated", "an earlier reason stays")
+        self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
+        self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])
+        # no engine package that lists archs (a source build, no engine yet): nothing is judged
+        for other in ({"usable": False}, {"usable": True, "engine": {"backend": "cuda", "archs": ["sm_86"]}}):
+            again = {"gpus": [{"vendor": "amd", "index": 1, "name": "x", "arch": "gfx1030", "usable": True, "problem": None}]}
+            with mock.patch("strata_control.engine_component.status", lambda other=other: other):
+                M.Strata._engine_code(again)
+            self.assertTrue(again["gpus"][0]["usable"])
 
     @mock.patch("strata_control.engine_component.status", lambda: {"usable": False})   # not this PC's installed (CUDA) engine
     def test_windows_lists_an_amd_card_and_not_the_integrated_radeon(self):
@@ -890,3 +915,58 @@ class DiskUsageTest(unittest.TestCase):
         self.blob(self.own / "Model-00003-of-00003.gguf", 10)
         desc = s.describe_config(s.configs()[0])
         self.assertEqual([m for m in desc["missing_files"] if m.endswith(".gguf")], [])
+
+
+class DraftLayerAndCancel(unittest.TestCase):
+    """#3257: the draft layer's download shows real progress, and a cancel ends the whole tree."""
+
+    def test_step_6_shows_the_draft_layer_download_added_to_the_finished_model_files(self):
+        lines = ["=== Step 6: preparing the model for Strata ===", "  > python mtp_fetch.py fetch",
+                 "  MTP draft layer:   2.00 / 5.00 GB (40%)"]
+        with tempfile.TemporaryDirectory() as d:
+            shard = Path(d) / "m-00001-of-00001.gguf"
+            shard.write_bytes(b"x" * 20_000_000)
+            job = {"files": [{"path": str(shard), "bytes": None, "role": "model"}], "total_gb": 60}
+            prog = M.combined_progress(M.install_progress(lines), job)
+        self.assertEqual(prog["download"]["file"], "Speed-up layer")
+        self.assertEqual([p["kind"] for p in prog["parts"]], ["model", "draft"])
+        self.assertEqual(prog["parts"][0]["state"], "done")
+        self.assertAlmostEqual(prog["parts"][1]["done_gb"], 2.0)
+        self.assertAlmostEqual(prog["parts"][1]["total_gb"], 5.0)
+        self.assertGreater(prog["download"]["total_gb"], 5.0)
+        self.assertEqual(prog["download"]["percent"], min(99, int(100 * prog["download"]["done_gb"] / prog["download"]["total_gb"])))
+
+    def test_without_a_file_list_the_draft_layer_alone_is_shown(self):
+        prog = M.combined_progress(M.install_progress(["=== Step 6: x ===", "  MTP draft layer:   5.00 / 5.00 GB (100%)"]), {})
+        self.assertEqual([(p["kind"], p["state"]) for p in prog["parts"]], [("draft", "done")])
+
+    def test_other_step_6_output_still_shows_no_download(self):
+        prog = M.combined_progress(M.install_progress(["=== Step 6: x ===", "  IQ2_XS:   0.00 / 0.00 GB (0%)"]), {})
+        self.assertNotIn("download", prog)
+
+    @unittest.skipUnless(M.WIN, "Windows process trees")
+    def test_cancel_ends_a_grandchild_even_when_taskkill_does_not_reach_it(self):
+        """setup.py -> tools/*.py: taskkill /T walks parent ids; a snapshot taken first still finds the grandchild."""
+        code = ("import subprocess,sys,time; c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)']);"
+                "print(c.pid, flush=True); time.sleep(120)")
+        top = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        grand = int(top.stdout.readline())
+        try:
+            ident, gident = M.proc_identity(top.pid), M.proc_identity(grand)
+            self.assertTrue(ident and gident)
+            self.assertIn((grand, gident), M.proc_tree_snapshot(top.pid))
+            real_run = subprocess.run
+
+            def no_taskkill(cmd, *a, **kw):                  # the case of #3257: taskkill ends the parent only
+                if cmd and cmd[0] == "taskkill":
+                    return real_run(["taskkill", "/PID", str(top.pid), "/F"], capture_output=True)
+                return real_run(cmd, *a, **kw)
+            with mock.patch.object(M.subprocess, "run", no_taskkill):
+                M.proc_kill_tree(top.pid, ident)
+            M.wait_gone(grand, gident, 10)
+            self.assertFalse(M.proc_alive(grand, gident), "the grandchild kept running")
+            self.assertFalse(M.proc_alive(top.pid, ident))
+        finally:
+            for pid in (grand, top.pid):
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            top.wait(10)

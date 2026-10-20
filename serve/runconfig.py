@@ -14,6 +14,8 @@ import os
 import shutil
 from pathlib import Path
 
+from strata_control import user_args
+
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
 EDITABLE = [
@@ -30,6 +32,8 @@ EDITABLE = [
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
+    ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
+                    "empty or on: as installed"),
     ("lazy_load", "bool", "Start without loading the model; the first request loads it (text only)"),
     ("engine_silence_s", "num>=0", "End a request when the engine says nothing for this long (default 300 s, 0 = wait)"),
     ("api_monitor", "bool", "Keep the last 100 requests' prompts and answers in memory for /api-monitor"),
@@ -153,6 +157,13 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
             elif v is not None:
                 a += [flag, str(v)]
             new["args"] = a
+            mine = user_args.set_flag(user_args.capture(new), flag, v)   # a value set here is the person's: it survives setup and the app
+            if mine:
+                new[user_args.USER_KEY] = mine
+            else:
+                new.pop(user_args.USER_KEY, None)
+            if user_args.WRITTEN_KEY in new:
+                new[user_args.WRITTEN_KEY] = list(a)
         elif v is None:
             new.pop(key, None)
         else:

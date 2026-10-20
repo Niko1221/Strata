@@ -675,7 +675,8 @@ class FolderScreen(Base):
             return Text("This model is already on this computer, so the folder starts where it is. Press Enter to keep it. "
                         "Another folder only matters for files that still have to be downloaded.", style=MUTE)
         return Text("Models are large files. Strata keeps them in one folder; the default is Strata's own data folder. "
-                    "Press Enter to keep it, or type another folder (it is created if it does not exist).", style=MUTE)
+                    "Press Enter to keep it, or type another folder (it is created if it does not exist). Models you already have stay where "
+                    "they are and stay usable; the new folder is for new downloads.", style=MUTE)
 
     def commit(self) -> None:
         value = self.query_one("#folderpath", Input).value.strip().strip('"')

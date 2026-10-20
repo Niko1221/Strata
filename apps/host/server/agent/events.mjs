@@ -236,7 +236,7 @@ export class TurnProjector {
     return { type: 'agent-tool', tool: entry.card };
   }
 
-  /* The speed shown while a reply streams, and after it: everything the model generated (reasoning included) over the time its
+  /* The speed shown while a reply streams, and after it: everything the model generated (reasoning and tool calls included) over the time its
      requests spent producing it, not over the whole turn (tool runs and the wait for the prompt are not decoding). One stream per model
      request; tokens are one per streamed chunk, or characters / 4 when a server batches. */
   #produced(attemptId, text, out) {
@@ -284,6 +284,8 @@ export class TurnProjector {
           const call = this.composing.get(c.id) ?? { name: c.name ?? '', head: '', bytes: 0 };
           if (c.name) call.name = c.name;
           const piece = String(c.argumentsDelta ?? '');
+          // Writing a tool call (a whole file, say) is decoding too: its tokens are in the engine's output count, so its time belongs in the speed.
+          this.#produced(f.attemptId, piece, out);
           call.bytes += piece.length;
           if (call.head.length < 4000) call.head += piece;
           this.composing.set(c.id, call);

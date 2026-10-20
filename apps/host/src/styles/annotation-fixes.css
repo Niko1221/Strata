@@ -486,7 +486,9 @@ html[data-motion='reduced'] .task-tree-row[data-leaving] { opacity: 0; }
 .provider-options[open] > .provider-fields { margin-top: 16px; }
 
 /* Keep each downloaded model name on one line, with a wider desktop popup. */
-.select__option-label { min-width: 0; flex: 1; }
+.select__option-label { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+/* A long name (a graphics card as the system reports it) wraps inside its own row instead of running over the next one (#3221). */
+.select__opt { height: auto; min-height: 36px; padding-top: 6px; padding-bottom: 6px; line-height: 1.35; }
 .select__pop--single-line .select__option-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .select__pop--single-line .select__tick { flex: none; }
 .settings-versions { padding: 4px 20px 0; }

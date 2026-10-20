@@ -9,7 +9,7 @@
  * The copy is made under a hidden temporary name and renamed into place, so an interrupted run leaves nothing half-installed
  * (the next start removes the leftover and tries again).
  */
-import { createReadStream, existsSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { copyFile, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -64,6 +64,40 @@ export function nvidiaDriverVersion() {
   return null;
 }
 
+/** Where the builds are published; the wrong-make sentence points here. */
+export const RELEASES_URL = 'https://github.com/Niko1221/Strata/releases';
+
+/**
+ * The engine family this PC's graphics card needs ('cuda', 'hip', 'sycl'), or null when it cannot be told. The same order as Control
+ * (NVIDIA first, then AMD, then Intel); STRATA_ENGINE_BACKEND wins. Reads only the driver and (Linux) the PCI vendor of the display adapters.
+ */
+export function gpuBackendHere(env = process.env) {
+  const forced = String(env.STRATA_ENGINE_BACKEND ?? '').trim().toLowerCase();
+  if (forced) return ['cuda', 'hip', 'sycl'].includes(forced) ? forced : null;
+  if (nvidiaDriverVersion()) return 'cuda';
+  try {
+    const base = '/sys/class/drm';
+    const vendors = new Set();
+    for (const card of readdirSync(base)) {
+      if (!/^card\d+$/.test(card)) continue;
+      try { vendors.add(readFileSync(`${base}/${card}/device/vendor`, 'utf8').trim().toLowerCase()); } catch { /* no vendor file */ }
+    }
+    for (const [vendor, backend] of [['0x10de', 'cuda'], ['0x1002', 'hip'], ['0x8086', 'sycl']]) if (vendors.has(vendor)) return backend;
+  } catch { /* not Linux */ }
+  return null;
+}
+
+const HIP_FAMILIES = [['RX 9000', ['gfx1200', 'gfx1201']], ['RX 7000', ['gfx1100', 'gfx1101', 'gfx1102']], ['RX 6000', ['gfx1030', 'gfx1031']], ['Ryzen AI Max', ['gfx1151']]];
+const MAKE_NAME = { cuda: 'NVIDIA', hip: 'AMD', sycl: 'Intel' };
+
+/** The plain sentence for a build made for another make of graphics card than this PC has. */
+export function wrongMakeNotice(manifest, here) {
+  const built = manifest.backend;
+  const families = [...new Set((manifest.archs ?? []).map(a => HIP_FAMILIES.find(([, list]) => list.includes(a))?.[0]).filter(Boolean))];
+  const builtFor = built === 'hip' && families.length ? `AMD ${families.join(' and ')}` : MAKE_NAME[built] ?? built;
+  return `This Strata is for ${builtFor} cards. Your PC has an ${MAKE_NAME[here] ?? here} card: download the ${MAKE_NAME[here] ?? here} version from ${RELEASES_URL}`;
+}
+
 /** One engine can ship as several builds of the same backend (CUDA 13 and CUDA 12 differ in the oldest driver they run on). */
 const variantOf = manifest => `${manifest.platform}/${manifest.backend}/${manifest.min_driver?.nvidia ?? ''}`;
 
@@ -85,7 +119,7 @@ export async function packageIsWhole(folder, manifest, { deep = false } = {}) {
  * Install the bundled engine when it is needed.
  * Returns { action: 'installed' | 'repaired' | 'kept' | 'none' | 'refused', folder?, version?, reason? }; never throws.
  */
-export async function installBundledEngine({ bundleDir, components, platform = null, log = () => {}, driver = undefined } = {}) {
+export async function installBundledEngine({ bundleDir, components, platform = null, log = () => {}, driver = undefined, backend = undefined } = {}) {
   try {
     if (!bundleDir || !components || !existsSync(bundleDir)) return { action: 'none' };
     let packages = [];
@@ -96,6 +130,17 @@ export async function installBundledEngine({ bundleDir, components, platform = n
     }
     if (platform) packages = packages.filter(p => p.manifest.platform === platform);
     if (!packages.length) return { action: 'none' };
+    // A build for another make of graphics card than this PC has can never run here: it is not unpacked, and the caller says so in plain words.
+    const wanted = backend === undefined ? gpuBackendHere() : backend;
+    if (wanted && ['cuda', 'hip', 'sycl'].includes(wanted)) {
+      const gpu = packages.filter(p => ['cuda', 'hip', 'sycl'].includes(p.manifest.backend));
+      const fits = packages.filter(p => !gpu.includes(p) || p.manifest.backend === wanted);
+      if (gpu.length && !fits.length) {
+        const first = gpu.sort((a, b) => compareVersions(b.manifest.version, a.manifest.version))[0].manifest;
+        return { action: 'wrong-make', built: first.backend, here: wanted, notice: wrongMakeNotice(first, wanted) };
+      }
+      packages = fits;
+    }
     // The CUDA builds the NVIDIA driver here can run: all of them when the driver is unknown or fits several; when none fits, the one with the lowest
     // requirement, so that Control can name the driver to install (copying the others would only waste disk).
     const driverHere = driver === undefined ? nvidiaDriverVersion() : driver;

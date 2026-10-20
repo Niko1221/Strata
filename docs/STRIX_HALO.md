@@ -98,6 +98,8 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 
 ## 5. What is not on by default (it changes bits)
 
+**Five of the switches below (`STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA`, `STRATA_SELECT_WMMA`) are one opt-in on an integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"). It was measured on a Radeon 780M only, where it is the default.** `STRATA_PF_FUSED`, `STRATA_HC_Q8`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well.
+
 These are faster on gfx1151 and **round differently** from the default path (a different summation order or a half-precision
 intermediate), so they are opt-in and the maintainers gate them with KL against the default (`STRATA_PF_SWITCH_MIN_T=4096` keeps
 the short prompts on the default numerics, since these pay on long ones). The maintainers' fast configuration sets all of

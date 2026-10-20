@@ -7,6 +7,12 @@ import type { SoftwareUpdate, UpdateCheckResult } from '../lib/types';
 import { nativeAction, useNative } from '../lib/native';
 import { NativeProgress } from './NativeModels';
 import { appVersionLabel } from '../lib/app-version';
+import { fetchUpdateCheck, publishUpdateCheck, useInstalledVersions, useLastUpdateCheck } from '../lib/update-check';
+/** A check from an earlier day shows its date too, because the result is kept between visits. */
+function checkedLabel(at: string) {
+    const when = new Date(at), sameDay = when.toDateString() === new Date().toDateString();
+    return sameDay ? when.toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' }) : when.toLocaleString(localeTag(), { dateStyle: 'medium', timeStyle: 'short' });
+}
 /** Installed versions are real host values. Installation needs a host updater. */
 export function SettingsUpdates() {
     const native = useNative();
@@ -16,12 +22,16 @@ export function SettingsUpdates() {
     const [rollback, setRollback] = useState(false);
     const [component, setComponent] = useState<'strata' | 'engine'>('strata');
     const [checking, setChecking] = useState(false);
-    const [result, setResult] = useState<UpdateCheckResult | null>(null);
+    // Opening Settings shows the last check kept on this computer. The network is touched only when "Check for updates" is pressed.
+    const versions = useInstalledVersions();
+    const last = useLastUpdateCheck(versions);
+    const [fresh, setFresh] = useState<UpdateCheckResult | null>(null);
     const [error, setError] = useState('');
     const request = useRef<AbortController | null>(null);
     useEffect(() => () => request.current?.abort(), []);
     const installed = component === 'strata' ? appVersion : native?.available ? (native.installed?.engine?.version ?? 'Not installed') : engineVersion;
     const active = native?.jobs.find(j => j.state === 'running');
+    const result = checking || error ? null : (fresh ?? last);
     async function operate(kind: string) {
         setError('');
         try {
@@ -39,16 +49,13 @@ export function SettingsUpdates() {
         request.current = controller;
         setChecking(true);
         setError('');
-        setResult(null);
+        setFresh(null);
         try {
-            const response = await fetch('/api/updates/check', { signal: controller.signal });
-            if (!response.ok)
-                throw new Error('Could not check for updates. Try again.');
-            const data = await response.json() as UpdateCheckResult;
-            if (!data.strata?.status || !data.engine?.status || !data.checkedAt)
-                throw new Error('The update service returned an incomplete result.');
-            if (!controller.signal.aborted)
-                setResult(data);
+            const data = await fetchUpdateCheck(controller.signal);
+            if (!controller.signal.aborted) {
+                setFresh(data);
+                publishUpdateCheck(data, versions);
+            }
         }
         catch (e) {
             if (!controller.signal.aborted)
@@ -72,7 +79,7 @@ export function SettingsUpdates() {
       {tr(versionRow('Strata', appVersion, result?.strata))}
       {tr(versionRow('Engine', native?.available ? (native.installed?.engine?.version ?? 'Not installed') : engineVersion, result?.engine))}
       <div className="settings-update-actions"><Btn size="sm" icon="refresh" disabled={checking} className={checking ? 'settings-update-checking' : undefined} onClick={() => void check()}>{tr(checking ? 'Checking…' : error || result?.strata.status === 'error' ? 'Try again' : result ? 'Check again' : 'Check for updates')}</Btn><Btn size="sm" variant="ghost" onClick={() => setRollback(true)}>{tr("Roll back\u2026")}</Btn></div>
-      <div className="settings-update-inline" role="status" aria-live="polite">{tr(checking ? 'Checking for new versions…' : error ? <span className="inline-error">{tr(error)}</span> : result ? <><span className="sr-only">{tr(result.strata.message)} {tr(result.engine.message)} </span>{tr("Checked at ")}{tr(new Date(result.checkedAt).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' }))}</> : null)}</div>
+      <div className="settings-update-inline" role="status" aria-live="polite">{tr(checking ? 'Checking for new versions…' : error ? <span className="inline-error">{tr(error)}</span> : result ? <><span className="sr-only">{tr(result.strata.message)} {tr(result.engine.message)} </span>{tr("Checked at ")}{tr(checkedLabel(result.checkedAt))}</> : null)}</div>
     </div>
     <Dialog open={rollback} compact title={tr("Roll back a version")} onClose={() => setRollback(false)} actions={<Btn onClick={() => setRollback(false)}>{tr("Done")}</Btn>}>
       <div className="settings-update-dialog">
@@ -87,7 +94,7 @@ export function SettingsUpdates() {
   </>;
 }
 
-/** "Strata 0.2.0-beta · Engine 0.1.45.3": the app's own version first, the engine's beside it (About). */
+/** "Strata 0.2.1 · Engine 0.1.46": the app's own version first, the engine's beside it (About). */
 export function AboutVersions() {
     const native = useNative();
     const app = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);

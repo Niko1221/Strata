@@ -511,6 +511,120 @@ void close_direct(void* h) {
 #endif
 }
 
+#if defined(__linux__)
+/// #3237: how fast this drive serves the experts' reads the two ways the file tier can take them - O_DIRECT preads of
+/// 1 MiB at random places on 8 threads (the unbuffered tier's I/O threads) against first touches of the pages of random
+/// 1 MiB pieces of a mapping on 3 threads (the cached tier: the pool's threads faulting the page cache in).  Regions the
+/// page cache already holds are skipped, and the probed ranges are dropped from the cache again.  The best of two
+/// rounds each; a few hundred MiB read, under two seconds per pass.  Done once per process.  false: not measurable.
+struct TierProbeResult { bool done = false, ok = false; double direct_bps = 0, cached_bps = 0; };
+
+bool file_tier_probe(const std::vector<std::string>& paths, double& direct_bps, double& cached_bps) {
+    static std::mutex mu;
+    static TierProbeResult memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (memo.done) { direct_bps = memo.direct_bps; cached_bps = memo.cached_bps; return memo.ok; }
+    memo.done = true;
+    const std::string* best = nullptr;
+    uint64_t size = 0;
+    for (const std::string& p : paths) {
+        struct stat st{};
+        if (::stat(p.c_str(), &st) == 0 && (uint64_t) st.st_size > size) { size = (uint64_t) st.st_size; best = &p; }
+    }
+    constexpr uint64_t kRegion = 1ull << 20;
+    constexpr int kPerPass = 96, kRounds = 2;
+    constexpr int kDirectThreads = 8, kCachedThreads = 3;
+    if (best == nullptr || size < 8ull * kPerPass * kRegion * 2) return false;
+    const int fd_d = ::open(best->c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+    const int fd_b = ::open(best->c_str(), O_RDONLY | O_CLOEXEC);
+    void* map = fd_b >= 0 ? mmap(nullptr, (size_t) size, PROT_READ, MAP_SHARED, fd_b, 0) : MAP_FAILED;
+    auto cleanup = [&] {
+        if (map != MAP_FAILED) munmap(map, (size_t) size);
+        if (fd_d >= 0) ::close(fd_d);
+        if (fd_b >= 0) ::close(fd_b);
+    };
+    if (fd_d < 0 || map == MAP_FAILED) { cleanup(); return false; }
+    const uint8_t* base = static_cast<const uint8_t*>(map);
+    uint64_t seed = (uint64_t) std::chrono::steady_clock::now().time_since_epoch().count() * 6364136223846793005ull + 1442695040888963407ull;
+    std::vector<uint64_t> used;
+    auto pick = [&](std::vector<uint64_t>& out) {   // kPerPass distinct 1 MiB pieces the page cache does not hold
+        out.clear();
+        std::vector<unsigned char> vec(kRegion / 4096);
+        for (int tries = 0; (int) out.size() < kPerPass && tries < kPerPass * 40; ++tries) {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            const uint64_t off = ((seed >> 20) % (size / kRegion)) * kRegion;
+            if (std::find(used.begin(), used.end(), off) != used.end()) continue;
+            if (mincore((void*) (base + off), (size_t) kRegion, vec.data()) != 0) continue;
+            int res = 0;
+            for (unsigned char c : vec) res += c & 1;
+            if (res * 4 > (int) vec.size()) continue;
+            used.push_back(off);
+            out.push_back(off);
+        }
+        return (int) out.size() >= kPerPass / 2;
+    };
+    auto preadn = [&](uint8_t* dst, uint64_t off) {
+        uint64_t done = 0;
+        while (done < kRegion) {
+            const ssize_t r = ::pread(fd_d, dst + done, (size_t) (kRegion - done), (off_t) (off + done));
+            if (r < 0) { if (errno == EINTR) continue; return false; }
+            if (r == 0) return false;
+            done += (uint64_t) r;
+        }
+        return true;
+    };
+    double best_d = 0, best_c = 0;
+    bool ok = true;
+    for (int round = 0; round < kRounds && ok; ++round) {
+        for (int mode = 0; mode < 2 && ok; ++mode) {   // 0: direct, 1: cached
+            std::vector<uint64_t> offs;
+            if (!pick(offs)) { ok = false; break; }
+            std::atomic<size_t> next{0};
+            std::atomic<uint64_t> bytes{0};
+            std::atomic<int> failed{0};
+            const auto t0 = std::chrono::steady_clock::now();
+            const auto deadline = t0 + std::chrono::milliseconds(1500);
+            std::vector<std::thread> th;
+            const int nthreads = mode == 0 ? kDirectThreads : kCachedThreads;
+            for (int t = 0; t < nthreads; ++t) {
+                th.emplace_back([&] {
+                    void* buf = nullptr;
+                    if (mode == 0 && posix_memalign(&buf, 4096, kRegion) != 0) { failed = 1; return; }
+                    volatile uint8_t sink = 0;
+                    for (;;) {
+                        const size_t i = next.fetch_add(1);
+                        if (i >= offs.size() || std::chrono::steady_clock::now() > deadline) break;
+                        if (mode == 0) {
+                            if (!preadn((uint8_t*) buf, offs[i])) { failed = 1; break; }
+                        } else {
+                            for (uint64_t pg = 0; pg < kRegion; pg += 4096) sink = (uint8_t) (sink + base[offs[i] + pg]);
+                        }
+                        bytes.fetch_add(kRegion);
+                    }
+                    std::free(buf);
+                });
+            }
+            for (std::thread& x : th) x.join();
+            const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (failed.load() != 0 || bytes.load() == 0 || secs <= 0) { ok = false; break; }
+            const double bps = (double) bytes.load() / secs;
+            (mode == 0 ? best_d : best_c) = std::max(mode == 0 ? best_d : best_c, bps);
+            for (uint64_t off : offs) {   // leave the page cache as it was
+                (void) madvise((void*) (base + off), (size_t) kRegion, MADV_DONTNEED);
+                (void) posix_fadvise(fd_b, (off_t) off, (off_t) kRegion, POSIX_FADV_DONTNEED);
+            }
+        }
+    }
+    cleanup();
+    memo.ok = ok && best_d > 0 && best_c > 0;
+    memo.direct_bps = best_d;
+    memo.cached_bps = best_c;
+    direct_bps = best_d;
+    cached_bps = best_c;
+    return memo.ok;
+}
+#endif
+
 /// #286/#577: whether the file tier reads its `read_bytes` unbuffered, beside `arena_bytes` of RAM copy still to be
 /// taken.  Windows times probe reads too (experts_unbuffered); on Linux the same rule as its `cache_counts = false`
 /// arm decides: whether the file cache could keep those bytes at all, from MemAvailable and the tightest cgroup
@@ -551,6 +665,30 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
                   (double) avail / (1ull << 30), (double) arena_bytes / (1ull << 30), (double) read_bytes / (1ull << 30),
                   keepable ? "can" : "cannot");
     why = msg;
+    // #3237: the room rule says the cache can keep the experts that come back, but when it holds under half of the read
+    // set, whether it pays depends on the drive: on a PCIe 5 NVMe (8 GB/s direct) the cached path read prompts at half
+    // the speed and decoded 3-4x slower than unbuffered reads, on a 1.7-2.5 GB/s NVMe the cache decodes faster.  So time
+    // both paths once at start and read unbuffered only when the drive is fast and serves direct reads clearly faster
+    // (platform::file_tier_prefers_direct).  STRATA_FILE_TIER_PROBE=0 keeps the room rule alone.
+    if (keepable && !old_rule && read_bytes > 0) {
+        const char* pe = std::getenv("STRATA_FILE_TIER_PROBE");
+        const uint64_t margin = 1ull << 30;
+        const double room = avail > arena_bytes + margin ? (double) (avail - arena_bytes - margin) : 0.0;
+        const double held = room / (double) read_bytes;
+        if (!(pe != nullptr && pe[0] == '0') && held < 0.5) {
+            double d = 0, c = 0;
+            char pm[256];
+            if (file_tier_probe(paths, d, c)) {
+                const bool direct = strata::platform::file_tier_prefers_direct(held, d, c);
+                std::snprintf(pm, sizeof pm, "; the cache holds %.0f%% of the read set, direct reads %.2f GB/s, cached-path reads "
+                              "%.2f GB/s (%.2fx): %s", held * 100.0, d / 1e9, c / 1e9, d / c,
+                              direct ? "the file tier reads unbuffered" : "the file cache stays");
+                why += pm;
+                return direct;
+            }
+            why += "; the drive probe could not run, the file cache stays";
+        }
+    }
     return !keepable;
 #else
     (void) paths; (void) arena_bytes; (void) read_bytes;
@@ -1594,6 +1732,11 @@ uint64_t gate_cache_room() {
     return 0;
 #endif
 }
+}
+
+double FileExpertSource::cache_room_ratio() const {
+    const uint64_t total = expert_bytes(), room = gate_cache_room();
+    return total == 0 || room == 0 ? 0.0 : (double) room / (double) total;
 }
 
 void FileExpertSource::gate_capacity() {

@@ -2,7 +2,7 @@
 
 Strata runs the Qwen3.8-Flash-Next mixture-of-experts model (and its Coder, Swift 1.5, Unsloth, Gyro and NVFP4
 variants, and Qwen3.6-35B-A3B) on a normal PC: one NVIDIA or AMD graphics card plus system RAM on Windows or Linux,
-or an Apple Silicon Mac. Version 0.2.0-beta, engine 0.1.45.3. It has three parts:
+or an Apple Silicon Mac. Version 0.2.1, engine 0.1.46. It has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
   not want a terminal. The installer has the engine inside.
