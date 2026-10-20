@@ -15,6 +15,7 @@ from yarl import URL
 from config import Settings, atomic_json, read_json
 from windows_job import WindowsServer
 import updates
+from extension import ExtensionIPC, ExtensionRequest
 
 HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te',
        'trailer', 'transfer-encoding', 'upgrade', 'proxy-connection', 'expect'}
@@ -54,6 +55,7 @@ class Controller:
         self.last_activity = time.monotonic()
         self.busy = False
         self.current_config = None
+        self.extension = ExtensionIPC(settings.state, settings.port) if settings.app_extension else None
         self.app = web.Application(client_max_size=0, handler_args={'auto_decompress': False})
         self.app.router.add_route('*', '/{path:.*}', self.forward)
 
@@ -69,7 +71,10 @@ class Controller:
                 'captured': datetime.now(timezone.utc).isoformat()}
 
     def publish(self):
-        print(json.dumps(self.snapshot(), ensure_ascii=True), flush=True)
+        snapshot = self.snapshot()
+        if self.extension is not None:
+            self.extension.publish(snapshot, self.current_config)
+        print(json.dumps(snapshot, ensure_ascii=True), flush=True)
 
     async def control(self, path, method='GET'):
         if not self.owned():
@@ -244,11 +249,15 @@ class Controller:
     async def worker(self):
         while not self.exit.is_set():
             command = await self.commands.get()
+            extension = command if isinstance(command, ExtensionRequest) else None
+            completed, failure = False, None
             self.busy, self.error = True, ''
             self.publish()
             try:
-                await self.command(command)
+                await self.command(extension.prepare(self) if extension else command)
+                completed = True
             except Exception as error:
+                failure = error
                 with (self.settings.logs / 'controller.log').open('a', encoding='utf-8') as log:
                     traceback.print_exc(file=log)
                 # Class only: errors may carry keys, request bodies or private paths.
@@ -259,12 +268,16 @@ class Controller:
                 elif self.owned():
                     self.phase, self.accepting = 'ready', True
             finally:
+                if extension and (completed or failure is not None):
+                    self.extension.finish(extension, failure)
                 self.busy = False
                 self.publish()
                 self.commands.task_done()
 
     async def poll(self):
         while not self.exit.is_set():
+            if self.extension is not None:
+                self.extension.claim(self.commands)
             if not self.busy and self.backend.alive:
                 try:
                     status = await self.control('/v1/status')
@@ -275,7 +288,7 @@ class Controller:
                             self.web_status = 'reachable' if response.status == 200 else 'auth protected' if response.status in (401, 403) else 'HTTP ' + str(response.status)
                     except Exception:
                         self.web_status = 'unavailable'
-                    self.model = 'loaded' if status.get('loaded') else 'unloaded'
+                    self.model = 'loaded' if status.get('loaded') is True else 'unloaded' if status.get('loaded') is False else 'unknown'
                     if status.get('activity', {}).get('in_flight'):
                         self.last_activity = time.monotonic()
                 except Exception:

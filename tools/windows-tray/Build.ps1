@@ -1,17 +1,19 @@
-param([string]$OutputDirectory = (Join-Path $PSScriptRoot '..\..\dist\windows-tray'), [switch]$Test)
+param([string]$OutputDirectory = (Join-Path $PSScriptRoot '..\..\dist\windows-tray'), [switch]$Test, [switch]$Examples)
 $ErrorActionPreference = 'Stop'
+if ($Test -and $Examples) { throw 'Choose either -Test or -Examples.' }
 $out = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (!(Test-Path $compiler)) { throw 'Windows with .NET Framework 4.8 is required.' }
-$name = if ($Test) { 'TrayTests.exe' } else { 'StrataTray.exe' }
+$name = if ($Test) { 'TrayTests.exe' } elseif ($Examples) { 'TrayMenuExamples.exe' } else { 'StrataTray.exe' }
 $arguments = @('/nologo','/platform:x64',('/out:' + (Join-Path $out $name)),
     ('/win32manifest:' + (Join-Path $PSScriptRoot 'app.manifest')),
     ('/win32icon:' + (Join-Path $PSScriptRoot 'Strata.ico')),
     ('/resource:' + (Join-Path $PSScriptRoot 'Strata.ico') + ',Strata.ico'),
     '/reference:System.dll,System.Core.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Web.Extensions.dll,System.Net.Http.dll',
-    (Join-Path $PSScriptRoot 'Program.cs'),(Join-Path $PSScriptRoot 'ManagedTray.cs'),(Join-Path $PSScriptRoot 'AppUpdatePolicy.cs'),(Join-Path $PSScriptRoot 'ProcessJob.cs'),(Join-Path $PSScriptRoot 'AssemblyInfo.cs'))
+    (Join-Path $PSScriptRoot 'Program.cs'),(Join-Path $PSScriptRoot 'ManagedTray.cs'),(Join-Path $PSScriptRoot 'ManagedMenu.cs'),(Join-Path $PSScriptRoot 'AppUpdatePolicy.cs'),(Join-Path $PSScriptRoot 'ProcessJob.cs'),(Join-Path $PSScriptRoot 'AssemblyInfo.cs'))
 if ($Test) { $arguments = @('/target:exe','/main:TrayTests') + $arguments + @((Join-Path $PSScriptRoot 'TrayTests.cs')) }
+elseif ($Examples) { $arguments = @('/target:exe','/main:MenuExamples') + $arguments + @((Join-Path $PSScriptRoot 'MenuExamples.cs')) }
 else { $arguments = @('/target:winexe') + $arguments }
 & $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Tray compilation failed.' }

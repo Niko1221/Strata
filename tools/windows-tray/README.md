@@ -79,6 +79,62 @@ Tray. Credentials stay in the original profile/environment; the proxy forwards
 client authentication unchanged and never supplies its control credential to
 an anonymous inference request.
 
+## Optional App Extension
+
+The companion local-model extension can use this same managed owner. Set
+`"app_extension": true` in the Tray JSON and restart the Tray to opt in. The
+default is `false`: no extension state files are read, written or consumed.
+This does not install an extension or change the official App frontend.
+
+When enabled, the owner atomically publishes `extension-status.json` in the
+existing `<tray-config-stem>.state` directory every normal status cycle (about
+two seconds). It contains the existing snapshot plus `schema: 1`, `modelId`
+(the current configuration's physical `model_name`, or `null`),
+`apiBaseUrl` (`http://127.0.0.1:<port>/v1`), and `loaded`. The latter is `true`
+or `false` only for known loaded/unloaded state; other states are `null`.
+`captured` is an ISO UTC timestamp, `active` counts admitted requests, and
+`selected` and `effective` remain distinct. A configured context is not proof
+of GPU allocation. Keep this directory private; it includes model identity
+and the existing generated profile and logs.
+
+The extension publishes one `extension-request.json` by hardlinking a fully
+written temporary file into the empty slot, without overwriting it. For example:
+
+```json
+{
+  "schema": 1,
+  "id": "11111111-1111-4111-8111-111111111111",
+  "expectedModel": "example-physical-model",
+  "action": "context",
+  "value": 131072
+}
+```
+
+Requests are limited to 4 KiB. Use a fresh UUID and the physical `modelId` from a fresh snapshot. Only these
+fields are accepted: `context` requires one of the eight official token values
+(8192/32768/65536/131072/204800/262144/393216/524288); `idle` requires
+0/300/600/1800 seconds. `load` and `unload` require no `value`. No profile,
+restart, update, arbitrary command or inference action is exposed.
+
+The owner claims the slot as `extension-running.json` without overwriting an
+existing claim, then uses its existing serial worker, authentication and drain
+rules. Physical identity is checked again at execution, including the source
+profile for a context/idle change. The snapshot acknowledges
+`request: {id, state: "running"|"done"|"error", error?: "ExceptionClass"}`.
+Errors include a class name only; an unreadable/invalid UUID is acknowledged
+with `id: null`. A durable terminal acknowledgment precedes claim removal;
+the last acknowledgment remains in subsequent snapshots. After load/unload,
+wait for the observed `loaded` value as well as the acknowledgment: the next
+status poll confirms it. The extension must reject stale snapshots and must
+not resubmit a mutation automatically.
+
+A running file left by a crashed owner blocks new requests. The next owner
+reports `InterruptedError` for an unfinished request and never replays it.
+After stopping the owner, inspect the actual outcome and local logs before
+manually clearing stale request/running files. A crash after acknowledgment
+may already have applied the action. Restart the owner before issuing a new
+explicit request; deleting a running file while it is active is unsafe.
+
 ## Menu guide
 
 - **Model Profile**, **Context** (8K/32K/64K/128K/200K/256K/384K/512K, the
@@ -169,10 +225,19 @@ configuration is included.
 The candidate uses the official App icon and native styling. Multi-monitor transitions
 and a real GPU upgrade need hardware acceptance; mock tests do not establish them.
 
+[Native menu examples](screenshots/README.md) show anonymous simulated state,
+rendered offscreen from the production WinForms menu with `DrawToBitmap`.
+They are not captures of a running server or evidence of GPU behavior.
+
+![Simulated managed Tray menu](screenshots/managed-menu.png)
+
+![Simulated context submenu, selected and effective 128K](screenshots/context-menu.png)
+
 ```powershell
 .\tools\windows-tray\Build.ps1 -Test
 .\dist\windows-tray\TrayTests.exe
 .\.venv\Scripts\python.exe -B tools/windows-tray/managed/test_managed.py
+.\.venv\Scripts\python.exe -B tools/windows-tray/managed/test_extension.py
 ```
 
 The managed suite uses disposable loopback ports, the unmodified official mock

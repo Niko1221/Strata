@@ -119,6 +119,32 @@ internal static class TrayTests
             try { AppUpdatePolicy.Parse("0.1.0", badFeed); } catch (FormatException) { rejected = true; }
             Check(rejected, "malformed App metadata reports an unavailable check");
         }
+        using (var view = new ManagedMenu(new[] { "Example Profile" }, true))
+        {
+            var selection = new System.Collections.Generic.Dictionary<string, object> { { "profile", "Example Profile" }, { "context", 131072 }, { "idle", 1800 }, { "auto", false } };
+            var state = new System.Collections.Generic.Dictionary<string, object> { { "selected", selection }, { "effective", null },
+                { "api", "available" }, { "model", "unloaded" }, { "phase", "ready" }, { "active", 0 }, { "busy", false }, { "error", "" },
+                { "version", "0.1.45.3" }, { "update", "Use Official Component Updater" } };
+            view.ApplyError(state); view.Apply(state, false);
+            Check(view.Menu.Renderer is StatusRenderer, "examples share the production status renderer");
+            Check(view.Menu.Items.Contains(view.OpenApp) && view.AppUpdate.Enabled, "configured App controls are present");
+            Check(view.Contexts.DropDownItems.Count == 8, "all official context choices");
+            Check(view.Contexts.Text == "Context: 128K (Effective Unknown)", "unknown effective context stays unknown");
+            Check(!view.EngineInstall.Enabled && !view.Automatic.Checked, "component updater cannot install or opt into upgrades");
+            Check(!view.Error.Available && !view.OpenConfig.Enabled, "empty error hidden and file action requires an actual profile");
+            foreach (ToolStripMenuItem item in view.Contexts.DropDownItems)
+                Check(item.Checked == ((int)item.Tag == 131072), "context checkmark follows the selected physical value");
+            foreach (ToolStripMenuItem item in view.Idles.DropDownItems)
+                Check(item.Checked == ((int)item.Tag == 1800), "idle checkmark follows the selected value");
+            state["busy"] = true; view.Apply(state, false);
+            Check(!view.Contexts.Enabled && !view.Profiles.Enabled && !view.Idles.Enabled && !view.Update.Enabled, "busy snapshot disables managed selection");
+            foreach (var item in view.Actions) Check(!item.Enabled, "busy snapshot disables lifecycle command " + item.Tag);
+            state["busy"] = false; state["update"] = "available"; view.Apply(state, false);
+            Check(view.EngineInstall.Enabled && view.Contexts.Enabled, "explicit available update and idle state re-enable controls");
+            view.Apply(state, true); Check(!view.Contexts.Enabled && !view.Actions[0].Enabled, "shutdown keeps controls disabled");
+        }
+        using (var view = new ManagedMenu(new[] { "Example Profile" }, false))
+            Check(!view.Menu.Items.Contains(view.OpenApp) && !view.AppUpdate.Enabled, "legacy config keeps App controls unavailable");
         Console.WriteLine(checks + " Tray checks passed.");
         return 0;
     }

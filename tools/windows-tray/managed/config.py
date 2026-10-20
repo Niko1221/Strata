@@ -50,8 +50,11 @@ class Settings:
         self.path = Path(path).resolve()
         value = read_json(self.path)
         if set(value) - {'python', 'repository', 'profiles', 'port', 'upstream_port', 'engine',
-                         'automatic_upgrade', 'update_asset', 'installed_version', 'desktop_app'}:
+                         'automatic_upgrade', 'update_asset', 'installed_version', 'desktop_app', 'app_extension'}:
             raise ValueError('Unknown Tray configuration field')
+        self.app_extension = value.get('app_extension', False)
+        if type(self.app_extension) is not bool:
+            raise ValueError('app_extension must be boolean')
         self.desktop_app = resolve(self.path.parent, value['desktop_app']) if 'desktop_app' in value else None
         if self.desktop_app is not None and (not self.desktop_app.is_file() or self.desktop_app.suffix.lower() != '.exe'):
             raise ValueError('desktop_app must name an existing Windows App executable')

@@ -6,5 +6,6 @@
   },
   "port": 8095,
   "upstream_port": 8096,
-  "automatic_upgrade": false
+  "automatic_upgrade": false,
+  "app_extension": false
 }
