@@ -1,0 +1,12 @@
+Internal ctest changing into directory: ./build-dflash2
+Test project ./build-dflash2
+    Start  56: dflash2_parity
+1/3 Test  #56: dflash2_parity ...................   Passed    0.44 sec
+    Start 107: dflash_policy_test
+2/3 Test #107: dflash_policy_test ...............   Passed    0.01 sec
+    Start 108: dflash_load_test
+3/3 Test #108: dflash_load_test .................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   0.47 sec

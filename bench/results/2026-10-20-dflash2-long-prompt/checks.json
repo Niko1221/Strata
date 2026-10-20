@@ -1,0 +1,8 @@
+{
+  "default_cli_floor": true,
+  "explicit_cli_zero": true,
+  "matching_actual_slots": 3279,
+  "target_only_ids_matched": 192,
+  "all_repeats_and_explorations_match_target": true,
+  "mtp_matches_same_fixture_ids": true
+}

@@ -55,6 +55,12 @@ a normal build rejects DFlash2 metadata. `--spec` reserves the verifier window;
 `--dflash-block K` selects K proposals plus the anchor. The official trained block
 has eight rows and allows at most seven proposals. The anchor is never emitted.
 
+Manual DFlash2 runs use a probability floor of 0.5, including when a fixed
+`--dflash-block` is given. Setup already uses that floor. The block controls the
+draft forward width; the floor limits how many consecutive confident proposals
+the target verifies. Use `--spec-min-p 0` explicitly for an ungated experiment.
+Verifying uncertain suffix rows can cost time even when the target rejects them.
+
 ## Context and memory
 
 Setup passes `--dflash-window 0`: the draft capacity follows `--max-context`.
@@ -126,3 +132,9 @@ A [fresh PR performance rerun](../bench/results/2026-10-19-dflash2-pr-performanc
 compares BF16/Q8_0/Q5_0/Q4_0 with bracketing MTP runs at prefill 256 and auto
 expert residency. Its settings and output controls are recorded separately from
 the earlier prefill-512 comparison.
+
+The [long-case diagnosis](../bench/results/2026-10-20-dflash2-long-prompt/README.md)
+checks the probability gate separately. On RTX 4070 Ti SUPER, Q4_0 with block 3
+improved from 42.57 to 48.29 decode tok/s at floor 0.5 on the 2425-token fixture;
+same-day MTP reached 51.57 tok/s. The target checked fewer rejected proposals.
+Both fixtures' output IDs match target-only controls at the same expert placement.

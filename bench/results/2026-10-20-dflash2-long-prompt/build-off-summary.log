@@ -1,0 +1,16 @@
+Build completed with exit code 0. Full local compiler log retained outside the checkout.
+11839 |                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+      |                              ^
+[150/163] Linking CXX static library libstrata_spec.a
+[151/163] Building CXX object CMakeFiles/dflash_policy_test.dir/src/spec/dflash_policy_test.cpp.o
+[152/163] Building CXX object CMakeFiles/dflash_load_test.dir/src/core/dflash_load_test.cpp.o
+[153/163] Building CXX object CMakeFiles/dflash_load_test.dir/src/core/dflash.cpp.o
+[154/163] Linking CXX executable dflash_policy_test
+[155/163] Linking CXX executable dflash_load_test
+[156/163] Building CUDA object CMakeFiles/strata_mmq.dir/ggml-tq-overlay/template-instances/mmq-instance-tq2_t.cu.o
+[157/163] Building CUDA object CMakeFiles/strata_mmq.dir/ggml-tq-overlay/template-instances/mmq-instance-tqk6.cu.o
+[158/163] Building CUDA object CMakeFiles/strata_mmq.dir/ggml-tq-overlay/template-instances/mmq-instance-tqk7.cu.o
+[159/163] Linking CXX static library libstrata_mmq.a
+[160/163] Linking CXX static library libstrata_prefill.a
+[161/163] Linking CXX static library libstrata_qwen35.a
+[162/163] Linking CXX executable strata

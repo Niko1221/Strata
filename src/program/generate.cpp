@@ -5724,10 +5724,11 @@ int main(int argc, char** argv) {
                          o.spec, o.spec - 1, trained, trained);
             return 2;
         }
-        // The default DFlash pass keeps the trained noise width and verifies
-        // only confident consecutive predictions. Explicit fixed blocks retain
-        // their existing behavior unless the user requests a probability gate.
-        if (o.dflash_block == 0 && !o.spec_min_p_set) o.spec_min_p = 0.5;
+        // DFlash2's forward width and confidence gate are independent. A fixed
+        // block must not silently turn off the gate used by setup: uncertain
+        // suffix rows still cost a full target verification even when rejected.
+        // Preserve explicit floors (including zero) and legacy fixed-block use.
+        if ((dg.is_dflash2() || o.dflash_block == 0) && !o.spec_min_p_set) o.spec_min_p = 0.5;
         // ONE authoritative effective draft length: the startup validation, the propose call, the
         // verifier window and the statistics below all read this variable
         dflash_k = o.dflash_block > 0 ? std::min(o.dflash_block, o.spec - 1) : std::min(o.spec - 1, trained);
