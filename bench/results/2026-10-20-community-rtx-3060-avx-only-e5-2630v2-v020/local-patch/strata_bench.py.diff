@@ -1,0 +1,12 @@
+--- <WORKDIR>/sources/Strata-0.2.0/tools/strata_bench.py	2026-10-20 14:31:06.117744101 +0900
++++ <WORKDIR>/experiments/08_v020/Strata/tools/strata_bench.py	2026-10-20 15:23:48.473439785 +0900
+@@ -973,7 +973,8 @@
+     if a.url:
+         base = a.url.rstrip("/")
+     else:
+-        base = server_base(cfg.get("host"), a.port or int(cfg.get("port", 8080)))
++        port = a.port or int(cfg.get("port", 8080))   # local fix (EXPERIMENT_LOG.md §19): 0.2.0 dropped this line
++        base = server_base(cfg.get("host"), port)
+     red = redactor(key=key)
+     started = False
+     try:
