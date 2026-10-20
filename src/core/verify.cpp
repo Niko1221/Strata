@@ -1893,6 +1893,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                       rr_stats_ != nullptr ? rr_stats_ + (n <= 8 ? 4 : 0) : nullptr, cs);
             } catch (const std::exception& e) { err = "verify route-resident: " + std::string(e.what()); return false; }
         }
+        // STRATA_VERIFY_ECAP (relaxed MTP, opt-in): cap the window's unique experts before the plan - token 0 keeps
+        // all K picks, the speculative tail keeps the top (cap - K) entries by routing weight, the rest fold into
+        // entry 0's group at w=0 (no expert traffic, zero contribution; changes the output only where a dropped
+        // low-weight expert of a draft position would have flipped it).  Inside the window: graph-capturable.
+        static const int ecap = [] { const char* v = std::getenv("STRATA_VERIFY_ECAP"); return v ? std::atoi(v) : 0; }();
+        if (ecap > K && n > 1)
+            strata::kernels::verify_ecap(ids_ + tb * K, w_ + tb * K, n * (int) K, (int) K, ecap, cs);
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,

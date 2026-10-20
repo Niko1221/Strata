@@ -108,6 +108,10 @@ void copy_rows_strided(float* dst, const float* src, int64_t rows, int64_t w, in
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err = nullptr);
+/// STRATA_VERIFY_ECAP (relaxed MTP): cap the verify window's expert set in place - token 0 keeps all k picks,
+/// the speculative tail (tokens 1..n-1) keeps the top (cap - k) entries by routing weight; dropped entries join
+/// entry 0's group with weight 0 (no extra expert read, zero contribution).  No-op when n <= k or cap <= k.
+void verify_ecap(int32_t* ids, float* w, int n, int k, int cap, void* stream);
 /// wait_flag_ge that also returns when *skip == value (device memory).
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream);
 /// copy_i32_from_mapped unless *skip == value.
