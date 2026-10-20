@@ -1362,6 +1362,10 @@ void Gemm::f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T
            "cublasGemmEx f16 out");
     }
     static const bool dbg_nan = std::getenv("STRATA_DBG_NAN") != nullptr;
+    if (f16_no_widen_) {   // F-2: the caller's consumer reads the packed halves (gr_mix_r_h16); no widen, no debug
+        // (the STRATA_HIP_F16_RANGE slot-1 tracking of the widened values is skipped with them)
+        return;
+    }
     widen_rows_f16<<<(unsigned) T, 256, 0, (cudaStream_t) stream_>>>(Y, N, ldy, dbg_nan ? 1 : 0);
     if (dbg_nan) {   // debug only: a sync per GEMM
         unsigned long long bad = 0, zero_count = 0;

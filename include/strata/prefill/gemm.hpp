@@ -64,6 +64,9 @@ public:
     /// and bf16() / f16() / native() run the GEMM with FP16 out (rocBLAS's tuned kernels there), widened in place in
     /// Y's own rows.  Off (default): every call is what it was.  Set by Prefill::init, together with set_act_f16.
     void set_f16_io(bool on) { f16_io_ = on; }
+    /// F-2 (the S28 skip): set around the one f16_inplace whose consumer reads the packed FP16 halves directly
+    /// (gr_mix_r_h16).  The GEMM must be a single beta=0 call; the flag is reset by the caller right after.
+    void set_f16_no_widen(bool on) { f16_no_widen_ = on; }
 
     /// Caller-owned buffers only: the scratch and workspace moved (the prompt path laid its buffers out again).
     void rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
@@ -113,6 +116,7 @@ private:
     void* hipblaslt_state_ = nullptr;
     void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;
+    bool f16_no_widen_ = false;   // F-2: f16_inplace skips widen_rows_f16 (the consumer reads the packed halves)
     /// cuBLAS 12 answers the default FP16 algorithm of a few (N, K) shapes with CUBLAS_STATUS_INTERNAL_ERROR once
     /// another CUDA device in the process has initialized its context (issue #1650, Turing + Pascal).  A fixed
     /// algorithm (ALGO2) survives that state, but is markedly slower for the wide shapes, so only the shapes that

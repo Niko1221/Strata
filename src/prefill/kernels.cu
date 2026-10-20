@@ -149,9 +149,13 @@ __global__ void gr_norm_rs_kernel(const float* __restrict__ R, const float* __re
         if (xn16_lo) xn16_lo[xo + d] = bf_lo(v, h);
     }
 }
+// Packed16 = true reads the up GEMM's FP16-out rows (widen_rows_f16 not run): element j of token t sits at half
+// t*2*D + j; the __half2 at slot t*D + j/2 holds halves 2*(j/2) and 2*(j/2)+1 = elements j and j+1, so thread d
+// takes .x for even d and .y for odd d. __half2float is exact, so the bits are identical to the widened run.
+template <bool Packed16>
 __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __restrict__ rs, const float* __restrict__ w,
-                                const float* __restrict__ g, float* __restrict__ mixed, uint16_t* __restrict__ mixed16,
-                                int64_t T, uint16_t* __restrict__ mixed_h, uint16_t* __restrict__ mixed16_lo) {
+                               const float* __restrict__ g, float* __restrict__ mixed, uint16_t* __restrict__ mixed16,
+                               int64_t T, uint16_t* __restrict__ mixed_h, uint16_t* __restrict__ mixed16_lo) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * N) return;
     const int64_t t = i / N, d = i % N;
@@ -159,8 +163,15 @@ __global__ void gr_mix_r_kernel(const float* __restrict__ R, const float* __rest
 #pragma unroll
     for (int c = 0; c < HC; ++c) {
         const int64_t j = t * D + c * N + d;
+        float gv;
+        if (Packed16) {
+            const __half2 h2 = reinterpret_cast<const __half2*>(g)[t * D + (c * N + d) / 2];
+            gv = (d & 1) ? __half2float(h2.y) : __half2float(h2.x);
+        } else {
+            gv = g[j];
+        }
         const float x = R[j] * rs[t * HC + c] * w[c * N + d];   // gr_norm_kernel's value, bit for bit
-        s = fmaf(x, sigm(g[j]), s);
+        s = fmaf(x, sigm(gv), s);
     }
     s /= (float) HC;
     mixed[i] = s;
@@ -2908,9 +2919,15 @@ void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint1
 }
 void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
               int64_t T, void* stream, uint16_t* mixed_h, uint16_t* mixed16_lo) {
-    gr_mix_r_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(R, rs, w_norm, gated, mixed, mixed16, T,
-                                                                          mixed_h, mixed16_lo);
+    gr_mix_r_kernel<false><<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(R, rs, w_norm, gated, mixed, mixed16, T,
+                                                                                  mixed_h, mixed16_lo);
     check("gr_mix_r");
+}
+void gr_mix_r_h16(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
+                  int64_t T, void* stream, uint16_t* mixed_h, uint16_t* mixed16_lo) {
+    gr_mix_r_kernel<true><<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(R, rs, w_norm, gated, mixed, mixed16, T,
+                                                                                mixed_h, mixed16_lo);
+    check("gr_mix_r_h16");
 }
 bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const float* rs, const float* w_norm,
               float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream) {

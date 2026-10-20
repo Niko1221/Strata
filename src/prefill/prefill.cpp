@@ -1009,6 +1009,14 @@ inline bool gr_unfused() {
     return v;
 }
 
+// F-2 (opt-in STRATA_HC_MIX_H16=1, the S28 skip): the up projection's FP16-out rows stay packed (f16_inplace skips
+// widen_rows_f16) and gr_mix_r_h16 reads the halves directly - __half2float is exact, so the bits are the widened
+// pair's bits.  Off (default): widen + gr_mix_r, what it was.
+inline bool hc_mix_h16() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_HC_MIX_H16"); return e && e[0] == '1'; }();
+    return v;
+}
+
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
 // STRATA_PF_ALLOC_TRACE=1 (diagnostic, no behaviour change; round 0216): the free-memory figure (cudaMemGetInfo) around the prompt path's
@@ -4863,6 +4871,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 pt.mark(kPfHcUp, cs);
                 bool upmixed = false;
                 // on the FP16 prompt path (m.f16_io) lo16 holds FP16 bits (act16) and gr_upmix reads it on the FP16 matrix-core builtin (g_act_f16)
+                bool checked = false;   // STRATA_HC_UPMIX_CHECK: ref holds the default pair's bits, compared below
+                std::vector<float> ref, got;
                 if (wu->q8_scale == nullptr && hc_upmix() && T >= std::max(pf_switch_min_t(), hc_upmix_min_t()) && !gr_unfused() && !m.lo16_lo && !m.mixed_bf_lo &&
                     wu->kind == core::WeightKind::Bf16InF32 && wu->data && wu->ne0 == LR && wu->ne1 == D) {
                     static int checks = [] { const char* e = std::getenv("STRATA_HC_UPMIX_CHECK"); return e ? std::atoi(e) : 0; }();
@@ -4870,32 +4880,44 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         --checks;
                         if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err)) return false;
                         gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h);
-                        std::vector<float> ref((size_t) T * N), got((size_t) T * N);
+                        checked = true;
+                        ref.resize((size_t) T * N);
+                        got.resize((size_t) T * N);
                         cudaMemcpyAsync(ref.data(), m.mixed, ref.size() * 4, cudaMemcpyDeviceToHost, m.cs);
                         upmixed = gr_upmix(m.lo16, (const uint16_t*) wu->data, m.R, m.grs, (const float*) wn->data,
                                            m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
-                        cudaMemcpyAsync(got.data(), m.mixed, got.size() * 4, cudaMemcpyDeviceToHost, m.cs);
-                        cudaStreamSynchronize(m.cs);
-                        double e2 = 0, r2 = 0, emax = 0;
-                        for (size_t i = 0; i < ref.size(); ++i) {
-                            const double dd = (double) got[i] - ref[i];
-                            e2 += dd * dd; r2 += (double) ref[i] * ref[i]; emax = std::max(emax, std::fabs(dd));
-                        }
-                        std::fprintf(stderr, "strata: STRATA_HC_UPMIX_CHECK layer %lld half %d T %lld: mixed rel RMS %.3e, "
-                                     "max |diff| %.3e (%s)\n", (long long) l, half, (long long) T,
-                                     std::sqrt(e2 / std::max(r2, 1e-30)), emax, upmixed ? "upmix" : "upmix refused");
                     } else {
                         upmixed = gr_upmix(m.lo16, (const uint16_t*) wu->data, m.R, m.grs, (const float*) wn->data,
                                            m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
                     }
                 }
-                if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+                if (!upmixed) {
+                    m.gemm.set_f16_no_widen(hc_mix_h16() && !gr_unfused());   // F-2: the packed halves are gr_mix_r_h16's input (or widen for gr_mix)
+                    if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+                    m.gemm.set_f16_no_widen(false);
+                }
                 pt.mark(kPfHcInj, cs);
+                if (checked) {   // got: the bits of the path that actually ran (on gfx1030: F-2's packed halves + gr_mix_r_h16)
+                    cudaMemcpyAsync(got.data(), m.mixed, got.size() * 4, cudaMemcpyDeviceToHost, m.cs);
+                    cudaStreamSynchronize(m.cs);
+                    double e2 = 0, r2 = 0, emax = 0;
+                    for (size_t i = 0; i < ref.size(); ++i) {
+                        const double dd = (double) got[i] - ref[i];
+                        e2 += dd * dd; r2 += (double) ref[i] * ref[i]; emax = std::max(emax, std::fabs(dd));
+                    }
+                    std::fprintf(stderr, "strata: STRATA_HC_UPMIX_CHECK layer %lld half %d T %lld: mixed rel RMS %.3e, "
+                                 "max |diff| %.3e (%s)\n", (long long) l, half, (long long) T,
+                                 std::sqrt(e2 / std::max(r2, 1e-30)), emax,
+                                 upmixed ? "upmix" : (gr_unfused() ? "gr_mix" : "f16-skip"));
+                }
                 if (!hcd && !bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
                 pt.mark(kPfHcMix, cs);
                 if (upmixed) {
                 } else if (gr_unfused()) {
                     gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h, m.mixed_bf_lo);
+                } else if (hc_mix_h16()) {   // F-2: the packed halves + gr_mix_r_h16 (same bits as the widened pair)
+                    gr_mix_r_h16(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
+                                 m.mixed_bf_lo);
                 } else {
                     gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
                              m.mixed_bf_lo);
