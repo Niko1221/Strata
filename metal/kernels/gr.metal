@@ -177,3 +177,21 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
 GRD(8, 8) GRD(8, 4) GRD(4, 4) GRD(4, 2) GRD(16, 16) GRD(16, 8)
 template [[host_name("gr_up")]] kernel decltype(gr_up_f<T_BF16>) gr_up_f<T_BF16>;
 template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8_0>;
+
+// --dflash: the target features of a window's rows - one completed layer output (R, hc streams of n_embd) averaged over
+// the streams, into column block `col` of F's rows (stride `stride` floats).  One threadgroup of 256 per (n/256, token).
+struct HcMeanArgs {
+    uint n_embd;
+    uint hc;
+    uint stride;
+    uint col;
+};
+kernel void hc_mean(device const float* R [[buffer(0)]], device float* F [[buffer(1)]], constant HcMeanArgs& a [[buffer(2)]],
+                    uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]]) {
+    const uint d = tg.x * 256 + tid, t = tg.y, n = a.n_embd;
+    if (d >= n) return;
+    device const float* r = R + t * a.hc * n;
+    float s = 0.0f;
+    for (uint c = 0; c < a.hc; ++c) s += r[c * n + d];
+    F[t * a.stride + a.col + d] = s / float(a.hc);
+}

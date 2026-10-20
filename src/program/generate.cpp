@@ -113,6 +113,10 @@
 #if defined(STRATA_GPU_METAL)
 namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
 #endif
+#if defined(STRATA_GPU_METAL) && defined(STRATA_DFLASH)
+namespace strata::metal_engine { void dflash_enable(); const float* dflash_rows(); }   // --dflash's target features
+#include "strata/spec/dflash_drafter.hpp"
+#endif
 
 #include <array>
 #include <chrono>
@@ -670,6 +674,8 @@ struct Options {
     std::string window_hashes;
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
+    /// --dflash: a DFlash2 draft GGUF (tools/dflash_head.py) drafting in place of the MTP layer (Metal --serve only)
+    std::string dflash;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
@@ -918,6 +924,9 @@ void usage() {
                  "  --suffix-draft N     prompt lookup: draft from an earlier repeat of the last N+ tokens of context\n"
                  "                       when it pays (default 3; 0 = MTP only)\n"
                  "  --mtp-max-t M        cap the MTP's windows at M tokens (0 = --spec; longer ones come from suffixes)\n"
+                 "  --dflash GGUF        opt-in, Metal --serve: a DFlash2 draft model (tools/dflash_head.py) drafts in place of\n"
+                 "                       --mtp, up to --spec - 1 tokens a window from target layers 5/15/25/35/45 (not with\n"
+                 "                       --mtp); --spec-min-p stops a draft where the selector's confidence falls below it\n"
                  "  --spec N             the MTP drafter's verify window: how many tokens it proposes per check (setup\n"
                  "                       writes 4; --suffix-draft lets it grow by 2, up to 8, where a repeat is likely)\n"
                  "  --spec-min-p P       how sure the draft layer must be to extend a verify window by another guess\n"
@@ -2563,6 +2572,8 @@ int main(int argc, char** argv) {
         else if (a == "--spec-follow") o.spec_follow = next("--spec-follow");
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
         else if (a == "--mtp") o.mtp = next("--mtp");
+        else if (a == "--dflash") o.dflash = next("--dflash");
+
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
@@ -8150,6 +8161,51 @@ int main(int argc, char** argv) {
         // neither fires, plain one-token-per-round decoding - slower, never wrong: the verify window still
         // confirms every emitted token against the real model regardless of where the draft came from.
         const bool use_mtp = !o.mtp.empty();
+        // --dflash: the DFlash2 drafter; every prompt chunk and committed window hands it its rows' target features
+        const bool use_df = !o.dflash.empty();
+#if defined(STRATA_GPU_METAL) && defined(STRATA_DFLASH)
+        strata::spec::DflashDrafter df;
+        if (use_df) {
+            std::string e;
+            if (use_mtp) { std::printf("ERR --dflash drafts in place of --mtp: give one of them\n"); return 1; }
+            if (o.spec < 2) { std::printf("ERR --dflash needs --spec 2 or more (the verify window)\n"); return 1; }
+            if (!df.load(o.dflash, e)) { std::printf("ERR %s\n", e.c_str()); return 1; }
+            strata::metal_engine::dflash_enable();
+            std::fprintf(stderr, "strata serve: DFlash2 drafter %s (block %d, %d drafts a window)\n", o.dflash.c_str(),
+                         df.block(), std::min(o.spec - 1, df.block() - 1));
+        }
+        // the last window's or prompt chunk's first n rows are committed at positions p0..: their features go in
+        // STRATA_DFLASH_DUMP=<prefix> (training data for an exact-target draft): per committed row its position,
+        // token, whether the engine generated it (1) or read it (0) -> <prefix>.idx (3 x int32), and its features as
+        // f16 -> <prefix>.f16 (5 x 2560)
+        static std::FILE* dump_idx = nullptr;
+        static std::FILE* dump_f16 = nullptr;
+        if (const char* dp = std::getenv("STRATA_DFLASH_DUMP"); dp != nullptr && use_df && dump_idx == nullptr) {
+            dump_idx = std::fopen((std::string(dp) + ".idx").c_str(), "ab");
+            dump_f16 = std::fopen((std::string(dp) + ".f16").c_str(), "ab");
+        }
+        auto df_feed = [&](int64_t n, int64_t p0, const int32_t* toks, bool generated, std::string& e) -> bool {
+            if (!use_df || n <= 0) return true;
+            const float* f = strata::metal_engine::dflash_rows();
+            if (f == nullptr) { e = "--dflash: the window wrote no target features"; return false; }
+            if (dump_idx != nullptr && dump_f16 != nullptr) {
+                const int W = df.feat_width();
+                std::vector<_Float16> h((size_t) W);
+                for (int64_t i = 0; i < n; ++i) {
+                    const int32_t rec[3] = {(int32_t) (p0 + i), toks[i], generated ? 1 : 0};
+                    for (int k = 0; k < W; ++k) h[(size_t) k] = (_Float16) f[(size_t) i * W + (size_t) k];
+                    std::fwrite(rec, sizeof rec, 1, dump_idx);
+                    std::fwrite(h.data(), sizeof(_Float16), h.size(), dump_f16);
+                }
+                std::fflush(dump_idx);
+                std::fflush(dump_f16);
+            }
+            return df.inject(f, (int) n, (int) p0, e);
+        };
+#else
+        if (use_df) { std::printf("ERR --dflash needs the Metal build with STRATA_DFLASH_LLAMA\n"); return 1; }
+        auto df_feed = [](int64_t, int64_t, const int32_t*, bool, std::string&) { return true; };
+#endif
         // STRATA_PREFILL_HELPER_SOURCE (opt-in): the prompt path may take a blob a helper's VRAM cache already
         // holds from that cache instead of reading the files again.  The helpers are idle while a prompt is read
         // (the serve path is serial: no batch slots), so the copy needs no ordering against their kernel streams.
@@ -9646,6 +9702,11 @@ int main(int argc, char** argv) {
                 }
             }
             if (!e.empty() || (use_mtp && !batched && !mtp.prefill(R_rows, nxt.data(), T, p0, e))) return false;
+            if (use_df) {
+                std::vector<int32_t> tk((size_t) T);
+                for (int64_t t = 0; t < T; ++t) tk[(size_t) t] = (int32_t) cur[(size_t) (p0 + t)];
+                if (!df_feed(T, p0, tk.data(), false, e)) return false;
+            }
             if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr)
                 std::fprintf(stderr, "strata serve: DRAFT_PREFILL path=%s mode=%d cells=%lld\n",
                              batched ? "batched" : "token", mtp.kv_state().kv_mode, (long long) T);
@@ -12971,6 +13032,7 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+                    if (!df_feed(T, q, win.data(), false, e)) return false;
                     q += T;
                     pp_reached = q;   // #471
                     pp_exact = true;
@@ -13902,6 +13964,10 @@ int main(int argc, char** argv) {
             const size_t WS = (size_t) std::max(S, merge_T);
             std::vector<int32_t> drafts(DS, 0), window(WS), outv(WS);
             std::vector<float> dprob(DS, 0.0f);
+            int n_df = 0;   // --dflash: the drafts in `drafts` for the next window
+#if defined(STRATA_GPU_METAL) && defined(STRATA_DFLASH)
+            float df_conf[8] = {};   // their selector confidences
+#endif
             std::vector<int32_t> sbuf((size_t) S, 0);
             const bool sfx_on = o.suffix_draft > 0 || o.lookup_chain > 0;
             if (sfx_on) {
@@ -14614,6 +14680,7 @@ int main(int argc, char** argv) {
                     T = 1;
                     while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
                 }
+                if (use_df) T = 1 + n_df;
                 if (first_window) T = merge_T > 0 ? merge_T : 1;
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
                 // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
@@ -14853,6 +14920,13 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                // --dflash: the committed rows' features (row i is window[i] at p + i; the rejected rows never go in)
+                // (a merged window's rows but the last are prompt tokens; the dump marks the window generated)
+                if (!df_feed(a + 1, p, window.data(), !merged, err)) {
+                    if (adapt_thr.joinable()) adapt_thr.join();
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
                 if (nonfinite_hit(ver, first_window ? "first decode" : "decode")) {   // #879: none of its tokens goes out
                     if (adapt_thr.joinable()) adapt_thr.join();
                     if (!adapt_ok) {
@@ -14894,6 +14968,13 @@ int main(int argc, char** argv) {
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
                 const bool drafted = !use_mtp || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+#if defined(STRATA_GPU_METAL) && defined(STRATA_DFLASH)
+                // --dflash: the drafts after outv[a], the token at p + a + 1 (the next window's row 0)
+                n_df = use_df && !eos && produced_n < max_new
+                           ? df.draft(outv[(size_t) a], (int) (p + a + 1), std::min(S - 1, df.block() - 1), (float) req_spec_min_p,
+                                      drafts.data(), df_conf)
+                           : 0;
+#endif
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -14926,6 +15007,15 @@ int main(int argc, char** argv) {
                 p += a + 1;
             }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
+#if defined(STRATA_GPU_METAL) && defined(STRATA_DFLASH)
+            if (use_df && df.n_draft > 0) {
+                std::fprintf(stderr, "strata serve: DFlash2 drafter %.2f ms a draft (%lld), %.2f ms a feature commit (%lld)\n",
+                             df.ms_draft / (double) df.n_draft, (long long) df.n_draft,
+                             df.n_inject ? df.ms_inject / (double) df.n_inject : 0.0, (long long) df.n_inject);
+                df.ms_draft = df.ms_inject = 0;
+                df.n_draft = df.n_inject = 0;
+            }
+#endif
             // the last commit (set_commit_async): the session is complete before anything reads or copies it
             if (!ver.wait_commit(err)) {
                 std::printf("ERR %s\n", err.c_str());
