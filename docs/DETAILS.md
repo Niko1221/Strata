@@ -1455,6 +1455,11 @@ one) when the disk holds a longer prefix than the session, a `--batch` slot or t
 - a read back needs RAM for the whole image above `--conversation-cache-min-free-mib`, as a park does; without it the
   prompt is read again (`not restored (not enough RAM ...)`). A read back removes the conversation from the disk (the
   session holds it again, and it is parked again on the next switch);
+- a file is read back only when that is faster than reading the tokens it adds, by this run's measured disk speed and
+  prompt speed (the prompt path's parts of 2,048 tokens or more): a new conversation that shares only the system prompt
+  with a saved one no longer reads the saved one's whole file (on the box below 6,033 MiB for 16,384 tokens, 11.4 s
+  from its NVMe against ~8 s to read the tokens). Until both speeds are measured the file is read; a skip is logged
+  (`not read`, with both estimates);
 - `--conversation-disk-mib N` (default 32768): the files' total, oldest out first. Without `--conversation-disk-persist`
   the files' identity is a random number of the run: only this engine reads them, and its files (`strata-conv-*`) are
   removed at start and when it ends;

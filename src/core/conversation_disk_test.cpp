@@ -171,6 +171,7 @@ int main() {
         check(logged("wrote 600 tokens") && logged("in 2 files"), "the write is logged");
         const auto live = tier.best(prompt_of(700), {}, false);
         check(live.tokens == 600 && live.live && live.id != 0, "best: the live state as a prefix");
+        check(!live.queued && live.bytes == tier.bytes() && live.bytes > 0, "best: a written entry, its files' bytes");
         const auto ck = tier.best([] { auto p = prompt_of(300); p.push_back(7); return p; }(), {}, false);
         check(ck.tokens == 300 && !ck.live, "best: the deepest checkpoint as a prefix");
         check(tier.best([] { auto p = prompt_of(150); p.push_back(7); return p; }(), {}, false).tokens == 150,
@@ -200,7 +201,7 @@ int main() {
         check(tier.put(image(400, 3, 5000)), "put b (queued behind a)");
         check(tier.pending(), "pending while the writer waits");
         const auto b = tier.best(prompt_of(450, 5000), {}, false);
-        check(b.tokens == 400, "b matches in the queue");
+        check(b.tokens == 400 && b.queued && b.bytes > 0, "b matches in the queue");
         SavedConversation back;
         check(tier.take(b.id, b.tokens, back, e) && same(back, image(400, 3, 5000)), "b back from RAM");
         check(tier.stats().ram_hits == 1 && logged("RAM hit: 400 tokens"), "a RAM hit, logged");

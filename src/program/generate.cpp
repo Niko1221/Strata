@@ -9268,6 +9268,7 @@ int main(int argc, char** argv) {
             }
         }
         strata::core::ConversationDiskTier conv_disk(std::move(disk_opts));
+        double prompt_read_tokens = 0, prompt_read_ms = 0;   // the prompt path's batched parts of 2,048+ tokens
         if (!o.conversation_disk_dir.empty() && !conversations.enabled())
             std::fprintf(stderr, "strata serve: --conversation-disk-dir needs the conversation cache "
                                  "(--conversation-cache-mib, --conversation-cache-slots, --prompt-cache): off\n");
@@ -12500,7 +12501,23 @@ int main(int argc, char** argv) {
             // the disk tier holds a longer prefix than the session, a --batch slot or the RAM cache: restore that one
             if (conv_disk.enabled()) {
                 const auto on_disk = conv_disk.best(ids, req_imgs, want_cvec);
-                if (on_disk.tokens > std::max({resume, slot_tokens, parked.tokens})) {
+                const int64_t reused_without_disk = std::max({resume, slot_tokens, parked.tokens});
+                const int64_t added = on_disk.tokens - reused_without_disk;
+                // a whole file for the tokens it adds (16,384 of a 6 GB file: a conversation sharing only the system
+                // prompt) only when reading it is faster than reading those tokens; until both speeds are measured, read
+                bool from_disk = added > 0;
+                const auto ds = conv_disk.stats();
+                if (from_disk && !on_disk.queued && ds.bytes_read > 0 && prompt_read_tokens > 0) {
+                    const double file_s = (double) on_disk.bytes * ds.read_ms / (double) ds.bytes_read / 1000;
+                    const double tokens_s = (double) added * prompt_read_ms / prompt_read_tokens / 1000;
+                    if (file_s >= tokens_s) {
+                        from_disk = false;
+                        std::fprintf(stderr, "strata serve: conversation disk: not read: its %lld more tokens read in "
+                                             "~%.1f s, its file (%.0f MiB) in ~%.1f s\n", (long long) added, tokens_s,
+                                     (double) on_disk.bytes / (1024.0 * 1024.0), file_s);
+                    }
+                }
+                if (from_disk) {
                     const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                     size_t evicted = 0;
                     auto admit = [&](uint64_t need, std::string& why) -> bool {
@@ -13921,11 +13938,15 @@ int main(int argc, char** argv) {
                 pp_exact = false;   // a batched or pipelined part is in flight: a cancel may leave the state past pp_reached
                 const bool sp_ok = read_to <= at || (win ? read_windows(at, read_to, err) : read_part(at, to, err));
                 if (sp_ok) pp_exact = true;
+                const double part_ms = std::chrono::duration<double, std::milli>(Clock::now() - tsp).count();
+                if (sp_ok && !win && to - at >= 2048) {
+                    prompt_read_tokens += (double) (to - at);
+                    prompt_read_ms += part_ms;
+                }
                 if (trace) {
-                    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - tsp).count();
-                    (win ? req_times.windows_ms : req_times.read_ms) += ms;
+                    (win ? req_times.windows_ms : req_times.read_ms) += part_ms;
                     std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (read_to - at),
-                                 win ? "windows" : "batched", ms);
+                                 win ? "windows" : "batched", part_ms);
                     if (merge_at >= 0)
                         std::fprintf(stderr, "strata trace: the first window takes the last %lld prompt tokens\n",
                                      (long long) (n - merge_at));
