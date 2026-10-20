@@ -4341,6 +4341,33 @@ bool FileExpertSource::replace_resident(int64_t layer, int64_t in, int64_t out) 
     return install_resident(layer, in, out, ram_adapt_buf_.data());
 }
 
+bool FileExpertSource::replace_resident_staged(int64_t layer, int64_t in, int64_t out) {
+    if (!complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() || !staged_.empty() ||
+        layer < 0 || layer >= n_layers_ || in < 0 || out < 0 || in >= n_expert_ || out >= n_expert_ || in == out)
+        return false;
+    const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+    const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+    if (i_in >= complement_offsets_.size() || i_out >= complement_offsets_.size()) return false;
+    if (!override_.empty() && (override_[i_in] != nullptr || override_[i_out] != nullptr)) return false;
+    const uint64_t at = complement_offsets_[i_out], bytes = layer_blob_bytes_[(size_t) layer];
+    if (at == kNoComplement || complement_offsets_[i_in] != kNoComplement || at > complement_bytes_ ||
+        bytes > complement_bytes_ - at || bytes > stage_blob_) return false;
+    ForesightSwap* fs = fs_swap_.load(std::memory_order_acquire);
+    bool moved = false;
+    {
+        // held across the copy: claim_stage cannot hand the buffer to another blob meanwhile
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        const auto it = stage_of_.find((int64_t) i_in);
+        if (it == stage_of_.end() || stage_busy_[it->second] || stage_key_[it->second] != (int64_t) i_in) return false;
+        if (fs != nullptr) fs->hold(layer, (int32_t) out);
+        std::memcpy((uint8_t*) complement_host_ + (size_t) at, stage_buf_[it->second].get(), (size_t) bytes);
+        moved = detail::exchange_cache_complement(complement_offsets_, i_out, i_in);
+        if (fs != nullptr) fs->unhold(layer, (int32_t) out);
+    }
+    if (moved) { ++ram_adapts_; ++ram_staged_; }
+    return moved;
+}
+
 // `in`'s bytes (src) into `out`'s place of the compact copy, and the two offsets swapped - the checks again, as the caller
 // may have read `src` a while ago (149-prefetch: ram_install)
 bool FileExpertSource::install_resident(int64_t layer, int64_t in, int64_t out, const uint8_t* src) {

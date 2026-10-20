@@ -172,23 +172,23 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
 - `STRATA_RAM_ADAPT=<n>` (opt-in, `--serve`, one GPU): the RAM copy follows the conversation too. Without it the
   copy is chosen once, at start, so when the RAM cannot hold every expert the GPU does not, an expert outside the copy
   is read from the SSD every time the conversation routes to it. With it, before a decode window and while no adaptive
-  round is in flight, up to `n` experts the windows keep routing to (the adaptive tier's decayed count, 2 or more) take
-  the RAM places of experts of their own layer that are not routed to (count below 0.5): one pair per layer, the
-  largest difference first, one blob read each. The RAM stays the same size; the routing, the weights and the VRAM
-  tier's rule are untouched, and an expert that left the copy is read from the file again when it is needed. It needs
-  the adaptive tier (`--adapt-every`), and does nothing with `STRATA_EXCHANGE_ROTATE=1`, a layer split, a peer or
-  helper GPU, or `--batch`. Prompt routing is not used to choose replacements, and no selection runs during prefill.
-  Later prompts can read from a RAM copy changed by earlier decode requests. The log reports how many experts moved.
-  Measured on an RTX 3060 12 GB with 32 GB of RAM (Linux, IQ2_XS, 20.5 GiB of experts in RAM and about 6,000 experts on
-  the file tier, `--adapt-async 1`, `--spec 3`, power-saver), against v0.1.43: 47 frozen Korean requests from
-  my own use (tools, follow-ups and background tasks, 281-33,241 prompt tokens), replayed in order in fresh engines:
-  release, this option, release. Each starts from the same held learned profile; the private prompts are not attached.
-  With default tail skip (7), decode is 43.26 -> 50.40 tok/s (+16.5%) against the closing release, computed as total
-  generated tokens / total decode time; the two release arms are within 0.2%. Short/long new-input requests gain
-  16.3%/16.9%; total prompt speed differs by 2.5%, within run variation. Decode file-tier demand reads per generated
-  token fall from 14.15 -> 2.67; 8,056 successful RAM promotions read another blob each, giving 3.16 with those added.
-  These are file-tier counts, not physical SSD I/O. RAM residency does not exempt an expert from tail skip. One machine,
-  one quantization; tail skip off, blocking adaptation, `--spec 2` and the soak were not repeated on v0.1.43.
+  round is in flight, experts the windows keep routing to (the adaptive tier's decayed count, 2 or more) take the RAM
+  places of experts of their own layer that are not routed to (count below 0.5): up to 4 pairs per layer, the largest
+  difference first. The incoming expert was usually just read for the window before; when its blob still sits in that
+  read's stage buffer it is copied from there, with no second file read. `n` caps the pairs that need a file read
+  (1 is enough in practice). The RAM stays the same size; the routing, the weights and the VRAM tier's rule are
+  untouched, and an expert that left the copy is read from the file again when it is needed. It needs the adaptive
+  tier (`--adapt-every`), and does nothing with `STRATA_EXCHANGE_ROTATE=1`, a layer split, a peer or helper GPU, or
+  `--batch`. Prompt routing is not used to choose replacements, and no selection runs during prefill. Later prompts
+  can read from a RAM copy changed by earlier decode requests. The log reports how many experts moved and how many of
+  them came out of a stage buffer.
+  Measured on an RTX 3060 12 GB with 32 GB of RAM (Linux, NVMe, IQ2_XS read in place, 20.5 GiB of experts in RAM,
+  `--adapt-async 1`, `--spec 3`), v0.2.1, each run a fresh engine with the stock profile and the model's page cache
+  dropped, 3 interleaved runs per setting: on 120 requests of 30 public ShareGPT conversations replayed in order,
+  decode 37.70 (off) / 48.71 (`=8` before this change) / 51.40 (`=1`) tok/s, prompt 117.8 / 137.4 / 141.5 tok/s, bytes
+  read from storage 956 / 408 / 308 GB; on `bench/prompts/standard-v1` (no concurrency stage) decode 42.04 / 47.58 /
+  48.34 tok/s and prompt speed within 1.1% of off. RAM residency does not exempt an expert from tail skip. One machine,
+  one quantization.
 - `--adapt-async 1` (opt-in, `--serve`): the swaps of a round advance between decode windows on a helper thread
   (copy back, copy in, move into RAM) instead of one window waiting for the whole round. With `--batch` slots it
   advances between their windows too (docs/BATCHING.md); not with `--batch-groups` or `--peer-device` (the blocking
