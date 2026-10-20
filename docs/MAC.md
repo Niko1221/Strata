@@ -169,6 +169,14 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 `--spec 2` is the best default on mixed text. An explicit `--spec N` in the config's `args` is kept.
 
+**DFlash2 drafter (opt-in, `--dflash`).** A DFlash2 draft model can draft in place of the MTP layer. Setup does not
+offer it; build with `-DSTRATA_DFLASH_LLAMA=<a llama.cpp Metal shared build>`, make the draft GGUF with
+`tools/dflash_head.py`, and put `--dflash <draft.gguf>` (instead of `--mtp`) and `--spec 4` in the config's `args`.
+`STRATA_DFLASH_NATIVE=1` in `env` runs the drafter with Strata's own Metal kernels (faster) instead of llama.cpp's graph.
+Without `--dflash` nothing changes. On an M4 Max with an abliterated IQ3_S target, a drafter fine-tuned on that target
+decoded 49.7 tok/s against MTP's 46.9-48.1 on short prompts, with the same greedy output; the stock incoai drafter was
+slower than MTP there. The runs: [bench/results/2026-10-20-metal-dflash2](../bench/results/2026-10-20-metal-dflash2/README.md).
+
 ### Quality
 
 - **The Q8_0 hyper-connection read is the default on Mac.** It keeps a Q8_0 copy of the hyper-connection matrices instead of BF16. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read.

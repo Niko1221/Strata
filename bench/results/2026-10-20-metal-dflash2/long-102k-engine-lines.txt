@@ -1,0 +1,6 @@
+# strata-iq3_s.log (MTP, build-metal, arena 42, spec 3, min-p 0.7): cold then cached
+strata serve: prompt 101872 tokens = 0 reused + 101872 read in 268751 ms (379.1 tok/s), 600 generated in 12826 ms (46.8 tok/s), drafts accepted 351 of 385, 7 checkpoints
+strata serve: prompt 101895 tokens = 101867 reused + 28 read in 582 ms (48.1 tok/s), 600 generated in 13505 ms (44.4 tok/s), drafts accepted 250 of 305, 8 checkpoints
+# strata-dflash.log (DFlash2 tuned, build-metal-dflash, arena 42, spec 4, min-p 0.75): cold then cached
+strata serve: prompt 101872 tokens = 0 reused + 101872 read in 276919 ms (367.9 tok/s), 600 generated in 11892 ms (50.5 tok/s), drafts accepted 413 of 430, 7 checkpoints
+strata serve: prompt 101895 tokens = 101867 reused + 28 read in 515 ms (54.4 tok/s), 600 generated in 13294 ms (45.1 tok/s), drafts accepted 310 of 381, 8 checkpoints
