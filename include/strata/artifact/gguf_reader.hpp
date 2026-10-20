@@ -230,6 +230,14 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
         elems = 32;
         bytes = 17;
         return true;
+    case 26:   // I32: a qns backbone's input permutation (<name>.qns_perm)
+        elems = 1;
+        bytes = 4;
+        return true;
+    case 27:   // I64: a qns model's per-layer expert index (blk.N.ffn_exps_qns_idx)
+        elems = 1;
+        bytes = 8;
+        return true;
     case 42:
         elems = 64;
         bytes = 18;

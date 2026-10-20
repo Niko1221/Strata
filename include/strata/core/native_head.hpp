@@ -31,10 +31,15 @@ public:
     int device() const { return device_; }
     /// Bytes of one vocabulary row.
     size_t row_bytes() const { return n_out_ > 0 ? (size_t) (bytes_ / (uint64_t) n_out_) : 0; }
+    /// type() == kQnsDenseType (the head as trellis from --qns-dense-gguf): its row scales and T bits per step.
+    const float* qns_scales() const { return qns_scales_; }
+    int qns_bits() const { return qns_bits_; }
 
 private:
     void* weights_ = nullptr;
     void* scratch_ = nullptr;
+    float* qns_scales_ = nullptr;
+    int qns_bits_ = 0;
     uint64_t bytes_ = 0;
     int n_in_ = 0, n_out_ = 0;
     int type_ = -1;

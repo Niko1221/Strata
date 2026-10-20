@@ -1,6 +1,7 @@
 // src/kernels/cpu/expert_layout.cpp - plan v0.3 P6: the per-layer expert table.  See the header.
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/qns.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -438,6 +439,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
         }
         NativeFmt f;
         if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
+        if (gt == kQnsType) f.bytes = blob;   // a qns layer's blobs differ in size: this is the largest
         if (f.bytes != blob) {
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
                   " B but its formats make " + std::to_string(f.bytes);
@@ -480,25 +482,52 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
         L.bytes[(size_t) l] = blob;
         if (blob > L.max_blob) L.max_blob = blob;
     }
+    const bool qns = L.fmt[0].gu_type == kQnsType;   // a qns pack has qns experts in every layer
+    // v6 marks a qns pack (v5 is the Hadamard-folded experts below); strata-qns.patch for 0.1.43 wrote it as v5
+    if (qns != (L.version == 6)) {
+        err = qns ? "native_experts.txt v" + std::to_string(L.version) + " has qns layers, which this engine reads "
+                    "from v6 packs only (a pack written for strata-qns.patch on 0.1.43?): repack with tools/iq_pack.py"
+                  : std::string("native_experts.txt v6 declares a qns pack, but its layers are not qns");
+        return false;
+    }
+    if (qns) {
+        auto read_all = [&](const std::string& name, void* dst, size_t bytes) {
+            std::ifstream f(pack_dir + "/" + name, std::ios::binary);
+            f.read((char*) dst, (std::streamsize) bytes);
+            if (f.gcount() == (std::streamsize) bytes && f.peek() == EOF) return true;
+            err = "a qns pack needs " + name + " of " + std::to_string(bytes) + " bytes (tools/iq_pack.py writes it)";
+            return false;
+        };
+        L.qns_off.resize((size_t) (n_layers * (L.n_expert + 1)));
+        L.qns_rotation.resize(2560 + 25 + 640 + 25);
+        if (!read_all("qns_offsets.bin", L.qns_off.data(), L.qns_off.size() * 8) ||
+            !read_all("qns_rotation.bin", L.qns_rotation.data(), L.qns_rotation.size() * 4))
+            return false;
+    }
     uint64_t at = 0;
     for (int64_t l = 0; l < n_layers; ++l) {
-        if (L.offset[(size_t) l] != at) {
+        if (L.offset[(size_t) l] != at || (L.fmt[(size_t) l].gu_type == kQnsType) != qns ||
+            (qns && L.blob_offset(l, 0) != at)) {
             err = "native_experts.txt: layer " + std::to_string(l) + " is missing or not contiguous";
             return false;
         }
-        at += L.bytes[(size_t) l] * (uint64_t) L.n_expert;
+        at = qns ? L.blob_offset(l, L.n_expert) : at + L.bytes[(size_t) l] * (uint64_t) L.n_expert;
     }
-    L.total = at;
+    L.total = qns ? at + L.max_blob : at;   // qns: slack for a layer-max copy of the last blob
+    if (qns) {
+        const float* r = L.qns_rotation.data();
+        qns::set_rotation(r, r + 2560, r + 2585, r + 3225);
+    }
     // v5: Agention's Hadamard-folded experts (prism.hadamard, hadamard.hpp).  The pack must say which layers are
     // rotated and with what signs; a v5 pack without hadamard.txt (or the reverse) is refused, never run unrotated.
     {
         std::ifstream probe(pack_dir + "/hadamard.txt");
         const bool have = (bool) probe;
-        if (L.version >= 5 && !have) {
+        if (L.version == 5 && !have) {
             err = "native_experts.txt v5 declares Hadamard-folded experts, but " + pack_dir + "/hadamard.txt is missing";
             return false;
         }
-        if (have && L.version < 5) {
+        if (have && L.version != 5) {
             err = pack_dir + "/hadamard.txt exists but native_experts.txt is v" + std::to_string(L.version) +
                   ": the pack is inconsistent (repack with tools/iq_pack.py)";
             return false;

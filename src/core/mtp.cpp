@@ -8,6 +8,9 @@
 #include "strata/core/progress.hpp"
 
 #include "strata/core/native_head.hpp"
+#include "strata/core/weights.hpp"
+#include "strata/kernels/qns_gather.hpp"
+#include "strata/kernels/qns_cuda.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/platform/memory.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -160,6 +163,8 @@ MtpDrafter::~MtpDrafter() {
     if (arena_) cudaFree(arena_);
     if (head_logits_) cudaFree(head_logits_);
     if (owns_draft_head_ && dhead_) { strata::kernels::native_q6_k_unpack(dhead_); cudaFree(dhead_); }
+    if (owns_draft_head_ && dscales_) cudaFree(dscales_);
+    if (qns_act_) cudaFree(qns_act_);
     if (owns_draft_head_ && dvocab_) cudaFree(dvocab_);
     if (ev_chain_) cudaEventDestroy(ev_chain_);
     for (cudaEvent_t e : ev_step_) if (e) cudaEventDestroy(e);
@@ -684,6 +689,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             return false;
         }
         dhead_ = shared->dhead_;
+        dscales_ = shared->dscales_;
         dhead_type_ = shared->dhead_type_;   // the subset's type (the main head's, or Q4_0): -1 failed every --batch-mtp step
         dvocab_ = shared->dvocab_;
         n_dvocab_ = shared->n_dvocab_;
@@ -695,8 +701,11 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         if (read_file(vocab_file(), raw) && raw.size() >= 4 && raw.size() % 4 == 0) {
             n_dvocab_ = (int64_t) (raw.size() / 4);
             const int64_t row_bytes = (int64_t) head->row_bytes();   // a vocabulary row of the native head
+            const bool qns = head->type() == kQnsDenseType;            // trellis rows: whole 32-row groups
+            const int64_t n_rows = qns ? (n_dvocab_ + 31) / 32 * 32 : n_dvocab_;
             if (cudaMalloc((void**) &dvocab_, raw.size()) != cudaSuccess ||
-                cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * row_bytes)) != cudaSuccess) {
+                cudaMalloc((void**) &dhead_, (size_t) (n_rows * row_bytes)) != cudaSuccess ||
+                (qns && cudaMalloc((void**) &dscales_, (size_t) n_rows * sizeof(float)) != cudaSuccess)) {
                 err = "mtp: the draft head does not fit";
                 draft_head_hint(n_dvocab_, row_bytes);
                 return false;
@@ -707,28 +716,40 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             const int head_dev = head->device();
             if (head_dev >= 0 && head_dev != device_) {
                 // the main head is on another card (the drafter on the first stage of a layer split, 0.1.44): the rows are
-                // gathered where the head is and the subset copied over once
+                // gathered where the head is and the subset copied over once (a trellis head: its row scales too)
                 void* tmp = nullptr;
+                float* tsc = nullptr;
                 int32_t* dv = nullptr;
                 bool ok_x = true;
                 {
                     const OnDevice on_head(head_dev);
-                    ok_x = cudaMalloc((void**) &tmp, (size_t) (n_dvocab_ * row_bytes)) == cudaSuccess &&
+                    ok_x = cudaMalloc((void**) &tmp, (size_t) (n_rows * row_bytes)) == cudaSuccess &&
+                           (!qns || cudaMalloc((void**) &tsc, (size_t) n_rows * sizeof(float)) == cudaSuccess) &&
                            cudaMalloc((void**) &dv, raw.size()) == cudaSuccess &&
                            cudaMemcpy(dv, raw.data(), raw.size(), cudaMemcpyHostToDevice) == cudaSuccess;
                     if (ok_x) {
-                        strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dv, n_dvocab_,
-                                                     (uint8_t*) tmp, nullptr);
+                        if (qns)
+                            strata::kernels::qns_gather_rows((const uint32_t*) head->weights(), head->qns_scales(),
+                                                             (int) (row_bytes / 4), dv, (int) n_dvocab_, (int) n_rows,
+                                                             (uint32_t*) tmp, tsc, nullptr);
+                        else
+                            strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dv, n_dvocab_,
+                                                         (uint8_t*) tmp, nullptr);
                         ok_x = cudaDeviceSynchronize() == cudaSuccess;
                     }
                 }
-                ok_x = ok_x && cudaMemcpy(dhead_, tmp, (size_t) (n_dvocab_ * row_bytes), cudaMemcpyDeviceToDevice) == cudaSuccess;
+                ok_x = ok_x && cudaMemcpy(dhead_, tmp, (size_t) (n_rows * row_bytes), cudaMemcpyDeviceToDevice) == cudaSuccess &&
+                       (!qns || cudaMemcpy(dscales_, tsc, (size_t) n_rows * sizeof(float), cudaMemcpyDeviceToDevice) == cudaSuccess);
                 {
                     const OnDevice on_head(head_dev);
                     if (tmp) cudaFree(tmp);
+                    if (tsc) cudaFree(tsc);
                     if (dv) cudaFree(dv);
                 }
                 if (!ok_x) { err = "mtp: the draft head's rows could not be copied from the head's card"; return false; }
+            } else if (qns) {
+                strata::kernels::qns_gather_rows((const uint32_t*) head->weights(), head->qns_scales(), (int) (row_bytes / 4),
+                                                 dvocab_, (int) n_dvocab_, (int) n_rows, (uint32_t*) dhead_, dscales_, nullptr);
             } else {
                 strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
             }
@@ -737,11 +758,17 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
             dhead_type_ = head->type();
+            if (q4_head_ && qns) { err = "mtp: --mtp-q4 head does not apply to a trellis head"; return false; }
             if (q4_head_ && !make_q4_head(err)) return false;
             if (dhead_type_ == 14 && strata::kernels::native_q6_k_packed_enabled())   // STRATA_Q6_PACKED=1
                 strata::kernels::native_q6_k_pack(dhead_, (int) (row_bytes / 210) * 256, (int) n_dvocab_,
                                                   "MTP draft head");
         }
+    }
+    if (head->type() == kQnsDenseType && qns_act_ == nullptr &&
+        cudaMalloc((void**) &qns_act_, (size_t) max_t_ * strata::kernels::qns_dense_act_bytes((int) g_->n_embd)) != cudaSuccess) {
+        err = "mtp: the trellis head's activation does not fit";
+        return false;
     }
     if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;
     return true;
@@ -1190,11 +1217,18 @@ bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
                         sample_ + t * N, dummy_inj_, cs);
         }
         g_mp.stamp(13, cs);
-        native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
-        native_mmvq(sub ? dhead_type_ : head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N,
-                    (int) nv, T, cs);
+        if (head_->type() == kQnsDenseType) {   // the head as trellis (the draft subset regrouped at bind)
+            strata::kernels::qns_dense_quant(sample_, T, (int) N, nullptr, qns_act_, cs);
+            strata::kernels::qns_dense_gemv((const uint32_t*) (sub ? (const void*) dhead_ : head_->weights()),
+                                            sub ? dscales_ : head_->qns_scales(), (int) ((nv + 31) / 32 * 32), (int) N,
+                                            head_->qns_bits(), qns_act_, T, head_logits_, cs);
+        } else {
+            native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
+            native_mmvq(sub ? dhead_type_ : head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N,
+                        (int) nv, T, cs);
+        }
         g_mp.stamp(14, cs);
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft

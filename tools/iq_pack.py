@@ -221,7 +221,7 @@ def tensor_bytes(mm, g, t) -> np.ndarray:
 
 
 def is_expert(name: str) -> bool:
-    return name.startswith("blk.") and name.endswith(("_exps.weight",))
+    return name.startswith("blk.") and name.endswith(("_exps.weight", "_exps_qns", "_exps_qns_idx"))
 
 
 def convert(name: str, type_name: str, raw: np.ndarray, compat_bf16: bool):
@@ -277,7 +277,7 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
     reads them (FORM; converted when stored otherwise, see above), quantized ones served natively from the GGUF."""
     todo, problems = [], []
     for name, (g, t, mm, p) in model.where.items():
-        if is_expert(t.name) or t.name in NOT_IN_PACK:
+        if is_expert(t.name) or t.name in NOT_IN_PACK or t.name.startswith("qns."):   # qns.*: qns_rotation.bin
             continue
         if len(t.shape) > 2:
             print("tensor %s has %d dimensions; the index holds two" % (t.name, len(t.shape)))
@@ -433,6 +433,8 @@ def expert_layout(model: Model, src: pathlib.Path):
     shards do not start their data section at the same byte, so one role's data_start must not be used for
     another's (per-role data_start as in #255, gopinath87607)."""
     T = {n: w[1] for n, w in model.where.items()}
+    if "blk.0.ffn_exps_qns" in T:
+        return qns_layout(model, src)
     exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")]
     if not exps:
         return "the model has no expert tensors (blk.N.ffn_{gate,up,down}_exps.weight)"
@@ -572,6 +574,36 @@ def hadamard_spec(meta: dict, layout, n_embd: int, n_ff: int):
         if r:
             lines.append("layer %d %d %d %d" % (l, r & 1, (r >> 1) & 1, (r >> 2) & 1))
     return "\n".join(lines) + "\n"
+QNS_TYPE = 250   # the engine's kQnsType: Qwen Next S trellis experts, one self-describing blob per expert
+
+
+def qns_layout(model: Model, src: pathlib.Path):
+    """A qns model (Qwen Next S, strata/qns_convert.py): each layer's 512 blobs are one I8 payload (blk.N.ffn_exps_qns)
+    with an I64 [512, 4] index (offset, bytes, T_gu, T_d).  The arena keeps the payloads back to back, so it is
+    compact; native_experts.txt v6 gives each layer its offset, its largest blob (the VRAM slot) and the payload's
+    absolute offset in its shard, and qns_offsets.bin every blob's arena offset (written by main)."""
+    T = {n: w[1] for n, w in model.where.items()}
+    n_layers = 1 + max(int(n.split(".")[1]) for n in T if n.endswith("_exps_qns"))
+    n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])
+    layout, lines, offsets, offset = [], [], [], 0
+    for l in range(n_layers):
+        g, t, mm, p = model.where["blk.%d.ffn_exps_qns" % l]
+        idx = model.bytes("blk.%d.ffn_exps_qns_idx" % l).view(np.int64).reshape(n_expert, 4)
+        assert idx[0, 0] == 0 and (idx[1:, 0] == idx[:-1, 0] + idx[:-1, 1]).all() and idx[-1, 0] + idx[-1, 1] == t.elements
+        blob = int(idx[:, 1].max())
+        offsets.append(np.append(idx[:, 0], t.elements) + offset)
+        layout.append((l, QNS_TYPE, QNS_TYPE, offset, blob, [t]))
+        lines.append("%d %d %d %d %d %d 0 0%s" % (l, QNS_TYPE, QNS_TYPE, offset, blob, g.data_start + t.offset,
+                                                  "" if p == src else " " + p.name))
+        offset += t.elements
+    head = ("# strata native experts v6: layer gu_type d_type offset blob_bytes payload_off 0 0 [shard] (n_expert %d, "
+            "total %d; qns layers: blob_bytes is the layer's largest blob, every blob's offset in qns_offsets.bin; "
+            "absolute offsets in %s, or in the named shard beside it)\n" % (n_expert, offset, src.name))
+    rotation = np.concatenate([model.bytes(n).view(np.float32) for n in
+                               ("qns.rot_signs_2560", "qns.rot_q_2560", "qns.rot_signs_640", "qns.rot_q_640")])
+    layout_files = {"qns_offsets.bin": np.concatenate(offsets).astype(np.int64).tobytes(),
+                    "qns_rotation.bin": rotation.astype(np.float32).tobytes()}
+    return layout, head + "".join(line + "\n" for line in lines), n_expert, offset, layout_files
 
 
 def experts_source(model: Model, text: str, total: int) -> dict:
@@ -622,13 +654,17 @@ def main() -> int:
     if isinstance(got, str):
         print(got)
         return 1
-    layout, text, n_expert, offset = got
+    layout, text, n_expert, offset, *qns_files = got
+    if qns_files and a.experts_bin:
+        print("a qns pack reads its experts from the GGUF payloads; --experts-bin is not supported for it")
+        return 1
     if any(t.type_name == "NVFP4" for *_, ts in layout for t in ts):
         a.experts_bin = True   # the GGUF holds the weights without the scale tails: the engine must read experts.bin
     # ---- prism.hadamard: rotated experts need hadamard.txt beside native_experts.txt, which becomes v5 so an engine
-    # that cannot rotate refuses the pack (instead of running the folded experts on unrotated activations)
+    # that cannot rotate refuses the pack (instead of running the folded experts on unrotated activations).  A qns
+    # pack (v6) has its own rotation in qns_rotation.bin and no per-role tensors to fold.
     t0 = layout[0][5]
-    had = hadamard_spec(g.metadata, layout, int(t0[0].shape[0]), int(t0[2].shape[0]))
+    had = None if qns_files else hadamard_spec(g.metadata, layout, int(t0[0].shape[0]), int(t0[2].shape[0]))
     if isinstance(had, str) and not had.startswith("# strata hadamard"):
         print("prism.hadamard: " + had)
         return 1
@@ -716,6 +752,8 @@ def main() -> int:
         htmp.replace(out / "hadamard.txt")
     else:
         (out / "hadamard.txt").unlink(missing_ok=True)      # a previous Hadamard model's, packed into this folder
+    for name, data in (qns_files[0].items() if qns_files else ()):   # before native_experts.txt, the marker
+        (out / name).write_bytes(data)
     tmp = out / "native_experts.txt.tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as fo:
         fo.write(text)

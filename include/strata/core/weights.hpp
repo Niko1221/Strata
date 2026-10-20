@@ -45,6 +45,10 @@ enum class WeightKind : int {
     F16InF32 = 3,   ///< an f16 value promoted to f32: a real f32->f16 conversion, not a truncation
 };
 
+/// A Qwen Next S backbone matrix served as its trellis (--qns-dense-gguf; not a ggml type id): `native_data` holds the
+/// row tapes as u32 words in 32-row groups, `qns_scales` the row scales (qns_cuda.hpp).
+inline constexpr int kQnsDenseType = 251;
+
 struct WeightRef {
     const void* data = nullptr;   ///< device pointer inside the arena
     uint64_t bytes = 0;
@@ -90,6 +94,11 @@ struct WeightRef {
     const void* native_data = nullptr;
     void* native_q8_1 = nullptr;
     int native_type = -1;
+    /// native_type == kQnsDenseType: the row scales, T bits per step, and for an input whose order differs from the
+    /// checkpoint's columns (GDN out_proj) the gather: checkpoint column c is the engine's input index qns_perm[c].
+    const float* qns_scales = nullptr;
+    const int32_t* qns_perm = nullptr;
+    int qns_bits = 0;
     /// S23 experiment (STRATA_HC_Q8=1): a hyper-connection projection's Q8_0 bytes as the GGUF stores them, owned by
     /// NativeDense, for the verify window's read (every other path keeps the pack's BF16 `data`)
     const void* hc_q8 = nullptr;

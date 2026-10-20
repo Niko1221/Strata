@@ -31,6 +31,10 @@ public:
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
+    /// --qns-dense-gguf: the GGUF that holds Qwen Next S backbone matrices as trellis (<name>.qns_words / .qns_scales /
+    /// .qns_perm); `load` serves each matrix it has from there instead of the model's Q8_0 blocks.  Empty: off.
+    static void set_qns_dense(const std::string& path);
+    static const std::string& qns_dense();
     /// Layer split: the device bytes `load` would allocate for the matrices of layers [lb, le) - the same walk and
     /// filters, each matrix rounded up to the granule cudaMalloc backs it with - reading the GGUF headers and `table`
     /// only, so it allocates nothing and needs no device (#1238).  `table` must hold every tensor the shards carry.
