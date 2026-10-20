@@ -276,19 +276,19 @@ class NoLeakedSampler(unittest.TestCase):
     running (21 after this file), polling NVML and psutil every second, which skewed serve/test_parallel's timings."""
 
     def test_server_close_ends_the_sampler(self):
-        import threading
-        import time
         tok = ByteTokenizer()
-        before = sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)"))
-        httpd = serve(Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE), port=0)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before + 1)
-        httpd.shutdown()
-        httpd.server_close()
-        for _ in range(50):
-            if sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")) == before:
-                break
-            time.sleep(0.1)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before)
+        svc = Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE)
+        httpd = serve(svc, port=0)
+        # A previous server's sampler may finish during this server's startup.
+        # Check the worker we own, rather than a changing process-wide count.
+        sampler = svc.telemetry._thread
+        try:
+            self.assertTrue(sampler.is_alive())
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        sampler.join(timeout=5)
+        self.assertFalse(sampler.is_alive(), "server_close left its telemetry sampler running")
 
 
 # ------------------------------------------------------------------------------------------------ over HTTP
