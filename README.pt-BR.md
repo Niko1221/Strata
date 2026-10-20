@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Busca web no chat do Strata">
   <img src="docs/media/web-search-settings.png" width="360" alt="Configurações de busca web: mecanismos e chaves">
 </p>
-<p align="center"><sub>Esquerda: chat respondido com a linha Sources sob a resposta (mecanismo usado e a consulta realmente pesquisada), ativável pelo globo do compositor.<br>Direita: seção Web search das configurações: liga/desliga, otimização da consulta, escolha de mecanismo, campo de chave, leitura das páginas.</sub></p>
+<p align="center"><sub>Esquerda: chat respondido com a linha Sources sob a resposta (mecanismo usado e a consulta realmente pesquisada), ativável pelo globo do compositor.<br>Direita: seção Web search das configurações: liga/desliga, otimização da consulta, escolha de mecanismo (DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity), campo de chave, leitura das páginas.</sub></p>
 
 
 <h3 align="center">Rode um modelo de ponta no seu próprio PC gamer</h3>

@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Websuche im Strata-Chat">
   <img src="docs/media/web-search-settings.png" width="360" alt="Websuche-Einstellungen mit Engine-Wahl und Keys">
 </p>
-<p align="center"><sub>Links: beantworteter Chat mit Sources-Zeile unter der Antwort (Engine + tatsächlich gesuchte Query), Umschalten per Globe im Composer.<br>Rechts: Settings-Abschnitt Websuche: An/Aus, Query-Optimierung, Engine-Wahl, Key-Feld, Page-Reading.</sub></p>
+<p align="center"><sub>Links: beantworteter Chat mit Sources-Zeile unter der Antwort (Engine + tatsächlich gesuchte Query), Umschalten per Globe im Composer.<br>Rechts: Settings-Abschnitt Websuche: An/Aus, Query-Optimierung, Engine-Wahl (DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity), Key-Feld, Page-Reading.</sub></p>
 
 
 <h3 align="center">Ein Spitzenmodell auf deinem eigenen Gaming-PC</h3>

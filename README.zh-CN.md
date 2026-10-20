@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Strata 聊天中的网页搜索">
   <img src="docs/media/web-search-settings.png" width="360" alt="设置中的网页搜索:引擎与密钥">
 </p>
-<p align="center"><sub>左：内置聊天的回答与回复下方的 Sources 行（所用引擎与实际检索词），可在输入区用地球图标开关。<br>右：设置中的 Web search 区：开关、查询优化、引擎选择、密钥输入、网页读取。</sub></p>
+<p align="center"><sub>左：内置聊天的回答与回复下方的 Sources 行（所用引擎与实际检索词），可在输入区用地球图标开关。<br>右：设置中的 Web search 区：开关、查询优化、引擎选择（DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity）、密钥输入、网页读取。</sub></p>
 
 
 <h3 align="center">在你自己的游戏电脑上运行最先进的模型</h3>

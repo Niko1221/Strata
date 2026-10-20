@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Strata チャット内のウェブ検索">
   <img src="docs/media/web-search-settings.png" width="360" alt="設定のウェブ検索:エンジンとキー">
 </p>
-<p align="center"><sub>左:回答の下の Sources 行(使用エンジンと実際に検索したクエリ)付きのチャット。入力欄(composer)の地球アイコンで切り替え。<br>右:設定の Web search 区:オン/オフ、クエリの最適化、エンジン選択、キー入力、ページ読み取り。</sub></p>
+<p align="center"><sub>左:回答の下の Sources 行(使用エンジンと実際に検索したクエリ)付きのチャット。入力欄(composer)の地球アイコンで切り替え。<br>右:設定の Web search 区:オン/オフ、クエリの最適化、エンジン選択(DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity)、キー入力、ページ読み取り。</sub></p>
 
 
 <h3 align="center">最先端のモデルを、手元のゲーミングPCで動かす</h3>

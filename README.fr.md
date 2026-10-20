@@ -27,7 +27,7 @@
   <img src="docs/media/web-search-chat.png" width="360" alt="Recherche web dans le chat Strata">
   <img src="docs/media/web-search-settings.png" width="360" alt="Réglages de recherche web : moteurs et clés">
 </p>
-<p align="center"><sub>À gauche: chat répondu avec la ligne Sources sous la réponse (moteur utilisé, requête réellement cherchée), activable via le globe du composeur.<br>À droite: section Web search des réglages: activation, optimisation de la requête, choix du moteur, champ de clé, lecture des pages.</sub></p>
+<p align="center"><sub>À gauche: chat répondu avec la ligne Sources sous la réponse (moteur utilisé, requête réellement cherchée), activable via le globe du composeur.<br>À droite: section Web search des réglages: activation, optimisation de la requête, choix du moteur (DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity), champ de clé, lecture des pages.</sub></p>
 
 
 <h3 align="center">Faites tourner un modèle de pointe sur votre propre PC de jeu</h3>
