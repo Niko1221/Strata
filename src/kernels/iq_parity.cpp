@@ -26,7 +26,7 @@
 
 int main(int argc, char** argv) {
     const std::string dir = argc > 1 ? argv[1] : "logs/iq_fixture";
-    const char* names[] = {"IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ1_M", "IQ4_NL", "IQ4_XS", "Q2_0", "Q3_K"};
+    const char* names[] = {"IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ1_M", "IQ4_NL", "IQ4_XS", "Q2_0", "Q3_K", "MXFP4"};
     int failures = 0, missing = 0;
     cudaStream_t s;
     cudaStreamCreate(&s);
@@ -82,15 +82,22 @@ int main(int argc, char** argv) {
         cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
         strata::kernels::quantize_q8_1_rows(dx, MC, cols, xq, s);
         std::vector<float> y((size_t) MC * rows), yn(y.size());
+        // the dense native MMVQ where it has the type; else the routed experts' own kernel (iq_mmvq, Fmt<T>::dot):
+        // MXFP4 exists only as an expert format
+        const auto mmvq = [&](const void* xq_, float* y_, int nc) {
+            if (strata::kernels::native_mmvq_supported(type))
+                strata::kernels::native_mmvq(type, dw, xq_, y_, cols, rows, nc, s);
+            else
+                strata::kernels::iq_mmvq(type, dw, xq_, y_, cols, rows, nc, s);
+        };
         int multi_bad = 0;
         try {
             for (int c = 0; c < MC; ++c)
-                strata::kernels::native_mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36,
-                                             dy + (size_t) c * rows, cols, rows, 1, s);
+                mmvq((const uint8_t*) xq + (size_t) c * cols / 32 * 36, dy + (size_t) c * rows, 1);
             cudaStreamSynchronize(s);
             cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost);
             for (int nc = 2; nc <= MC; ++nc) {
-                strata::kernels::native_mmvq(type, dw, xq, dy, cols, rows, nc, s);
+                mmvq(xq, dy, nc);
                 cudaStreamSynchronize(s);
                 cudaMemcpy(yn.data(), dy, yn.size() * 4, cudaMemcpyDeviceToHost);
                 if (strata::kernels::native_mmvq_multi_exact() &&
