@@ -421,10 +421,17 @@ using Clock = std::chrono::steady_clock;
 // --pipeline-windows: every STRATA_PIPELINE_* test and tuning variable (THETA, FORCE_MISS, SWITCH, LOG, TRACE, DOOM_SKIP,
 // LOOKUP_PON, PRESTAGE, AGREE, SNAP_OVERLAP, SPEC_DEPTH; the new loop's NEWLOOP, THETA3, FORCE_MISS_C, CHECK_STATE) is
 // read only with STRATA_PIPELINE_DEBUG=1; without it the defaults apply.  The slot pool's STRATA_PIPELINE_UNDO_PER_STAGE
-// and STRATA_PIPELINE_SLOTS are read always (they choose a mode, not a test).
+// and STRATA_PIPELINE_SLOTS, and depth 3's STRATA_MTP_CHAIN_MAX and STRATA_MTP_CHAIN_STOP, are read always (they choose
+// a mode or tune it, not a test).
 static const char* pipe_dbg_env(const char* name) {
     static const bool on = [] { const char* v = std::getenv("STRATA_PIPELINE_DEBUG"); return v != nullptr && v[0] != 0 && v[0] != '0'; }();
     return on ? std::getenv(name) : nullptr;
+}
+// STRATA_PIPELINE_POOL_FAIL=init|snap|capture|chain (testing, with STRATA_PIPELINE_DEBUG=1): the slot pool's (or depth
+// 3's chain) allocation or capture at that point behaves as if it failed, so its fallback can be run on purpose
+static bool pipe_pool_fail(const char* what) {
+    static const char* v = pipe_dbg_env("STRATA_PIPELINE_POOL_FAIL");
+    return v != nullptr && std::strcmp(v, what) == 0;
 }
 
 // The resident RAM mode and the adaptive tier.  A swap copies `in` (held in RAM) into the slot of `out` (held only
@@ -5044,7 +5051,22 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --pipeline-windows 3 is 2: it needs 4 slots per stage\n");
             o.pipeline_windows = 2;
         }
+        if (pl_ns > 2 && pl_ns * stages_n == 16)   // one more verifier anywhere would go unregistered, silently
+            std::fprintf(stderr, "strata generate: --pipeline-windows: %d slots on %d stages register all 16 verifiers "
+                                 "the watchdog can release\n", pl_ns, stages_n);
     }
+    // the scheduler's bounds are the engine's (pl_sched.hpp cannot see the kernels' or the drafter's headers)
+    static_assert(strata::pl::kMaxRows == strata::kernels::kVerifyMaxT, "pl::kMaxRows is a window's rows (kVerifyMaxT)");
+    static_assert(strata::pl::kChainMax == strata::core::MtpDrafter::kChainMax, "pl::kChainMax is the drafter's");
+    // depth 3's chain: STRATA_MTP_CHAIN_MAX its outputs at most (7..11, default 11; the step graphs
+    // past 7 are captured only for a pool that can run depth 3, see pl_prepare); STRATA_MTP_CHAIN_STOP=0 queues every
+    // output at its launch instead of only as far as its last new window needs (default 1).  Depth 3 only.
+    const int pl_chain_max_env = [] {
+        const char* v = std::getenv("STRATA_MTP_CHAIN_MAX");
+        const int k = v != nullptr ? std::atoi(v) : strata::core::MtpDrafter::kChainMax;
+        return std::max(strata::kernels::kVerifyMaxT - 1, std::min(strata::core::MtpDrafter::kChainMax, k));
+    }();
+    const bool pl_chain_stop_env = [] { const char* v = std::getenv("STRATA_MTP_CHAIN_STOP"); return v == nullptr || std::atoi(v) != 0; }();
     // ---- layer split across GPUs: each later stage's own copy of the dense weights, its session and (the last) the
     // head, made on its device before the host arena is mapped (as the drafter below, for the same WDDM reason)
     std::vector<std::unique_ptr<GpuStage>> stages;
@@ -5310,7 +5332,9 @@ int main(int argc, char** argv) {
         const char* v = std::getenv("STRATA_SPLIT_OWN_PLACE");
         return v != nullptr && std::string(v) == "reserve";
     }();
-    auto stage_room = [&](int dev, bool later, bool drafter, bool search = false) -> int64_t {
+    // later_front: a later stage that runs front windows (not the last): the slot pool's snapshots past the second
+    // (pl_ns > 2; the first two were never kept out on those stages, and stay so)
+    auto stage_room = [&](int dev, bool later, bool drafter, bool search = false, bool later_front = false) -> int64_t {
         const strata::core::OnDevice on(dev);
         size_t fb = 0, tb = 0;
         if (const cudaError_t e = cudaMemGetInfo(&fb, &tb); e != cudaSuccess)
@@ -5326,6 +5350,7 @@ int main(int argc, char** argv) {
         rin.drafter = drafter;
         rin.pipe_window_mib = kPipeWindowMib;
         rin.pipe_snap_mib = kPipeSnapMib;
+        rin.extra_snap_mib = later && later_front && o.pipeline_windows >= 2 && pl_ns > 2 ? kPipeSnapMib / pl_ns * (pl_ns - 2) : 0;
         return strata::program::stage_reserve::room_bytes((int64_t) fb, rin);
     };
     if (multi_gpu && split_auto) {
@@ -5340,7 +5365,7 @@ int main(int argc, char** argv) {
         std::vector<double> layer_ms((size_t) ns);
         for (int i = 0; i < ns; ++i) {
             const int dev = i == 0 ? 0 : stages[(size_t) i - 1]->dev;
-            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, mtp_first ? i == 0 : i + 1 == ns, true);
+            cap[(size_t) i] = stage_room(i == 0 ? -1 : dev, i > 0, mtp_first ? i == 0 : i + 1 == ns, true, i > 0 && i + 1 < ns);
             int sms = 0, khz = 0;
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
             if (cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, dev) != cudaSuccess || khz <= 0) khz = 1800000;
@@ -7433,7 +7458,7 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         // the drafter and the head are already allocated by now (they load above, before this), so what is left
         // to hold back is the windows - and `free_b` has already lost the drafter.
-        const int64_t room = stage_room(st.dev, true, false);
+        const int64_t room = stage_room(st.dev, true, false, false, stp.get() != stages.back().get());
         const strata::core::OnDevice on(st.dev);
         {
             size_t fb = 0, tb = 0;
@@ -10219,9 +10244,11 @@ int main(int argc, char** argv) {
             if (pl_ns > 2) {
                 const int64_t win_x = kPipeWindowMib / (pl_ns - 1) * (pl_ns - 2);
                 const int64_t snap_x = (int64_t) (pl_ns - 2) * (int64_t) gdn_snapshot_bytes(ss) >> 20;
-                std::fprintf(stderr, "strata serve: --pipeline-windows: %lld MiB of CUDA0 and %lld MiB of every later "
-                                     "stage's card stay kept out of the expert caches for the %d slots it does not hold "
-                                     "(until a restart)\n", (long long) (win_x + snap_x), (long long) win_x, pl_ns - 2);
+                const int64_t snap_l = kPipeSnapMib / pl_ns * (pl_ns - 2);   // stage_room's later_front
+                std::fprintf(stderr, "strata serve: --pipeline-windows: %lld MiB of CUDA0, %lld MiB of every later front "
+                                     "stage's card and %lld MiB of the last stage's stay kept out of the expert caches for "
+                                     "the %d slots it does not hold (until a restart)\n", (long long) (win_x + snap_x),
+                             (long long) (win_x + snap_l), (long long) win_x, pl_ns - 2);
             }
             cudaGetLastError();
             for (auto& vs : g_pl_diag.v)
@@ -10291,6 +10318,8 @@ int main(int argc, char** argv) {
                               std::to_string(st == 0 ? 0 : stages[(size_t) st - 1]->dev) + " (stage " + std::to_string(st + 1) +
                               "): " + err;
                 }
+                if (why.empty() && q + 1 == pl_ns && pipe_pool_fail("init"))   // every slot made, then given back
+                    why = "STRATA_PIPELINE_POOL_FAIL=init (testing)";
                 if (why.empty())
                     for (int st = 0; st + 1 < n_stages; ++st)
                         stage_ver_q(st, q).set_next(&stage_ver_q(st + 1, q), &split_drive_x[q - 2]);
@@ -10464,6 +10493,7 @@ int main(int argc, char** argv) {
                         why = "the GDN snapshot of slot " + std::to_string(q) + " on stage " + std::to_string(st + 1) +
                               " does not fit";
             }
+            if (why.empty() && pipe_pool_fail("snap")) why = "STRATA_PIPELINE_POOL_FAIL=snap (testing)";
             if (!why.empty()) {
                 pl_snaps_drop_x();
                 pl_pool_shrink(why);
@@ -10486,6 +10516,7 @@ int main(int argc, char** argv) {
         // the same by slot (the new loop): every slot's plan sink, [0] and [1] the parities'
         SplitDrive* PSDq[strata::pl::kMaxSlots] = {&split_drive, &split_drive_b, &split_drive_x[0], &split_drive_x[1],
                                                    &split_drive_x[2]};
+        static_assert(std::size(PSDq) == (size_t) strata::pl::kMaxSlots, "a plan sink per slot");
         cudaEvent_t pl_mtp_ev[2] = {nullptr, nullptr};
         bool pl_mtp_live[2] = {false, false};
         bool pl_prepared = false;
@@ -10524,6 +10555,24 @@ int main(int argc, char** argv) {
             }
             if (!mtp.prepare_prefill(e)) return false;
             if (o.pipeline_windows >= 2 && pl_snap_ok && !mtp.prepare_chain(e)) return false;
+            // depth 3 (a pool of 4 slots or more can run it, per request): the chain's step graphs past today's 7
+            // outputs, after today's (prepare_chain captures only what is missing, so today's graphs are the ones above,
+            // unchanged).  One that does not capture leaves the drafter at 7 outputs, said once; depth 3 then runs
+            // today's loop (see pl_go) - the engine goes on.
+            if (o.pipeline_windows >= 2 && pl_snap_ok && pl_ns >= 4 && mtp.chain_max() < pl_chain_max_env) {
+                // STRATA_PIPELINE_POOL_FAIL=chain (testing, STRATA_PIPELINE_DEBUG=1): as if this capture failed
+                static const bool chain_fail = pipe_pool_fail("chain");
+                std::string e2 = chain_fail ? "STRATA_PIPELINE_POOL_FAIL=chain (testing)" : "";
+                mtp.set_chain_max(pl_chain_max_env);
+                if (!chain_fail && !mtp.prepare_chain(e2) && e2.empty()) e2 = "the capture failed";
+                if (!e2.empty()) {
+                    mtp.set_chain_max(0);
+                    cudaGetLastError();
+                    std::fprintf(stderr, "strata serve: --pipeline-windows: the drafter's chain stays at %d outputs (depth 3 "
+                                         "needs %d): %s%s\n", mtp.chain_max(), pl_chain_max_env, e2.c_str(),
+                                 vram_free_note().c_str());
+                }
+            }
             const strata::core::OnDevice on(mtp.device());
             for (cudaEvent_t& ev : pl_mtp_ev)
                 if (ev == nullptr && cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) != cudaSuccess) {
@@ -15059,11 +15108,6 @@ int main(int argc, char** argv) {
                 const char* note = nullptr;
                 strata::pl::Mode m = pl_pw >= 3 ? strata::pl::Mode::B : pl_ups != 0 ? strata::pl::Mode::B0
                                                                                     : strata::pl::Mode::N2;
-                if (m == strata::pl::Mode::B) {
-                    // the new loop is wired at depth 2 here; depth 3 (the third window, the 11-output chain) follows
-                    note = "--pipeline-windows 3: depth 3 is not wired yet; the windows run as B0 (depth 2, per-stage undo)";
-                    m = strata::pl::Mode::B0;
-                }
                 // the slots a mode needs by its depth (depth + 1: B 4, B0 3; N2 today's 2), against the pool the server
                 // holds (a capture that failed may have given it back to two, see pl_prepare)
                 strata::pl::Config pl_need;
@@ -15072,6 +15116,9 @@ int main(int argc, char** argv) {
                 if (mtp_first) {
                     note = "the new pipelined loop does not run with the draft layer on the first stage "
                            "(STRATA_MTP_STAGE0); today's loop";
+                    pl_mode = -1;
+                } else if (m == strata::pl::Mode::B && pl_nf < 2) {   // (a switch file's pw=3 on a two-stage split)
+                    note = "depth 3 needs three or more stages; today's loop";
                     pl_mode = -1;
                 } else if (pl_ns < pl_slots_need) {
                     note = m == strata::pl::Mode::B
@@ -16258,7 +16305,10 @@ int main(int argc, char** argv) {
             // N2 (STRATA_PIPELINE_NEWLOOP=1, testing) runs today's loop operation for operation, so the translation can
             // be checked against it (same events, same speed); B0 (STRATA_PIPELINE_UNDO_PER_STAGE=1) is depth 2 with the
             // slot pool and the per-stage undo: a wrong guess is undone on each front stage as soon as no doomed window
-            // runs there, and the fresh window goes on without waiting for the others.  Every emitted token is still the
+            // runs there, and the fresh window goes on without waiting for the others; B (--pipeline-windows 3) adds a
+            // third window in flight (the one two guesses deep, C, launched from the chain's outputs past B's bonus,
+            // gated at STRATA_PIPELINE_THETA3), the chain forced through both guessed windows (up to 11 outputs, queued
+            // step by step with STRATA_MTP_CHAIN_STOP), and four slots.  Every emitted token is still the
             // serial loop's: only the oldest window runs the last stage and is emitted; a wrong
             // guess is undone per stage (the snapshot of the verified window restored, its commit replayed with the real
             // count); a slot - its verifier on every stage, its hand-offs, plan sink and snapshots - is not reused before
@@ -16287,8 +16337,11 @@ int main(int argc, char** argv) {
                 cfg.theta3 = pl_theta3;
                 cfg.max_context = o.max_context;
                 cfg.chain_out2 = strata::kernels::kVerifyMaxT - 1;
-                cfg.chain_max = strata::core::MtpDrafter::kChainMax;
-                cfg.chain_stop = false;   // depth 3 only
+                // depth 3: the chain forced through two windows in flight, up to 11 outputs (the
+                // step graphs past 7 are captured in pl_prepare when the pool can run B), queued only as far as its
+                // last new window needs (STRATA_MTP_CHAIN_STOP)
+                cfg.chain_max = pl_chain_max_env;
+                cfg.chain_stop = pl_chain_stop_env;
                 cfg.force_miss = pl_force_miss;
                 cfg.force_miss_c = pl_force_miss_c;
                 cfg.prestage = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_PRESTAGE"); return v == nullptr || std::atoi(v) != 0; }();
@@ -16297,9 +16350,13 @@ int main(int argc, char** argv) {
                 cfg.lookup_pon = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_LOOKUP_PON"); return v ? (float) std::atof(v) : 0.75f; }();
                 cfg.spec_depth = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_SPEC_DEPTH"); return v ? std::max(1, std::atoi(v)) : 1 << 20; }();
                 std::string cerr;
-                if (strata::pl::Sched::check(cfg, cerr)) {
+                if (pl_m == strata::pl::Mode::B && mtp.chain_max() < cfg.chain_max) {   // pl_prepare's capture gave up
+                    cerr = "depth 3 needs the drafter's chain of " + std::to_string(cfg.chain_max) + " outputs; " +
+                           std::to_string(mtp.chain_max()) + " are captured";
+                } else if (strata::pl::Sched::check(cfg, cerr)) {
                     pl_go = true;
-                } else {
+                }
+                if (!pl_go) {
                     pl_want = true;
                     static std::set<std::string> said;
                     if (said.insert(cerr).second)
@@ -16711,6 +16768,10 @@ int main(int argc, char** argv) {
                                 std::snprintf(cb, sizeof cb, " [%s] %lld", strata::pl::case_name(c), (long long) st4.case_hits[c]);
                                 cs += cb;
                             }
+                        if (st4.chain_skip > 0) {   // depth 3: chains not launched for want of room for D
+                            std::snprintf(cb, sizeof cb, " [chain skipped, no room for D] %lld", (long long) st4.chain_skip);
+                            cs += cb;
+                        }
                         std::fprintf(stderr, "strata pipeline cases:%s\n", cs.c_str());
                     }
                 }
