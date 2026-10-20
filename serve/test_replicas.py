@@ -27,6 +27,25 @@ class Config(unittest.TestCase):
         self.assertEqual(gpu_groups({"replicas": [{"gpus": [0, 1]}, {"gpus": [2]}]}), [[0, 1], [2]])
         self.assertEqual(gpu_groups({"replicas": [{"gpus": [0, 1]}]}), [])
 
+    def test_automatic_groups_reject_duplicate_cards(self):
+        for cards in ([0, 0], [0, 1, 1, 2], [0, 0, 1, 2], "0,0", "0,1,1,2", "0,00"):
+            with self.subTest(cards=cards):
+                with self.assertRaisesRegex(ReplicaConfigError, "a card is in two replicas"):
+                    gpu_groups({"gpu": cards, "replicas": 2})
+
+    def test_named_groups_still_reject_duplicate_cards(self):
+        for groups in ([[0], [0]], [[0, 1], [1, 2]], [[0, 0], [1, 2]], [[0, 0]]):
+            with self.subTest(groups=groups):
+                with self.assertRaisesRegex(ReplicaConfigError, "a card is in two replicas"):
+                    gpu_groups({"replicas": [{"gpus": g} for g in groups]})
+
+    def test_valid_card_order_and_disabled_replicas_are_unchanged(self):
+        for cards in ([3, 1, 2, 0], "3,1,2,0"):
+            self.assertEqual(gpu_groups({"gpu": cards, "replicas": 2}), [[3, 1], [2, 0]])
+        for count in (None, False, 0, 1):
+            with self.subTest(count=count):
+                self.assertEqual(gpu_groups({"gpu": [0, 0], "replicas": count}), [])
+
     def test_mistakes_are_said(self):
         for cfg in ({"gpu": [0, 1, 2], "replicas": 2}, {"replicas": 2}, {"replicas": "2"},
                     {"replicas": [{"gpus": [0, 1]}, {"gpus": [1, 2]}]}, {"replicas": [{"gpus": []}, {"gpus": [1]}]}):

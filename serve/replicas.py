@@ -56,11 +56,12 @@ def gpu_groups(cfg: dict) -> list[list[int]]:
             raise ReplicaConfigError(f'"replicas": {spec} does not divide the {len(cards)} cards {cards} evenly: name the '
                                      f'groups ("replicas": [{{"gpus": [0, 1]}}, ...]) or change the count')
         n = len(cards) // spec
-        return [cards[i * n:(i + 1) * n] for i in range(spec)]
-    groups = []
-    for e in spec:
-        g = e.get("gpus") if isinstance(e, dict) else e
-        groups.append(_cards(g))
+        groups = [cards[i * n:(i + 1) * n] for i in range(spec)]
+    else:
+        groups = []
+        for e in spec:
+            g = e.get("gpus") if isinstance(e, dict) else e
+            groups.append(_cards(g))
     if any(not g for g in groups):
         raise ReplicaConfigError('every replica needs its cards: {"gpus": [0, 1]}')
     flat = [c for g in groups for c in g]
