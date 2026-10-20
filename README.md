@@ -35,6 +35,17 @@ agents. Your chats and files stay on your PC.
 
 Version 0.2.0-beta · engine 0.1.45.3
 
+## iPhone companion (preview)
+
+The optional [native iPhone app](apps/ios/README.md) follows Strata's colors and lets you open and continue your Mac's
+conversations, including saved history, Thinking, progress, browser/tool activity and approvals. Work stays on the Mac
+or its configured model provider and continues when you close the phone app.
+
+This preview requires the matching [Mac pairing and shared-conversation changes](https://github.com/Niko1221/Strata/pull/3347);
+the current desktop release does not expose its API. Pairing is off until you enable **Pair iPhone** on the Mac.
+Build the client with Xcode and choose your own signing team for device installation. See the
+[scope discussion](https://github.com/Niko1221/Strata/issues/3346) for the proposed upstream integration.
+
 ## What you need
 
 **You need at least 32 GB of RAM and graphics memory (VRAM) together.** On a Mac or a Ryzen AI Max, that is the unified

@@ -2,7 +2,7 @@
 
 This fixture uses the real companion bridge's TLS certificate and pairing authentication with an in-memory synthetic host. It supplies saved history, Thinking, ordered progress, browser action cards, approvals, continuation, and Stop. It never discovers or controls a running Mac app, starts a model, or opens a browser.
 
-Requires macOS, Node.js 22 or later, Xcode, an installed iPhone simulator, and the matching `apps/companion-bridge/bridge.mjs` from the Mac companion changes. From the repository root:
+Requires macOS, Node.js 24.12.0 or later, Xcode, an installed iPhone simulator, and the matching `apps/companion-bridge/bridge.mjs` from the Mac companion changes. From the repository root:
 
 ```sh
 node apps/ios/test-support/shared-conversation-fixture.mjs --test \

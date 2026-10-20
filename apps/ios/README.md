@@ -2,7 +2,11 @@
 
 A native SwiftUI companion for the Strata desktop app. It uses Strata's emerald, white and charcoal palette in light and dark mode. Requires iOS 17 or later.
 
-This app requires the matching Mac iPhone-pairing and shared-conversation support in `apps/companion-bridge` and `apps/host`. Build the Mac companion changes first; the unmodified desktop release does not expose this API. Pairing is opt-in on the Mac.
+This app requires the matching [Mac iPhone-pairing and shared-conversation support](https://github.com/Niko1221/Strata/pull/3347) in `apps/companion-bridge` and `apps/host`. Build the Mac companion changes first; the unmodified desktop release does not expose this API. Pairing is opt-in on the Mac.
+
+<img src="docs/shared-conversation.png" alt="Synthetic iPhone conversation showing Thinking and ordered progress in Strata's dark theme" width="320">
+
+The preview uses synthetic test data from the included UI fixture.
 
 ## Connect
 
