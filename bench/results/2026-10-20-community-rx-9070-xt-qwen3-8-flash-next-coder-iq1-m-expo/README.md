@@ -2,7 +2,7 @@
 
 Measured on 2026-10-20 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Speed only: no correctness check was run.
 
-The configuration this PC now runs: the same PC, engine, model and settings as [the first run](../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m/README.md), with two changes: AMD EXPO on (RAM 4800 -> 5600 MT/s), and `STRATA_PREFILL_HOST_PLAN=0` in the config's `env`, because on this PC the host-aware prompt plan made 16K-32K prompts slower whenever it engaged (#3518). With it off the engine keeps setup's 6144-token prompt chunk and 96-slot ring, so this run's prompt path is the same as the first run's (which also kept 6144/96). It is the reference for the first run, together with [the second run](../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-2/README.md).
+The configuration this PC now runs: the same PC, engine, model and settings as [the first run](../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m/README.md), with two changes: AMD EXPO on (RAM 4800 -> 5600 MT/s), and `STRATA_PREFILL_HOST_PLAN=0` in the config's `env`, because on this PC the host-aware prompt plan made 16K-32K prompts slower whenever it engaged (#3518). With it off the engine keeps setup's 6144-token prompt chunk and 96-slot ring, so this run's prompt path is the same as the first run's (which also kept 6144/96). It is the "after" reference for the first run.
 
 ## Hardware and software
 
@@ -18,7 +18,7 @@ The configuration this PC now runs: the same PC, engine, model and settings as [
 - Model and quantization: qwen3.8-flash-next-coder-iq1_m (ISTA-DASLab's Coder, IQ1_M)
 - Context: 65536 tokens; parallel slots: 1; KV int8
 - Low-RAM mode: on (`--resident-experts`). This start kept 16.45 GiB of experts in RAM and 3,081 in the GPU cache (first run: 10.86 GiB and 2,934)
-- **Experimental speed projection: ON**, as in the other runs
+- **Experimental speed projection: ON**, as in the first run
 - Settings: the install's own configuration plus `STRATA_PREFILL_HOST_PLAN=0` (hip backend); thinking off for the suite; temperature 0
 
 ```text
