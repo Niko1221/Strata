@@ -1,0 +1,52 @@
+{
+  "parent": "c7bebe215a6feb754e08dfbc02a3ac12d38fa55f",
+  "date": "2026-10-20",
+  "hardware": "RTX 4070 Ti SUPER 16 GiB; Ryzen 9 5900X; 125.7 GiB RAM",
+  "platform": "Linux-6.12.113+deb13-amd64-x86_64-with-glibc2.41",
+  "toolchain": "CUDA 13.4, SM89, GCC 14.2, driver 610.57.04",
+  "executables": {
+    "before": "385e0436fdeffdf4ea3229ffa35b50bd3ce7dd4be1e4466e7e9b8fc3979296f0",
+    "after": "7f32d909e27d8398c6e59cd794dba3de67a68472e26da2fb709e00b8cb220131",
+    "extension_off_unchanged": "7d39b9f2553617ab94f20bf7fbf6a273403f2016bd7ecdb54ec7f9d78dee533c"
+  },
+  "sources": {
+    "src/kernels/cuda/dflash2.cu": "f7d4a66426512778972c6a0b3815bbad358c2f52b948d77f3278a420256d6a5d",
+    "src/kernels/dflash2_parity.cpp": "dc4b20613de6dd1d4486cb20a815de4959a1b04350474357ec16347f7115ae6c"
+  },
+  "q4_0_gguf_sha256": "f8ca73fc3749a061af19eec1c7d798c60e61f49d079df6671b9034866a6fd3d5",
+  "commands": [
+    "cmake --build build-dflash2 --target strata dflash2_parity -j 4",
+    "python3 ../Strata-data/dflash2-draft-profile/profile.py",
+    "python3 ../Strata-data/dflash2-draft-profile/compare.py before",
+    "python3 ../Strata-data/dflash2-draft-profile/compare.py after",
+    "python3 ../Strata-data/dflash2-draft-profile/compare.py mtp",
+    "python3 ../Strata-data/dflash2-draft-profile/profile.py after",
+    "STRATA_DRAFT_RESULTS=<output> bash bench/results/2026-10-20-dflash2-attention/microbench.sh",
+    "ctest --test-dir build-dflash2 -R dflash2_parity\\|dflash_policy\\|dflash_load --output-on-failure",
+    "cmake --build build --target strata dflash_policy_test dflash_load_test -j 4",
+    "ctest --test-dir build -R dflash_policy\\|dflash_load --output-on-failure",
+    ".venv/bin/python -m unittest serve.test_lifeline.Lifeline.test_the_portable_watcher_ends_the_child_when_the_server_is_killed -v"
+  ],
+  "passed": [
+    "three CUDA ON CTests",
+    "two CUDA OFF CTests",
+    "all three microbenchmark binary dump comparisons",
+    "all 192 fixture IDs equal across all full-model arms and target-only controls",
+    "isolated parent-CI watcher case locally"
+  ],
+  "failed": [
+    "initial python launcher unavailable (exit 127), no engine started; corrected to python3",
+    "parent CI runtime suite: portable watcher child-lifetime assertion, 1 failure / 882 tests, 14 skipped; isolated local rerun passes"
+  ],
+  "not_run": [
+    "HIP",
+    "SYCL",
+    "Metal",
+    "Windows",
+    "multi GPU",
+    "concurrency",
+    "other quantizations",
+    "context length sweep"
+  ],
+  "helper_notes": "Repository helpers are formatting-equivalent with optional output-directory override added; first profile uses before labels for the originally unlabelled output. Absolute checkout prefixes in copied evidence are sanitized to <repo>. Initial std=c++17 exploratory microbench is retained separately; final three trials use std=c++20."
+}

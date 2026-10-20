@@ -1,0 +1,6 @@
+[1/4] Building CUDA object CMakeFiles/strata_kernels.dir/src/kernels/cuda/dflash2.cu.o
+[2/4] Linking CXX static library libstrata_kernels.a
+[3/4] Linking CXX executable dflash2_parity
+[4/4] Linking CXX executable strata
+[1/2] Building CXX object CMakeFiles/dflash2_parity.dir/src/kernels/dflash2_parity.cpp.o
+[2/2] Linking CXX executable dflash2_parity

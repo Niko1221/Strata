@@ -261,6 +261,8 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
     const int first = window ? max(0, end - rows - window + 1) : 0;
     const int begin = first + ch * 64;
     __shared__ float scores[64];
+    __shared__ float probabilities[64];
+    __shared__ size_t poolrows[64];
     for (int c = warp; c < 64; c += 4) {
         const int cell = begin + c;
         float dot = 0;
@@ -276,12 +278,20 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
     __syncthreads();
     float m = -INFINITY;
     for (int c = 0; c < 64; ++c) m = fmaxf(m, scores[c]);
+    // Every value lane consumes the same softmax weights and paged addresses.
+    // Stage them once per cell, instead of repeating expf and page division
+    // in all 128 lanes. Keep the original ordered sums and masked-cell skip.
+    if (t < 64 && scores[t] != -INFINITY) {
+        probabilities[t] = expf(scores[t] - m);
+        const int cell = begin + t;
+        poolrows[t] = ((size_t)table[cell / page_size] * kv_heads + head / (heads / kv_heads)) * page_size + cell % page_size;
+    }
+    __syncthreads();
     float sum = 0, acc = 0;
     for (int c = 0; c < 64; ++c) {
         if (scores[c] == -INFINITY) continue;
-        const float p = expf(scores[c] - m);
-        const int cell = begin + c;
-        const size_t poolrow = ((size_t)table[cell / page_size] * kv_heads + head / (heads / kv_heads)) * page_size + cell % page_size;
+        const float p = probabilities[c];
+        const size_t poolrow = poolrows[c];
         sum += p;
         acc += p * __half2float(__ushort_as_half(v[poolrow * 128 + t]));
     }

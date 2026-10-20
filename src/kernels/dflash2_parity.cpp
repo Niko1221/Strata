@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <numeric>
 #include <stdexcept>
 #include <vector>
@@ -176,8 +177,10 @@ void target_features_and_attention() {
             if(bits[i] != ((u+0x7fff+((u>>16)&1))>>16)) throw std::runtime_error("HC BF16 mean differs");
         }
     }
-    const int hd=128, heads=4, kv=2, page=64;
-    for (int rows : {2,8}) for (int end : {9,73,2053}) for (int window : {0,2048}) {
+    const int hd=128, page=64;
+    for (int heads : {4,32}) for (int rows : {2,4,8})
+    for (int end : {9,73,2053}) for (int window : {0,2048}) {
+        const int kv = heads == 32 ? 8 : 2;
         const int pages=(end+page-1)/page;
         std::vector<int32_t> table(pages), steps(rows*4);
         for(int p=0;p<pages;++p)table[p]=pages-1-p; // nonidentity page table
@@ -218,6 +221,69 @@ void target_features_and_attention() {
                 near(got[(r*heads+h)*hd+d],acc/sum);
             }
         }
+    }
+}
+
+// Real drafter geometry, including a full local window. The output fingerprint
+// and optional binary dump let before/after binaries compare their outputs,
+// alongside the FP64 reference checks above. Timing uses graph replay.
+void attention_benchmark(const char* bits_path) {
+    using namespace strata::kernels;
+    std::ofstream bits;
+    if (bits_path) {
+        bits.open(bits_path, std::ios::binary | std::ios::trunc);
+        if (!bits) throw std::runtime_error("cannot open attention output dump");
+    }
+    for (int rows : {2, 4, 8}) for (int end : {32, 2053}) {
+        const int heads = 32, kv = 8, page = 64, hd = 128;
+        const int pages = (end + page - 1) / page;
+        const int active = std::min(end, 2048 + rows);
+        std::vector<int32_t> table(pages), steps(rows * 4);
+        for (int p = 0; p < pages; ++p) table[p] = pages - 1 - p;
+        for (int r = 0; r < rows; ++r) steps[r * 4 + 1] = end;
+        std::vector<uint16_t> k(pages * page * kv * hd), v(k.size());
+        std::vector<float> q(rows * heads * hd);
+        for (size_t i = 0; i < k.size(); ++i) {
+            k[i] = __half_as_ushort(__float2half(((int)(i % 43) - 21) * 0.015f));
+            v[i] = __half_as_ushort(__float2half(((int)(i % 37) - 18) * 0.03f));
+        }
+        for (size_t i = 0; i < q.size(); ++i) q[i] = ((int)(i % 29) - 14) * 0.02f;
+        Device<float> dq(q), out(q.size()), scratch(rows * heads * ((active + 63) / 64) * 130);
+        Device<uint16_t> dk(k), dv(v);
+        Device<int32_t> dt(table), ds(steps);
+        cudaStream_t stream;
+        checked(cudaStreamCreate(&stream));
+        cudaGraph_t graph;
+        cudaGraphExec_t exec;
+        checked(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+        dflash2_attention(dq.p, dk.p, dv.p, dt.p, ds.p, out.p, scratch.p,
+                          rows, heads, kv, page, active, 2048, stream);
+        checked(cudaStreamEndCapture(stream, &graph));
+        checked(cudaGraphInstantiate(&exec, graph, 0));
+        for (int i = 0; i < 20; ++i) checked(cudaGraphLaunch(exec, stream));
+        cudaEvent_t a, b;
+        checked(cudaEventCreate(&a)); checked(cudaEventCreate(&b));
+        checked(cudaEventRecord(a, stream));
+        for (int i = 0; i < 200; ++i) checked(cudaGraphLaunch(exec, stream));
+        checked(cudaEventRecord(b, stream)); checked(cudaEventSynchronize(b));
+        float ms;
+        checked(cudaEventElapsedTime(&ms, a, b));
+        const auto got = out.read(q.size());
+        if (bits_path) {
+            bits.write(reinterpret_cast<const char*>(got.data()), got.size() * sizeof(float));
+            if (!bits) throw std::runtime_error("cannot write attention output dump");
+        }
+        uint64_t fingerprint = 14695981039346656037ull;
+        for (float value : got) {
+            uint32_t bits;
+            std::memcpy(&bits, &value, sizeof bits);
+            fingerprint = (fingerprint ^ bits) * 1099511628211ull;
+        }
+        std::printf("attention rows=%d heads=32 end=%d: %.6f ms/pass bits=%016llx\n",
+                    rows, end, ms / 200, (unsigned long long)fingerprint);
+        checked(cudaEventDestroy(a)); checked(cudaEventDestroy(b));
+        checked(cudaGraphExecDestroy(exec)); checked(cudaGraphDestroy(graph));
+        checked(cudaStreamDestroy(stream));
     }
 }
 
@@ -330,7 +396,7 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
-    try { invalid_model_values(); convolve(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); checked(cudaDeviceSynchronize()); }
+    try { invalid_model_values(); convolve(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
     return 0;

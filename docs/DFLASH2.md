@@ -138,3 +138,10 @@ checks the probability gate separately. On RTX 4070 Ti SUPER, Q4_0 with block 3
 improved from 42.57 to 48.29 decode tok/s at floor 0.5 on the 2425-token fixture;
 same-day MTP reached 51.57 tok/s. The target checked fewer rejected proposals.
 Both fixtures' output IDs match target-only controls at the same expert placement.
+
+The [attention follow-up](../bench/results/2026-10-20-dflash2-attention/README.md)
+removes repeated softmax and page-address calculations in DFlash2's CUDA attention.
+On the same card and long fixture, drafting fell from 4.18 to 3.19 ms/window
+and decode rose from 48.45 to 49.39 tok/s, with identical output tokens. Fresh
+MTP reached 51.24 tok/s; it remains faster on this long fixture. Both DFlash2
+arms used the same 3274 expert slots, selected automatically from available VRAM.
