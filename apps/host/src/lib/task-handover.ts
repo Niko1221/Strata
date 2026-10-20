@@ -1,5 +1,8 @@
 import { tr, localeTag } from './i18n';
 import type { Task } from './tasks';
+import type { Session } from './types';
+import { loopEndNote } from './loop';
+import { sessionTitle } from './session-title';
 
 /**
  * "Continue in a new chat" on a task: the first message of the new chat. It carries what the task found, what it did and the files it made, in the
@@ -39,6 +42,29 @@ export function taskHandoverMessage(task: Task): string {
   }
   const files = (task.files ?? []).filter(f => f && typeof f.path === 'string' && f.path);
   if (files.length) parts.push(`**${tr('Files')}**\n\n${files.map(f => `- ${f.path}`).join('\n')}`);
+  parts.push(tr('Please help me take it from here.'));
+  return parts.join('\n\n');
+}
+
+export const chatHandoverTitle = (session: Pick<Session, 'title' | 'messages' | 'defaultTitle'>) => tr('Continuing from the chat “{0}”', [sessionTitle(session)]);
+
+/**
+ * "Continue in a new chat" on a chat or a loop that went wrong (the board): what was asked last, what went wrong or what the last answer
+ * was, and, for a loop, how it ended, so the new chat can take it from there.
+ */
+export function chatHandoverMessage(session: Session): string {
+  const real = session.messages.filter(m => !m.local);
+  const answer = [...real].reverse().find(m => m.role === 'assistant');
+  const asked = [...real].reverse().find(m => m.role === 'user');
+  const parts = [`**${chatHandoverTitle(session)}**`];
+  const loop = session.loop;
+  if (loop) {
+    const ended = loop.endedWhy && loop.endedWhy !== 'stopped' && loop.endedWhy !== 'closed' ? `\n\n${loopEndNote(loop.endedWhy, loop.answers)}` : '';
+    parts.push(`**${tr('The loop')}**\n\n${loop.prompt}${ended}`);
+  } else if (asked?.content) parts.push(`**${tr('What I asked')}**\n\n${asked.content.trim().slice(0, 1500)}`);
+  if (answer?.error) parts.push(`**${tr('What went wrong')}**\n\n${String(answer.error).trim()}`);
+  const said = (answer?.content ?? '').trim() || (loop?.lastText ?? '');
+  if (said) parts.push(`**${tr('The last answer')}**\n\n${said.slice(0, 2000)}`);
   parts.push(tr('Please help me take it from here.'));
   return parts.join('\n\n');
 }

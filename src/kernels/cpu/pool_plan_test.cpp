@@ -100,6 +100,29 @@ int main() {
         expect(cpu::plan_pool_workers(h3).workers == 15, "8P+8E: not more E-cores than P-cores, every core but the host's");
     }
 
+    // #3262: Core Ultra 7 255H (6P + 8E + 2 LP-E, no SMT).  The LP-E cores (CPUs 14-15) are in cpu_lowpower/cpus, in
+    // neither the core nor the atom list; they are efficiency cores.
+    {
+        const std::vector<int> core = {0, 1, 2, 3, 4, 5}, atom = {6, 7, 8, 9, 10, 11, 12, 13}, lp = {14, 15};
+        int e = 0, p = 0;
+        for (int c = 0; c < 16; ++c) {
+            const long cap = c < 6 ? 1024 : c < 14 ? 774 : 312;
+            (cpu::hybrid_cpu_is_efficiency(c, cap, 1024, true, core, atom, lp) ? e : p)++;
+        }
+        expect(p == 6 && e == 10, "255H: 6 P-cores, 8 E + 2 LP-E counted as efficiency cores");
+        expect(cpu::hybrid_cpu_is_efficiency(14, 312, 1024, true, core, atom, lp), "LP-E core 14 is an E-core");
+        expect(!cpu::hybrid_cpu_is_efficiency(5, 1024, 1024, true, core, atom, lp), "P-core 5 stays a P-core");
+        // a CPU in the lists of no kind falls back to its capacity (312 < 90% of 1024: an E-core)
+        expect(cpu::hybrid_cpu_is_efficiency(14, 312, 1024, true, core, atom, {}), "LP-E core with no third list: capacity says E");
+        // a CPU in no list with a favoured-P capacity is a P-core
+        expect(!cpu::hybrid_cpu_is_efficiency(20, 1012, 1024, true, core, atom, lp), "unlisted CPU, capacity 1012/1024: P");
+        // the plan with the right counts: 6P + 10E -> 5 + 5 workers, not the 15 of "every core but the host's"
+        auto h = cpu_of(16, {16});
+        h.p_cores = 6;
+        h.e_cores = 10;
+        expect(cpu::plan_pool_workers(h).workers == 10, "255H -> 10 workers (the measured 9-13 are flat; 15 is -35%)");
+    }
+
     // a container quota
     const auto q = cpu_of(128, {64}, 4.0);
     line("64c, container quota 4 CPUs", q);

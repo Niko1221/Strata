@@ -406,7 +406,30 @@ export interface SessionAgent {
 
 export type ChatMode = 'auto' | 'manual' | 'accept-edits' | 'plan' | 'bypass';
 
+/**
+ * What the board needs to know about a /loop after the window closes: loops live in memory, so the chat keeps a small record of the
+ * last one (running, or how it ended). A record that says `running` with no loop behind it is a loop the window closed on.
+ */
+export interface LoopRecord {
+  prompt: string;
+  everyMs: number;
+  startedAt: number;
+  state: 'running' | 'ended';
+  answers: number;
+  maxRuns?: number;
+  /** When the next answer is due (ms), while running. */
+  nextAt?: number;
+  endedAt?: number;
+  /** count, said-done, time, failures, cap; `stopped` when the person typed /loop stop; `closed` when the window closed on it. */
+  endedWhy?: 'count' | 'said-done' | 'time' | 'failures' | 'cap' | 'stopped' | 'closed';
+  /** The last answer's first words, for the card. */
+  lastText?: string;
+}
+
 export interface Session {
+  /** The person dismissed this chat's (or its loop's) card on the board at this time. A later problem brings it back. */
+  ackedAt?: string;
+  loop?: LoopRecord;
   timeSkips?: import('./time-skip').TimeSkipRun[];
   showcase?: boolean;
   agents?: SessionAgent[];

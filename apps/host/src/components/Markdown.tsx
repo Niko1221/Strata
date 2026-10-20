@@ -3,7 +3,9 @@ import { tr } from '../lib/i18n';
 import { Fragment, type ReactNode } from 'react';
 import { Btn, IconBtn } from './ui';
 import { SyntaxCode } from './SyntaxCode';
-function inline(text: string, onOpenLink?: (url: string) => void): ReactNode {
+import { MathView } from './MathView';
+import { displayBlock, hasMath, splitMath } from '../lib/math';
+function inlineMarks(text: string, onOpenLink?: (url: string) => void): ReactNode {
     return text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^\s)]+\))/g).map((part, i) => {
         if (part.startsWith('`') && part.endsWith('`'))
             return <code key={i} className="md-code">{part.slice(1, -1)}</code>;
@@ -18,6 +20,18 @@ function inline(text: string, onOpenLink?: (url: string) => void): ReactNode {
                 onOpenLink(link[2]);
             } }}>{link[1]}</a>;
         return <Fragment key={i}>{part}</Fragment>;
+    });
+}
+/** Text with its inline marks and, outside code spans, its math (#3268). Math is cut out first: a * or _ inside a formula is not emphasis. */
+function inline(text: string, onOpenLink?: (url: string) => void): ReactNode {
+    if (!hasMath(text))
+        return inlineMarks(text, onOpenLink);
+    return text.split(/(`[^`]+`)/g).map((chunk, c) => {
+        if (chunk.length > 1 && chunk.startsWith('`') && chunk.endsWith('`'))
+            return <Fragment key={c}>{inlineMarks(chunk, onOpenLink)}</Fragment>;
+        return <Fragment key={c}>{splitMath(chunk).map((part, p) => part.kind === 'math'
+            ? <MathView key={p} tex={part.tex} display={part.display}/>
+            : <Fragment key={p}>{inlineMarks(part.text, onOpenLink)}</Fragment>)}</Fragment>;
     });
 }
 export function Markdown({ text, onOpenLink, onPreviewHtml }: {
@@ -41,6 +55,12 @@ export function Markdown({ text, onOpenLink, onPreviewHtml }: {
                 body.push(lines[i++]);
             i++;
             nodes.push(<div className="st-code" key={key}><div className="st-code__head"><span>{language || tr('code')}</span>{tr(/^html$/i.test(language) && onPreviewHtml ? <Btn size="sm" onClick={() => onPreviewHtml(body.join('\n'))}>{tr("Open preview")}</Btn> : null)}<IconBtn name="copy" title={tr("Copy code")} onClick={() => void navigator.clipboard.writeText(body.join('\n'))}/></div><SyntaxCode text={body.join('\n')} language={language}/></div>);
+            continue;
+        }
+        const block = displayBlock(lines, i);
+        if (block) {
+            nodes.push(<div className="md-math-block" key={i}><MathView tex={block.tex.trim()} display/></div>);
+            i += block.used;
             continue;
         }
         const heading = line.match(/^(#{1,6})\s+(.+)$/);

@@ -5,13 +5,13 @@
 #
 # Build it with docker/build.sh (it assembles the build context: the Terminal sources and the package folder):
 #
-#     docker/build.sh --flavor cuda --engine /path/to/0.2.0-linux-x86_64-cuda-cuda13 --tag strata:0.2.0-cuda13
+#     docker/build.sh --flavor cuda --engine /path/to/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.1-cuda13
 #
 # Plain `docker build` also works when the context folder has this layout (build.sh makes it):
 #     terminal-src/   the files package_terminal.py needs (packaging/, strata_cli/, strata_control/, serve/, tools/, data/, ...)
 #     engine/         one folder per engine package, exactly as `package_engine.py` wrote it (engine-component.json inside)
 #     docker/         entrypoint.sh, strata-wrapper.sh, healthcheck.sh
-#   docker build --build-arg FLAVOR=cuda -t strata:0.2.0-cuda13 -f Dockerfile <context>
+#   docker build --build-arg FLAVOR=cuda -t strata:0.2.1-cuda13 -f Dockerfile <context>
 #
 # FLAVOR picks the small set of system libraries the runtime image adds and its base:
 #   cuda  NVIDIA: the engine package carries cudart/cublas; the driver's libcuda comes from nvidia-container-toolkit
@@ -111,6 +111,9 @@ VOLUME ["/data"]
 EXPOSE 8080
 
 LABEL org.opencontainers.image.title="Strata" \
+      org.opencontainers.image.source="https://github.com/Niko1221/Strata" \
+      org.opencontainers.image.url="https://github.com/Niko1221/Strata" \
+      org.opencontainers.image.documentation="https://github.com/Niko1221/Strata/blob/main/docs/DOCKER.md" \
       org.opencontainers.image.description="Strata local LLM server (Terminal + engine package), flavor ${FLAVOR}" \
       org.opencontainers.image.version="${STRATA_VERSION}" \
       org.opencontainers.image.licenses="see LICENSE" \

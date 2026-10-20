@@ -16,7 +16,7 @@ A backend name alone is not a target. Each row is an OS x CPU ABI x backend tupl
 
 | Target tuple | App artifact | Engine package | Status |
 | --- | --- | --- | --- |
-| `macos-arm64-metal` | `.app` + `.dmg` (Tauri) | Metal `strata`, bundled | **built.** The app's self-test passed from inside the mounted DMG and the engine's 17 kernel-parity suites pass on an Apple M4 GPU. A large model does not fit the 16 GiB test Mac. No picture reader on Mac yet. Signing and notarising: `packaging/mac/sign-and-notarize.sh` (see [mac/README.md](mac/README.md)); it has been run with stand-ins for Apple's service, not yet against the real one. |
+| `macos-arm64-metal` | `.app` + `.dmg` (Tauri) | Metal `strata`, bundled | **built.** The app's self-test passed from inside the mounted DMG and the engine's 17 kernel-parity suites pass on an Apple M4 GPU. A large model does not fit the 16 GiB test Mac. Carries `strata-vision` (Metal), built by `packaging/build_vision_mac.sh`. Signing and notarising: `packaging/mac/sign-and-notarize.sh` (see [mac/README.md](mac/README.md)); it has been run with stand-ins for Apple's service, not yet against the real one. |
 | Terminal `darwin-arm64` | self-contained `.tar.gz` | any | **built and verified.** Runs from a moved directory in a clean environment with no usable system Python. |
 | `windows-x86_64-cuda` | NSIS `.exe` (Tauri) | `cuda13` and `cuda12` packages | **built and tested** on a Windows PC with an NVIDIA card: silent install with a PATH of System32 only, a real model, an agent chat. |
 | `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | **built; never run on a real AMD card.** |

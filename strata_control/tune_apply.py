@@ -41,6 +41,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from strata_control import user_args
+
 SCHEMA_VERSION = 1
 
 
@@ -152,6 +154,14 @@ def apply_args_to_config(config: dict[str, Any], argv: Sequence[str]) -> dict[st
     for flag in sorted(wanted):
         stripped.extend(wanted[flag])
     candidate["args"] = stripped
+    # The person's own options (user_args, strata_control/user_args.py) are kept, except the flags this recommendation sets: a tuning
+    # the person asks for is their newer choice.  The hand edits so far are recorded first, so writing "args" here loses none.
+    if candidate.get(user_args.WRITTEN_KEY) is not None or candidate.get(user_args.USER_KEY):
+        mine = user_args.capture(config)
+        mine = user_args.flat([g for g in user_args.groups(mine) if user_args.flag_of(g) not in wanted])
+        user_args.stamp(candidate, mine)
+        if user_args.WRITTEN_KEY not in config:
+            candidate.pop(user_args.WRITTEN_KEY, None)
     return candidate
 
 

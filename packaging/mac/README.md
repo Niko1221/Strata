@@ -50,13 +50,13 @@ updater key** here: that key never goes near the Mac, and the Mac needs no node.
 ## What it does
 
 1. Copies the `.app` out of the dmg into a temporary folder (the original is never changed).
-2. Signs every Mach-O inside it, deepest first (node, python, every `.dylib`, `.so` and `.node`, the engine, `rg`, `spawn-helper`,
+2. Signs every Mach-O inside it, deepest first (node, python, every `.dylib`, `.so` and `.node`, the engine and its picture reader `strata-vision`, `rg`, `spawn-helper`,
    the app's own program): hardened runtime and a secure timestamp. Then signs the `.app`.
 3. Rewrites `engine-component.json` for the engine it just signed. Control checks every engine file against the SHA-256 in that file, and
    signing changes the engine binary, so without this step the signed app would refuse its own engine.
 4. `codesign --verify --deep --strict`, `spctl -a -vvv`.
 5. Runs the signed copy before Apple sees it: the app's own `--self-test` (private node, host, UI, Control), every native addon loaded in
-   the signed node, the bundled python (numpy, PIL, ctypes callbacks), the engine's `--version` (no model is loaded), and Control's own
+   the signed node, the bundled python (numpy, PIL, ctypes callbacks), the engine's and the picture reader's `--version` (no model is loaded), and Control's own
    check of the engine manifest. A signing mistake shows up here, not on a tester's Mac.
 6. Notarises the `.app`, staples it, rebuilds the dmg (the app, an Applications link, the volume icon, as in
    `apps/desktop/scripts/make-dmg.sh`), signs the dmg, notarises and staples it, then `spctl -a -t open --context context:primary-signature -vv`.

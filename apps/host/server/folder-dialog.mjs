@@ -56,6 +56,7 @@ export function watchedWindowsDialog(shell, args, { readyMs = 30_000, openMs = 2
   return new Promise((resolve, reject) => {
     const child = spawnProcess(shell, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     let stdout = '', ready = false, settled = false;
+    child.stdout?.setEncoding?.('utf8');                 // a multi-byte letter of a Cyrillic folder must not be cut between two chunks
     const end = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); try { child.kill(); } catch { /* gone */ } fn(value); };
     const timer = setTimeout(() => end(resolve, ready ? { stdout: '' } : { noDialog: true }), readyMs);
     const later = () => { clearTimeout(timer); ready = true; setTimeout(() => end(resolve, { stdout: '' }), openMs).unref?.(); };

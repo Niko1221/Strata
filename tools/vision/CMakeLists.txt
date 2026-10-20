@@ -3,6 +3,7 @@
 #
 #   cmake -S tools/vision -B build-vision -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR=third_party/llama.cpp
 #         [-DSTRATA_VISION_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native] [-DSTRATA_PORTABLE=OFF]
+#         [-DSTRATA_VISION_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx (oneAPI sourced; Linux)]
 #         [-DSTRATA_VISION_HIP=ON -DSTRATA_VISION_HIP_ARCHS="gfx1200;gfx1201" + the HIP compiler the engine build uses]
 #   cmake --build build-vision --target strata-vision
 #
@@ -16,13 +17,18 @@ project(strata_vision C CXX)
 set(LLAMA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/llama.cpp" CACHE PATH "llama.cpp checkout")
 option(STRATA_VISION_CUDA "run the vision encoder on the GPU (builds ggml-cuda)" OFF)
 option(STRATA_VISION_HIP "run the vision encoder on an AMD GPU (builds ggml-hip); the program is named strata-vision-hip" OFF)
+option(STRATA_VISION_SYCL "run the vision encoder on an Intel GPU (builds ggml-sycl, needs the oneAPI icx/icpx compilers); the program is named strata-vision-sycl" OFF)
 set(STRATA_VISION_HIP_ARCHS "" CACHE STRING "the gfx architectures strata-vision-hip is compiled for (';'-separated)")
 if(STRATA_VISION_HIP AND STRATA_VISION_CUDA)
   message(FATAL_ERROR "strata-vision: STRATA_VISION_CUDA and STRATA_VISION_HIP are two different programs")
 endif()
+if(STRATA_VISION_SYCL AND (STRATA_VISION_CUDA OR STRATA_VISION_HIP))
+  message(FATAL_ERROR "strata-vision: STRATA_VISION_SYCL is its own program: not together with CUDA or HIP")
+endif()
 if(STRATA_VISION_HIP AND NOT STRATA_VISION_HIP_ARCHS)
   message(FATAL_ERROR "strata-vision: STRATA_VISION_HIP needs STRATA_VISION_HIP_ARCHS, for example \"gfx1200;gfx1201\"")
 endif()
+option(STRATA_VISION_METAL "a Mac: ggml's Metal backend in the program, so --gpu reads pictures on the Mac's GPU (OFF: CPU only)" ON)
 option(STRATA_PORTABLE "build for other PCs: AVX2 baseline, static MSVC runtime" ON)
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -62,6 +68,19 @@ endif()
 set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA ${STRATA_VISION_CUDA} CACHE BOOL "" FORCE)
 set(GGML_HIP ${STRATA_VISION_HIP} CACHE BOOL "" FORCE)
+if(APPLE)
+  # One program for both readers: strata-vision --gpu runs the encoder on the Metal GPU, without --gpu on the CPU (Apple Silicon always
+  # has the Metal framework, the engine needs it too).  The Metal shaders are embedded in the binary and compiled by macOS when the
+  # reader starts, so nothing but the program has to be shipped.  No -march flag: the default target (an M1) runs on every Apple
+  # Silicon Mac, and ggml's CPU path has no BF16 vector kernel on ARM (measured on an M4: the same ~50 s for a 260-token picture with
+  # -march=armv8.6-a+bf16+i8mm as without), so a faster target would only risk the M1.
+  set(GGML_METAL ${STRATA_VISION_METAL} CACHE BOOL "" FORCE)
+  set(GGML_METAL_EMBED_LIBRARY ${STRATA_VISION_METAL} CACHE BOOL "" FORCE)
+endif()
+set(GGML_SYCL ${STRATA_VISION_SYCL} CACHE BOOL "" FORCE)
+if(STRATA_VISION_SYCL)
+  set(GGML_SYCL_TARGET "INTEL" CACHE STRING "" FORCE)
+endif()
 if(STRATA_VISION_HIP)
   # the engine's HIP build says the same (cmake/hip_backend.cmake); ggml-hip reads AMDGPU_TARGETS / CMAKE_HIP_ARCHITECTURES
   set(AMDGPU_TARGETS "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
@@ -72,6 +91,9 @@ endif()
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
 
 add_executable(strata-vision strata_vision.cpp)
+if(MSVC)   # #3202: the ANSI code page of the process is UTF-8, so a Cyrillic model folder reaches the reader intact (see ../../CMakeLists.txt)
+  target_sources(strata-vision PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/strata-utf8.manifest)
+endif()
 target_link_libraries(strata-vision PRIVATE mtmd llama)
 target_compile_features(strata-vision PRIVATE cxx_std_17)
 set_target_properties(strata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -81,6 +103,14 @@ if(STRATA_VISION_HIP)
   set_target_properties(strata-vision PROPERTIES OUTPUT_NAME strata-vision-hip)
   string(REPLACE ";" "," _hip_archs "${STRATA_VISION_HIP_ARCHS}")
   target_compile_definitions(strata-vision PRIVATE STRATA_VISION_HIP STRATA_VISION_HIP_ARCHS="${_hip_archs}")
+endif()
+if(APPLE AND STRATA_VISION_METAL)
+  target_compile_definitions(strata-vision PRIVATE STRATA_VISION_METAL)
+endif()
+if(STRATA_VISION_SYCL)
+  # the Intel GPU reader is its own program too, beside the CPU reader "strata-vision" it falls back on
+  set_target_properties(strata-vision PROPERTIES OUTPUT_NAME strata-vision-sycl)
+  target_compile_definitions(strata-vision PRIVATE STRATA_VISION_SYCL)
 endif()
 if(WIN32 AND STRATA_VISION_HIP)
   # hipblas.dll (and rocblas.dll behind it) live in rocm\bin of the engine package: loaded on first use, after main() has put that folder on
@@ -92,6 +122,14 @@ if(UNIX AND NOT APPLE)
   # the libraries it needs are the ones in its own folder (a component folder is relocatable): RUNPATH $ORIGIN
   set_target_properties(strata-vision PROPERTIES BUILD_WITH_INSTALL_RPATH ON INSTALL_RPATH "$ORIGIN")
   target_link_options(strata-vision PRIVATE -Wl,--enable-new-dtags)
+endif()
+if(STRATA_VISION_SYCL AND UNIX AND NOT APPLE)
+  # libsycl and the OpenMP runtime live in the oneAPI compiler's lib folder, which only a sourced setvars.sh puts on the search path:
+  # recorded in the program, it starts from a plain shell (the server starts it with the PC's own environment)
+  get_filename_component(_icpx_bin "${CMAKE_CXX_COMPILER}" REALPATH)
+  get_filename_component(_icpx_bin "${_icpx_bin}" DIRECTORY)
+  get_filename_component(_icpx_lib "${_icpx_bin}/../lib" ABSOLUTE)
+  set_target_properties(strata-vision PROPERTIES INSTALL_RPATH "$ORIGIN;${_icpx_lib}")
 endif()
 
 # opens a GGUF that has tensor types llama.cpp does not know (a Gyro quantization's TQK6 / TQK7) for its vocabulary only

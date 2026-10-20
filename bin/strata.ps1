@@ -50,6 +50,8 @@ if (-not $py) {
     [Console]::Error.WriteLine("        Reinstall the archive, or set STRATA_PYTHON to a Python 3.10 or newer.")
     exit 5
 }
+# UTF-8 text in Python, not the Windows code page: folders with Cyrillic or other letters stay intact (#3202)
+$env:PYTHONUTF8 = '1'
 $rest = @($py | Select-Object -Skip 1)
 & $py[0] @rest $app @args
 exit $LASTEXITCODE

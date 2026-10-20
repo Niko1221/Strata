@@ -1,7 +1,7 @@
 {
   "name": "strata",
   "private": true,
-  "version": "0.2.0-beta",
+  "version": "0.2.1",
   "type": "module",
   "description": "Strata \u2014 local AI, tuned to one model. Web shell + engine host.",
   "scripts": {
@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "html-to-image": "^1.11.13",
+    "katex": "^0.19.0",
     "pdfjs-dist": "^6.4.299",
     "prismjs": "1.30.0",
     "react": "^19.1.0",

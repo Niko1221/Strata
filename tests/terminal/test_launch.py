@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -275,6 +276,18 @@ class RunConfig(unittest.TestCase):
         self.assertEqual(cfg["env"], {"STRATA_PIN_BY_NEED": "1"})
         self.assertEqual(self.BASE["args"][-1], "auto")               # the installed config is never edited
 
+    def test_mtp_off_leaves_the_draft_layer_out_of_this_launch_only(self):
+        base = {**self.BASE, "args": [*self.BASE["args"], "--spec", "4", "--spec-min-p", "0.5", "--mtp", "/m/rt"]}
+        cfg = derive_config(base, S.LaunchSettings(mtp="off"), bool_flags=frozenset())
+        self.assertIs(cfg["mtp"], False)
+        for flag in ("--mtp", "--spec-min-p", "--batch-mtp"):
+            self.assertNotIn(flag, cfg["args"])
+        self.assertEqual(cfg["args"][cfg["args"].index("--spec") + 1], "4")      # prompt lookup keeps its windows
+        self.assertIn("--mtp", base["args"])                                      # the installed config is never edited
+        on = derive_config({**base, "mtp": False}, S.LaunchSettings(mtp="on"), bool_flags=frozenset())
+        self.assertIs(on["mtp"], True)                                            # an explicit on beats an installed off
+        self.assertEqual(derive_config(base, S.LaunchSettings(), bool_flags=frozenset())["args"], base["args"])
+
     def test_local_and_cloudflare_stay_on_loopback_without_a_key(self):
         for kind in ("local", "cloudflare"):
             cfg = derive_config(self.BASE, S.LaunchSettings(access=kind), bool_flags=frozenset())
@@ -320,6 +333,23 @@ class SetupArgs(unittest.TestCase):
                 self.assertEqual(r.s.vision, want)
             off = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="off"), catalog=catalog(NV))
             self.assertEqual(off.setup_args()[off.setup_args().index("--vision") + 1], "no")
+
+    def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
+        for gb in (16.0, 32.0, 128.0):
+            hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},
+                  "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": gb},
+                  "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": gb, "usable": True}]}
+            with Home():
+                cat = catalog(hw)
+                with mock.patch.object(type(cat), "reader_state", lambda self: "present"):
+                    self.assertTrue(cat.is_mac())
+                    self.assertEqual(cat.picture_default(True), "gpu", gb)
+                    r = Runner(S.LaunchSettings(family="qwen", model="Q2_0", context=32768), catalog=cat)
+                    with mock.patch.object(sys, "platform", "darwin"):
+                        args = r.setup_args()
+                    self.assertEqual(args[args.index("--vision") + 1], "gpu", gb)
+                with mock.patch.object(type(cat), "reader_state", lambda self: "missing"):
+                    self.assertEqual(cat.picture_default(True), "off")
 
     def test_a_model_that_cannot_read_pictures_stays_off_without_a_question(self):
         import dataclasses
@@ -659,6 +689,15 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("launch", out)
         self.assertIn("connect", out)
 
+    def test_mtp_flag_is_listed_planned_and_copyable(self):
+        code, out, err = run_cli(["launch", "--help"])
+        self.assertIn("--mtp", out)
+        p = self.plan("--model", "q2_0", "--context", "32k", "--vision", "off", "--mtp", "off")
+        self.assertEqual(p["settings"]["mtp"], "off")
+        self.assertIn("--mtp off", p["flags"])
+        code, out, err = run_cli(["launch", "--plan", "--mtp", "maybe"])
+        self.assertNotEqual(code, 0)
+
     def test_vision_help_says_the_picture_rule(self):
         code, out, err = run_cli(["launch", "--help"])
         text = " ".join(out.split())
@@ -896,9 +935,19 @@ class ConnectCommand(unittest.TestCase):
         self.assertIn("backup", out)
 
     def test_write_asks_first_without_yes(self):
-        code, out, err = run_cli(["connect", "opencode", "--write"])
+        # no keyboard: stdin is a pipe whatever the shell that runs the tests is; input() must never be reached
+        pipe = io.StringIO("")
+        with mock.patch.object(sys, "stdin", pipe), mock.patch("builtins.input", side_effect=AssertionError("asked on a pipe")):
+            code, out, err = run_cli(["connect", "opencode", "--write"])
         self.assertEqual(code, 2)
         self.assertIn("asks first", err)
+
+    def test_write_answered_by_nobody_writes_nothing(self):
+        # a terminal whose input ends (Ctrl-D, a closed console) is "no", not a traceback
+        with mock.patch.object(sys.stdin, "isatty", return_value=True), mock.patch("builtins.input", side_effect=EOFError):
+            code, out, err = run_cli(["connect", "opencode", "--write"])
+        self.assertEqual(code, 0)
+        self.assertIn("Nothing was written", out)
 
     def test_built_in_harness_has_nothing_to_write(self):
         code, out, _ = run_cli(["connect", "deepseek-harness", "--write", "--yes"])

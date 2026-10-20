@@ -176,7 +176,7 @@ def build_vision(llama: Path) -> Path:
     with open(log, "w", encoding="utf-8") as f:
         for cmd in ([tool("cmake"), "-S", str(ROOT / "tools" / "vision"), "-B", str(ROOT / "build-vision"), "-G", "Ninja",
                      "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={tool('ninja')}", f"-DLLAMA_DIR={llama}",
-                     "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"],
+                     "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_VISION_METAL=ON", "-DSTRATA_PORTABLE=OFF"],
                     [tool("ninja"), "-C", str(ROOT / "build-vision"), "strata-vision"]):
             if subprocess.call(cmd, stdout=f, stderr=subprocess.STDOUT, env=env) != 0:
                 S.fail(f"the image encoder did not build (see {log})")
@@ -332,6 +332,8 @@ def main(argv=None) -> int:
     ap.add_argument("--draft-vocab", choices=list(S.DRAFT_VOCABS))
     ap.add_argument("--no-browser", dest="browser", action="store_false", default=None)
     ap.add_argument("--data-dir")
+    ap.add_argument("--move-data", action="store_true", help="with --data-dir: move the model files already here into the new folder")
+    ap.add_argument("--set-default-data-dir", action="store_true", help="with --data-dir: remember the new folder without moving anything")
     ap.add_argument("--models-dir")
     ap.add_argument("--gguf-dir")
     ap.add_argument("--yes", action="store_true")
@@ -343,8 +345,9 @@ def main(argv=None) -> int:
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--update", action="store_true")
     ap.add_argument("--build", action="store_true", help="build the engine again even when it is current")
-    ap.add_argument("--vision", choices=["yes", "no"],
-                    help="let the model read images (the image encoder on the GPU, built here; default: asked, no)")
+    ap.add_argument("--vision", choices=["yes", "no", "gpu", "cpu"],
+                    help="let the model read images (the image encoder, built here; yes = gpu: it reads on the Mac's GPU, cpu is ~100x "
+                         "slower; default: asked, yes)")
     a, rest = ap.parse_known_args(argv)
     if rest:
         S.warn("not used on a Mac: " + " ".join(rest))
@@ -354,7 +357,7 @@ def main(argv=None) -> int:
     if a.source:
         os.environ["STRATA_SOURCE"] = a.source
     S.say("Strata on a Mac (Apple Silicon, Metal)")
-    data, elsewhere = S.data_folder(a.data_dir)
+    data, elsewhere = S.data_folder_for(a)
     roots = [data, *elsewhere]
     models_root = Path(a.models_dir) if a.models_dir else data / "models"
 
@@ -394,7 +397,12 @@ def main(argv=None) -> int:
     for n in model_note(model, info["ram_gb"]):
         S.warn(n)
     vision = a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
-                                          ["y", "n"], "n", a.yes) == "y" else "no")
+                                          ["y", "n"], "y", a.yes) == "y" else "no")   # on by default (strata_control/vision_reader.py)
+    if vision == "cpu":
+        from strata_control import vision_reader as VR
+        S.warn(VR.MAC_CPU_NOTE)
+    vision_gpu = vision != "cpu"
+    vision = "no" if vision == "no" else "yes"
     ctx = a.context or recommend_context(info["ram_gb"])
     if ctx > TESTED_CONTEXT:
         S.say(f"  context {ctx}: measured on the Mac up to {TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
@@ -519,7 +527,7 @@ def main(argv=None) -> int:
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
     if vision == "yes":
         cfg["args"] += ["--vision"]
-        cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": True,
+        cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,
                          "max_tokens": 1024}
     if a.host:
         cfg["host"] = a.host

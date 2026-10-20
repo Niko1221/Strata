@@ -177,7 +177,7 @@ class Base(unittest.TestCase):
         patches = [
             mock.patch.object(setup, "ROOT", self.t),
             mock.patch.object(setup, "GPU_PICK", None),
-            mock.patch.object(setup, "data_folder", lambda d: (self.t / "data", [])),
+            mock.patch.object(setup, "data_folder", lambda d, *a, **k: (self.t / "data", [])),
             mock.patch.object(setup, "installed_configs", lambda: []),
             mock.patch.object(setup, "gpus", lambda: found),
             mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
