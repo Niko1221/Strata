@@ -79,7 +79,12 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     }, [selectedSize?.id, installed?.ready, resourceProfile, vision, native?.jobs.filter(j => j.state === 'done').length]);
     useEffect(() => { if (tunedNow?.fields.kv) setKv(tunedNow.fields.kv as typeof kv); if (tunedNow?.fields.lowRam) setLowRam(tunedNow.fields.lowRam as typeof lowRam); }, [tunedNow]);
     const active = native?.jobs.find(j => j.state === 'running');
-    const job = native?.jobs.find(j => j.id === jobId) ?? (!jobId ? native?.jobs.filter(j => ['load', 'install'].includes(j.kind)).at(-1) : undefined);
+    // Catalog groups share quantization names. A remembered job must still belong
+    // to the selected version; another family's failure stays in diagnostics.
+    const selectedJob = (j: NativeJob) => !!selectedSize && (j.model === selectedSize.id ||
+        (j.model === selectedSize.model && j.family === selectedSize.sourceFamily));
+    const job = native?.jobs.find(j => j.id === jobId && selectedJob(j)) ??
+        native?.jobs.filter(j => ['load', 'install'].includes(j.kind) && selectedJob(j)).at(-1);
     const noFit = selectedSize?.on_this_pc === 'does not fit';
     // Graphics cards (strata_control/gpu_fit.py: the one rule of the app, the Terminal and setup): the recommended option is pre-selected, the person may pick another
     // A card a loaded model already uses (a second model on it usually does not fit): said on its row, and not the pre-selected one while another is free.
