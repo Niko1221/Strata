@@ -37,6 +37,16 @@ test('invalid or omitted efforts keep the provider default',async t=>{
   assert.equal(Object.hasOwn(f.mock.requests.at(-1).body,'reasoning_effort'),false);
  }
 });
+
+test('direct OpenRouter chat uses the same effort format and Max mapping as agent chat',async t=>{
+ const f=await fixture(t,{kind:'provider',provider:'openrouter'});
+ for(const [thinking,effort] of Object.entries({...choices,Max:'xhigh'})){
+  await f.service.stream({selection:f.selection,message:'Test',thinking,onFrame:()=>{}});
+  const payload=f.mock.requests.at(-1).body;
+  assert.deepEqual(payload.reasoning,{effort});
+  assert.equal(Object.hasOwn(payload,'reasoning_effort'),false);
+ }
+});
 test('saved false and unknown support cannot be overridden by request capability fields',async t=>{
  for(const reasoning of [false,null]){
   const f=await fixture(t,{models:[{id:'mock-chat',reasoning}]});

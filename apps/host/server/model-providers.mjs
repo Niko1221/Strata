@@ -1,5 +1,6 @@
 /** Saved API connections. Secrets never leave the host's private credentials file. */
 import { modelReadsPictures, modelSupportsReasoning } from './vision-probe.mjs';
+import { isOpenRouter, OPENROUTER_EFFORTS } from './agent/profile.mjs';
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -148,7 +149,8 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     // Match the native composer's effort names. Unknown support and other protocols keep provider defaults.
     const choice = typeof thinking === 'string' ? thinking.toLowerCase() : '';
     if (protocol === 'openai-chat' && (model.reasoning ?? knownThinks(connection, model.id)) === true && ['off', 'low', 'medium', 'high', 'max'].includes(choice)) {
-      payload.reasoning_effort = ({ off: 'none', max: 'high' })[choice] ?? choice;
+      if (isOpenRouter(connection)) payload.reasoning = { effort: OPENROUTER_EFFORTS[choice] };
+      else payload.reasoning_effort = ({ off: 'none', max: 'high' })[choice] ?? choice;
     }
     const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(10 * 60 * 1000)]) : AbortSignal.timeout(10 * 60 * 1000);
     const res = await request(connection, protocol === 'anthropic' ? 'messages' : protocol === 'openai-responses' ? 'responses' : 'chat/completions', { method: 'POST', body: JSON.stringify(payload), signal: requestSignal });
