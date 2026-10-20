@@ -139,6 +139,10 @@ int Sched::t_rule(const float* pr, int from, int avail) const {
 
 bool Sched::check(const Config& c, std::string& err) {
     if (c.n_front < 1 || c.n_front > kMaxFront) { err = "pl_sched: front stages out of range"; return false; }
+    if (c.mode == Mode::B && c.n_front < 2) {   // with one front stage C could only wait at stage 0
+        err = "pl_sched: depth 3 needs three or more stages";
+        return false;
+    }
     if (c.ns() < 2 || c.ns() > kMaxSlots || (c.mode != Mode::N2 && c.ns() < c.depth() + 1)) {
         err = "pl_sched: slots out of range (mode " + std::string(mode_name(c.mode)) + " needs " +
               std::to_string(c.mode == Mode::N2 ? 2 : c.depth() + 1) + ", has " + std::to_string(c.ns()) + ")";
@@ -595,6 +599,18 @@ bool Sched::launch_chain(PlIo& io, const ChainReq& r) {
         }
         if (depth >= 3 && nwin_ >= f + 2) {   // through the window behind it too (C): the chain then makes D
             const PW& X2 = win_[f + 1];
+            if (ch_.n_force + X2.T >= cap) {
+                // no output left for D's row 0: no chain now - D is made by the chain at B's verdict, forced through C
+                // alone.  A guard only: B and C were made by chains of this same cap whose output 0 was at or before
+                // B's row 1, so their tokens past B's row 0 end at index cap - 1 at the latest (pl_sched_test asserts
+                // it never fires)
+                ch_ = ChainState{};
+                ++st_.chain_skip;
+                for (int h = 0; h < nheld_; ++h)
+                    if (held_[h].uid == r.src_uid) held_[h].need_chain = false;
+                io.trace("CS", r.src_seq, r.kind, 0);
+                return true;
+            }
             for (int i = 0; i < X2.T; ++i) {
                 ch_.force[ch_.n_force] = X2.tok[i];
                 ch_.force_prob[ch_.n_force++] = i == 0 ? 1.0f : X2.prob[i - 1];
@@ -614,7 +630,12 @@ bool Sched::launch_chain(PlIo& io, const ChainReq& r) {
     if (o.n_queue >= n_out) o.n_queue = 0;
     if (!run(io, o)) return false;
     ch_.n = io.chain_cap();   // n_out after the cell clamp (chain_n: only what is queued so far)
-    if (ch_.n < n_out) ++st_.case_hits[kCase10];
+    if (ch_.n < n_out) {
+        ++st_.case_hits[kCase10];
+        // the drafter forced only what fits too (MtpDrafter::chain_launch); its outputs past ch_.n are zeros, not
+        // disagreements (N2 keeps today's count, which knew no clamp)
+        if (c_.per_stage()) ch_.n_force = std::min(ch_.n_force, ch_.n);
+    }
     ch_.open = o.n_queue > 0 && o.n_queue < ch_.n;
     ch_.asked = o.n_queue - 1;
     ch_.queued = o.n_queue > 0 ? std::min(o.n_queue, ch_.n) : ch_.n;
