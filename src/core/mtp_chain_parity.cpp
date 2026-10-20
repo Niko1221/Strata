@@ -324,6 +324,8 @@ int main(int argc, char** argv) {
         const bool may_close = rnd(2) == 0;
         if (!dc.chain_launch(T, tokens, p, a, force, nfb, kC, kC, err, nq)) return fail_setup("c chain: " + err);
         if (!dc.chain_open()) ++c_queued_all;
+        // chain_cap: what it may queue (n_out); chain_n: what is queued so far (the scheduler reads the bound from cap)
+        if (dc.chain_cap() != kC || dc.chain_n() != std::min(nq, kC)) return fail_setup("c: chain_cap / chain_n at launch");
         bool closed = false;
         for (;;) {
             const int ready = dc.chain_outputs_ready(err);
@@ -399,9 +401,10 @@ int main(int argc, char** argv) {
         for (int32_t& f : force) f = tok();
         const int64_t pb = o.max_cells - 6;
         if (!db.chain_launch(1, tokens, pb, 0, force, 10, kC, kC, err) || !finish(db, err)) return fail_setup("b edge: " + err);
-        if (db.chain_n() != 5) {
+        if (db.chain_n() != 5 || db.chain_cap() != 5) {
             ++bad;
-            std::fprintf(stderr, "MISMATCH: the max_cells clamp gave b %d (want 5)\n", db.chain_n());
+            std::fprintf(stderr, "MISMATCH: the max_cells clamp gave b %d / cap %d (want 5)\n", db.chain_n(),
+                         db.chain_cap());
         }
         for (int j = db.chain_n(); j <= kC; ++j)
             if (db.chain_tok()[j] != 0) { ++bad; std::fprintf(stderr, "MISMATCH: b edge output %d not cleared\n", j); }
