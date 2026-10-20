@@ -5,11 +5,32 @@ import { nativeRouting, useNative } from '../lib/native';
 /** Connection facts first. Instructions and request details open only on demand. */
 import { CloudflareDialog } from '../components/CloudflareDialog';
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { RemoteServingPanel, servingHostRequest } from '../components/RemoteServingPanel';
+import type { ServingTarget } from '../components/RemoteServingPanel';
 import { Btn, Dialog, Empty, Icon, IconBtn, Seg, Select, ErrorNotice } from '../components/ui';
 import { Screen, SectionHead } from '../components/layout';
 import { clockTime, duration, tokens } from '../lib/format';
 import { cancelRequest, setLocalSharing, setServingAccess, useStore, pushToast } from '../lib/store';
 export function ServingScreen() {
+    const [targets, setTargets] = useState<ServingTarget[]>([]), [destination, setDestination] = useState('local');
+    const [error, setError] = useState(''), [attempt, setAttempt] = useState(0);
+    useEffect(() => {
+        const controller = new AbortController();
+        void servingHostRequest<{ targets: ServingTarget[] }>('/api/model-management/targets', controller.signal).then(result => {
+            if (controller.signal.aborted) return;
+            const remote = result.targets.filter(target => target.id !== 'local' && target.kind !== 'local');
+            setTargets(remote); setError('');
+            setDestination(selected => selected === 'local' || remote.some(target => target.id === selected) ? selected : 'local');
+        }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Saved destinations could not be loaded.'); });
+        return () => controller.abort();
+    }, [attempt]);
+    const selected = targets.find(target => target.id === destination);
+    const selector = <div className="serving-destination"><span className="small muted">{tr('Destination')}</span><Select ariaLabel={tr('Serving destination')} value={selected?.id || 'local'} translateLabels={false} options={[{ value: 'local', label: tr('This Mac') }, ...targets.map(target => ({ value: target.id, label: target.name }))]} onChange={setDestination}/>{error ? <><span className="xs muted serving-destination-error" role="status">{tr(error)}</span><IconBtn name="refresh" title={tr('Reload serving destinations')} onClick={() => setAttempt(value => value + 1)}/></> : null}</div>;
+    return selected ? <Screen title={tr('Serving')} actions={selector}><RemoteServingPanel key={selected.id} targetId={selected.id} name={selected.name}/></Screen> : <LocalServingScreen destination={selector}/>;
+}
+
+function LocalServingScreen({ destination }: { destination: ReactNode }) {
     const serving = useStore(s => s.serving);
     const storedRuntime = useStore(s => s.runtime), hardware = useStore(s => s.hardware);
     const native = useNative();
@@ -51,7 +72,7 @@ export function ServingScreen() {
         }
     }, [selected?.id, selected?.cancellable]);
     if (!serving)
-        return <Screen title={tr("Serving")}><p className="muted">{tr("Waiting for API status\u2026")}</p></Screen>;
+        return <Screen title={tr("Serving")} actions={destination}><p className="muted">{tr("Waiting for API status\u2026")}</p></Screen>;
     const multipleModels = (runtime?.instances.length ?? 0) > 1;
     const modelManagementEnabled = serving.access.remoteModelManagement === true;
     const filterId = multipleModels && runtime?.instances.some(i => i.id === modelFilter) ? modelFilter : 'all';
@@ -83,7 +104,7 @@ export function ServingScreen() {
         }
     }
     const code = `curl ${serving.baseUrl}${protocol === 'responses' ? '/responses' : protocol === 'openai' ? serving.endpoints.openai : serving.endpoints.anthropic} \\\n  -H 'Content-Type: application/json'${serving.access.apiKeySet ? " \\\n  -H 'Authorization: Bearer YOUR_API_KEY'" : ''} \\\n  -d '${JSON.stringify({ model: loaded?.apiModelId ?? 'YOUR_MODEL_ID', ...(protocol === 'responses' ? { input: 'Hello', store: false } : { ...(protocol === 'anthropic' ? { max_tokens: 256 } : {}), messages: [{ role: 'user', content: 'Hello' }] }) }, null, 2)}'`;
-    return <Screen title={tr("Serving")} actions={<><Btn icon="link" onClick={() => setCloudflareOpen(true)}>{tr("Cloudflare tunnel")}</Btn><IconBtn name="info" title={tr("Connection guide")} onClick={() => setGuide(true)}/></>}><div className="stack stack--lg">
+    return <Screen title={tr("Serving")} actions={<>{destination}<Btn icon="link" onClick={() => setCloudflareOpen(true)}>{tr("Cloudflare tunnel")}</Btn><IconBtn name="info" title={tr("Connection guide")} onClick={() => setGuide(true)}/></>}><div className="stack stack--lg">
     <section className="st-card serving-overview"><dl className="summary-list"><div><dt>{tr("API base URL")}</dt><dd className="row"><code style={{ overflowWrap: 'anywhere' }}>{serving.baseUrl}</code><IconBtn name="copy" title={tr("Copy API base URL")} onClick={() => void copyConnectionValue(serving.baseUrl, 'API base URL')}/></dd></div>{tr(!multipleModels ? <div><dt>{tr("Model ID")}</dt><dd className="row"><code>{loaded?.apiModelId ?? 'No model loaded'}</code><IconBtn name="copy" title={tr("Copy Model ID")} disabled={!loaded} onClick={() => {
                 if (loaded)
                     void copyConnectionValue(loaded.apiModelId, 'Model ID');

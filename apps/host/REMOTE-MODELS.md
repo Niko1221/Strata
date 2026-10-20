@@ -36,6 +36,16 @@ Choose **Import GGUF**, then browse folders on the destination or enter a file p
 
 After downloading or importing, load the model on the destination to make it available through its inference API. Then fetch that connection's available models in **Settings → Models** to add it to chat.
 
+## Serving a Terminal model from the Mac
+
+Open **Serving** and choose a saved connection in **Destination**. **This Mac** remains the default. The remote panel reads the server's current model and loaded state through its saved API address and key; no remote desktop is needed.
+
+Choose **Review load** or **Review unload**, check the computer and model, then confirm. These actions apply only to the model already configured on that API listener. Existing server load hooks can run. Unloading frees that model's memory while leaving its API available; a later inference request may load it again. The server must report a reliable idle admission count before either control is available. Busy servers wait; older servers without that information show status with an explanation and disabled controls.
+
+SSH model downloads and imports manage files. They do not change which model an existing Terminal API is configured to serve. Prepare a new model with that server's Terminal workflow, review its launch plan, and connect its resulting API address. Keep separate connections for separate services, such as Maya and Strata on different ports. Loading another large model also needs enough free memory on that computer.
+
+These serving controls are available in the Mac app. They are not shared through its inference API or the paired iPhone bridge. API keys stay in the Mac's saved connections.
+
 ## iPhone
 
 The paired iPhone's **Models → Download models** section can choose the paired Mac or one of its saved Strata connections. It uses the same catalog, preview and progress controls. The Mac keeps API credentials and SSH configuration. Set up SSH for a Terminal server on the Mac first; the phone uses that saved target without receiving SSH details. A phone can stop downloads it started; other downloads can be managed from the Mac. File imports are available in the Mac app.

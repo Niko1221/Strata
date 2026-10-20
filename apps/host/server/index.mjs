@@ -8,6 +8,7 @@ import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
 import { createModelManagement, createModelManagementProxy, createModelManagementRoutes } from './model-management.mjs';
+import { createRemoteServing, createRemoteServingRoutes } from './remote-serving.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
@@ -976,6 +977,7 @@ const modelManagement = createModelManagement({
   },
 });
 const modelManagementRoutes = createModelManagementRoutes({ service: modelManagement, proxy: createModelManagementProxy({ providers: modelProviders }), port: PORT, allowRemote: managementEnabled, companionAllowed });
+const remoteServingRoutes = createRemoteServingRoutes({ service: createRemoteServing({ providers: modelProviders }), port: PORT });
 const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, allowModelManagement: managementEnabled, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
 const tunnelPort = Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2);
 const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, allowModelManagement: managementEnabled, host: '127.0.0.1', port: tunnelPort });
@@ -993,6 +995,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-strata-client');
   res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  if (path === '/api/remote-serving' || path.startsWith('/api/remote-serving/')) return remoteServingRoutes(req, res, url);
   if (path === '/api/model-management' || path.startsWith('/api/model-management/')) return modelManagementRoutes(req, res, path, method);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
   if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
