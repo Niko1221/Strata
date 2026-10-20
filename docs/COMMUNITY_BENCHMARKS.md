@@ -71,6 +71,9 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-15: RX 7900 XT 20 GB (gfx1100) on Linux, EPYC 7K62 container with 48 CPUs and 128 GiB](../bench/results/2026-10-15-community-rx-7900-xt-ud-q5-k-xl/README.md):
   v0.1.44.1 source build on a system ROCm 7.2.3, Unsloth UD-Q5_K_XL at 262K, all experts in RAM; setup's configuration vs the same plus `--vram-reserve-mib 1024 --prefill auto:32768`, same day: decode 17.2 → 22.7 tok/s, prompt 335/565/1019 → 577/888/1116 tok/s at 4K/16K/32K, agent follow-up first token 7.2 → 5.4 s; needles 6/6 at 32K and 125K. Screening runs: `STRATA_PREFILL_MMQ=1`, `--pool-workers 47` and `--adapt-every 0` slower here; one `verify: timed out` engine stop (#2065 pattern).
 
+- [2026-10-20: RX 7900 XT 20 GB (gfx1100) on Linux, v0.1.44.1 vs v0.2.0-beta, EPYC 7K62 container with 48 CPUs and 128 GiB](../bench/results/2026-10-20-community-rx-7900-xt-ud-q5-k-xl-0.2.0-beta/README.md):
+  the same tuned UD-Q5_K_XL configuration measured the same day before and after updating the source build (nixpkgs ROCm 7.2.3 → 7.2.4 changed too): prompt 226/833/902 → 828/1,153/1,050 tok/s at 4K/16K/32K (the v0.1.44.1 4K run was noisy), short-chat decode 16.2 → 18.6 and agent follow-ups unchanged within the ranges. One session per build, speed only, no needle check.
+
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
