@@ -85,7 +85,7 @@ export interface AppState {
   shareTelemetry: boolean;
   paletteOpen: boolean;
   shortcutsOpen: boolean;
-  settingsSection: 'Appearance' | 'Models' | 'Tools' | 'Storage' | 'Engine' | 'About';
+  settingsSection: 'Appearance' | 'Models' | 'Tools' | 'iPhone' | 'Storage' | 'Engine' | 'About';
   hardware: Hardware | null;
   library: ModelLibrary | null;
   imageModels: ImageModelLibrary | null;
@@ -278,7 +278,7 @@ function set(patch: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
   // Opening another chat shows that chat's model choice and whether that chat is mid-turn.
   if (state.activeSession !== before) {
     const chosen = state.sessions.find(s => s.id === state.activeSession)?.preferences?.remoteModel ?? null;
-    state = { ...state, remoteModel: 'remoteModel' in next ? state.remoteModel : chosen, streaming: !!state.activeSession && liveTurns.has(state.activeSession) };
+    state = { ...state, remoteModel: 'remoteModel' in next ? state.remoteModel : chosen, streaming: !!state.activeSession && (liveTurns.has(state.activeSession) || sharedActive.has(state.activeSession)) };
   }
   for (const l of listeners) l();
 }
@@ -682,6 +682,12 @@ function applyEvent(e: StreamEvent) {
       else if (t.status === 'done') pushToast('success', 'Task finished', String(t.title ?? ''));
       break;
     }
+    case 'companion':
+      if (data.available === true && !sharedReady) void initializeSharedConversations().catch(() => undefined);
+      break;
+    case 'conversation':
+      applySharedConversation(data as { conversation?: Session; deleted?: string });
+      break;
     case 'agent':
       if (typeof data.sessionId === 'string') patchSession(data.sessionId, s => ({ ...s, agents: updateAgent(s.agents ?? [], data.agent) }));
       break;
@@ -724,6 +730,8 @@ export async function bootstrap() {
       connection: 'live',
     });
     applyProviders(providers);
+    // A source UI proxy or older host can keep using its local cache until shared routes are available.
+    await initializeSharedConversations().catch(() => { sharedReady = false; });
     closeEvents?.();
     let reconnect = false;
     closeEvents = onEvent(applyEvent, (status) => {
@@ -1008,12 +1016,72 @@ export async function scopeSkill(id: string, workspaceId: string | null) {
 
 /* ---------------------------------------------------------------- sessions */
 
+const sharedRevisions = new Map<string, number>();
+const sharedSnapshots = new Map<string, string>();
+const sharedActive = new Set<string>();
+let sharedReady = false;
+let sharedSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let sharedSyncPending = Promise.resolve();
+const sessionSnapshot = (session: Session) => { const { revision, active, status, ...snapshot } = session; return snapshot; };
+function cacheSessions(sessions: Session[]) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(sessions)); } catch { /* Offline cache may be full; the host retains history. */ }
+}
+function applySharedConversation(data: { conversation?: Session; deleted?: string }) {
+  if (data.deleted) {
+    sharedActive.delete(data.deleted); sharedRevisions.delete(data.deleted); sharedSnapshots.delete(data.deleted);
+    const sessions = state.sessions.filter(s => s.id !== data.deleted);
+    cacheSessions(sessions); set({ sessions, activeSession: state.activeSession === data.deleted ? null : state.activeSession }); return;
+  }
+  const session = data.conversation;
+  if (!session || !Array.isArray(session.messages) || !session.id) return;
+  if (typeof session.revision === 'number' && session.revision < (sharedRevisions.get(session.id) ?? 0)) return;
+  sharedRevisions.set(session.id, session.revision ?? 0);
+  if (session.active) sharedActive.add(session.id); else sharedActive.delete(session.id);
+  // This renderer already projects its own stream; applying the same deltas twice would duplicate text.
+  if (liveTurns.has(session.id)) return;
+  sharedSnapshots.set(session.id, JSON.stringify(sessionSnapshot(session)));
+  const sessions = state.sessions.some(s => s.id === session.id) ? state.sessions.map(s => s.id === session.id ? session : s) : [session, ...state.sessions];
+  cacheSessions(sessions);
+  set({ sessions, streaming: !!state.activeSession && (liveTurns.has(state.activeSession) || sharedActive.has(state.activeSession)), liveChats: new Set([...liveTurns.keys(), ...sharedActive]).size });
+  document.documentElement.dataset.streaming = state.liveChats ? 'true' : 'false';
+}
+async function initializeSharedConversations() {
+  const availability = await api.get<{ available?: boolean }>('/api/companion/conversations');
+  if (availability.available === false) { sharedReady = false; return; }
+  // First import is insert-only; reconnecting with an old browser cache never replaces newer phone work.
+  const result = await api.post<{ results: { conversation?: Session; deleted?: string; id?: string }[] }>('/api/companion/conversations/sync', { sessions: state.sessions.filter(session => !liveTurns.has(session.id)).map(session => ({ session: sessionSnapshot(session) })) });
+  for (const item of result.results) applySharedConversation(item.deleted ? { deleted: item.id } : item);
+  const remote = await api.get<{ conversations: Session[] }>('/api/companion/conversations');
+  for (const conversation of remote.conversations) applySharedConversation({ conversation });
+  sharedReady = true;
+  scheduleSharedSync();
+}
+async function syncSharedSession(session: Session) {
+  const snapshot = sessionSnapshot(session);
+  const result = await api.post<{ results: { conversation?: Session; deleted?: boolean; id?: string }[] }>('/api/companion/conversations/sync', { sessions: [{ session: snapshot, baseRevision: session.revision }] });
+  for (const item of result.results) applySharedConversation(item.deleted ? { deleted: item.id } : { conversation: item.conversation });
+}
+function scheduleSharedSync() {
+  if (!sharedReady || sharedSyncTimer) return;
+  sharedSyncTimer = setTimeout(() => {
+    sharedSyncTimer = null;
+    sharedSyncPending = sharedSyncPending.then(async () => {
+      for (const session of state.sessions) {
+        if (liveTurns.has(session.id) || sharedActive.has(session.id)) continue;
+        if (sharedSnapshots.get(session.id) === JSON.stringify(sessionSnapshot(session))) continue;
+        await syncSharedSession(session);
+      }
+    }).catch(() => { /* Preserve local edits while offline; bootstrap retries after reconnect. */ });
+  }, 300);
+}
+
 function persistSessions(sessions: Session[]) {
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
   } catch {
     /* quota — sessions are a cache, not the source of truth */
   }
+  scheduleSharedSync();
 }
 
 export function newSession(): Session {
@@ -1039,7 +1107,8 @@ export function setChatPreferences(id: string | undefined, preferences: NonNulla
   const sessionId = id ?? newSession().id;
   patchSession(sessionId, s => ({ ...s, preferences: { ...s.preferences, ...preferences } }));
   // A mode change applies to the very next tool call of a turn that is already running (a goal and its helpers included).
-  if (preferences.mode && liveTurns.get(sessionId)?.agent) void api.post('/api/chat/mode', { sessionId, mode: preferences.mode }).catch(() => undefined);
+  if (sharedReady) void api.patch<{ conversation: Session }>(`/api/companion/conversations/${encodeURIComponent(sessionId)}/preferences`, preferences).then(applySharedConversation).catch(() => undefined);
+  if (preferences.mode && (liveTurns.get(sessionId)?.agent || sharedActive.has(sessionId))) void api.post('/api/chat/mode', { sessionId, mode: preferences.mode }).catch(() => undefined);
 }
 export function setPreviewTabClosed(sessionId:string|undefined, artifactId:string, closed:boolean, selected:string|null) {
   if(!sessionId)return;
@@ -1107,6 +1176,8 @@ export function isUnread(s: Session, activeSession: string | null): boolean {
 }
 
 export function deleteSession(id: string) {
+  if (sharedActive.has(id) || liveTurns.has(id)) { pushToast('info', 'Stop this conversation first', 'Its work is still running on the Mac.'); return; }
+  if (sharedReady) void api.del(`/api/companion/conversations/${encodeURIComponent(id)}`).catch(() => void initializeSharedConversations());
   const sessions = state.sessions.filter((s) => s.id !== id);
   persistSessions(sessions);
   set({ sessions, activeSession: state.activeSession === id ? (sessions[0]?.id ?? null) : state.activeSession });
@@ -1321,8 +1392,8 @@ function startTimeSkipDemo(prompt: string) {
 
 function markTurn(sessionId: string, turn: { abort: AbortController; agent: boolean } | null) {
   if (turn) liveTurns.set(sessionId, turn); else liveTurns.delete(sessionId);
-  set({ streaming: !!state.activeSession && liveTurns.has(state.activeSession), liveChats: liveTurns.size });
-  document.documentElement.dataset.streaming = liveTurns.size ? 'true' : 'false';
+  set({ streaming: !!state.activeSession && (liveTurns.has(state.activeSession) || sharedActive.has(state.activeSession)), liveChats: new Set([...liveTurns.keys(), ...sharedActive]).size });
+  document.documentElement.dataset.streaming = state.liveChats ? 'true' : 'false';
 }
 
 /**
@@ -1333,6 +1404,7 @@ function markTurn(sessionId: string, turn: { abort: AbortController; agent: bool
 export function stopStreaming() {
   const id = state.activeSession;
   const turn = id ? liveTurns.get(id) : undefined;
+  if (id && !turn && sharedActive.has(id)) { void api.post(`/api/companion/conversations/${encodeURIComponent(id)}/stop`).then(result => applySharedConversation(result as { conversation?: Session })).catch(e => pushToast('error', 'Could not stop the conversation', e.message)); return; }
   if (!id || !turn) return;
   const abort = () => { turn.abort.abort(); };
   void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
@@ -1588,13 +1660,17 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
     }));
 
   const started = performance.now();
+  const sharedAtStart = sharedReady;
 
   const imageSlots=photoHistorySlots(prior,pictures.length);
   try {
+    // Persist the complete transcript before the host begins capturing this exact turn.
+    if (sharedReady) { const snapshot = state.sessions.find(s => s.id === sessionId); if (snapshot) await syncSharedSession(snapshot); }
     await streamPost(
       planStart ? '/api/plan/start-goal' : '/api/chat/stream',
       {
         sessionId,
+        userMessageId: userMsg.id, assistantMessageId: assistantId,
         ...(planStart ? { planId: planStart } : {}),
         ...(resume ? { goalAction: 'resume' } : planStart ? {} : { message: options.shown ? body : body }),
         history:await Promise.all(prior.map(async(m,index)=>{const included=pictureCheck.ok?(m.photos??[]).filter((_,p)=>imageSlots.has(`${index}:${p}`)):[];const omitted=(m.photos??[]).filter(p=>!included.includes(p));const text=m.content+(omitted.length?`\n[Earlier pictures: ${omitted.map(p=>p.name).join(', ')}. Their pixels are outside this model's image context; ask to reattach them if needed.]`:'');return {role:m.role,content:included.length?[{type:'text',text},...await Promise.all(included.map(async photo=>({type:'image_url',image_url:{url:(await photoData(photo)).url}})))]:text};})),
@@ -1725,6 +1801,14 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   } finally {
     clearStatus(sessionId);
     markTurn(sessionId, null);
+    if (sharedReady) {
+      try {
+        // First enable may happen during this previously unshared stream. Import only its complete result.
+        if (!sharedAtStart) { const complete = state.sessions.find(s => s.id === sessionId); if (complete) await syncSharedSession(complete); }
+        applySharedConversation(await api.get<{ conversation: Session }>(`/api/companion/conversations/${encodeURIComponent(sessionId)}`));
+      } catch {}
+    }
+    scheduleSharedSync();
     const next = releasedMessages.get(sessionId)?.shift();
     if (next !== undefined) { if (!releasedMessages.get(sessionId)?.length) releasedMessages.delete(sessionId); setTimeout(() => void sendMessage(next), 0); }
   }

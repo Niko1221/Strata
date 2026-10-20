@@ -5,7 +5,8 @@
   "private": true,
   "description": "Strata Desktop - local AI, tuned to one model.",
   "scripts": {
-    "build:ui": "npm --prefix ../host run build",
+    "stage:companion": "node scripts/stage-companion.mjs",
+    "build:ui": "npm run stage:companion && npm --prefix ../host run build",
     "typecheck:ui": "npm --prefix ../host run typecheck",
     "test:ui": "npm --prefix ../host test",
     "tauri": "tauri",

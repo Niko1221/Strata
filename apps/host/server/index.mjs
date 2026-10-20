@@ -59,6 +59,10 @@ import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, 
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUi } from './app-ui.mjs';
+import { createCompanionManager } from './companion.mjs';
+import { createCompanionRoutes } from './companion-routes.mjs';
+import { createConversations } from './conversations.mjs';
+import { createConversationRoutes, addConversationEvents } from './conversation-routes.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
 import { createRuntimeModels } from './runtime-models.mjs';
@@ -90,6 +94,14 @@ const DIST = process.env.STRATA_DIST
     : join(ROOT, 'dist');
 const PORT = Number(process.env.STRATA_PORT ?? 8791);
 const HOST = process.env.STRATA_BIND ?? '127.0.0.1';
+const companion = createCompanionManager({
+  hostPort: PORT,
+  changed: () => hub.send('companion', { available: companion.hasOptedIn() }),
+  directory: process.env.STRATA_COMPANION_DIR,
+  port: Number(process.env.STRATA_COMPANION_PORT ?? 8787),
+  adminPort: Number(process.env.STRATA_COMPANION_ADMIN_PORT ?? 8788),
+});
+const companionRoutes = createCompanionRoutes({ manager: companion, port: PORT });
 /* The folder chats work in when nothing else is chosen. It is never the app's own folder (the host is started inside its install
    directory, so `process.cwd()` was "host" in the sidebar and the agent could read and write the app): the person's own
    Documents\Strata\Workspace (the models folder is next to it, not in it), created on first use, unless STRATA_WORKSPACE names one. */
@@ -155,7 +167,11 @@ async function pictureRefusal(connection, model) {
   const fix = `open Settings → Models, edit "${connection.name}" and turn on "Read pictures with this model"`;
   return `"${model.name}" is set not to read pictures (or its server says it cannot: a llama-server started without --mmproj, or a text-only model). If that is wrong, ${fix}. Otherwise choose a model that reads pictures.`;
 }
+let conversations;
+const observedAgentFrames = new WeakSet();
+const agentConversationObservers = new Map();
 const agent = createAgentBridge({
+  onFrame: (chatId, frame) => { observedAgentFrames.add(frame); agentConversationObservers.get(chatId)?.record(frame); },
   tools: () => agentTools.profileView(),
   skillsDir: () => AGENT_SKILLS,
   onGoal: (chatId, goal) => hub.send('goal', { chatId, goal }),
@@ -473,6 +489,40 @@ const chatFolders = createChatFolders({ file: join(store.DATA_DIR, 'chat-folders
 /** Where a chat's files are: its chosen folder, else the folder its agent worked in, else the default workspace (chat-files.mjs). One source for every file route. */
 const chatRoot = chatId => chatRootOf({ chosen: chatFolders.get(chatId), used: agent.workingFolder?.(chatId), fallback: workspaces[0]?.path ?? WORKSPACE });
 
+conversations = createConversations({
+  directory: store.DATA_DIR,
+  enabled: () => companion.hasOptedIn(),
+  notify: (event, data) => hub.send(event, data),
+  defaultWorkspace: () => workspaces[0]?.path ?? WORKSPACE,
+  validateSelection: selection => {
+    if (selection.remoteModel) {
+      const own = modelProviders.withSecrets().find(c => c.id === selection.remoteModel.connectionId);
+      if (!own?.models.some(m => m.id === selection.remoteModel.modelId)) throw Object.assign(new Error('This conversation’s API model is no longer configured. Choose its model on the Mac.'), { status: 409 });
+    } else if (selection.nativeModelId) {
+      try { native.resolveInstance(selection.nativeModelId); }
+      catch { throw Object.assign(new Error('This conversation’s local model is no longer loaded. Choose its model on the Mac.'), { status: 409 }); }
+    }
+  },
+  pending: id => agent.pendingFor(id),
+  stop: id => agent.stop(id),
+  approve: options => agent.approve(options),
+  execute: async ({ session, message, mode, signal, onFrame, capture }) => {
+    const preferences = session.preferences ?? {};
+    const body = { ...preferences, sessionId: session.id, message, mode, companionTurn: true, trackedConversation: true,
+      conversationWorkspace: session.workspace,
+      history: session.messages.filter(m => !m.local && !m.timeSkipId && ['user', 'assistant'].includes(m.role) && m.content.trim()).slice(-40).map(m => ({ role: m.role, content: m.content })),
+    };
+    const workspaceId = workspaces.find(w => w.path === session.workspace)?.id ?? null;
+    const canAgent = process.env.STRATA_AGENT !== 'off' && preferences.agent !== false && (body.remoteModel || native.hasLive()) && agent.status().state !== 'unavailable';
+    if (canAgent) return runAgentTurn({ controller: { signal }, chatId: session.id, body, message, workspaceId, onFrame: () => {}, conversationTurn: capture });
+    const plain = withPlainStatus(onFrame);
+    try { return await runTurn({ ...body, message, history: body.history, signal, onFrame: plain, sessionId: session.id, workspaceId, useTools: preferences.useTools === true, client: 'Strata iPhone' }); }
+    finally { plain.dispose(); }
+  },
+});
+const conversationRoutes = createConversationRoutes({ conversations, port: PORT });
+
+
 function saveWorkspaces() {
   try {
     mkdirSync(store.DATA_DIR, { recursive: true });
@@ -560,9 +610,11 @@ async function runRemoteTurn({ selection, message, history, images = [], onFrame
 }
 
 /** One agent turn for a chat, streamed to the caller as the NDJSON frames the chat already renders. */
-async function runAgentTurn({ res, controller, chatId, body, message, workspaceId, images = [] }) {
-  const write = frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
-  const cwd = chatFolders.get(chatId) ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
+async function runAgentTurn({ res, controller, chatId, body, message, workspaceId, images = [], onFrame = null, conversationTurn = conversations?.capture(chatId) }) {
+  const write = frame => { if (!observedAgentFrames.has(frame)) conversationTurn?.record(frame); onFrame?.(frame); if (res && !res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); };
+  const fail = frame => write(frame);
+  const sharedWorkspace = body.trackedConversation || body.companionTurn ? agent.workingFolder(chatId) ?? body.conversationWorkspace : null;
+  const cwd = chatFolders.get(chatId) ?? sharedWorkspace ?? (workspaceId ? workspaces.find(w => w.id === workspaceId)?.path : null) ?? WORKSPACE;
   let choice, instance = null;
   if (body.remoteModel) {
     choice = { connectionId: String(body.remoteModel.connectionId), modelId: String(body.remoteModel.modelId) };
@@ -572,9 +624,10 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   }
   else {
     try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); }
-    catch (e) { write({ type: 'error', message: e.message }); return; }
+    catch (e) { fail({ type: 'error', message: e.message }); return; }
     choice = { instanceId: instance.id };
   }
+  if (body.companionTurn === true && controller.signal.aborted || body.trackedConversation === true && !conversationTurn?.current()) return;
   const started = Date.now();
   // A turn the engine is serving must be visible to the rest of the host (Serving, unload guards).
   const entry = instance ? serving.open({ client: 'Strata chat', endpoint: '/agent', model: instance.apiModelId, instanceId: instance.id, gpuIds: instance.gpus.map(String), cancel: () => { void agent.stop(chatId); } }) : null;
@@ -588,15 +641,18 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
+    if (conversationTurn) agentConversationObservers.set(chatId, conversationTurn);
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
       : goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
     if (result?.detached) void result.ended.then(r => settle(r?.tokensOut ?? null), () => settle(null));
     else settle(result?.tokensOut ?? null, result?.error ? 'The agent turn failed.' : undefined);
+    if (!result?.detached) conversationTurn?.finish();
+    return result;
   } catch (err) {
     const plain = plainTurnFailure(err);
-    write({ type: 'error', message: plain.message, ...(plain.details ? { details: plain.details } : {}), code: plain.code });
+    fail({ type: 'error', message: plain.message, ...(plain.details ? { details: plain.details } : {}), code: plain.code });
     settle(null, plain.message);
   }
 }
@@ -912,6 +968,8 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-strata-client');
   res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
+  if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
   if (method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -944,7 +1002,10 @@ async function api(req, res, path, method, url) {
   if(path==='/api/fonts'&&method==='GET')return json(res,200,await systemFonts());
   if (storageChanging && !['GET', 'OPTIONS'].includes(method)) return error(res, 409, 'Wait for the model folder check to finish.');
   // --- events -------------------------------------------------------------
-  if (path === '/api/events') return hub.add(res);
+  if (path === '/api/events') {
+    addConversationEvents({ req, res, hub, conversations, port: PORT });
+    return;
+  }
   if(path.startsWith('/api/native')){try{
   if(path==='/api/native'&&method==='GET')return json(res,200,await native.refresh(url.searchParams.get('refresh')==='1'));
   if(path==='/api/native'&&method==='PATCH')return json(res,200,await native.configure(await readBody(req)));
@@ -1885,12 +1946,26 @@ async function api(req, res, path, method, url) {
        does not fire in another. */
     const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : null;
 
+    const controller = new AbortController();
+    const trackedId = conversations.available() && typeof body.sessionId === 'string' && body.sessionId && !body.sessionId.startsWith('iphone-') ? body.sessionId : null;
+    let conversationTurn = null;
+    body.trackedConversation = !!trackedId;
+    if (trackedId) {
+      if (!conversations.has(trackedId)) {
+        const at = new Date().toISOString();
+        conversations.sync([{ session: { id: trackedId, title: 'New conversation', defaultTitle: true, createdAt: at, updatedAt: at, messages: [], workspace: agent.workingFolder(trackedId) ?? chatFolders.get(trackedId) ?? workspaces.find(w => w.id === workspaceId)?.path ?? WORKSPACE, tokensIn: 0, tokensOut: 0 } }]);
+      }
+      try { conversations.begin(trackedId, message, {
+        userMessageId: body.userMessageId, assistantMessageId: body.assistantMessageId, controller,
+        preferences: { ...(body.remoteModel !== undefined ? { remoteModel: body.remoteModel } : {}), ...(body.nativeModelId ? { nativeModelId: body.nativeModelId } : {}), mode: body.mode ?? 'manual', thinking: body.thinking ?? 'Medium', thinkingBudget: body.thinkingBudget ?? 0, useTools: body.useTools === true, agent: body.agent !== false },
+      }); conversationTurn = conversations.capture(trackedId); } catch (e) { return error(res, e.status ?? 409, e.message); }
+    }
+
     res.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
     });
-    const controller = new AbortController();
     res.on('close', () => { if (!res.writableEnded) controller.abort(); });
 
     /* Agent turn, when the component is there and this request can use it. A client that disappears
@@ -1904,7 +1979,7 @@ async function api(req, res, path, method, url) {
     if (chatId && !agentSkip) {
       const capability = agent.status();
       if (capability.state !== 'unavailable') {
-        await runAgentTurn({ res, controller, chatId, body, message, workspaceId, images });
+        await runAgentTurn({ res, controller, chatId, body, message, workspaceId, images, conversationTurn });
         res.end();
         return undefined;
       }
@@ -1914,7 +1989,7 @@ async function api(req, res, path, method, url) {
     }
 
     // A plain chat turn says what it is doing too (reading the message, thinking with a token count, writing).
-    const plain = withPlainStatus(frame => { if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); });
+    const plain = withPlainStatus(frame => { conversationTurn?.record(frame); if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(frame)}\n`); });
     res.on('close', () => plain.dispose());
     await runTurn({
       message,
@@ -1929,6 +2004,7 @@ async function api(req, res, path, method, url) {
       nativeModelId:body.nativeModelId,
       images,useTools:body.useTools===true,thinking:body.thinking??'high',thinkingBudget:Number.isInteger(body.thinkingBudget)&&body.thinkingBudget>0?Math.min(body.thinkingBudget,262144):0,
     });
+    conversationTurn?.finish();
     res.end();
     return undefined;
   }
@@ -2147,6 +2223,8 @@ async function staticFile(req, res, path) {
 /* ------------------------------------------------------------------ start --- */
 
 server.listen(PORT, HOST, () => {
+  // Restore only a pairing listener the person explicitly enabled in this app.
+  void companion.restore().catch(() => {});
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.
   if (control && process.env.STRATA_PACKAGED === '1') control.cleanup().catch(() => {});
@@ -2158,7 +2236,8 @@ const shutdown = async () => {
   clearInterval(taskTimer);tasks.close();
   const timeout=setTimeout(()=>process.exit(0),control?45000:10000);timeout.unref();   // stopping an engine through Control: drained (15 s), then ended; the shell's deadline is longer
   server.close();server.closeAllConnections?.();
-  await Promise.allSettled([localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
+  conversations.close();
+  await Promise.allSettled([companion.close(),localShare.stop(),cloudflare.stop(),native.close(),agent.close()]);
   process.exit(0);
 };
 // Every ordinary way of being told to stop takes the clean path: Ctrl+C, kill, the terminal closing (SIGHUP), Ctrl+Break.

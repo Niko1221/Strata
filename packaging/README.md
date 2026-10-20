@@ -56,6 +56,7 @@ unknown target's archive rather than installing it unverified.
 cd apps/desktop
 ./scripts/fetch-node.sh                                                      # the sidecar (once)
 npm install --prefix ../host && npm --prefix ../host run build                # the UI
+node scripts/stage-companion.mjs                                             # the optional iPhone pairing service
 cargo tauri build --bundles app                                              # -> Strata.app
 
 # macOS DMG (headless: Tauri's default step needs a Finder session)

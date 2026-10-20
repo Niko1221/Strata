@@ -36,6 +36,7 @@
       "resources/node": "node",
       "resources/control": "control",
       "resources/harness": "harness",
+      "resources/companion-bridge": "companion-bridge",
       "resources/engine-bundle": "engine-bundle"
     },
     "linux": {

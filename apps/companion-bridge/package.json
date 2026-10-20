@@ -1,0 +1,7 @@
+{
+  "name": "strata-companion-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node index.mjs", "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=20" }
+}

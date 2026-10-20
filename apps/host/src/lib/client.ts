@@ -47,7 +47,7 @@ export interface StreamEvent {
 export function onEvent(handler: (e: StreamEvent) => void, onStatus?: (s: 'live' | 'offline') => void) {
   let source: EventSource;
   let seenAt = Date.now();
-  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue'];
+  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue', 'conversation', 'companion', 'agent'];
   const connect = () => {
     source?.close();
     seenAt = Date.now();

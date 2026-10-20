@@ -1,0 +1,37 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createConversations } from '../server/conversations.mjs';
+import { createConversationRoutes } from '../server/conversation-routes.mjs';
+
+test('shared conversations require the exact local desktop origin and expose bounded actions', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'strata-conversation-routes-'));
+  const conversations = createConversations({ directory, execute: async ({ onFrame }) => onFrame({ type: 'delta', text: 'Shared reply' }) });
+  let server;
+  const route = createConversationRoutes({ conversations, port: () => server.address().port });
+  server = http.createServer((req, res) => { res.setHeader('access-control-allow-origin', '*'); void route(req, res, new URL(req.url, 'http://localhost')); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); conversations.close(); rmSync(directory, { recursive: true, force: true }); });
+  const root = `http://127.0.0.1:${server.address().port}`;
+  const path = '/api/companion/conversations';
+  const request = (suffix = '', method = 'GET', body, headers = {}) => fetch(root + path + suffix, { method, headers: { ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal((await request('', 'GET', undefined, { origin: 'https://untrusted.example' })).status, 403);
+  assert.equal((await request('', 'POST', {}, { origin: 'http://127.0.0.1:9999' })).status, 403);
+  const rebound = await new Promise((resolve, reject) => { const req = http.request(root + path, { headers: { host: 'rebound.example' } }, res => { res.resume(); resolve(res.statusCode); }); req.on('error', reject); req.end(); });
+  assert.equal(rebound, 403);
+  const created = await request('', 'POST', {});
+  assert.equal(created.status, 201); assert.equal(created.headers.get('access-control-allow-origin'), null);
+  const { conversation } = await created.json();
+  assert.equal((await request(`/${conversation.id}/messages`, 'POST', { message: 'Continue', mode: 'bypass', workspace: '/' })).status, 202);
+  await new Promise(resolve => setImmediate(resolve));
+  const detail = await (await request(`/${conversation.id}`)).json();
+  assert.equal(detail.conversation.messages.at(-1).content, 'Shared reply');
+  assert.equal(detail.conversation.preferences.mode, 'manual');
+  assert.equal((await request(`/${conversation.id}/arbitrary-shell`, 'POST', {})).status, 404);
+  assert.equal((await request(`/${conversation.id}/approval`, 'POST', { toolId: 'x', decision: 'always' })).status, 400);
+  assert.equal((await request(`/${conversation.id}`, 'DELETE')).status, 200);
+  assert.equal((await request(`/${conversation.id}`)).status, 404);
+});

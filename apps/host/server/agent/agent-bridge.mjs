@@ -114,7 +114,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onFrame: observeFrame = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -338,7 +338,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const written = { all: '', step: '' };
     // The turn guard (turn-guard.mjs): counts failing searches, searches, plan rewrites and a nearly full context. Set up once the route is known.
     let guard = null;
-    const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
+    const raw = frame => {
+      // A detached desktop/phone still has one durable transcript and live observers.
+      try { observeFrame(chatId, frame); } catch {}
+      try { send(frame); } catch { send = () => {}; attached = false; }
+    };
     // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
     const tracker = new DeliverableTracker(workspacePath, trackerFolders());
     let toolsRan = false;   // a turn that ran no tool wrote nothing, so there is nothing to look for at its end

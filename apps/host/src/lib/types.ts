@@ -407,13 +407,17 @@ export interface SessionAgent {
 export type ChatMode = 'auto' | 'manual' | 'accept-edits' | 'plan' | 'bypass';
 
 export interface Session {
+  /** Shared host revision and live activity; localStorage remains an offline cache. */
+  revision?: number;
+  active?: boolean;
+  status?: string | null;
   timeSkips?: import('./time-skip').TimeSkipRun[];
   showcase?: boolean;
   agents?: SessionAgent[];
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;
-  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
+  preferences?: { nativeModelId?: string; access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
   /** A branch does not have retained per-turn input usage. */
   statsAvailable?: boolean;
   id: string;
