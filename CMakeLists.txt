@@ -1967,6 +1967,17 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(native_expert_bench src/kernels/native_expert_bench.cpp)
     target_include_directories(native_expert_bench PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(native_expert_bench PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
+    if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
+      # STRATA_EXPERT_NIBBLE (include/strata/core/expert_nibble.hpp): the 4-bit gate/up expert slots against the
+      # production kernels and the GGUF blobs, bit for bit, on a real model's layers (needs a GP100); --header: the
+      # contract's host half, no GPU
+      add_executable(iq_nibble_parity src/kernels/iq_nibble_parity.cpp)
+      target_include_directories(iq_nibble_parity PRIVATE ${_strata_gpu_include_directories})
+      target_link_libraries(iq_nibble_parity PRIVATE strata_kernels strata_kernels_cpu strata_artifact ggml-base ${_strata_gpu_runtime_target})
+      if(STRATA_BUILD_TESTS)
+        add_test(NAME iq_nibble_parity_header COMMAND iq_nibble_parity --header)
+      endif()
+    endif()
     # MODEL-UPDATE: the dense Q8_0 GEMVs at the engine's shapes against the memory bandwidth (a benchmark, no test)
     add_executable(q8_gemv_bench src/kernels/q8_gemv_bench.cpp)
     target_include_directories(q8_gemv_bench PRIVATE ${_strata_gpu_include_directories})
