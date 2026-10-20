@@ -1220,9 +1220,16 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         void* head_interleaved = xq_ + native_q8_1_bytes((int) N, (int) max_rows_);
         {
             DFlashSection s("out.quantize");
-            if (head_il && head_rows >= 2)
-                native_quantize_q8_1_il(head_input, xq_, head_interleaved, (int) N, head_rows, cs_);
-            else if (head_->type() != 30) native_quantize_q8_1(head_input, xq_, (int) N, head_rows, cs_);
+            if (head_il && head_rows >= 2) {
+                if (head_rows <= 4)
+                    native_quantize_q8_1_il(head_input, xq_, head_interleaved, (int) N, head_rows, cs_);
+                else {
+                    // The fused producer supports at most four columns. The
+                    // existing interleave pass also supports trained wide blocks.
+                    native_quantize_q8_1(head_input, xq_, (int) N, head_rows, cs_);
+                    native_q8_1_interleave(xq_, head_interleaved, (int) N, head_rows, cs_);
+                }
+            } else if (head_->type() != 30) native_quantize_q8_1(head_input, xq_, (int) N, head_rows, cs_);
         }
         if (output_parity && head_->type() != 30)
             parity_dump(parity_dir_, "head_act_q8", (const float*) xq_,

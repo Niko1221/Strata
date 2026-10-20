@@ -5789,7 +5789,8 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "strata generate: experimental native Q5_K head, %llu bytes, in %.1f s\n",
+        std::fprintf(stderr, "strata generate: experimental native %s head, %llu bytes, in %.1f s\n",
+                     strata::ggml_type_name(native_head.type()),
                      (unsigned long long) native_head.weight_bytes(),
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - head_t0).count());
     }

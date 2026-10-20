@@ -145,3 +145,32 @@ On the same card and long fixture, drafting fell from 4.18 to 3.19 ms/window
 and decode rose from 48.45 to 49.39 tok/s, with identical output tokens. Fresh
 MTP reached 51.24 tok/s; it remains faster on this long fixture. Both DFlash2
 arms used the same 3274 expert slots, selected automatically from available VRAM.
+
+## Optional Q8_0 head projection on SM89
+
+The target's actual output-head format matters independently of the drafter's
+weight format. A Q4_0 drafter can share a Q8_0 target head. Startup now prints
+the loaded head's real format; the older message always said Q5_K.
+
+`STRATA_MMVQ_IL_Q8_HEAD=1` enables the measured interleaved Q8_0 projection for
+248320 output rows and 3–8 input rows on SM89. Other shapes and architectures
+keep their existing dispatch. DFlash2 also needs `STRATA_DFLASH_HEAD_IL=1` to
+use it for its own output projection. The first switch can accelerate the
+shared target verifier too; give an MTP control the same switch when comparing.
+The kernel keeps the original integer dots, scaling and FP32 reduction order.
+Both switches are opt-in. No head weights or vocabulary rows are removed.
+
+The [long-prompt follow-up](../bench/results/2026-10-20-dflash2-long-tuned/README.md)
+records the complete measurements, confidence/block settings, expert placement
+and output checks. A setting measured on one prompt is not a general default.
+
+The follow-up's Q8_0 drafter profile uses block 7 and floor 0.7, with both head
+switches enabled. On RTX 4070 Ti SUPER / Ryzen 9 5900X it reached 56.77 versus
+55.31 decode tok/s for MTP on the 2425-token fixture. Expert placement was fixed
+and checked: 3188 slots for DFlash2, 3143 for MTP. These are settings for that
+measurement, not new defaults or a recommendation for every prompt.
+
+The same change reuses attention's K/V addresses, specializes official power-of-two
+page indexing and pairs adjacent values in long windows. The original ordered
+sums and masks remain unchanged. General geometry and unaligned buffers retain
+a scalar path. The report includes bitwise comparisons and the whole-model limits.

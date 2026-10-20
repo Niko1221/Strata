@@ -34,3 +34,17 @@ Which table a card gets:
 
 The emit rule: per cell, the fastest rows count if it takes at least 3% off the plain kernel's time, else 0; shapes of one
 class that disagree give 0; a class with no measured shape copies its neighbour below.
+
+### Opt-in Q8_0 output head on SM89
+
+`STRATA_MMVQ_IL_Q8_HEAD=1` selects two rows per warp for the 248320-row Q8_0
+head at 3–8 columns on SM89. It leaves one/two columns, other output sizes,
+other cards and the existing default path unchanged. DFlash2's own head path
+also requires `STRATA_DFLASH_HEAD_IL=1`. See the
+[long-prompt measurements](../bench/results/2026-10-20-dflash2-long-tuned/README.md).
+
+Recheck parity and the head timings with:
+
+```sh
+STRATA_MMVQ_IL_Q8_HEAD=1 MMVQ_IL_ONLY=Q8_0 build-dflash2/mmvq_il_parity --bench
+```

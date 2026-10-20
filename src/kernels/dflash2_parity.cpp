@@ -177,7 +177,8 @@ void target_features_and_attention() {
             if(bits[i] != ((u+0x7fff+((u>>16)&1))>>16)) throw std::runtime_error("HC BF16 mean differs");
         }
     }
-    const int hd=128, page=64;
+    const int hd=128;
+    for (int page : {64,96})
     for (int heads : {4,32}) for (int rows : {2,4,8})
     for (int end : {9,73,2053}) for (int window : {0,2048}) {
         const int kv = heads == 32 ? 8 : 2;
@@ -199,6 +200,13 @@ void target_features_and_attention() {
         dflash2_attention(dq.p,dk.p,dv.p,dt.p,ds.p,out.p,scratch.p,rows,heads,kv,page,
                           std::min(end,window?window+rows:end),window,nullptr);
         auto got=out.read(q.size());
+        if (heads == 32 && rows == 2 && end == 2053 && window == 2048 && page == 64) {
+            Device<uint16_t> shifted(v.size() + 1);
+            checked(cudaMemcpy(shifted.p + 1, v.data(), v.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
+            dflash2_attention(dq.p,dk.p,shifted.p+1,dt.p,ds.p,out.p,scratch.p,rows,heads,kv,page,
+                              visible,window,nullptr);
+            if (out.read(q.size()) != got) throw std::runtime_error("unaligned V changed attention bits");
+        }
         dflash2_attention(dq.p,dk.p,dv.p,dt.p,ds.p,out.p,scratch.p,rows,heads,kv,page,
                           padded,window,nullptr);
         if (out.read(q.size()) != got) throw std::runtime_error("padded DFlash2 attention changed output bits");
@@ -234,7 +242,7 @@ void attention_benchmark(const char* bits_path) {
         bits.open(bits_path, std::ios::binary | std::ios::trunc);
         if (!bits) throw std::runtime_error("cannot open attention output dump");
     }
-    for (int rows : {2, 4, 8}) for (int end : {32, 2053}) {
+    for (int rows : {2, 4, 8}) for (int end : {32, 128, 512, 1024, 2053}) {
         const int heads = 32, kv = 8, page = 64, hd = 128;
         const int pages = (end + page - 1) / page;
         const int active = std::min(end, 2048 + rows);

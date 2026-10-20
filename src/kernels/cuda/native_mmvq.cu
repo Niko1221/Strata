@@ -1553,6 +1553,27 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
 // xor tree; each weight block is decoded once (the traits' `load`) and every column takes the single-column dot's own
 // expression (the same *_q8_dot_impl calls), so each value is bitwise the multi-column kernel's. K-quants read the
 // block-major copy; IQ4_XS, whose lanes read the same int of consecutive blocks, the position-major one.
+// Q8_0 keeps the small-format dot's two dp4a operations and scaling order.
+// Virtual warps below retain the exact multi-column partial sums.
+struct IlQ8_0 {
+    using F = SmallTraits<Q80Block, 8>;
+    static constexpr bool PM = false;
+    template <int NC, class X>
+    __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
+        int u[2][NC];
+        float d8[NC];
+        x.u(kby, iqs, u[0]);
+        x.u(kby, iqs + 1, u[1]);
+        x.scales(kby, d8);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            int sumi = 0;
+#pragma unroll
+            for (int i = 0; i < 2; ++i) sumi = STRATA_DP4A(r.v[i], u[i][c], sumi);
+            out[c] = r.d0 * d8[c] * float(sumi);
+        }
+    }
+};
 struct IlIQ4XS {
     using F = IQ4XSTraits;
     static constexpr bool PM = true;
@@ -3197,6 +3218,15 @@ const std::vector<IlEnvRow>& il_env_rows() {
 // can check every architecture's table without that card.
 int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
     if (ncols < 1 || ncols > 8) return 0;
+    // Full Q8_0 Flash-Next head measured on RTX 4070 Ti SUPER (SM89).
+    // Keep every existing default and all unmeasured shapes on their old path.
+    if (type == 8) {
+        static const bool q8_head = [] {
+            const char* v = std::getenv("STRATA_MMVQ_IL_Q8_HEAD");
+            return v && v[0] == '1';
+        }();
+        return q8_head && cc == 89 && n_out == 248320 && ncols >= 3 ? 2 : 0;
+    }
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
     if (ncols > 4) {   // 147-verify: 5..8 columns, only where a card measured its table
         static const bool wide = il_env_on("STRATA_MMVQ_IL_WIDE");
@@ -3284,7 +3314,7 @@ bool il_arch_ok() {
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
     if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
-           (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
+           (ggml_type == 8 || ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
 }
 
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
@@ -3302,6 +3332,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     validate_stream(stream);
     const auto s = static_cast<cudaStream_t>(stream);
     switch (ggml_type) {
+    case 8: launch_il_rows<IlQ8_0>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 23: launch_il_rows<IlIQ4XS>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 12: launch_il_rows<IlQ4K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;
     case 13: launch_il_rows<IlQ5K>(r, weights, x_il, y, n_in, n_out, ncols, s); break;

@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -252,6 +253,7 @@ __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_
     if (out) out[i] = sum;
     if (out_bf16) out_bf16[i] = bf16_from_f32(sum);
 }
+template<bool Canonical, bool Paired>
 __global__ void attention128_kernel(const float* q, const uint16_t* k, const uint16_t* v,
                                     const int32_t* table, const int32_t* steps, float* scratch,
                                     int rows, int heads, int kv_heads, int page_size, int chunks, int window) {
@@ -263,40 +265,53 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
     __shared__ float scores[64];
     __shared__ float probabilities[64];
     __shared__ size_t poolrows[64];
-    for (int c = warp; c < 64; c += 4) {
+    const int kv_head = Canonical ? head >> 2 : head / (heads / kv_heads);
+    for (int c = warp; c < 64; c += (Paired ? 2 : 4)) {
         const int cell = begin + c;
         float dot = 0;
         const bool visible = cell < end && (!window || abs(cell - position) < window);
+        size_t poolrow = 0;
         if (visible) {
-            const size_t poolrow = ((size_t)table[cell / page_size] * kv_heads + head / (heads / kv_heads)) * page_size + cell % page_size;
+            const int page = Canonical ? cell >> 6 : cell / page_size;
+            const int offset = Canonical ? cell & 63 : cell % page_size;
+            poolrow = ((size_t)table[page] * (Canonical ? 8 : kv_heads) + kv_head) *
+                      (Canonical ? 64 : page_size) + offset;
             for (int d = lane; d < 128; d += 32)
                 dot += q[(row * heads + head) * 128 + d] * __half2float(__ushort_as_half(k[poolrow * 128 + d]));
             for (int offset = 16; offset; offset >>= 1) dot += __shfl_xor_sync(0xffffffffu, dot, offset);
         }
-        if (!lane) scores[c] = visible ? dot * 0.08838834764831845f : -INFINITY;
+        if (!lane) {
+            scores[c] = visible ? dot * 0.08838834764831845f : -INFINITY;
+            poolrows[c] = poolrow;
+        }
     }
     __syncthreads();
     float m = -INFINITY;
     for (int c = 0; c < 64; ++c) m = fmaxf(m, scores[c]);
-    // Every value lane consumes the same softmax weights and paged addresses.
-    // Stage them once per cell, instead of repeating expf and page division
-    // in all 128 lanes. Keep the original ordered sums and masked-cell skip.
+    // Value components share their softmax weights and the address staged
+    // by QK. Compute expf once per cell, keeping the original ordered sums
+    // and masked-cell skip.
     if (t < 64 && scores[t] != -INFINITY) {
         probabilities[t] = expf(scores[t] - m);
-        const int cell = begin + t;
-        poolrows[t] = ((size_t)table[cell / page_size] * kv_heads + head / (heads / kv_heads)) * page_size + cell % page_size;
     }
     __syncthreads();
-    float sum = 0, acc = 0;
+    float sum = 0, acc = 0, acc1 = 0;
     for (int c = 0; c < 64; ++c) {
         if (scores[c] == -INFINITY) continue;
         const float p = probabilities[c];
         const size_t poolrow = poolrows[c];
         sum += p;
-        acc += p * __half2float(__ushort_as_half(v[poolrow * 128 + t]));
+        if constexpr (Paired) {
+            const float2 value = __half22float2(reinterpret_cast<const __half2*>(v + poolrow * 128)[t]);
+            acc += p * value.x;
+            acc1 += p * value.y;
+        } else {
+            acc += p * __half2float(__ushort_as_half(v[poolrow * 128 + t]));
+        }
     }
     float* dst = scratch + ((row * heads + head) * chunks + ch) * 130;
-    dst[t] = acc;
+    if constexpr (Paired) { dst[2 * t] = acc; dst[2 * t + 1] = acc1; }
+    else dst[t] = acc;
     if (!t) { dst[128] = m; dst[129] = sum; }
 }
 __global__ void attention128_merge(const float* scratch, float* out, int chunks) {
@@ -329,7 +344,19 @@ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, con
         (int64_t)rows * heads * ((active_cells + 63LL) / 64) * 130 > INT32_MAX)
         throw std::invalid_argument("dflash2_attention: invalid geometry or missing buffers");
     const int chunks = (active_cells + 63) / 64;
-    attention128_kernel<<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+    // The official geometry uses power-of-two pages and four Q heads per KV
+    // head. Its addresses need shifts, not runtime integer divisions. Other
+    // geometries keep the general indexing path.
+    if (heads == 32 && kv_heads == 8 && page_size == 64) {
+        // Two adjacent values share their denominator and use one aligned
+        // half2 load. Keep the original ordered sum for each component. Small
+        // windows retain four warps; long windows benefit from smaller CTAs.
+        if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
+            attention128_kernel<true, true><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+        else
+            attention128_kernel<true, false><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+    } else
+        attention128_kernel<false, false><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
     attention128_merge<<<rows * heads,128,0,(cudaStream_t)stream>>>(scratch,out,chunks);
 }
 
