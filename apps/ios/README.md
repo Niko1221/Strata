@@ -46,6 +46,8 @@ Progress shows the current stage and downloaded amount. Downloads continue on th
 
 These files stay on the destination computer. API-only providers use their existing **Use model** action and do not offer model downloads. Older Mac builds keep their model library available and show an update message when phone downloads are unsupported. Configure Strata connections in the Mac app; provider credentials stay there.
 
+For a Terminal server, edit its connection on the Mac and choose **Model management → Terminal server over SSH**. Host, optional username, port and source folder are configured separately for each server. The Mac uses its SSH keys and verified host key; these details are not sent to the iPhone. SSH downloads only model files into a separate server library. Preparation and loading remain separate Terminal actions, and the serving model keeps running. See the [Mac support PR](https://github.com/Niko1221/Strata/pull/3347) for remote setup.
+
 **Connection → Disconnect Mac** revokes the phone's access and removes its local credential. **Forget this Mac** is available when the Mac is unreachable; it removes the credential only from the phone. Remove that device in the Mac pairing window to revoke its old session. **Pair again** also recovers a changed certificate or address.
 
 ## Build
