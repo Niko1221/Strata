@@ -160,6 +160,14 @@ Added on 2026-10-19, same machine, same model files. Scripts are in the linked h
 - **#3177 reproduction attempt:** 6 of 6 agent requests of 55,019 tokens finished (0.1.45 and 0.1.44.1, MTP on and off).
 - **Fresh engines with MTP, 4K prompt:** 0.2.0: 1 of 24 read about 38 % slower; 0.1.44.1: 0 of 24.
 
+## Follow-up 2026-10-21 (folder `followup-2026-10-21/`)
+
+Strata 0.2.1 on the same machine: engine 0.1.46 `hip-rx7900` with control 0.1.46.2, and the Docker image `0.2.1-rocm-gfx110x`.
+
+- **#3262 fixed:** without `--pool-workers` 0.2.1 plans 10 workers on CPUs 1-10 and leaves the LP-E cores free. Decode 61.1 tok/s (9 workers: 61.5), a 63-token prompt 97.6 tok/s (9 workers: 88.0; 0.1.44.1: 66.1). Long prompts unchanged: 742 / 1,204 / 1,210 tok/s at 4K / 16K / 32K.
+- **The Docker image runs on gfx1100**, and its unchanged default-track `strata bench run` is complete with 12/12 sanity checks: [`../2026-10-21-standard-rx-7900-xtx-2c7f637a/`](../2026-10-21-standard-rx-7900-xtx-2c7f637a/README.md). Its defaults read prompts slower than the run config above (16K: 772 against 1,237 tok/s); the shipped gfx1100 hipBLASLt table, opt-in in 0.2.1, closes the gap (1,238 tok/s).
+- Both packaging notes of #3263 are fixed in 0.1.46. Fresh engines with MTP: 8 of 8 normal.
+
 ## Correctness and limitations
 
 - Quality is covered by the engine comparison against llama.cpp and the needles; no coding or task-level suite is included.
