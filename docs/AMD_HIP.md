@@ -625,7 +625,9 @@ names the architecture and version (`STRATA_ROCBLAS_TUNING_V1 gfx1030 5.6.0.8d1a
 solution rocBLAS refuses at run time falls back to the default kernel for that call, and after three refusals for good.
 `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set) is the smoke test.
 
-Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured on an RX 6900 XT.
+Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu) and
+`gfx1030-rocblas-5.4.0.ad84daa81c.txt` (TheRock's `gfx103X-all` 7.13.0a20260515 wheels, which setup installs into `.venv` when
+there is no system ROCm 7), both measured on an RX 6900 XT. The table needs `STRATA_HIP_PROMPT_F16=1`.
 Other gfx1030 cards run it too, but a table calibrated for them may pick differently; `tune_rocblas` makes one in about 5
 minutes. Data: [2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md).
 
@@ -704,6 +706,7 @@ STRATA_PF_SWITCH_MIN_T=4096` 925 -> 1,092 tok/s; `--resident-experts` 1,092 -> 2
 | `STRATA_HIP_PROMPT_F16=1`, 2x RX 6900 XT, GSQ-RCO IQ3_S, engine 0.1.39 | 9.4K / 34.7K / 105.8K prompts 744 / 915 / 926 tok/s instead of 439 / 466 / 461; decode unchanged |
 | `STRATA_RDNA2_SGEMM=1`, RX 6800 over OCuLink, Ryzen 7 8845HS, Windows 11, Coder IQ1_M, 12K prompts, engine 0.1.39 | Prompt 312 -> 452 tok/s; GPU timeline 37.2 -> 25.5 s; decode 29-34 vs 29-35 tok/s; same session: native 310, SGEMM 439, FP16 494 tok/s |
 | rocBLAS table, 2x RX 6900 XT, 799-token prompt | GPU time 3,329 -> 2,985 ms; 8,874 tokens 11,978 -> 11,459 ms; 1,108 tokens unchanged (bounded by expert PCIe transfer) |
+| rocBLAS table for TheRock 7.13 (5.4.0.ad84daa81c), RX 6900 XT, UD-Q4_K_XL, `STRATA_HIP_PROMPT_F16=1` | 268-395-token follow-up on a cached conversation 1,851 -> 1,635 ms (median of 6 each, every pair 10-13% faster); fresh 745-1,569 tokens 3,554 -> 3,435 ms; fresh 4.9-6.7K tokens 9,070 -> 8,976 ms; nothing else differed |
 | `STRATA_SELECT_SIMT=1`, 2x RX 6900 XT, IQ3_S, 0.1.40.3 | 128K prompt 1,735 -> 1,861 tok/s (+7.4%); 32K +0.8%. `qsa_select_bench`, 256 queries: 2.69 -> 0.587 ms at 128K |
 | `STRATA_HC_PERSIST=1`, 2x RX 6900 XT, ROCm 10.0 | Read 1.35-2.10x; -4.2% / -2.8% ms per verify window at 4K / 32K |
 | Draft side stream, RX 6800 Windows | See above |
