@@ -152,17 +152,27 @@ bool window_checkpoint_sizes(size_t& gdn, size_t& ple, size_t& tails, size_t& de
 namespace strata::core {
 #endif
 
+// The byte sizes of a checkpoint's five running-state arrays: the one rule the validator (save side) and the read limits
+// (restore side) share. Metal: the decode window's own geometry; elsewhere the session's carve.
+static bool checkpoint_payload_sizes(const SessionState& ss, const ConversationStateSizes& z, std::array<size_t, 5>& m,
+                                     std::string& error) {
+    m = {z.gdn, ss.ple_hist ? z.ple : 0, owned_qsa(ss) * z.tail, owned_qsa(ss) * z.dead, owned_qsa(ss) * z.block_pos};
+#if defined(STRATA_GPU_METAL)
+    // the Metal window keeps the running state and the indexer block positions itself: check its geometry
+    if (!strata::metal_engine::window_checkpoint_sizes(m[0], m[1], m[2], m[3], m[4])) return fail(error, "metal window: not up");
+#else
+    (void) error;
+#endif
+    return true;
+}
+
 bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss,
                                       const ModelGeometry& g, std::string& error) {
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    size_t gdn = z.gdn, ple = ss.ple_hist ? z.ple : 0, tails = owned_qsa(ss) * z.tail,
-           dead = owned_qsa(ss) * z.dead, block_pos = owned_qsa(ss) * z.block_pos;
-#if defined(STRATA_GPU_METAL)
-    // the Metal window keeps the running state and the indexer block positions itself: check its geometry
-    if (!strata::metal_engine::window_checkpoint_sizes(gdn, ple, tails, dead, block_pos))
-        return fail(error, "metal window: not up");
-#endif
+    std::array<size_t, 5> m;
+    if (!checkpoint_payload_sizes(ss, z, m, error)) return false;
+    const size_t gdn = m[0], ple = m[1], tails = m[2], dead = m[3], block_pos = m[4];
     const struct { const char* name; size_t actual, expected; } fields[] = {
         {"gdn", c.gdn.size(), gdn}, {"ple", c.ple.size(), ple}, {"tails", c.tails.size(), tails},
         {"dead", c.dead.size(), dead}, {"block_pos", c.block_pos.size(), block_pos}};
@@ -372,13 +382,15 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     size_t tails = 0, dead = 0, block_pos = 0;
     if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
         !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+    std::array<size_t, 5> payload;
+    if (!checkpoint_payload_sizes(ss, z, payload, error)) return false;
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
     l.max_kv_layers = layers + 1;
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
-    l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
+    l.max_state_bytes = {payload[0], payload[1], payload[2], payload[3], payload[4]};
     l.max_kv_bytes.assign(layers + 1, {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
