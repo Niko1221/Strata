@@ -119,6 +119,71 @@ class Config(unittest.TestCase):
         self.assertTrue(cfg["exe"] and isinstance(cfg["args"], list))
 
 
+class Swift(unittest.TestCase):
+    def test_the_original_and_unsloth_are_unchanged(self):
+        self.assertEqual(M.model_shard_names("IQ3_S"), ["Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+                                                        "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"])
+        self.assertFalse(M.repacks("IQ3_S") or M.repacks("Q2_0"))
+        self.assertTrue(M.repacks("UD-Q4_K_XL") and M.repacks("UD-Q6_K_XL"))
+        self.assertIs(M.mac_model("IQ3_S", "qwen"), M.MAC_MODELS["IQ3_S"])
+
+    def test_swift_files_are_repacked(self):
+        self.assertEqual(M.model_shard_names("IQ3_S", "swift"),
+                         ["Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+                          "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"])
+        self.assertTrue(M.repacks("IQ3_S", "swift"))           # its shards cut through layer 14
+        self.assertEqual(list(M.MAC_SWIFT), ["IQ3_S"])           # the measured size only
+        self.assertFalse(M.streams("IQ3_S", 128, "swift"))
+        self.assertTrue(M.streams("IQ3_S", 32, "swift"))
+
+    def test_engine_args_for_the_repacked_swift_file(self):
+        native = Path("/d/metal/swift-iq3_s-metal.gguf")
+        ple = Path("/m/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf")
+        args = M.engine_args(Path("/d/packs/swift-iq3_s"), [native, ple], Path("/d/mtp/rt"), 65536, ram_gb=128)
+        self.assertEqual(args[args.index("--native") + 1], str(native))
+        self.assertEqual(args[args.index("--native-dense-gguf") + 1], str(native))
+        self.assertEqual(args[args.index("--ple-gguf") + 1], str(ple))   # the n-gram table stays in shard 1
+        self.assertEqual(args[args.index("--mtp") + 1], str(Path("/d/mtp/rt")))
+
+    def _choices(self, argv):
+        """main() up to its choices (step 3 stops it): what it warned and said."""
+        class Stop(Exception):
+            pass
+        info = {"chip": "Apple M5 Max", "ram_gb": 128.0, "macos": "27.2"}
+        warned, said = [], []
+        with mock.patch.object(M, "mac_info", return_value=info), \
+             mock.patch.object(M, "mac_problems", return_value=[]), \
+             mock.patch.object(M, "mac_configs", return_value=[]), \
+             mock.patch.object(M.S, "data_folder", return_value=(Path(tempfile.mkdtemp()), [])), \
+             mock.patch.object(M.S, "warn", side_effect=warned.append), \
+             mock.patch.object(M.S, "ok", side_effect=said.append), \
+             mock.patch.object(M.S, "say"), mock.patch.object(M.S, "step"), \
+             mock.patch.object(M.S, "pip_install", side_effect=Stop):
+            with self.assertRaises(Stop):
+                M.main(argv)
+        return warned, said
+
+    def test_swift_takes_iq3_s_and_reads_no_images(self):
+        warned, said = self._choices(["--family", "swift", "--vision", "yes", "--yes"])
+        self.assertTrue(any(s.startswith("IQ3_S, context") for s in said))
+        self.assertTrue(any("reads no images" in w for w in warned))
+        self.assertFalse(any("is a qwen file" in w for w in warned))   # --family swift is not overridden
+
+    def test_an_unmeasured_swift_size_stops(self):
+        with mock.patch.object(M, "mac_info", return_value={"chip": "Apple M5 Max", "ram_gb": 128.0, "macos": "27.2"}), \
+             mock.patch.object(M, "mac_problems", return_value=[]), \
+             mock.patch.object(M, "mac_configs", return_value=[]), \
+             mock.patch.object(M.S, "data_folder", return_value=(Path(tempfile.mkdtemp()), [])), \
+             mock.patch.object(M.S, "say"), mock.patch.object(M.S, "step"), mock.patch.object(M.S, "ok"):
+            with self.assertRaises(SystemExit):
+                M.main(["--family", "swift", "--model", "Q2_0", "--yes"])
+
+    def test_without_swift_the_choices_are_the_same(self):
+        warned, said = self._choices(["--yes"])
+        self.assertTrue(any(s.startswith("IQ3_S, context") for s in said))
+        self.assertFalse(any("reads no images" in w for w in warned))
+
+
 class Vision(unittest.TestCase):
     def test_the_projector_is_pinned_and_the_encoder_builds_with_metal(self):
         self.assertIn("mmproj-Qwen3.8-Flash-Next-BF16.gguf", M.VISION_SHA256)

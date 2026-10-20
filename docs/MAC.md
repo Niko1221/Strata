@@ -69,7 +69,7 @@ The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read 
 - the Anthropic API on `/v1/messages`;
 - the chat page on `http://127.0.0.1:8080/`.
 
-Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--vision yes|no`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
+Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--family swift` (Swift 1.5 IQ3_S, below), `--vision yes|no`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
 `--data-dir`, `--models-dir`, `--gguf-dir`, `--setup` (another model or new settings), `--no-start`, `--check` (only
 check the Mac), `--build` (build the engine again).
 
@@ -126,6 +126,35 @@ of the second request on (the first request after the start pays a few seconds o
 - **The engine's whole anonymous footprint is limited to 60% of the RAM on a Mac with 64 GB or more (82.4 GB of the M5 Max's 137.4 GB): the arena, every Metal buffer and the host memory the process holds, not only the Metal buffers.** macOS keeps a floor of file cache (`vm.vm_page_filecache_min`: 37.2 GB here) and compresses anonymous memory instead of dropping cache below it. The arena is anonymous, and the GPU wires it only while a command buffer runs, so while it is filled it is ordinary pageable memory. Two kernel panics on the M5 Max (the watchdog daemon starved for 92 s) had the engine at 95 and 90 GiB resident and the compressor at 2-4 million pages. Measured again with a memory watchdog every second: an old-build arena of 100 GB compressed 19 GB of itself in 7 seconds and swapped 24,000 pages; the old automatic arena (69 GB) with a 40 GB file write and a 16 GB program beside it took the compressor from 21,000 to 4.07 million pages in 10 seconds (pressure "warn"). With 30% left (footprint 94.5 GB) and the file write alone, 12,000 pages were swapped out; with 35% left, 316; with 40% left and the write and the 16 GB program, none and the compressor at 0.3 million pages. The old rule (arena + Metal buffers under 67%) counted 7.5 GB of buffers where the process held 11-15 GB, so its real total was about 100 GB. A resident pack is different (clean file pages that macOS drops, never compresses): UD-Q4_K_XL resident (wired 91.7 GB) took the same 40 GB write and 16 GB program with no swap-out and nothing compressed, so resident packs are limited to 70% of the RAM as before. The arena is also wired (`mlock`) once it is filled: unwired it is ordinary pageable memory whenever the GPU is idle (the GPU's own wiring ends a few seconds after its last command buffer; a Metal residency set did not hold it), and a 20 GB file written beside the idle engine took the arena into the compressor and froze the Mac (a third watchdog panic, in a control run of this work). Wired, the same write at full speed raised the compressor by 0.7 million pages (the engine's non-arena memory), swapped out 408 pages and changed nothing else. `STRATA_METAL_WIRE_ARENA=0` turns it off; it is on for Macs with 64 GB or more. The engine prints the planned total (`planned resident footprint ... cap ...`) and the footprint after the fill. `STRATA_METAL_ARENA_GB` still sets the arena as you say, with a warning when it is over the cap.
 - **The experts' copy** (`<model>.experts`, 98 GB for Q5) did not pay on the M5 Max: decode 50.3 against 50.2 tok/s without it, 4K prompt 741 against 685 (noisy). Setup does not write it on a Mac with 96 GB or more.
 - **Prompts stream in chunks of 4096** on a streaming Mac with 96 GB or more (the engine's own default there; 1024 on a smaller one): every chunk makes one pass over the experts that are not in the arena, so a longer chunk reads them fewer times. UD-Q5, warm, 2 interleaved rounds: chunks of 1024 gave 700 tok/s on the 4K prompt, 2048 gave 920 and 4096 gave 1,100 (32K: 710, 970, 1,100); the decode did not change. `STRATA_METAL_PROMPT_CHUNK=N` sets it. On a resident model 4096 instead of 2048 gained only 2-4% (Q2_0), so that default stays.
+
+### Swift 1.5 (opt-in) on the M5 Max
+
+`./setup.sh --family swift` sets up Swift 1.5 IQ3_S. Nothing else changes: without `--family swift` the size menu and every other
+model are set up as before.
+
+- **Why setup repacks it:** Swift's two shards cut through a layer (IQ3_S: layer 14's gate is in shard 1, its up and down in shard 2), and the
+  Metal engine maps one file. Setup writes the experts and dense tensors into one GGUF with `metal/tools/metal_repack.py`, as it
+  does for Unsloth's files (54.8 GB, 1,223 tensors, every one checked by SHA-256 against its shard). The n-gram table stays in
+  Swift's shard 1 and is read from the SSD.
+- **The pack:** `tools/iq_pack.py` writes Swift's 96 router tensors, stored as F32, as BF16. All 96 are exact (max error 0).
+- **The draft layer:** the original model's MTP layer, as on a PC.
+- **The engine:** no change. The decode window maps the repacked file (`PLE on`).
+- **Images:** off. The image encoder is checked on the Mac with the original model only.
+- **Sizes:** IQ3_S only. IQ2_XS and IQ3_XXS are not measured on a Mac, so setup does not offer them.
+
+Measured with SC117's abliterated Swift 1.5 IQ3_S (`SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`, the same file
+layout as UkisAI's release), resident, `--spec 2` with MTP, engine 0.1.45 with the Mac build fix (the one 0.2.0 carries). UkisAI's own files are not measured.
+
+| | Swift 1.5 IQ3_S | Qwen3.8-Flash-Next IQ3_S (SC117 abliterated), the same Mac |
+|---|---|---|
+| Decode, 4 prompts up to 200 tokens (story, Chinese, code, primes), greedy | 93.1 / 97.2 / 110.4 / 104.6 tok/s | 94.3 / 95.1 / 109.2 / 108.5 tok/s |
+| 6.8K-token needle, 3 documents | 3 of 3 found | 3 of 3 found |
+| Prompt, 6.8K tokens | 1,636-1,731 tok/s | 1,651-1,767 tok/s |
+| 3 short reasoning questions, thinking on | 3 of 3 right, 73-136 tokens | 3 of 3 right, 74-76 tokens |
+
+The answers read correctly. Swift's are worded differently from the original's, as a fine-tune's are. Not measured: a
+comparison with the CUDA or HIP engine on the same Swift file, the KL harness, contexts over 8K, streaming from the SSD on a
+smaller Mac, and a long server run. The three reasoning questions are too easy to show Swift's shorter thinking.
 
 ### M4 Mac mini, 32 GB, experts streamed from the SSD
 
@@ -256,7 +285,7 @@ reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplie
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
-- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
+- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Swift 1.5 IQ3_S is opt-in (`--family swift`) and measured with SC117's abliterated build only (above). Setup repacks Unsloth's and Swift's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Coder release is not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **The ready-made Mac engine is in the app and in the Terminal's engine component, not in the release zips.** The zips
   (for `START-HERE.bat` and `setup.sh`) have no Mac engine: `./setup.sh` builds it.
 

@@ -34,10 +34,10 @@ sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
 from strata_control import mac_fit as _fit  # noqa: E402
 from strata_control.mac_fit import (  # noqa: E402,F401  (re-exported: the tests and callers use these names here)
-    BIG_MAC_GB, CONTEXTS, GIB_GB, GPU_SHARE, MAC_ABOUT, MAC_MODELS, MIN_MACOS, OVERHEAD_GB, RECOMMENDED,
+    BIG_MAC_GB, CONTEXTS, GIB_GB, GPU_SHARE, MAC_ABOUT, MAC_MODELS, MAC_SWIFT, MIN_MACOS, OVERHEAD_GB, RECOMMENDED,
     RESIDENT_LEAVE_SHARE, STREAM_COPY_GAIN, STREAM_MEASURED, STREAM_MTP_FROM_GB, STREAM_SPEC, TESTED_CONTEXT,
-    _sysctl, gpu_budget_gb, mac_info, mac_problems, macos_tuple, model_need_gb, model_note, recommend_context,
-    recommend_model, stream_mtp, streams)
+    _sysctl, gpu_budget_gb, mac_info, mac_model, mac_problems, macos_tuple, model_need_gb, model_note,
+    recommend_context, recommend_model, stream_mtp, streams)
 
 # Apple's metal-cpp headers for the macOS 26 SDK (https://developer.apple.com/metal/cpp/), pinned by SHA-256
 METAL_CPP_URL = "https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip"
@@ -63,14 +63,21 @@ UD_SHARDS = {
 }
 
 
-def model_shard_names(model: str) -> list[str]:
+def model_shard_names(model: str, family: str | None = None) -> list[str]:
     """The model's files in order (shard 1 first)."""
-    n = MAC_MODELS[model].get("shards", 2)
-    if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
+    m = mac_model(model, family)
+    n = m.get("shards", 2)
+    if m.get("family") == "gyro":                          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
-    if MAC_MODELS[model].get("family") == "unsloth":
+    if m.get("family") == "unsloth":
         return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
-    return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
+    return [S.model_file(S.FAMILIES[m.get("family", "qwen")], model, i) for i in range(1, n + 1)]
+
+
+def repacks(model: str, family: str | None = None) -> bool:
+    """Shards that cut through layers (Unsloth's 4-6, Swift's 2) are repacked into one GGUF the GPU maps."""
+    m = mac_model(model, family)
+    return m.get("shards", 2) > 2 or m.get("family") == "swift"
 
 
 def shard_sha(name: str):
@@ -326,9 +333,9 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
+    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro", "swift"], default=None,
                     help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
-                         "(follows --model)")
+                         "(follows --model), swift = Swift 1.5 (IQ3_S; opt-in)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--port", type=int)
@@ -389,7 +396,13 @@ def main(argv=None) -> int:
     rec, notes = recommend_model(info["ram_gb"])
     for n in notes:
         S.warn(n)
-    if a.model:
+    swift = a.family == "swift"
+    if swift:
+        model = a.model or "IQ3_S"
+        if model not in MAC_SWIFT:
+            S.fail(f"Swift 1.5 on a Mac: {', '.join(MAC_SWIFT)} only; {model} is not set up here yet",
+                   "run ./setup.sh --family swift --model IQ3_S")
+    elif a.model:
         model = a.model
     else:
         names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing")]   # --model offers the others
@@ -399,9 +412,13 @@ def main(argv=None) -> int:
                   + ("  (recommended)" if m in RECOMMENDED else "") + ("   <- default" if m == rec else ""))
         model = names[int(S.ask("Which size?", [str(i) for i in range(1, len(names) + 1)],
                                 str(names.index(rec) + 1), a.yes)) - 1]
-    for n in model_note(model, info["ram_gb"]):
+    family = "swift" if swift else MAC_MODELS[model].get("family", "qwen")
+    for n in model_note(model, info["ram_gb"], family):
         S.warn(n)
-    vision = a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
+    if swift and a.vision not in (None, "no"):
+        S.warn("Swift 1.5 reads no images on a Mac yet (the image encoder is checked with the original model only): "
+               "images off")
+    vision = "no" if swift else a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
                                           ["y", "n"], "y", a.yes) == "y" else "no")   # on by default (strata_control/vision_reader.py)
     if vision == "cpu":
         from strata_control import vision_reader as VR
@@ -412,7 +429,6 @@ def main(argv=None) -> int:
     if ctx > TESTED_CONTEXT:
         S.say(f"  context {ctx}: measured on the Mac up to {TESTED_CONTEXT} (needles found at 8K-32K); longer is kept")
     S.ok(f"{model}, context {ctx}")
-    family = MAC_MODELS[model].get("family", "qwen")
     if a.family and a.family != family:
         S.warn(f"--family {a.family}: {model} is a {family} file; using {family}")
     fam = S.FAMILIES[family]
@@ -439,7 +455,7 @@ def main(argv=None) -> int:
     S.step(5, f"downloading {fam['title']} {model}")
     models_dir = Path(a.gguf_dir) if a.gguf_dir else models_root / tag
     models_dir.mkdir(parents=True, exist_ok=True)
-    files = [models_dir / n for n in model_shard_names(model)]
+    files = [models_dir / n for n in model_shard_names(model, family)]
     for s in files:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
@@ -468,9 +484,10 @@ def main(argv=None) -> int:
     # The repack and the pack move 100+ GB through the disk and the pack's python holds up to 20 GB: no engine may run beside
     # them (an engine of 70-90 GB with a repack froze the 128 GB M5 Max twice).  A lock beside the GPU's file tells the engine
     # and start() to wait; a running engine stops setup here.
-    lock_dir = data / "metal" if len(files) > 2 else files[0].parent
+    repack = repacks(model, family)
+    lock_dir = data / "metal" if repack else files[0].parent
     native0 = data / "metal" / f"{tag.lower()}-metal.gguf"
-    work = (len(files) > 2 and not (native0.exists() and S.done(native0))) or \
+    work = (repack and not (native0.exists() and S.done(native0))) or \
         not ((pack / "native_experts.txt").exists() and (pack / "tokenizer" / "vocab.json").exists())
     prep_lock = lock_dir / PREPARE_LOCK
     if work:
@@ -481,14 +498,14 @@ def main(argv=None) -> int:
         lock_dir.mkdir(parents=True, exist_ok=True)
         prep_lock.write_text(str(os.getpid()))
         atexit.register(lambda: prep_lock.unlink() if prep_lock.exists() else None)
-    if len(files) > 2:
-        # many shards: the experts and dense tensors into one GGUF the GPU maps (or streams), the n-gram table read
-        # from its own shard (every tensor checked byte for byte: --verify)
+    if repack:
+        # shards that cut through layers: the experts and dense tensors into one GGUF the GPU maps (or streams), the
+        # n-gram table read from its own shard (every tensor checked byte for byte: --verify)
         native = data / "metal" / f"{tag.lower()}-metal.gguf"
         native.parent.mkdir(parents=True, exist_ok=True)
         if not (native.exists() and S.done(native)):
             S.say(f"  Writing the model's experts and weights into one file for the GPU (one time, "
-                  f"{MAC_MODELS[model]['shard1_gb']:.0f} GB) ...")
+                  f"{mac_model(model, family)['shard1_gb']:.0f} GB) ...")
             S.run([sys.executable, str(ROOT / "metal" / "tools" / "metal_repack.py"), "--shard1", str(files[0]),
                    "--out", str(native), "--verify"])
             S.mark(native)
@@ -505,7 +522,7 @@ def main(argv=None) -> int:
     prep_lock.unlink(missing_ok=True)
     mtp = (S.find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
-    stream = streams(model, info["ram_gb"])
+    stream = streams(model, info["ram_gb"], family)
     use_mtp = stream_mtp(stream, info["ram_gb"])
     if stream and not use_mtp:
         S.ok("the experts will stream from the SSD: no MTP draft layer (one token per step is faster there); "
