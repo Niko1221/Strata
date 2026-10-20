@@ -1,0 +1,414 @@
+[
+ {
+  "id": "math_zh_high",
+  "cat": "数学推理（思考：high）",
+  "effort": "high",
+  "wall_s": 5.54,
+  "finish": "stop",
+  "content": "三管同时打开时，每小时净注水量为：\n\n\\[\n\\frac{1}{6}+\\frac{1}{4}-\\frac{1}{8}\n=\\frac{4+6-3}{24}\n=\\frac{7}{24}\n\\]\n\n所以注满水池所需时间为：\n\n\\[\n1 \\div \\frac{7}{24}=\\frac{24}{7}\\text{ 小时}\n\\]\n\n最终答案：\n\n\\[\n\\boxed{\\frac{24}{7}\\text{ 小时}}\n\\]\n\n小数形式：\n\n\\[\n\\boxed{3.428571\\text{ 小时}}\n\\]",
+  "reasoning": "We need answer in Chinese likely. Need solve. Problem: pool, inlet A fills in 6h, B fills in 4h, drain C empties full pool in 8h. Three open simultaneously from empty, how many hours to fill? Need final answer fraction and decimal.\n\nRates: A = 1/6 pool/h, B=1/4, C=-1/8. Net = 1/6+1/4-1/8. Common denominator 24: 4+6-3=7/24. Time = 1/(7/24)=24/7 hours ≈ 3.428571... Need maybe if net positive. Yes.\n\nNeed final concise but include fraction and decimal. Could mention 24/7 hours = 3 3/7 hours ≈ 3.4286 hours. Ensure final answer.\n",
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 121,
+   "completion_tokens": 345,
+   "total_tokens": 466,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 121,
+   "prompt_ms": 1107.4,
+   "prompt_per_token_ms": 9.152,
+   "prompt_per_second": 109.3,
+   "predicted_n": 345,
+   "predicted_ms": 4420.3,
+   "predicted_per_token_ms": 12.812,
+   "predicted_per_second": 78.0,
+   "draft_n": 284,
+   "draft_n_accepted": 220
+  }
+ },
+ {
+  "id": "math_zh_none",
+  "cat": "数学推理（思考：关）",
+  "effort": "none",
+  "wall_s": 9.08,
+  "finish": "stop",
+  "content": "这是一个经典的工程问题（水池注水问题）。我们可以通过计算各管道的工作效率来解决。\n\n### 1. 确定各管道的效率\n\n设水池的总容量为 $1$（即单位“池”）。\n\n*   **甲进水管**：单独注满需要 6 小时。\n    *   效率 $E_{甲} = \\frac{1}{6}$ （每小时注入 $\\frac{1}{6}$ 池水）\n*   **乙进水管**：单独注满需要 4 小时。\n    *   效率 $E_{乙} = \\frac{1}{4}$ （每小时注入 $\\frac{1}{4}$ 池水）\n*   **丙排水管**：单独排空需要 8 小时。\n    *   效率 $E_{丙} = -\\frac{1}{8}$ （每小时排出 $\\frac{1}{8}$ 池水，注意是负值，因为是排水）\n\n### 2. 计算三管同时打开的总效率\n\n当三管同时打开时，每小时的净注水量为各管道效率之和：\n\n$$\nE_{总} = E_{甲} + E_{乙} + E_{丙}\n$$\n\n代入数值：\n\n$$\nE_{总} = \\frac{1}{6} + \\frac{1}{4} - \\frac{1}{8}\n$$\n\n为了进行加减运算，我们需要找到分母 $6, 4, 8$ 的最小公倍数。\n*   $6 = 2 \\times 3$\n*   $4 = 2^2$\n*   $8 = 2^3$\n*   最小公倍数 (LCM) 为 $2^3 \\times 3 = 24$。\n\n将分数通分：\n\n$$\n\\frac{1}{6} = \\frac{4}{24}\n$$\n$$\n\\frac{1}{4} = \\frac{6}{24}\n$$\n$$\n\\frac{1}{8} = \\frac{3}{24}\n$$\n\n计算总效率：\n\n$$\nE_{总} = \\frac{4}{24} + \\frac{6}{24} - \\frac{3}{24} = \\frac{4 + 6 - 3}{24} = \\frac{7}{24}\n$$\n\n这意味着每小时可以注入 $\\frac{7}{24}$ 池水。\n\n### 3. 计算注满水池所需的时间\n\n时间 $T$ 等于总工作量除以总效率：\n\n$$\nT = \\frac{1}{E_{总}} = \\frac{1}{\\frac{7}{24}} = \\frac{24}{7} \\text{ 小时}\n$$\n\n### 4. 转换为小数\n\n$$\n\\frac{24}{7} \\approx 3.428571...\n$$\n\n通常保留两位或三位小数，或者给出精确的循环小数表示。\n\n*   **分数形式**：$\\frac{24}{7}$ 小时\n*   **小数形式**：约 $3.43$ 小时（更精确为 $3.\\overline{428571}$）\n\n### 最终答案\n\n*   **分数**：$\\frac{24}{7}$ 小时\n*   **小数**：约 $3.43$ 小时",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 81,
+   "completion_tokens": 748,
+   "total_tokens": 829,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 81,
+   "prompt_ms": 569.4,
+   "prompt_per_token_ms": 7.03,
+   "prompt_per_second": 142.3,
+   "predicted_n": 748,
+   "predicted_ms": 8507.2,
+   "predicted_per_token_ms": 11.373,
+   "predicted_per_second": 87.9,
+   "draft_n": 626,
+   "draft_n_accepted": 506
+  }
+ },
+ {
+  "id": "logic_trap",
+  "cat": "逻辑陷阱",
+  "effort": "none",
+  "wall_s": 1.36,
+  "finish": "stop",
+  "content": "1. Sally herself is one of the sisters, and since each brother has exactly 2 sisters, there must be another sister besides Sally, making a total of 2 sisters in the family (Sally + 1 other). Therefore, Sally has 1 sister.",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 47,
+   "completion_tokens": 55,
+   "total_tokens": 102,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 47,
+   "prompt_ms": 546.6,
+   "prompt_per_token_ms": 11.63,
+   "prompt_per_second": 86.0,
+   "predicted_n": 55,
+   "predicted_ms": 810.3,
+   "predicted_per_token_ms": 14.733,
+   "predicted_per_second": 67.9,
+   "draft_n": 49,
+   "draft_n_accepted": 32
+  }
+ },
+ {
+  "id": "logic_trap_high",
+  "cat": "逻辑陷阱（思考：high）",
+  "effort": "high",
+  "wall_s": 3.76,
+  "finish": "stop",
+  "content": "1. Each brother’s two sisters include Sally, so Sally has one additional sister.",
+  "reasoning": "We need answer user's puzzle. Need think carefully. Sally has 3 brothers. Each of her brothers has 2 sisters. How many sisters does Sally have? Need answer with number first, then one sentence reasoning.\n\nInterpretation: Sally is female. She has 3 brothers. Each brother has 2 sisters. The sisters of a brother include Sally and possibly other sisters. If each brother has 2 sisters, and Sally is one of them, then there is one additional sister. So Sally has 1 sister. But check: If Sally has 3 brothers, each brother has 2 sisters. Since all brothers share same sisters. Sally is a sister to each brother. If each brother has exactly 2 sisters, total sisters in family = 2. Sally plus one other sister. Sally has 1 sister. Answer number first: 1. Then one sentence reasoning. Need ensure no ambiguity: Could be trick: Each of her brothers has 2 sisters, including Sally, so Sally has one sister. If Sally herself is not counted as sister to herself. Yes.\n\nNeed final concise.\n",
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 87,
+   "completion_tokens": 246,
+   "total_tokens": 333,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 87,
+   "prompt_ms": 583.4,
+   "prompt_per_token_ms": 6.706,
+   "prompt_per_second": 149.1,
+   "predicted_n": 246,
+   "predicted_ms": 3172.3,
+   "predicted_per_token_ms": 12.896,
+   "predicted_per_second": 77.5,
+   "draft_n": 207,
+   "draft_n_accepted": 141
+  }
+ },
+ {
+  "id": "knowledge",
+  "cat": "常识问答",
+  "effort": "none",
+  "wall_s": 1.22,
+  "finish": "stop",
+  "content": "1. 周树人\n2. 堪培拉\n3. 加西亚·马尔克斯\n4. 100℃\n5. 皮肤\n6. 尼尔·阿姆斯特朗，1969年",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 87,
+   "completion_tokens": 49,
+   "total_tokens": 136,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 87,
+   "prompt_ms": 577.7,
+   "prompt_per_token_ms": 6.64,
+   "prompt_per_second": 150.6,
+   "predicted_n": 49,
+   "predicted_ms": 636.8,
+   "predicted_per_token_ms": 12.996,
+   "predicted_per_second": 76.9,
+   "draft_n": 39,
+   "draft_n_accepted": 35
+  }
+ },
+ {
+  "id": "code_expr",
+  "cat": "写代码（运行测试）",
+  "effort": "none",
+  "wall_s": 4.79,
+  "finish": "stop",
+  "content": "```python\ndef evaluate(expr: str) -> float:\n    tokens = []\n    i = 0\n    n = len(expr)\n    while i < n:\n        if expr[i] == ' ':\n            i += 1\n            continue\n        if expr[i] in '+-*/()':\n            tokens.append(expr[i])\n            i += 1\n        elif expr[i].isdigit() or expr[i] == '.':\n            j = i\n            while j < n and (expr[j].isdigit() or expr[j] == '.'):\n                j += 1\n            tokens.append(float(expr[i:j]))\n            i = j\n        else:\n            raise ValueError(f\"Unexpected character: {expr[i]}\")\n\n    def parse_expr():\n        result = parse_term()\n        while tokens and tokens[0] in '+-':\n            op = tokens.pop(0)\n            right = parse_term()\n            if op == '+':\n                result += right\n            else:\n                result -= right\n        return result\n\n    def parse_term():\n        result = parse_factor()\n        while tokens and tokens[0] in '*/':\n            op = tokens.pop(0)\n            right = parse_factor()\n            if op == '*':\n                result *= right\n            else:\n                result /= right\n        return result\n\n    def parse_factor():\n        if tokens and tokens[0] == '-':\n            tokens.pop(0)\n            return -parse_factor()\n        if tokens and tokens[0] == '(':\n            tokens.pop(0)\n            result = parse_expr()\n            if not tokens or tokens[0] != ')':\n                raise ValueError(\"Missing closing parenthesis\")\n            tokens.pop(0)\n            return result\n        if tokens and isinstance(tokens[0], float):\n            return tokens.pop(0)\n        raise ValueError(\"Unexpected token\")\n\n    result = parse_expr()\n    if tokens:\n        raise ValueError(\"Extra tokens after expression\")\n    return result\n```",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 81,
+   "completion_tokens": 440,
+   "total_tokens": 521,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 81,
+   "prompt_ms": 568.0,
+   "prompt_per_token_ms": 7.012,
+   "prompt_per_second": 142.6,
+   "predicted_n": 440,
+   "predicted_ms": 4215.1,
+   "predicted_per_token_ms": 9.58,
+   "predicted_per_second": 104.4,
+   "draft_n": 345,
+   "draft_n_accepted": 319
+  }
+ },
+ {
+  "id": "code_bug",
+  "cat": "找 bug",
+  "effort": "none",
+  "wall_s": 8.1,
+  "finish": "stop",
+  "content": "## Bug 分析\n\n这段二分查找代码存在 **无限循环** 的 bug。问题出在 `lo = mid` 这一行。\n\n### 核心问题\n\n当 `a[mid] < x` 时，执行 `lo = mid`（而不是 `lo = mid + 1`）。这会导致：\n\n- 如果 `mid == lo`，那么 `lo = mid` 后 `lo` 没有变化，循环条件 `lo < hi` 仍然成立，进入死循环。\n- 例如：`a = [1, 2]`, `x = 2`，初始 `lo=0, hi=2`，`mid=1`，`a[1]=2 > x`? 不，`a[1]==x` 会返回。但考虑 `a=[1,3]`, `x=2`：`lo=0,hi=2,mid=1,a[1]=3>2 → hi=1`；然后 `lo=0,hi=1,mid=0,a[0]=1<2 → lo=0`，此时 `lo==mid==0`，下一轮 `mid=(0+1)//2=0`，又执行 `lo=0`，无限循环。\n\n### 修正方法\n\n将 `lo = mid` 改为 `lo = mid + 1`，确保搜索区间严格缩小：\n\n```python\ndef bsearch(a, x):\n    lo, hi = 0, len(a)\n    while lo < hi:\n        mid = (lo + hi) // 2\n        if a[mid] < x:\n            lo = mid + 1       # ← 修正：必须跳过 mid，否则可能死循环\n        elif a[mid] > x:\n            hi = mid\n        else:\n            return mid\n    return -1\n```\n\n### 为什么 `hi = mid` 没问题？\n\n因为当 `a[mid] > x` 时，`mid` 不可能等于 `hi`（由于 `lo < hi`，`mid = (lo+hi)//2 < hi`），所以 `hi = mid` 一定会使区间缩小。而 `lo = mid` 时，`mid` 可能等于 `lo`，导致区间不缩小，因此必须用 `lo = mid + 1`。\n\n### 验证\n\n```python\n# 测试用例\nprint(bsearch([1, 3, 5, 7], 5))   # → 2 ✓\nprint(bsearch([1, 3, 5, 7], 4))   # → -1 ✓\nprint(bsearch([], 1))              # → -1 ✓\nprint(bsearch([1], 1))             # → 0 ✓\nprint(bsearch([1, 2], 2))          # → 1 ✓\n```\n\n所有测试通过，无死循环。",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 111,
+   "completion_tokens": 626,
+   "total_tokens": 737,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 111,
+   "prompt_ms": 611.4,
+   "prompt_per_token_ms": 5.508,
+   "prompt_per_second": 181.6,
+   "predicted_n": 626,
+   "predicted_ms": 7483.2,
+   "predicted_per_token_ms": 11.954,
+   "predicted_per_second": 83.7,
+   "draft_n": 556,
+   "draft_n_accepted": 419
+  }
+ },
+ {
+  "id": "json_strict",
+  "cat": "严格 JSON 输出",
+  "effort": "none",
+  "wall_s": 1.64,
+  "finish": "stop",
+  "content": "[{\"name\":\"李默\",\"age\":35,\"city\":\"北京\",\"skills\":[\"编程\",\"摄影\"]},{\"name\":\"王芳\",\"age\":42,\"city\":\"上海\",\"skills\":[\"烹饪\",\"园艺\"]},{\"name\":\"张伟\",\"age\":28,\"city\":\"广州\",\"skills\":[\"游泳\",\"吉他\"]}]",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 69,
+   "completion_tokens": 65,
+   "total_tokens": 134,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 69,
+   "prompt_ms": 802.3,
+   "prompt_per_token_ms": 11.628,
+   "prompt_per_second": 86.0,
+   "predicted_n": 65,
+   "predicted_ms": 830.0,
+   "predicted_per_token_ms": 12.769,
+   "predicted_per_second": 78.3,
+   "draft_n": 47,
+   "draft_n_accepted": 42
+  }
+ },
+ {
+  "id": "poem",
+  "cat": "七言绝句",
+  "effort": "none",
+  "wall_s": 1.04,
+  "finish": "stop",
+  "content": "霜风渐起夜微凉，\n月照空阶影自长。\n落叶无声铺满径，\n寒蛩独语断愁肠。",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 45,
+   "completion_tokens": 35,
+   "total_tokens": 80,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 45,
+   "prompt_ms": 496.5,
+   "prompt_per_token_ms": 11.033,
+   "prompt_per_second": 90.6,
+   "predicted_n": 35,
+   "predicted_ms": 543.9,
+   "predicted_per_token_ms": 15.54,
+   "predicted_per_second": 64.4,
+   "draft_n": 24,
+   "draft_n_accepted": 14
+  }
+ },
+ {
+  "id": "translate",
+  "cat": "中译英",
+  "effort": "none",
+  "wall_s": 1.33,
+  "finish": "stop",
+  "content": "This little shop has been open for over twenty years, and the owner always remembers his regular customers’ preferences. On rainy days, he lends umbrellas to guests who don’t have one, never rushing them to return it.",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 50,
+   "completion_tokens": 46,
+   "total_tokens": 96,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 50,
+   "prompt_ms": 560.1,
+   "prompt_per_token_ms": 11.202,
+   "prompt_per_second": 89.3,
+   "predicted_n": 46,
+   "predicted_ms": 761.8,
+   "predicted_per_token_ms": 16.561,
+   "predicted_per_second": 60.4,
+   "draft_n": 47,
+   "draft_n_accepted": 28
+  }
+ },
+ {
+  "id": "summary_zh",
+  "cat": "中文长文摘要",
+  "effort": "none",
+  "wall_s": 8.87,
+  "finish": "stop",
+  "content": "1. 在普通游戏电脑（12GB+显存）上免费运行1250亿参数AI模型，数据本地化。\n2. 通过GPU、内存与SSD分摊专家权重，实现每秒60-94 token的高速度推理。\n3. 支持Windows/Linux，兼容OpenAI API，可集成编程智能体及多模态功能。",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 4122,
+   "completion_tokens": 83,
+   "total_tokens": 4205,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 4122,
+   "prompt_ms": 7558.8,
+   "prompt_per_token_ms": 1.834,
+   "prompt_per_second": 545.3,
+   "predicted_n": 83,
+   "predicted_ms": 1280.0,
+   "predicted_per_token_ms": 15.422,
+   "predicted_per_second": 64.8,
+   "draft_n": 72,
+   "draft_n_accepted": 47
+  }
+ },
+ {
+  "id": "needle",
+  "cat": "长文档找细节（~2万 token）",
+  "effort": "none",
+  "wall_s": 38.71,
+  "finish": "stop",
+  "content": "7391-ALPHA-蓝鲸",
+  "reasoning": null,
+  "tool_calls": null,
+  "usage": {
+   "prompt_tokens": 21819,
+   "completion_tokens": 11,
+   "total_tokens": 21830,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 21819,
+   "prompt_ms": 38499.0,
+   "prompt_per_token_ms": 1.764,
+   "prompt_per_second": 566.7,
+   "predicted_n": 11,
+   "predicted_ms": 166.9,
+   "predicted_per_token_ms": 15.173,
+   "predicted_per_second": 65.9,
+   "draft_n": 9,
+   "draft_n_accepted": 9
+  }
+ },
+ {
+  "id": "tool_call",
+  "cat": "工具调用",
+  "effort": "none",
+  "wall_s": 1.83,
+  "finish": "tool_calls",
+  "content": "I'll check Beijing's current weather for you.",
+  "reasoning": null,
+  "tool_calls": [
+   {
+    "id": "call_c2b960ada5b541db96499cd4",
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "arguments": "{\"city\":\"Beijing\",\"unit\":\"celsius\"}"
+    }
+   }
+  ],
+  "usage": {
+   "prompt_tokens": 297,
+   "completion_tokens": 51,
+   "total_tokens": 348,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "timings": {
+   "cache_n": 0,
+   "prompt_n": 297,
+   "prompt_ms": 1142.0,
+   "prompt_per_token_ms": 3.845,
+   "prompt_per_second": 260.1,
+   "predicted_n": 51,
+   "predicted_ms": 683.8,
+   "predicted_per_token_ms": 13.408,
+   "predicted_per_second": 74.6,
+   "draft_n": 45,
+   "draft_n_accepted": 37
+  }
+ }
+]

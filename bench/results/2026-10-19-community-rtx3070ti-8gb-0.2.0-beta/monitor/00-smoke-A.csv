@@ -1,0 +1,3 @@
+t,gpu_util,sm_mhz,power_w,temp_c,throttle,cpu_total_pct,other_cpu_s,other_top
+1792455710.0,0,1995,60.63,49,0x0000000000000001,38.6,0,
+1792455713.6,99,2025,177.50,60,0x0000000000000001,59.1,5.39,LightingService.exe:2.98;cam_helper.exe:0.62;System:0.34

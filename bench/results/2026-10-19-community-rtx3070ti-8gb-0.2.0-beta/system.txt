@@ -1,0 +1,80 @@
+# System probes and provenance, collected 2026-10-19 on the benchmark PC (local paths replaced)
+
+## OS
+Microsoft Windows 11 Pro 10.0.26200 build 26200 64-bit
+
+## GPU (nvidia-smi)
+name, memory.total [MiB], driver_version, pcie.link.gen.max, pcie.link.width.max, power.limit [W], compute_cap
+NVIDIA GeForce RTX 3070 Ti, 8192 MiB, 617.42, 4, 16, 290.00 W, 8.6
+
+## CPU
+AMD Ryzen 9 5900X 12-Core Processor; cores 12; threads 24; max clock 4200 MHz
+
+## RAM
+total physical: 63.9 GiB
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+
+## Storage
+Samsung SSD 970 EVO Plus 2TB; SSD; NVMe; 1863 GB
+
+## Display power setting (the GPU also drives the display)
+power plan: Balanced; the display turns off after (AC): 60 min without keyboard/mouse input
+System log, Microsoft-Windows-Kernel-Power, 2026-10-19 18:27:59 local, event 566: "The system session has transitioned from 18 to 19." - 60 min after the last keyboard/mouse input (about 17:28, read at 18:48 as 80 min idle); session 1 ran 17:23-18:29 with the display on, session 2 and the task check 18:30-18:46 with it off.
+
+## Strata tree
+git clone --branch v0.2.0-beta https://github.com/Niko1221/Strata.git -> HEAD 3d1fb48090e8f2cefc22d7b5845fb7f5b71f33fa (v0.2.0-beta); CMakeLists.txt project version 0.1.45.3
+
+## Engine (a release asset of v0.2.0-beta, placed in <repo>\engine by hand: the tag's setup.py looks for the pre-0.2 asset name strata-windows-x64.zip and found none)
+asset: strata-engine-0.1.45.3-windows-x86_64-cuda-cuda13.tar.gz, SHA-256 1b3845ecc3a46644ddc11e5296ab3d35026dbf650041c53657c43874682d1559 (matches the release's SHA256SUMS.txt)
+every file matches the SHA-256 listed in its engine-component.json; engine/BUILD.json:
+{
+ "version": "0.1.45.3",
+ "source": "f-split-pkg4",
+ "commit": "f6d65cb584c0",
+ "archs": [
+  75,
+  86,
+  89,
+  120
+ ],
+ "ptx": true,
+ "cuda": "13.0",
+ "vision": "gpu-cuda13",
+ "portable": true
+}
+engine-component.json: build_id f6d65cb584c0+cuda13.0, min_driver nvidia 580.65, notes: 0.2.0-beta tester build from f-split-int2 b6b246042: engine speed work, strata-vision (CUDA 13) inside, cublas bundled
+engine/strata.exe SHA-256: 0a38ce07a1e9872bbce13a2d9889e44fb5b2799db251d142031ce85a68486420; size 223403008 B
+engine start line: "strata generate: session is up (engine 0.1.45)"
+setup accepted it: "[ok] ready-made engine already installed" (setup.py get_prebuilt: BUILD.json present, source not 'local', archs include 86, version >= MIN_ENGINE (0, 1, 45))
+
+## CUDA wheels in .venv
+nvidia-cublas       13.0.2.14
+nvidia-cuda-runtime 13.0.96
+
+## Environment
+STRATA_* variables (process, user, machine): none; B-share-off sets STRATA_PREFILL_CPU_SHARE=0 in its config's env only
+
+## Model files (the shared <data-dir>: the same files as the 0.1.40.3 report; nothing downloaded or packed again)
+Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf: 39225954592 B
+Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf: 28800138432 B
+expert-profile.bin SHA-256: 8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf (identical to 0.1.40.3's)
+packs\iq2_xs and mtp\rt unchanged since 2026-10-07 (setup reused them, draft_vocab.bin identical); the only file setup wrote in <data-dir> was mtp\tensors\verified.json (its MTP integrity check)
+
+## setup (START-HERE.bat --yes --family qwen --model IQ2_XS --vision no --no-start), excerpts
+  [ok] GPU: NVIDIA GeForce RTX 3070 Ti, 8.0 GB VRAM, compute capability 8.6, driver 617.42
+  [!]  less than 12 GB of VRAM: Strata will run, but most experts stay on the CPU and it will be slow
+  [ok] RAM: 64 GB
+  [ok] CPU: AMD Ryzen 9 5900X 12-Core Processor (AVX2)
+  [ok] PCIe: 4.0 x16
+  4) IQ3_S    (recommended) 3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC with little else running; download 84 GB, uses ~50 GB of RAM
+  [ok] context: 32768 tokens
+  [ok] KV cache: 8-bit
+  [ok] ready-made engine already installed
+(the first attempt, before the engine was placed by hand, printed "No ready-made engine for v0.1.45.3 (HTTP Error 404: Not Found)" and "compiling instead"; it installed Visual Studio 2022 Build Tools and stopped when the CUDA Toolkit download failed; nothing was compiled)
+setup with --context 131072 --kv k8v4 printed "KV cache: 4-bit (Hadamard-rotated)" for k8v4 (the label issue the 0.1.40.3 report noted)
+
+## Background during the runs
+Closed before session 1: ChatGPT desktop, Discord, Steam, NZXT CAM, SteelSeries GG and its capture service. Still running: Chrome (idle), the Claude desktop app, ASUS LightingService (about 0.6 of a core throughout, see monitor/), SteelSeries GG helpers that restarted themselves, system services.
