@@ -1,0 +1,9 @@
+strata   code parse_duration   PASS   258 tok @  40.2 tok/s    9.1 s  
+strata   code merge_intervals  PASS   182 tok @  42.4 tok/s    6.6 s  
+strata   code lru_cache        PASS   485 tok @  48.1 tok/s   12.6 s  
+strata   code roman            PASS   529 tok @  46.1 tok/s   14.0 s  
+strata   code toposort         PASS   453 tok @  43.9 tok/s   12.7 s  
+strata   code fix_bisect       PASS    95 tok @  48.9 tok/s    5.0 s  
+strata   code calc             PASS   844 tok @  47.3 tok/s   20.2 s  
+strata   code wrap             PASS   343 tok @  46.2 tok/s    9.9 s  
+strata   code total 8/8 passed, 3189 tokens, 90 s

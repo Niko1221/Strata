@@ -1,0 +1,14 @@
+start 18:57:12, GPU C: 57 46 47 
+p4k        prompt  3857 tok @  226.3 tok/s | gen    4 tok @  36.5 tok/s | drafts 3/3 | '180'
+p16k       prompt 15672 tok @  374.6 tok/s | gen    4 tok @  24.7 tok/s | drafts 3/3 | '720'
+p32k       prompt 31885 tok @  485.3 tok/s | gen    5 tok @  24.5 tok/s | drafts 4/6 | '1440'
+gen        prompt    26 tok @   51.3 tok/s | gen  300 tok @  33.3 tok/s | drafts 138/260 | 'Elias did not speak to the sea; he liste'
+gen        prompt     7 tok @   56.2 tok/s | gen  300 tok @  33.5 tok/s | drafts 145/269 | 'Elias did not speak to the sea; he liste'
+gen        prompt     7 tok @   56.0 tok/s | gen  300 tok @  34.5 tok/s | drafts 146/268 | 'Elias did not speak to the sea; he liste'
+tool       prompt   305 tok @   69.8 tok/s | gen   65 tok @  37.2 tok/s | drafts 43/55 | [('get_weather', '{"city":"Brisbane"}')]
+(the coding step of this run failed on a path bug in the script; the 8 tasks were run right after: cand-strata-0.1.42-code.txt)
+end 18:59:50
+GPU0 max 73C, max 169W, thermal slowdown 0/79
+GPU1 max 66C, max 162W, thermal slowdown 0/79
+GPU2 max 67C, max 164W, thermal slowdown 0/79
+DONE
