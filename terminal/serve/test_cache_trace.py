@@ -1,11 +1,11 @@
 import unittest
-from .cache_trace import snapshot
+from serve.cache_trace import snapshot
 
 class CacheTrace(unittest.TestCase):
 
     def test_resume_after_main_source_is_actual_reuse(self):
         import queue, threading
-        from .server import StrataEngine
+        from serve.server import StrataEngine
         engine=object.__new__(StrataEngine)
         engine.lines=queue.Queue()
         engine._ctl_mode='solo'
@@ -21,7 +21,7 @@ class CacheTrace(unittest.TestCase):
         self.assertEqual(engine.cache_events_view()[0]['reused_tokens'],700)
     def test_global_expiry_does_not_inherit_request(self):
         import threading
-        from .server import StrataEngine
+        from serve.server import StrataEngine
         engine=object.__new__(StrataEngine)
         engine._tl=threading.local()
         engine._tl.request_key='request-a'
