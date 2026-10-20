@@ -164,6 +164,10 @@ struct Timing {
     // source copy crawls (source_done is what orders the slot's next last-stage window: B0/B only, the old loop has
     // no such wait and relies on the copy taking microseconds)
     double snap_slow = 0.0, src_slow = 0.0;
+    // chain_n() as MtpDrafter::chain_n reports it: the outputs queued so far (with n_queue, the steps queued up to now).
+    // false: the clamped n_out while the chain runs (what this mock answered before; MtpDrafter answers that through
+    // chain_cap) - both must work, since the scheduler reads the bound from chain_cap and chain_n only once it is done
+    bool chain_n_engine = true;
 };
 
 // durations (ms) of a window's stage by its rows, from the recorded trace
@@ -268,7 +272,8 @@ public:
         return 1;
     }
     bool chain_live() override { return ch_.live; }
-    int chain_n() override { return ch_.n; }
+    int chain_cap() override { return ch_.cap; }
+    int chain_n() override { return T_.chain_n_engine && ch_.live ? ch_.queued : ch_.n; }
     const int32_t* chain_tok() override { return tok_; }
     const float* chain_prob() override { return prob_; }
     void ple_prev(int32_t out[2]) override {
@@ -446,6 +451,7 @@ private:
     struct Chain {
         bool live = false, open = false;
         int n = 0, n_early = 0, queued = 0;
+        int cap = 0;                 // n_out after the clamp (n becomes the outputs queued once the chain is done)
         int32_t out[12] = {};
         float prob[12] = {};
         bool landed[12] = {};
@@ -993,6 +999,7 @@ bool Sim::exec(const PlOp& o) {
                 ++clamps;
             }
             ch_.n = n;
+            ch_.cap = n;
             ch_.n_early = std::min(o.n_early, n);
             compute_chain(o);
             chain_src_uid_ = o.uid;
@@ -3154,6 +3161,7 @@ RandomCase make_random(uint64_t seed) {
     tm.chain_round *= cs;
     if (r.p(0.15) || g_stress) tm.snap_slow = 0.3;
     if (r.p(0.15) || g_stress) tm.src_slow = g_stress ? 0.6 : 0.3;
+    tm.chain_n_engine = (mix64(seed + 11) & 3) != 0;   // a quarter with the old reading (not from r: the worlds stay as they were)
     if (g_stress) c.slots = 0;   // the fewest slots: windows wait for one, and take a slot the moment it is free
     return rc;
 }
