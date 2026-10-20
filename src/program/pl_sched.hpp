@@ -159,7 +159,11 @@ public:
     virtual int chain_ready() = 0;           // chain_outputs_ready (-1: an error)
     virtual int chain_poll() = 0;            // 1 done, 0 running (or open), -1 an error
     virtual bool chain_live() = 0;
-    virtual int chain_n() = 0;               // the outputs of the chain launched last (after the cell clamp)
+    // The chain launched last, as MtpDrafter reports it: chain_cap the outputs it may queue at most (n_out after the
+    // cell clamp), chain_n the outputs queued so far (= chain_cap for a chain queued whole; with n_queue the steps
+    // queued up to now, and once a closed open chain is done the outputs it really has)
+    virtual int chain_cap() = 0;
+    virtual int chain_n() = 0;
     virtual const int32_t* chain_tok() = 0;
     virtual const float* chain_prob() = 0;
     virtual void ple_prev(int32_t out[2]) = 0;   // ss.ple_prev now
@@ -217,6 +221,9 @@ inline StateMask pl_state_mask(int64_t end) {
 
 class Sched {
 public:
+    // Whether a configuration can run (what begin checks first): the engine asks before it commits a request to the
+    // new loop, so a configuration it cannot run falls back to today's loop instead of failing the request
+    static bool check(const Config& c, std::string& err);
     // A request: the first window (T = 1, token x at position p), ss.ple_prev now, the loop's clock now
     bool begin(const Config& c, int64_t p, int32_t x, const int32_t ple_prev[2], double t0_ms, std::string& err);
     // One round of the loop: 1 go on, 0 the loop is over (nothing in flight; the engine drains), -1 an error (err())
@@ -237,6 +244,8 @@ public:
     int slot_owner_count() const;
     bool in_flight() const;        // any window in flight on any stage
     int64_t committed_end() const { return end_; }
+    // One line of the scheduler's state (an error's context): the windows, the doomed, the undo, the chain, the slots
+    std::string dump() const;
 
 private:
     struct Held { uint64_t uid = 0; int slot = -1; bool need_undo = false, need_chain = false; };

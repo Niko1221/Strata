@@ -1417,7 +1417,7 @@ PlDiag g_pl_diag;
 struct PlIoFns final : strata::pl::PlIo {
     std::function<int(int, int, bool)> f_front;
     std::function<int(int, int32_t*)> f_last;
-    std::function<int()> f_chain_ready, f_chain_poll, f_chain_n;
+    std::function<int()> f_chain_ready, f_chain_poll, f_chain_cap, f_chain_n;
     std::function<bool()> f_chain_live;
     std::function<const int32_t*()> f_chain_tok;
     std::function<const float*()> f_chain_prob;
@@ -1434,6 +1434,7 @@ struct PlIoFns final : strata::pl::PlIo {
     int chain_ready() override { return f_chain_ready(); }
     int chain_poll() override { return f_chain_poll(); }
     bool chain_live() override { return f_chain_live(); }
+    int chain_cap() override { return f_chain_cap(); }
     int chain_n() override { return f_chain_n(); }
     const int32_t* chain_tok() override { return f_chain_tok(); }
     const float* chain_prob() override { return f_chain_prob(); }
@@ -14774,6 +14775,7 @@ int main(int argc, char** argv) {
                 io.f_chain_ready = [&]() { return mtp.chain_outputs_ready(err); };
                 io.f_chain_poll = [&]() { return mtp.chain_poll(err); };
                 io.f_chain_live = [&]() { return mtp.chain_live(); };
+                io.f_chain_cap = [&]() { return mtp.chain_cap(); };   // what the chain may queue (n_out, clamped)
                 io.f_chain_n = [&]() { return mtp.chain_n(); };
                 io.f_chain_tok = [&]() { return mtp.chain_tok(); };
                 io.f_chain_prob = [&]() { return mtp.chain_prob(); };
