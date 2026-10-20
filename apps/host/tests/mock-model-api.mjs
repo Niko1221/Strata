@@ -12,8 +12,9 @@ export async function createMockModelApi(port = 0) {
     if (req.url.includes('/models')) {
       res.setHeader('content-type', 'application/json');
       const paginated = req.url.includes('limit=100');
-      res.end(JSON.stringify({ data: req.url.includes('after_id=') ? [{ id: 'second-model', display_name: 'Second model' }] : [{ id: 'mock-chat', name: 'Test chat model', context_length: 32768 }, { id: 'mock-reasoning', name: 'Test reasoning model', context_length: 65536 }], ...(paginated ? { has_more: !req.url.includes('after_id='), last_id: 'mock-reasoning' } : {}) })); return;
+      res.end(JSON.stringify({ data: req.url.includes('after_id=') ? [{ id: 'second-model', display_name: 'Second model' }] : [{ id: 'mock-chat', name: 'Test chat model', context_length: 32768 }, { id: 'mock-reasoning', name: 'Test reasoning model', context_length: 65536, input_modalities: ['text'], supported_parameters: ['reasoning'] }], ...(paginated ? { has_more: !req.url.includes('after_id='), last_id: 'mock-reasoning' } : {}) })); return;
     }
+    if (req.url === '/props') { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ modalities: { vision: false } })); return; }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const send = value => res.write(`data: ${JSON.stringify(value)}\r\n\r\n`);
     if (body.model === 'truncated') { send({ choices: [{ index: 0, delta: { content: 'Partial' } }] }); res.end(); return; }
