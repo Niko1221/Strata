@@ -6,8 +6,12 @@
 //      read would have applied; then the write and the projection together.
 //   3. add: h + d (bitwise).
 // For 1, 3 and 8 rows (a decode token, a verify window, a full window); the prompt chunks use the same kernel.
+//
+//   cvec_parity            the checks
+//   cvec_parity --bench    GPU time of the 41 dispatches a window adds (layers 4..44, write + project), per window size
 #include "mtl_rt.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +40,8 @@ std::string engine_msl() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
     mtl::Context cx;
     std::printf("device %s\n", cx.device_name().c_str());
     const int lcv = cx.compile({engine_msl() + "/cvec.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -97,6 +102,33 @@ int main() {
         return worst;
     };
 
+    if (bench) {
+        // the window's shape: 41 dispatches, each behind a barrier, on 41 distinct direction rows
+        mtl::Buffer dirs = cx.alloc(4 * (size_t) 48 * N);
+        for (int l = 0; l < 48; ++l) std::memcpy(dirs.as<float>() + (size_t) l * N, v.data(), 4 * (size_t) N);
+        for (int T : {1, 2, 3, 8, 2048}) {
+            mtl::Buffer RB = T > MAXT ? cx.alloc(4 * (size_t) T * D) : R, BB = T > MAXT ? cx.alloc(4 * (size_t) T * N) : bo,
+                        IB = T > MAXT ? cx.alloc(4 * (size_t) T * HC) : inj;
+            std::vector<mtl::Dispatch> ds;
+            for (int l = 4; l <= 44; ++l) {
+                CvecArgs a{N, HC, 0, 1u, 1.0f};
+                mtl::Dispatch d;
+                d.p = &pcv;
+                d.args = {mtl::Arg::B(RB), mtl::Arg::B(BB), mtl::Arg::B(IB), mtl::Arg::B(dirs, (size_t) l * N * 4), mtl::Arg::V(a)};
+                d.grid[0] = HC;
+                d.grid[1] = (uint32_t) T;
+                d.tg[0] = 256;
+                ds.push_back(d);
+            }
+            cx.warm(ds, 0.3);
+            std::vector<double> t;
+            for (int i = 0; i < 20; ++i) t.push_back(cx.run_graph(ds));
+            std::sort(t.begin(), t.end());
+            std::printf("rows %4d: 41 dispatches %.3f ms GPU (median of 20), %.2f us each\n", T, 1e3 * t[10], 1e6 * t[10] / 41);
+            if (T > MAXT) { cx.free(RB); cx.free(BB); cx.free(IB); }
+        }
+        return 0;
+    }
     for (int T : {1, 3, 8}) {
         std::printf("rows %d\n", T);
         // ---- 1. project, no pending write
