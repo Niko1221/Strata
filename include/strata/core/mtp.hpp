@@ -170,8 +170,13 @@ public:
     /// An open chain queues nothing more: the steps already queued run, and chain_poll then reports it done.
     void chain_close() { chain_open_ = false; }
     bool chain_open() const { return chain_live_ && chain_open_; }
-    /// The outputs the current (or last) chain queued: n_out after the cell clamp, or fewer for a closed open chain.
+    /// The outputs the current (or last) chain queued SO FAR: all of them (n_out after the cell clamp) for a chain
+    /// launched whole, the steps queued up to now for an open one (n_queue, chain_extend), fewer than chain_cap() for a
+    /// closed open chain.
     int chain_n() const { return chain_n_; }
+    /// The outputs the current (or last) chain may queue at most: n_out after the cell clamp (chain_extend's bound).
+    /// Equal to chain_n() for a chain launched whole.
+    int chain_cap() const { return chain_cap_; }
     /// 1: every output is in chain_tok()/chain_prob(); 0: still running (or open); -1: an error.
     int chain_poll(std::string& err);
     /// How many of the chain's first outputs (up to `n_early`; all of them once the chain is done) have landed in
