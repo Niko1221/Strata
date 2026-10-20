@@ -1,0 +1,1 @@
+export function createApi(db){return {async order(user,input){if(!user)throw Error('unauthorized');if(db.stock<input.quantity)throw Error('out of stock');await Promise.resolve();db.stock-=input.quantity;return db.insert({tenant:input.tenant,quantity:input.quantity});},async list(user){return db.orders;}};}

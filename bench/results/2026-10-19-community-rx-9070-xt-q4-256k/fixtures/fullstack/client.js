@@ -1,0 +1,1 @@
+export function createClient(fetchOrders){const state={orders:[],loading:false,error:null};return {state,async refresh(){state.loading=true;try{state.orders=await fetchOrders();}catch(e){state.error=e.message;}state.loading=false;}};}

@@ -20,6 +20,11 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-19: RX 9070 XT 16 GB, Ryzen 7 9800X3D, 64 GB RAM](../bench/results/2026-10-19-community-rx-9070-xt-q4-256k/README.md):
+  Windows HIP 0.1.45.3, full UD-Q4_K_XL with SSD-backed experts; three-run short/8K/near-256K probes,
+  approximately eight-minute full-window TTFT and a passed 225K–230K-input controlled coding loop.
+  Custom historical protocol; synthetic context, background applications and cache-allocation caveats.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
