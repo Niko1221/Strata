@@ -232,6 +232,8 @@ public:
         if (s < 0 || s >= slots_ || base_ == nullptr) return nullptr;
         return slot_room(s) >= blob + need ? base_ + slot_offset(s) + blob : nullptr;
     }
+    /// Bytes slot `s` holds.
+    uint64_t slot_bytes(int64_t s) const { return slot_offset(s + 1) - slot_offset(s); }
 
 private:
 #if defined(STRATA_USE_HIP)

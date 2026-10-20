@@ -612,6 +612,9 @@ private:
                                   // unless some layer's gate/up is folded
     const float* had_sx_ = nullptr;   // APR: device sign vectors for x (n_embd) and h (n_ff); nullptr = identity
     const float* had_sh_ = nullptr;
+    uint8_t* qns_xq_ = nullptr;   // a qns pack's rotated two-plane activations (qns_cuda.hpp)
+    uint8_t* qns_xd_ = nullptr;   // a trellis backbone's 2560-wide layer input, quantized (qns_dense_quant)
+    uint8_t* qns_od_ = nullptr;   // and its 6144-wide output-projection input
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;

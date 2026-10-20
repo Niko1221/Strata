@@ -1,4 +1,7 @@
 #include "strata/core/native_head.hpp"
+#include "strata/core/native_dense.hpp"
+#include "strata/core/weights.hpp"
+#include "strata/kernels/qns_cuda.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -20,6 +23,7 @@ void NativeHead::unload() {
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
     if (scratch_) cudaFree(scratch_);
+    if (qns_scales_) cudaFree(qns_scales_);
     if (weights_) cudaFree(weights_);
     scratch_ = nullptr;
     weights_ = nullptr;
@@ -27,6 +31,34 @@ void NativeHead::unload() {
 
 bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {
     if (loaded()) { err = "native head is already loaded"; return false; }
+    if (!NativeDense::qns_dense().empty()) {   // the head as trellis, when the qns backbone GGUF holds it
+        try {
+            const strata::GgufFile qns(NativeDense::qns_dense());
+            const strata::TensorInfo* words = qns.find("output.weight.qns_words");
+            const strata::TensorInfo* scales = qns.find("output.weight.qns_scales");
+            const strata::MetaValue* bits = qns.get("qns.dense_bits");
+            if (words && scales && bits) {
+                if (scales->shape[0] != (uint64_t) n_out || n_out % 32) { err = "native head: the qns head does not match"; return false; }
+                const uint64_t wb = strata::tensor_payload_bytes(*words), sb = strata::tensor_payload_bytes(*scales);
+                if (cudaMalloc(&weights_, wb) != cudaSuccess || cudaMalloc((void**) &qns_scales_, sb) != cudaSuccess ||
+                    cudaMalloc(&scratch_, strata::kernels::qns_dense_act_bytes((int) n_in)) != cudaSuccess ||
+                    cudaMemcpy(weights_, qns.tensor_data(*words), wb, cudaMemcpyHostToDevice) != cudaSuccess ||
+                    cudaMemcpy(qns_scales_, qns.tensor_data(*scales), sb, cudaMemcpyHostToDevice) != cudaSuccess) {
+                    err = "native head: the qns head upload failed";
+                    return false;
+                }
+                bytes_ = wb;   // row_bytes(): a row's words (the drafter's gather); the scales are beside them
+                n_in_ = (int) n_in;
+                n_out_ = (int) n_out;
+                type_ = kQnsDenseType;
+                qns_bits_ = (int) bits->u;
+                return true;
+            }
+        } catch (const std::exception& error) {
+            err = std::string("native head: ") + error.what();
+            return false;
+        }
+    }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
         return false;
@@ -89,7 +121,11 @@ bool NativeHead::run(const float* mixed, float* logits, void* stream, std::strin
         return false;
     }
     try {
-        if (type_ == 13) {
+        if (type_ == kQnsDenseType) {
+            strata::kernels::qns_dense_quant(mixed, 1, n_in_, nullptr, scratch_, (cudaStream_t) stream);
+            strata::kernels::qns_dense_gemv((const uint32_t*) weights_, qns_scales_, n_out_, n_in_, qns_bits_, scratch_, 1,
+                                            logits, (cudaStream_t) stream);
+        } else if (type_ == 13) {
             strata::kernels::native_q5_k_f32(weights_, mixed, scratch_, logits, n_in_, n_out_, 1, stream);
         } else {
             strata::kernels::native_quantize_q8_1(mixed, scratch_, n_in_, 1, stream);

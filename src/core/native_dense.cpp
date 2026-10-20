@@ -1,4 +1,5 @@
 #include "strata/core/native_dense.hpp"
+#include "strata/kernels/qns_cuda.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -158,7 +159,19 @@ struct Pending {
     uint64_t bytes;
     DevicePtr data;
     DevicePtr packed;   // STRATA_Q8_PACKED=1 copy, or null
+    DevicePtr qns_scales, qns_perm;   // kQnsDenseType
 };
+std::string g_qns_dense;
+DevicePtr upload(const strata::GgufFile& gguf, const strata::TensorInfo& t, std::string& err) {
+    const uint64_t bytes = strata::tensor_payload_bytes(t);
+    if (bytes == 0) { err = "native dense: " + t.name + " has no readable payload"; return {}; }
+    void* allocation = nullptr;
+    cudaError_t status = cudaMalloc(&allocation, bytes);
+    DevicePtr data(allocation);
+    if (status == cudaSuccess) status = cudaMemcpy(data.get(), gguf.tensor_data(t), bytes, cudaMemcpyHostToDevice);
+    if (status != cudaSuccess) { err = "native dense upload " + t.name + ": " + cudaGetErrorString(status); return {}; }
+    return data;
+}
 }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -179,6 +192,8 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
 }
 
 void NativeDense::set_layer_range(int lb, int le) { g_layer_lb = lb; g_layer_le = le; }
+void NativeDense::set_qns_dense(const std::string& path) { g_qns_dense = path; }
+const std::string& NativeDense::qns_dense() { return g_qns_dense; }
 // The byte walk `load` does for the layers [lb, le), without the allocations: the same filters in the same order,
 // reading the GGUF headers and the canonical table only, so it needs no device.  A later stage's projections are not
 // on the card when the split search prices that stage, and `load` runs one cudaMalloc per matrix (#1238).  The two
@@ -261,6 +276,17 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::vector<Pending> pending;
         std::set<std::string> seen;
         int max_in = 0;
+        std::unique_ptr<strata::GgufFile> qns;   // --qns-dense-gguf: backbone matrices served as trellis
+        int qns_bits = 0;
+        if (!g_qns_dense.empty()) {
+            qns = std::make_unique<strata::GgufFile>(g_qns_dense);
+            const strata::MetaValue* bits = qns->get("qns.dense_bits");
+            const strata::TensorInfo* signs = qns->find("qns.rot_signs_6144");
+            const strata::TensorInfo* q = qns->find("qns.rot_q_6144");
+            if (!bits || !signs || !q) { err = "native dense: " + g_qns_dense + " is not a qns backbone GGUF"; return false; }
+            qns_bits = (int) bits->u;
+            strata::kernels::qns_cuda_set_rotation_6144((const float*) qns->tensor_data(*signs), (const float*) qns->tensor_data(*q));
+        }
         uint64_t total = 0, hc_q8_bytes = 0, allocated = 0;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
@@ -347,6 +373,22 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
                     err = "native dense: incompatible matrix " + tensor.name; return false;
                 }
+                if (const strata::TensorInfo* words = qns ? qns->find(tensor.name + ".qns_words") : nullptr) {
+                    const strata::TensorInfo* scales = qns->find(tensor.name + ".qns_scales");
+                    const strata::TensorInfo* perm = qns->find(tensor.name + ".qns_perm");
+                    if (!scales || scales->shape[0] != (uint64_t) ref.ne1 || (perm && perm->shape[0] != (uint64_t) ref.ne0)) {
+                        err = "native dense: " + tensor.name + " in " + g_qns_dense + " does not match the model"; return false;
+                    }
+                    DevicePtr w = upload(*qns, *words, err), sc = upload(*qns, *scales, err);
+                    DevicePtr pm = perm ? upload(*qns, *perm, err) : DevicePtr();
+                    if (!w || !sc || (perm && !pm)) return false;
+                    const uint64_t qbytes = strata::tensor_payload_bytes(*words) + strata::tensor_payload_bytes(*scales) +
+                                            (perm ? strata::tensor_payload_bytes(*perm) : 0);
+                    total += qbytes;
+                    allocated += alloc_bytes(qbytes);
+                    pending.push_back(Pending{&ref, kQnsDenseType, qbytes, std::move(w), {}, std::move(sc), std::move(pm)});
+                    continue;
+                }
                 const auto bytes = strata::kernels::native_mmvq_weight_bytes(
                     tensor.type, (int) ref.ne0, (int) ref.ne1);
                 void* allocation = nullptr;
@@ -379,7 +421,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                         return false;
                     }
                 }
-                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
+                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed), {}, {}});
             }
             if (hc_q8_env())
                 for (const auto& tensor : gguf.tensors()) {
@@ -477,6 +519,13 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             item.ref->native_data = item.data.get();
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
+            if (item.type == kQnsDenseType) {
+                item.ref->qns_scales = (const float*) item.qns_scales.get();
+                item.ref->qns_perm = (const int32_t*) item.qns_perm.get();
+                item.ref->qns_bits = qns_bits;
+                weights_.push_back(item.qns_scales.release());
+                if (item.qns_perm) weights_.push_back(item.qns_perm.release());
+            }
             if (item.packed) {
                 strata::kernels::native_q8_0_packed_register(item.data.get(), item.packed.get(), (int) item.ref->ne0,
                                                              (int) item.ref->ne1);

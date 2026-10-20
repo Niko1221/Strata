@@ -23,6 +23,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/qns_cuda.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -813,9 +814,16 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
         nat_xr_ = had_gu_any ? b.take<float>(T * N) : nullptr;
-        hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
+        if (strata::kernels::cpu::expert_layout().qns()) {
+            qns_xq_ = b.take<uint8_t>(T * strata::kernels::qns_act_bytes());
+            // a trellis backbone (--qns-dense-gguf): the 2560-wide layer input and the 6144-wide output-projection input
+            qns_xd_ = b.take<uint8_t>(T * strata::kernels::qns_dense_act_bytes(2560));
+            qns_od_ = b.take<uint8_t>(T * strata::kernels::qns_dense_act_bytes(6144));
+        }
+        hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>({
             strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
-            strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
+            strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff),
+            strata::kernels::cpu::expert_layout().qns() ? strata::kernels::qns_grouped_scratch_bytes((int64_t) (T * K)) : 0}));
         head_mixed_ = b.take<float>(T * N); head_inj_ = b.take<float>(HC);
         sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
@@ -1311,6 +1319,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             il_ready = false;
         };
         auto mm = [&](const WeightRef* w, float* out, int n_in, int n_out) {
+            if (w->native_type == kQnsDenseType) {   // trellis rows read the rotated input quantized beside xq_
+                strata::kernels::qns_dense_gemv((const uint32_t*) w->native_data, w->qns_scales, n_out, n_in, w->qns_bits,
+                                                n_in == (int) N ? qns_xd_ : qns_od_, n, out, cs);
+                return;
+            }
             if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(w->native_type, n, n_out)) {
                 if (!il_ready && n >= 2) {   // one column reads the plain q8_1 blocks
                     strata::kernels::native_q8_1_interleave(xq_, xil_, n_in, n, cs);
@@ -1348,19 +1361,23 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (cudaEventRecord(mjoin_, side_) != cudaSuccess) { err = "verify: the GDN gates' branch could not join"; return false; }
                 }
                 if (!q8_attn) quant_in(xm, (int) N);
+                if (wqkv->native_type == kQnsDenseType) strata::kernels::qns_dense_quant(xm, n, (int) N, nullptr, qns_xd_, cs);
                 if (side_proj) {   // the gate projection (compute-bound for i-quants) beside qkv and the conv
                     // the branch reads F4's interleaved copy too (written on cs before the fork; bitwise native_mmvq's
                     // output), and qkv is recorded before the branch's launch, so its grid is dispatched first and the
                     // conv / recurrence that wait for it start sooner (z is read only after the recurrence)
-                    const bool g_il = g_mmvq_il() && strata::kernels::native_mmvq_il_supported(wg->native_type, n, (int) ZV);
+                    const bool g_qns = wg->native_type == kQnsDenseType;   // trellis rows read qns_xd_, written above
+                    const bool g_il = !g_qns && g_mmvq_il() && strata::kernels::native_mmvq_il_supported(wg->native_type, n, (int) ZV);
                     if (g_il && !il_ready && n >= 2) {
                         strata::kernels::native_q8_1_interleave(xq_, xil_, (int) N, n, cs);
                         il_ready = true;
                     }
                     if (!branch(pfork_, cs, side2_, "fork")) return false;
                     mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);
-                    if (g_il) strata::kernels::native_mmvq_il(wg->native_type, wg->native_data, xq_, xil_, z_ + (size_t) tb * ZV,
-                                                              (int) N, (int) ZV, n, side2_);
+                    if (g_qns) strata::kernels::qns_dense_gemv((const uint32_t*) wg->native_data, wg->qns_scales, (int) ZV, (int) N,
+                                                               wg->qns_bits, qns_xd_, n, z_ + (size_t) tb * ZV, side2_);
+                    else if (g_il) strata::kernels::native_mmvq_il(wg->native_type, wg->native_data, xq_, xil_, z_ + (size_t) tb * ZV,
+                                                                   (int) N, (int) ZV, n, side2_);
                     else native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, side2_);
                     if (cudaEventRecord(pjoin_, side2_) != cudaSuccess) { err = "verify: the gate projection's branch could not join"; return false; }
                 }
@@ -1370,8 +1387,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                  (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
                                  (int) HV, n, df_side_[0]);
                     fork(1);
-                    native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n,
-                                df_side_[1]);
+                    if (wg->native_type == kQnsDenseType)
+                        strata::kernels::qns_dense_gemv((const uint32_t*) wg->native_data, wg->qns_scales, (int) ZV, (int) N,
+                                                        wg->qns_bits, qns_xd_, n, z_ + (size_t) tb * ZV, df_side_[1]);
+                    else
+                        native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n,
+                                    df_side_[1]);
                 }
                 const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem;   // the side mixer computes the gates on its branch
                 if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
@@ -1456,6 +1477,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // destination (#1139: the out-projection read stale bytes), so that case quantizes here as without it
                 if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
                 else il_ready = false;
+                if (wout->native_type == kQnsDenseType)   // the engine's GDN output is a column permutation of the checkpoint's
+                    strata::kernels::qns_dense_quant(y_ + (size_t) tb * ZV, n, (int) ZV, wout->qns_perm, qns_od_, cs);
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
             } else {
                 // ======================= QSA =======================
@@ -1503,13 +1526,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }();
                 const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && (!st.kv_q4 || qb_q4);
                 if (!q8_attn) quant_in(xm, (int) N);
+                if (wq->native_type == kQnsDenseType) strata::kernels::qns_dense_quant(xm, n, (int) N, nullptr, qns_xd_, cs);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
                 const bool qbr = br && qb;
                 if (qbr) {
                     fork(0);
-                    native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
-                                (int) (NH * 2 * HD), n, df_side_[0]);
+                    if (wq->native_type == kQnsDenseType)
+                        strata::kernels::qns_dense_gemv((const uint32_t*) wq->native_data, wq->qns_scales, (int) (NH * 2 * HD),
+                                                        (int) N, wq->qns_bits, qns_xd_, n, qfull_ + tb * NH * 2 * HD, df_side_[0]);
+                    else
+                        native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
+                                    (int) (NH * 2 * HD), n, df_side_[0]);
                     copy_rows_strided(qcur_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, (int64_t) n * NH, HD, 2 * HD,
                                       df_side_[0]);
                     norm_rope_on(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH, df_side_[0]);
@@ -1584,10 +1612,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // the attention's queries: the projection (mm on cs, which may read F4's interleaved copy; on a branch
                 // F4's kernel too, its copy written on cs before the fork - bitwise the same), the q/gate
                 // split with norm and RoPE, the rotation
-                const bool q_il = side_proj && g_mmvq_il() &&
+                const bool q_il = side_proj && g_mmvq_il() && wq->native_type != kQnsDenseType &&
                                   strata::kernels::native_mmvq_il_supported(wq->native_type, n, (int) (NH * 2 * HD));
                 auto q_chain = [&](cudaStream_t ns) -> bool {
                     if (ns == cs) mm(wq, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD));
+                    else if (wq->native_type == kQnsDenseType)   // trellis rows read qns_xd_ (written on cs before the fork)
+                        strata::kernels::qns_dense_gemv((const uint32_t*) wq->native_data, wq->qns_scales, (int) (NH * 2 * HD),
+                                                        (int) N, wq->qns_bits, qns_xd_, n, qfull_ + tb * NH * 2 * HD, ns);
                     else if (q_il) strata::kernels::native_mmvq_il(wq->native_type, wq->native_data, xq_, xil_,
                                                                    qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD), n, ns);
                     else native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
@@ -1825,6 +1856,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 stamp(l, 14, grp);
                 quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
+                if (wo->native_type == kQnsDenseType)
+                    strata::kernels::qns_dense_quant(attn32_ + tb * NH * HD, n, (int) (NH * HD), nullptr, qns_od_, cs);
                 mm(wo, bo_ + tb * N, (int) (NH * HD), (int) N);
             }
         } catch (const std::exception& e) {
@@ -1971,6 +2004,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             } else if (!qdedup && !q8_ffn) {
                 quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
             }
+            // qns experts read their own rotated two-plane activation (the q8_1 image above still feeds the shared expert)
+            if (strata::kernels::cpu::expert_layout().qns())
+                strata::kernels::qns_quant_act(xm, n, qns_xq_ + (size_t) tb * strata::kernels::qns_act_bytes(), cs);
         } else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
         stamp(l, 18, grp);
@@ -2003,7 +2039,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // plan v0.3 P6: the VRAM groups now; the PCIe groups once the copy engine has landed them in staging.
         // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).
         auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy, float* dst_buf) {
-            if (lay.native) {
+            if (lay.qns()) {
+                strata::kernels::qns_expert_grouped(gp, gs, gn, p_dst, p_tok, cap, cap,
+                                                    qns_xq_ + (size_t) tb * strata::kernels::qns_act_bytes(), hit_scratch_,
+                                                    dst_buf, cs, gy);
+            } else if (lay.native) {
                 // the layer's GGUF formats (i-quant gate/up, Q2_0 / IQ4_NL down)
                 const auto& f = lay.fmt[(size_t) l];
                 NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
@@ -2045,7 +2085,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
                 const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
                 uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-                fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                if (lay.qns()) fetch_qns_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                else fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
                 rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
             }
             stamp(l, 21, grp);
@@ -2210,7 +2251,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
             }
         }
-        if (head_ != nullptr && head_->loaded()) {
+        if (head_ != nullptr && head_->loaded() && head_->type() == kQnsDenseType) {   // the head as trellis
+            strata::kernels::qns_dense_quant(head_mixed_, T, (int) N, nullptr, qns_xd_, cs);
+            strata::kernels::qns_dense_gemv((const uint32_t*) head_->weights(), head_->qns_scales(), (int) n_vocab_, (int) N,
+                                            head_->qns_bits(), qns_xd_, T, head_logits_, cs);
+        } else if (head_ != nullptr && head_->loaded()) {
             try {
                 native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
                 if (g_mmvq_il() && strata::kernels::native_mmvq_il_supported(head_->type(), (int) T, (int) n_vocab_)) {

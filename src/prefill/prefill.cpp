@@ -24,6 +24,7 @@
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/qns_cuda.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -2437,6 +2438,19 @@ ColdTrace g_cold;
 bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                  std::string& err, int64_t ldy = 0, int64_t ldx = 0) {
     if (!w->native_data) { err = "prefill: " + name + " has no native GGUF blocks (run with --native)"; return false; }
+    if (w->native_type == core::kQnsDenseType) {   // trellis rows, dequantized to fp16 in slices of whole 32-row groups
+        const int64_t N = w->ne1, K = w->ne0, rows = gm.scratch_elems() / K / 32 * 32;
+        if (rows <= 0 || (ldx != 0 && ldx != K)) { err = "prefill: " + name + ": a qns matrix needs 32 scratch rows and an unpadded X"; return false; }
+        const int64_t group_words = (K / 64 * w->qns_bits + 1) * 32;
+        for (int64_t r0 = 0; r0 < N; r0 += rows) {
+            const int64_t n = std::min(rows, N - r0);
+            strata::kernels::qns_dense_dequant_f16((const uint32_t*) w->native_data + r0 / 32 * group_words, w->qns_scales + r0,
+                                                   (int) n, (int) K, w->qns_bits, w->qns_perm, gm.scratch(),
+                                                   (cudaStream_t) gm.stream());
+            gm.f16(X, gm.scratch(), Y + r0, T, n, K, ldy > 0 ? ldy : N, 0.0f);
+        }
+        return true;
+    }
     const bool ct = g_cold.begin();
     gm.native(X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy, 0.0f, ldx);
     if (ct) g_cold.end("native", name, T, w->ne1, w->ne0);
@@ -2958,7 +2972,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const StreamEntry& en = seq[issued];
                 const int sl = (int) (issued % (size_t) m.ring);
                 const auto th = Clock::now();
-                const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+                const size_t bytes = (size_t) lay0.expert_bytes(en.l, en.e);   // a qns blob's own size
                 if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                 if (en.job < 0) {
                     cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
@@ -3006,7 +3020,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const StreamEntry& en = seq[idx];
                     const int sl = (int) (idx % (size_t) m.ring);
                     const auto th = Clock::now();
-                    const size_t bytes = (size_t) lay0.blob_bytes(en.l);
+                    const size_t bytes = (size_t) lay0.expert_bytes(en.l, en.e);
                     if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                     if (en.job < 0) {
                         cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
@@ -4405,13 +4419,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (pinned) {
                                 // DMA straight from the page-locked arena: the copy stream only waits for the slot
                                 if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
-                                cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
+                                cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.expert_bytes(l, e), cudaMemcpyHostToDevice, m.copy);
                                 ++stats_.experts_dma;
                             } else {
                                 // copied to a pinned buffer by the stager (waits only if it is behind), then DMA
                                 const uint8_t* hb = m.stager->wait(job_of[j]);
                                 if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
-                                cudaMemcpyAsync(m.stage_dev[sl], hb, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice, m.copy);
+                                cudaMemcpyAsync(m.stage_dev[sl], hb, (size_t) lay.expert_bytes(l, e), cudaMemcpyHostToDevice, m.copy);
                                 m.stager->issued_one(job_of[j], m.copy);
                             }
                             cudaEventRecord(m.copied[sl], m.copy);
@@ -4598,7 +4612,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 return true;
                             }
                             const int q = (int) (j % DQ);
-                            if (lay.native) {
+                            if (lay.qns()) {   // trellis decode, un-rotated to the original basis (qns_cuda.hpp)
+                                strata::kernels::qns_dequant_gu_f16(blob_dev, m.dq_gu[q], m.cs);
+                                strata::kernels::qns_dequant_d_f16(blob_dev, m.dq_d[q], m.cs);
+                            } else if (lay.native) {
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
                                 strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,

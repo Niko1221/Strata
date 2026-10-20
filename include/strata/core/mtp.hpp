@@ -261,6 +261,8 @@ private:
     float *h_prob_ = nullptr, *m_prob_ = nullptr;   // each draft's probability under the draft layer
     // the draft head: the main head's rows for a token subset (rt/draft_vocab.bin), or the whole head
     uint8_t* dhead_ = nullptr;
+    float* dscales_ = nullptr;               ///< a trellis head (kQnsDenseType): the draft subset's row scales
+    uint8_t* qns_act_ = nullptr;             ///< and the drafter's rotated, quantized head input
     int32_t* dvocab_ = nullptr;
     int64_t n_dvocab_ = 0;
     std::string rt_dir_;

@@ -828,7 +828,8 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows (the layer's own n_ff / n_embd: Flash-Next's
             // FF / H, or another family's smaller expert)
             const int per = mode_ == 5 ? (int) nfmt_->n_ff : (int) nfmt_->n_embd;
-            const int64_t g0 = mrows_ * (int64_t) i / mtasks_, g1 = mrows_ * (int64_t) (i + 1) / mtasks_;
+            int64_t g0 = mrows_ * (int64_t) i / mtasks_, g1 = mrows_ * (int64_t) (i + 1) / mtasks_;
+            if (nfmt_->gu_type == kQnsType) { g0 &= ~7ll; g1 &= ~7ll; }   // whole 8-row blocks (qns.hpp)
             for (int64_t r = g0; r < g1;) {
                 const int e = (int) (r / per), r0 = (int) (r % per);
                 const int r1 = (int) std::min<int64_t>(per, r0 + (g1 - r));

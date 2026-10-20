@@ -602,6 +602,24 @@ __global__ void res_patch_kernel(int32_t* __restrict__ table, const volatile int
     for (int k = blockIdx.x * blockDim.x + threadIdx.x; k < n; k += gridDim.x * blockDim.x) table[pairs[2 * k]] = pairs[2 * k + 1];
 }
 
+// qns blobs: each copies its own bytes (header word 9, qns_blob.py), cut into kPieces ranges so a few blobs still keep
+// the whole grid's loads in flight over PCIe.
+__global__ void fetch_qns_blobs_kernel(const unsigned long long* __restrict__ src, const int32_t* __restrict__ n,
+                                       uint4* __restrict__ dst, long long per) {
+    constexpr int kPieces = 16;
+    __shared__ long long words;
+    const int blobs = *n;
+    for (int task = blockIdx.x; task < blobs * kPieces; task += gridDim.x) {
+        const int k = task % blobs, piece = task / blobs;
+        const uint4* s = (const uint4*) src[k];
+        if (threadIdx.x == 0) words = (((const uint32_t*) s)[9] + 15) / 16;
+        __syncthreads();
+        const long long lo = words * piece / kPieces, hi = words * (piece + 1) / kPieces;
+        for (long long i = lo + threadIdx.x; i < hi; i += blockDim.x) dst[k * per + i] = s[i];
+        __syncthreads();
+    }
+}
+
 __global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes) {
     const int k = threadIdx.x;
     if (k < *n) ptr[k] = base + (unsigned long long) k * (unsigned long long) bytes;
@@ -701,6 +719,13 @@ void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream) {
     if (n <= 0) return;
     res_patch_kernel<<<(n + 255) / 256 < 64 ? (n + 255) / 256 : 64, 256, 0, (cudaStream_t) stream>>>(table, pairs, n);
     check("res_patch");
+}
+
+void fetch_qns_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t slot_bytes, int cap, void* stream) {
+    if (cap <= 0) return;
+    if (slot_bytes % 16 != 0) { std::fprintf(stderr, "fetch_qns_blobs: slot size must be a multiple of 16\n"); std::exit(1); }
+    fetch_qns_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (slot_bytes / 16));
+    check("fetch_qns_blobs");
 }
 
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream) {

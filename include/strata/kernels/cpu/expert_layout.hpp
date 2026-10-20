@@ -15,6 +15,10 @@
 
 namespace strata::kernels::cpu {
 
+/// Qwen Next S trellis experts (not a ggml type id): one self-describing qns blob per expert (header with its own bit
+/// widths, trellis words in 32-row groups, row scales).  native_experts.txt v6 gives such a layer `kQnsType kQnsType`.
+inline constexpr int kQnsType = 250;
+
 struct ExpertLayout {
     bool native = false;
     int64_t n_layers = 0, n_expert = NE;
@@ -31,13 +35,27 @@ struct ExpertLayout {
     int version = 0;                      ///< native_experts.txt's header version (0 = none given)
     uint64_t max_blob = BLOB;
     uint64_t total = 0;                   ///< experts.bin size
+    /// qns packs (qns_offsets.bin): each expert's blob has its own size, so the arena is compact and a blob's offset
+    /// is this table's, n_layers x (n_expert + 1) with each layer's end last.  `bytes` stays the layer's largest blob:
+    /// the VRAM slot and the copy size.  A copy of `bytes` may run into the next blob; `total` ends with max_blob of
+    /// slack so it never runs past the arena.
+    std::vector<uint64_t> qns_off;
+    /// qns packs (qns_rotation.bin): the experts' input rotations, signs[2560], Q[5][5] (2560 = 512 x 5), signs[640],
+    /// Q[5][5] (640 = 128 x 5).
+    std::vector<float> qns_rotation;
 
+    bool qns() const { return !qns_off.empty(); }
     uint64_t blob_bytes(int64_t layer) const { return native ? bytes[(size_t) layer] : (uint64_t) BLOB; }
     uint64_t layer_offset(int64_t layer) const {
         return native ? offset[(size_t) layer] : (uint64_t) layer * (uint64_t) n_expert * (uint64_t) BLOB;
     }
     uint64_t blob_offset(int64_t layer, int64_t expert) const {
+        if (qns()) return qns_off[(size_t) (layer * (n_expert + 1) + expert)];
         return layer_offset(layer) + (uint64_t) expert * blob_bytes(layer);
+    }
+    /// One expert's own blob: a qns blob's size (its VRAM slot is sized to it), else the layer's.
+    uint64_t expert_bytes(int64_t layer, int64_t expert) const {
+        return qns() ? blob_offset(layer, expert + 1) - blob_offset(layer, expert) : blob_bytes(layer);
     }
 };
 
@@ -98,6 +116,8 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 /// v5 = v4 plus `hadamard.txt` beside it: Hadamard-folded experts (hadamard.hpp), written only for such models,
 /// so an engine that cannot rotate the activations refuses the pack instead of running it wrong.
-inline constexpr int kExpertLayoutVersion = 5;
+/// v6 = qns layers (`kQnsType kQnsType offset max_blob payload_off 0 0`) with qns_offsets.bin and qns_rotation.bin
+/// (strata-qns.patch for 0.1.43 wrote these as v5; such a pack is refused with a note to repack).
+inline constexpr int kExpertLayoutVersion = 6;
 
 }  // namespace strata::kernels::cpu

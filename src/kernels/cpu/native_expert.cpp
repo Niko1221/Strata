@@ -12,6 +12,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/tq_cpu.hpp"
+#include "strata/kernels/cpu/qns.hpp"
 
 #include "ggml.h"
 #include "ggml-cpu.h"
@@ -60,6 +61,20 @@ bool iq256_supported(int type) noexcept {
 bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type == 8; }
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
+    if (gu_type == kQnsType || d_type == kQnsType) {   // Qwen Next S trellis experts (qns.hpp); blob size per layer
+        static_assert(qns::kActBytes <= kNativeActBytes && qns::kHBytes <= kNativeHBytes, "qns activations fit the pool");
+        if (gu_type != d_type || n_embd != 2560 || n_ff != 640) {
+            err = "native experts: a qns layer is qns gate/up and down at 2560 x 640";
+            return false;
+        }
+        f = NativeFmt{};
+        f.gu_type = f.d_type = f.gu_act = f.d_act = kQnsType;
+        f.n_embd = n_embd;
+        f.n_ff = n_ff;
+        f.act_bytes = qns::kActBytes;
+        f.h_bytes = qns::kHBytes;
+        return true;
+    }
     init_once();
     // The trellis types (Gyro, ggml types 144-146) are not in a ggml built from upstream (and an upstream ggml indexes its
     // type table by the id, so asking it about 144 reads past the table): their geometry and activation format (Q8_0)
@@ -130,6 +145,7 @@ bool q8k_avx1(int type) {
 }  // namespace
 
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
+    if (f.gu_type == kQnsType) { qns::quant_act(x, dst); return; }
     if (f.had_gu) {   // Hadamard-folded gate/up: quantize H (s * x), never x itself (hadamard.hpp)
         thread_local std::vector<float> tmp;
         tmp.assign(x, x + f.n_embd);
@@ -142,6 +158,7 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
+    if (f.d_type == kQnsType) { qns::quant_h(h, dst); return; }
     if (f.had_d) {
         thread_local std::vector<float> tmp;
         tmp.assign(h, h + f.n_ff);
@@ -154,6 +171,7 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
 }
 
 int native_gu_mt_min(int gu_type) {
+    if (gu_type == kQnsType) return 1;   // one kernel for every group size: a token's rows never depend on the drafting
     // #152: from how many tokens the multi-token kernels run (ggml's vec_dot below that).  The default 2 is the
     // measured-fastest rule, but a token's expert rows then round differently alone than in a group, so greedy output
     // can depend on how many drafts a verify window held.  STRATA_IQ_MT_MIN=1 (opt-in, 0.1.30) uses the multi-token
@@ -174,6 +192,7 @@ int native_gu_mt_min(int gu_type) {
 
 void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1) {
+    if (f.gu_type == kQnsType) { qns::gu_rows(blob, act, nt, ff, r0, r1); return; }
     // the multi-token kernels decode the weights once for all tokens: 2.0-2.4x ggml-cpu at three tokens, no faster
     // at one (all are bound by the codebook lookups, ~5 GB/s per core), measured by native_expert_parity.  AVX-512
     // first, then the AVX-2 one (Zen 2/3, Intel 12th-14th gen).  STRATA_NO_IQ512 drops an AVX-512 CPU to the
@@ -286,6 +305,7 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
 
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
+    if (f.d_type == kQnsType) { qns::down_rows(blob, hq, nt, out, r0, r1); return; }
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
     static const bool iq4nl_mt = std::getenv("STRATA_NO_IQ4NL") == nullptr;

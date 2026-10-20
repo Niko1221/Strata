@@ -5170,6 +5170,21 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
         std::map<std::string, std::unique_ptr<strata::GgufFile>> files;
         for (int64_t l = 0; l < lay.n_layers; ++l) {
             const auto& fm = lay.fmt[(size_t) l];
+            if (fm.gu_type == strata::kernels::cpu::kQnsType) {   // the layer's blobs as one I8 payload tensor
+                const std::string path = expert_gguf_file(gguf, lay, l, 0);
+                auto& f = files[path];
+                if (!f) f = std::make_unique<strata::GgufFile>(path);
+                const std::string name = "blk." + std::to_string(l) + ".ffn_exps_qns";
+                const strata::TensorInfo* t = f->find(name);
+                const uint64_t span = lay.blob_offset(l, lay.n_expert) - lay.blob_offset(l, 0);
+                if (t == nullptr || t->type != 24 /* I8 */ || strata::tensor_payload_bytes(*t) != span ||
+                    f->data_start() + t->offset != lay.gguf_off[(size_t) (3 * l)]) {
+                    err = "the pack's native_experts.txt does not match the model: " + name + " in " + path +
+                          " is missing, not I8, not " + std::to_string(span) + " B or elsewhere - repack with tools/iq_pack.py";
+                    return false;
+                }
+                continue;
+            }
             const uint64_t blob = lay.bytes[(size_t) l];
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
             for (int r = 0; r < 3; ++r) {
@@ -5238,6 +5253,11 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
     std::atomic<int64_t> next{0};
     std::atomic<bool> bad{false};
 #if defined(_WIN32)
+    if (unbuffered && lay.qns()) {   // this reader scatters gate/up/down roles, which a qns pack does not have
+        st.ok = false;
+        st.error = "qns packs are Linux-only for now";
+        return st;
+    }
     if (unbuffered) {
         uint64_t max_chunk = 0;
         for (int64_t l = 0; l < lay.n_layers; ++l) {
@@ -5342,6 +5362,19 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
             if (l >= lay.n_layers || bad) break;
             wait_ready(l);
             const auto& fm = lay.fmt[(size_t) l];
+            if (fm.gu_type == strata::kernels::cpu::kQnsType) {   // the payload is the arena's layer, byte for byte
+                const std::string name = expert_gguf_file(gguf, lay, l, 0);
+                if (name != open_name) {
+                    if (file.f != nullptr) std::fclose(file.f);
+                    file.f = std::fopen(name.c_str(), "rb");
+                    if (file.f == nullptr) { bad = true; return; }
+                    open_name = name;
+                }
+                const uint64_t start = lay.blob_offset(l, 0), span = lay.blob_offset(l, lay.n_expert) - start;
+                if (STRATA_FSEEK64(file.f, lay.gguf_off[(size_t) (3 * l)]) != 0 ||
+                    std::fread(dst + start, 1, (size_t) span, file.f) != (size_t) span) { bad = true; return; }
+                continue;
+            }
             const uint64_t blob = lay.bytes[(size_t) l];
             const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
             const uint64_t at[3] = {0, fm.up_off, fm.down_off};

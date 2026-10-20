@@ -49,6 +49,7 @@ BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
     "IQ1_M": (256, 56), "Q2_0": (64, 18), "MXFP4": (32, 17), "NVFP4": (64, 36),
     # fp16 scale + trellis stream (32 steps x 8 / 6 / 7 bits); PTQ1_0: 26 B of trits + fp16 scale
     "TQ2_T": (128, 34), "TQK6": (128, 26), "TQK7": (128, 30), "PTQ1_0": (128, 28),
+    "I8": (1, 1), "I64": (1, 8),
 }
 
 
