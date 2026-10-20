@@ -1,0 +1,593 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		02291579233E472787508311 /* StrataMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */; };
+		19B67E6E7EBD1D780BA5F817 /* CompanionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B15E5C8FBCE10522DE165334 /* CompanionStore.swift */; };
+		2D18BE444A89C7FFA545C3CB /* CompanionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */; };
+		2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */; };
+		3708264D60BA706BA23AC809 /* CompanionSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */; };
+		3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81DA49FE4380C675E397AF6D /* ModelsView.swift */; };
+		4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B873E16871EAA80E94A49E3F /* PairingTests.swift */; };
+		57FBEF1B0FBD00F25E2F03EB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B70947875E2884785A789C47 /* Assets.xcassets */; };
+		64A1A952A5B6D2FA1FB32286 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2039E6C0B84C032D88C64AE /* QRScannerView.swift */; };
+		79B2F9C1699CE48D32D09946 /* CompanionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */; };
+		829F6E6C8120B173E097882E /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32556F71F05DB037CC51141D /* Components.swift */; };
+		8316ABA47A36267F8DA68E4C /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 753EC19E8E6F2E274E15738E /* ConnectionView.swift */; };
+		8AF7EAC858EC466D76A60E4C /* MacActivityCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */; };
+		A0AD8CB7E42C1FBD86F429B1 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2CC74861FF7D89BCF70ADAA /* ChatView.swift */; };
+		A97D21E9F25E3DBD69E896C4 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64D770867340AE9EBFA13A4A /* OverviewView.swift */; };
+		A9E534606DECBE48695179D4 /* MacThinkingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */; };
+		B758D656728EF24B7E571622 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F8B0FC6C733BA38DC82F66 /* Theme.swift */; };
+		C81D39EBC082FC1B884B536E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB6F478F559C2014D628588 /* ContentView.swift */; };
+		FC866819762C78C3310B882E /* StoreRaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0B53937E750755DB49739C5E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 67F67946633A65337D7EF5AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 07836E08D0AEF82226335DE6;
+			remoteInfo = StrataMobile;
+		};
+		942A9601D532E76D3703D0DB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 67F67946633A65337D7EF5AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 07836E08D0AEF82226335DE6;
+			remoteInfo = StrataMobile;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionClient.swift; sourceTree = "<group>"; };
+		19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionSmokeTests.swift; sourceTree = "<group>"; };
+		2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrataMobileApp.swift; sourceTree = "<group>"; };
+		32556F71F05DB037CC51141D /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacThinkingView.swift; sourceTree = "<group>"; };
+		38373B4B3DA9939161CEA1F2 /* StrataMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = StrataMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreRaceTests.swift; sourceTree = "<group>"; };
+		5851392661A0FA86A4C30E57 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		64D770867340AE9EBFA13A4A /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
+		753EC19E8E6F2E274E15738E /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
+		81DA49FE4380C675E397AF6D /* ModelsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsView.swift; sourceTree = "<group>"; };
+		8CB6F478F559C2014D628588 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		9B73A4354E8999227ECE6E60 /* StrataMobileUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrataMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B15E5C8FBCE10522DE165334 /* CompanionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionStore.swift; sourceTree = "<group>"; };
+		B70947875E2884785A789C47 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B873E16871EAA80E94A49E3F /* PairingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingTests.swift; sourceTree = "<group>"; };
+		C2039E6C0B84C032D88C64AE /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
+		C2CC74861FF7D89BCF70ADAA /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionModels.swift; sourceTree = "<group>"; };
+		C7F8B0FC6C733BA38DC82F66 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacActivityCard.swift; sourceTree = "<group>"; };
+		E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingTimelineTests.swift; sourceTree = "<group>"; };
+		ED048175CF9BFFCB79F9E40A /* StrataMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = StrataMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		17686E7A238DAB2CD7C18326 /* StrataMobileUITests */ = {
+			isa = PBXGroup;
+			children = (
+				19BD26A6FC2E7504FE691831 /* CompanionSmokeTests.swift */,
+			);
+			path = StrataMobileUITests;
+			sourceTree = "<group>";
+		};
+		49BCCDD444EA9B48D589BFDD /* StrataMobile */ = {
+			isa = PBXGroup;
+			children = (
+				B70947875E2884785A789C47 /* Assets.xcassets */,
+				5851392661A0FA86A4C30E57 /* Info.plist */,
+				2E747A736E510FDB4A2EF361 /* StrataMobileApp.swift */,
+				C7F8B0FC6C733BA38DC82F66 /* Theme.swift */,
+				A4A289F10E4E9F5FB07C51DD /* Models */,
+				DB27EB57A61654805AF9D425 /* Services */,
+				C9D637691997C4C1976E22E4 /* Views */,
+			);
+			path = StrataMobile;
+			sourceTree = "<group>";
+		};
+		8BF343E16F97187389520BF0 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				38373B4B3DA9939161CEA1F2 /* StrataMobile.app */,
+				ED048175CF9BFFCB79F9E40A /* StrataMobileTests.xctest */,
+				9B73A4354E8999227ECE6E60 /* StrataMobileUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A4A289F10E4E9F5FB07C51DD /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				C3A7DE4AF50BD0C3004EE31D /* CompanionModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		BE53F23E6DA0628EC28D028A /* StrataMobileTests */ = {
+			isa = PBXGroup;
+			children = (
+				B873E16871EAA80E94A49E3F /* PairingTests.swift */,
+				49C61200D469B81D7402D0E1 /* StoreRaceTests.swift */,
+				E59F3652EB28C1B5CBA23EE8 /* ThinkingTimelineTests.swift */,
+			);
+			path = StrataMobileTests;
+			sourceTree = "<group>";
+		};
+		C9D637691997C4C1976E22E4 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				C2CC74861FF7D89BCF70ADAA /* ChatView.swift */,
+				32556F71F05DB037CC51141D /* Components.swift */,
+				753EC19E8E6F2E274E15738E /* ConnectionView.swift */,
+				8CB6F478F559C2014D628588 /* ContentView.swift */,
+				CF2E3BCB286B0C22E232AFCE /* MacActivityCard.swift */,
+				37F1F34CF3BDA01A86F47075 /* MacThinkingView.swift */,
+				81DA49FE4380C675E397AF6D /* ModelsView.swift */,
+				64D770867340AE9EBFA13A4A /* OverviewView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		CF8EBEF84D1762EBED7F3964 = {
+			isa = PBXGroup;
+			children = (
+				49BCCDD444EA9B48D589BFDD /* StrataMobile */,
+				BE53F23E6DA0628EC28D028A /* StrataMobileTests */,
+				17686E7A238DAB2CD7C18326 /* StrataMobileUITests */,
+				8BF343E16F97187389520BF0 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DB27EB57A61654805AF9D425 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				141A40B82BA2D85EDA8360C1 /* CompanionClient.swift */,
+				B15E5C8FBCE10522DE165334 /* CompanionStore.swift */,
+				C2039E6C0B84C032D88C64AE /* QRScannerView.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		07836E08D0AEF82226335DE6 /* StrataMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F60649D52F53711C29F9D667 /* Build configuration list for PBXNativeTarget "StrataMobile" */;
+			buildPhases = (
+				D3DB7257A0FA2BC3AD42368C /* Sources */,
+				704A8D0088C8BA1B0661BEEA /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StrataMobile;
+			packageProductDependencies = (
+			);
+			productName = StrataMobile;
+			productReference = 38373B4B3DA9939161CEA1F2 /* StrataMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		16BA0A398467A2D3B4D9C09A /* StrataMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B44FB4745A2D5A05A4D10207 /* Build configuration list for PBXNativeTarget "StrataMobileTests" */;
+			buildPhases = (
+				B70539FF78C287F2928D13A2 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				145A0DC7A2B5A3C80A060348 /* PBXTargetDependency */,
+			);
+			name = StrataMobileTests;
+			packageProductDependencies = (
+			);
+			productName = StrataMobileTests;
+			productReference = ED048175CF9BFFCB79F9E40A /* StrataMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		ED96EB0741213B18A3E1FD17 /* StrataMobileUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D59880C4FF29B72308475C6A /* Build configuration list for PBXNativeTarget "StrataMobileUITests" */;
+			buildPhases = (
+				DFFC4CAC4BAEC18586177A57 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7D9B49E12F784EF65D666586 /* PBXTargetDependency */,
+			);
+			name = StrataMobileUITests;
+			packageProductDependencies = (
+			);
+			productName = StrataMobileUITests;
+			productReference = 9B73A4354E8999227ECE6E60 /* StrataMobileUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		67F67946633A65337D7EF5AF /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					07836E08D0AEF82226335DE6 = {
+						ProvisioningStyle = Automatic;
+					};
+					16BA0A398467A2D3B4D9C09A = {
+						ProvisioningStyle = Automatic;
+					};
+					ED96EB0741213B18A3E1FD17 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = 07836E08D0AEF82226335DE6;
+					};
+				};
+			};
+			buildConfigurationList = 9B5E9F1F39DFF84DBBDD1647 /* Build configuration list for PBXProject "StrataMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = CF8EBEF84D1762EBED7F3964;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 8BF343E16F97187389520BF0 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				07836E08D0AEF82226335DE6 /* StrataMobile */,
+				16BA0A398467A2D3B4D9C09A /* StrataMobileTests */,
+				ED96EB0741213B18A3E1FD17 /* StrataMobileUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		704A8D0088C8BA1B0661BEEA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				57FBEF1B0FBD00F25E2F03EB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B70539FF78C287F2928D13A2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4D9C963E28DB3BD3F639EA37 /* PairingTests.swift in Sources */,
+				FC866819762C78C3310B882E /* StoreRaceTests.swift in Sources */,
+				2D6AC49DAF586845379D5BC0 /* ThinkingTimelineTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D3DB7257A0FA2BC3AD42368C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0AD8CB7E42C1FBD86F429B1 /* ChatView.swift in Sources */,
+				79B2F9C1699CE48D32D09946 /* CompanionClient.swift in Sources */,
+				2D18BE444A89C7FFA545C3CB /* CompanionModels.swift in Sources */,
+				19B67E6E7EBD1D780BA5F817 /* CompanionStore.swift in Sources */,
+				829F6E6C8120B173E097882E /* Components.swift in Sources */,
+				8316ABA47A36267F8DA68E4C /* ConnectionView.swift in Sources */,
+				C81D39EBC082FC1B884B536E /* ContentView.swift in Sources */,
+				8AF7EAC858EC466D76A60E4C /* MacActivityCard.swift in Sources */,
+				A9E534606DECBE48695179D4 /* MacThinkingView.swift in Sources */,
+				3BC9A744F1A9FB886EAC7AA1 /* ModelsView.swift in Sources */,
+				A97D21E9F25E3DBD69E896C4 /* OverviewView.swift in Sources */,
+				64A1A952A5B6D2FA1FB32286 /* QRScannerView.swift in Sources */,
+				02291579233E472787508311 /* StrataMobileApp.swift in Sources */,
+				B758D656728EF24B7E571622 /* Theme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DFFC4CAC4BAEC18586177A57 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3708264D60BA706BA23AC809 /* CompanionSmokeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		145A0DC7A2B5A3C80A060348 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 07836E08D0AEF82226335DE6 /* StrataMobile */;
+			targetProxy = 942A9601D532E76D3703D0DB /* PBXContainerItemProxy */;
+		};
+		7D9B49E12F784EF65D666586 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 07836E08D0AEF82226335DE6 /* StrataMobile */;
+			targetProxy = 0B53937E750755DB49739C5E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0B24FEFCD75DFE4637CA6F8F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StrataMobile.app/StrataMobile";
+			};
+			name = Debug;
+		};
+		5E9B29C940C9C8ABA9C0236B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 4;
+				INFOPLIST_FILE = StrataMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6C0F1E89E5A6CF4404DA3CAB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 4;
+				INFOPLIST_FILE = StrataMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		76B64C16C6F38DCF25FD9BDA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BDEFE5B06ACAD8604B8AB239 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		CAC0CE2C9CC4C846976E9261 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = StrataMobile;
+			};
+			name = Debug;
+		};
+		D53C762E5D47EA34CC351C12 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileUITests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = StrataMobile;
+			};
+			name = Release;
+		};
+		EF040062096072F3AE76997C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.strata.companion.StrataMobileTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StrataMobile.app/StrataMobile";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		9B5E9F1F39DFF84DBBDD1647 /* Build configuration list for PBXProject "StrataMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				76B64C16C6F38DCF25FD9BDA /* Debug */,
+				BDEFE5B06ACAD8604B8AB239 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B44FB4745A2D5A05A4D10207 /* Build configuration list for PBXNativeTarget "StrataMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0B24FEFCD75DFE4637CA6F8F /* Debug */,
+				EF040062096072F3AE76997C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D59880C4FF29B72308475C6A /* Build configuration list for PBXNativeTarget "StrataMobileUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CAC0CE2C9CC4C846976E9261 /* Debug */,
+				D53C762E5D47EA34CC351C12 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F60649D52F53711C29F9D667 /* Build configuration list for PBXNativeTarget "StrataMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6C0F1E89E5A6CF4404DA3CAB /* Debug */,
+				5E9B29C940C9C8ABA9C0236B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 67F67946633A65337D7EF5AF /* Project object */;
+}
