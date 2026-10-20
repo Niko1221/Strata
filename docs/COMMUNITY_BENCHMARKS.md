@@ -72,6 +72,7 @@ and their limits. Report what you actually measured and label estimates separate
   engine 0.1.45.3 built on the PC with `tools\hip\build_windows.bat` (gfx1201 only), Coder IQ1_M at 65,536 context in the low-RAM mode, experimental speed projection on;
   `tools/strata_bench.py --long`, one suite: chat decode 46.9 tok/s (42.5-58.8, n=9), prompt 909/1,271/1,237 tok/s at 4K/16K/32K, agent-session cache hit 69.6%. Also notes a `strata_bench.py` start-up error and the `--selftest` device-0 case.
   A [second run](../bench/results/2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-2/README.md) after turning on AMD EXPO (RAM 4800 -> 5600 MT/s): chat decode 60.2 tok/s, prompt 1,187/1,314/1,398 tok/s; that start also got a larger GPU cache and RAM copy, so it is not a clean A/B of EXPO.
+  A [third run](../bench/results/2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-3/README.md) with EXPO on and `STRATA_PREFILL_HOST_PLAN=0` (#3518): chat decode 56.6 tok/s, prompt 1,219/1,314/1,323 tok/s, agent decode 69.1 tok/s.
 
 ## Run the benchmark
 

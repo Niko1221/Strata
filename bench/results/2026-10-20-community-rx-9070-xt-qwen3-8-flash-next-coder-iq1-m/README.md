@@ -66,7 +66,7 @@ Per-request data: `results.json`. Engine log lines from the start of this server
 
 Not measured: this is a speed suite. The conversation uses the model's own replies, so token counts differ a little between runs. Machine details come from the server, `nvidia-smi`/`rocm-smi` and the OS; the lines above marked as hand-added come from Windows (WMI) and the engine log. Total time of the suite: 239 s.
 
-Not tested: a run without the experimental speed projection; `STRATA_HIP_WMMA=1`; more than one suite run per server start; a long generation. A second run the same day with the RAM at its rated 5600 MT/s (AMD EXPO on) is in [`../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-2/`](../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-2/README.md); its engine start also got more free memory, so it is not a clean A/B of EXPO.
+Not tested: a run without the experimental speed projection; `STRATA_HIP_WMMA=1`; more than one suite run per server start; a long generation. A second run the same day with the RAM at its rated 5600 MT/s (AMD EXPO on) is in [`../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-2/`](../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-2/README.md); its engine start also got more free memory, so it is not a clean A/B of EXPO. A third run, the configuration this PC now uses (EXPO on and `STRATA_PREFILL_HOST_PLAN=0`, #3518), is in [`../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-3/`](../2026-10-20-community-rx-9070-xt-qwen3-8-flash-next-coder-iq1-m-3/README.md).
 
 Seen while preparing this run (reported, not fixed here):
 
