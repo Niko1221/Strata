@@ -5,11 +5,15 @@ maxfridbe wrote it in [#423](https://github.com/Niko1221/Strata/pull/423), with 
 The code is in `sycl/`, and the port's own notes, measurements and maintenance procedure are in
 [docs/INTEL.md](INTEL.md). This page covers what you need, how to build it, and what has been tested.
 
-**Experimental means:** the Strata maintainers have no Intel GPU. We compile the port and run its kernel tests, but
-we have not run it on an Arc. Every result on Arc hardware below comes from the community. The NVIDIA and AMD
-engines are unchanged: the Intel build is a separate CMake target, off by default.
+**Experimental means:** the Intel engine is still young and Linux only. When the port arrived (0.1.39) the maintainers had no
+Intel GPU and every result on Arc hardware came from the community. Since 0.1.40.2 the maintainers also test on an Arc Pro B70
+(32 GB, `xe`) and an Arc A750 (8 GB, `i915`); the results from those two cards are marked in the table below. Other cards
+are still community reports. The NVIDIA and AMD engines are unchanged: the Intel build is a separate CMake target, off by default.
 
-There is **no ready-made Intel engine** in the release zips. You build it from source on Linux.
+**Where the engine comes from.** There is **no Intel engine in the release zips** (the ones `START-HERE.bat` and `setup.sh`
+use): you build it from source on Linux, as described below. A ready-made Intel engine does exist as a Docker image,
+`ghcr.io/niko1221/strata:0.2.0-sycl`, built for the 0.2.0 release (the image needs prepared model files; see
+[Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
 
 ## What has been run, and by whom
 
@@ -48,9 +52,10 @@ Full flags, per-request timings and engine logs are in the report linked in the 
 - **Unchanged:** the CUDA engine's greedy output, checked byte-identical against the gated 0.1.39 build (Q2_0 and Coder).
   The HIP build is not affected (the option is off by default).
 
-**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, the Alchemist
-A-series, integrated Arc GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and
-images (not wired on Intel).
+**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, integrated Arc
+GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and images (not wired on Intel: there
+is no picture reader for the Arc engine). The Alchemist A-series was tested later, on an A750 (rows above and
+[INTEL.md](INTEL.md), "Arc A750 and the other Alchemist cards").
 
 ## What you need
 
@@ -139,6 +144,12 @@ Things that matter on an Arc (details in INTEL.md):
 - `SYCL_CACHE_PERSISTENT=0`: the persistent JIT cache crashed on Xe2 during the first compile.
 - Two cards: `ONEAPI_DEVICE_SELECTOR=level_zero:*` (the image pins `level_zero:0`; `strata-sycl.sh` now passes the
   variable through) and `--layer-split`.
+- **`--layer-split auto` on two equal cards (0.1.44, #1440):** when several splits hold all the experts and predict the
+  same speed, the search now takes the one that leaves its fullest card the most VRAM to spare (within 0.2% of the best
+  predicted time, `STRATA_SPLIT_HEADROOM_TOL`). It used to take the first one tried, which filled the second card to its
+  last MiB. A full card under `xe` moves buffers to system memory instead of failing: 2x B70 with IQ3_S, auto picked
+  K=24 (~11 tok/s) where `--layer-split 30` ran ~54. The startup line names both splits when the choice moves.
+  `STRATA_SPLIT_HEADROOM=0` keeps the old pick.
 - **Arc Pro B60:** the PCI id is `8086:e211` (`lspci -nn`, the kernel's `xe` id list files it with the BMG-G21 cards), `sycl-ls` prints
   `Intel(R) Arc(TM) Pro B60 Graphics 20.1.0`, and `ocloc ids bmg-g21` prints 20.1.0, so `-DSTRATA_SYCL_AOT=bmg-g21` is the right target.
   `setup_intel.py` knows both B60 ids, `e211` and `e221` (both seen on B60 cards). On a `--layer-split` the startup line "N experts are neither in VRAM nor mirrored"

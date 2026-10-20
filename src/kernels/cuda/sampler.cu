@@ -158,7 +158,7 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     float bv = __int_as_float(0xff800000);   // -inf
     int best = n_vocab;
     for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
-        const float s = apply_penalties(l[v], hit_count(v), p);
+        const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
@@ -355,7 +355,7 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
             bool taken = false;
             for (int j = 0; j < i; ++j) if (sel_ids[j] == v) { taken = true; break; }
             if (taken) continue;
-            const float s = apply_penalties(l[v], hit_count(v), p);
+            const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
             if (s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -601,7 +601,7 @@ sampler_one_block_kernel(const float* __restrict__ logits, int n_vocab, const in
         float bv = __int_as_float(0xff800000);   // -inf
         int best = n_vocab;
         for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
-            const float s = apply_penalties(l[v], hit_count(v), p);
+            const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
             if ((s < prev_v || (s == prev_v && v > prev_i)) && s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -730,7 +730,7 @@ sampler_split_part_kernel(const float* __restrict__ logits, int n_vocab, const i
 #pragma unroll
     for (int j = 0; j < kSplitPerLane; ++j) {
         const int v = lo + 32 * j + lane;
-        s[j] = v < n_vocab ? l[v] : __int_as_float(0xff800000);
+        s[j] = v < n_vocab ? (p.logit_bias ? l[v] + p.logit_bias[v] : l[v]) : __int_as_float(0xff800000);
     }
     if (use_bits) {
 #pragma unroll
@@ -1258,7 +1258,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         }();
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
-        if (!(multi && shmem == 0 && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
+        if (!(multi && shmem == 0 && !p.logit_bias && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
             sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
                 logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
     } else if (sampled_path() == SampledPath::Old) {

@@ -2,7 +2,8 @@
 rem Update Strata without starting the model (#475): the newest code (git pull, when this folder is a git clone), then
 rem what START-HERE.bat does before a start - the engine (a new one when this version needs it), the Python packages,
 rem each installed model's settings and draft subset. The model files are not touched. Start the model later with
-rem START-HERE.bat. Options are passed on to setup.py.
+rem START-HERE.bat. Options are passed on to setup.py. The bundled Python (python\ beside this file) is used when
+rem there is one: START-HERE.bat, which this file runs, picks it.
 setlocal
 title Strata - update
 cd /d "%~dp0"
@@ -32,7 +33,8 @@ rem All of it in one block: cmd reads a .bat file while it runs it, and the git 
         if defined DIRTY (
           echo  You have local changes to tracked files here, so nothing was touched. To move to the new history
           echo  yourself ^(your untracked files, models and settings stay where they are^):
-          echo    git branch pre-cleanup-backup ^&^& git stash push
+          echo    git branch pre-cleanup-backup
+          echo    git stash push
           echo    git checkout -B main origin/main
           echo  then run UPDATE.bat again.
           pause
@@ -50,6 +52,7 @@ rem All of it in one block: cmd reads a .bat file while it runs it, and the git 
         )
         call git checkout -q -B %%BR%% origin/main
         if errorlevel 1 (
+          call git branch -D %%BK%% >nul 2>nul
           echo.
           echo  Could not move to the new history ^(the reason is above^): nothing was updated. By hand:
           echo    git checkout -B main origin/main

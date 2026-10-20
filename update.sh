@@ -2,7 +2,8 @@
 # Update Strata without starting the model (#475): the newest code (git pull, when this folder is a git clone), then
 # what ./setup.sh does before a start - the engine (a new ready-made one when this version needs it, or compiled
 # again when its source changed), the Python packages, each installed model's settings and draft subset. The model
-# files are not touched. Start the model later with ./setup.sh. Options are passed on to setup.py.
+# files are not touched. Start the model later with ./setup.sh. Options are passed on to setup.py. The bundled Python
+# (python/ beside this file) is used when there is one: ./setup.sh, which this file runs, picks it.
 cd "$(dirname "$0")" || exit 1
 # all of it in a function, read before it runs: the git pull below can change this very file
 main() {
@@ -37,6 +38,8 @@ main() {
           echo "Moved to the new history. Your old commits are kept in the branch $bk."
           echo "Untracked files (models, settings, the engine) were not touched."
         else
+          # the backup branch made a moment ago would make the by-hand `git branch pre-cleanup-backup` below fail
+          git branch -D "$bk" >/dev/null 2>&1
           echo "Could not move to the new history (the reason is above): nothing was updated. By hand:"
           echo "  git branch pre-cleanup-backup"
           echo "  git checkout -B main origin/main"

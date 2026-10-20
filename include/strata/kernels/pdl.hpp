@@ -33,9 +33,15 @@ bool pdl_supported();
 
 #if (defined(__CUDACC__) || defined(__HIPCC__))
 
-// not __CUDA_ARCH__-dependent: the host pass must see the same kernel signature (MSVC rejects the template stubs
-// otherwise), so on CUDA these parameters lose __restrict__ for every architecture
+// STRATA_PDL_RESTRICT never goes on a __global__ signature: the host pass and the stub must see the same signature on
+// every architecture (MSVC rejects the template stubs otherwise, and so does g++ when the stub is generated from a
+// device pass).  A kernel takes plain pointers and declares `const T* STRATA_PDL_RESTRICT p = p_;` locals in its body.
+// On CUDA the activation pointers lose __restrict__ so the compiler cannot load them before pdl_wait() - but only
+// where PDL can run (sm_70 and newer here).  On Pascal and older (__CUDA_ARCH__ < 700, no PDL) `__restrict__` is what
+// lets the compiler use the read-only data path (LDG.CI): without it decode on sm_61 halves (#1469).
 #if defined(__HIPCC__)
+#define STRATA_PDL_RESTRICT __restrict__
+#elif defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 700)
 #define STRATA_PDL_RESTRICT __restrict__
 #else
 #define STRATA_PDL_RESTRICT
@@ -44,7 +50,11 @@ bool pdl_supported();
 #if defined(__HIPCC__)
 inline constexpr bool kPdlPrefetch = false;   // HIP: no PDL, the kernels keep their plain loops
 #else
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ < 700)
+inline constexpr bool kPdlPrefetch = false;   // Pascal and older: no PDL, the prefetch only costs registers (#1469)
+#else
 inline constexpr bool kPdlPrefetch = true;    // CUDA: the weights a kernel can load before pdl_wait() are loaded there
+#endif
 /// `kernel` may be launched with the PDL attribute into `stream` now (see the header comment).
 bool pdl_launch_ok(const void* kernel, cudaStream_t stream);
 #endif

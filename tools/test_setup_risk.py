@@ -238,7 +238,7 @@ class LowRamGpus(unittest.TestCase):
     def test_asked_and_answered_two(self):
         ram, found = PROFILES["32GB-2x24GB"]
         code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                                        answers={"Low-RAM mode: which GPUs?": "2"})
+                                        answers={"Which GPUs?": "2", "Low-RAM mode: which GPUs?": "2"})     # the split asked for (the default is the largest card + RAM)
         self.assertEqual(code, 0, out)
         self.assertTrue(any("Low-RAM mode: which GPUs? [1]" in q for q in asked), asked)
         self.assertEqual(cfg["gpu"], [0, 1])
@@ -276,7 +276,7 @@ class LowRamGpus(unittest.TestCase):
         ram, found = PROFILES["32GB-2x24GB"]
         with mock.patch.object(setup, "MIN_ENGINE", setup.RESIDENT_SPLIT_ENGINE):
             code, out, cfg, asked = install(ram, found, ["--family", "qwen", "--model", "Q2_0", "--no-start"],
-                                            answers="")
+                                            answers={"Which GPUs?": "2"})          # the split chosen (the default is the largest card + RAM)
             self.assertEqual(code, 0, out)
             self.assertEqual(cfg["gpu"], [0, 1])
             self.assertIn("--resident-experts", cfg["args"])
@@ -328,7 +328,7 @@ class StartOnSeveralGpus(unittest.TestCase):
         code, out, asked, cfg = self.offer(["--resident-experts"], "y")
         self.assertIn("[n]", asked[0])
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
+        self.assertEqual(cfg["args"], ["--mmap-experts"])   # #1447: no helper cache, no --remote-expert-opt
         code, out, asked, cfg = self.offer(["--mmap-experts"], None)           # other configs: as before
         self.assertEqual(cfg["gpu"], [0, 1])
 
@@ -341,7 +341,7 @@ class StartOnSeveralGpus(unittest.TestCase):
             code, out, asked, cfg = self.offer(["--resident-experts"], None)   # --yes: the recommendation
             self.assertIsNone(code, out)
             self.assertEqual(cfg["gpu"], [0, 1])
-            self.assertEqual(cfg["args"], ["--resident-experts", "--remote-expert-opt"])
+            self.assertEqual(cfg["args"], ["--resident-experts"])
             self.assertNotIn("OS file cache", out)
 
     def test_start_with_gpus(self):
@@ -360,7 +360,7 @@ class StartOnSeveralGpus(unittest.TestCase):
             cfg = json.loads(p.read_text())
         self.assertIsNone(code, out)
         self.assertEqual(cfg["gpu"], [0, 1])
-        self.assertEqual(cfg["args"], ["--mmap-experts", "--remote-expert-opt"])   # 0.1.39b: #578 on 2+ GPUs
+        self.assertEqual(cfg["args"], ["--mmap-experts"])   # #1447: no helper cache, no --remote-expert-opt
         self.assertIn("no layer split yet", out)
         self.assertTrue(call.called)
 
@@ -488,6 +488,7 @@ class RulesAgreeWithTheWrittenConfig(unittest.TestCase):
     def go(self, ram, cards, model, *flags):
         return install(ram, cards, ["--family", "qwen", "--model", model, "--no-start", *flags])
 
+    @mock.patch.object(setup, "is_wsl", lambda: False)   # #974: not WSL, as in install()
     def test_the_streaming_rule_is_the_flag_setup_writes(self):
         for model, ctx, kv, choice in itertools.product(("Q2_0", "IQ3_XXS", "IQ3_S"), ("32768", "131072"),
                                                         ("int8", "q4_0", "k8v4"), ("auto", "on", "off")):

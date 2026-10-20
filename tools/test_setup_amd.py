@@ -429,13 +429,44 @@ class CalibrationKey(unittest.TestCase):
                 self.assertIsNone(setup.setup_calibration(cfg, hip=True))             # Windows HIP: defaults for now
 
 
-class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
-        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
-            self.assertEqual(setup.hip_vision("yes"), "none")
-        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "cpu")
+class HipVisionWish(unittest.TestCase):
+    """AMD pictures are on by default, on Linux and Windows: the wish is "gpu" (hip_reader() settles it against the readers the
+    engine folder carries: the HIP one, else the CPU one), "cpu" when asked for, "none" for no."""
+
+    def test_wish(self):
+        for win in (True, False):
+            with mock.patch.object(setup, "WIN", win):
+                self.assertEqual(setup.hip_vision(None), "gpu")
+                self.assertEqual(setup.hip_vision("yes"), "gpu")
+                self.assertEqual(setup.hip_vision("gpu"), "gpu")
+                self.assertEqual(setup.hip_vision("cpu"), "cpu")
+                self.assertEqual(setup.hip_vision("no"), "none")
+                self.assertEqual(setup.hip_vision("none"), "none")
+                # owner decision 2026-10-18: nothing asked / yes = the CPU reader under 24 GB, the GPU reader from 24 GB; gpu / cpu are kept
+                self.assertEqual(setup.hip_vision(None, 16.0), "cpu")
+                self.assertEqual(setup.hip_vision("yes", 16.0), "cpu")
+                self.assertEqual(setup.hip_vision("yes", 23.9), "gpu")
+                self.assertEqual(setup.hip_vision(None, 32.0), "gpu")
+                self.assertEqual(setup.hip_vision("gpu", 16.0), "gpu")
+                self.assertEqual(setup.hip_vision("cpu", 32.0), "cpu")
+
+    def test_reader_settled_against_the_engine_folder(self):
+        for win, suffix in ((False, ""), (True, ".exe")):
+            with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "WIN", win),                     mock.patch.object(setup, "warn", lambda *a: None):
+                eng = Path(d)
+                (eng / ("strata-vision" + suffix)).write_bytes(b"x")
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1201"})[0], "cpu")        # no HIP reader: the CPU one
+                (eng / ("strata-vision-hip" + suffix)).write_bytes(b"x")
+                mode, r = setup.hip_reader(eng, "gpu", {"arch": "gfx1201"})
+                self.assertEqual((mode, r.exe.name, r.cpu_exe.name),
+                                 ("gpu", "strata-vision-hip" + suffix, "strata-vision" + suffix))
+                (eng / "BUILD.json").write_text('{"vision_archs": ["gfx1100"]}')
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1201"})[0], "cpu")        # the card is not in its build
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1100"})[0], "gpu")
+                self.assertEqual(setup.hip_reader(eng, "cpu", {"arch": "gfx1100"})[0], "cpu")
+                (eng / ("strata-vision" + suffix)).unlink()
+                (eng / ("strata-vision-hip" + suffix)).unlink()
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1100"})[0], "none")
 
 
 class HipRuntimeBesideExe(unittest.TestCase):
@@ -507,6 +538,60 @@ class DeviceAccess(unittest.TestCase):
         self.assertIn('access("/dev/kfd", R_OK | W_OK)', guard)
         self.assertIn("STRATA_USE_HIP", guard)               # CUDA builds keep the "another program" text
         self.assertIn("another program (or an engine that is still exiting)", src)
+
+
+class EngineLaunchEnv(unittest.TestCase):
+    """#2372: every engine program setup runs gets the ready-made HIP engine's rocm/bin on PATH, or Windows shows a
+    "hipblas.dll not found" dialog per DLL and `strata --families` prints nothing (setup then said the engine does
+    not run Qwen3.6)."""
+
+    def engine(self, tmp: Path) -> Path:
+        eng = tmp / "engine"
+        (eng / "rocm" / "bin").mkdir(parents=True)
+        (eng / "BUILD.json").write_text('{"backend": "hip", "lib_dirs": ["rocm/bin"]}', encoding="utf-8")
+        return eng
+
+    def test_engine_env_puts_rocm_bin_first(self):
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}):
+                env = setup.engine_env(eng)
+            self.assertEqual(env["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+            self.assertTrue(env["PATH"].endswith("C:\\Windows"))
+
+    def test_engine_without_lib_dirs_keeps_the_environment(self):
+        with tempfile.TemporaryDirectory() as t:
+            with mock.patch.dict("os.environ", {"PATH": "/usr/bin"}):
+                self.assertEqual(setup.engine_env(Path(t))["PATH"], "/usr/bin")
+
+    def test_families_probe_runs_with_that_env(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"], seen["env"] = cmd, kw.get("env")
+            return mock.Mock(stdout="qwen4exp qwen35moe\n")
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.object(setup.subprocess, "run", fake_run):
+                names = setup.engine_families(eng)
+            self.assertEqual(names, {"qwen4exp", "qwen35moe"})
+            self.assertEqual(seen["cmd"][1], "--families")
+            self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+
+    def test_device_probe_runs_with_that_env(self):
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["env"] = kw.get("env")
+            return mock.Mock(returncode=0, stdout="device 0: AMD Radeon RX 7900 XT\n  arch gfx1100, 20.0 GiB, wave32\n")
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            probe = eng / ("strata-device.exe" if setup.WIN else "strata-device")
+            probe.write_text("x")
+            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None):
+                found = setup.hip_devices(probe)
+            self.assertEqual(found[0]["arch"], "gfx1100")
+            self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
 
 
 class TdrPointer(unittest.TestCase):

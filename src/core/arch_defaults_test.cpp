@@ -1,5 +1,6 @@
 // src/core/arch_defaults_test.cpp - the per-architecture default table (no GPU needed).
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -28,8 +29,8 @@ int main() {
     unset("STRATA_GFX1151_DEFAULTS");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
-    CHECK(arch_default_env("gfx1201:sramecc-:xnack-").empty());
     CHECK(arch_default_env("gfx1150").empty());
+    CHECK(arch_default_env("gfx1152").empty());
     CHECK(arch_default_env("gfx11510").empty());   // not a prefix match
     CHECK(arch_default_env("").empty());
     CHECK(arch_default_env(nullptr).empty());
@@ -44,6 +45,21 @@ int main() {
                 CHECK(kv.first != bits);
         }
     }
+    // gfx12: the five prompt switches only, no decode switch, no bit-changing one
+    unset("STRATA_GFX12_DEFAULTS");
+    for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
+        const auto t = arch_default_env(a);
+        CHECK(t.size() == 5);
+        for (const auto& kv : t) CHECK(kv.first != "STRATA_HCD_EXACT");
+        for (const auto& kv : t) {
+            CHECK(kv.first != "STRATA_Q8_PACKED" && kv.first != "STRATA_SH_STREAM" && kv.first != "STRATA_PF_GEMM" &&
+                  kv.first != "STRATA_PF_FUSED");
+        }
+    }
+    CHECK(arch_default_env("gfx12010").empty());
+    put("STRATA_GFX12_DEFAULTS", "0");
+    CHECK(arch_default_env("gfx1201").empty());
+    unset("STRATA_GFX12_DEFAULTS");
     // a user's setting wins, whatever it is; the rest are set
     put("STRATA_TSUM", "0");
     unset("STRATA_QFUSE");
@@ -55,6 +71,14 @@ int main() {
     put("STRATA_GFX1151_DEFAULTS", "0");
     CHECK(arch_default_env("gfx1151").empty());
     CHECK(apply_arch_defaults("gfx1151").empty());
+    // the two approved gfx12 prompt defaults (WMMA attention, Q2_0 fused experts): on for Linux, off for Windows
+    CHECK(gfx12_prompt_defaults_on(false));
+    CHECK(!gfx12_prompt_defaults_on(true));
+#if defined(_WIN32)
+    CHECK(!kGfx12PromptDefaultsOn);
+#else
+    CHECK(kGfx12PromptDefaultsOn);
+#endif
     std::printf(fails ? "arch_defaults_test: %d FAILED\n" : "arch_defaults_test: OK\n", fails);
     return fails ? 1 : 0;
 }
