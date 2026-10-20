@@ -20,6 +20,12 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-20: RTX 4070 12 GB (sm_89, Ada), Ryzen 7 5700X, 31 GiB RAM](../bench/results/2026-10-20-community-rtx-4070-coder-iq1_m/README.md):
+  Strata source build (engine 0.1.45.3), Coder IQ1_M of the 2026-10-19 release, 131,072-token context;
+  the **first measurement on an Ada card**. Decode 44.1 tok/s, 16K prompt 1532 tok/s with a 10.5 s first
+  token. Reports the box's own noise floor (the same configuration measured twice: 0.9% apart on decode,
+  6% on the 16K prompt, 22% on the 4K prompt), a 48-configuration switch sweep, and the first measured
+  MMVQ-IL table for sm_89 (a separate PR).
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
