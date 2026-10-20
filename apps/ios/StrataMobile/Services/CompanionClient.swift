@@ -56,6 +56,7 @@ final class CompanionClient {
         }
         var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
         req.httpMethod = method
+        req.timeoutInterval = path.hasPrefix("/v1/model-management/") ? 180 : 20
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { req.httpBody = try JSONEncoder().encode(body) }
@@ -64,6 +65,18 @@ final class CompanionClient {
 
     func perform<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil) async throws -> T {
         let (data, response) = try await session.data(for: request(path, method: method, body: body))
+        try Self.check(response, data: data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    func request<Body: Encodable>(_ path: String, method: String, jsonBody: Body) throws -> URLRequest {
+        var req = try request(path, method: method)
+        req.httpBody = try JSONEncoder().encode(jsonBody)
+        return req
+    }
+
+    func perform<T: Decodable, Body: Encodable>(_ path: String, method: String, jsonBody: Body) async throws -> T {
+        let (data, response) = try await session.data(for: request(path, method: method, jsonBody: jsonBody))
         try Self.check(response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -101,9 +114,17 @@ final class CompanionClient {
         guard (200..<300).contains(http.statusCode) else {
             let error = try? JSONDecoder().decode(ServerError.self, from: data)
             let message = error?.message ?? error?.error
-            throw CompanionError.server(message ?? (http.statusCode == 401 ? "This pairing has expired or was removed on the Mac. Pair again." : "The Mac returned an error (\(http.statusCode))."))
+            throw CompanionHTTPError(statusCode: http.statusCode,
+                                     message: message ?? (http.statusCode == 401 ? "This pairing has expired or was removed on the Mac. Pair again." : "The Mac returned an error (\(http.statusCode))."))
         }
     }
+}
+
+struct CompanionHTTPError: LocalizedError {
+    var statusCode: Int
+    var message: String
+    var errorDescription: String? { message }
+    var isUnsupported: Bool { statusCode == 404 || statusCode == 405 || statusCode == 501 }
 }
 
 struct ChatFrame: Decodable {

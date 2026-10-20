@@ -20,6 +20,103 @@ struct CompanionModel: Codable, Identifiable, Equatable {
     var selected: Bool? = nil
 }
 
+struct ModelManagementTarget: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var kind: String
+    var isRemote: Bool { kind == "remote" }
+}
+
+struct ModelManagementTargets: Decodable { var targets: [ModelManagementTarget]; var reason: String? }
+
+struct ModelManagementCatalog: Decodable, Equatable {
+    struct Capabilities: Decodable, Equatable { var downloads: Bool; var imports: Bool? }
+    var supported: Bool
+    var reason: String?
+    var targetName: String
+    var capabilities: Capabilities
+    var models: [DownloadableModel]
+    var jobs: [ModelDownloadJob]
+    var canDownload: Bool { supported && capabilities.downloads }
+}
+
+struct DownloadableModel: Decodable, Identifiable, Equatable {
+    var id: String
+    var name: String
+    var sizeGb: Double?
+    var state: String
+    var detail: String?
+    var readPictures: Bool
+    var canDownload: Bool { ["available", "error", "cancelled"].contains(state) }
+    var sizeLabel: String { ModelDownloadFormat.gigabytes(sizeGb) }
+}
+
+struct ModelDownloadJob: Decodable, Identifiable, Equatable {
+    var id: String
+    var modelId: String?
+    var name: String
+    var kind: String
+    var state: String
+    var summary: String
+    var percent: Double?
+    var doneGb: Double?
+    var totalGb: Double?
+    var error: String?
+    var canCancel: Bool?
+
+    var isRunning: Bool { state == "running" || state == "queued" }
+    var canRetry: Bool { kind == "download" && ["error", "cancelled"].contains(state) && modelId != nil }
+    var progress: Double? {
+        guard let percent, percent.isFinite else { return nil }
+        return min(100, max(0, percent)) / 100
+    }
+    var statusLabel: String {
+        switch state {
+        case "queued": return "Waiting to download"
+        case "running": return "Downloading and preparing"
+        case "done": return "Ready on computer"
+        case "cancelled": return "Download stopped"
+        case "error": return "Download needs attention"
+        default: return state.capitalized
+        }
+    }
+    var counterLabel: String? {
+        guard let doneGb, doneGb.isFinite, doneGb >= 0,
+              let totalGb, totalGb.isFinite, totalGb >= 0 else { return nil }
+        return ModelDownloadFormat.gigabytes(doneGb) + " of " + ModelDownloadFormat.gigabytes(totalGb)
+    }
+}
+
+struct ModelDownloadPlan: Decodable, Identifiable, Equatable {
+    var planId: String
+    var targetName: String
+    var modelName: String
+    var downloadGb: Double?
+    var diskFreeGb: Double?
+    var diskNeededGb: Double?
+    var diskShort: String?
+    var readPictures: Bool
+    var warnings: [String]
+    var expiresAt: Double
+    var id: String { planId }
+
+    func isExpired(at date: Date = Date()) -> Bool {
+        !expiresAt.isFinite || date.timeIntervalSince1970 * 1000 >= expiresAt
+    }
+    func canStart(at date: Date = Date()) -> Bool {
+        !planId.isEmpty && diskShort?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false && !isExpired(at: date)
+    }
+}
+
+enum ModelDownloadFormat {
+    static func gigabytes(_ value: Double?) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "Not reported" }
+        return value.formatted(.number.precision(.fractionLength(0...1))) + " GB"
+    }
+}
+
+struct ModelDownloadResult: Decodable { var job: ModelDownloadJob }
+
 struct CompanionChat: Codable, Identifiable, Equatable {
     var id: String
     var title: String

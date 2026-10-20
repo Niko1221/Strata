@@ -21,7 +21,8 @@ Each invitation expires after five minutes and works once. Use **New pairing cod
 
 - Live connection and model status from the Mac.
 - The Mac's configured API models, with credentials kept on the Mac.
-- Loading and unloading models that are already installed locally. Download models in the desktop app first.
+- Loading and unloading models that are already installed locally.
+- Downloading catalog models on the paired Mac or a supported Strata connection, after reviewing size, storage, picture reading, and required engine steps.
 - The Mac's existing conversations, their saved message history, and current work.
 - Continuing the same conversation and workspace from either device.
 - The Mac's Thinking text in an expandable panel, with a live preview and recorded duration when available.
@@ -36,6 +37,14 @@ Tap **Thinking** or **Thought for…** above a reply to read the Thinking text s
 While Chat is open in the foreground, its history and activity refresh about once per second. Other status and conversation lists refresh about every five seconds. On iOS 18 or later, scrolling back through history pauses automatic scrolling; choose **Latest** to follow new replies again. On iOS 17, use **Latest** to jump to current work; live updates leave the scroll position alone. Leaving Chat or putting the phone away does not stop the Mac's agent. Browser activity describes what the Mac is doing; it does not stream the Mac's screen. **Open page on iPhone** opens a reported web address locally.
 
 Requests go through the Mac. A configured API provider may run remotely. Earlier phone-only chats remain available under **Earlier iPhone conversations**; continuing one uses its original text-only chat path.
+
+## Download a model
+
+Open **Models → Downloads**, choose the destination computer, and choose **Review download**. The review names the computer and shows the expected download size, storage needed, free storage, picture reading choice, and any required engine changes. Starting may unload native models and prepare or update the engine; the review explains those steps. Choose **Download on…** only when you are ready. Downloading does not load the model automatically.
+
+Progress shows the current stage and downloaded amount. Downloads continue on the selected computer when you leave the screen or put the phone away. While Models is open, active progress refreshes about once per second. Use **Stop download** for a download started by this phone; work started elsewhere can be watched here and managed from its original computer or device. **Review and retry** checks a fresh plan before starting again. An expired review or insufficient storage blocks the confirmation.
+
+These files stay on the destination computer. API-only providers use their existing **Use model** action and do not offer model downloads. Older Mac builds keep their model library available and show an update message when phone downloads are unsupported. Configure Strata connections in the Mac app; provider credentials stay there.
 
 **Connection → Disconnect Mac** revokes the phone's access and removes its local credential. **Forget this Mac** is available when the Mac is unreachable; it removes the credential only from the phone. Remove that device in the Mac pairing window to revoke its old session. **Pair again** also recovers a changed certificate or address.
 
@@ -67,7 +76,7 @@ xcodebuild -project StrataMobile.xcodeproj -scheme StrataMobile \
   -only-testing:StrataMobileUITests/CompanionSmokeTests/testManualPairingRejectsInvalidCode test
 ```
 
-Choose an available simulator in the commands above. The [synthetic shared-conversation fixture](test-support/README.md) runs the full history, Thinking, ordered progress, browser, approval, continuation, Stop, and relaunch flow using the real TLS bridge and a synthetic host. It starts no model, browser, or desktop agent.
+Choose an available simulator in the commands above. The [synthetic companion fixtures](test-support/README.md) run shared-chat and model-download workflows through the real TLS bridge with a synthetic host. They cover history, Thinking, ordered progress, browser activity, approvals, continuation, Stop, relaunch, download review, typed picture-reading choices, progress, fresh-plan retry, remote target selection, and older-Mac fallback. They start no actual download, model, browser, or desktop agent.
 
 The optional real Mac read-only test takes `STRATA_READONLY_INVITATION`. It pairs, reads existing history, and verifies saved pairing after relaunch, without sending a model message or approving/stopping work.
 

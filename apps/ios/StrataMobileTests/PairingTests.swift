@@ -37,9 +37,24 @@ final class PairingTests: XCTestCase {
         let request = try client.request("/v1/status")
         XCTAssertEqual(request.url?.absoluteString, "https://mac.local:8787/v1/status")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+        XCTAssertEqual(request.timeoutInterval, 20)
         XCTAssertThrowsError(try client.request("https://other.local/v1/status"))
         XCTAssertThrowsError(try client.request("/v1/../api/secrets"))
         XCTAssertThrowsError(try client.request("/v1/status?redirect=other"))
+    }
+
+    func testTypedDownloadPlanSendsABooleanWithinThePinnedEndpoint() throws {
+        struct DownloadPlan: Encodable { var modelId: String; var readPictures: Bool }
+        let client = CompanionClient(baseURL: URL(string: "https://mac.local:8787")!, fingerprint: pin, token: "test-token")
+        let plan = DownloadPlan(modelId: "catalog-model", readPictures: true)
+        let request = try client.request("/v1/model-management/targets/local/plan", method: "POST", jsonBody: plan)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        XCTAssertEqual(body["modelId"] as? String, "catalog-model")
+        XCTAssertEqual(body["readPictures"] as? Bool, true)
+        XCTAssertNil(body["readPictures"] as? String, "The Mac requires an explicit JSON boolean for picture reading.")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+        XCTAssertEqual(request.timeoutInterval, 180, "Native planning and preparation can take longer than overview requests.")
+        XCTAssertThrowsError(try client.request("https://other.local/v1/model-management/targets/local/plan", method: "POST", jsonBody: plan))
     }
 
     func testLiveTLSRefusesAnUnexpectedCertificate() async throws {
@@ -53,9 +68,9 @@ final class PairingTests: XCTestCase {
         do {
             try await correct.discard("/v1/status", method: "GET")
             XCTFail("Unpaired status should be refused")
-        } catch let error as CompanionError {
-            guard case .server(let message) = error else { XCTFail("Unexpected response: \(error)"); return }
-            XCTAssertTrue(message.contains("Pair")) // Reached HTTP only after the correct pin was accepted.
+        } catch let error as CompanionHTTPError {
+            XCTAssertEqual(error.statusCode, 401)
+            XCTAssertTrue(error.message.contains("Pair")) // Reached HTTP only after the correct pin was accepted.
         }
         let incorrect = CompanionClient(baseURL: address, fingerprint: String(repeating: "0", count: 64))
         do {

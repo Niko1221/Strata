@@ -252,12 +252,225 @@ final class StoreRaceTests: XCTestCase {
 
 /// Delayed responses exercise the real HTTP decoding path without a live bridge,
 /// simulator changes, or access to the app's saved Keychain entry.
+@MainActor
+final class ModelManagementTests: XCTestCase {
+    func testDownloadPlanReportsStorageVisionAndExpiresInMilliseconds() throws {
+        let now = Date(timeIntervalSince1970: 1000)
+        var json = StoreTransport.downloadPlan(expiresAt: 1_001_000)
+        let plan = try decode(ModelDownloadPlan.self, json)
+        XCTAssertTrue(plan.canStart(at: now))
+        XCTAssertFalse(plan.canStart(at: Date(timeIntervalSince1970: 1001)))
+        XCTAssertEqual(plan.downloadGb, 12)
+        XCTAssertEqual(plan.diskFreeGb, 100)
+        XCTAssertEqual(plan.diskNeededGb, 14)
+        XCTAssertTrue(plan.readPictures)
+        XCTAssertFalse(plan.warnings.isEmpty)
+        json["diskShort"] = "Not enough free storage"
+        XCTAssertFalse(try decode(ModelDownloadPlan.self, json).canStart(at: now))
+        XCTAssertEqual(ModelDownloadFormat.gigabytes(nil), "Not reported")
+    }
+
+    func testDownloadProgressClampsValuesAndMissingOwnershipCannotCancel() throws {
+        var job = try decode(ModelDownloadJob.self, StoreTransport.downloadJob(state: "queued", canCancel: nil))
+        XCTAssertTrue(job.isRunning)
+        XCTAssertNil(job.canCancel)
+        job.percent = 120; XCTAssertEqual(job.progress, 1)
+        job.percent = -10; XCTAssertEqual(job.progress, 0)
+        job.percent = .nan; XCTAssertNil(job.progress)
+        job.state = "cancelled"; XCTAssertTrue(job.canRetry)
+        XCTAssertFalse(job.isRunning)
+        job.modelId = nil; XCTAssertFalse(job.canRetry)
+        XCTAssertNotNil(job.counterLabel)
+        job.doneGb = .infinity; XCTAssertNil(job.counterLabel)
+    }
+
+    func testOldMacDownloadCapabilityFallbackPreservesTheLibrary() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respond { request in
+            request.url!.path == "/v1/models" ? ["models": [["id": "api-fixture", "name": "API model", "state": "available"]]] : nil
+        }
+        let store = fixture.makeStore()
+        await store.refresh()
+        let unsupported = fixture.hold("/v1/model-management/targets")
+        let refreshing = Task { await store.refreshModelManagement() }
+        await fulfillment(of: [unsupported.requested], timeout: 2)
+        unsupported.finish(["error": "Unknown endpoint"], status: 404)
+        await refreshing.value
+        XCTAssertEqual(store.models.map(\.id), ["api-fixture"])
+        XCTAssertTrue(store.modelTargets.isEmpty)
+        XCTAssertTrue(store.modelManagementMessage?.contains("Update Strata") == true)
+        XCTAssertNil(store.error)
+    }
+
+    func testReviewCannotStartUntilExplicitConfirmationAndPostsOnlyThePlanToken() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement()
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        let model = try XCTUnwrap(store.modelCatalog?.models.first)
+        await store.reviewModelDownload(model, readPictures: false)
+        XCTAssertEqual(store.modelDownloadPlan?.planId, "fresh-plan")
+        let planRequest = try XCTUnwrap(fixture.requests.last(where: { $0.path.hasSuffix("/plan") }))
+        XCTAssertEqual(planRequest.jsonBody?["readPictures"] as? Bool, false)
+        XCTAssertNil(planRequest.jsonBody?["readPictures"] as? String)
+        XCTAssertFalse(fixture.requests.contains(where: { $0.path.hasSuffix("/downloads") }))
+
+        let started = fixture.hold("/v1/model-management/targets/local/downloads")
+        let starting = Task { await store.startModelDownload() }
+        await fulfillment(of: [started.requested], timeout: 2)
+        fixture.respondManagement(jobs: [StoreTransport.downloadJob()])
+        started.finish(["job": StoreTransport.downloadJob()])
+        await starting.value
+        let request = try XCTUnwrap(fixture.requests.last(where: { $0.path.hasSuffix("/downloads") }))
+        XCTAssertEqual(request.body, ["planId": "fresh-plan"])
+        XCTAssertEqual(store.modelCatalog?.jobs.first?.id, "own-download")
+        XCTAssertNil(store.reviewingModelDownload)
+        XCTAssertFalse(store.isStartingModelDownload)
+    }
+
+    func testTargetChangeRejectsLateCatalogAndReviewResponses() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement()
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        let model = try XCTUnwrap(store.modelCatalog?.models.first)
+        let oldCatalog = fixture.hold("/v1/model-management/targets/local")
+        let oldPlan = fixture.hold("/v1/model-management/targets/local/plan")
+        let polling = Task { await store.refreshModelManagement() }
+        let reviewing = Task { await store.reviewModelDownload(model, readPictures: true) }
+        await fulfillment(of: [oldCatalog.requested, oldPlan.requested], timeout: 2)
+        await store.selectModelTarget(StoreTransport.remoteTargetId)
+        oldCatalog.finish(StoreTransport.managementCatalog(targetName: "Old Mac"))
+        oldPlan.finish(StoreTransport.downloadPlan())
+        await polling.value; await reviewing.value
+        XCTAssertEqual(store.selectedModelTargetId, StoreTransport.remoteTargetId)
+        XCTAssertEqual(store.modelCatalog?.targetName, "Remote Strata")
+        XCTAssertNil(store.modelDownloadPlan)
+        XCTAssertNil(store.reviewingModelDownload)
+        XCTAssertFalse(store.isPlanningModelDownload)
+        XCTAssertFalse(fixture.requests.contains(where: { $0.path.hasSuffix("/downloads") }))
+    }
+
+    func testForgetDuringReviewCannotRestoreOldMacDownloadState() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement()
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        let model = try XCTUnwrap(store.modelCatalog?.models.first)
+        let plan = fixture.hold("/v1/model-management/targets/local/plan")
+        let reviewing = Task { await store.reviewModelDownload(model, readPictures: true) }
+        await fulfillment(of: [plan.requested], timeout: 2)
+        store.forgetMac()
+        plan.finish(StoreTransport.downloadPlan())
+        await reviewing.value
+        XCTAssertFalse(store.isPaired)
+        XCTAssertTrue(store.modelTargets.isEmpty)
+        XCTAssertNil(store.modelCatalog)
+        XCTAssertNil(store.modelDownloadPlan)
+        XCTAssertNil(store.reviewingModelDownload)
+        XCTAssertFalse(store.isPlanningModelDownload)
+    }
+
+    func testExpiredReviewCannotPostADownload() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement(expiresAt: 1)
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        await store.reviewModelDownload(try XCTUnwrap(store.modelCatalog?.models.first), readPictures: true)
+        await store.startModelDownload()
+        XCTAssertTrue(store.modelDownloadReviewError?.contains("expired") == true)
+        XCTAssertFalse(fixture.requests.contains(where: { $0.path.hasSuffix("/downloads") }))
+    }
+
+    func testMacStartedDownloadPollsOnlyInModelsAndCannotCancelAnotherDevice() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement(jobs: [StoreTransport.downloadJob(canCancel: false)])
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        let reads = fixture.requests.count
+        await store.refreshLiveState(refreshOverview: false)
+        XCTAssertEqual(fixture.requests.count, reads)
+        store.setModelsVisible(true)
+        var changed = StoreTransport.downloadJob(canCancel: false); changed["percent"] = 45
+        fixture.respondManagement(jobs: [changed])
+        await store.refreshLiveState(refreshOverview: false)
+        XCTAssertEqual(fixture.requests.count, reads + 1)
+        XCTAssertEqual(store.modelCatalog?.jobs.first?.progress, 0.45)
+        var forged = try XCTUnwrap(store.modelCatalog?.jobs.first); forged.canCancel = true
+        await store.cancelModelDownload(forged)
+        XCTAssertFalse(fixture.requests.contains(where: { $0.method == "POST" }))
+        var publications = 0
+        let observation = store.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+        await store.refreshLiveState(refreshOverview: false)
+        XCTAssertEqual(publications, 0, "An unchanged progress snapshot should not rebuild the Models screen.")
+    }
+
+    func testStopIsScopedAndAPreStopPollCannotReviveTheJob() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement(jobs: [StoreTransport.downloadJob()])
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        let job = try XCTUnwrap(store.modelCatalog?.jobs.first)
+        let oldCatalog = fixture.hold("/v1/model-management/targets/local")
+        let polling = Task { await store.refreshModelManagement() }
+        await fulfillment(of: [oldCatalog.requested], timeout: 2)
+        let cancelled = fixture.hold("/v1/model-management/targets/local/downloads/own-download/cancel")
+        let cancelling = Task { await store.cancelModelDownload(job) }
+        await fulfillment(of: [cancelled.requested], timeout: 2)
+        fixture.release("/v1/model-management/targets/local")
+        let stopped = StoreTransport.downloadJob(state: "cancelled", canCancel: false)
+        fixture.respondManagement(jobs: [stopped])
+        cancelled.finish(["job": stopped])
+        await cancelling.value
+        oldCatalog.finish(StoreTransport.managementCatalog(jobs: [StoreTransport.downloadJob()]))
+        await polling.value
+        XCTAssertEqual(store.modelCatalog?.jobs.first?.state, "cancelled")
+        XCTAssertEqual(fixture.requests.filter { $0.method == "POST" }.map(\.path), ["/v1/model-management/targets/local/downloads/own-download/cancel"])
+        XCTAssertNil(store.cancellingModelDownloadId)
+        await store.reviewModelDownload(try XCTUnwrap(store.modelCatalog?.models.first), readPictures: true)
+        XCTAssertEqual(store.modelDownloadPlan?.planId, "fresh-plan", "Retry must obtain a fresh review instead of restarting the old job.")
+        XCTAssertFalse(fixture.requests.contains(where: { $0.path.hasSuffix("/downloads") }))
+    }
+
+    func testAPIOnlyModelCannotBeSentToTheDownloadPlanner() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement()
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        let apiModel = try decode(DownloadableModel.self, ["id": "api-provider-model", "name": "API only", "state": "available", "readPictures": false])
+        await store.reviewModelDownload(apiModel, readPictures: false)
+        XCTAssertNil(store.reviewingModelDownload)
+        XCTAssertFalse(fixture.requests.contains(where: { $0.method == "POST" }))
+    }
+
+    func testDisappearingTargetsLeaveThePickerBindingSafe() async throws {
+        let fixture = StoreTransport(); defer { fixture.close() }
+        fixture.respondManagement()
+        let store = fixture.makeStore()
+        await store.refreshModelManagement()
+        XCTAssertEqual(store.modelTargetSelection, "local")
+        fixture.respond { request in
+            request.url!.path == "/v1/model-management/targets" ? ["targets": [], "reason": "Update Strata"] : nil
+        }
+        await store.refreshModelManagement(refreshTargets: true)
+        XCTAssertTrue(store.modelTargets.isEmpty)
+        XCTAssertEqual(store.modelTargetSelection, "", "SwiftUI may read the old Picker binding after its targets disappear.")
+        XCTAssertNil(store.modelCatalog)
+        XCTAssertEqual(store.modelManagementMessage, "Update Strata")
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, _ json: [String: Any]) throws -> T {
+        try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: json))
+    }
+}
+
 private final class StoreTransport {
     static let status: [String: Any] = ["macName": "Fixture Mac", "hostConnected": true, "engineState": "idle", "activeRequests": 0]
     let host = "fixture-\(UUID().uuidString.lowercased()).invalid"
     private let lock = NSLock()
     private var held: [String: HeldStoreResponse] = [:]
-    struct RecordedRequest { var path: String; var method: String; var body: [String: String]? }
+    struct RecordedRequest { var path: String; var method: String; var body: [String: String]?; var jsonBody: [String: Any]? }
     private var recordedRequests: [RecordedRequest] = []
     var requests: [RecordedRequest] { lock.lock(); defer { lock.unlock() }; return recordedRequests }
     private var responder: ((URLRequest) -> [String: Any]?)?
@@ -286,6 +499,10 @@ private final class StoreTransport {
         return response
     }
 
+    func release(_ path: String) {
+        lock.lock(); held.removeValue(forKey: path); lock.unlock()
+    }
+
     func receive(_ request: StoreURLProtocol) {
         let path = request.request.url!.path
         let payload: Data?
@@ -302,8 +519,9 @@ private final class StoreTransport {
             payload = data
         } else { payload = nil }
         let body = payload.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] }
+        let jsonBody = payload.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         lock.lock()
-        recordedRequests.append(RecordedRequest(path: path, method: request.request.httpMethod ?? "GET", body: body))
+        recordedRequests.append(RecordedRequest(path: path, method: request.request.httpMethod ?? "GET", body: body, jsonBody: jsonBody))
         let response = held[path]
         let responder = responder
         lock.unlock()
@@ -347,13 +565,44 @@ private final class HeldStoreResponse {
         lock.lock(); self.request = request; lock.unlock()
         requested.fulfill()
     }
-    func finish(_ json: [String: Any]) {
+    func finish(_ json: [String: Any], status: Int = 200) {
         lock.lock(); let request = self.request; self.request = nil; lock.unlock()
-        request?.finishJSON(json)
+        request?.finishJSON(json, status: status)
     }
     func finishSSE(_ value: String) {
         lock.lock(); let request = self.request; self.request = nil; lock.unlock()
         request?.finish(Data(value.utf8), contentType: "text/event-stream")
+    }
+}
+
+private extension StoreTransport {
+    static var remoteTargetId: String { "remote-aaaaaaaaaaaaaaaaaaaaaaaa" }
+    static func downloadJob(state: String = "running", canCancel: Bool? = true) -> [String: Any] {
+        var job: [String: Any] = ["id": "own-download", "modelId": "catalog-native", "name": "Native fixture", "kind": "download", "state": state,
+            "summary": "Downloading model files", "percent": 25, "doneGb": 3, "totalGb": 12]
+        if let canCancel { job["canCancel"] = canCancel }
+        return job
+    }
+    static func managementCatalog(targetName: String = "Fixture Mac", jobs: [[String: Any]] = []) -> [String: Any] {
+        ["supported": true, "targetName": targetName, "capabilities": ["downloads": true, "imports": false],
+         "models": [["id": "catalog-native", "name": "Native fixture", "sizeGb": 12, "state": "available", "readPictures": true]], "jobs": jobs]
+    }
+    static func downloadPlan(expiresAt: Double = Date().timeIntervalSince1970 * 1000 + 60_000) -> [String: Any] {
+        ["planId": "fresh-plan", "targetName": "Fixture Mac", "modelName": "Native fixture", "downloadGb": 12, "diskFreeGb": 100, "diskNeededGb": 14,
+         "readPictures": true, "expiresAt": expiresAt,
+         "warnings": ["Running native models will be unloaded before preparing files.", "The engine may be downloaded or updated.", "The model will not be loaded automatically."]]
+    }
+    func respondManagement(jobs: [[String: Any]] = [], expiresAt: Double = Date().timeIntervalSince1970 * 1000 + 60_000) {
+        respond { request in
+            switch request.url!.path {
+            case "/v1/model-management/targets":
+                return ["targets": [["id": "local", "name": "Fixture Mac", "kind": "local"], ["id": Self.remoteTargetId, "name": "Remote Strata", "kind": "remote"]]]
+            case "/v1/model-management/targets/local": return Self.managementCatalog(jobs: jobs)
+            case "/v1/model-management/targets/" + Self.remoteTargetId: return Self.managementCatalog(targetName: "Remote Strata")
+            case "/v1/model-management/targets/local/plan": return Self.downloadPlan(expiresAt: expiresAt)
+            default: return nil
+            }
+        }
     }
 }
 

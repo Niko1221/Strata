@@ -6,6 +6,22 @@ final class CompanionStore: ObservableObject {
     @Published private(set) var connection: PairedConnection?
     @Published private(set) var status: CompanionStatus?
     @Published private(set) var models: [CompanionModel] = []
+    @Published private(set) var modelTargets: [ModelManagementTarget] = []
+    @Published private(set) var selectedModelTargetId: String?
+    // A Picker can read its previous binding while a capability refresh removes
+    // the last target. Never subscript the changing collection from that binding.
+    var modelTargetSelection: String { selectedModelTargetId ?? modelTargets.first?.id ?? "" }
+    @Published private(set) var modelCatalog: ModelManagementCatalog?
+    @Published private(set) var modelManagementMessage: String?
+    @Published private(set) var isDiscoveringModelTargets = false
+    @Published private(set) var isLoadingModelCatalog = false
+    @Published private(set) var reviewingModelDownload: DownloadableModel?
+    @Published private(set) var modelDownloadPlan: ModelDownloadPlan?
+    @Published private(set) var modelDownloadReviewError: String?
+    @Published private(set) var isPlanningModelDownload = false
+    @Published private(set) var isStartingModelDownload = false
+    @Published private(set) var cancellingModelDownloadId: String?
+    var isModelDownloadBusy: Bool { isStartingModelDownload || cancellingModelDownloadId != nil }
     @Published private(set) var chats: [CompanionChat] = []
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var currentChatId: String?
@@ -19,6 +35,13 @@ final class CompanionStore: ObservableObject {
     var isLegacyConversation: Bool { currentChatId != nil }
     private var hasChosenConversation = false
     private var chatVisible = false
+    private var modelsVisible = false
+    private var hasDiscoveredModelTargets = false
+    private var modelTargetGeneration = UUID()
+    private var modelReviewGeneration = UUID()
+    private var modelTargetsRequest: UUID?
+    private var modelCatalogRequest: UUID?
+    private var modelReviewTargetId: String?
     @Published private(set) var isLoading = false
     @Published private(set) var isSending = false
     @Published var error: String?
@@ -45,7 +68,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func pair(url: String, code: String, fingerprint: String) async {
-        guard !isLoading, !isSending, !isSubmittingMessage else { return }
+        guard !isLoading, !isSending, !isSubmittingMessage, !isModelDownloadBusy else { return }
         let operation = beginLoading()
         let generation = connectionGeneration
         error = nil
@@ -62,6 +85,7 @@ final class CompanionStore: ObservableObject {
             let saved = PairedConnection(baseURL: address, macName: result.macName, fingerprint: pin, token: result.token)
             try saveConnection(saved)
             connectionGeneration = UUID(); conversationGeneration = UUID()
+            clearModelManagement()
             connection = saved
             client = CompanionClient(baseURL: address, fingerprint: pin, token: saved.token)
             status = nil; models = []; chats = []; messages = []; currentChatId = nil
@@ -189,11 +213,187 @@ final class CompanionStore: ObservableObject {
     }
 
     func setChatVisible(_ visible: Bool) { chatVisible = visible }
+    func setModelsVisible(_ visible: Bool) { modelsVisible = visible }
 
     func refreshLiveState(refreshOverview: Bool) async {
         guard isPaired else { return }
         if refreshOverview { await refresh(silently: true) }
         if chatVisible { await refreshCurrentConversation() }
+        if modelsVisible, refreshOverview || !hasDiscoveredModelTargets || modelCatalog?.jobs.contains(where: \.isRunning) == true {
+            await refreshModelManagement(refreshTargets: refreshOverview)
+        }
+    }
+
+    func refreshModelManagement(refreshTargets: Bool = false) async {
+        guard isPaired else { return }
+        if refreshTargets || !hasDiscoveredModelTargets { await discoverModelTargets() }
+        await refreshModelCatalog()
+    }
+
+    private func discoverModelTargets() async {
+        guard let client, modelTargetsRequest == nil else { return }
+        let generation = connectionGeneration
+        let request = UUID()
+        modelTargetsRequest = request
+        if !hasDiscoveredModelTargets { isDiscoveringModelTargets = true }
+        defer {
+            if modelTargetsRequest == request {
+                modelTargetsRequest = nil
+                if isDiscoveringModelTargets { isDiscoveringModelTargets = false }
+            }
+        }
+        do {
+            let result: ModelManagementTargets = try await client.perform("/v1/model-management/targets")
+            guard connectionGeneration == generation, modelTargetsRequest == request else { return }
+            hasDiscoveredModelTargets = true
+            if modelTargets != result.targets { modelTargets = result.targets }
+            if result.targets.isEmpty {
+                selectedModelTargetId = nil; modelCatalog = nil; dismissModelDownloadReview()
+                modelManagementMessage = result.reason ?? "Update Strata on your Mac to download models from your iPhone."
+            } else if !result.targets.contains(where: { $0.id == selectedModelTargetId }) {
+                await selectModelTarget(result.targets.first(where: { $0.kind == "local" })?.id ?? result.targets[0].id)
+            }
+        } catch is CancellationError { }
+        catch {
+            guard connectionGeneration == generation, modelTargetsRequest == request else { return }
+            hasDiscoveredModelTargets = true
+            if let http = error as? CompanionHTTPError, http.isUnsupported {
+                modelTargets = []; selectedModelTargetId = nil; modelCatalog = nil; dismissModelDownloadReview()
+                modelManagementMessage = "Update Strata on your Mac to download models from your iPhone."
+            } else { modelManagementMessage = friendly(error) }
+        }
+    }
+
+    func selectModelTarget(_ id: String) async {
+        guard modelTargets.contains(where: { $0.id == id }), !isModelDownloadBusy else { return }
+        modelTargetGeneration = UUID(); modelCatalogRequest = nil
+        selectedModelTargetId = id; modelCatalog = nil; modelManagementMessage = nil; isLoadingModelCatalog = false
+        dismissModelDownloadReview()
+        await refreshModelCatalog()
+    }
+
+    private func refreshModelCatalog() async {
+        guard let client, let target = selectedModelTargetId, modelCatalogRequest == nil, !isModelDownloadBusy else { return }
+        let generation = connectionGeneration
+        let targetGeneration = modelTargetGeneration
+        let request = UUID()
+        modelCatalogRequest = request
+        if modelCatalog == nil { isLoadingModelCatalog = true }
+        defer {
+            if modelCatalogRequest == request {
+                modelCatalogRequest = nil
+                if isLoadingModelCatalog { isLoadingModelCatalog = false }
+            }
+        }
+        do {
+            let catalog: ModelManagementCatalog = try await client.perform(modelManagementPath(target))
+            guard connectionGeneration == generation, modelTargetGeneration == targetGeneration, selectedModelTargetId == target, modelCatalogRequest == request else { return }
+            if modelCatalog != catalog { modelCatalog = catalog }
+            let message = catalog.canDownload ? nil : catalog.reason ?? "This computer does not support model downloads from the phone."
+            if modelManagementMessage != message { modelManagementMessage = message }
+        } catch is CancellationError { }
+        catch {
+            if connectionGeneration == generation, modelTargetGeneration == targetGeneration, modelCatalogRequest == request {
+                modelManagementMessage = friendly(error)
+            }
+        }
+    }
+
+    func reviewModelDownload(_ model: DownloadableModel, readPictures: Bool) async {
+        guard let client, let target = selectedModelTargetId, let catalog = modelCatalog, catalog.canDownload,
+              let actual = catalog.models.first(where: { $0.id == model.id }), !isModelDownloadBusy,
+              actual.canDownload || catalog.jobs.contains(where: { $0.modelId == actual.id && $0.canRetry }) else { return }
+        let generation = connectionGeneration
+        let targetGeneration = modelTargetGeneration
+        let review = UUID()
+        modelReviewGeneration = review; modelReviewTargetId = target
+        reviewingModelDownload = actual; modelDownloadPlan = nil; modelDownloadReviewError = nil; isPlanningModelDownload = true
+        defer { if modelReviewGeneration == review { isPlanningModelDownload = false } }
+        do {
+            let plan: ModelDownloadPlan = try await client.perform(modelManagementPath(target) + "/plan", method: "POST",
+                jsonBody: ModelDownloadPlanRequest(modelId: actual.id, readPictures: readPictures && actual.readPictures))
+            guard connectionGeneration == generation, modelTargetGeneration == targetGeneration, modelReviewGeneration == review,
+                  modelReviewTargetId == target, selectedModelTargetId == target else { return }
+            modelDownloadPlan = plan
+        } catch is CancellationError { }
+        catch {
+            if connectionGeneration == generation, modelTargetGeneration == targetGeneration, modelReviewGeneration == review {
+                modelDownloadReviewError = friendly(error)
+            }
+        }
+    }
+
+    func dismissModelDownloadReview() {
+        guard !isStartingModelDownload else { return }
+        modelReviewGeneration = UUID(); modelReviewTargetId = nil
+        reviewingModelDownload = nil; modelDownloadPlan = nil; modelDownloadReviewError = nil; isPlanningModelDownload = false
+    }
+
+    func startModelDownload() async {
+        guard let client, let target = selectedModelTargetId, modelReviewTargetId == target,
+              let plan = modelDownloadPlan, !isPlanningModelDownload, !isModelDownloadBusy else { return }
+        guard plan.canStart() else {
+            modelDownloadReviewError = plan.diskShort?.isEmpty == false ? plan.diskShort : "This review has expired. Refresh the plan before downloading."
+            return
+        }
+        let generation = connectionGeneration
+        let targetGeneration = modelTargetGeneration
+        isStartingModelDownload = true; modelDownloadReviewError = nil
+        // A pre-start poll cannot replace the job returned by this action.
+        modelCatalogRequest = nil; isLoadingModelCatalog = false
+        defer { if connectionGeneration == generation { isStartingModelDownload = false } }
+        do {
+            let result: ModelDownloadResult = try await client.perform(modelManagementPath(target) + "/downloads", method: "POST", body: ["planId": plan.planId])
+            guard connectionGeneration == generation, modelTargetGeneration == targetGeneration, selectedModelTargetId == target else { return }
+            updateModelDownload(result.job)
+            isStartingModelDownload = false
+            dismissModelDownloadReview()
+            await refreshModelCatalog()
+        } catch is CancellationError { }
+        catch {
+            if connectionGeneration == generation, modelTargetGeneration == targetGeneration { modelDownloadReviewError = friendly(error) }
+        }
+    }
+
+    func cancelModelDownload(_ job: ModelDownloadJob) async {
+        guard let client, let target = selectedModelTargetId, !isModelDownloadBusy,
+              modelCatalog?.jobs.contains(where: { $0.id == job.id && $0.kind == "download" && $0.isRunning && $0.canCancel == true }) == true else { return }
+        let generation = connectionGeneration
+        let targetGeneration = modelTargetGeneration
+        cancellingModelDownloadId = job.id; modelManagementMessage = nil
+        modelCatalogRequest = nil; isLoadingModelCatalog = false
+        defer { if connectionGeneration == generation { cancellingModelDownloadId = nil } }
+        do {
+            let result: ModelDownloadResult = try await client.perform(modelManagementPath(target) + "/downloads/" + escapedComponent(job.id) + "/cancel", method: "POST", body: [:])
+            guard connectionGeneration == generation, modelTargetGeneration == targetGeneration, selectedModelTargetId == target else { return }
+            updateModelDownload(result.job)
+            cancellingModelDownloadId = nil
+            await refreshModelCatalog()
+        } catch is CancellationError { }
+        catch { if connectionGeneration == generation, modelTargetGeneration == targetGeneration { modelManagementMessage = friendly(error) } }
+    }
+
+    private func updateModelDownload(_ job: ModelDownloadJob) {
+        guard var catalog = modelCatalog else { return }
+        if let index = catalog.jobs.firstIndex(where: { $0.id == job.id }) { catalog.jobs[index] = job }
+        else { catalog.jobs.insert(job, at: 0) }
+        if modelCatalog != catalog { modelCatalog = catalog }
+    }
+
+    private func modelManagementPath(_ target: String) -> String {
+        "/v1/model-management/targets/" + escapedComponent(target)
+    }
+
+    private func escapedComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))) ?? value
+    }
+
+    private func clearModelManagement() {
+        modelTargetGeneration = UUID(); modelTargetsRequest = nil; modelCatalogRequest = nil
+        modelTargets = []; selectedModelTargetId = nil; modelCatalog = nil; modelManagementMessage = nil
+        hasDiscoveredModelTargets = false; isDiscoveringModelTargets = false; isLoadingModelCatalog = false
+        isStartingModelDownload = false; cancellingModelDownloadId = nil
+        dismissModelDownloadReview()
     }
 
     func selectConversation(_ summary: MacConversationSummary) async {
@@ -306,7 +506,7 @@ final class CompanionStore: ObservableObject {
 
     func disconnect() async {
         guard let client else { return }
-        guard !isSending, !isSubmittingMessage else { error = "Wait for the current request before disconnecting."; return }
+        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy else { error = "Wait for the current request before disconnecting."; return }
         let generation = connectionGeneration
         do {
             // Revoke on the Mac before deleting the local credential.
@@ -318,7 +518,7 @@ final class CompanionStore: ObservableObject {
     }
 
     func forgetMac() {
-        guard !isSending, !isSubmittingMessage else { error = "Wait for the current request before forgetting this Mac."; return }
+        guard !isSending, !isSubmittingMessage, !isModelDownloadBusy else { error = "Wait for the current request before forgetting this Mac."; return }
         do {
             try deleteConnection()
             clearConnection()
@@ -338,6 +538,7 @@ final class CompanionStore: ObservableObject {
 
     private func clearConnection() {
         connectionGeneration = UUID(); conversationGeneration = UUID()
+        clearModelManagement()
         loadingOperation = nil; isLoading = false
         client = nil; connection = nil; status = nil; models = []; chats = []; messages = []; currentChatId = nil; error = nil
         conversations = []; currentConversation = nil; pendingApprovals = []; hasChosenConversation = false
@@ -368,3 +569,4 @@ private struct PairResult: Decodable { var token: String; var macName: String }
 private struct ModelResult: Decodable { var models: [CompanionModel] }
 private struct ChatListResult: Decodable { var chats: [CompanionChat] }
 private struct ChatHistory: Decodable { var messages: [ChatMessage] }
+private struct ModelDownloadPlanRequest: Encodable { var modelId: String; var readPictures: Bool }

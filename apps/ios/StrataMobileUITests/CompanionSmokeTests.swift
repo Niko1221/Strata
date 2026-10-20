@@ -275,6 +275,101 @@ final class CompanionSmokeTests: XCTestCase {
         XCTAssertTrue(finalCalls.contains { ($0["path"] as? String) == "/api/companion/conversations/fixture-mac-research/stop" })
     }
 
+    /// Uses a real TLS bridge with synthetic catalog/jobs. No model files, real
+    /// Strata computers, or physical phones are controlled by this fixture.
+    @MainActor
+    func testModelDownloadReviewProgressCancelRetryAndTargetSelection() async throws {
+        guard let raw = ProcessInfo.processInfo.environment["STRATA_TEST_INVITATION"],
+              let invitation = URLComponents(string: raw),
+              let control = ProcessInfo.processInfo.environment["STRATA_MODEL_MANAGEMENT_FIXTURE_CONTROL"],
+              let controlURL = URL(string: control), controlURL.host == "127.0.0.1" else {
+            throw XCTSkip("Provide an isolated model-management fixture invitation and loopback control URL.")
+        }
+        func item(_ name: String) -> String? { invitation.queryItems?.first { $0.name == name }?.value }
+        openManualPairing()
+        sensitivePairingVisible = true
+        fillPairing(address: try XCTUnwrap(item("url")), code: try XCTUnwrap(item("code")), fingerprint: try XCTUnwrap(item("fingerprint")))
+        submitPairing()
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.buttons["dismissPairingButton"])
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 25), .completed)
+        sensitivePairingVisible = false
+        tapTab("Models")
+        let review = app.buttons["reviewModelDownload-catalog-native"]
+        try requireModelElement(review)
+        reveal(review); review.tap()
+        let vision = app.switches["modelDownloadVisionToggle"]
+        try requireModelElement(vision)
+        XCTAssertTrue(app.staticTexts["Fixture Mac"].exists)
+        XCTAssertTrue(app.staticTexts["12 GB"].exists)
+        XCTAssertTrue(app.staticTexts["100 GB"].exists)
+        XCTAssertTrue(app.staticTexts["14 GB"].exists)
+        attachScreenshot("Model downloads — review size storage and destination")
+        vision.tap()
+        let visionOff = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "0"), object: vision)
+        await fulfillment(of: [visionOff], timeout: 10)
+        _ = try XCTUnwrap((vision.value as? String) == "0" ? true : nil, "Picture reading must update the plan.")
+        var snapshot = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(snapshot["downloadCount"] as? Int, 0, "Reviewing or changing vision must not start a download.")
+        var calls = try XCTUnwrap(snapshot["calls"] as? [[String: Any]])
+        let planRequest = try XCTUnwrap(calls.last(where: { ($0["path"] as? String)?.hasSuffix("/plan") == true }))
+        XCTAssertEqual((planRequest["body"] as? [String: Any])?["readPictures"] as? Bool, false)
+        let confirm = app.buttons["confirmModelDownloadButton"]
+        reveal(confirm)
+        XCTAssertTrue(app.staticTexts["Running native models will be unloaded before preparing files."].exists)
+        XCTAssertTrue(app.staticTexts["The engine may be downloaded or updated."].exists)
+        XCTAssertTrue(app.staticTexts["The model will not be loaded automatically."].exists)
+        confirm.tap()
+        let stopFirst = app.buttons["cancelModelDownload-fixture-download-1"]
+        try requireModelElement(stopFirst)
+        _ = try await fixtureControl(controlURL, action: "download-progress")
+        try requireModelElement(app.staticTexts["Downloading picture reader"])
+        reveal(stopFirst)
+        attachScreenshot("Model downloads — live stage progress and Stop")
+        stopFirst.tap()
+        let retryFirst = app.buttons["retryModelDownload-fixture-download-1"]
+        try requireModelElement(retryFirst)
+        reveal(retryFirst); retryFirst.tap()
+        try requireModelElement(confirm)
+        snapshot = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(snapshot["downloadCount"] as? Int, 1, "Retry first opens a new review.")
+        XCTAssertGreaterThan(try XCTUnwrap(snapshot["planCount"] as? Int), 2)
+        reveal(confirm); confirm.tap()
+        try requireModelElement(app.buttons["cancelModelDownload-fixture-download-2"])
+        _ = try await fixtureControl(controlURL, action: "download-error")
+        let retryFailed = app.buttons["retryModelDownload-fixture-download-2"]
+        try requireModelElement(retryFailed)
+        revealModelControl(retryFailed); retryFailed.tap()
+        try requireModelElement(confirm)
+        snapshot = try await fixtureControl(controlURL, action: "state")
+        XCTAssertEqual(snapshot["downloadCount"] as? Int, 2, "A failed download also needs another explicit confirmation.")
+        app.buttons["dismissModelDownloadReview"].tap()
+
+        let picker = app.buttons["modelDownloadTargetPicker"]
+        revealModelControl(picker); picker.tap()
+        let remote = app.buttons["Remote Strata"]
+        try requireModelElement(remote, timeout: 5); remote.tap()
+        try requireModelElement(review); reveal(review); review.tap()
+        try requireModelElement(confirm)
+        XCTAssertTrue(app.staticTexts["Remote Strata"].exists, "The review must name the selected remote computer.")
+        reveal(confirm); confirm.tap()
+        try requireModelElement(app.buttons["cancelModelDownload-fixture-download-3"])
+        _ = try await fixtureControl(controlURL, action: "download-complete")
+        try requireModelElement(app.staticTexts["Ready on computer"])
+        snapshot = try await fixtureControl(controlURL, action: "state")
+        calls = try XCTUnwrap(snapshot["calls"] as? [[String: Any]])
+        let starts = calls.filter { ($0["path"] as? String)?.hasSuffix("/downloads") == true }
+        XCTAssertEqual(starts.count, 3)
+        XCTAssertEqual(starts.last?["path"] as? String, "/api/model-management/targets/remote-aaaaaaaaaaaaaaaaaaaaaaaa/downloads")
+        XCTAssertEqual(Set((starts.last?["body"] as? [String: Any])?.keys.map { $0 } ?? []), ["planId"])
+        attachScreenshot("Model downloads — remote computer complete")
+
+        app.terminate(); app.launch(); tapTab("Models")
+        try requireModelElement(app.buttons["retryModelDownload-fixture-download-2"])
+        _ = try await fixtureControl(controlURL, action: "management-unsupported")
+        try requireModelElement(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Update Strata")).firstMatch, timeout: 12)
+        XCTAssertTrue(app.staticTexts["YOUR LIBRARY"].exists, "An older Mac keeps its existing model library usable.")
+    }
+
     /// Read-only acceptance against the user's running Mac. This test pairs,
     /// reads existing history, and reconnects; it sends no model message or action.
     @MainActor
@@ -396,6 +491,19 @@ final class CompanionSmokeTests: XCTestCase {
             app.scrollViews.firstMatch.swipeUp()
         }
         XCTAssertTrue(element.isHittable, "The control must be reachable by scrolling.")
+    }
+
+    private func revealModelControl(_ element: XCUIElement) {
+        for _ in 0..<5 {
+            if element.isHittable { return }
+            app.scrollViews.firstMatch.swipeDown()
+        }
+        reveal(element)
+    }
+
+    private func requireModelElement(_ element: XCUIElement, timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line) throws {
+        _ = try XCTUnwrap(element.waitForExistence(timeout: timeout) ? element : nil,
+                          "The expected model-download control was not available.", file: file, line: line)
     }
 
     private func attachScreenshot(_ name: String) {
