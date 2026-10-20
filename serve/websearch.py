@@ -3,9 +3,9 @@
 The web app's Web search section picks the engine; every request carries its own config and nothing
 is stored on the server (API keys stay in the browser that set them, like its API key field):
 
-    cfg = {"engine": "searxng" | "duckduckgo" | "brave" | "tavily" | "serper",
+    cfg = {"engine": "searxng" | "duckduckgo" | "brave" | "tavily" | "serper" | "exa" | "perplexity",
            "url": SearXNG base, default http://127.0.0.1:8888,
-           "api_key": Brave / Tavily / Serper,
+           "api_key": Brave / Tavily / Serper / Exa / Perplexity,
            "max_results": 1..20, default 6,
            "read_pages": true/false, "read_max": 1..5  (fetch the top pages in full),
            "page_limit": true/false + "page_chars": per-page cap (default 5000),
@@ -62,6 +62,23 @@ def _http_url(url, what):
     return u
 
 
+SNIPPET_CAP = 2000   # one hostile or oversized page must not eat the search-injection budget
+
+
+def _result_rows(data, key, name):
+    # Keyed-engine payloads must be dict-of-lists. A malformed envelope becomes a clean
+    # named engine error that search() propagates to the caller (readable message in the
+    # chat UI) instead of an AttributeError crash inside the handler; non-dict rows are dropped.
+    if not isinstance(data, dict):
+        raise SearchError(f"{name} returned an unexpected response")
+    rows = data.get(key)
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise SearchError(f"{name} returned an unexpected response")
+    return [r for r in rows if isinstance(r, dict)]
+
+
 def _searxng(query, cfg, n):
     base = _http_url((cfg.get("url") or DEFAULT_SEARCH_URL).rstrip("/"), "the SearXNG base")
     q = urllib.parse.urlencode({"q": query, "format": "json"})
@@ -70,11 +87,11 @@ def _searxng(query, cfg, n):
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"SearXNG at {base} is not reachable ({e}); start it or pick another engine") from e
     out = []
-    for row in data.get("results") or []:
-        url = (row.get("url") or "").strip()
+    for row in _result_rows(data, "results", "SearXNG"):
+        url = str(row.get("url") or "").strip()
         if url:
-            out.append({"title": (row.get("title") or "").strip() or url, "url": url,
-                        "snippet": (row.get("content") or "").strip()})
+            out.append({"title": str(row.get("title") or "").strip() or url, "url": url,
+                        "snippet": str(row.get("content") or "").strip()[:SNIPPET_CAP]})
         if len(out) >= n:
             break
     return out
@@ -106,7 +123,7 @@ def _duckduckgo(query, cfg, n):
         if url.startswith("//duckduckgo.com/lite/"):      # DDG's own redirect wrapper
             url = urllib.parse.parse_qs(urllib.parse.urlparse("https:" + url).query).get("uddg", [url])[0]
         out.append({"title": _clean(title) or url, "url": url,
-                    "snippet": _clean(snips[k]) if k < len(snips) else ""})
+                    "snippet": (_clean(snips[k]) if k < len(snips) else "")[:SNIPPET_CAP]})
         if len(out) >= n:
             break
     return out
@@ -126,9 +143,21 @@ def _brave(query, cfg, n):
         raise SearchError(f"Brave Search is not reachable (HTTP {e.code})") from e
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"Brave Search is not reachable ({e})") from e
-    return [{"title": r.get("title") or r.get("url", ""), "url": r.get("url", ""),
-             "snippet": r.get("description") or ""}
-            for r in (data.get("web") or {}).get("results", [])[:n] if r.get("url")]
+    if not isinstance(data, dict):
+        raise SearchError("Brave Search returned an unexpected response")
+    web = data.get("web") or {}
+    if not isinstance(web, dict):
+        raise SearchError("Brave Search returned an unexpected response")
+    out = []
+    for r in _result_rows(web, "results", "Brave Search"):
+        url = str(r.get("url") or "").strip()
+        if not url:
+            continue
+        out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
+                    "snippet": str(r.get("description") or "").strip()[:SNIPPET_CAP]})
+        if len(out) >= n:
+            break
+    return out
 
 
 def _tavily(query, cfg, n):
@@ -145,8 +174,16 @@ def _tavily(query, cfg, n):
         raise SearchError(f"Tavily is not reachable (HTTP {e.code})") from e
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"Tavily is not reachable ({e})") from e
-    return [{"title": r.get("title") or r.get("url", ""), "url": r.get("url", ""),
-             "snippet": r.get("content") or ""} for r in data.get("results", [])[:n] if r.get("url")]
+    out = []
+    for r in _result_rows(data, "results", "Tavily"):
+        url = str(r.get("url") or "").strip()
+        if not url:
+            continue
+        out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
+                    "snippet": str(r.get("content") or "").strip()[:SNIPPET_CAP]})
+        if len(out) >= n:
+            break
+    return out
 
 
 def _serper(query, cfg, n):
@@ -162,8 +199,16 @@ def _serper(query, cfg, n):
         raise SearchError(f"Serper is not reachable (HTTP {e.code})") from e
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"Serper is not reachable ({e})") from e
-    return [{"title": r.get("title") or r.get("link", ""), "url": r.get("link", ""),
-             "snippet": r.get("snippet") or ""} for r in data.get("organic", [])[:n] if r.get("link")]
+    out = []
+    for r in _result_rows(data, "organic", "Serper"):
+        url = str(r.get("link") or "").strip()
+        if not url:
+            continue
+        out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
+                    "snippet": str(r.get("snippet") or "").strip()[:SNIPPET_CAP]})
+        if len(out) >= n:
+            break
+    return out
 
 
 def _exa(query, cfg, n):
@@ -183,13 +228,20 @@ def _exa(query, cfg, n):
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"Exa is not reachable ({e})") from e
     out = []
-    for r in data.get("results") or []:
+    for r in _result_rows(data, "results", "Exa"):
         url = str(r.get("url") or "").strip()
         if not url:
             continue
-        snips = [str(h) for h in (r.get("highlights") or []) if str(h).strip()]
+        hl = r.get("highlights")
+        # highlights is a list of crawled text blocks per API contract; any other type
+        # (int, str) is treated as absent: iterating a str would fabricate a snippet
+        # from single characters and a number would raise mid-request
+        snips = [str(h) for h in hl if str(h).strip()] if isinstance(hl, list) else []
+        # highlights are text crawled off third-party pages, not the API's own short snippet;
+        # a cap keeps one hostile page from eating the whole search-injection budget
+        snippet = snips[0].strip() if snips else str(r.get("text") or "").strip()
         out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
-                    "snippet": snips[0].strip() if snips else ""})
+                    "snippet": snippet[:SNIPPET_CAP]})
         if len(out) >= n:
             break
     return out
@@ -213,16 +265,26 @@ def _perplexity(query, cfg, n):
         raise SearchError(f"Perplexity is not reachable (HTTP {e.code})") from e
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise SearchError(f"Perplexity is not reachable ({e})") from e
+    if not isinstance(data, dict):
+        raise SearchError("Perplexity returned an unexpected response")
     rows = data.get("search_results")
     if rows is None:
-        rows = [{"url": u} for u in (data.get("citations") or [])]
+        cites = data.get("citations")
+        # citations is a list of URL strings per API contract; a non-list is treated as absent
+        rows = [{"url": u} for u in cites if isinstance(u, str)] if isinstance(cites, list) else []
+    if not isinstance(rows, list):
+        raise SearchError("Perplexity returned an unexpected response")
     out = []
-    for r in rows[:n]:
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
         url = str(r.get("url") or "").strip()
         if not url:
             continue
         out.append({"title": str(r.get("title") or "").strip() or url, "url": url,
-                    "snippet": str(r.get("snippet") or "")})
+                    "snippet": str(r.get("snippet") or "")[:SNIPPET_CAP]})
+        if len(out) >= n:
+            break
     return out
 
 

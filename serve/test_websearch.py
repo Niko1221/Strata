@@ -237,12 +237,141 @@ class KeyedEngineTests(WebSearchBase):
         self.assertEqual(out[1]["title"], "https://b.example/2")
 
     def test_perplexity_falls_back_to_bare_citations(self):
-        payload = json.dumps({"citations": ["https://a.example/1", "https://b.example/2"]})
+        payload = json.dumps({"search_results": None,
+                              "citations": ["https://a.example/1", "https://b.example/2"]})
         self.patch_routes([("api.perplexity.ai", payload, "application/json")])
         out = w.search("q", {"engine": "perplexity", "api_key": "k", "max_results": 3})
         self.assertEqual([r["url"] for r in out], ["https://a.example/1", "https://b.example/2"])
         self.assertEqual(out[0]["title"], "https://a.example/1")
         self.assertEqual(out[0]["snippet"], "")
+
+    def test_http_errors_map_like_the_other_keyed_engines(self):
+        for engine, host in (("exa", "api.exa.ai"), ("perplexity", "api.perplexity.ai")):
+            for code, needle in ((401, "rejected the API key"), (403, "rejected the API key"),
+                                 (500, "is not reachable")):
+                with self.subTest(engine=engine, code=code):
+                    err = urllib.error.HTTPError(f"https://{host}/", code, "x", None, None)
+                    self.patch_routes([(host, err, None)])
+                    with self.assertRaises(w.SearchError) as cm:
+                        w.search("q", {"engine": engine, "api_key": "k"})
+                    self.assertIn(needle, str(cm.exception))
+
+    def test_malformed_response_shapes_become_named_search_errors(self):
+        cases = [("api.exa.ai", "exa", json.dumps({"results": "not a list"})),
+                 ("api.exa.ai", "exa", json.dumps(["top", "level"])),
+                 ("api.perplexity.ai", "perplexity", json.dumps({"search_results": {"a": 1}})),
+                 ("api.perplexity.ai", "perplexity", json.dumps([1, 2]))]
+        for host, engine, payload in cases:
+            with self.subTest(engine=engine, payload=payload):
+                self.patch_routes([(host, payload, "application/json")])
+                with self.assertRaises(w.SearchError) as cm:
+                    w.search("q", {"engine": engine, "api_key": "k"})
+                self.assertIn("unexpected response", str(cm.exception))
+
+    def test_junk_rows_and_citations_are_skipped_not_fatal(self):
+        payload = json.dumps({"results": [{"url": "https://a.example/1", "title": "ok"},
+                                          "junk string", 42, {"url": ""}]})
+        self.patch_routes([("api.exa.ai", payload, "application/json")])
+        out = w.search("q", {"engine": "exa", "api_key": "k", "max_results": 3})
+        self.assertEqual([r["url"] for r in out], ["https://a.example/1"])
+        payload = json.dumps({"citations": [{"url": 1}, "https://ok.example/2", None]})
+        self.patch_routes([("api.perplexity.ai", payload, "application/json")])
+        out = w.search("q", {"engine": "perplexity", "api_key": "k", "max_results": 3})
+        self.assertEqual([r["url"] for r in out], ["https://ok.example/2"])
+
+    def test_key_travels_as_bearer_header_only(self):
+        seen = []
+
+        def fu(req, timeout=None):
+            seen.append(req)
+            return FakeResp(json.dumps({"results": [], "search_results": []}), "application/json")
+
+        w.urllib.request.urlopen = fu
+        w.search("q", {"engine": "exa", "api_key": "***"})
+        w.search("q", {"engine": "perplexity", "api_key": "***"})
+        self.assertEqual(len(seen), 2)
+        for req in seen:
+            self.assertEqual(req.get_header("Authorization"), "Bearer ***")
+            self.assertNotIn("***", req.full_url)
+
+    def test_keyed_engines_cap_at_n_and_cap_snippet_length(self):
+        exa = json.dumps({"results": [{"url": f"https://a.example/{i}", "title": f"T{i}",
+                                       "highlights": ["z" * 5000]} for i in range(5)]})
+        self.patch_routes([("api.exa.ai", exa, "application/json")])
+        out = w.search("q", {"engine": "exa", "api_key": "k", "max_results": 2})
+        self.assertEqual(len(out), 2)
+        self.assertTrue(all(len(r["snippet"]) == 2000 for r in out))
+        perplexity = json.dumps({"search_results": [{"url": f"https://b.example/{i}",
+                                                     "snippet": "y" * 4000} for i in range(5)]})
+        self.patch_routes([("api.perplexity.ai", perplexity, "application/json")])
+        out = w.search("q", {"engine": "perplexity", "api_key": "k", "max_results": 2})
+        self.assertEqual(len(out), 2)
+        self.assertEqual(len(out[0]["snippet"]), 2000)
+
+
+class HardenedShapeTests(WebSearchBase):
+    """Findings from the dsh review (DeepSeek harness, 20.10.2026), pinned as tests."""
+
+    def test_exa_bad_highlight_types_never_crash_or_fabricate(self):
+        # highlights per API contract is a list; int must not raise mid-request and a
+        # str must not be iterated char-by-char into a fabricated snippet
+        payload = json.dumps({"results": [
+            {"url": "https://t1.example/1", "title": "T1", "highlights": 123},
+            {"url": "https://t2.example/2", "title": "T2", "highlights": "abcdefgh"},
+            {"url": "https://t3.example/3", "title": "T3", "text": "text fallback"}]})
+        self.patch_routes([("api.exa.ai", payload, "application/json")])
+        out = w.search("q", {"engine": "exa", "api_key": "k", "max_results": 3})
+        self.assertEqual([r["url"] for r in out],
+                         ["https://t1.example/1", "https://t2.example/2", "https://t3.example/3"])
+        self.assertEqual([r["snippet"] for r in out], ["", "", "text fallback"])
+
+    def test_all_keyed_engines_reject_bad_envelopes(self):
+        cases = [("api.search.brave.com", "brave", json.dumps([1, 2])),
+                 ("api.search.brave.com", "brave", json.dumps({"web": "junk"})),
+                 ("api.tavily.com", "tavily", json.dumps([1, 2])),
+                 ("google.serper.dev", "serper", json.dumps([1, 2])),
+                 ("127.0.0.1:8888", "searxng", json.dumps([1, 2]))]
+        for host, engine, payload in cases:
+            with self.subTest(engine=engine, payload=payload):
+                self.patch_routes([(host, payload, "application/json")])
+                with self.assertRaises(w.SearchError) as cm:
+                    w.search("q", {"engine": engine, "api_key": "k"})
+                self.assertIn("unexpected response", str(cm.exception))
+
+    def test_junk_rows_are_dropped_not_fatal_in_tavily_serper_brave(self):
+        payloads = [("api.search.brave.com", "brave", json.dumps({"web": {"results": [
+                        {"url": "https://b.example/1", "description": "d"}, "junk", 42]}})),
+                    ("api.tavily.com", "tavily", json.dumps({"results": [
+                        None, "junk", {"url": "https://t.example/1", "content": "c"}]})),
+                    ("google.serper.dev", "serper", json.dumps({"organic": [
+                        42, {"link": "https://s.example/1", "snippet": "s"}]}))]
+        for host, engine, payload in payloads:
+            with self.subTest(engine=engine):
+                self.patch_routes([(host, payload, "application/json")])
+                out = w.search("q", {"engine": engine, "api_key": "k", "max_results": 3})
+                self.assertEqual(len(out), 1)
+                self.assertTrue(out[0]["url"].startswith("https://"))
+
+    def test_snippets_are_capped_in_every_engine(self):
+        long = "x" * 3000
+        payloads = [("api.search.brave.com", "brave", json.dumps({"web": {"results": [
+                        {"url": "https://b.example/1", "title": "b", "description": long}]}})),
+                    ("api.tavily.com", "tavily", json.dumps({"results": [
+                        {"url": "https://t.example/1", "title": "t", "content": long}]})),
+                    ("google.serper.dev", "serper", json.dumps({"organic": [
+                        {"link": "https://s.example/1", "title": "s", "snippet": long}]})),
+                    ("127.0.0.1:8888", "searxng", json.dumps({"results": [
+                        {"url": "https://x.example/1", "title": "x", "content": long}]}))]
+        for host, engine, payload in payloads:
+            with self.subTest(engine=engine):
+                self.patch_routes([(host, payload, "application/json")])
+                out = w.search("q", {"engine": engine, "api_key": "k", "max_results": 2})
+                self.assertLessEqual(len(out[0]["snippet"]), w.SNIPPET_CAP)
+        page = ('<a href="https://d.example/1" class="result-link">D</a>'
+                '<td class="result-snippet">' + "y" * 3000 + "</td>")
+        self.patch_routes([("lite.duckduckgo.com", page, "text/html")])
+        out = w.search("q", {"engine": "duckduckgo", "max_results": 2})
+        self.assertLessEqual(len(out[0]["snippet"]), w.SNIPPET_CAP)
 
 
 if __name__ == "__main__":
