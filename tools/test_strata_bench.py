@@ -339,6 +339,27 @@ class ReportTests(unittest.TestCase):
     def test_no_server_is_an_error_not_a_crash(self):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
+    def test_the_start_server_branch_knows_its_port(self):
+        """#3188: with no --url the bench starts its own server; that branch used `port` three times without binding it."""
+        with tempfile.TemporaryDirectory() as d:
+            c = Path(d) / "strata-x.json"
+            c.write_text(json.dumps({"exe": "strata", "args": ["--spec", "4"], "port": 8123}))
+            with mock.patch.object(B, "is_strata", return_value=False), \
+                 mock.patch.object(B, "try_json", return_value=None), \
+                 mock.patch.object(B, "start_server", return_value=object()) as start, \
+                 mock.patch.object(B, "wait_ready", return_value=False), \
+                 mock.patch.object(B, "stop_server"), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(B.main(["--config", str(c), "--out", d, "--quiet"]), 1)
+            self.assertEqual(start.call_args[0][1], 8123)         # the config's port reaches the starter
+            self.assertIn("The server did not become ready", err.getvalue())
+            with mock.patch.object(B, "is_strata", return_value=False), \
+                 mock.patch.object(B, "try_json", return_value={}), \
+                 contextlib.redirect_stderr(io.StringIO()) as err2:
+                self.assertEqual(B.main(["--config", str(c), "--out", d, "--quiet"]), 2)
+            self.assertIn("Port 8123 is used by something that is not Strata", err2.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
