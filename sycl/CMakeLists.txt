@@ -254,7 +254,7 @@ strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_s
                        src/core/mtp.cpp src/core/conversation_snapshot.cpp src/core/conversation_state.cpp
                        src/core/conversation_memory.cpp   # 0.1.31: the conversation snapshots (#216)
                        src/core/arch_defaults.cpp src/core/vmm.cpp   # vmm.cpp is the port's stub: no driver VMM on Level Zero
-                       src/core/conversation_file.cpp
+                       src/core/conversation_file.cpp src/core/conversation_disk.cpp   # the disk tier (--conversation-disk-dir)
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/core/copy_queue.cpp)   # 0.1.43: a queue on the copy engine
