@@ -104,5 +104,40 @@ class ReadyTimeout(unittest.TestCase):
         self.assertFalse(svc.engine.starting)
 
 
+class SpawnFailure(unittest.TestCase):
+    """The engine program cannot be started at all (missing, not executable, or blocked by Windows - #735): the
+    request that was loading it gets a 503 with the reason, not a dropped connection."""
+    BODIES = {'/v1/chat/completions': {'messages': [{'role': 'user', 'content': 'hi'}], 'max_tokens': 8},
+              '/v1/messages': {'model': 'strata', 'max_tokens': 8, 'messages': [{'role': 'user', 'content': 'hi'}]},
+              '/v1/responses': {'input': 'hi', 'max_output_tokens': 8}}
+
+    def test_missing_engine_answers_503_and_leaves_nothing_running(self):
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        eng = StrataEngine(str(root / 'no-such-engine'), [], log=str(root / 'engine.log'), lazy=True)
+        svc = Service(eng, ByteTokenizer(), ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
+        httpd = serve(svc, port=0)
+        self.addCleanup(httpd.shutdown); self.addCleanup(httpd.server_close)
+        base = f'http://127.0.0.1:{httpd.server_address[1]}'
+        before = set(threading.enumerate())
+        cases = list(self.BODIES.items()) + [('/v1/chat/completions',
+                                              {**self.BODIES['/v1/chat/completions'], 'stream': True})]
+        for path, body in cases:
+            with self.subTest(path=path, stream=body.get('stream', False)):
+                req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
+                                             headers={'Content-Type': 'application/json'})
+                with self.assertRaises(urllib.error.HTTPError) as cm:
+                    urllib.request.urlopen(req, timeout=30)
+                self.assertEqual(cm.exception.code, 503)
+                self.assertIn('the engine could not be started', cm.exception.read().decode())
+                self.assertTrue(eng.log.closed)                 # our handle on the engine log is given back
+        # the start narrator ("still starting ... please wait") ends with the failed start
+        deadline = time.monotonic() + 5
+        while (narrators := [t for t in set(threading.enumerate()) - before if '(narrate_start)' in t.name]) \
+                and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(narrators, [])
+
+
 if __name__ == '__main__':
     unittest.main()

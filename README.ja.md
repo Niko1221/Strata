@@ -33,7 +33,7 @@ Strata は **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 - **無料です。** MIT ライセンス。アカウントもクラウドも不要です。
 - **プライバシーを守ります。** テレメトリはありません。Strata が何をダウンロードするか、いつインターネットを使うか、ダウンロードをどう検証するかは [docs/SAFETY.md](docs/SAFETY.md) に書いてあります。
 
-バージョン 0.2.0-beta · エンジン 0.1.45.3
+バージョン 0.2.1 · エンジン 0.1.46
 
 ## 必要な環境
 
@@ -72,16 +72,16 @@ Strata は **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 
 | OS | グラフィックスカード | ダウンロードするファイル |
 | --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.0-beta-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda13.exe) |
-| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.0-beta-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda12.exe) |
-| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.0-beta-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip.exe) |
-| | AMD Radeon RX 7000 シリーズまたは Ryzen AI Max (Strix Halo) | [`Strata-0.2.0-beta-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.0-beta-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx9070.AppImage) |
-| | AMD Radeon RX 7000 シリーズ | [`Strata-0.2.0-beta-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.0-beta-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-strixhalo.AppImage) |
-| **Mac**（Apple Silicon、macOS 15 以降） | 内蔵 | [`Strata-0.2.0-beta-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-mac.dmg) |
+| **Windows 10 / 11** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.1-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-cuda13.exe) |
+| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.1-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-cuda12.exe) |
+| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.1-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-hip.exe) |
+| | AMD Radeon RX 7000 シリーズまたは Ryzen AI Max (Strix Halo) | [`Strata-0.2.1-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-hip-rdna3.exe) |
+| **Linux** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.1-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-nvidia-cuda13.AppImage) |
+| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.1-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-nvidia-cuda12.AppImage) |
+| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.1-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-rx9070.AppImage) |
+| | AMD Radeon RX 7000 シリーズ | [`Strata-0.2.1-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-rx7900.AppImage) |
+| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.1-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-strixhalo.AppImage) |
+| **Mac**（Apple Silicon、macOS 15 以降） | 内蔵 | [`Strata-0.2.1-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-mac.dmg) |
 
 **迷ったときは:** NVIDIA の場合、ドライバーがバージョン 580 以降なら `cuda13`、それより古ければ `cuda12` を選びます。`cuda12` は古いカードと古いドライバー向けです。
 `hip` と `amd` のファイルは AMD のカード用です。それ以外の AMD カード（RX 6000）には、まだ用意されたアプリがありません。
@@ -270,7 +270,7 @@ strata doctor                                  # インストール済みのエ�
 
 このルールの根拠となる数値です。Radeon AI PRO R9700 では、カードのリーダーは260トークンの画像に57 ms、プロセッサのリーダーは3.1秒かかりました。
 16 GBのカード（Tesla P100 と RTX A4000、Linux）では、カードのリーダーを使うとテキストの速度が3〜5%下がりました。
-本来モデルが使う約1.4 GBをリーダーが占めるためです。Mac にはまだ画像リーダーがありません。
+本来モデルが使う約1.4 GBをリーダーが占めるためです。Mac ではメモリ量にかかわらず GPU が読み取ります（32 GB の M4 で260トークンの画像に0.45秒、共有メモリを約1.2 GB使います）。プロセッサでは1枚あたり約50秒かかるため、`--vision cpu` を指定したときだけ使います。
 
 ### 知っておくと便利なこと
 

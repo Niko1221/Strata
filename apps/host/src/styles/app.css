@@ -7503,3 +7503,11 @@ textarea {
 .native-vision-missing { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
 .storage-model--shared { background: var(--st-surface-2); }
 .storage-model--shared small { font-size: var(--st-fs-xs); }
+
+/* Math in answers (#3268): KaTeX draws it; its own stylesheet and fonts load with it, on the first answer that has a formula. */
+.md-math--source { font-size: 0.9em; }
+.md-math-block { margin: 0.6em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.md-math--display { display: block; margin: 0.6em 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.md-math-block .md-math--display { margin: 0; }
+.md-math .katex { font-size: 1.08em; }
+.md-math .katex-display { margin: 0; }

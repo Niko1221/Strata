@@ -25,6 +25,7 @@ ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "cloud
                 "tailscale": "Tailscale"}
 TUNE_MODES = ("quick", "thorough", "skip")
 VISION_MODES = ("off", "on", "gpu", "cpu")
+MTP_MODES = ("on", "off")
 KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
 DEFAULT_PORT = 8080
 
@@ -85,17 +86,25 @@ class LaunchSettings:
     kv: str | None = None                      # None = int8 above 8K, as setup
     vision: str | None = None                  # None = the default (on when the model can read pictures and the engine has the reader), off | on | gpu | cpu
     parallel: int | None = None                # None = fit to the card
+    mtp: str | None = None                     # None = as installed (draft layer on); "off" starts without it (less graphics memory and RAM, slower); "on" overrides an installed "off"
     tune: str = "skip"                         # quick | thorough | skip
     tune_allow_small: bool = False             # the "answer-changing" tick, off by default, as in the app
     access: str = "local"
     port: int = DEFAULT_PORT
     api_key: str | None = None                 # never shown whole; stored only in the private preset file
+    no_key: bool = False                       # served beyond this computer without a key, on purpose (--no-api-key); a warning, never a refusal
     extra: dict[str, str] = field(default_factory=dict)    # Advanced: --set key=value (flags and STRATA_* variables)
     # filled in by the run, kept in the preset
     tuned_preset: str | None = None            # id of the tuning preset the tuner saved
     tuned_at: str | None = None
     last_used: str | None = None
     created: str | None = None
+
+    @property
+    def is_tuned(self) -> bool:
+        """Tuning was done for this preset: it saved faster settings (tuned_preset), or it measured that the standard settings are already the
+        fastest (only tuned_at is set). Either way the next start must not tune again."""
+        return bool(self.tuned_preset or self.tuned_at)
 
     def to_dict(self, *, with_key: bool = True) -> dict[str, Any]:
         d = {"schema": SCHEMA, **asdict(self)}
@@ -151,6 +160,11 @@ def check_port(port: Any) -> Notice | None:
     return None
 
 
+NO_KEY_NETWORK = "No API key: anyone who can reach this port can use the model and its tools (they can read and change files on this computer)."
+NO_KEY_PUBLIC = ("No API key on a public address: anyone on the internet who finds it can use the model and its tools "
+                 "(they can read and change files on this computer).")
+
+
 def check_access(s: LaunchSettings) -> list[Notice]:
     out: list[Notice] = []
     if s.access not in ACCESS_KINDS:
@@ -162,8 +176,13 @@ def check_access(s: LaunchSettings) -> list[Notice]:
     if port:
         out.append(port)
     if s.access != "local" and not s.api_key:
-        out.append(Notice("warn", f"{ACCESS_WORDS[s.access]} without an API key lets anyone who can reach it use your computer's model.",
-                          "Add an API key (Strata makes one for you in the Access step)."))
+        if s.access == "cloudflare":
+            out.append(Notice("warn", NO_KEY_PUBLIC, "Leave --no-api-key out to get a key."))
+        elif s.no_key:
+            out.append(Notice("warn", NO_KEY_NETWORK, "Leave --no-api-key out to get a key."))
+        else:
+            out.append(Notice("warn", f"{ACCESS_WORDS[s.access]} without an API key lets anyone who can reach it use your computer's model.",
+                              "Add an API key (Strata makes one for you in the Access step)."))
     return out
 
 
@@ -251,7 +270,7 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
     else:
         if s.model_path:
             parts.append(f'--model-path "{s.model_path}"')
-        elif s.model:
+        if s.model:                                   # own files the table recognised say which model they are, so the line stays exact
             parts.append(f"--model {s.model.lower()}" + (f" --family {s.family}" if s.family and s.family != "qwen" else ""))
         if s.data_dir:
             parts.append(f'--data-dir "{s.data_dir}"')
@@ -263,6 +282,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--vision {s.vision}")
         if s.parallel:
             parts.append(f"--parallel {s.parallel}")
+        if s.mtp:
+            parts.append(f"--mtp {s.mtp}")
         parts.append(f"--tune {s.tune}")
         if s.tune_allow_small:
             parts.append("--tune-allow-small")

@@ -80,6 +80,9 @@ def select(src: Path, entrypoint: str, *, tree: bool, include: list[str]) -> lis
         top_level = "/" not in rel
         if tree or (top_level and wanted(path)) or any(fnmatch.fnmatch(rel, pattern) for pattern in include):
             chosen.add(rel)
+    for path in sorted((src / "tuning").glob("*.txt")) if (src / "tuning").is_dir() else []:
+        if path.is_file() and not path.is_symlink():      # the hipBLASLt tuning tables of an AMD package (strata_control/hipblaslt_tuning.py)
+            chosen.add(path.relative_to(src).as_posix())
     chosen.discard(entrypoint)
     return [entrypoint] + sorted(chosen)
 
@@ -92,6 +95,11 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
         raise SystemExit(f"unknown backend {backend!r}")
     if backend != "cpu" and not archs:
         raise SystemExit(f"a {backend} package needs at least one --arch (sm_86, gfx1201, ...)")
+    if backend == "hip":
+        from strata_control import hipblaslt_tuning
+        problems = hipblaslt_tuning.check_stage(src, archs)
+        if problems:
+            raise SystemExit("refusing to package the AMD engine:\n  " + "\n  ".join(problems))
     entrypoint = entry or ("strata.exe" if target.startswith("windows") else "strata")
     if not (src / entrypoint).is_file():
         raise SystemExit(f"{src / entrypoint} does not exist")

@@ -66,7 +66,10 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from strata_control import engine_component  # noqa: E402
+from strata_control import hipblaslt_tuning  # noqa: E402
 from strata_control import vision_reader  # noqa: E402
+from strata_control import draft_layer  # noqa: E402
+from strata_control import user_args  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -98,6 +101,24 @@ def popen(what: str, args: list, role: str = "engine", **kw):
 
 # How long close() gives the engine at each step of ending it (seconds). Module values so that a test can shorten them.
 ENGINE_QUIT_WAIT_S, ENGINE_TERM_WAIT_S, ENGINE_KILL_WAIT_S = 20, 5, 20
+
+
+def rttime_limit_note() -> str:
+    """#3238: Linux only. A hard RLIMIT_RTTIME that is not unlimited (PipeWire's client module sets it to 0 when rtkit is
+    missing; every program started from that desktop inherits it) makes the kernel SIGKILL a process as soon as it
+    checks a thread with an armed CPU timer, with no OOM kill and no message. Returns one sentence naming the cause and
+    the fix, or "" when the limit is unlimited, the platform has no such limit or it cannot be read."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_RTTIME)
+    except (ImportError, AttributeError, OSError, ValueError):
+        return ""
+    if hard == resource.RLIM_INFINITY:
+        return ""
+    return (f"This session has a real-time CPU limit (RLIMIT_RTTIME hard limit {hard}; the desktop's audio system sets "
+            "it to 0 when rtkit is not installed). Linux can then end a program with signal 9 for no visible reason. "
+            "Install rtkit, or start Strata outside the desktop session's limits, for example: "
+            "systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...")
 
 
 def end_leftover_engines(exe: str) -> None:
@@ -994,8 +1015,15 @@ class StrataEngine:
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
-        self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env, **pin)
+        try:
+            self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env,
+                              **pin)
+        except OSError:                                  # nothing started: the narrator stops, the log handle goes back
+            loading.set()
+            if log:
+                self.log.close()
+            raise
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
@@ -1196,6 +1224,11 @@ class StrataEngine:
         if rc is not None and rc >= 0 and last:          # it ended by itself: its own last words say why (#215)
             return (f"The engine exited (code {rc}). Its last log line: {last} - if that does not explain it, please "
                     "report it at github.com/Niko1221/Strata/issues with the log.")
+        rt_note = rttime_limit_note() if rc == -9 else ""
+        if rt_note:                                       # #3238: the kernel killed it, but not for RAM
+            return ("The engine was ended by signal 9. " + rt_note + " If dmesg (sudo dmesg | grep -i -E 'killed "
+                    "process|out of memory') shows an out-of-memory kill instead, close other programs or use a smaller "
+                    "model (Q2_0 / IQ2_XS).")
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "
                 "smaller model (Q2_0 / IQ2_XS).")
@@ -2534,6 +2567,13 @@ class Vision:
             args += ["--min-tokens", str(cfg["min_tokens"])]
         return args
 
+    def _ensure_dir(self):
+        """#3370: a temp cleaner (Windows Storage Sense) removes the empty work folder while the encoder is unloaded; the next
+        start then failed with WinError 267 for as long as the server lived.  Make it again; pictures cached in it are gone."""
+        if not self.dir.is_dir():
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self.cache.clear()
+
     def _start(self):
         """Start the reader.  When a GPU reader that has a CPU reader to fall back on does not start (the GPU runtime does not
         load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
@@ -2551,6 +2591,7 @@ class Vision:
 
     def _start_reader(self):
         args, log, env = self.spawn
+        self._ensure_dir()
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
         self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
@@ -2713,6 +2754,7 @@ class Vision:
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
+            self._ensure_dir()
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
@@ -2871,6 +2913,16 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     args = list(cfg["args"])
+    # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
+    # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
+    if cfg.get("user_args"):
+        args = user_args.merge(args, cfg["user_args"])
+    # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
+    # that writes --mtp back into the args cannot undo it, because this is applied at every start.
+    if draft_layer.is_off(cfg):
+        args, removed = draft_layer.strip(args)
+        if removed:
+            print(f'[strata] "mtp": false - starting without the draft layer ({" ".join(removed)} left out)', flush=True)
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
@@ -3081,6 +3133,89 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     return out
 
 
+#: AMD chips that share the system memory (an iGPU): never preferred over a card that has memory of its own.
+HIP_IGPU_ARCHS = ("gfx1035", "gfx1036", "gfx1037", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx90c")
+
+
+def parse_hip_devices(text: str) -> list[dict]:
+    """`strata-device --list-devices`: [{"index", "name", "arch", "vram_gb", "integrated", "cannot_run"}], numbered as the HIP runtime numbers them."""
+    found: list[dict] = []
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"device\s+(\d+):\s*(.*)$", s)
+        if m:
+            found.append({"index": int(m.group(1)), "name": m.group(2).strip(), "arch": "", "vram_gb": 0.0, "integrated": False, "cannot_run": None})
+            continue
+        if not found:
+            continue
+        a = re.match(r"arch\s+(gfx[0-9a-f]+)\s*,\s*([\d.]+)\s*GiB(.*)$", s)
+        if a and not found[-1]["arch"]:
+            found[-1]["arch"], found[-1]["vram_gb"] = a.group(1), float(a.group(2))
+            found[-1]["integrated"] = "integrated" in a.group(3)      # a newer engine says so itself
+        elif s.startswith("cannot run:"):
+            found[-1]["cannot_run"] = s[len("cannot run:"):].strip()
+    for d in found:
+        d["integrated"] = d["integrated"] or d["arch"] in HIP_IGPU_ARCHS
+    return found
+
+
+def hip_no_card_message(devices: list[dict]) -> str:
+    """The plain line when the engine has code for none of the computer's cards."""
+    cards = ", ".join(f"{d['name'] or 'graphics card'} ({d['arch'] or 'unknown'}{', integrated' if d['integrated'] else ''})" for d in devices)
+    built = next((m.group(1) for d in devices for m in [re.search(r"compiled for \(([^)]*)\)", d["cannot_run"] or "")] if m), "")
+    text = f"[strata] none of this computer's graphics cards has code in this Strata engine{f' (it is built for {built})' if built else ''}. Cards found: {cards}."
+    note = engine_component.no_package_note([d["arch"] for d in devices])
+    return text + (f" {note}" if note else "")
+
+
+def pick_hip_devices(devices: list[dict]) -> tuple[list[int] | None, str | None]:
+    """Which card an "Automatic" start runs on: (HIP_VISIBLE_DEVICES to set, or None to leave the runtime's own order; a plain problem or
+    None).  Cards this engine has no code for are skipped, and so are integrated chips while a card of its own can run (#3203: a mini PC's
+    Radeon 760M is HIP's device 0 and the engine died on it; the RX 6800 XT behind it was never tried).  When device 0 is already the right
+    kind nothing changes."""
+    if not devices:
+        return None, None
+    runnable = [d for d in devices if not d["cannot_run"]]
+    if not runnable:
+        return None, hip_no_card_message(devices)
+    pool = [d for d in runnable if not d["integrated"]] or runnable
+    if devices[0] in pool:
+        return None, None
+    best = max(pool, key=lambda d: (round(d["vram_gb"]), -d["index"]))
+    return [best["index"]], None
+
+
+def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
+    """HIP_VISIBLE_DEVICES for a start that names no card (see pick_hip_devices), asked of the engine package's own `strata-device`.
+    None leaves everything as it was: a card the config or the environment names, no probe next to the engine, or a probe that fails.
+    SystemExit with the plain line when no card of this computer can run."""
+    if cfg.get("backend") != "hip" or gpu_list(cfg) or str(cfg.get("hip_ordinal") if cfg.get("hip_ordinal") is not None else "").strip() \
+            or env.get("HIP_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES"):
+        return None
+    exe = cfg.get("exe")
+    if not isinstance(exe, str) or not exe or engine_component.is_reference(exe):
+        return None
+    probe = Path(exe).with_name("strata-device.exe" if os.name == "nt" else "strata-device")
+    if not probe.is_file():
+        return None
+    try:
+        done = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=60, cwd=str(probe.parent), env=env,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    devices = parse_hip_devices(done.stdout)
+    visible, problem = pick_hip_devices(devices)
+    if problem:
+        raise SystemExit(problem)
+    if visible:
+        d = next(x for x in devices if x["index"] == visible[0])
+        print(f"[strata] automatic GPU choice: GPU {d['index']} ({d['name']}, {d['arch']}); the engine skips cards it has no code for and "
+              f"integrated chips while a card of its own can run", flush=True)
+    return visible
+
+
 def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
@@ -3111,6 +3246,9 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
     if cfg.get("backend") == "hip":
         hip_env_guard(env, cfg)
+        auto = hip_auto_devices(cfg, env)
+        if auto:
+            env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in auto)
     return env
 
 
@@ -3693,10 +3831,13 @@ class Service:
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
 
     def reasoning_budget(self, req) -> int | None:
-        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
-        config's.  0 (or less) means no budget, so a request can turn a configured one off.  ValueError (a 400) for
-        anything that is not a whole number."""
-        value = (req or {}).get("reasoning_budget_tokens") if isinstance(req, dict) else None
+        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
+        llama.cpp reads it, `thinking_budget_tokens`), else the config's.  0 (or less) means no budget, so a request can
+        turn a configured one off.  ValueError (a 400) for anything that is not a whole number."""
+        req = req if isinstance(req, dict) else {}
+        value = req.get("reasoning_budget_tokens")
+        if value is None:                                # a null does not hide the other name
+            value = req.get("thinking_budget_tokens")
         if value is None:
             value = self.reasoning_budget_tokens
         if isinstance(value, float) and value.is_integer():
@@ -3868,9 +4009,13 @@ class Service:
                   "(a minute or two) ...", flush=True)
         try:
             self.engine.restart()
-        except Exception:
+        except Exception as e:
             if vision_started:
                 self.vision.unload()
+            # the program could not be started at all (missing, not executable, or blocked by Windows - #735): the
+            # request path answers EngineDied with a 503, but takes a bare OSError for a client that went away (#2496)
+            if isinstance(e, OSError):
+                raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
@@ -5501,14 +5646,14 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
-            # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
-            # which is cache_read_input_tokens (message_start could only say the whole prompt).  At least the last
-            # prompt token is always read, and Claude Code takes an input_tokens of 0 as "not given" and keeps
-            # message_start's whole prompt beside cache_read_input_tokens: the prompt counted twice (#1013)
+            # the final counts (message_start could only say the whole prompt): what was read now stays for the next
+            # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
             reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
+            read_now = len(ids) - reused
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
                                                                        "stop_sequence": x.get("stop_sequence")},
-                                    "usage": {"input_tokens": len(ids) - reused, "cache_read_input_tokens": reused,
+                                    "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
+                                              "cache_read_input_tokens": reused,
                                               "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
 
@@ -7177,6 +7322,22 @@ def key_list(value) -> list[str]:
     return [k.strip() for k in str(value).split(",") if k.strip()]
 
 
+def explicit_no_key(value) -> bool:
+    """The owner chose to serve without a key: "api_key": "none" in the config, STRATA_API_KEY=none or --api-key none
+    (or --no-api-key, handled by the caller).  Never a key called "none"."""
+    return isinstance(value, str) and value.strip().lower() == "none"
+
+
+def open_server_warning(port, public=False, tools=False) -> str:
+    """The one plain warning for a server on the network with no API key (recommend, never force)."""
+    msg = f"no API key: anyone who can reach port {port} can use the model" + (" and its tools" if tools else "") + "."
+    if tools:
+        msg += " The tools can read and change files on this computer."
+    if public:
+        msg += " This address is on the public internet, so anyone who finds it can use it."
+    return msg + " Add an API key to keep others out."
+
+
 def api_key_of(value):
     """The key as a client can send it (#725).  An HTTP header loses the spaces and line ends around its value, so a
     key kept with them (a config file or an environment file with CRLF line ends, a quoted " key ") matched no
@@ -7586,6 +7747,26 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def with_current_reader(cfg: dict, package: Path) -> dict:
+    """The picture reader (vision "exe", "cpu_exe") is written into the run config as an absolute path inside the engine package's folder,
+    and that folder is named after the engine version: after an engine update, or in a container made for another card, the path is gone
+    and the server would stop with "server_exited". Use the same file of the package that is installed now (the reader ships in the package)."""
+    vision = cfg.get("vision")
+    if not isinstance(vision, dict):
+        return cfg
+    fixed = dict(vision)
+    for key in ("exe", "cpu_exe"):
+        old = fixed.get(key)
+        if isinstance(old, str) and old and not engine_component.is_reference(old) and os.path.isabs(old) and not os.path.exists(old):
+            new = package / old.replace("\\", "/").rsplit("/", 1)[-1]
+            if new.is_file():
+                print(f"[strata] the picture reader {old} is not there any more; using {new} from the engine package in use", flush=True)
+                fixed[key] = str(new)
+    if fixed == vision:
+        return cfg
+    return {**cfg, "vision": fixed}
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -7594,6 +7775,9 @@ def with_component_engine(cfg: dict) -> dict:
     cfg = dict(cfg)
     cfg["exe"] = _component_exe(cfg["exe"], cfg)
     cfg["lib_dirs"] = [*engine_component.package_lib_dirs(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
+    cfg = with_current_reader(cfg, Path(cfg["exe"]).parent)
+    if cfg.get("backend") == "hip":     # AMD: the package's own hipBLASLt tuning table for this card, when its hipBLASLt version matches
+        cfg = hipblaslt_tuning.apply(cfg, Path(cfg["exe"]).parent, say=lambda line: print(line, flush=True))
     return cfg
 
 
@@ -7673,6 +7857,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY. "
                          "Several keys: separate them with commas (key1,key2), as llama.cpp does")
+    ap.add_argument("--no-api-key", action="store_true",
+                    help="serve on the network without an API key (anyone who can reach the port can use the model; "
+                         "also \"api_key\": \"none\" in the config). Warns once, never refuses")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
@@ -7698,6 +7885,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     launch_args = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(launch_args)
+    if a.engine == "strata" and (_rt := rttime_limit_note()):   # #3238: say it before the first unexplained -9
+        print("[strata] WARNING: " + _rt, flush=True)
     global OPENS_BROWSER
     OPENS_BROWSER = bool(a.open)
     # Every ordinary way of being asked to stop takes Ctrl+C's path (QUIT to the engine, then exit): SIGTERM (#96 docker
@@ -7779,14 +7968,16 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 x.strip() == "--api-key=" for i, x in enumerate(supplied_args)):
         print("[strata] an API key was given but it is empty: set a key, or leave it out", file=sys.stderr)
         return 2
+    raw_key = a.api_key or cfg.get("api_key", "")
+    no_key_chosen = bool(getattr(a, "no_api_key", False)) or explicit_no_key(raw_key)
+    if explicit_no_key(raw_key):
+        raw_key = ""
     try:
-        preflight_api_key = api_key_of(a.api_key or cfg.get("api_key", ""))
+        preflight_api_key = api_key_of(raw_key)
     except ValueError as e:
         print(f"[strata] {e}: set a key, or leave it out", file=sys.stderr)
         return 2
-    if a.host not in ("127.0.0.1", "localhost", "::1") and not preflight_api_key:
-        print("[strata] a non-loopback bind requires an inference API key", file=sys.stderr, flush=True)
-        return 2
+    # A key is recommended on a network, never required (owner decision 2026-10-20): the banner below warns once.
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
@@ -7969,7 +8160,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if set(key_list(svc.api_key)) & set(key_list(svc.telemetry_key)):
         print("[strata] telemetry_read_key must differ from every inference API key", file=sys.stderr)
         return 2
-    if not svc.api_key and "api_key" in cfg:             # #569: written, but empty: the server has none (a warning, not a stop)
+    if not svc.api_key and "api_key" in cfg and not no_key_chosen:             # #569: written, but empty: the server has none (a warning, not a stop)
         print("[strata] the api_key in the config is empty: this server has no API key (anyone who can reach it can "
               "use it); set one, or leave api_key out", file=sys.stderr, flush=True)
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
@@ -8093,8 +8284,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if not ips:
             print("       from other devices: http://<this PC's IP address>:" + str(bound_port) + "/", flush=True)
         if not svc.api_key:
-            print("       WARNING: no API key - anyone on your network can use this model. Add \"api_key\": \"...\" "
-                  "to the config (clients send it as their API key; the web page asks for it)", flush=True)
+            print("       WARNING: " + open_server_warning(bound_port, tools=svc.mcp is not None),
+                  flush=True)
         if os.name == "nt":
             print("       nothing arrives? Windows Firewall blocks it until allowed: accept its prompt for Python, or run "
                   "in an admin PowerShell:\n         New-NetFirewallRule -DisplayName \"Strata " + str(bound_port) + "\" "

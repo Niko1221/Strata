@@ -416,6 +416,22 @@ class CalibrationKey(unittest.TestCase):
                              "NVIDIA GeForce RTX 5070 + NVIDIA GeForce RTX 5070|24GB|AMD Ryzen 9 7950X|64GB|"
                              "qwen3.8-flash-next-iq3_xxs|32768|text")
 
+    def test_nvidia_string_dual_keys_like_the_list(self):
+        """A dual config's string "0,1" keys like [0, 1] (calibrate died with "there is no GPU 0,1")."""
+        def amd(*a, **k):
+            raise AssertionError("amd_gpus called for an NVIDIA config")
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            self.assertEqual(setup.hardware_key(self.cfg("0,1", backend="cuda")),
+                             setup.hardware_key(self.cfg([0, 1], backend="cuda")))
+            self.assertEqual(setup.gpu_sel("0,1"), [0, 1])
+            self.assertEqual(setup.gpu_sel("0"), [0])
+        asked = []
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: asked.append(i) or {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            setup.hardware_key(self.cfg(1, backend="cuda"))      # a single card given as a number still asks for that card
+            self.assertEqual(asked, [1])
+
     def test_setup_reuses_a_saved_calibration_on_linux_hip(self):
         cfg = self.cfg(1)
         saved = {"settings": {"pcie_frac": 0.0}, "tok_s": 40.1, "date": "2026-10-03"}

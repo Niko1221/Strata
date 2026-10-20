@@ -42,8 +42,25 @@ if(STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")
 elseif(STRATA_SYCL_AOT MATCHES "^pvc")
   add_compile_definitions(STRATA_NO_DG2_XMX=1)   # the grouped XMX kernels (sub-group 8, 8x8x16) do not compile for Xe2 / Xe-HPC
 endif()
-if(STRATA_SYCL_AOT AND NOT STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")
-  add_compile_definitions(STRATA_I8_NO_ESIMD=1)   # 151-b70: the fused int8 DPAS expert kernels (ESIMD, s8 8x16x32) are Xe2-only: no AOT build for Alchemist / Xe-HPC
+# The fused int8 DPAS expert kernels (src/prefill/esimd_moe.dp.cpp, ESIMD, s8 8x16x32).  AUTO: built for the JIT build and for an AOT build of
+# Xe2 (bmg, lnl); stubs for an AOT build of any other device.  OFF: stubs everywhere, available() is false and the prompt's experts take the
+# grouped XMX path instead (slower prompts on Battlemage, same answers).  #3219: IGC 2.36.3 (Compute Runtime 26.22.38646.4, in an old
+# strata-sycl-dev image) dies with an internal error on 77 of these kernels for bmg-g31; a newer IGC builds them.  ON keeps them on a device AUTO
+# would stub.
+set(STRATA_SYCL_I8_ESIMD "AUTO" CACHE STRING "the fused int8 ESIMD expert kernels: AUTO, ON or OFF (OFF: the XMX path, for a device compiler that cannot build them)")
+set_property(CACHE STRATA_SYCL_I8_ESIMD PROPERTY STRINGS AUTO ON OFF)
+if(NOT STRATA_SYCL_I8_ESIMD MATCHES "^(AUTO|ON|OFF)$")
+  message(FATAL_ERROR "STRATA_SYCL_I8_ESIMD must be AUTO, ON or OFF (got '${STRATA_SYCL_I8_ESIMD}')")
+endif()
+set(_i8_esimd ON)
+if(STRATA_SYCL_I8_ESIMD STREQUAL "OFF")
+  set(_i8_esimd OFF)
+elseif(STRATA_SYCL_I8_ESIMD STREQUAL "AUTO" AND STRATA_SYCL_AOT AND NOT STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")
+  set(_i8_esimd OFF)   # 151-b70: DPAS s8 8x16x32 is Xe2-only: no AOT build for Alchemist / Xe-HPC
+endif()
+if(NOT _i8_esimd)
+  add_compile_definitions(STRATA_I8_NO_ESIMD=1)
+  message(STATUS "Strata SYCL: the fused int8 ESIMD expert kernels are off (STRATA_SYCL_I8_ESIMD=${STRATA_SYCL_I8_ESIMD}): stubs, the XMX path serves the prompt's experts")
 endif()
 if(STRATA_SYCL_AOT)
   list(APPEND _sycl_flags -fsycl-targets=spir64_gen)
@@ -397,7 +414,7 @@ if(STRATA_SYCL_PARITY)
   add_executable(esimd_moe_mode_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_moe_mode_test.cpp)   # 151-b70: the default choice of the expert chain (no GPU)
   target_include_directories(esimd_moe_mode_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME esimd_moe_mode_test COMMAND esimd_moe_mode_test)
-  if(NOT STRATA_SYCL_AOT OR STRATA_SYCL_AOT MATCHES "^(bmg|lnl)")   # DPAS s8 8x16x32 (Xe2): not for an Alchemist / Xe-HPC AOT build
+  if(_i8_esimd)   # DPAS s8 8x16x32 (Xe2): not for an Alchemist / Xe-HPC AOT build, nor with STRATA_SYCL_I8_ESIMD=OFF
     add_executable(esimd_dpas_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_dpas_probe.cpp)   # ESIMD DPAS peak (registers only)
     add_executable(esimd_i8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_i8_bench.cpp)   # ESIMD int8 DPAS GEMM on pre-decoded weights
   endif()

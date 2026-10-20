@@ -34,7 +34,7 @@ try:
  for entry in files:
   name=entry["path"]; parts=pathlib.PurePosixPath(name).parts
   if not isinstance(name,str) or not parts or name.startswith("/") or chr(92) in name or any(p in (".","..","__pycache__") for p in parts) or name in names: raise ValueError("path")
-  if parts[0] not in allowed and name not in {"setup.py","strata.py","VERSION","requirements.txt","requirements-build.txt","requirements-monitor.txt","remote_model_manager.py","remote_model_lifecycle.py"}: raise ValueError("root")
+  if parts[0] not in allowed and name not in {"setup.py","strata.py","VERSION","requirements.txt","requirements-build.txt","requirements-monitor.txt","requirements-nvfp4-local.txt","remote_model_manager.py","remote_model_lifecycle.py"}: raise ValueError("root")
   content=base64.b64decode(entry["data"],validate=True); total+=len(content)
   if len(content)>8388608 or total>25165824 or hashlib.sha256(content).hexdigest()!=entry["sha256"]: raise ValueError("file")
   names.add(name); decoded.append((name,content,entry["sha256"]))

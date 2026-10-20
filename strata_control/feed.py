@@ -279,9 +279,21 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
                 control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload)
 
 
+def _expired_words(expires_at: str, now: dt.datetime, server_now: dt.datetime | None) -> str:
+    """Expired by this PC's clock. If the update server's own clock says otherwise (or says the PC is far off), the clock is what is wrong."""
+    fix = "Set the date and time right (Windows: Settings, Time & language, Date & time, Set time automatically) and try again."
+    if server_now is not None:
+        off = abs((server_now - now).total_seconds())
+        if off > 15 * 60 and _time(expires_at, "expires_at") >= server_now:
+            return (f"your PC clock is wrong: it says {now:%Y-%m-%d %H:%M} (UTC) but the update server says {server_now:%Y-%m-%d %H:%M}, "
+                    f"so the update feed looks expired. {fix}")
+    return (f"the update feed expired on {expires_at} by this PC's clock ({now:%Y-%m-%d}). If that is not today's date, your PC clock is wrong. "
+            f"{fix} Otherwise the update source needs to publish a new feed; nothing was downloaded.")
+
+
 def verify_and_parse(payload: bytes, signature_bytes: bytes, *, source: str, trusted: dict[str, bytes],
                      last_sequence: int | None = None, channel: str | None = None,
-                     now: dt.datetime | None = None) -> Feed:
+                     now: dt.datetime | None = None, server_now: dt.datetime | None = None) -> Feed:
     """Check the signature over `payload`, then parse; then the three guards: the channel is the one asked for, the feed has
     not expired, and its sequence is not lower than the last one accepted (a replayed older feed is a downgrade)."""
     if not trusted:
@@ -300,7 +312,7 @@ def verify_and_parse(payload: bytes, signature_bytes: bytes, *, source: str, tru
         raise FeedError(f"the feed is for the {feed.channel!r} channel, this PC follows {channel!r}")
     now = now or dt.datetime.now(dt.timezone.utc)
     if feed.expires_at and _time(feed.expires_at, "expires_at") < now:
-        raise FeedError(f"the update feed expired on {feed.expires_at}; refusing a stale feed")
+        raise FeedError(_expired_words(feed.expires_at, now, server_now))
     if last_sequence is not None and feed.sequence < last_sequence:
         raise FeedDowngrade(f"the update feed is older than the one already accepted (sequence {feed.sequence} < {last_sequence}); "
                             "refusing a replayed feed")
@@ -324,6 +336,7 @@ def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
         signature = transfer.read_small(location + SIGNATURE_SUFFIX)
     except transfer.TransferError as exc:
         raise FeedError(f"the update feed could not be read: {exc}", 6) from None
+    guards.setdefault("server_now", transfer.server_date())
     return verify_and_parse(payload, signature, source=location, trusted=trusted, **guards)
 
 

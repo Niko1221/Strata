@@ -26,6 +26,8 @@ from pathlib import Path
 from strata_control import profiles
 from strata_control.doctor import inspect as inspect_components
 from strata_control.profiles import ProfileError
+from strata_control import atomic as _atomic_mod
+from strata_control import posix_owner
 
 
 SUITE = "legacy-decode-v1"
@@ -290,8 +292,10 @@ def _measure_locked(ref: str, path: Path, profile: dict | None, revision: str | 
     _exclusive_preflight(cfg, profile)
     if output.exists() or output.is_symlink():
         raise ProfileError("calibration report path already exists", 2)
+    if not output.parent.is_dir():                    # before the 19 minute sweep, not after it (#3187)
+        raise ProfileError("report output directory does not exist", 5)
     identity = _identity(path, cfg, profile, revision)
-    cal = _full_folder("tools.calibrate")
+    cal =_full_folder("tools.calibrate")
     execute = runner or cal.run
     runner_cfg = _runtime_cfg(cfg, profile)
     runner_cfg["exe"] = str(_resolved(cfg["exe"], cfg, path))
@@ -412,7 +416,7 @@ def _replace_bytes(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
+        _atomic_mod.replace(temp, path)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -460,9 +464,8 @@ def _backup_directory(path: Path, *, create: bool = False) -> Path:
     except OSError as exc:
         raise ProfileError(f"cannot access calibration backup directory ({type(exc).__name__})", 5) from None
     if not stat.S_ISDIR(details.st_mode) or (os.name == "posix" and
-                                            (details.st_uid != os.getuid() or
-                                             stat.S_IMODE(details.st_mode) & 0o077)):
-        raise ProfileError("calibration backup directory must be owner-only and not a symlink", 5)
+                                            (posix_owner.owner_only_wrong(directory, details))):
+        raise ProfileError(posix_owner.owner_only_text("calibration backup directory must be owner-only and not a symlink", directory), 5)
     return directory
 
 
@@ -482,9 +485,8 @@ def _load_application(path: Path, report: dict) -> dict:
     try:
         details = manifest.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_APPLICATION_BYTES or \
-                (os.name == "posix" and (details.st_uid != os.getuid() or
-                                         stat.S_IMODE(details.st_mode) & 0o077)):
-            raise ProfileError("calibration application record is not an owner-only regular file", 5)
+                (os.name == "posix" and (posix_owner.owner_only_wrong(manifest, details))):
+            raise ProfileError(posix_owner.owner_only_text("calibration application record is not an owner-only regular file", manifest), 5)
         data = json.loads(manifest.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise ProfileError("calibration application record was not found", 5) from None
@@ -633,8 +635,8 @@ def _saved_bytes(path: Path, *, required: bool = True, owner_only: bool = False)
         raise ProfileError("calibration rollback file is missing", 5) from None
     if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_REPORT_BYTES or \
             (owner_only and os.name == "posix" and
-             (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-        raise ProfileError("calibration rollback file must be a regular owner-only file under 2 MiB", 5)
+             (posix_owner.owner_only_wrong(path, details))):
+        raise ProfileError(posix_owner.owner_only_text("calibration rollback file must be a regular owner-only file under 2 MiB", path), 5)
     try:
         return path.read_bytes()
     except OSError as exc:

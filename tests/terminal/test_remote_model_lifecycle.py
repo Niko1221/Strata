@@ -499,6 +499,56 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(json.loads(prepared["before_load"][2]), [0])
         self.assertEqual(self.source_snapshot(), before)
 
+    def test_reuse_applies_user_options_before_qualifying_and_copying_inputs(self):
+        cfg = json.loads(self.config.read_text())
+        vector = self.source / "user-vector.gguf"; vector.write_bytes(self.payload)
+        cfg["args"] += ["--vram-reserve-mib", "700", "--spec", "4"]
+        cfg["args_written"] = list(cfg["args"])
+        cfg["user_args"] = ["--vram-reserve-mib", "0", "--spec", "8", "--control-vector", str(vector), "--max-context", "131072"]
+        self.config.write_text(json.dumps(cfg)); before = self.source_snapshot()
+        profile = self.prepared(); prepared = module.checked_json(profile["configPath"])
+        args = prepared["args"]
+        self.assertEqual(args.count("--vram-reserve-mib"), 1)
+        self.assertEqual(args[args.index("--vram-reserve-mib") + 1], "0")
+        self.assertEqual(args[args.index("--spec") + 1], "8")
+        self.assertEqual(args[args.index("--max-context") + 1], "32768")
+        copied = Path(args[args.index("--control-vector") + 1])
+        self.assertTrue(copied.is_relative_to(self.lifecycle.root)); self.assertEqual(copied.read_bytes(), self.payload)
+        self.assertNotIn("user_args", prepared); self.assertNotIn("args_written", prepared)
+        self.assertEqual(self.source_snapshot(), before)
+
+    def test_reuse_honors_mtp_off_before_inspecting_unused_draft_paths(self):
+        cfg = json.loads(self.config.read_text())
+        cfg["args"] += ["--mtp", "/must-not-read/or/copy", "--spec-min-p", "0.5", "--batch-mtp", "--spec", "4"]
+        cfg["user_args"] = ["--mtp", "/also-must-not-read", "--spec-min-p", "0.8"]
+        cfg["mtp"] = False
+        self.config.write_text(json.dumps(cfg)); before = self.source_snapshot()
+        profile = self.prepared(); prepared = module.checked_json(profile["configPath"])
+        self.assertIs(prepared["mtp"], False)
+        for flag in ("--mtp", "--spec-min-p", "--batch-mtp"): self.assertNotIn(flag, prepared["args"])
+        self.assertEqual(prepared["args"][prepared["args"].index("--spec") + 1], "4")
+        self.assertNotIn("user_args", prepared); self.assertEqual(self.source_snapshot(), before)
+
+    def test_reuse_user_native_override_is_resolved_before_matching_the_model(self):
+        cfg = json.loads(self.config.read_text())
+        cfg["args"][1] = "/original/different-model.gguf"
+        cfg["user_args"] = ["--native", str(self.model)]
+        self.config.write_text(json.dumps(cfg)); before = self.source_snapshot()
+        with mock.patch.object(module.subprocess, "Popen", side_effect=AssertionError("effective model reuse must not run setup")):
+            profile = self.prepared()
+        prepared = module.checked_json(profile["configPath"])
+        self.assertTrue(Path(prepared["args"][prepared["args"].index("--native") + 1]).is_relative_to(self.lifecycle.root))
+        self.assertNotIn("user_args", prepared); self.assertEqual(self.source_snapshot(), before)
+
+    def test_reuse_rejects_unsafe_or_malformed_user_options_before_copying(self):
+        original = json.loads(self.config.read_text())
+        for user in (["--expert-profile-save", str(self.source / "must-not-write.bin")], ["--future-file-option", "/outside"], ["--prefill", "../../outside"], ["--spec", 8], "--spec 8", None):
+            with self.subTest(user=user):
+                cfg = copy.deepcopy(original); cfg["user_args"] = user; self.config.write_text(json.dumps(cfg))
+                self.assert_error(409, "prepare-plan", {"modelId": "native-q2_0", "engineId": self.engine_id()})
+                self.assertFalse(self.lifecycle.load()["jobs"])
+        self.assertFalse((self.source / "must-not-write.bin").exists())
+
     def test_reuse_dependency_change_after_review_refuses_job(self):
         plan = self.plan(); (self.pack / "native_experts.txt").write_text("changed original prepared data")
         self.assert_error(409, "prepare", {"planId": plan["planId"]})

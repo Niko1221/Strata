@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from strata_control import loopback
 from strata_control.tune_engine import EngineMeasurement, MeasurementError, process_tree_peak_mib
 
 
@@ -94,7 +95,7 @@ class ApiHarness:
                     f"the worker exited with code {self._proc.returncode} before becoming ready"
                     + self._log_tail())
             try:
-                with urllib.request.urlopen(f"{self.url}/health", timeout=2) as response:
+                with loopback.urlopen(f"{self.url}/health", timeout=2) as response:
                     if response.status == 200:
                         return
             except (urllib.error.URLError, OSError):
@@ -172,7 +173,7 @@ class ApiHarness:
         usage: dict[str, Any] = {}
         finish: str | None = None
         try:
-            with urllib.request.urlopen(request, timeout=self.request_timeout_s) as response:
+            with loopback.urlopen(request, timeout=self.request_timeout_s) as response:
                 for raw in response:
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data:"):

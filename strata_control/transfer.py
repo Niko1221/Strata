@@ -16,6 +16,8 @@ import http.client
 import ipaddress
 import os
 import threading
+import email.utils
+import datetime as _dt
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -131,14 +133,34 @@ _opener = urllib.request.build_opener(_PolicyRedirects)
 _USER_AGENT = "strata-updater/1"
 
 
+_SERVER_DATE: list = []
+
+
+def server_date():
+    """The time the update server named in the `Date` header of its last answer (a timezone-aware datetime), or None. It lets a feed that
+    looks expired be told from a PC whose clock is wrong."""
+    return _SERVER_DATE[-1] if _SERVER_DATE else None
+
+
+def _remember_date(response) -> None:
+    try:
+        parsed = email.utils.parsedate_to_datetime(response.headers.get("Date") or "")
+        if parsed is not None:
+            _SERVER_DATE[:] = [parsed if parsed.tzinfo else parsed.replace(tzinfo=_dt.timezone.utc)]
+    except (TypeError, ValueError):
+        pass
+
+
 def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) -> bytes:
     """A small document (the feed, its signature). Larger than `limit` is refused, not truncated."""
     kind = kind_of(location)
+    _SERVER_DATE.clear()                                 # only the answer of this read counts
     try:
         if kind in ("http", "https"):
             check_url_policy(location)
             request = urllib.request.Request(location, headers={"User-Agent": _USER_AGENT, "Cache-Control": "no-cache"})
             with _opener.open(request, timeout=timeout) as response:
+                _remember_date(response)
                 data = response.read(limit + 1)
         else:
             path = _local_path(location)
@@ -151,7 +173,11 @@ def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) 
         raise TransferError(f"the update server answered {exc.code} for {location}") from None
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
-        raise TransferError(f"could not read {location} ({type(exc).__name__}: {reason})") from None
+        hint = ""
+        if "CERTIFICATE_VERIFY_FAILED" in str(reason):
+            hint = (". This computer did not accept the update server's certificate: check that its date and time are right, "
+                    "or that a company proxy is not replacing the certificate")
+        raise TransferError(f"could not read {location} ({type(exc).__name__}: {reason}){hint}") from None
     if len(data) > limit:
         raise TransferError(f"{location} is larger than {limit} bytes")
     return data

@@ -37,7 +37,7 @@ MAX_STATE = 4 * 1024 * 1024
 ACTIVE = ("queued", "running")
 INPUT_FLAGS = frozenset(("--native", "--pack", "--mtp", "--expert-profile", "--native-dense-gguf", "--ple-gguf", "--embd-gguf", "--mtp-draft-vocab", "--control-vector"))
 SCALAR_FLAGS = frozenset(("--max-context", "--expert-cache", "--prefill", "--spec", "--spec-min-p", "--kv", "--kv-resident", "--rope-scaling", "--rope-scale", "--ple-io", "--resident-budget-gib", "--vram-reserve-mib", "--pool-workers", "--threads", "--cpu-threads", "--kv-threads", "--prefill-threads", "--batch", "--batch-groups", "--layer-split", "--pcie-mode", "--pcie-frac", "--adapt-every", "--adapt-decay", "--adapt-min-gain", "--adapt-async", "--adapt-swaps", "--mtp-hnorm", "--mtp-q4", "--cvec-mode", "--cvec-dir", "--prompt-cache", "--pipeline-windows", "--mtp-max-t", "--lookup-chain", "--lookup-chain-min"))
-BOOLEAN_FLAGS = frozenset(("--mmap-experts", "--resident-experts", "--resident-cpu-experts", "--expert-cache-cpu-order", "--expert-cache-per-layer", "--spec-split", "--no-spec-split", "--stop-eos", "--prefill-head-alias", "--no-hit-poke", "--vision", "--remote-expert-opt"))
+BOOLEAN_FLAGS = frozenset(("--mmap-experts", "--resident-experts", "--resident-cpu-experts", "--expert-cache-cpu-order", "--expert-cache-per-layer", "--spec-split", "--no-spec-split", "--stop-eos", "--prefill-head-alias", "--no-hit-poke", "--vision", "--remote-expert-opt", "--batch-mtp"))
 GUARD = '''import json,subprocess,sys
 try:
  cards=json.loads(sys.argv[1]); minimum=int(sys.argv[2])
@@ -484,7 +484,19 @@ class Lifecycle:
         if disk and shutil.disk_usage(self.root).free < value["diskNeeded"]: raise ApiError(409, "Free disk space on this server and review preparation again.")
 
     def reuse_plan(self, model, engine):
-        cfg = engine["config"]
+        cfg = copy.deepcopy(engine["config"])
+        # The server applies explicit user options and the MTP switch at every
+        # start. Qualify that same effective argument list, then copy/rewrite
+        # every input path. Never carry raw user_args into the private config:
+        # they would override its rewritten paths when the server starts.
+        user = cfg.get("user_args", [])
+        if not isinstance(user, list) or not all(isinstance(arg, str) for arg in user):
+            raise ApiError(409, "The existing profile has invalid user engine options.")
+        with self.environment():
+            self.source_modules()
+            from strata_control import draft_layer, user_args
+            cfg["args"] = user_args.merge(cfg["args"], user)
+            draft_layer.apply(cfg)
         cwd = cfg.get("cwd") or str(Path(engine["configPath"]).parent)
         try: native = located(cfg["args"][cfg["args"].index("--native") + 1], cwd)
         except (ValueError, OSError, IndexError): return None
@@ -805,7 +817,7 @@ def worker(home, namespace, job_id, token):
             engine = value["engine"]["config"]
             # Never carry a user's unload scripts, network services, image
             # generation, or external hooks into the private model profile.
-            keep = ("args", "tokenizer", "model_name", "backend", "cuda", "gpu", "gpus_asked", "layer_split", "lib_dirs")
+            keep = ("args", "tokenizer", "model_name", "backend", "cuda", "gpu", "gpus_asked", "layer_split", "lib_dirs", "mtp")
             cfg = {key: cfg[key] for key in keep if key in cfg}
             cfg.update(exe=engine["exe"], lib_dirs=value["engine"]["resolvedLibDirs"], cwd=str(lifecycle.source), lazy_load=True, open_browser=False,
                        host="127.0.0.1", port=0, parallel=1, log=str(folder / "engine.log"))

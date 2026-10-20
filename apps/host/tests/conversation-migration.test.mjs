@@ -30,7 +30,10 @@ async function fixture(t) {
     calls.push({ method, path, body: structuredClone(body) });
     if (path === '/api/companion/conversations') return catalog.list();
     if (path === '/api/companion/conversations/sync') { if (blockedSync) await blockedSync; return catalog.sync(body.sessions); }
-    if (path.startsWith('/api/companion/conversations/')) return catalog.detail(path.split('/').at(-1));
+    if (path.startsWith('/api/companion/conversations/')) {
+      if (path.endsWith('/stop')) return catalog.stop(path.split('/').at(-2));
+      return catalog.detail(path.split('/').at(-1));
+    }
     const fixtures = { '/api/setup': { complete: true }, '/api/models': { variants: [] }, '/api/skills': [], '/api/workspaces': { workspaces: [{ id: 'w', path: '/fixture/project', name: 'Project' }] }, '/api/runtime': { instances: [] }, '/api/serving': { stats: { running: 0, waiting: 0 }, revision: 1 }, '/api/model-providers': { connections: [{ id: 'fixture-api', protocol: 'openai-chat', models: [{ id: 'fixture-model' }] }] } };
     return fixtures[path] ?? {};
   };
@@ -45,7 +48,7 @@ async function fixture(t) {
   await store.bootstrap(); store.selectSession(session.id);
   assert.equal(store.getState().connection, 'live');
   t.after(async () => { await new Promise(r => setTimeout(r, 350)); for (const toast of store.getState().toasts) store.holdToast(toast.id); catalog.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { store, catalog, calls, id: session.id, get stream() { return stream; }, enable: () => { enabled = true; listener({ event: 'companion', data: { available: true } }); }, blockImport() { let resolve; blockedSync = new Promise(r => { resolve = r; }); return () => { blockedSync = null; resolve(); }; } };
+  return { store, catalog, calls, id: session.id, get stream() { return stream; }, enable: () => { enabled = true; listener({ event: 'companion', data: { available: true } }); }, emitConversation: () => listener({ event: 'conversation', data: catalog.detail(session.id) }), blockImport() { let resolve; blockedSync = new Promise(r => { resolve = r; }); return () => { blockedSync = null; resolve(); }; } };
 }
 
 test('first pairing during a Mac reply defers its history until the complete result is available', async t => {
@@ -79,4 +82,24 @@ test('a pre-sharing reply cancelled after enabling keeps partial text with strea
   f.stream.reject(Object.assign(new Error('Cancelled'), { name: 'AbortError' })); await answering;
   const saved = f.catalog.detail(f.id).conversation.messages.at(-1);
   assert.equal(saved.content, 'Partial '); assert.equal(saved.streaming, false);
+});
+
+test('the task board follows and stops a phone-started chat and retains its dismissal after sharing', async t => {
+  const f = await fixture(t);
+  f.enable(); await until(() => f.catalog.list().conversations.length === 1);
+  f.catalog.begin(f.id, 'Phone continuation');
+  f.emitConversation();
+  assert.deepEqual(f.store.liveChatIds(), [f.id]);
+  assert.equal(f.store.getState().sessions.find(s => s.id === f.id).active, true);
+  f.store.stopChat(f.id);
+  await until(() => !f.store.liveChatIds().includes(f.id));
+  assert.equal(f.calls.filter(c => c.path.endsWith('/stop')).length, 1);
+  assert.equal(f.calls.some(c => c.path === '/api/chat/stop'), false);
+  f.store.stopChat(f.id); await tick();
+  assert.equal(f.calls.filter(c => c.path.endsWith('/stop')).length, 1, 'An ended shared chat cannot be stopped twice.');
+  f.store.dismissChat(f.id);
+  const ackedAt = f.store.getState().sessions.find(s => s.id === f.id).ackedAt;
+  await until(() => f.catalog.detail(f.id).conversation.ackedAt === ackedAt);
+  f.emitConversation();
+  assert.equal(f.store.getState().sessions.find(s => s.id === f.id).ackedAt, ackedAt);
 });

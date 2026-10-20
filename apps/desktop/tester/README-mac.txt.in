@@ -27,8 +27,7 @@ START IT
 
 Closing the window stops Strata and its engine.
 
-Pictures: this Mac build has no picture reader yet, so models read text only here. Picture input works on the Windows and
-Linux builds.
+Pictures: on by default. This Mac build reads them on the Mac's GPU (under a second for a small picture on an M4).
 
 
 @INCLUDE:common-gatekeeper-mac.txt@

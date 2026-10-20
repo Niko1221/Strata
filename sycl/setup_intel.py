@@ -11,10 +11,11 @@ setup.py's, unchanged.  What is replaced:
     sized from sysfs;
   - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
     sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
-  - pictures (opt-in for now, see PICTURES_ON_BY_DEFAULT): read by the portable CPU reader (`strata-vision`, the program the AMD packages carry beside
-    their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
-    /dev/shm, which strata-sycl.sh shares with the container.  A SYCL GPU reader does not exist yet, so "gpu" is read as "cpu"
-    here; --vision no is the off switch;
+  - pictures (on by default on an Alchemist card, see pictures_on_by_default): read by the portable CPU reader (`strata-vision`, the program the
+    AMD packages carry beside their engine, compiled here by setup's own step) on the host; it hands the image embeddings to the engine through
+    /dev/shm, which strata-sycl.sh shares with the container.  The reader choice is strata_control/vision_reader.py's one rule (CPU reader under
+    24 GB of VRAM); an Arc of 24 GB or more also keeps the CPU reader unless --vision gpu asks for the SYCL one (`strata-vision-sycl`, compiled
+    on the host when the oneAPI compiler is there).  --vision no is the off switch;
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
     (--stream-experts), so RAM only bounds the KV streaming;
   - the config: the container's paths, the SYCL flags, backend "sycl"; the run script starts
@@ -122,19 +123,88 @@ def drop(args, name, value=False):
         del args[i:i + 1 + int(value)]
 
 
-# Pictures on an Intel Arc work end to end up to the engine (the CPU reader encodes, the embeddings reach the container through /dev/shm)
-# but the first picture request on the Arc Pro B70 (engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU: the xe driver logged an engine
-# reset (ccs + bcs) and "Fault response: Unsuccessful -EINVAL", and the request ended 503.  Until the SYCL engine's vision path is fixed
-# pictures stay opt-in here (--vision yes); flip this to True to make them the default like on the other makes of card.
-PICTURES_ON_BY_DEFAULT = False
+# Pictures on an Intel Arc: the CPU reader encodes on the host and the embeddings reach the engine through /dev/shm.  Tested end to end
+# on the Arc A750 (i915, Alchemist; 2026-10-19, docs/INTEL.md): 47 picture requests (shapes, text, two pictures in one request, a picture in the
+# history, text after pictures) through the CPU reader and the same through the SYCL GPU reader, in the container and outside it, no GPU fault.
+# The first picture request on the Arc Pro B70 (Battlemage, xe, engine 0.1.45 SYCL, IQ3_S, 2026-10-19) hung the GPU with the CPU reader: an xe
+# engine reset (ccs + bcs) and "Fault response: Unsuccessful -EINVAL", the request ended 503.  That fault is in the engine on xe and has not been
+# looked at again (the B70 is gone), so a Battlemage card keeps pictures opt-in (--vision yes) and is told so.
+PICTURES_ON_BY_DEFAULT_IDS = ALCHEMIST_IDS
+
+
+def pictures_on_by_default(driver: str, devid: str = "") -> bool:
+    """Pictures are on in setup's default for an Alchemist card (i915, or the A-series on xe), which has run them; a Battlemage card
+    (xe, the B-series) keeps them opt-in until the first-picture GPU fault of the B70 is understood."""
+    return driver == "i915" or devid in PICTURES_ON_BY_DEFAULT_IDS
+
 
 READER_DIR = ROOT / "engine-sycl"    # the folder setup treats as the engine's: BUILD.json and, for pictures, the CPU reader strata-vision
 
 
 def intel_vision(asked, vram_gb: float = 0.0) -> str:
-    """The picture reader wanted on an Intel Arc: "none" when switched off, else "cpu" (the only reader the SYCL port has; a
-    SYCL GPU reader is later work).  Takes setup.hip_vision's arguments."""
-    return "none" if str(asked or "").lower() in ("no", "none", "off") else "cpu"
+    """The picture reader wanted on an Intel Arc, by strata_control/vision_reader.py's rule: "none" when switched off, "cpu" by default (under 24 GB
+    of VRAM the CPU reader is the rule, and an Arc of 24 GB or more keeps it too until the SYCL reader has run on such a card), "gpu" only when
+    asked for.  Takes setup.hip_vision's arguments."""
+    from strata_control import vision_reader as VR
+    return VR.wanted(asked, vram_gb, "intel")
+
+
+def oneapi_compiler():
+    """The oneAPI icx / icpx on this PC (PATH, else /opt/intel/oneapi), or None."""
+    import glob
+    import shutil
+    cc, cxx = shutil.which("icx"), shutil.which("icpx")
+    if not (cc and cxx):
+        found = sorted(glob.glob("/opt/intel/oneapi/compiler/*/bin/icpx"))
+        cxx = found[-1] if found else None
+        cc = str(Path(cxx).with_name("icx")) if cxx else None
+    return (cc, cxx) if cc and cxx and Path(cc).exists() else None
+
+
+def oneapi_environment() -> dict:
+    """The environment setvars.sh makes (the SYCL reader's build needs MKL and the compiler's libraries); {} when there is no setvars.sh."""
+    setvars = Path("/opt/intel/oneapi/setvars.sh")
+    if not setvars.is_file():
+        return {}
+    out = subprocess.run(["/bin/bash", "-c", f". {setvars} >/dev/null 2>&1; env -0"], capture_output=True, check=False).stdout
+    return dict(item.split("=", 1) for item in out.decode("utf-8", "replace").split("\0") if "=" in item)
+
+
+def build_vision_sycl_reader(stub: Path, llama) -> bool:
+    """Compile tools/vision with STRATA_VISION_SYCL into `stub`/strata-vision-sycl.  False (and the reason said) when the oneAPI compiler is
+    not on this PC or the build fails: the CPU reader is there, pictures still work."""
+    import shutil
+    compiler = oneapi_compiler()
+    if compiler is None:
+        S.warn("the GPU picture reader needs the oneAPI compiler (icx / icpx), which is not on this PC: pictures are read on the CPU "
+               "(a few seconds each); install intel-oneapi-compiler-dpcpp-cpp and intel-oneapi-mkl-devel to build it")
+        return False
+    S.say("  Compiling the picture reader for your Intel GPU (a few minutes, once) ...")
+    saved = dict(os.environ)
+    try:
+        os.environ.update(oneapi_environment())
+        S.cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision-sycl", "strata-vision",
+                      [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_SYCL=ON", "-DSTRATA_PORTABLE=OFF",
+                       f"-DCMAKE_C_COMPILER={compiler[0]}", f"-DCMAKE_CXX_COMPILER={compiler[1]}"], None, "")
+        shutil.copy2(ROOT / "build-vision-sycl" / "bin" / "strata-vision-sycl", stub / "strata-vision-sycl")
+    except SystemExit:
+        raise
+    except Exception as e:                               # noqa: BLE001 - the CPU reader is there; pictures work without the GPU one
+        S.warn(f"the GPU picture reader did not compile ({e}): pictures are read on the CPU")
+        return False
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    return True
+
+
+def build_vision_sycl(stub: Path, stamp: Path, llama, vsrc) -> None:
+    meta = json.loads(stamp.read_text(encoding="utf-8"))
+    if (stub / "strata-vision-sycl").exists() and meta.get("vision_gpu_src") == vsrc:
+        return
+    if build_vision_sycl_reader(stub, llama):
+        stamp.write_text(json.dumps({**meta, "vision": "gpu", "vision_gpu": "strata-vision-sycl", "vision_gpu_src": vsrc}, indent=1))
+        S.ok(f"picture reader (GPU): {stub / 'strata-vision-sycl'}, (CPU fallback): {stub / 'strata-vision'}")
 
 
 SYCL_PROFILE = "expert-profile-sycl.bin"   # data/: the xe cards' expert ranking (to_sycl)
@@ -317,10 +387,14 @@ def install(argv) -> None:
     S.hip_vision = intel_vision                         # pictures on by default, read on the CPU (setup's hip_reader settles it)
 
     def build_engine_hip(gpu, llama, vision="none"):
-        """No engine to compile here (the SYCL build is separate); the picture reader is: the portable CPU reader, once."""
+        """No engine to compile here (the SYCL build is separate); the picture readers are: the portable CPU reader, once, and for
+        --vision gpu the SYCL GPU reader (a few minutes, once; it needs the oneAPI compiler on this PC, else the CPU reader stays)."""
         if vision != "none":
             stamp = stub / "BUILD.json"
-            S.build_vision_cpu(stub, stamp, json.loads(stamp.read_text(encoding="utf-8")), llama, S.source_hash(S.VISION_SOURCES))
+            vsrc = S.source_hash(S.VISION_SOURCES)
+            S.build_vision_cpu(stub, stamp, json.loads(stamp.read_text(encoding="utf-8")), llama, vsrc)
+            if vision == "gpu":
+                build_vision_sycl(stub, stamp, llama, vsrc)
         return stub
     S.build_engine_hip = build_engine_hip
     S.hipblaslt_table = lambda *a, **k: None
@@ -403,8 +477,10 @@ def install(argv) -> None:
     sys.argv = [str(ROOT / "setup.py"), *argv]
     if "--backend" not in argv:
         sys.argv += ["--backend", "hip"]
-    if "--vision" not in argv and not PICTURES_ON_BY_DEFAULT:
+    if "--vision" not in argv and not pictures_on_by_default(intel[0]["driver"], intel[0].get("devid", "")):
         sys.argv += ["--vision", "none"]
+        S.say("  Pictures are off by default on this card (Arc Pro B70 test of 2026-10-19: the first picture reset the GPU, docs/INTEL.md): "
+              "--vision yes turns them on")
     if "--low-ram" not in argv:
         sys.argv += ["--low-ram", "off"]
     sys.exit(S.main())

@@ -107,8 +107,10 @@ read them. The picture reader runs on the CPU when the graphics card has less th
 picture, nothing taken from the card) and on the graphics card from 24 GB (about 1-1.4 GB of VRAM; 0.1-0.5 s per
 picture). The rule is the same on NVIDIA and AMD cards. `--vision off` (or "No" in the app and in `strata launch`) turns
 pictures off; `--vision cpu` or `--vision gpu` picks the reader. On AMD, `strata-vision-hip` is the card's reader; if it
-cannot start, Strata uses the CPU reader by itself ([AMD_HIP.md](AMD_HIP.md)). The Mac app and the Mac Terminal have no
-picture reader yet ([MAC.md](MAC.md)), and neither does the Intel Arc engine ([INTEL.md](INTEL.md#not-done)). More: [Images](DETAILS.md#images-vision).
+cannot start, Strata uses the CPU reader by itself ([AMD_HIP.md](AMD_HIP.md)). The Mac reads pictures on its GPU
+([MAC.md](MAC.md)). On an Intel Arc the rule is the same, with two differences: an Arc of 24 GB or more keeps the
+CPU reader unless you ask for `--vision gpu` (the Intel GPU reader has only run on an 8 GB A750), and a Battlemage card (B580, B70)
+has pictures off until you pass `--vision yes` ([INTEL.md](INTEL.md#pictures-on-an-arc-2026-10-19-branch-f-021-arcvis)). More: [Images](DETAILS.md#images-vision).
 
 ### Qwen3.8-Flash-Next
 

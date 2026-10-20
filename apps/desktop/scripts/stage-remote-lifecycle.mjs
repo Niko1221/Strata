@@ -9,7 +9,7 @@ import { gzipSync } from 'node:zlib';
 
 export function stageRemoteLifecycle({ root = fileURLToPath(new URL('../../..', import.meta.url)), output } = {}) {
   output ??= resolve(root, 'apps/host/python/remote-lifecycle-source.json.gz');
-  const roots = ['serve', 'strata_control', 'strata_cli', 'tools', 'data', 'setup.py', 'strata.py', 'requirements.txt', 'requirements-build.txt', 'requirements-monitor.txt'];
+  const roots = ['serve', 'strata_control', 'strata_cli', 'tools', 'data', 'setup.py', 'strata.py', 'requirements.txt', 'requirements-build.txt', 'requirements-monitor.txt', 'requirements-nvfp4-local.txt'];
   const tracked = execFileSync('git', ['ls-files', '-z', '--', ...roots], { cwd: root, maxBuffer: 2 * 1024 * 1024 }).toString().split('\0').filter(Boolean);
   if (!tracked.includes('serve/server.py') || !tracked.includes('strata_control/runtime.py')) throw new Error('Build lifecycle resources from a Strata source checkout.');
   const paths = tracked.map(path => ({ path, source: resolve(root, path) }));

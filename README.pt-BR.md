@@ -33,7 +33,7 @@ agentes de programação. Suas conversas e arquivos ficam no seu PC.
 - **Gratuito.** Licença MIT, sem conta, sem nuvem.
 - **Privado.** Sem telemetria. O que o Strata baixa, quando usa a internet e como confere os downloads está em [docs/SAFETY.md](docs/SAFETY.md).
 
-Versão 0.2.0-beta · mecanismo 0.1.45.3
+Versão 0.2.1 · mecanismo 0.1.46
 
 ## O que você precisa
 
@@ -73,16 +73,16 @@ logo abaixo da tabela.
 
 | Sistema | Sua placa de vídeo | Arquivo para baixar |
 | --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX, driver 580 ou mais novo | [`Strata-0.2.0-beta-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda13.exe) |
-| | NVIDIA, placa mais antiga ou driver anterior ao 580 | [`Strata-0.2.0-beta-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-cuda12.exe) |
-| | AMD Radeon série RX 9000 ou Radeon AI PRO R9700 | [`Strata-0.2.0-beta-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip.exe) |
-| | AMD Radeon série RX 7000 ou Ryzen AI Max (Strix Halo) | [`Strata-0.2.0-beta-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX, driver 580 ou mais novo | [`Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA, placa mais antiga ou driver anterior ao 580 | [`Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon série RX 9000 ou Radeon AI PRO R9700 | [`Strata-0.2.0-beta-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx9070.AppImage) |
-| | AMD Radeon série RX 7000 | [`Strata-0.2.0-beta-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.0-beta-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-linux-amd-strixhalo.AppImage) |
-| **Mac** (Apple Silicon, macOS 15 ou mais novo) | integrada | [`Strata-0.2.0-beta-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.0-beta-mac.dmg) |
+| **Windows 10 / 11** | NVIDIA RTX, driver 580 ou mais novo | [`Strata-0.2.1-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-cuda13.exe) |
+| | NVIDIA, placa mais antiga ou driver anterior ao 580 | [`Strata-0.2.1-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-cuda12.exe) |
+| | AMD Radeon série RX 9000 ou Radeon AI PRO R9700 | [`Strata-0.2.1-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-hip.exe) |
+| | AMD Radeon série RX 7000 ou Ryzen AI Max (Strix Halo) | [`Strata-0.2.1-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-hip-rdna3.exe) |
+| **Linux** | NVIDIA RTX, driver 580 ou mais novo | [`Strata-0.2.1-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-nvidia-cuda13.AppImage) |
+| | NVIDIA, placa mais antiga ou driver anterior ao 580 | [`Strata-0.2.1-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-nvidia-cuda12.AppImage) |
+| | AMD Radeon série RX 9000 ou Radeon AI PRO R9700 | [`Strata-0.2.1-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-rx9070.AppImage) |
+| | AMD Radeon série RX 7000 | [`Strata-0.2.1-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-rx7900.AppImage) |
+| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.1-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-strixhalo.AppImage) |
+| **Mac** (Apple Silicon, macOS 15 ou mais novo) | integrada | [`Strata-0.2.1-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-mac.dmg) |
 
 **Se você estiver em dúvida:** para NVIDIA, use `cuda13` se o seu driver for a versão 580 ou mais nova, e `cuda12` nos outros casos. O `cuda12`
 serve para placas e drivers mais antigos. Os arquivos `hip` e `amd` são para placas AMD. Outras placas AMD (RX 6000) ainda não têm app pronto: veja [Placas AMD](docs/AMD_HIP.md).
@@ -273,7 +273,8 @@ por modelo, ou escolha o leitor com `--vision off`, `--vision gpu` ou `--vision 
 
 Os números por trás da regra: numa Radeon AI PRO R9700, o leitor da placa levou 57 ms para uma imagem de 260 tokens e o do
 processador levou 3,1 s. Em placas de 16 GB (Tesla P100 e RTX A4000, Linux), o leitor da placa custou de 3 a 5% da velocidade do texto,
-porque ocupa cerca de 1,4 GB que o modelo usaria de outra forma. O Mac ainda não tem leitor de imagens.
+porque ocupa cerca de 1,4 GB que o modelo usaria de outra forma. No Mac, a GPU faz a leitura, seja qual for a memória (0,45 s para uma imagem de 260 tokens em um M4 de 32 GB, cerca de 1,2 GB da memória compartilhada);
+o processador leva cerca de 50 s por imagem, então só lê com `--vision cpu`.
 
 ### Bom saber
 

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from strata_control import paths
+from strata_control import atomic as _atomic_mod
 
 WINDOWS = os.name == "nt"
 SCHEMA = 1
@@ -192,7 +193,7 @@ def write_record(pid: int, role: str, *, profile: str | None = None, cmd: list[s
         path = procs_dir() / f"{pid}.json"
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(record), encoding="utf-8")
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
         return token
     except (OSError, ValueError):
         return None

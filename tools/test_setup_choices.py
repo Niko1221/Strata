@@ -660,7 +660,7 @@ class CalibrateWithModel(unittest.TestCase):
                 mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None), \
                 mock.patch.object(setup, "calibrate_config", lambda c: tuned.append(c.name) or True), \
                 mock.patch.object(setup, "start", lambda *a, **k: 0), \
-                mock.patch.object(setup, "data_folder", lambda d: (Path(tmp.name), [])), \
+                mock.patch.object(setup, "data_folder", lambda d, *a, **k: (Path(tmp.name), [])), \
                 mock.patch.object(setup, "step", side_effect=SystemExit("reached the plain setup")):
             try:
                 code, out = quiet(setup.main)
