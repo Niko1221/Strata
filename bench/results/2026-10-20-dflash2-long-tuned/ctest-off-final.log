@@ -1,0 +1,12 @@
+Internal ctest changing into directory: <repo>/build
+Test project <repo>/build
+    Start  47: mmvq_il_parity
+1/3 Test  #47: mmvq_il_parity ...................   Passed    3.20 sec
+    Start 114: dflash_policy_test
+2/3 Test #114: dflash_policy_test ...............   Passed    0.00 sec
+    Start 115: dflash_load_test
+3/3 Test #115: dflash_load_test .................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   3.21 sec

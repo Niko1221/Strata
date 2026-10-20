@@ -1,0 +1,20 @@
+BF16 selector rows=8 rank=256 k=16 confidence=0: 0.058877 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=1: 0.062351 ms/pass
+topk rows=8 vocab=248320 k=16 single CTA: 1.021409 ms/pass
+topk rows=8 vocab=248320 k=16 tiled: 0.096051 ms/pass
+attention rows=2 heads=32 end=32: 0.007393 ms/pass bits=aa32e91e321f53ac
+attention rows=2 heads=32 end=128: 0.011505 ms/pass bits=a5c34e00ce051cb3
+attention rows=2 heads=32 end=512: 0.019466 ms/pass bits=4238a8b3b0594270
+attention rows=2 heads=32 end=1024: 0.032287 ms/pass bits=b04cbfdf60b66373
+attention rows=2 heads=32 end=2053: 0.060462 ms/pass bits=9316156b1a9a65e6
+attention rows=4 heads=32 end=32: 0.008018 ms/pass bits=5720af05e5ec8e1f
+attention rows=4 heads=32 end=128: 0.013174 ms/pass bits=ee20fb300032f242
+attention rows=4 heads=32 end=512: 0.030971 ms/pass bits=0fa2dddc39ddf9be
+attention rows=4 heads=32 end=1024: 0.059069 ms/pass bits=8e873f0ff55ef0f7
+attention rows=4 heads=32 end=2053: 0.112497 ms/pass bits=62da8a2c9bca9762
+attention rows=8 heads=32 end=32: 0.009887 ms/pass bits=51af8ad963e5e8ef
+attention rows=8 heads=32 end=128: 0.019814 ms/pass bits=0102e8d908c1a5db
+attention rows=8 heads=32 end=512: 0.058696 ms/pass bits=5bdceda0e388eb7a
+attention rows=8 heads=32 end=1024: 0.111104 ms/pass bits=565002747ea4f3f9
+attention rows=8 heads=32 end=2053: 0.244024 ms/pass bits=66b3bf50f789711c
+PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal

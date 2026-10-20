@@ -1,6 +1,8 @@
 # DFlash2 long-case confidence-gate diagnosis
 
-Measured on 2026-10-20: RTX 4070 Ti SUPER 16 GiB, Ryzen 9 5900X, Linux, CUDA 13.4 / SM89. Same local NVFP4 target, BF16 embedding, FP8 PLE, Q5_K shared output head and official Q4_0 drafter as the [preceding experiment](../2026-10-19-dflash2-pr-performance/README.md).
+Metadata correction (2026-10-20): the shared target head is Q8_0 (GGML type 8, 2560 × 248320, 675430400 bytes). The older engine hard-coded Q5_K in its log. This corrects the format label; the original timings and raw logs are unchanged. See the [follow-up](../2026-10-20-dflash2-long-tuned/README.md).
+
+Measured on 2026-10-20: RTX 4070 Ti SUPER 16 GiB, Ryzen 9 5900X, Linux, CUDA 13.4 / SM89. Same local NVFP4 target, BF16 embedding, FP8 PLE, Q8_0 shared output head and official Q4_0 drafter as the [preceding experiment](../2026-10-19-dflash2-pr-performance/README.md).
 
 ## Cause and fix
 

@@ -1,0 +1,29 @@
+{
+  "same_executable_both_arms": true,
+  "all_final_tokens_equal_target_only": true,
+  "source_files_match_tested_hashes": true,
+  "attention": [
+    {
+      "rep": 0,
+      "bytes": 1146880,
+      "float32_outputs": 286720,
+      "sha256": "e461f72d09a3fb8533be360f4fd2de428a1e2916c60a059fa0006f4417f57570",
+      "all_bits_equal": true
+    },
+    {
+      "rep": 1,
+      "bytes": 1146880,
+      "float32_outputs": 286720,
+      "sha256": "e461f72d09a3fb8533be360f4fd2de428a1e2916c60a059fa0006f4417f57570",
+      "all_bits_equal": true
+    },
+    {
+      "rep": 2,
+      "bytes": 1146880,
+      "float32_outputs": 286720,
+      "sha256": "e461f72d09a3fb8533be360f4fd2de428a1e2916c60a059fa0006f4417f57570",
+      "all_bits_equal": true
+    }
+  ],
+  "every_dflash2_sample_exceeds_every_mtp_sample": true
+}

@@ -1,10 +1,12 @@
 # DFlash2 quantization versus original BF16 and MTP — 2026-10-19
 
+Metadata correction (2026-10-20): the shared target head is Q8_0 (GGML type 8, 2560 × 248320, 675430400 bytes). The older engine hard-coded Q5_K in its log. This corrects the format label; the original timings and raw logs are unchanged. See the [follow-up](../2026-10-20-dflash2-long-tuned/README.md).
+
 ## Scope and artifacts
 
 Hardware: RTX 4070 Ti SUPER 16 GiB, Ryzen 9 5900X, 125.7 GiB RAM; Linux,
 CUDA 13.4, Release build for SM89. The target is the local Qwen3.8-Flash-Next
-NVFP4 pack, BF16 token embeddings, FP8 PLE, INT8 KV and the shared Q5_K
+NVFP4 pack, BF16 token embeddings, FP8 PLE, INT8 KV and the shared Q8_0
 output head. `*-command.json` records the exact executable SHA-256, command
 and environment. No engine code or user configuration is changed for this study.
 
@@ -100,7 +102,7 @@ Quantization reduces the BF16 GGUF from 1150.3 MiB to 740.1 MiB (Q8_0),
 576.0 MiB (Q5_0) or 521.4 MiB (Q4_0). Runtime savings are partly used by the
 larger target cache: Q4_0 fits 244 more GPU experts than BF16 and 138 more than
 MTP, with about 128 MiB free after the run. The target output head is shared
-with all DFlash2 arms and already Q5_K; these size reductions come from the
+with all DFlash2 arms and already Q8_0; these size reductions come from the
 drafter backbone, not from quantizing that head.
 
 The greedy output check passed all 16 DFlash2 quantization/workload pairs.

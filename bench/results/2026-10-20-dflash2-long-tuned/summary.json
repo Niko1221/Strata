@@ -1,0 +1,179 @@
+{
+  "dflash2-il": {
+    "info": {
+      "logit_bias": "1",
+      "context": "8192",
+      "kv": "int8",
+      "kv_resident": "0",
+      "expert_slots": "3188",
+      "expert_cache_mib": "8406",
+      "expert_slots_primary": "3188",
+      "expert_cache_primary_mib": "8406",
+      "spec": "8",
+      "mtp_max": "0",
+      "lookup": "0",
+      "vram_free_mib": "223",
+      "cvec": "0",
+      "arena_mib": "64800",
+      "pool_workers": "11",
+      "pcie_frac": "0.00",
+      "spec_min_p": "0.70",
+      "dflash_block": "7",
+      "dflash_max": "7",
+      "conversation_cache_mib": "0",
+      "conversation_cache_slots": "4",
+      "conversation_cache_min_free_mib": "2560",
+      "conversation_cache_min_tokens": "0",
+      "tail_role_token": "-1",
+      "vram_elastic": "0",
+      "prefill_cap": "256",
+      "prefill_stages": "1",
+      "stream_all_min": "1024",
+      "prefill_pipe": "0",
+      "engine": "0.1.45.3"
+    },
+    "groups": {
+      "code/block=7/floor=0.7": {
+        "median": 50.86092715231788,
+        "min": 50.82053996823716,
+        "max": 50.87170791161041,
+        "samples": 3,
+        "rates": [
+          50.82053996823716,
+          50.86092715231788,
+          50.87170791161041
+        ],
+        "accepted": [
+          70,
+          70,
+          70
+        ],
+        "offered": [
+          84,
+          84,
+          84
+        ],
+        "prompt_ms": [
+          433.4,
+          435.2,
+          427.6
+        ]
+      },
+      "long/block=7/floor=0.7": {
+        "median": 56.76778428241973,
+        "min": 56.76107136522202,
+        "max": 57.132654883056595,
+        "samples": 3,
+        "rates": [
+          57.132654883056595,
+          56.76107136522202,
+          56.76778428241973
+        ],
+        "accepted": [
+          68,
+          68,
+          68
+        ],
+        "offered": [
+          71,
+          71,
+          71
+        ],
+        "prompt_ms": [
+          50955.5,
+          51294.6,
+          50942.1
+        ]
+      }
+    }
+  },
+  "mtp": {
+    "info": {
+      "logit_bias": "1",
+      "context": "8192",
+      "kv": "int8",
+      "kv_resident": "0",
+      "expert_slots": "3143",
+      "expert_cache_mib": "8287",
+      "expert_slots_primary": "3143",
+      "expert_cache_primary_mib": "8287",
+      "spec": "4",
+      "mtp_max": "0",
+      "lookup": "0",
+      "vram_free_mib": "221",
+      "cvec": "0",
+      "arena_mib": "64800",
+      "pool_workers": "11",
+      "pcie_frac": "0.00",
+      "spec_min_p": "0.50",
+      "dflash_block": "0",
+      "dflash_max": "0",
+      "conversation_cache_mib": "0",
+      "conversation_cache_slots": "4",
+      "conversation_cache_min_free_mib": "2560",
+      "conversation_cache_min_tokens": "0",
+      "tail_role_token": "-1",
+      "vram_elastic": "0",
+      "prefill_cap": "256",
+      "prefill_stages": "1",
+      "stream_all_min": "1024",
+      "prefill_pipe": "0",
+      "engine": "0.1.45.3"
+    },
+    "groups": {
+      "code/block=None/floor=0.5": {
+        "median": 38.46307945029849,
+        "min": 38.34018930468469,
+        "max": 38.597619813444844,
+        "samples": 3,
+        "rates": [
+          38.597619813444844,
+          38.46307945029849,
+          38.34018930468469
+        ],
+        "accepted": [
+          60,
+          60,
+          60
+        ],
+        "offered": [
+          103,
+          103,
+          103
+        ],
+        "prompt_ms": [
+          511.5,
+          505.5,
+          501.5
+        ]
+      },
+      "long/block=None/floor=0.5": {
+        "median": 55.30909719421559,
+        "min": 53.502758735997325,
+        "max": 55.42085209560097,
+        "samples": 3,
+        "rates": [
+          55.30909719421559,
+          55.42085209560097,
+          53.502758735997325
+        ],
+        "accepted": [
+          64,
+          64,
+          64
+        ],
+        "offered": [
+          68,
+          68,
+          68
+        ],
+        "prompt_ms": [
+          61399.6,
+          61221.6,
+          61431.9
+        ]
+      }
+    }
+  },
+  "all_fixture_tokens_match_target_only": true
+}

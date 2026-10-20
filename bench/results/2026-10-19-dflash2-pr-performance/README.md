@@ -1,8 +1,10 @@
 # Fresh MTP versus all supported DFlash2 weight formats — 2026-10-19
 
+Metadata correction (2026-10-20): the shared target head is Q8_0 (GGML type 8, 2560 × 248320, 675430400 bytes). The older engine hard-coded Q5_K in its log. This corrects the format label; the original timings and raw logs are unchanged. See the [follow-up](../2026-10-20-dflash2-long-tuned/README.md).
+
 Engine source: `af85f5ce3b4411833b5529361ae18ffdadbdce3f`. This evidence adds scripts/results only; engine input hashes remain those in the preceding validation package. Executable hashes, exact commands and environment are retained per arm.
 
-Fresh same-source runs on RTX 4070 Ti SUPER 16 GiB, Ryzen 9 5900X, 125.7 GiB RAM, Linux, CUDA 13.4 / SM89. Target: local Qwen3.8-Flash-Next NVFP4 pack, BF16 embeddings, FP8 PLE, shared Q5_K output head, INT8 KV. Context 8192, prefill 256, auto expert cache, allocation reserve 512 MiB. All arms fill available VRAM; smaller draft allocations permit more target experts.
+Fresh same-source runs on RTX 4070 Ti SUPER 16 GiB, Ryzen 9 5900X, 125.7 GiB RAM, Linux, CUDA 13.4 / SM89. Target: local Qwen3.8-Flash-Next NVFP4 pack, BF16 embeddings, FP8 PLE, shared Q8_0 output head, INT8 KV. Context 8192, prefill 256, auto expert cache, allocation reserve 512 MiB. All arms fill available VRAM; smaller draft allocations permit more target experts.
 
 Greedy seed 1234, 96 new tokens, four fixed prompts (27/54/33/2425 input tokens), one warmup per prompt and three measured repeats per speculative arm. MTP at floor 0 is run before and after all four DFlash2 variants. An additional MTP run at setup's floor 0.5 follows those series and is the table reference; this sensitivity check was added after the initial series to avoid comparing only against an untuned zero-floor baseline. Both MTP settings remain in the raw evidence.
 
