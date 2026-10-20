@@ -28,14 +28,24 @@ The first two and the prompt chunks are measured through one engine (per-request
 count, the adaptive tier and the shared-expert stream need a restart per value.  Those are decode speed: the prompt
 path streams every expert whatever they say.
 
-A setting is kept only when it beats the default by more than MIN_GAIN in an interleaved re-measurement - the
-adaptive expert tier and the OS make single measurements noisy by a few percent.
+The sweep's PCIe/floor winner is kept only when a paired re-measurement (default and candidate back to back, the
+order alternating, all 7 pairs - a fixed budget, because stopping early strands winners) clearly beats this run's
+own variation: the sweeps repeat every value, so the scatter is measured on the spot (a user's log from 2026-10:
+1.9% sample sigma, 3.8% median max-minus-median spread across 21 repeated values), and adjacent pairing cancels
+the block-to-block drift of the run (#1332 measured 8-28% between engine starts even at an unchanged setting).
+The pair is judged as one unit: a coordinate enters the config as part of the pair that won.  A fixed percent margin could not tell a real +2.8% from a
++2.8% draw - the 2026-10 report shows it dropping exactly such a winner while the sweep's "-> best" line stayed on
+screen unexplained.  The restart-only steps (the worker counts, the expert tier, the shared-expert stream) and
+--prefill-pipe keep the fixed
+MIN_GAIN margin: values measured in different engine starts cannot be paired, and --prefill-pipe's own step
+judges its 3 paired rounds by winning every one of them.
 
     python tools/calibrate.py strata-q2_0.json        # measure and print; setup.py --calibrate also saves it
 """
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import sys
 import threading
@@ -46,7 +56,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))
 
-MIN_GAIN = 0.03                    # a setting must beat the default by this much to be kept
+MIN_GAIN = 0.03                    # the margin for the steps that need a restart per value (the worker counts,
+                                   # the expert tier, the shared-expert stream), and for --prefill-pipe, whose own
+                                   # step re-measures in 3 paired rounds and keeps a value only winning every round
+CONFIRM_PAIRS = 7                  # the confirmation's interleaved default-vs-candidate pairs, always all of them:
+                                   # stopping early on a 3-pair mean strands true winners - a few noisy pairs go
+                                   # negative on a gain the full 7 decide to be real
+T_KEEP = 2.5                       # keep at t >= T_KEEP
 PCIE_FRACS = (0.0, 0.2, 0.35, 0.55, 0.75, 0.9, 1.0)   # 1.0: every miss over PCIe, the CPU pool gets no expert
 SPEC_MIN_PS = (0.3, 0.5, 0.7)
 SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
@@ -192,6 +208,32 @@ def pick(measured: dict, default_key, min_gain: float = MIN_GAIN):
     return best if med[best] > med[default_key] * (1.0 + min_gain) else default_key
 
 
+def pooled_sigma(samples) -> float:
+    """This engine run's own run-to-run noise: the root-mean-square relative scatter of the sweeps' repeated
+    draws.  A fixed percent margin cannot fit every PC, so the margin is measured on the spot."""
+    cvs = [statistics.stdev(v) / statistics.mean(v)
+           for v in samples if len(v) > 1 and statistics.mean(v) > 0]
+    return math.sqrt(sum(cv * cv for cv in cvs) / len(cvs)) if cvs else 0.0
+
+
+def paired_decision(dflt_samples: list, cand_samples: list, sigma: float) -> tuple[bool, float, float]:
+    """The candidate against the default over interleaved pairs - the pairing cancels the drift between blocks
+    that #1332 measured.  Kept when the mean paired gain beats its own scatter by T_KEEP: a gain bigger than the
+    variation is real, a lucky best-of-eight sweep draw is not.  Returns (keep, mean gain, t), t clamped to
+    ±99 so the report stays finite JSON and carries the gain's sign when the scatter is zero."""
+    gains = [(c - d) / d for d, c in zip(dflt_samples, cand_samples) if d > 0 and c > 0]   # a dead arm skips the pair
+    if not gains:
+        return False, 0.0, 0.0
+    mean = statistics.mean(gains)
+    n = len(gains)
+    # the floor carries the sweeps' block-to-block drift that adjacent pairing cancels, so a drift-heavy PC is
+    # judged stricter than its own paired noise would say - a conservative ceiling; T_KEEP is the dial
+    s = max(statistics.stdev(gains) if n > 1 else 0.0, math.sqrt(2.0) * sigma)
+    t = min(max(mean / (s / math.sqrt(n)), -99.0), 99.0) if s > 0 else (
+        99.0 if mean > 0 else -99.0 if mean < 0 else 0.0)
+    return t >= T_KEEP, mean, t
+
+
 class Session:
     """One running engine: measure decode tok/s for a setting (the median of the prompts' rates)."""
 
@@ -271,7 +313,7 @@ def engine_error(log: str | None, since: int = 0) -> str | None:
 
 
 def sweep(s, values: list, base_tune: dict, key: str, label: str, say,
-          progress=None, stage: str | None = None) -> dict:
+          progress=None, stage: str | None = None, prefer=None) -> dict:
     """Every value, `SWEEP_ROUNDS` times, one round visiting all of them and every other round in reverse order.
 
     A single rate per value cannot order neighbours.  #1332 has 0.75 to 0.95 inside each other's noise at 72.7,
@@ -296,7 +338,7 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say,
     med = {v: statistics.median(out[v]) for v in values}
     say(f"    {label}, median of {SWEEP_ROUNDS}: " +
         ", ".join(f"{v:g}: {med[v]:.1f} ({min(out[v]):.1f}-{max(out[v]):.1f})" for v in values) +
-        f" -> best {max(med, key=lambda k: med[k]):g}")
+        f" -> best {max(med, key=lambda k: (med[k], k == prefer)):g}")
     return out
 
 
@@ -329,36 +371,53 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             report.update(rep_pipe)
         # 1. the PCIe share, at the default draft floor
         by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}), {"spec_min_p": d_minp}, "pcie_frac",
-                        "PCIe share", say, progress, "pcie_share")
-        best_pcie = max(by_pcie, key=lambda k: statistics.median(by_pcie[k]))
+                        "PCIe share", say, progress, "pcie_share", prefer=round(d_pcie, 2))
+        best_pcie = max(by_pcie, key=lambda k: (statistics.median(by_pcie[k]), k == round(d_pcie, 2)))
         # 2. the draft floor, at that share
         by_minp = sweep(s, sorted(set(SPEC_MIN_PS) | {round(d_minp, 2)}), {"pcie_frac": best_pcie}, "spec_min_p",
-                        "draft floor", say, progress, "draft_floor")
-        best_minp = max(by_minp, key=lambda k: statistics.median(by_minp[k]))
-        # 3. the winner against the default, interleaved, the same number of rounds
+                        "draft floor", say, progress, "draft_floor", prefer=round(d_minp, 2))
+        best_minp = max(by_minp, key=lambda k: (statistics.median(by_minp[k]), k == round(d_minp, 2)))
+        # 3. the winner against the default, in all 7 interleaved pairs: kept when the gain beats this run's own
+        #    noise.  The pair is judged as one unit; adjacent pairing cancels the run's block-to-block drift
+        #    (#1332 measured 8-28% between engine starts), and the sweeps' repeats measured that noise (a fixed
+        #    percent margin could not tell a real +2.8% from a +2.8% draw).
         dflt, cand = (round(d_pcie, 2), round(d_minp, 2)), (best_pcie, best_minp)
         confirm = {dflt: [], cand: []}
-        confirm_total = SWEEP_ROUNDS * 2 if cand != dflt else 1
-        _progress(progress, "confirmation", 0, confirm_total)
+        chosen = dflt
+        noise = pooled_sigma(list(by_pcie.values()) + list(by_minp.values()))
+        t = None
         if cand != dflt:
-            for _ in range(SWEEP_ROUNDS):
-                for k in (dflt, cand):
+            confirm_total = CONFIRM_PAIRS * 2
+            _progress(progress, "confirmation", 0, confirm_total)
+            while len(confirm[cand]) < CONFIRM_PAIRS:
+                for k in ((dflt, cand) if len(confirm[dflt]) % 2 == 0 else (cand, dflt)):
                     confirm[k].append(s.rate({"pcie_frac": k[0], "spec_min_p": k[1]}))
-                    _progress(progress, "confirmation", sum(map(len, confirm.values())), confirm_total)
+                    _progress(progress, "confirmation",
+                              len(confirm[dflt]) + len(confirm[cand]), confirm_total)
+            keep, gain, t = paired_decision(confirm[dflt], confirm[cand], noise)
+            # truncate, never round: the shown t must never land on the 2.5 threshold beside the other verdict
+            t_show = math.copysign(math.floor(abs(t) * 100.0), t) / 100.0
+            _progress(progress, "confirmation", confirm_total, confirm_total)
+            say(f"    confirmation over {len(confirm[cand])} pairs: mean {gain:+.1%} against this run's "
+                f"noise {noise:.1%} (t {t_show:.2f}) -> " + ("kept" if keep else "kept the default"))
+            chosen = cand if keep else dflt
         else:
+            _progress(progress, "confirmation", 0, 1)
             _progress(progress, "confirmation", 1, 1)
-        chosen = pick(confirm, dflt) if cand != dflt else dflt
         report.update(default={"pcie_frac": dflt[0], "spec_min_p": dflt[1], "pool_workers": d_workers},
                       pcie_sweep={str(k): v for k, v in by_pcie.items()},
                       min_p_sweep={str(k): v for k, v in by_minp.items()},
-                      confirm={f"{k[0]}/{k[1]}": v for k, v in confirm.items()})
+                      confirm={f"{k[0]}/{k[1]}": v for k, v in confirm.items()},
+                      confirm_noise=round(noise, 4),
+                      **({"confirm_t": t_show} if t is not None else {}))
     finally:
         close(eng)
     settings = {}
     if pipe:
         settings["--prefill-pipe"] = str(int(pipe))
-    if chosen != dflt:
+    if chosen[0] != dflt[0]:
         settings["--pcie-frac"] = f"{chosen[0]:.2f}"
+    if chosen[1] != dflt[1]:
         settings["--spec-min-p"] = f"{chosen[1]:.2f}"
     base_rate = statistics.median(confirm[chosen]) if confirm.get(chosen) else None
     # 4. fewer CPU workers (a restart each), with the chosen settings
@@ -391,6 +450,7 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
         elif by_workers.get(d_workers):
             base_rate = statistics.median(by_workers[d_workers])
     else:
+        _progress(progress, "cpu_workers", 0, 1)
         _progress(progress, "cpu_workers", 1, 1)
     # 5. the adaptive expert tier (a restart each), with everything chosen so far
     tuned = apply(base_args, settings)
@@ -488,10 +548,14 @@ DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None, 
 
 def apply(args: list[str], settings: dict) -> list[str]:
     """`args` with the calibrated settings; a setting the calibration did not change goes back to the product
-    default (setup's --spec-min-p 0.5, the engine's own PCIe share and worker count), so an older calibration's
-    values never linger."""
+    default (setup's --spec-min-p 0.5, the engine's own PCIe share and worker count) only where the config
+    carried the flag already, so an older calibration's values never linger - and a hand-written config is
+    never given an argument the calibration did not actually choose (the 2026-10 report: an unchosen
+    --spec-min-p 0.5 read as a decision)."""
     out = list(args)
     for flag, default in DEFAULTS.items():
+        if flag not in out and flag not in settings:
+            continue
         out = with_arg(out, flag, settings.get(flag, default))
     return out
 
