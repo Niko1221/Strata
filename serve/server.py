@@ -7068,6 +7068,8 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
+            from serve.replicas import request_conversation  # lever 3: a named conversation keeps its replica
+            cancel._strata_conversation = request_conversation(req, messages)
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("openai", req, messages, tools, max_new, thinking, len(ids))
@@ -7133,6 +7135,8 @@ def make_handler(svc: Service):
             if title is not None:
                 return self._responses_ready(req, title)
             cancel = threading.Event()
+            from serve.replicas import conversation_id       # lever 3: a named conversation keeps its replica
+            cancel._strata_conversation = conversation_id(req)   # the derived name needs messages: the prepare step has them
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
                 ids, thinking, tools, max_new, asm, validator, req = self._responses_prepare(req, cancel)
@@ -7304,6 +7308,8 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
+            from serve.replicas import request_conversation  # lever 3: a named conversation keeps its replica
+            cancel._strata_conversation = request_conversation(req, messages)
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))

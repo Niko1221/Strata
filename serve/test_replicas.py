@@ -11,7 +11,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.replicas import BLOCK, ReplicaConfigError, ReplicaEngine, Router, cpu_sets, gpu_groups, replica_cfg
+from serve.replicas import (BLOCK, ReplicaConfigError, ReplicaEngine, Router, conversation_id, conversation_key,
+                            cpu_sets, gpu_groups, replica_cfg, request_conversation)
 from serve.server import ByteTokenizer, Service, StrataEngine, serve
 from serve.test_parallel import FAKE_BATCH
 
@@ -71,6 +72,55 @@ class Routing(unittest.TestCase):
         self.assertLessEqual(len(r.blocks), 10)
 
 
+class ConversationId(unittest.TestCase):
+    """The standard field only: no header, no user field (that one is the end user, not the conversation)."""
+
+    def test_the_standard_key_names_it(self):
+        self.assertEqual(conversation_id({"prompt_cache_key": "cache"}), "cache")
+        self.assertEqual(conversation_id({"prompt_cache_key": "  cache  "}), "cache")   # spaces are not the id
+        self.assertEqual(conversation_id({"prompt_cache_key": "x" * 500}), "x" * 128)   # bounded
+
+    def test_other_fields_are_not_a_conversation(self):
+        self.assertIsNone(conversation_id({"user": "session-1"}))
+        self.assertIsNone(conversation_id({}))
+        self.assertIsNone(conversation_id({"prompt_cache_key": "   "}))
+        self.assertIsNone(conversation_id({"prompt_cache_key": 7}))
+        self.assertIsNone(conversation_id(None))
+
+
+class ConversationKey(unittest.TestCase):
+    """No client change: the request's own first user message names the conversation."""
+
+    def test_the_first_user_message_names_it(self):
+        grown = [{"role": "user", "content": "build a thing"}, {"role": "assistant", "content": "ok"},
+                 {"role": "user", "content": "next"}]
+        self.assertEqual(conversation_key([{"role": "user", "content": "build a thing"}]), conversation_key(grown))
+        self.assertNotEqual(conversation_key([{"role": "user", "content": "build another thing"}]),
+                            conversation_key(grown))
+
+    def test_text_parts_are_read(self):
+        self.assertEqual(conversation_key([{"role": "user", "content": [{"type": "text", "text": "hi"}]}]),
+                         conversation_key([{"role": "user", "content": "hi"}]))
+
+    def test_a_system_prompt_is_not_the_conversation(self):
+        a = [{"role": "system", "content": "same system prompt"}, {"role": "user", "content": "one"}]
+        b = [{"role": "system", "content": "same system prompt"}, {"role": "user", "content": "two"}]
+        self.assertNotEqual(conversation_key(a), conversation_key(b))
+
+    def test_nothing_to_name(self):
+        self.assertIsNone(conversation_key([]))
+        self.assertIsNone(conversation_key([{"role": "assistant", "content": "hi"}]))
+        self.assertIsNone(conversation_key([{"role": "user", "content": "   "}]))
+        self.assertIsNone(conversation_key([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]))
+        self.assertIsNone(conversation_key(None))
+
+    def test_the_standard_key_wins(self):
+        msgs = [{"role": "user", "content": "same task"}]
+        self.assertEqual(request_conversation({"prompt_cache_key": "named"}, msgs), "named")
+        self.assertEqual(request_conversation({}, msgs), conversation_key(msgs))
+        self.assertIsNone(request_conversation({}, []))
+
+
 class FakeEngine:
     def __init__(self, n=4):
         self.batch, self.up = n, True
@@ -108,6 +158,33 @@ class RouteChoice(unittest.TestCase):
         self.assertEqual(e.route(ids + [1]), 0)
         e.inflight = [5, 0]
         self.assertEqual(e.route(ids + [1]), 1)
+
+    def test_a_new_talk_takes_a_free_card_before_a_warm_one(self):
+        """A warm card that keeps taking new conversations leaves the other card idle: load comes first for a new one."""
+        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
+        warm = list(range(BLOCK * 200))                             # 12,800 tokens held on replica 0
+        e.router.note(0, warm)
+        ids = warm[:BLOCK * 100] + [42]                             # 6,400 of them match, so 0 is the cheap card
+        e.inflight = [1, 0]
+        self.assertEqual(e.route(ids, "first:abc"), 1)               # a named new conversation: the free card
+        e.inflight = [1, 0]
+        self.assertEqual(e.route(ids), 1)                            # an unnamed new talk: the same
+
+    def test_sessions_split_across_cards_even_while_idle(self):
+        """Two sessions arriving between bursts must not both pin to the warm card: placement counts conversations."""
+        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
+        warm = list(range(BLOCK * 200))                             # both cards idle, one holds the shared prefix
+        e.router.note(0, warm)
+        first = e.route(warm[:BLOCK * 50], "first:a")
+        second = e.route(warm[:BLOCK * 50], "first:b")              # no request running: nothing says "busy"
+        self.assertNotEqual(first, second)
+        third = e.route(warm[:BLOCK * 50], "first:c")               # 1 vs 1: either card, both work
+        self.assertIn(third, [0, 1])
+        self.assertEqual(sorted(e.router.conv_balance), [1, 2])     # spread, not piled on the warm card
+        for _ in range(10):                                         # turns never move a bound session
+            e.inflight, e.conv_inflight = [0, 0], {}                # the previous turn of each finished
+            self.assertEqual(e.route(warm[:BLOCK * 50] + [1], "first:a"), first)
+            self.assertEqual(e.route(warm[:BLOCK * 50] + [2], "first:b"), second)
 
     def test_a_dead_replica_is_skipped(self):
         a, b = FakeEngine(), FakeEngine()
@@ -157,6 +234,85 @@ class RouteChoice(unittest.TestCase):
         self.assertEqual(selected, [1])
 
 
+class Conversations(unittest.TestCase):
+    """Lever 3: a client that names its conversation gets strict stickiness; a new conversation picks by load."""
+
+    def engine(self):
+        e = ReplicaEngine([FakeEngine(), FakeEngine()])
+        e.heal = lambda: None
+        return e
+
+    def test_a_named_conversation_keeps_its_replica(self):
+        e = self.engine()
+        ids = [1] * 100
+        k = e.route(ids, "c1")
+        e.inflight, e.conv_inflight = [0, 0], {}              # the first turn finished
+        e.inflight[k] = 3                                     # the other card is idle: a warm talk still stays
+        self.assertEqual(e.route(ids, "c1"), k)
+
+    def test_a_new_conversation_takes_the_least_busy_card(self):
+        e = self.engine()
+        e.routed, e.inflight = [5, 0], [2, 0]
+        self.assertEqual(e.route([1] * 100, "c2"), 1)
+        self.assertEqual(e.router.held("c2"), 1)
+        e.inflight, e.conv_inflight = [0, 0], {}              # the first request finished
+        self.assertEqual(e.route([1] * 100, "c2"), 1)         # and stays there
+
+    def test_a_replica_that_restarted_forgets_its_conversations(self):
+        e = self.engine()
+        k = e.route([1] * 100, "c3")
+        e.router.forget(k)
+        self.assertIsNone(e.router.held("c3"))
+        self.assertEqual(e.route([1] * 100, "c3"), 1 - k)     # the card with nothing routed wins the tie
+        self.assertEqual(e.router.held("c3"), 1 - k)
+
+    def test_a_dead_replica_hands_its_conversations_back(self):
+        a, b = FakeEngine(), FakeEngine()
+        e = ReplicaEngine([a, b])
+        e.heal = lambda: None
+        self.assertEqual(e.route([1] * 100, "c5"), 0)
+        a.up = False
+        self.assertEqual(e.route([1] * 100, "c5"), 1)         # a conversation does not go to a corpse
+        self.assertEqual(e.router.held("c5"), 1)
+        self.assertEqual(e.route([1] * 100, "c5"), 1)         # and the binding survives a later busy card
+
+    def test_identical_openings_do_not_pile_on_one_card(self):
+        """Content-derived names collide: sessions with byte-equal first messages are separate sessions, not one
+        conversation asking twice — five A/B arms with identical prompts ran on one card (2026-10-20)."""
+        e = self.engine()
+        ids = [1] * 100
+        arms = [e.route(ids, "first:same") for _ in range(4)]       # all four arrive while each other is live
+        self.assertEqual(arms, [0, 1, 0, 1])                        # strictly alternating, one session per card
+        self.assertEqual(e.routed, [2, 2])                          # both cards worked
+        e.inflight, e.conv_inflight = [0, 0], {}                    # all four finished
+        self.assertIn(e.route(ids, "first:same"), {0, 1})           # a quiet shared name: either card, by load
+
+    def test_the_conversation_map_is_bounded(self):
+        r = Router(2, conv_cap=4)
+        for i in range(10):
+            r.bind(f"c{i}", i % 2)
+        self.assertEqual(len(r.convs), 4)
+        self.assertIsNone(r.held("c0"))
+        self.assertEqual(r.held("c9"), 1)
+
+    def test_unnamed_conversations_keep_the_prefix_rule(self):
+        e = self.engine()
+        ids = list(range(BLOCK * 8))
+        k = e.route(ids)
+        e.router.note(k, ids)
+        e.inflight = [0, 0]
+        self.assertEqual(e.route(ids, None), k)               # the next turn goes back by the hashes
+
+    def test_generate_reads_the_conversation_from_the_cancel(self):
+        e = self.engine()
+        e.inflight[1] = 2                                     # the load rule would pick replica 0
+        cancel = threading.Event()
+        cancel._strata_conversation = "c4"
+        self.assertEqual(list(e.generate([1] * 100, 1, {}, cancel)), [7])
+        self.assertEqual(e.router.held("c4"), 0)
+        self.assertEqual(e.inflight, [0, 2])
+
+
 class ReplicaService(unittest.TestCase):
     def start(self, slots=4, n=2):
         import serve.server as server
@@ -185,15 +341,15 @@ class ReplicaService(unittest.TestCase):
         if getattr(self, "tmp", None):
             self.tmp.cleanup()
 
-    def post(self, messages, max_tokens=64):
-        body = {"messages": messages, "max_tokens": max_tokens, "reasoning_effort": "none"}
+    def post(self, messages, max_tokens=64, **extra):
+        body = {"messages": messages, "max_tokens": max_tokens, "reasoning_effort": "none", **extra}
         req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read().decode())["choices"][0]["message"]["content"]
 
-    def chat(self, text, max_tokens=64):
-        return self.post([{"role": "user", "content": text}], max_tokens)
+    def chat(self, text, max_tokens=64, **extra):
+        return self.post([{"role": "user", "content": text}], max_tokens, **extra)
 
     def served(self):
         return [sum(1 for l in p.read_text().splitlines() if l.split()[0] in ("GEN", "BGEN")) if p.exists() else 0
@@ -297,6 +453,16 @@ class ReplicaService(unittest.TestCase):
         self.post([{"role": "user", "content": first}, {"role": "assistant", "content": reply},
                    {"role": "user", "content": "and then?"}], 16)
         self.assertEqual(self.served()[k], 2)
+
+    def test_a_named_conversation_keeps_its_replica_across_turns(self):
+        self.start()
+        first = "begin " + "lorem ipsum " * 40
+        reply = self.chat(first, user="named-conversation")
+        k = self.served().index(1)
+        for i in range(3):
+            self.post([{"role": "user", "content": first}, {"role": "assistant", "content": reply},
+                       {"role": "user", "content": f"and then? {i}"}], 16, user="named-conversation")
+            self.assertEqual(self.served()[k], 2 + i)
 
     def test_a_replica_that_died_is_skipped(self):
         self.start()
