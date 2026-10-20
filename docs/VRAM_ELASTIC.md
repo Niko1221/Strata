@@ -108,6 +108,12 @@ expert outside the cache), but I have not run a fault-injection test of these tw
 
 ## The image encoder on demand
 
+For a CPU encoder, set `"gpu": false` and `"elastic": true` in the existing `"vision"` section. It starts with the
+first picture and stops after `"elastic_idle_s"` (default 120) without one, between requests. Text requests do not
+start it. CPU on-demand loading needs no `"vram_elastic"`, reserves no VRAM and leaves the expert cache alone.
+The next picture pays the encoder's load time again; unloading ends its process, but the OS may keep reclaimable
+file-cache pages. Without `"elastic": true`, startup is unchanged.
+
 On an NVIDIA card with one GPU the GPU picture reader is on demand **by default** (since 0.2.9): it is not started with the server or with a
 load, the first picture starts it (1.2-1.4 s on an RTX A6000, 1,342 MiB of VRAM), and `"elastic_idle_s"` (default 120) without a picture stops
 it, so between pictures it holds no VRAM. Its room comes from the reserve (`--vram-reserve-mib`; setup's 700 for a GPU reader becomes 2048, a
