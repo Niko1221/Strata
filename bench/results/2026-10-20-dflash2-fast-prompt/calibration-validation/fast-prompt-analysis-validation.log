@@ -1,0 +1,9 @@
+exploratory/adapt32/dflash2-il.json {'decode_tok_s': 56.777856635911995, 'client_wall_s': 45.42402345299706, 'prompt_s': 43.733} False
+exploratory/prefill512-short4096/dflash2-il.json {'decode_tok_s': 55.04587155963303, 'client_wall_s': 53.15125799500311, 'prompt_s': 51.407} True
+exploratory/short64-3188/dflash2-il.json {'decode_tok_s': 52.25342913128674, 'client_wall_s': 11.259073694000108, 'prompt_s': 9.421} True
+prefill1024/dflash2-il.json {'decode_tok_s': 44.99437570303712, 'client_wall_s': 8.487822821000009, 'prompt_s': 6.354} True
+prefill256/dflash2-il.json {'decode_tok_s': 50.23810769794338, 'client_wall_s': 11.42121504700117, 'prompt_s': 9.51} True
+prefill256/mtp.json {'decode_tok_s': 49.823541623417064, 'client_wall_s': 11.369053409001936, 'prompt_s': 9.441} None
+prefill512/dflash2-il.json {'decode_tok_s': 50.2092050209205, 'client_wall_s': 7.821205063999514, 'prompt_s': 5.909} True
+prefill512/mtp.json {'decode_tok_s': 50.34877012639639, 'client_wall_s': 7.755254427000182, 'prompt_s': 5.844} None
+tuned512/dflash2-il.json {'decode_tok_s': 51.94805194805195, 'client_wall_s': 7.761576163000427, 'prompt_s': 5.909} True

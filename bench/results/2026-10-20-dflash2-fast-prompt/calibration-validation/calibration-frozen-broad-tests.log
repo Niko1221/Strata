@@ -1,0 +1,427 @@
+<repo>/tests/terminal/test_private_files.py:167: SyntaxWarning: invalid escape sequence '\W'
+  self.assertFalse(pf.repair_access(os.environ.get("SystemRoot", "C:\Windows") + "\System32\drivers"))
+<repo>/tests/terminal/test_private_files.py:167: SyntaxWarning: invalid escape sequence '\S'
+  self.assertFalse(pf.repair_access(os.environ.get("SystemRoot", "C:\Windows") + "\System32\drivers"))
+..................................
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: --pcie-frac 0.20 (61.2 tok/s)
+.
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: STRATA_SH_STREAM=1 (70.1 tok/s)
+
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: the default settings are already the fastest here (65.0 tok/s)
+..
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  DFlash2 also compares fresh short/long requests, prefill chunks, VRAM headroom and joint block/floor
+  profiles, with separate restarts for confirmation. Allow roughly 30-90 minutes in total.
+  [ok] tuned for this PC: --prefill 512, --short-read 64, --dflash-block 6, --spec-min-p 0.85, --vram-reserve-mib 1024
+.
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [!]  the tuning did not finish (the engine exited before it was ready): the default settings stay
+............................Q8_0: /tmp/tmptj2npui3/dflash2/dflash2-7ec3de85bc6ed138-Q8_0.gguf (4416 bytes)
+  [ok] DFlash2 Q8_0 already prepared
+.............................strata: Markdown output file already exists
+.[strata] done: 2 tokens in 0 s (13.3 tok/s) (disconnect, cancel=True)
+...[strata] done: 23 tokens in 0 s (28125.1 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (37146.3 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (45015.9 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (11606.0 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (27491.9 tok/s) (stop, cancel=False)
+......[strata] done: 23 tokens in 0 s (18480.6 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (25821.5 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (45590.3 tok/s) (stop, cancel=False)
+[strata] done: 23 tokens in 0 s (44517.3 tok/s) (stop, cancel=False)
+..........measured fake decode workload
+....measured fake decode workload
+.......................................[strata] The engine package failed its integrity check, so it was not started: 0.1.45 linux-x86_64-cuda: engine is missing. Repair or reinstall the engine component with Update engine in the app's Settings or `strata update` in the Terminal (`strata install` also works); the app never downloads one while it runs.
+................F..F........F.................F.E.......................................ss....................................................................  [ok] llama.cpp 3cf0325 (gguf-py for the preparation tools)
+  [ok] engine component: 0.1.45 (linux-x86_64-cuda) in /tmp/strata-launch-test-0u7i62p8/engine
+  [!]  this engine component has no image encoder (strata-vision): images off for this model
+  [ok] llama.cpp 3cf0325 (gguf-py for the preparation tools)
+  [ok] engine component: 0.1.45 (linux-x86_64-cuda) in /tmp/strata-launch-test-0u7i62p8/engine
+  [ok] image encoder: /tmp/strata-launch-test-0u7i62p8/engine/strata-vision (carried by the engine component)
+  [ok] llama.cpp 3cf0325 (gguf-py for the preparation tools)
+  [ok] engine component: 0.1.45 (linux-x86_64-cuda) in /tmp/strata-launch-test-0u7i62p8/engine
+...............................................................................................127.0.0.1 - - [20/Oct/2026 16:10:45] "GET /install-manifest.txt HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:45] "GET /control/strata-control-9.9.9-linux-x86_64.tar.gz HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:45] "GET /test-trust.json HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /strata-feed.json HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /strata-feed.json.sig HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /install-manifest.txt HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /top.tar.gz HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /test-trust.json HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /strata-feed.json HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /strata-feed.json.sig HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /install-manifest.txt HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:46] "GET /control/strata-control-9.9.9-linux-x86_64.tar.gz HTTP/1.1" 200 -
+.note: the windows-x86_64 control package is tar.gz, so it is left out of install-manifest.txt (the one-line installer needs zip; pack-control --format zip)
+127.0.0.1 - - [20/Oct/2026 16:10:47] "GET /install-manifest.txt HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:47] "GET /strata-control-9.9.9-linux-x86_64.tar.gz HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:47] "GET /test-trust.json HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:48] "GET /strata-feed.json HTTP/1.1" 200 -
+127.0.0.1 - - [20/Oct/2026 16:10:48] "GET /strata-feed.json.sig HTTP/1.1" 200 -
+.s..E.....Econtrol linux-x86_64 9.9.9: 0 MB
+feed written to /tmp/tmpya8ru2rd/feed
+  serve it:  python -m http.server 1 --bind 127.0.0.1 --directory /tmp/tmpya8ru2rd/feed
+  trust it:  STRATA_UPDATE_TRUSTED_KEYS=/tmp/tmpya8ru2rd/feed/test-trust.json
+FAIL monitor-killed  ['ProcessLookupError: [Errno 3] No such process'] 
+FFAIL monitor-quit  ['the monitor did not stay up (is Textual installed here?)'] 
+FPASS runtime-die-with 1.3  
+.PASS runtime-owner-killed 0.3  
+.PASS runtime-server-killed   server killed, owner left alive
+.PASS runtime-stop 0.9  stop -> stopped
+.PASS runtime-survives-terminal 2.3  still serving: True
+.PASS serve-busy-stop 5.6  
+.PASS serve-ctrl-c 0.8  
+.PASS serve-kill-parent 0.2  
+.PASS serve-nohup-keeps-serving 0.8  
+.PASS serve-sighup 0.8  
+.PASS serve-sigterm 0.8  
+.PASS serve-terminal-closed 0.8  
+....................E....................E....E...F.......  Installing a test package ...
+  [ok] a test package installed
+.E............s...........ssssss..Fs.ss....F............................................................s...................s.........s................strata: --parallel must be in 1..1024
+...[strata] a non-loopback bind requires an inference API key
+.E.strata: run config needs a nonempty exe path
+....EE..E.E....ssssssssssssssssssssssssssss....E.......EE......E..................................................................ssss
+======================================================================
+ERROR: test_drain_rejects_new_inference_and_reports_state (test_drain.DrainTests.test_drain_rejects_new_inference_and_reports_state)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_drain.py", line 39, in test_drain_rejects_new_inference_and_reports_state
+    self.assertIn("DRAINING", render_view(snapshot, "overview", 80, 24))
+                              ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/render.py", line 584, in render_view
+    lines += [_device(d, width) for d in devices[:4]] or ["Per-device readings unavailable"]
+              ~~~~~~~^^^^^^^^^^
+  File "<repo>/strata_cli/render.py", line 236, in _device
+    from strata_cli.overview import short_gpu              # "NVIDIA GeForce RTX 3090" -> "RTX 3090": the maker's prefix used to cut the model off
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/overview.py", line 18, in <module>
+    from rich import box
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_launch_monitor (unittest.loader._FailedTest.test_launch_monitor)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_launch_monitor
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_launch_monitor.py", line 13, in <module>
+    from strata_cli.launch.monitor_ext import LaunchMonitor
+  File "<repo>/strata_cli/launch/monitor_ext.py", line 19, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+ERROR: test_launch_tui (unittest.loader._FailedTest.test_launch_tui)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_launch_tui
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_launch_tui.py", line 15, in <module>
+    from strata_cli.launch.app import Ctx, LaunchApp, run_monitor
+  File "<repo>/strata_cli/launch/app.py", line 16, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+ERROR: test_mixed_vendors (unittest.loader._FailedTest.test_mixed_vendors)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_mixed_vendors
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_mixed_vendors.py", line 15, in <module>
+    from strata_cli.launch.screens import flow_for
+  File "<repo>/strata_cli/launch/screens.py", line 16, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+ERROR: test_plain_monitor_runs_when_the_launch_package_is_not_bundled (test_monitor_bundle.MonitorBundleTests.test_plain_monitor_runs_when_the_launch_package_is_not_bundled)
+The pyz has no strata_cli.launch: interactive `monitor` must fall back to the plain Monitor, not fail.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_monitor_bundle.py", line 309, in test_plain_monitor_runs_when_the_launch_package_is_not_bundled
+    from strata_cli import monitor as monitor_module
+  File "<repo>/strata_cli/monitor.py", line 12, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_monitor_classic (unittest.loader._FailedTest.test_monitor_classic)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_monitor_classic
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_monitor_classic.py", line 11, in <module>
+    from rich.console import Console
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+ERROR: test_overview (unittest.loader._FailedTest.test_overview)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_overview
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_overview.py", line 10, in <module>
+    from rich.console import Console
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+ERROR: test_display_cells_preserve_wide_and_combining_clusters (test_terminal.ContractTests.test_display_cells_preserve_wide_and_combining_clusters) (width=110)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_terminal.py", line 186, in test_display_cells_preserve_wide_and_combining_clusters
+    view = render_view(snapshot, name, width, height)
+  File "<repo>/strata_cli/render.py", line 713, in render_view
+    lines.append(_line(("> " if i == index else "  ") + _device(devices[i], width - 2), width))
+                                                        ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/render.py", line 236, in _device
+    from strata_cli.overview import short_gpu              # "NVIDIA GeForce RTX 3090" -> "RTX 3090": the maker's prefix used to cut the model off
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/overview.py", line 18, in <module>
+    from rich import box
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_parallel_prompt_progress_and_frozen_queue_age (test_terminal.ContractTests.test_parallel_prompt_progress_and_frozen_queue_age)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_terminal.py", line 438, in test_parallel_prompt_progress_and_frozen_queue_age
+    self.assertIn("First engine token 1.234 s", render_view(s, "overview", 80, 24))
+                                                ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/render.py", line 584, in render_view
+    lines += [_device(d, width) for d in devices[:4]] or ["Per-device readings unavailable"]
+              ~~~~~~~^^^^^^^^^^
+  File "<repo>/strata_cli/render.py", line 236, in _device
+    from strata_cli.overview import short_gpu              # "NVIDIA GeForce RTX 3090" -> "RTX 3090": the maker's prefix used to cut the model off
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/overview.py", line 18, in <module>
+    from rich import box
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_pipeline_stage_in_flight_sample_is_bounded_and_labelled_host_time (test_terminal.ContractTests.test_pipeline_stage_in_flight_sample_is_bounded_and_labelled_host_time)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_terminal.py", line 242, in test_pipeline_stage_in_flight_sample_is_bounded_and_labelled_host_time
+    from rich.console import Console
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_replica_slots_and_requests_keep_identity_without_aggregate_batch_claim (test_terminal.ContractTests.test_replica_slots_and_requests_keep_identity_without_aggregate_batch_claim)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_terminal.py", line 62, in test_replica_slots_and_requests_keep_identity_without_aggregate_batch_claim
+    from rich.console import Console
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_small_layout_and_untrusted_text (test_terminal.ContractTests.test_small_layout_and_untrusted_text)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_terminal.py", line 445, in test_small_layout_and_untrusted_text
+    output = render_view(s, "overview", width, height)
+  File "<repo>/strata_cli/render.py", line 584, in render_view
+    lines += [_device(d, width) for d in devices[:4]] or ["Per-device readings unavailable"]
+              ~~~~~~~^^^^^^^^^^
+  File "<repo>/strata_cli/render.py", line 236, in _device
+    from strata_cli.overview import short_gpu              # "NVIDIA GeForce RTX 3090" -> "RTX 3090": the maker's prefix used to cut the model off
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<repo>/strata_cli/overview.py", line 18, in <module>
+    from rich import box
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_the_screens_open_a_browser_only_for_open (test_tuiqa_browser.NoBrowserByItself.test_the_screens_open_a_browser_only_for_open)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_tuiqa_browser.py", line 50, in test_the_screens_open_a_browser_only_for_open
+    from strata_cli.launch import app as launch_app
+  File "<repo>/strata_cli/launch/app.py", line 16, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+======================================================================
+ERROR: test_tuiqa_launch (unittest.loader._FailedTest.test_tuiqa_launch)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_tuiqa_launch
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_tuiqa_launch.py", line 13, in <module>
+    from textual.app import App
+ModuleNotFoundError: No module named 'textual'
+
+
+======================================================================
+ERROR: test_tuiqa_monitor (unittest.loader._FailedTest.test_tuiqa_monitor)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_tuiqa_monitor
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_tuiqa_monitor.py", line 13, in <module>
+    from strata_cli.launch.monitor_ext import LaunchMonitor
+  File "<repo>/strata_cli/launch/monitor_ext.py", line 19, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+ERROR: test_tuiqa_wizard (unittest.loader._FailedTest.test_tuiqa_wizard)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_tuiqa_wizard
+Traceback (most recent call last):
+  File "/usr/lib/python3.13/unittest/loader.py", line 396, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.13/unittest/loader.py", line 339, in _get_module_from_name
+    __import__(name)
+    ~~~~~~~~~~^^^^^^
+  File "<repo>/tests/terminal/test_tuiqa_wizard.py", line 14, in <module>
+    from strata_cli.launch.app import Ctx, LaunchApp
+  File "<repo>/strata_cli/launch/app.py", line 16, in <module>
+    from rich.text import Text
+ModuleNotFoundError: No module named 'rich'
+
+
+======================================================================
+FAIL: test_a_remembered_older_install_and_the_app_install_are_both_listed (test_discovery.GuiLayout.test_a_remembered_older_install_and_the_app_install_are_both_listed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_discovery.py", line 149, in test_a_remembered_older_install_and_the_app_install_are_both_listed
+    self.assertEqual(sorted(m["id"] for m in got["models"]), ["gyro-gyro-s", "qwen-iq3_xxs"])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Lists differ: ['gyro-gyro-s'] != ['gyro-gyro-s', 'qwen-iq3_xxs']
+
+Second list contains 1 additional elements.
+First extra element 1:
+'qwen-iq3_xxs'
+
+- ['gyro-gyro-s']
++ ['gyro-gyro-s', 'qwen-iq3_xxs']
+
+======================================================================
+FAIL: test_an_own_setting_beats_the_apps_folder (test_discovery.GuiLayout.test_an_own_setting_beats_the_apps_folder)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_discovery.py", line 245, in test_an_own_setting_beats_the_apps_folder
+    self.assertEqual(self.catalog().data_dir().resolve(), mine.resolve())
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: PosixPath('/tmp/strata-discovery-g1sk6rav/home/Documents/Strata') != PosixPath('/tmp/strata-discovery-g1sk6rav/mine')
+
+======================================================================
+FAIL: test_list_and_the_wizard_agree_on_the_install (test_discovery.GuiLayout.test_list_and_the_wizard_agree_on_the_install)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_discovery.py", line 120, in test_list_and_the_wizard_agree_on_the_install
+    self.assertEqual(cat.root.resolve(), models.resolve_install()[0].resolve())
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: PosixPath('<repo>') != PosixPath('/tmp/strata-discovery-5398ly4y/local/strata/install')
+
+======================================================================
+FAIL: test_shell_scripts_parse (test_docker_files.Scripts.test_shell_scripts_parse)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_docker_files.py", line 23, in test_shell_scripts_parse
+    self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 2 != 0 : smoke-test.sh: <repo>/docker/smoke-test.sh: 17: Syntax error: redirection unexpected
+
+
+======================================================================
+FAIL: test_monitor_killed (test_lifecycle_matrix.LifecycleMatrix.test_monitor_killed)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_lifecycle_matrix.py", line 26, in test
+    self.assertTrue(result["ok"], result.get("problems"))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : ['ProcessLookupError: [Errno 3] No such process']
+
+======================================================================
+FAIL: test_monitor_quit (test_lifecycle_matrix.LifecycleMatrix.test_monitor_quit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_lifecycle_matrix.py", line 26, in test
+    self.assertTrue(result["ok"], result.get("problems"))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : ['the monitor did not stay up (is Textual installed here?)']
+
+======================================================================
+FAIL: test_start_and_serve_modules_do_not_load_installer_code (test_no_acquisition.ImportGraphTests.test_start_and_serve_modules_do_not_load_installer_code)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_no_acquisition.py", line 88, in test_start_and_serve_modules_do_not_load_installer_code
+    self.assertIn(top, ("serve", "strata_cli", "strata_control"),
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  f"{name} ({rel}) is loaded by starting/serving but is not part of it")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: '.venv' not found in ('serve', 'strata_cli', 'strata_control') : jinja2.bccache (.venv/lib/python3.13/site-packages/jinja2/bccache.py) is loaded by starting/serving but is not part of it
+
+======================================================================
+FAIL: test_a_file_made_in_the_profile_is_unshared_but_not_strictly_private (test_private_files.PrivateFileTests.test_a_file_made_in_the_profile_is_unshared_but_not_strictly_private)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_private_files.py", line 74, in test_a_file_made_in_the_profile_is_unshared_but_not_strictly_private
+    self.assertTrue(pf.is_unshared(path))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_an_engine_orphan_of_this_executable_is_found_and_a_live_one_is_not (test_procs.Procs.test_an_engine_orphan_of_this_executable_is_found_and_a_live_one_is_not)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<repo>/tests/terminal/test_procs.py", line 138, in test_an_engine_orphan_of_this_executable_is_found_and_a_live_one_is_not
+    self.assertIsNone(procs.start_token(orphan_pid))
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'l:2420216' is not None
+
+----------------------------------------------------------------------
+Ran 785 tests in 267.055s
+
+FAILED (failures=9, errors=16, skipped=48)
+{"schema_version": 1, "ok": true, "jobs": []}
+{"schema_version": 1, "ok": true, "runs": []}

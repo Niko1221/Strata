@@ -1,0 +1,22 @@
+{
+  "source_parent": "27b65cc8b4c42c83da65bbed605c8ab6bba8171b",
+  "source_sha256": {
+    "tools/calibrate.py": "e6d37370a7a07d0952cb8c79b05aadf4259c0a2a11711b51f460be464979ce3a",
+    "tools/calibrate_dflash2.py": "309acc6467931b36b21c1ed42684b393d878c861656c689ae2aaa4414cd769e2",
+    "setup.py": "0a6e90653dc1a7998d5e8426e7e79d2a641850e1e9e3e3214edb64b6f21e0de8",
+    "strata_control/calibration.py": "25efc142d3e1fa749707dac98709257db8a7bf950c936fd2036b503d55f70a0a"
+  },
+  "targeted_tests": {
+    "run": 97,
+    "passed": 97
+  },
+  "broad_terminal_tests": {
+    "run": 785,
+    "failures": 9,
+    "errors": 16,
+    "skipped": 48
+  },
+  "gpu_smoke_exit_code": 0,
+  "full_production_calibration_run": false,
+  "calibration_source_commit": "aea721b3"
+}

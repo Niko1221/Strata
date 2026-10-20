@@ -1,0 +1,14 @@
+{
+  "all_selected_and_mtp_match_target_control": true,
+  "target_ids_per_request": 96,
+  "same_executable_as_prior_report": true,
+  "executable_sha256": "7eb8b4c9e9ddbe1a305ce34f6f5bcc5cf8edb7d1f8fb225614ef7f171c92bdb1",
+  "decode_gain_vs_mtp_percent": 3.1764069264069272,
+  "client_wall_reduction_vs_prefill256_percent": 32.04246543770001,
+  "all_df_decode_samples_exceed_all_mtp_samples": true,
+  "old_control_token_mismatches": 12,
+  "source_commit": "27b65cc8b4c42c83da65bbed605c8ab6bba8171b",
+  "accepted_engine_source_commit": "aab69ad03f8c225402ff0972e5b5a4bc0147fec1",
+  "source_diff": "",
+  "models_reference": "../2026-10-20-dflash2-long-tuned/provenance.json"
+}

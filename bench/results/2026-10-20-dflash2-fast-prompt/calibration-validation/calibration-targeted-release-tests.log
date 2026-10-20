@@ -1,0 +1,36 @@
+..................................
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: --pcie-frac 0.20 (61.2 tok/s)
+.
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: STRATA_SH_STREAM=1 (70.1 tok/s)
+
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: the default settings are already the fastest here (65.0 tok/s)
+..
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  DFlash2 also compares fresh short/long requests, prefill chunks, VRAM headroom and joint block/floor
+  profiles, with separate restarts for confirmation. Allow roughly 30-90 minutes in total.
+  [ok] tuned for this PC: --prefill 512, --short-read 64, --dflash-block 6, --spec-min-p 0.85, --vram-reserve-mib 1024
+.
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [!]  the tuning did not finish (the engine exited before it was ready): the default settings stay
+............................Q8_0: /tmp/tmp1l_sjpeh/dflash2/dflash2-7ec3de85bc6ed138-Q8_0.gguf (4416 bytes)
+  [ok] DFlash2 Q8_0 already prepared
+.......measured fake decode workload
+....measured fake decode workload
+....................
+----------------------------------------------------------------------
+Ran 97 tests in 0.664s
+
+OK
