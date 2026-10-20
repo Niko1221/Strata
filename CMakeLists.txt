@@ -2084,18 +2084,20 @@ if(STRATA_BUILD_TESTS)
 
   if(STRATA_NATIVE_EXPERTS)
     # APR port: a Hadamard-folded trellis expert (TQ2_T / TQK6 / TQK7) on the CPU path vs llama.cpp's graph for the
-    # same weights (synthetic; needs STRATA_GGML_DIR = a ggml with the trellis types, else it reports and fails)
+    # same weights (synthetic).  The FWHT and Q8_0 fold checks run on any ggml; the trellis pairs need
+    # STRATA_GGML_DIR = a ggml with the trellis types (the default FetchContent ggml is upstream) and skip without it
     add_executable(native_hadamard_test src/kernels/cpu/native_hadamard_test.cpp)
     target_link_libraries(native_hadamard_test PRIVATE strata_kernels_cpu strata_artifact)
     add_test(NAME native_hadamard_test COMMAND native_hadamard_test)
-    set_tests_properties(native_hadamard_test PROPERTIES TIMEOUT 300)
+    set_tests_properties(native_hadamard_test PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
     # the CPU trellis kernels (tq_cpu.hpp): AVX2 / AVX-512 vs the scalar kernel bit for bit, vs ggml-cpu's vec_dot
-    # and to_float, plain and with the Hadamard rotation; `tq_cpu_parity --bench` is the micro-benchmark
+    # and to_float, plain and with the Hadamard rotation; `tq_cpu_parity --bench` is the micro-benchmark.  Every
+    # check needs the fork's trellis types, so the test skips on an upstream ggml
     add_executable(tq_cpu_parity src/kernels/cpu/tq_cpu_parity.cpp)
     target_link_libraries(tq_cpu_parity PRIVATE strata_kernels_cpu)
     add_test(NAME tq_cpu_parity COMMAND tq_cpu_parity)
     add_test(NAME tq_cpu_parity_avx2 COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_AVX2=1 $<TARGET_FILE:tq_cpu_parity>)
-    set_tests_properties(tq_cpu_parity tq_cpu_parity_avx2 PROPERTIES TIMEOUT 300)
+    set_tests_properties(tq_cpu_parity tq_cpu_parity_avx2 PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
   endif()
 
   add_executable(expert_parity src/kernels/cpu/expert_parity.cpp)

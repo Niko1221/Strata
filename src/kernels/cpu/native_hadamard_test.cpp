@@ -296,15 +296,21 @@ int main(int argc, char** argv) {
     if (!native_experts_available()) { std::fprintf(stderr, "built without native experts\n"); return 1; }
     int rc = fwht_check();
     if (argc >= 5 && std::strcmp(argv[1], "--pack") == 0 && std::strcmp(argv[3], "--gguf") == 0) {
+        // a Gyro expert needs the trellis type entries; on an upstream ggml, real() would index past its type table
+        if (GGML_TYPE_COUNT <= 146) { std::fprintf(stderr, "--pack: this ggml has no trellis types\n"); return 1; }
         for (int i = 5; i + 1 < argc || i == 5; i += 2) {   // [layer expert]...
             const int layer = argc > i ? std::atoi(argv[i]) : 0, expert = argc > i + 1 ? std::atoi(argv[i + 1]) : 0;
             rc |= real(argv[2], argv[4], layer, expert);
         }
         return rc;
     }
+    rc |= synthetic(8, 8);       // Q8_0: the fold's convention, against the unrotated float expert (any ggml has it)
     // ggml type ids of the agention fork: 144 TQ2_T, 145 TQK6, 146 TQK7
-    if (GGML_TYPE_COUNT <= 146) { std::fprintf(stderr, "this ggml has no trellis types (build with STRATA_GGML_DIR = the agention fork)\n"); return 1; }
-    rc |= synthetic(8, 8);       // Q8_0: the fold's convention, against the unrotated float expert
+    if (GGML_TYPE_COUNT <= 146) {
+        std::fprintf(stderr, "trellis experts skipped: this ggml has no trellis types (build with STRATA_GGML_DIR = "
+                             "the agention fork)\n");
+        return rc ? 1 : 77;   // a skip, not a failure - but a broken FWHT or Q8_0 fold still fails
+    }
     rc |= synthetic(145, 146);   // Gyro-S
     rc |= synthetic(144, 144);   // Gyro-M
     return rc;
