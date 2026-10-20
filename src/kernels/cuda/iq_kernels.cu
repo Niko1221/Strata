@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
 #include "strata/kernels/gfx_arch.hpp"
@@ -3886,6 +3887,670 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
     else native_down_multi_kernel<TD, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
 }
 
+// ---------------------------------------------------------------- STRATA_EXPERT_NIBBLE: gate/up on 4-bit slots
+// (opt-in, default off; strata/core/expert_nibble.hpp has the slot layout and the item code).  A converted layer's
+// VRAM slot holds each 32-weight item of a gate/up row as 16 bytes of 4-bit codes (one 16-byte load), its integer
+// scale byte and the superblock's fp16 d bit for bit; the kernels below decode an item into the production
+// Split<TG>::W (or IQ3_S's offset form) with 1-4 instructions per four weights instead of the codebook lookups, then
+// run the production integer chain and float tail in the production lane / item / addition order (row_dot_80_sub16:
+// k = t, t+32, t+64 into s, t+16, t+48 into s16, __fadd_rn, xor 8, 4, 2, 1), so every gate / up value is bit for bit
+// native_gu_multi_kernel<TG, *, true>'s.  Two skeletons in the shape of native_gu_multi_kernel (grid (80, gy), 256
+// threads, 16 lanes a row, a group's entries GRP_NC at a time, the group stride):
+//   S  the entries' q8_1 blocks staged in shared memory, each item's code loaded and decoded where it is used, the
+//      production apply on it (IQ3_S: v = 2u - 15 restored per byte - no sum of x)
+//   P  the lane's five items' codes, scales and d loaded before the staging (in flight during it), the entries' qs
+//      words staged as 16-byte rows and ds as a float, the production chain written out on the registers (IQ3_S:
+//      sumi = 2 dot(u, x) - 15 sum(x) with sum(x) from the staged words: the same int32)
+// Then the load-time transcoder, the GGUF rebuild (the start-up check and the prompt path's gather) and the slot hash.
+// Built only with STRATA_EXPERT_NIBBLE_BUILT (a CUDA build with STRATA_EXPERIMENTAL_SM60); elsewhere a gu_nib layout
+// stops in native_expert_grouped, and the switch is refused at start.
+#if STRATA_EXPERT_NIBBLE_BUILT
+namespace nibk = strata::core::nibble;
+
+__device__ __forceinline__ uint32_t nib_prmt(uint32_t a, uint32_t b, uint32_t sel) {
+    uint32_t r;
+    asm("prmt.b32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(sel));   // the sign-replicate modes too
+    return r;
+}
+
+// One item's code -> the production W (what Split<TG>::load gives for the same GGUF item, byte for byte).
+template<int TG> struct NibLoad;
+template<> struct NibLoad<22> {   // IQ2_S: the nibble is the PRMT selector into {8,25,43,0} {-8,-25,-43,0}
+    using W = Split<22>::W;
+    __device__ static W load(uint4 q, uint32_t sc, __half d) {
+        constexpr uint32_t T0 = 0x002B1908u, T1 = 0x00D5E7F8u;
+        W r;
+        const uint32_t qw[4] = { q.x, q.y, q.z, q.w };
+#pragma unroll
+        for (int m = 0; m < 4; ++m) {
+            r.g[2 * m + 0] = (int) nib_prmt(T0, T1, qw[m]);
+            r.g[2 * m + 1] = (int) nib_prmt(T0, T1, qw[m] >> 16);
+        }
+        r.ls0 = sc & 0x0F;
+        r.ls1 = sc >> 4;
+        r.dw = __half2float(d);
+        return r;
+    }
+};
+template<> struct NibLoad<18> {   // IQ3_XXS: magnitude PRMT into {4..62}, sign-replicated byte masks, (g ^ m) + (m & 1s)
+    using W = Split<18>::W;
+    __device__ static W load(uint4 q, uint32_t sc, __half d) {
+        constexpr uint32_t T0 = 0x1C140C04u, T1 = 0x3E342C24u;   // {4,12,20,28} {36,44,52,62}
+        W r;
+        const uint32_t qw[4] = { q.x, q.y, q.z, q.w };
+#pragma unroll
+        for (int m = 0; m < 4; ++m) {
+            const uint32_t w = qw[m], ms = w & 0x77777777u, a = w << 4;
+            const uint32_t m0 = nib_prmt(a, w, 0xD9C8u), m1 = nib_prmt(a, w, 0xFBEAu);
+            const uint32_t g0 = nib_prmt(T0, T1, ms), g1 = nib_prmt(T0, T1, ms >> 16);
+            r.g[2 * m + 0] = (int) ((g0 ^ m0) + (m0 & 0x01010101u));
+            r.g[2 * m + 1] = (int) ((g1 ^ m1) + (m1 & 0x01010101u));
+        }
+        r.ls = (int) sc;
+        r.dw = __half2float(d);
+        return r;
+    }
+};
+template<> struct NibLoad<21> {   // IQ3_S: v = 2u - 15 per byte, ((2u | 0x80) - 0x0F) ^ 0x80 (every byte >= 0x80: no borrow)
+    using W = Split<21>::W;
+    __device__ static W load(uint4 q, uint32_t sc, __half d) {
+        W r;
+        const uint32_t qw[4] = { q.x, q.y, q.z, q.w };
+#pragma unroll
+        for (int m = 0; m < 4; ++m) {
+            const uint32_t lo2 = (qw[m] << 1) & 0x1E1E1E1Eu, hi2 = (qw[m] >> 3) & 0x1E1E1E1Eu;   // 2u per byte
+            r.g[2 * m + 0] = (int) (((lo2 | 0x80808080u) - 0x0F0F0F0Fu) ^ 0x80808080u);
+            r.g[2 * m + 1] = (int) (((hi2 | 0x80808080u) - 0x0F0F0F0Fu) ^ 0x80808080u);
+        }
+        r.ls = (int) sc;
+        r.dw = __half2float(d);
+        return r;
+    }
+};
+
+// S skeleton row dot over one converted row (codes, scales, d of row `row`), x the staged blocks
+template<int TG, int NC>
+__device__ __forceinline__ void nib_row_dot_s(const uint4* __restrict__ crow, const uint8_t* __restrict__ srow,
+                                              const __half* __restrict__ drow, const block_q8_1* x, const int (&off)[NC],
+                                              int t, float (&s)[NC]) {
+    using Q = NibLoad<TG>;
+    const int iqs = 2 * (t & 7), kb = t >> 3;
+    const block_q8_1* xb[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) { s[c] = 0.0f; xb[c] = x + off[c] + kb * 8; }
+#pragma unroll
+    for (int i = 0; i < 3; ++i) {
+        const typename Q::W w = Q::load(crow[t + 32 * i], srow[t + 32 * i], drow[kb + 4 * i]);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s[c] += Split<TG>::apply(w, xb[c] + 32 * i, iqs);
+    }
+    float s16[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s16[c] = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const typename Q::W w = Q::load(crow[t + 16 + 32 * i], srow[t + 16 + 32 * i], drow[kb + 2 + 4 * i]);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s16[c] += Split<TG>::apply(w, xb[c] + 16 + 32 * i, iqs);
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        s[c] = __fadd_rn(s[c], s16[c]);
+#pragma unroll
+        for (int o = 8; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+    }
+}
+
+// One pass of the S skeleton: the n (1..GRP_NC) entries from e staged, then this thread's row against them.
+// Block-uniform (e, n): every thread reaches both barriers.
+template<int TG>
+__device__ __forceinline__ void nib_pass_s(block_q8_1* s_x, const uint4* crow, const uint8_t* srow, const __half* drow,
+                                           const int32_t* __restrict__ ent_tok, const block_q8_1* __restrict__ xq,
+                                           int e, int n, int t, float* dst, int r) {
+    int tok[GRP_NC];
+#pragma unroll
+    for (int c = 0; c < GRP_NC; ++c) tok[c] = ent_tok[e + min(c, n - 1)];
+    __syncthreads();
+    for (int i = threadIdx.x; i < n * 80 * 9; i += 256) {   // 80 blocks x 36 B an entry, as 9 words a block
+        const int c = i / 720, rem = i % 720;
+        ((int*) s_x)[c * 720 + rem] = ((const int*) (xq + (size_t) tok[c] * 80))[rem];
+    }
+    __syncthreads();
+    if (n == 1) {
+        const int o[1] = { 0 }; float s[1];
+        nib_row_dot_s<TG, 1>(crow, srow, drow, s_x, o, t, s);
+        if (t == 0) dst[(size_t) e * nibk::kNFf + r] = s[0];
+    } else if (n == 2) {
+        const int o[2] = { 0, 80 }; float s[2];
+        nib_row_dot_s<TG, 2>(crow, srow, drow, s_x, o, t, s);
+        if (t < 2) dst[(size_t) (e + t) * nibk::kNFf + r] = s[t];
+    } else if (n == 3) {
+        const int o[3] = { 0, 80, 160 }; float s[3];
+        nib_row_dot_s<TG, 3>(crow, srow, drow, s_x, o, t, s);
+        if (t < 3) dst[(size_t) (e + t) * nibk::kNFf + r] = s[t];
+    } else {
+        const int o[4] = { 0, 80, 160, 240 }; float s[4];
+        nib_row_dot_s<TG, 4>(crow, srow, drow, s_x, o, t, s);
+        if (t < 4) dst[(size_t) (e + t) * nibk::kNFf + r] = s[t];
+    }
+}
+
+// P skeleton: x as two LDS.128 per item and entry, ds as the float __low2float gives
+struct NibXQ { int4 a, b; };
+
+template<int TG>
+__device__ __forceinline__ float nib_p_apply(const uint4& q, uint32_t sc, __half dh, const NibXQ& x, float dx, int xsum) {
+    if constexpr (TG == 22) {   // SplitLs2::apply on the registers
+        const typename NibLoad<22>::W w = NibLoad<22>::load(q, sc, dh);
+        int sumi0 = 0, sumi1 = 0;
+        sumi0 = ggml_cuda_dp4a(w.g[0], x.a.x, sumi0); sumi0 = ggml_cuda_dp4a(w.g[1], x.a.y, sumi0);
+        sumi0 = ggml_cuda_dp4a(w.g[2], x.a.z, sumi0); sumi0 = ggml_cuda_dp4a(w.g[3], x.a.w, sumi0);
+        sumi1 = ggml_cuda_dp4a(w.g[4], x.b.x, sumi1); sumi1 = ggml_cuda_dp4a(w.g[5], x.b.y, sumi1);
+        sumi1 = ggml_cuda_dp4a(w.g[6], x.b.z, sumi1); sumi1 = ggml_cuda_dp4a(w.g[7], x.b.w, sumi1);
+        const int sumi = (sumi0 * w.ls0 + sumi1 * w.ls1 + (sumi0 + sumi1) / 2) / 4;
+        const float d = w.dw * dx;
+        return d * sumi;
+    } else if constexpr (TG == 18) {   // Split<18>::apply on the registers
+        const typename NibLoad<18>::W w = NibLoad<18>::load(q, sc, dh);
+        int sumi = 0;
+        sumi = ggml_cuda_dp4a(w.g[0], x.a.x, sumi); sumi = ggml_cuda_dp4a(w.g[1], x.a.y, sumi);
+        sumi = ggml_cuda_dp4a(w.g[2], x.a.z, sumi); sumi = ggml_cuda_dp4a(w.g[3], x.a.w, sumi);
+        sumi = ggml_cuda_dp4a(w.g[4], x.b.x, sumi); sumi = ggml_cuda_dp4a(w.g[5], x.b.y, sumi);
+        sumi = ggml_cuda_dp4a(w.g[6], x.b.z, sumi); sumi = ggml_cuda_dp4a(w.g[7], x.b.w, sumi);
+        sumi = (w.ls * sumi + sumi / 2) / 2;
+        const float d = w.dw * dx;
+        return d * sumi;
+    } else {   // IQ3_S, offset form: dot(v, x) = 2 dot(u, x) - 15 sum(x), exact (|2 dot(u, x)| < 2^17); then Split<21>'s
+        int u[8];
+        const uint32_t qw[4] = { q.x, q.y, q.z, q.w };
+#pragma unroll
+        for (int m = 0; m < 4; ++m) {
+            u[2 * m + 0] = (int) (qw[m] & 0x0F0F0F0Fu);
+            u[2 * m + 1] = (int) ((qw[m] >> 4) & 0x0F0F0F0Fu);
+        }
+        int sumu = 0;
+        sumu = ggml_cuda_dp4a(u[0], x.a.x, sumu); sumu = ggml_cuda_dp4a(u[1], x.a.y, sumu);
+        sumu = ggml_cuda_dp4a(u[2], x.a.z, sumu); sumu = ggml_cuda_dp4a(u[3], x.a.w, sumu);
+        sumu = ggml_cuda_dp4a(u[4], x.b.x, sumu); sumu = ggml_cuda_dp4a(u[5], x.b.y, sumu);
+        sumu = ggml_cuda_dp4a(u[6], x.b.z, sumu); sumu = ggml_cuda_dp4a(u[7], x.b.w, sumu);
+        int sumi = 2 * sumu - 15 * xsum;
+        sumi *= (int) sc;
+        const float d = __half2float(dh) * dx;
+        return d * sumi;
+    }
+}
+
+// the lane's items in the production order: k = t, t+32, t+64 (sum s), then t+16, t+48 (sum s16)
+template<int TG, int NC>
+__device__ __forceinline__ void nib_row_dot_p(const uint4 (&q)[5], const uint32_t (&sc)[5], const __half (&dh)[5],
+                                              const NibXQ* __restrict__ sx, const float* __restrict__ sd,
+                                              const int* __restrict__ sxs, int t, float (&s)[NC]) {
+    constexpr int K[5] = { 0, 32, 64, 16, 48 };
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s[c] = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 3; ++i) {
+        const int k = t + K[i];
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            s[c] += nib_p_apply<TG>(q[i], sc[i], dh[i], sx[c * 80 + k], sd[c * 80 + k], TG == 21 ? sxs[c * 80 + k] : 0);
+    }
+    float s16[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s16[c] = 0.0f;
+#pragma unroll
+    for (int i = 3; i < 5; ++i) {
+        const int k = t + K[i];
+#pragma unroll
+        for (int c = 0; c < NC; ++c)
+            s16[c] += nib_p_apply<TG>(q[i], sc[i], dh[i], sx[c * 80 + k], sd[c * 80 + k], TG == 21 ? sxs[c * 80 + k] : 0);
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        s[c] = __fadd_rn(s[c], s16[c]);
+#pragma unroll
+        for (int o = 8; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+    }
+}
+
+// The P skeleton's work on one group: this lane's five items into registers, then the passes.  Block-uniform.
+template<int TG>
+__device__ __forceinline__ void nib_group_p(NibXQ* s_x, float* s_d, int* s_xs, const uint4* crow, const uint8_t* srow,
+                                            const __half* drow, const int32_t* __restrict__ ent_tok,
+                                            const block_q8_1* __restrict__ xq, int e0, int e1, int t, float* dst, int r) {
+    const int kb = t >> 3;
+    uint4 q[5]; uint32_t sc[5]; __half dh[5];
+    q[0] = crow[t]; q[1] = crow[t + 32]; q[2] = crow[t + 64]; q[3] = crow[t + 16]; q[4] = crow[t + 48];
+    sc[0] = srow[t]; sc[1] = srow[t + 32]; sc[2] = srow[t + 64]; sc[3] = srow[t + 16]; sc[4] = srow[t + 48];
+    dh[0] = drow[kb]; dh[1] = drow[kb + 4]; dh[2] = drow[kb + 8]; dh[3] = drow[kb + 2]; dh[4] = drow[kb + 6];
+    for (int e = e0; e < e1; e += GRP_NC) {
+        const int n = min(GRP_NC, e1 - e);
+        __syncthreads();
+        for (int i = threadIdx.x; i < n * 80; i += 256) {
+            const int c = i >= 240 ? 3 : i >= 160 ? 2 : i >= 80 ? 1 : 0, kk = i - 80 * c;
+            const int tok = ent_tok[e + c];
+            const int* src = (const int*) (xq + (size_t) tok * 80 + kk);
+            NibXQ v;
+            v.a = make_int4(src[1], src[2], src[3], src[4]);
+            v.b = make_int4(src[5], src[6], src[7], src[8]);
+            s_x[i] = v;
+            s_d[i] = __low2float(xq[(size_t) tok * 80 + kk].ds);
+            if constexpr (TG == 21) {   // sum(x): the production dp4a against 0x01010101 over the 8 qs words
+                int xs = 0;
+                xs = ggml_cuda_dp4a(v.a.x, 0x01010101, xs); xs = ggml_cuda_dp4a(v.a.y, 0x01010101, xs);
+                xs = ggml_cuda_dp4a(v.a.z, 0x01010101, xs); xs = ggml_cuda_dp4a(v.a.w, 0x01010101, xs);
+                xs = ggml_cuda_dp4a(v.b.x, 0x01010101, xs); xs = ggml_cuda_dp4a(v.b.y, 0x01010101, xs);
+                xs = ggml_cuda_dp4a(v.b.z, 0x01010101, xs); xs = ggml_cuda_dp4a(v.b.w, 0x01010101, xs);
+                s_xs[i] = xs;
+            }
+        }
+        __syncthreads();
+        if (n == 1) {
+            float s[1]; nib_row_dot_p<TG, 1>(q, sc, dh, s_x, s_d, s_xs, t, s);
+            if (t == 0) dst[(size_t) e * nibk::kNFf + r] = s[0];
+        } else if (n == 2) {
+            float s[2]; nib_row_dot_p<TG, 2>(q, sc, dh, s_x, s_d, s_xs, t, s);
+            if (t < 2) dst[(size_t) (e + t) * nibk::kNFf + r] = s[t];
+        } else if (n == 3) {
+            float s[3]; nib_row_dot_p<TG, 3>(q, sc, dh, s_x, s_d, s_xs, t, s);
+            if (t < 3) dst[(size_t) (e + t) * nibk::kNFf + r] = s[t];
+        } else {
+            float s[4]; nib_row_dot_p<TG, 4>(q, sc, dh, s_x, s_d, s_xs, t, s);
+            if (t < 4) dst[(size_t) (e + t) * nibk::kNFf + r] = s[t];
+        }
+    }
+}
+
+// SKEL kSkelS or kSkelP for every group.  grid (80, gy): 2 x 640 rows = 80 x 16, so every thread has a row and
+// reaches every barrier.
+constexpr int kNibSWords = GRP_NC * 80 * (int) (sizeof(block_q8_1) / 4);   // S: the blocks
+constexpr int kNibXqWords = GRP_NC * 80 * (int) (sizeof(NibXQ) / 4);         // P: the qs rows, then ds, then sum(x)
+template<int TG, int SKEL>
+inline constexpr int kNibSmemWords = SKEL == nibk::kSkelS ? kNibSWords : kNibXqWords + GRP_NC * 80 + (TG == 21 ? GRP_NC * 80 : 0);
+template<int TG, int SKEL>
+__global__ void __launch_bounds__(256) nib_gu_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                                     const int32_t* __restrict__ grp_start,
+                                                     const int32_t* __restrict__ n_groups,
+                                                     const int32_t* __restrict__ ent_tok,
+                                                     const block_q8_1* __restrict__ xq, float* __restrict__ gate,
+                                                     float* __restrict__ up) {
+    const int ng = *n_groups;
+    if (blockIdx.y >= (unsigned) ng) return;
+    STRATA_SHARED_ALIGN16_U32(s_buf, kNibSmemWords<TG, SKEL>);
+    const int subwarp = threadIdx.x >> 4, t = threadIdx.x & 15;
+    const int row = blockIdx.x * 16 + subwarp;   // 0 .. 2 n_ff
+    const bool is_up = row >= nibk::kNFf;
+    const int r = is_up ? row - (int) nibk::kNFf : row;
+    float* dst = is_up ? up : gate;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* slot = (const uint8_t*) grp_ptr[g];
+        const uint4* crow = (const uint4*) (slot + nibk::kCodesOff) + (size_t) row * nibk::kItems;
+        const uint8_t* srow = slot + nibk::kScOff + (size_t) row * nibk::kItems;
+        const __half* drow = (const __half*) (slot + nibk::kDOff) + (size_t) row * nibk::kSuper;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        if constexpr (SKEL == nibk::kSkelP) {
+            nib_group_p<TG>((NibXQ*) s_buf, (float*) (s_buf + kNibXqWords), (int*) (s_buf + kNibXqWords + GRP_NC * 80),
+                            crow, srow, drow, ent_tok, xq, e0, e1, t, dst, r);
+        } else {
+            for (int e = e0; e < e1; e += GRP_NC)
+                nib_pass_s<TG>((block_q8_1*) s_buf, crow, srow, drow, ent_tok, xq, e, min(GRP_NC, e1 - e), t, dst, r);
+        }
+    }
+}
+
+int g_nib_variant = -1;   // native_expert_nib_set_variant (the bench / parity); -1 = expert_nibble.hpp's gu_skeleton
+
+// The gate/up of a converted layer's VRAM groups: native_gu_multi_kernel's grid and outputs.
+void launch_gu_nib(const NativeExpertLayout& L, dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr,
+                   const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_tok, const block_q8_1* X,
+                   float* gate, float* up) {
+    const int skel = g_nib_variant >= 0 ? (g_nib_variant == 1 ? nibk::kSkelP : nibk::kSkelS) : nibk::gu_skeleton(L.gu_type);
+#define STRATA_NIB_GU(TG, S) \
+    case TG * 2 + S: nib_gu_kernel<TG, S><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, gate, up); break;
+    switch (L.gu_type * 2 + skel) {
+        STRATA_NIB_GU(22, 0) STRATA_NIB_GU(22, 1)
+        STRATA_NIB_GU(18, 0) STRATA_NIB_GU(18, 1)
+        STRATA_NIB_GU(21, 0) STRATA_NIB_GU(21, 1)
+        default:
+            std::fprintf(stderr, "native_expert_grouped: 4-bit gate/up type %d at %lld x %lld is not built\n", L.gu_type,
+                         (long long) L.n_embd, (long long) L.n_ff);
+            std::exit(1);
+    }
+#undef STRATA_NIB_GU
+}
+
+// ---- the load-time transcoder (expert_nibble.hpp's transcode)
+template<int TG>
+__device__ __forceinline__ uint32_t nib_code(int v, bool& ok) {
+    if constexpr (TG == 21) {   // v odd in -15..15 -> u = (v + 15) / 2
+        if ((v & 1) == 0 || v < -15 || v > 15) { ok = false; return 0; }
+        return (uint32_t) ((v + 15) >> 1);
+    } else if constexpr (TG == 18) {   // index of {4, 12, ..., 52, 62} | sign << 3
+        const int a = v < 0 ? -v : v;
+        const int i = a == 62 ? 7 : ((a & 7) == 4 && a <= 52) ? (a - 4) >> 3 : -1;
+        if (i < 0) { ok = false; return 0; }
+        return (uint32_t) i | (v < 0 ? 8u : 0u);
+    } else {   // IQ2_S: index of {8, 25, 43} | sign << 2
+        const int a = v < 0 ? -v : v;
+        const int i = a == 8 ? 0 : a == 25 ? 1 : a == 43 ? 2 : -1;
+        if (i < 0) { ok = false; return 0; }
+        return (uint32_t) i | (v < 0 ? 4u : 0u);
+    }
+}
+
+// The GGUF blocks (ggml-common.h): their size and the fp16 d at their start
+template<int TG> struct NibBlk;
+template<> struct NibBlk<22> { using B = block_iq2_s; };
+template<> struct NibBlk<18> { using B = block_iq3_xxs; };
+template<> struct NibBlk<21> { using B = block_iq3_s; };
+
+// One thread per (expert, row, item): the production load, the code, scale and d written, read back from memory and
+// decoded with the kernels' own decoders, compared with the load's W (and, for IQ3_S, the P skeleton's u against v);
+// `bad` counts the items that differ or hold a weight outside the code set.
+template<int TG>
+__global__ void __launch_bounds__(256) nib_transcode_kernel(const uint8_t* __restrict__ src, uint64_t raw_bytes,
+                                                            uint64_t gu_row, uint64_t up_off,
+                                                            const unsigned long long* __restrict__ slots, long long n,
+                                                            unsigned long long* __restrict__ bad) {
+    const long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n * nibk::kRows * nibk::kItems) return;
+    const int k = (int) (i % nibk::kItems);
+    const int row = (int) ((i / nibk::kItems) % nibk::kRows);
+    const long long ex = i / (nibk::kItems * nibk::kRows);
+    const bool is_up = row >= nibk::kNFf;
+    const int r = is_up ? row - (int) nibk::kNFf : row;
+    const uint8_t* wr = src + (size_t) ex * raw_bytes + (is_up ? up_off : 0) + (size_t) r * gu_row;
+    const int kbx = k / Fmt<TG>::ipb, iqs = Fmt<TG>::step * (k % Fmt<TG>::ipb);
+    using S = Split<TG>;
+    const typename S::W w = S::template load<false>(wr, kbx, iqs, nullptr);
+    bool ok = true;
+    uint32_t words[4];
+#pragma unroll
+    for (int m = 0; m < 4; ++m) {
+        const uint32_t g0 = (uint32_t) w.g[2 * m], g1 = (uint32_t) w.g[2 * m + 1];
+        uint32_t word = 0;
+#pragma unroll
+        for (int b = 0; b < 4; ++b) {
+            const uint32_t c0 = nib_code<TG>((int) (int8_t) (g0 >> (8 * b)), ok);
+            const uint32_t c1 = nib_code<TG>((int) (int8_t) (g1 >> (8 * b)), ok);
+            if constexpr (TG == 21) word |= (c0 | c1 << 4) << (8 * b);
+            else word |= c0 << (4 * b) | c1 << (16 + 4 * b);
+        }
+        words[m] = word;
+    }
+    uint32_t sc;
+    if constexpr (TG == 22) sc = (uint32_t) (w.ls0 | w.ls1 << 4);
+    else sc = (uint32_t) w.ls;
+    ok = ok && sc < 256u;
+    uint8_t* slot = (uint8_t*) slots[ex];
+    uint4* cp = (uint4*) (slot + nibk::code_off(row, k));
+    uint8_t* sp = slot + nibk::scale_off(row, k);
+    *cp = make_uint4(words[0], words[1], words[2], words[3]);
+    *sp = (uint8_t) sc;
+    const __half dsrc = ((const typename NibBlk<TG>::B*) wr + kbx)->d;   // the block's d, bit for bit
+    __half dread = dsrc;
+    if (k % Fmt<TG>::ipb == 0) {   // the superblock's first item writes its d
+        __half* dp = (__half*) (slot + nibk::d_off(row, kbx));
+        *dp = dsrc;
+        dread = __ushort_as_half(*(volatile const unsigned short*) dp);
+        ok = ok && __half_as_ushort(dread) == __half_as_ushort(dsrc);
+    }
+    // the code and the scale read back from memory and decoded as the kernels do
+    const uint4 qb = __ldcv(cp);
+    const uint32_t sb = *(volatile const uint8_t*) sp;
+    const typename NibLoad<TG>::W v = NibLoad<TG>::load(qb, sb, dread);
+#pragma unroll
+    for (int j = 0; j < 8; ++j) ok = ok && v.g[j] == w.g[j];
+    if constexpr (TG == 22) ok = ok && v.ls0 == w.ls0 && v.ls1 == w.ls1;
+    else ok = ok && v.ls == w.ls;
+    ok = ok && __float_as_uint(v.dw) == __float_as_uint(w.dw);
+    if constexpr (TG == 21) {   // the P skeleton's u: 2u - 15 per byte is v
+        const uint32_t qw[4] = { qb.x, qb.y, qb.z, qb.w };
+#pragma unroll
+        for (int m = 0; m < 4; ++m) {
+            const uint32_t u0 = qw[m] & 0x0F0F0F0Fu, u1 = (qw[m] >> 4) & 0x0F0F0F0Fu;
+            ok = ok && __vsub4(__vadd4(u0, u0), 0x0F0F0F0Fu) == (uint32_t) w.g[2 * m] &&
+                 __vsub4(__vadd4(u1, u1), 0x0F0F0F0Fu) == (uint32_t) w.g[2 * m + 1];
+        }
+    }
+    if (!ok) atomicAdd(bad, 1ull);
+}
+
+// ---- the GGUF rebuild (expert_nibble.hpp's check_gguf and gather_gguf)
+// The reverse codebooks: a group's magnitude pattern -> its grid index (0xFFFFFFFF: not in the grid).  32-bit
+// entries for atomicCAS, which also counts a pattern two grid entries share (none in ggml's grids; then refused).
+constexpr int kNibRev22 = 6561, kNibRev18 = 4096, kNibRev21 = 4096;   // 3^8 (IQ2_S: 8 weights), 8^4, 8^4 (4 weights)
+__device__ uint32_t g_nib_rev22[kNibRev22];
+__device__ uint32_t g_nib_rev18[kNibRev18];
+__device__ uint32_t g_nib_rev21[kNibRev21];
+__device__ unsigned long long g_nib_rev_bad;
+
+__device__ __forceinline__ int nib_mag22(uint32_t b) { return b == 8 ? 0 : b == 25 ? 1 : b == 43 ? 2 : -1; }
+__device__ __forceinline__ int nib_mag18(uint32_t b) { return b == 62 ? 7 : ((b & 7) == 4 && b <= 52) ? (int) (b - 4) >> 3 : -1; }
+__device__ __forceinline__ int nib_mag21(uint32_t b) { return (b & 1) && b <= 15 ? (int) (b - 1) >> 1 : -1; }
+
+__global__ void nib_rev_clear_kernel() {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < kNibRev22) g_nib_rev22[i] = 0xFFFFFFFFu;
+    if (i < kNibRev18) g_nib_rev18[i] = 0xFFFFFFFFu;
+    if (i < kNibRev21) g_nib_rev21[i] = 0xFFFFFFFFu;
+    if (i == 0) g_nib_rev_bad = 0;
+}
+__global__ void nib_rev_fill_kernel() {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t* tab = nullptr;
+    int key = 0;
+    bool ok = true;
+    uint32_t idx = 0;
+    if (i < 1024) {   // iq2s_grid: 8 bytes of {8, 25, 43}
+        const uint64_t g = iq2s_grid[i];
+        for (int j = 7; j >= 0; --j) { const int m = nib_mag22((uint32_t) (g >> (8 * j)) & 0xFF); ok = ok && m >= 0; key = key * 3 + (m < 0 ? 0 : m); }
+        tab = g_nib_rev22; idx = (uint32_t) i;
+    } else if (i < 1024 + 256) {   // iq3xxs_grid: 4 bytes of {4, ..., 62}
+        const uint32_t g = iq3xxs_grid[i - 1024];
+        for (int j = 3; j >= 0; --j) { const int m = nib_mag18((g >> (8 * j)) & 0xFF); ok = ok && m >= 0; key = key * 8 + (m < 0 ? 0 : m); }
+        tab = g_nib_rev18; idx = (uint32_t) (i - 1024);
+    } else if (i < 1024 + 256 + 512) {   // iq3s_grid: 4 bytes of {1, 3, ..., 15}
+        const uint32_t g = iq3s_grid[i - 1280];
+        for (int j = 3; j >= 0; --j) { const int m = nib_mag21((g >> (8 * j)) & 0xFF); ok = ok && m >= 0; key = key * 8 + (m < 0 ? 0 : m); }
+        tab = g_nib_rev21; idx = (uint32_t) (i - 1280);
+    } else {
+        return;
+    }
+    if (!ok || atomicCAS(tab + key, 0xFFFFFFFFu, idx) != 0xFFFFFFFFu) atomicAdd(&g_nib_rev_bad, 1ull);
+}
+
+// The bytes of GGUF block `s` of row `row`'s item `ib` (0..7) rebuilt from the slot into `blk` (shared memory, the
+// block's first byte): the codes give each weight's magnitude index and sign, the reverse codebook the grid index,
+// the scale byte and d are the block's own.  Disjoint bytes per item (IQ3_S: the even item writes the shared scale
+// byte); item 0 writes d.
+template<int TG>
+__device__ __forceinline__ void nib_gguf_item(uint8_t* blk, int ib, const uint8_t* __restrict__ slot, int row, int k) {
+    const uint4 q4 = *(const uint4*) (slot + nibk::code_off(row, k));
+    const uint32_t w[4] = { q4.x, q4.y, q4.z, q4.w };
+    const uint32_t sc = slot[nibk::scale_off(row, k)];
+    if (ib == 0) {
+        const uint8_t* dp = slot + nibk::d_off(row, k / 8);
+        blk[0] = dp[0];
+        blk[1] = dp[1];
+    }
+    if constexpr (TG == 22) {   // block_iq2_s: d, qs[32] grid low bits, qs[32] signs, qh[8], scales[8]
+        uint32_t qh = 0;
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            int key = 0;
+            uint32_t sg = 0;
+#pragma unroll
+            for (int j = 7; j >= 0; --j) {
+                const uint32_t c = j < 4 ? (w[l] >> (4 * j)) & 15u : (w[l] >> (16 + 4 * (j - 4))) & 15u;
+                key = key * 3 + (int) (c & 3u);
+                sg |= ((c >> 2) & 1u) << j;
+            }
+            const uint32_t idx = key < kNibRev22 ? g_nib_rev22[key] : 0xFFFFFFFFu;
+            blk[2 + 4 * ib + l] = (uint8_t) idx;
+            blk[2 + 32 + 4 * ib + l] = (uint8_t) sg;
+            qh |= ((idx >> 8) & 3u) << (2 * l);
+        }
+        blk[66 + ib] = (uint8_t) qh;
+        blk[74 + ib] = (uint8_t) sc;
+    } else if constexpr (TG == 18) {   // block_iq3_xxs: d, qs[64] grid indices, 8 x aux32 (4 x 7 sign bits | scale << 28)
+        uint32_t aux = sc << 28;
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            uint32_t sg = 0;
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                int key = 0;
+#pragma unroll
+                for (int j = 3; j >= 0; --j) {
+                    const uint32_t c = (w[l] >> (16 * h + 4 * j)) & 15u;
+                    key = key * 8 + (int) (c & 7u);
+                    sg |= ((c >> 3) & 1u) << (4 * h + j);
+                }
+                blk[2 + 8 * ib + 2 * l + h] = (uint8_t) g_nib_rev18[key];
+            }
+            aux |= (sg & 0x7Fu) << (7 * l);   // the 8th sign is the parity of the other 7 (ksigns_iq2xs)
+        }
+        blk[2 + 64 + 4 * ib + 0] = (uint8_t) aux;
+        blk[2 + 64 + 4 * ib + 1] = (uint8_t) (aux >> 8);
+        blk[2 + 64 + 4 * ib + 2] = (uint8_t) (aux >> 16);
+        blk[2 + 64 + 4 * ib + 3] = (uint8_t) (aux >> 24);
+    } else {   // block_iq3_s: d, qs[64] grid low bits, qh[8], signs[32], scales[4] (two items' nibbles each)
+        uint32_t qh = 0;
+#pragma unroll
+        for (int l = 0; l < 4; ++l) {
+            uint32_t sg = 0;
+#pragma unroll
+            for (int h = 0; h < 2; ++h) {
+                int key = 0;
+#pragma unroll
+                for (int j = 3; j >= 0; --j) {
+                    const uint32_t u = (w[l] >> (8 * j + 4 * h)) & 15u;   // v = 2u - 15: negative for u <= 7
+                    key = key * 8 + (int) (u <= 7u ? 7u - u : u - 8u);
+                    sg |= (u <= 7u ? 1u : 0u) << (4 * h + j);
+                }
+                const uint32_t idx = g_nib_rev21[key];
+                blk[2 + 8 * ib + 2 * l + h] = (uint8_t) idx;
+                qh |= ((idx >> 8) & 1u) << (2 * l + h);
+            }
+            blk[74 + 4 * ib + l] = (uint8_t) sg;
+        }
+        blk[66 + ib] = (uint8_t) qh;
+        if ((ib & 1) == 0) {
+            const uint32_t sc1 = slot[nibk::scale_off(row, k + 1)];
+            blk[106 + ib / 2] = (uint8_t) (((sc - 1u) >> 1) | (((sc1 - 1u) >> 1) << 4));
+        }
+    }
+}
+
+constexpr int kNibGgufRows = 8;        // gate/up rows a block rebuilds (in shared memory, then one coalesced pass)
+constexpr int kNibGgufThreads = 128;
+constexpr int kNibGgufWords = 8;       // uint4 per thread in the down / tail part
+struct NibGgufArgs {
+    const unsigned long long* dev;     // the slots' device addresses (check), or nullptr: `p`
+    const uint8_t* p[16];              // the slots (gather: an MMQ group, at most mmq::kGatherGroupMax)
+    int first, n;
+    uint8_t* gu;                       // gather: the rebuilt [gate | up]; check: the raw blobs' first byte
+    uint64_t gu_stride;
+    uint8_t* d;                        // gather: the down rows; check: the raw blobs' down rows
+    uint64_t d_stride;
+    uint64_t gu_row, down16, zero16;   // GGUF row bytes; down rows and MMQ tail in uint4
+    unsigned long long* bad;           // check: 32-bit words / uint4 that differ
+};
+// blockIdx.y: expert first + y.  blockIdx.x < kRows / kNibGgufRows: rows [8x, 8x + 8) rebuilt into shared memory,
+// then written (gather) or compared (check) as 32-bit words; the rest: the down rows as uint4, and (gather, the last
+// expert) the zeroed tails after gate/up and down.
+template<int TG, bool CHECK>
+__global__ void __launch_bounds__(kNibGgufThreads) nib_gguf_kernel(NibGgufArgs a) {
+    constexpr int BB = (int) sizeof(typename NibBlk<TG>::B);
+    __shared__ uint32_t s_rows[kNibGgufRows * 1100 / 4];
+    const int q = a.first + (int) blockIdx.y;
+    const uint8_t* slot = a.dev != nullptr ? (const uint8_t*) a.dev[q] : a.p[q];
+    constexpr int kRowBlocks = (int) (nibk::kRows / kNibGgufRows);
+    unsigned long long nbad = 0;
+    if ((int) blockIdx.x < kRowBlocks) {
+        const int r0 = (int) blockIdx.x * kNibGgufRows;
+        uint8_t* sb = (uint8_t*) s_rows;
+        for (int u = threadIdx.x; u < kNibGgufRows * (int) nibk::kItems; u += kNibGgufThreads) {
+            const int rr = u / (int) nibk::kItems, k = u % (int) nibk::kItems;
+            nib_gguf_item<TG>(sb + (size_t) rr * a.gu_row + (size_t) (k >> 3) * BB, k & 7, slot, r0 + rr, k);
+        }
+        __syncthreads();
+        const int nw = (int) (kNibGgufRows * a.gu_row / 4);
+        uint32_t* dst = (uint32_t*) (a.gu + (size_t) q * a.gu_stride + (size_t) r0 * a.gu_row);
+        for (int i = threadIdx.x; i < nw; i += kNibGgufThreads) {
+            if constexpr (CHECK) nbad += dst[i] != s_rows[i];
+            else dst[i] = s_rows[i];
+        }
+    } else {
+        const uint4* src = (const uint4*) (slot + nibk::kDownOff);
+        uint4* dd = (uint4*) (a.d + (size_t) q * a.d_stride);
+        const int64_t base = ((int64_t) blockIdx.x - kRowBlocks) * (kNibGgufThreads * kNibGgufWords);
+#pragma unroll
+        for (int w = 0; w < kNibGgufWords; ++w) {
+            const int64_t i = base + (int64_t) w * kNibGgufThreads + threadIdx.x;
+            if (i < (int64_t) a.down16) {
+                if constexpr (CHECK) {
+                    const uint4 x = src[i], y = dd[i];
+                    nbad += x.x != y.x || x.y != y.y || x.z != y.z || x.w != y.w;
+                } else {
+                    dd[i] = src[i];
+                }
+            } else if (!CHECK && q == a.n - 1 && i < (int64_t) (a.down16 + 2 * a.zero16)) {
+                const int64_t z = i - (int64_t) a.down16;
+                if (z < (int64_t) a.zero16) ((uint4*) (a.gu + (size_t) a.n * a.gu_stride))[z] = make_uint4(0, 0, 0, 0);
+                else ((uint4*) (a.d + (size_t) a.n * a.d_stride))[z - (int64_t) a.zero16] = make_uint4(0, 0, 0, 0);
+            }
+        }
+    }
+    if constexpr (CHECK) {
+        if (nbad) atomicAdd(a.bad, nbad);
+    }
+}
+
+// sum_i (w_i ^ i) * kHashMul mod 2^64 over the first `bytes` bytes of each slot (little-endian words, the last one
+// zero-extended): expert_nibble.hpp's hash_host.  A sum, so the blocks' order of adding does not change it.
+__global__ void __launch_bounds__(256) nib_hash_kernel(const unsigned long long* __restrict__ slots, uint64_t bytes,
+                                                       unsigned long long* __restrict__ out) {
+    const uint8_t* p = (const uint8_t*) slots[blockIdx.y];
+    const uint64_t n16 = bytes / 16, nw = (bytes + 3) / 4;
+    uint64_t h = 0;
+    for (uint64_t q = (uint64_t) blockIdx.x * blockDim.x + threadIdx.x; q < n16; q += (uint64_t) gridDim.x * blockDim.x) {
+        const uint4 v = ((const uint4*) p)[q];
+        const uint32_t i = (uint32_t) (4 * q);
+        h += (uint64_t) (v.x ^ i) * nibk::kHashMul + (uint64_t) (v.y ^ (i + 1)) * nibk::kHashMul +
+             (uint64_t) (v.z ^ (i + 2)) * nibk::kHashMul + (uint64_t) (v.w ^ (i + 3)) * nibk::kHashMul;
+    }
+    if (blockIdx.x == 0)
+        for (uint64_t i = 4 * n16 + threadIdx.x; i < nw; i += blockDim.x) {
+            uint32_t w = 0;
+            for (uint64_t b = 4 * i; b < 4 * i + 4 && b < bytes; ++b) w |= (uint32_t) p[b] << (8 * (b - 4 * i));
+            h += (uint64_t) (w ^ (uint32_t) i) * nibk::kHashMul;
+        }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) h += __shfl_xor_sync(0xffffffffu, h, o);
+    __shared__ uint64_t s_h[8];
+    if ((threadIdx.x & 31) == 0) s_h[threadIdx.x >> 5] = h;
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        uint64_t t = 0;
+        for (int w = 0; w < (int) (blockDim.x >> 5); ++w) t += s_h[w];
+        atomicAdd(out + blockIdx.y, (unsigned long long) t);
+    }
+}
+#endif  // STRATA_EXPERT_NIBBLE_BUILT
+
+// STRATA_EXPERT_NIBBLE: whether a layout's gate/up is a converted slot's 4-bit codes (constant false in a build
+// without the kernels, so its dispatch below is today's code)
+constexpr bool nib_layout(const NativeExpertLayout& L) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    return L.gu_nib;
+#else
+    static_cast<void>(L);
+    return false;
+#endif
+}
+
 }  // namespace
 
 void iq_set_old_kernels(bool old) { g_old_kernels = old; }
@@ -4068,6 +4733,36 @@ NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd,
         L.bytes += 16;
     }
     return L;
+}
+
+NativeExpertLayout native_expert_layout_nib(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) {
+    namespace nb = strata::core::nibble;
+    NativeExpertLayout L = native_expert_layout(gu_type, d_type, n_embd, n_ff);
+    L.gu_nib = true;
+    L.gu_row = (size_t) (nb::kItems * nb::kItemBytes);   // a row's codes (the scales and d follow all the codes)
+    L.up_off = nb::kUpCodesOff;
+    L.down_off = nb::kDownOff;
+    L.bytes = nb::slot_bytes_for((uint64_t) n_embd * L.d_row);
+    return L;
+}
+
+bool native_expert_nib_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    namespace nb = strata::core::nibble;
+    return nb::fmt_built(gu_type) && n_embd == nb::kNEmbd && n_ff == nb::kNFf && d_type != 40 &&
+           native_expert_supported(gu_type, d_type, n_embd, n_ff);
+#else
+    (void) gu_type; (void) d_type; (void) n_embd; (void) n_ff;
+    return false;
+#endif
+}
+
+void native_expert_nib_set_variant(int v) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    g_nib_variant = v;
+#else
+    (void) v;
+#endif
 }
 
 size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
@@ -4778,8 +5473,16 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     float* h = (float*) ((uint8_t*) scratch + 2 * fa);
     block_q8_1* hq = (block_q8_1*) ((uint8_t*) scratch + 3 * fa);
     const auto* X = (const block_q8_1*) x_q8_1;
+#if !STRATA_EXPERT_NIBBLE_BUILT
+    if (L.gu_nib) {   // STRATA_EXPERT_NIBBLE's slots: the switch is refused at start in a build without the kernels
+        std::fprintf(stderr, "native_expert_grouped: 4-bit gate/up slots are not built into this engine\n");
+        std::exit(1);
+    }
+#endif
+    // STRATA_EXPERT_NIBBLE (nib_layout): only the gate/up step below takes another kernel (launch_gu_nib, in place of
+    // launch_gu); SwiGLU, the q8_1 quantization and the down rows (GGUF, at L.down_off) are the layout's own
     static const bool v2 = [] { const char* v = std::getenv("STRATA_EXPERT_V2"); return v && v[0] == '1'; }();
-    if (v2 && L.gu_type == 21 && L.d_type == 20 && L.n_embd == 2560 && L.n_ff == 640) {   // S26: see s26_gu_l_kernel
+    if (v2 && !nib_layout(L) && L.gu_type == 21 && L.d_type == 20 && L.n_embd == 2560 && L.n_ff == 640) {   // S26: see s26_gu_l_kernel
         // S26 STRATA_TSUM=1: the sums as one transposed butterfly per warp (s26_tsum.cuh; bitwise the same values)
         static const bool ts = [] { const char* v = std::getenv("STRATA_TSUM"); return v && v[0] == '1'; }();
         // (+ down rows' items spread evenly over the lanes, one load group: bitwise, harness 1.09-1.12x vs 1.03-1.06x;
@@ -4849,7 +5552,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #endif
 #endif
 #if STRATA_EXP_LAYOUTS
-    const bool fused_gu = em0 == 8 && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
+    const bool fused_gu = !nib_layout(L) && em0 == 8 && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
                           L.n_ff % 32 == 0;
     if (fused_gu && g_exp_phase != 2) {
         const dim3 gl((unsigned) (L.n_ff / 32), (unsigned) cap_groups);
@@ -4871,7 +5574,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     const bool gs_layout = true;
 #endif
-    if (gs_layout && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(expdec_mode() && !g_old_kernels && expdec_gu_ok(L))) {
+    if (gs_layout && !nib_layout(L) && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(expdec_mode() && !g_old_kernels && expdec_gu_ok(L))) {
         switch (L.gu_type) {
 #define STRATA_GS(T) case T: gs_done = launch_gu_swiglu<T>(L, gy, s, grp_ptr, grp_start, n_groups, ent_tok, X, hq); break;
             STRATA_GU_FMTS(STRATA_GS)
@@ -4886,7 +5589,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (g_exp_phase != 2 && !gs_done) {
 #endif
 #if STRATA_EXP_LAYOUTS
-    const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
+    const bool lds_gu = !nib_layout(L) && (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
     if (lds_gu) {
         const dim3 gl((unsigned) ((2 * L.n_ff + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_embd / 32) * sizeof(block_q8_1);
@@ -4907,13 +5610,19 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     // the AMD layouts cover the IQ packs' gate/up types; Unsloth's Q4_K / Q5_K take the CUDA layout below
     const bool amd_gu = L.gu_type == 16 || L.gu_type == 17 || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 ||
                         L.gu_type == 23 || L.gu_type == 29 || L.gu_type == 42;
-    if ((em == 1 || em == 2 || em == 4) && amd_gu) {
+    if ((em == 1 || em == 2 || em == 4) && amd_gu && !nib_layout(L)) {
         switch (L.gu_type) {
             STRATA_GU_AMD(16) STRATA_GU_AMD(17) STRATA_GU_AMD(18) STRATA_GU_AMD(21) STRATA_GU_AMD(22) STRATA_GU_AMD(23)
             STRATA_GU_AMD(29) STRATA_GU_AMD(42)
         }
     } else
 #undef STRATA_GU_AMD
+#endif
+#if STRATA_EXPERT_NIBBLE_BUILT
+    if (nib_layout(L))   // STRATA_EXPERT_NIBBLE: a converted layer's VRAM slots, native_gu_multi_kernel's grid and bits
+        launch_gu_nib(L, dim3((unsigned) (strata::core::nibble::kRows / 16), (unsigned) gy), s, grp_ptr, grp_start,
+                      n_groups, ent_tok, X, gate, up);
+    else
 #endif
     if (!expdec_gu(L, gy, cap_groups, s, grp_ptr, grp_start, n_groups, ent_tok, X, gate, up))   // STRATA_EXPDEC=1
     switch (L.gu_type) {
@@ -4986,6 +5695,164 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 }
 
 }  // namespace strata::kernels
+
+// ---------------------------------------------------------------- STRATA_EXPERT_NIBBLE: expert_nibble.hpp's functions
+namespace strata::core::nibble {
+
+#if STRATA_EXPERT_NIBBLE_BUILT
+namespace {
+int g_rev_ready[64];   // per device: 0 not built, 1 built, 2 a grid entry not unique (refused)
+
+bool rev_ready() {
+    int dev = 0;
+    return cudaGetDevice(&dev) == cudaSuccess && dev >= 0 && dev < 64 && g_rev_ready[dev] == 1;
+}
+}  // namespace
+#endif
+
+int prepare(void* stream) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return (int) cudaErrorInvalidDevice;
+    if (g_rev_ready[dev] == 1) return 0;
+    if (g_rev_ready[dev] == 2) return (int) cudaErrorInvalidValue;
+    cudaStream_t s = (cudaStream_t) stream;
+    strata::kernels::nib_rev_clear_kernel<<<(strata::kernels::kNibRev22 + 255) / 256, 256, 0, s>>>();
+    strata::kernels::nib_rev_fill_kernel<<<(1024 + 256 + 512 + 255) / 256, 256, 0, s>>>();
+    cudaError_t e = cudaGetLastError();
+    unsigned long long bad = 0;
+    if (e == cudaSuccess) e = cudaStreamSynchronize(s);
+    if (e == cudaSuccess) e = cudaMemcpyFromSymbol(&bad, strata::kernels::g_nib_rev_bad, sizeof bad);
+    if (e != cudaSuccess) return (int) e;
+    g_rev_ready[dev] = bad == 0 ? 1 : 2;
+    return bad == 0 ? 0 : (int) cudaErrorInvalidValue;
+#else
+    (void) stream;
+    return 1;   // cudaErrorInvalidValue: not in this build
+#endif
+}
+
+int transcode(const LayerVram& L, const void* staging, int64_t n, const unsigned long long* slot_ptrs,
+              unsigned long long* bad, void* stream) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    if (n <= 0) return 0;
+    if (!L.on || !fmt_built(L.gu_type) || L.raw_gu_row != raw_gu_row(L.gu_type) ||
+        L.raw_up_off != (uint64_t) kNFf * L.raw_gu_row || L.raw_bytes < 2 * L.raw_up_off)
+        return (int) cudaErrorInvalidValue;
+    const long long nthr = (long long) n * kRows * kItems;
+    const dim3 grid((unsigned) ((nthr + 255) / 256));
+    cudaStream_t s = (cudaStream_t) stream;
+    const uint8_t* src = (const uint8_t*) staging;
+#define STRATA_NIB_TC(TG) \
+    strata::kernels::nib_transcode_kernel<TG><<<grid, 256, 0, s>>>(src, L.raw_bytes, L.raw_gu_row, L.raw_up_off, slot_ptrs, n, bad)
+    switch (L.gu_type) {
+        case kIQ2_S: STRATA_NIB_TC(22); break;
+        case kIQ3_XXS: STRATA_NIB_TC(18); break;
+        case kIQ3_S: STRATA_NIB_TC(21); break;
+        default: return (int) cudaErrorInvalidValue;
+    }
+#undef STRATA_NIB_TC
+    return (int) cudaGetLastError();
+#else
+    (void) L; (void) staging; (void) n; (void) slot_ptrs; (void) bad; (void) stream;
+    return 1;   // cudaErrorInvalidValue: not in this build
+#endif
+}
+
+#if STRATA_EXPERT_NIBBLE_BUILT
+namespace {
+int launch_gguf(const LayerVram& L, strata::kernels::NibGgufArgs& a, bool check, cudaStream_t s) {
+    namespace K = strata::kernels;
+    if (!L.on || !fmt_built(L.gu_type) || L.raw_gu_row != raw_gu_row(L.gu_type) || L.down_bytes % 16 != 0 ||
+        L.raw_up_off != (uint64_t) kNFf * L.raw_gu_row || L.raw_down_off != 2 * L.raw_up_off)
+        return (int) cudaErrorInvalidValue;
+    if (!rev_ready()) return (int) cudaErrorNotReady;   // prepare() was not run on this device
+    a.gu_row = L.raw_gu_row;
+    a.down16 = L.down_bytes / 16;
+    const int64_t tail = (int64_t) (a.down16 + 2 * a.zero16);
+    const int64_t per = (int64_t) K::kNibGgufThreads * K::kNibGgufWords;
+    const dim3 grid((unsigned) (kRows / K::kNibGgufRows + (tail + per - 1) / per), (unsigned) (a.n - a.first));
+#define STRATA_NIB_GG(TG) \
+    (check ? K::nib_gguf_kernel<TG, true><<<grid, K::kNibGgufThreads, 0, s>>>(a) \
+           : K::nib_gguf_kernel<TG, false><<<grid, K::kNibGgufThreads, 0, s>>>(a))
+    switch (L.gu_type) {
+        case kIQ2_S: STRATA_NIB_GG(22); break;
+        case kIQ3_XXS: STRATA_NIB_GG(18); break;
+        case kIQ3_S: STRATA_NIB_GG(21); break;
+        default: return (int) cudaErrorInvalidValue;
+    }
+#undef STRATA_NIB_GG
+    return (int) cudaGetLastError();
+}
+}  // namespace
+#endif
+
+int check_gguf(const LayerVram& L, const void* staging, int64_t n, const unsigned long long* slot_ptrs,
+               unsigned long long* bad, void* stream) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    if (n <= 0) return 0;
+    if (n > 65535) return (int) cudaErrorInvalidValue;
+    strata::kernels::NibGgufArgs a{};
+    a.dev = slot_ptrs;
+    a.first = 0;
+    a.n = (int) n;
+    a.gu = (uint8_t*) staging;
+    a.gu_stride = L.raw_bytes;
+    a.d = (uint8_t*) staging + L.raw_down_off;
+    a.d_stride = L.raw_bytes;
+    a.zero16 = 0;
+    a.bad = bad;
+    if (((uintptr_t) staging | L.raw_bytes) % 16 != 0) return (int) cudaErrorInvalidValue;
+    return launch_gguf(L, a, true, (cudaStream_t) stream);
+#else
+    (void) L; (void) staging; (void) n; (void) slot_ptrs; (void) bad; (void) stream;
+    return 1;   // cudaErrorInvalidValue: not in this build
+#endif
+}
+
+int gather_gguf(const LayerVram& L, const uint8_t* const* slots, int first, int n, void* gu_dst, uint64_t gu_stride,
+                void* d_dst, uint64_t d_stride, uint64_t zero_bytes, void* stream) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    if (first < 0 || n <= first || n > 16) return (int) cudaErrorInvalidValue;
+    uintptr_t al = (uintptr_t) gu_dst | (uintptr_t) d_dst | gu_stride | d_stride | zero_bytes;
+    for (int q = first; q < n; ++q) al |= (uintptr_t) slots[q];
+    if (al % 16 != 0 || gu_stride < (uint64_t) kRows * L.raw_gu_row || d_stride < L.down_bytes) return (int) cudaErrorInvalidValue;
+    strata::kernels::NibGgufArgs a{};
+    a.dev = nullptr;
+    for (int q = first; q < n; ++q) a.p[q] = slots[q];
+    a.first = first;
+    a.n = n;
+    a.gu = (uint8_t*) gu_dst;
+    a.gu_stride = gu_stride;
+    a.d = (uint8_t*) d_dst;
+    a.d_stride = d_stride;
+    a.zero16 = zero_bytes / 16;
+    a.bad = nullptr;
+    return launch_gguf(L, a, false, (cudaStream_t) stream);
+#else
+    (void) L; (void) slots; (void) first; (void) n; (void) gu_dst; (void) gu_stride; (void) d_dst; (void) d_stride;
+    (void) zero_bytes; (void) stream;
+    return 1;   // cudaErrorInvalidValue: not in this build
+#endif
+}
+
+int hash_slots(const LayerVram& L, const unsigned long long* slot_ptrs, int64_t n, unsigned long long* out, void* stream) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    if (n <= 0) return 0;
+    if (L.hashed == 0) return (int) cudaErrorInvalidValue;
+    cudaStream_t s = (cudaStream_t) stream;
+    const cudaError_t e = cudaMemsetAsync(out, 0, (size_t) n * sizeof(unsigned long long), s);
+    if (e != cudaSuccess) return (int) e;
+    // ~2.7 MB a slot: 32 blocks of 256 threads each, ~21 16-byte loads a thread
+    strata::kernels::nib_hash_kernel<<<dim3(32, (unsigned) n), 256, 0, s>>>(slot_ptrs, L.hashed, out);
+    return (int) cudaGetLastError();
+#else
+    (void) L; (void) slot_ptrs; (void) n; (void) out; (void) stream;
+    return 1;   // cudaErrorInvalidValue: not in this build
+#endif
+}
+
+}  // namespace strata::core::nibble
 
 // ---- Volta prompt experts (STRATA_PF_WMMA): a group's experts as one launch of FP16 tensor-core tiles, the weights
 // dequantized into shared memory by dq_dispatch (the FP16 path's own formulas), the activations FP16, FP32 sums.
