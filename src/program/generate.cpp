@@ -12471,7 +12471,8 @@ int main(int argc, char** argv) {
                     const bool idle_source = !sl.active && sl.cached;
                     // (an active slot only where the drafter's rows come along or are not drafted from: the copy
                     // takes the main layers' cells, so the main drafter would keep another conversation's below it)
-                    const bool active_source = sl.active && !sl.tainted && slot_ckpt_move_env() &&
+                    // (not with --kv-pool-tokens: the slot's chunks would move to the main session while it decodes)
+                    const bool active_source = sl.active && !sl.tainted && slot_ckpt_move_env() && !kv_pool.active() &&
                                                (!use_mtp || batch_mtp || admit_slot >= 0);
                     if (sl.cvec != want_cvec || !(idle_source || active_source)) continue;
                     if (idle_source && (int64_t) sl.ids.size() > std::max(resume, slot_tokens) && starts_with(sl.ids, {})) {
