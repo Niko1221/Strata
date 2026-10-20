@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/platform/aux_cpus.hpp"
@@ -4790,6 +4791,12 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
         d.hit_pending = false;
         if (!d.hits_ready() || ids == nullptr || k <= 0) return;
         if ((int64_t) d.is_hit.size() < k) d.is_hit.resize((size_t) k);
+        // STRATA_EXPERT_NIBBLE=1: this split computes a resident expert with the GGUF-block kernels and admits + fills
+        // a missed one with its GGUF blob - neither may meet a layer whose slots hold 4-bit codes (a native pack's
+        // experts run in the verify windows, so this is the backstop, never the path)
+        if (strata::core::nibble::layer(d.layers).on)
+            strata::core::nibble::fatal(d.layers, "the expert source's hit split (expert_hit_run)",
+                                        "it computes resident experts as GGUF blocks and fills slots with GGUF blobs");
 
         // ================================ THE DECISION, ONCE, ON THIS LAYER'S IDS ================================
         //
