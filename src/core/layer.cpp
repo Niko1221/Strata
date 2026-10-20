@@ -747,23 +747,24 @@ struct KvPlan {
     int mode = 0;
     int64_t pages = 0, slots = 0, pooled_rows = 0;
 };
-KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
+KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells, bool force_ring = false) {
     KvPlan p;
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
     p.pooled_rows = max_cells / s.idx_block + 2;
-    if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
+    if (ring_cells < 0) return p;   // ring_cells < 0: always fully resident
     // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
     static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
     static const bool main_off = std::getenv("STRATA_KV_MAIN_OFF") != nullptr;
-    if (ring_cells > 0 ? ring_off : main_off) return p;
-    if (ring_cells > 0) {
+    if (ring_cells > 0 && (force_ring || g_kv_resident > 0) && !ring_off) {
         const int64_t r = (ring_cells + s.page_size - 1) / s.page_size;
-        if (r < p.pages) { p.mode = 2; p.slots = r; p.pooled_rows = 2; }   // the drafter has no indexer
-    } else {
-        const int64_t r = (std::max(g_kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
-        if (r < p.pages) { p.mode = 1; p.slots = r; }
+        if (r < p.pages) { p.mode = 2; p.slots = r; p.pooled_rows = 2; }   // a ring has no indexer
+        return p;
     }
+    if (g_kv_resident <= 0) return p;
+    if (ring_cells > 0 ? ring_off : main_off) return p;
+    const int64_t r = (std::max(g_kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
+    if (r < p.pages) { p.mode = 1; p.slots = r; }
     return p;
 }
 uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8, bool q4) {
@@ -791,7 +792,7 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
                          const QsaStateInitOptions& opts) {
     if (opts.disable_streaming) ring_cells = 0;   // bytes and init force this identically
     const QsaShapes s = qsa_shapes(g);
-    KvPlan p = kv_plan(s, max_cells, ring_cells);
+    KvPlan p = kv_plan(s, max_cells, ring_cells, opts.force_ring);
     if (opts.no_indexer) p.pooled_rows = 0;
     const bool elastic = !opts.disable_elastic && strata::core::vmm_available() &&
                          (opts.elastic_init_cells > 0 || (g_kv_elastic && !opts.force_owned_kv));
@@ -822,7 +823,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                         const QsaState* share_rope, int64_t ring_cells, const QsaStateInitOptions& opts) {
     if (opts.disable_streaming) ring_cells = 0;   // bytes and init force this identically
     const QsaShapes s = qsa_shapes(g);
-    KvPlan p = kv_plan(s, max_cells, ring_cells);
+    KvPlan p = kv_plan(s, max_cells, ring_cells, opts.force_ring);
     if (opts.no_indexer) p.pooled_rows = 0;
     const bool elastic = !opts.disable_elastic && strata::core::vmm_available() &&
                          (opts.elastic_init_cells > 0 || (g_kv_elastic && !opts.force_owned_kv));
@@ -936,7 +937,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.host_step[strata::kernels::kStepCount] = 0;
     // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout
     st.host = strata::kernels::KvHostPools{};
-    if (p.mode != 0) {
+    if (p.mode != 0 && !(p.mode == 2 && opts.disable_ring_host_copy)) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;

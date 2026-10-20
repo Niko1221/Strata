@@ -86,15 +86,21 @@ are refused. Near the end of the available context, the proposal-fit guard short
 verification to a target-only step rather than overrunning a pool.
 
 DFlash2 owns five FP16 K/V pools using its own head geometry. They remain on the GPU
-when the target's KV is streamed to RAM. Weights, pools, scratch and head binding
-are allocated before `--expert-cache auto` reads free device memory. The auto cache
-therefore uses the selected artifact's actual allocation, not a fixed drafter estimate.
+when the target's KV is streamed to RAM. The official checkpoint has a local window
+of 2048 cells, so the draft K/V now uses a fixed device ring sized for that window,
+the largest verifier block and page alignment. On the CUDA test build, four-cell
+pages and the eight-row verifier block use 2060 cells per draft layer. RoPE positions
+and the logical context still follow `--max-context`; older K/V pages are outside
+DFlash2's attention window.
+Attention scratch is bounded by the same window and block. It does not grow as the
+conversation gets longer.
 
-On the profiled CUDA/VMM path, draft pools and attention scratch start at 8192 cells.
-They grow as requests need more context by exchanging memory with expert-cache slots.
-Without that path the full capacity is allocated at startup. An infeasible allocation
-or growth reports an error; a larger configured context is not guaranteed to fit every GPU.
-The setup low-RAM estimate includes the selected weight format and full draft capacity.
+Weights, the bounded pools and scratch are allocated before `--expert-cache auto`
+reads free device memory. The auto cache can therefore use the VRAM that a full
+512K draft pool and scratch previously reserved. DFlash2's local pools no longer
+borrow chunks from the expert cache while decoding. The target's KV policy is
+unchanged. An infeasible startup allocation still reports an error, and the complete
+model plus expert cache must fit the PC's available VRAM.
 
 The [128K VRAM audit](../bench/results/2026-10-19-dflash2-vram/README.md) checks full
 BF16/Q8_0/Q4_0 allocations and one actual elastic growth step on RTX 4070 Ti SUPER.
@@ -122,7 +128,8 @@ are point masses verified by the target; only its accepted prefix is committed.
 Sampled requests use target-only decoding and maintain draft context for later greedy reuse.
 
 In-memory prompt and conversation snapshots include the drafter's five committed K/V
-prefixes. Rewind overwrites later cells. Disk SAVE/RESTORE remains unsupported.
+pages in logical order, including the retained tail of its device-only local ring.
+Disk SAVE/RESTORE remains unsupported for DFlash2.
 The [cache regression evidence](../bench/results/2026-10-19-dflash2-pr/cache/README.md)
 records fixed-residency comparisons with fresh drafter and target-only controls.
 

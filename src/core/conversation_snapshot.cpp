@@ -13,9 +13,13 @@ namespace strata::core {
 namespace {
 struct Layout {
     int format;
-    int64_t cells, pooled_rows, page_size;
+    int64_t cells, pooled_rows, page_size, first_page, pages;
     size_t data, scales, pooled, value_data, value_scales;
 };
+
+bool device_only_ring(const QsaState& st) {
+    return st.kv_mode == 2 && !st.host.present();
+}
 
 bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
     const int64_t page = strata::kernels::qsa_real_shapes().page_size;
@@ -39,7 +43,10 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
-    const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    const int64_t end_page = (upto + s.page_size - 1) / s.page_size;
+    const int64_t stored_pages = device_only_ring(st) ? std::min(end_page, st.n_slots) : end_page;
+    const int64_t first_page = end_page - stored_pages;
+    const int64_t cells = stored_pages * s.page_size;
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
@@ -50,7 +57,8 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
     // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size,
+         first_page, stored_pages, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,
@@ -73,7 +81,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
 }
 
 std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
-    const bool host = st.kv_mode != 0 && !resident;
+    const bool host = st.kv_mode != 0 && !resident && st.host.present();
     if (st.kv_hybrid)
         return {host ? st.host.k_q : st.k_q, host ? st.host.v_q4 : st.v_q4, host ? st.host.k_scale : st.k_scale,
                 nullptr, st.idx_pooled};
@@ -86,10 +94,13 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
 }
 
 bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error) {
-    if (upto < 0 || upto > st.max_cells || st.n_pages < 0 || l.cells / l.page_size > st.n_pages ||
+    const bool no_host_ring = device_only_ring(st);
+    if (upto < 0 || upto > st.max_cells || st.n_pages < 0 || l.pages > st.n_pages ||
+        l.first_page < 0 || l.first_page > st.n_pages - l.pages ||
         st.kv_mode < 0 || st.kv_mode > 2 || st.n_slots <= 0 ||
         (st.kv_mode == 0 && st.n_slots < st.n_pages) ||
-        l.pooled_rows > st.idx_pooled_rows || (st.kv_mode != 0 && !st.host.present())) {
+        l.pooled_rows > st.idx_pooled_rows || (st.kv_mode != 0 && !st.host.present() && !no_host_ring) ||
+        (no_host_ring && l.pages > st.n_slots)) {
         error = "conversation snapshot: invalid K/V extent or missing authoritative host pool";
         return false;
     }
@@ -118,6 +129,65 @@ bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (e == cudaSuccess) return true;
     error = std::string("conversation snapshot copy: ") + cudaGetErrorString(e);
     return false;
+}
+
+// A device-only ring stores logical page P in physical slot P % n_slots. Snapshot
+// buffers use a compact linear order beginning at Layout::first_page.
+bool ring_to_image(const std::array<ConversationBuffer*, 5>& dst, const std::array<void*, 5>& src,
+                   const std::array<size_t, 5>& sizes, const Layout& l, const QsaState& st,
+                   std::string& error) {
+    for (size_t part = 0; part < dst.size(); ++part) {
+        if (!sizes[part]) continue;
+        if (!src[part] || (part < 4 && (l.pages <= 0 || sizes[part] % size_t(l.pages) != 0))) {
+            error = "conversation snapshot: invalid ring pool geometry";
+            return false;
+        }
+        if (part == 4) {
+            dst[part]->resize(sizes[part]);
+            if (!dst[part]->visit(0, sizes[part], [&](uint8_t* p, size_t n, size_t at) {
+                    return transfer(p, static_cast<const uint8_t*>(src[part]) + at, n, error);
+                })) return false;
+            continue;
+        }
+        const size_t page_bytes = sizes[part] / size_t(l.pages);
+        dst[part]->resize(sizes[part]);
+        for (int64_t i = 0; i < l.pages; ++i) {
+            const size_t image_at = size_t(i) * page_bytes;
+            const size_t slot_at = size_t((l.first_page + i) % st.n_slots) * page_bytes;
+            if (!dst[part]->visit(image_at, page_bytes, [&](uint8_t* p, size_t n, size_t at) {
+                    return transfer(p, static_cast<const uint8_t*>(src[part]) + slot_at + at - image_at, n, error);
+                })) return false;
+        }
+    }
+    return true;
+}
+
+bool image_to_ring(const std::array<const ConversationBuffer*, 5>& src, const std::array<void*, 5>& dst,
+                   const std::array<size_t, 5>& sizes, const Layout& l, const QsaState& st,
+                   int64_t source_first_page, std::string& error) {
+    for (size_t part = 0; part < src.size(); ++part) {
+        if (!sizes[part]) continue;
+        if (!dst[part] || (part < 4 && (l.pages <= 0 || sizes[part] % size_t(l.pages) != 0))) {
+            error = "conversation snapshot: invalid ring pool geometry";
+            return false;
+        }
+        if (part == 4) {
+            if (!src[part]->visit(0, sizes[part], [&](const uint8_t* p, size_t n, size_t at) {
+                    return transfer(static_cast<uint8_t*>(dst[part]) + at, p, n, error);
+                })) return false;
+            continue;
+        }
+        const size_t page_bytes = sizes[part] / size_t(l.pages);
+        for (int64_t i = 0; i < l.pages; ++i) {
+            const int64_t logical_page = l.first_page + i;
+            const size_t image_at = size_t(logical_page - source_first_page) * page_bytes;
+            const size_t slot_at = size_t(logical_page % st.n_slots) * page_bytes;
+            if (!src[part]->visit(image_at, page_bytes, [&](const uint8_t* p, size_t n, size_t at) {
+                    return transfer(static_cast<uint8_t*>(dst[part]) + slot_at + at - image_at, p, n, error);
+                })) return false;
+        }
+    }
+    return true;
 }
 } // namespace
 
@@ -150,7 +220,8 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     Layout l{};
     if (!layout(st, g, upto, index, l, error)) return false;
     if (!valid(st, l, upto, error)) return false;
-    if (unchanged_tokens < 0 || unchanged_tokens > upto || unchanged_tokens > image.cells) {
+    if (unchanged_tokens < 0 || unchanged_tokens > upto ||
+        (!device_only_ring(st) && unchanged_tokens > image.cells)) {
         error = "conversation snapshot: invalid unchanged prefix";
         return false;
     }
@@ -160,11 +231,19 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     image.heads = g.n_head_kv;
     image.head_dim = g.head_dim;
     image.page_size = l.page_size;
+    image.first_page = l.first_page;
     image.pooled_rows = l.pooled_rows;
     image.idx_dim = g.idx_key_dim;
     const auto src = pools(st);
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+    if (device_only_ring(st)) {
+        // The ring's logical start shifts as the conversation grows, so retained
+        // linear prefixes cannot be reused safely. Keep the segmented allocations
+        // and refresh the small bounded payload instead.
+        if (!ring_to_image(dst, src, sizes, l, st, error)) return false;
+        return true;
+    }
     for (size_t i = 0; i < dst.size(); ++i) {
         // Recopy the partial page and the indexer's moving spare row. Completed
         // pages/rows strictly before the first rewritten token remain identical.
@@ -189,7 +268,7 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     if (image.format != l.format || image.cells != l.cells || image.heads != g.n_head_kv ||
         image.head_dim != g.head_dim || image.page_size != l.page_size || image.pooled_rows != l.pooled_rows ||
-        image.idx_dim != g.idx_key_dim) {
+        image.first_page != l.first_page || image.idx_dim != g.idx_key_dim) {
         error = "conversation snapshot: incompatible K/V geometry";
         return false;
     }
@@ -207,11 +286,13 @@ namespace {
 bool refresh_residency(const QsaState& st, const ModelGeometry& g, int64_t upto, std::string& error) {
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
     if (st.kv_mode == 2 && upto > 0) {
-        auto shapes = strata::kernels::qsa_real_shapes();
-        shapes.n_head_kv = g.n_head_kv; shapes.head_dim = g.head_dim;
-        const int64_t end = (upto + shapes.page_size - 1) / shapes.page_size;
-        strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
-                                        std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
+        if (!device_only_ring(st)) {
+            auto shapes = strata::kernels::qsa_real_shapes();
+            shapes.n_head_kv = g.n_head_kv; shapes.head_dim = g.head_dim;
+            const int64_t end = (upto + shapes.page_size - 1) / shapes.page_size;
+            strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
+                                            std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
+        }
     }
     const auto status = cudaGetLastError();
     if (status == cudaSuccess) return true;
@@ -226,6 +307,7 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
     if (!layout(from, g, upto, index, lf, error) || !valid(from, lf, upto, error) ||
         !layout(to, g, upto, index, lt, error) || !valid(to, lt, upto, error)) return false;
     if (lf.format != lt.format || lf.cells != lt.cells || lf.page_size != lt.page_size ||
+        lf.first_page != lt.first_page || lf.pages != lt.pages ||
         lf.pooled_rows != lt.pooled_rows || lf.data != lt.data || lf.value_data != lt.value_data ||
         lf.scales != lt.scales || lf.value_scales != lt.value_scales || lf.pooled != lt.pooled) {
         error = "conversation snapshot: direct K/V copy between different layouts";
@@ -238,6 +320,34 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
     const auto src = pools(from);
     const auto dst = pools(to);
     const std::array<size_t,5> sizes = {lf.data, lf.value_data, lf.scales, lf.value_scales, lf.pooled};
+    if (device_only_ring(from) || device_only_ring(to)) {
+        if (!device_only_ring(from) || !device_only_ring(to) || from.n_slots != to.n_slots) {
+            error = "conversation snapshot: direct copy between incompatible ring layouts";
+            return false;
+        }
+        for (size_t part = 0; part < sizes.size(); ++part) {
+            if (!sizes[part]) continue;
+            if (!src[part] || !dst[part]) { error = "conversation snapshot: missing state buffer"; return false; }
+            if (part == 4) {
+                const cudaError_t e = conversation_detail::copy_nonblocking(dst[part], src[part], sizes[part], queued);
+                if (e != cudaSuccess) { error = std::string("conversation snapshot direct copy: ") + cudaGetErrorString(e); return false; }
+                continue;
+            }
+            const size_t page_bytes = sizes[part] / size_t(lf.pages);
+            for (int64_t i = 0; i < lf.pages; ++i) {
+                const size_t slot_at = size_t((lf.first_page + i) % from.n_slots) * page_bytes;
+                const cudaError_t e = conversation_detail::copy_nonblocking(
+                    static_cast<uint8_t*>(dst[part]) + slot_at,
+                    static_cast<const uint8_t*>(src[part]) + slot_at, page_bytes, queued);
+                if (e != cudaSuccess) { error = std::string("conversation snapshot direct ring copy: ") + cudaGetErrorString(e); return false; }
+            }
+        }
+        if (queued) {
+            const cudaError_t e = conversation_detail::order_after_queued();
+            if (e != cudaSuccess) { error = std::string("conversation snapshot direct copy: ") + cudaGetErrorString(e); return false; }
+        }
+        return refresh_residency(to, g, upto, error);
+    }
     for (size_t i = 0; i < sizes.size(); ++i) {
         if (!sizes[i]) continue;
         if (!src[i] || !dst[i]) { error = "conversation snapshot: missing state buffer"; return false; }
@@ -256,6 +366,13 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto dst = pools(st);
+    if (device_only_ring(st)) {
+        Layout l{};
+        if (!layout(st, g, upto, index, l, error)) return false;
+        const std::array<size_t, 5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+        if (!image_to_ring(src, dst, sizes, l, st, image.first_page, error)) return false;
+        return refresh_residency(st, g, upto, error);
+    }
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
@@ -276,6 +393,16 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     for (size_t i = 0; i < src.size(); ++i)
         if (sizes[i] > src[i]->size()) { error = "conversation snapshot: prefix beyond the K/V payload"; return false; }
+    if (device_only_ring(st)) {
+        const int64_t image_end = image.first_page + image.cells / image.page_size;
+        if (l.first_page < image.first_page || l.first_page + l.pages > image_end) {
+            error = "conversation snapshot: the requested prefix is outside the captured ring pages";
+            return false;
+        }
+        const auto dst = pools(st);
+        if (!image_to_ring(src, dst, sizes, l, st, image.first_page, error)) return false;
+        return refresh_residency(st, g, upto, error);
+    }
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
@@ -294,6 +421,10 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
 
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,
                             int64_t upto, bool index, std::string& error) {
+    if (device_only_ring(st)) {
+        error = "conversation snapshot: device-only local-attention ring cannot be saved as a full-context session";
+        return false;
+    }
     Layout l{};
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
     SessionKvSource s;
@@ -332,11 +463,35 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
     };
     const std::array<const ConversationBuffer*, 5> saved = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto authoritative = pools(st);
-    for (size_t i = 0; i < saved.size(); ++i)
-        if (!saved[i]->visit(0, saved[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
-                return compare(static_cast<const uint8_t*>(authoritative[i]) + at, p, n, true);
-            })) return false;
-    if (st.kv_mode == 2 && image.cells > 0) {
+    if (device_only_ring(st)) {
+        Layout l{};
+        if (!layout(st, g, upto, index, l, error)) return false;
+        const std::array<size_t, 5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+        for (size_t i = 0; i < saved.size(); ++i) {
+            if (!sizes[i]) continue;
+            if (i == 4) {
+                if (!saved[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
+                        return compare(static_cast<const uint8_t*>(authoritative[i]) + at, p, n, true);
+                    })) return false;
+                continue;
+            }
+            const size_t page_bytes = sizes[i] / size_t(l.pages);
+            for (int64_t page = 0; page < l.pages; ++page) {
+                const size_t image_at = size_t(page) * page_bytes;
+                const size_t slot_at = size_t((l.first_page + page) % st.n_slots) * page_bytes;
+                if (!saved[i]->visit(image_at, page_bytes, [&](const uint8_t* p, size_t n, size_t at) {
+                        return compare(static_cast<const uint8_t*>(authoritative[i]) + slot_at + at - image_at,
+                                       p, n, true);
+                    })) return false;
+            }
+        }
+    } else {
+        for (size_t i = 0; i < saved.size(); ++i)
+            if (!saved[i]->visit(0, saved[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
+                    return compare(static_cast<const uint8_t*>(authoritative[i]) + at, p, n, true);
+                })) return false;
+    }
+    if (st.kv_mode == 2 && !device_only_ring(st) && image.cells > 0) {
         const auto resident = pools(st, true);
         const int64_t end = image.cells / image.page_size;
         const int64_t begin = std::max<int64_t>(0, end - st.n_slots);

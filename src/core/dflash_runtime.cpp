@@ -215,6 +215,12 @@ uint64_t DFlashDrafter::vram_bytes() const {
 }
 
 uint64_t DFlashDrafter::scratch_bytes(int64_t cells) const {
+    const DFlashGeometry& dg = artifact_.geom();
+    // DFlash2's attention is symmetric but local. It can see at most its
+    // sliding window plus all rows written by one speculative block, so the
+    // split-attention workspace does not need to follow the full conversation.
+    if (dg.is_dflash2() && dg.sliding_window > 0)
+        cells = std::min<int64_t>(cells, dg.sliding_window + max_rows_);
     return (uint64_t) max_rows_ * strata::kernels::qsa_decode_attn_scratch_floats(
         std::min<int64_t>(cap_, cells), shapes_) * sizeof(float);
 }
@@ -333,6 +339,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         err = "dflash: target session has no primary attention state"; return false;
     }
     device_ = device;
+    max_rows_ = 8;
     // the effective mask token, resolved once: the CLI override wins over the artifact's metadata
     // (generate.cpp has validated it against the target's vocabulary)
     mask_ = mask_override >= 0 ? mask_override : dg.mask_token_id;
@@ -400,27 +407,38 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     pool_g_.n_head = dg.n_head;
     pool_g_.n_head_kv = dg.n_head_kv;
     pool_g_.head_dim = dg.head_dim;
-    // DFlash attends to every committed cell directly and never uses the target's
-    // sparse indexer. Its pooled index rows otherwise waste gigabytes at long contexts.
+    // DFlash never uses the target's sparse indexer. The plain artifact has full
+    // attention; DFlash2's local window uses a small physical ring while the page
+    // table and positions retain the full logical context.
     const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
     // ONE STATE PER DRAFT LAYER: a QsaState is a single layer's pools, and the five draft layers
     // must not share them (a shared pool made every layer attend layer 0's K/V).
     if (pool_g_.n_qsa_layers() != dg.layers)
         return bail("dflash: the pool geometry does not give one state per draft layer");
-    // This is a context capacity, not a rolling window: preserve every cell up
-    // to it, including the true rope positions. CUDA may map its physical memory
-    // on demand; other backends carve the full FP16 pools from the owned arenas.
+    // The capacity remains a logical context bound, including true RoPE positions.
+    // DFlash2's trained local attention does not need K/V older than its window.
     window_ = (window > 0 && window < max_cells) ? window : 0;
     cap_ = std::min<int64_t>(((window_ > 0 ? window_ : max_cells) + 63) / 64 * 64, max_cells);
-    // ring = -1 forces mode 0 even when the target's K/V is streamed to RAM.
+    const bool local_ring = dg.is_dflash2() && dg.sliding_window > 0;
+    // A local ring and its workspace are bounded already; they do not need to
+    // reserve the expert cache's elastic chunks, even if the caller requested
+    // elastic storage for a full-attention drafter.
+    elastic_kv = elastic_kv && !local_ring;
     strata::core::QsaStateInitOptions kv_opts;
     kv_opts.force_owned_kv = true;
     kv_opts.force_f16_kv = true;
     kv_opts.disable_elastic = !elastic_kv;
     kv_opts.elastic_init_cells = elastic_kv ? std::min<int64_t>(cap_, 8192) : 0;
     kv_opts.no_indexer = true;
-    const int64_t ring = -1;
     const auto pool_shapes = strata::core::shapes_of(pool_g_);
+    // Reserve enough whole pages for the symmetric window and every row in a
+    // speculative block. The page-alignment allowance prevents writes at a page
+    // boundary from overwriting a K/V page that the first proposal still reads.
+    const int64_t ring = local_ring
+        ? dg.sliding_window + max_rows_ + pool_shapes.page_size - 1
+        : -1;
+    kv_opts.force_ring = local_ring;
+    kv_opts.disable_ring_host_copy = local_ring;
     const uint64_t sb = strata::core::qsa_state_bytes(pool_g_, cap_, false, ring, kv_opts);
     st_.assign((size_t) dg.layers, QsaState{});
     arenas_.assign((size_t) dg.layers, nullptr);
@@ -430,9 +448,9 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         if (strata::core::qsa_state_init(pool_g_, cap_, arenas_[(size_t) l], st_[(size_t) l],
                                          &ss.qsa_states[ss.qsa_primary()], ring, kv_opts) == 0)
             return bail("dflash: the draft K/V state init failed");
-        {
-            // the page table starts as the identity, uploaded on the drafter's own stream (the init
-            // wrote it on the default stream)
+        if (st_[(size_t) l].kv_mode == 0) {
+            // Fully resident states use the identity map. Ring states retain the
+            // modulo page map installed by qsa_state_init.
             std::vector<int32_t> ident_page((size_t) st_[(size_t) l].n_pages);
             for (int64_t pg = 0; pg < st_[(size_t) l].n_pages; ++pg) ident_page[(size_t) pg] = (int32_t) pg;
             if (cudaMemcpyAsync(st_[(size_t) l].page_table, ident_page.data(),
@@ -442,9 +460,9 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         }
         strata::core::qsa_state_zero(st_[(size_t) l], pool_g_, nullptr);
         vram_ += sb;
-        // Independently owned FP16 pools with an identity page table. A VMM pool
-        // has a reserved range for every logical page and an explicitly mapped
-        // prefix; otherwise all of its bytes must be inside the caller's arena.
+        // Independently owned FP16 pools. A VMM pool has a reserved range for
+        // every logical page and an explicitly mapped prefix; otherwise all of
+        // its bytes must be inside the caller's arena.
         {
             const QsaState& s = st_[(size_t) l];
             const uintptr_t a0 = reinterpret_cast<uintptr_t>(arenas_[(size_t) l]);
@@ -457,9 +475,16 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
             };
             const bool own_pools = elastic_kv ? s.kv_elastic >= 0 && qsa_state_elastic_bytes(s) > 0
                                                : s.kv_elastic == -1 && inside(s.k_pool, pool_bytes) && inside(s.v_pool, pool_bytes);
-            if (!own_pools || s.kv_mode != 0 || s.kv_int8 || s.kv_q4 || s.kv_hybrid ||
-                s.host.k_pool != nullptr || s.map.slot_block != nullptr || s.n_slots < s.n_pages) {
-                return bail("dflash: the draft K/V state is not the owned whole-resident FP16 allocation "
+            const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
+            const int64_t requested_ring_pages = ring > 0
+                ? (ring + pool_shapes.page_size - 1) / pool_shapes.page_size : 0;
+            const bool ring_reduces_state = local_ring && requested_ring_pages < s.n_pages && !ring_off;
+            const bool local_ring_state = ring_reduces_state && s.kv_mode == 2 && s.n_slots < s.n_pages &&
+                                          !s.host.present() && s.page_table != nullptr;
+            const bool full_state = !ring_reduces_state && s.kv_mode == 0 && s.n_slots >= s.n_pages;
+            if (!own_pools || (!local_ring_state && !full_state) || s.kv_int8 || s.kv_q4 || s.kv_hybrid ||
+                s.host.k_pool != nullptr || s.map.slot_block != nullptr) {
+                return bail("dflash: the draft K/V state is not the owned FP16 allocation "
                             "the drafter requires (n_slots " + std::to_string((long long) s.n_slots) +
                             ", n_pages " + std::to_string((long long) s.n_pages) + ", mode " +
                             std::to_string(s.kv_mode) + ")");
@@ -488,9 +513,10 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     }
 
     // ---- buffers: at most 8 rows ride through the forward at once
-    max_rows_ = 8;
     shapes_ = strata::core::shapes_of(pool_g_);
-    attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, shapes_);
+    const int64_t scratch_cells = local_ring
+        ? std::min<int64_t>(cap_, dg.sliding_window + max_rows_) : cap_;
+    attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(scratch_cells, shapes_);
     const int64_t R = max_rows_, N = dg.hidden, F = dg.fusion_in(), I = dg.intermediate;
     const int64_t Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim;
     if (!dflash_mapped(R * 4 + 64, (void**) &h_out_, (void**) &out_) ||
@@ -550,7 +576,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
              take(strata::kernels::native_q8_1_bytes(width, (int) R), (void**) &proj_q8_);
     }
     if (!ok) return bail(err);
-    // no selection table: the drafter's attention reads the identity cells straight from the
+    // no selection table: the drafter reads logical cells straight from the
     // block position (dflash_attn_batch); dflash_identity_fill stays for the load test
     if (cudaMemset(top_scratch_, 0, std::max<uint64_t>(4, strata::kernels::row_top_prob_scratch_bytes((int) R))) != cudaSuccess ||
         cudaMemset(arg_scratch_, 0, std::max<uint64_t>(4, strata::kernels::argmax_rows_scratch_bytes((int) R))) != cudaSuccess ||
@@ -1096,8 +1122,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             }
             {
                 DFlashSection s("L*.attn");
-                // the drafter's cells are the identity [0, pos+K): no selection table, and only their
-                // chunks launch (the configured window cap stays the scratch stride)
+                // the drafter uses logical cells [0, pos+K): no selection table, and only the
+                // visible chunks launch (the configured window cap stays the scratch stride)
 #ifdef STRATA_ENABLE_DFLASH2
                 if (dg.is_dflash2() && dg.head_dim == 128)
                     dflash2_attention(q_, pools.k_pool, pools.v_pool, pools.page_table, attn_step_,

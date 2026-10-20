@@ -1,0 +1,233 @@
+Start testing: Oct 20 20:16 CEST
+----------------------------------------------------------
+39/164 Testing: conversation_snapshot_test
+39/164 Test: conversation_snapshot_test
+Command: "<repo-dir>/build-dflash2/conversation_snapshot_test"
+Directory: <repo-dir>/build-dflash2
+"conversation_snapshot_test" start time: Oct 20 20:16 CEST
+Output:
+----------------------------------------------------------
+conversation_snapshot_test: 4135 checks passed
+<end of output>
+Test time =   0.47 sec
+----------------------------------------------------------
+Test Passed.
+"conversation_snapshot_test" end time: Oct 20 20:16 CEST
+"conversation_snapshot_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+64/164 Testing: dflash2_parity
+64/164 Test: dflash2_parity
+Command: "<repo-dir>/build-dflash2/dflash2_parity"
+Directory: <repo-dir>/build-dflash2
+"dflash2_parity" start time: Oct 20 20:16 CEST
+Output:
+----------------------------------------------------------
+PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal
+<end of output>
+Test time =   2.83 sec
+----------------------------------------------------------
+Test Passed.
+"dflash2_parity" end time: Oct 20 20:16 CEST
+"dflash2_parity" time elapsed: 00:00:02
+----------------------------------------------------------
+
+66/164 Testing: dflash_head_bf16_test
+66/164 Test: dflash_head_bf16_test
+Command: "<repo-dir>/build-dflash2/dflash_head_bf16_test"
+Directory: <repo-dir>/build-dflash2
+"dflash_head_bf16_test" start time: Oct 20 20:16 CEST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.21 sec
+----------------------------------------------------------
+Test Passed.
+"dflash_head_bf16_test" end time: Oct 20 20:16 CEST
+"dflash_head_bf16_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+67/164 Testing: dflash_rope_parity
+67/164 Test: dflash_rope_parity
+Command: "<repo-dir>/build-dflash2/dflash_rope_parity"
+Directory: <repo-dir>/build-dflash2
+"dflash_rope_parity" start time: Oct 20 20:16 CEST
+Output:
+----------------------------------------------------------
+dflash_rope_parity: ok
+<end of output>
+Test time =   0.22 sec
+----------------------------------------------------------
+Test Passed.
+"dflash_rope_parity" end time: Oct 20 20:16 CEST
+"dflash_rope_parity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+68/164 Testing: dflash_owned_kv_test
+68/164 Test: dflash_owned_kv_test
+Command: "<repo-dir>/build-dflash2/dflash_owned_kv_test"
+Directory: <repo-dir>/build-dflash2
+"dflash_owned_kv_test" start time: Oct 20 20:16 CEST
+Output:
+----------------------------------------------------------
+dbg: section 1 (owned+append)
+dbg: section 4 (five layers)
+dbg: section 3 (elastic)
+dflash_owned_kv_test: ok
+<end of output>
+Test time =   0.35 sec
+----------------------------------------------------------
+Test Passed.
+"dflash_owned_kv_test" end time: Oct 20 20:16 CEST
+"dflash_owned_kv_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+98/164 Testing: kv_stream_parity
+98/164 Test: kv_stream_parity
+Command: "<repo-dir>/build-dflash2/kv_stream_parity"
+Directory: <repo-dir>/build-dflash2
+"kv_stream_parity" start time: Oct 20 20:16 CEST
+Output:
+----------------------------------------------------------
+kv_stream_parity: streamed vs resident KV, bitwise
+  int8: 306 batches, 703691 block lookups, 71303 misses (89.9% hit), overflow 0, 0 failures
+  int8 ring restore: identical
+  fp16: 306 batches, 672800 block lookups, 69637 misses (89.6% hit), overflow 0, 0 failures
+  fp16 ring restore: identical
+  q4_0: 306 batches, 680672 block lookups, 69212 misses (89.8% hit), overflow 0, 0 failures
+  q4_0 ring restore: identical
+  k8v4: 306 batches, 702021 block lookups, 70477 misses (90.0% hit), overflow 0, 0 failures
+  k8v4 ring restore: identical
+PASS
+<end of output>
+Test time =   5.73 sec
+----------------------------------------------------------
+Test Passed.
+"kv_stream_parity" end time: Oct 20 20:17 CEST
+"kv_stream_parity" time elapsed: 00:00:05
+----------------------------------------------------------
+
+99/164 Testing: kv_window_parity
+99/164 Test: kv_window_parity
+Command: "<repo-dir>/build-dflash2/kv_window_parity"
+Directory: <repo-dir>/build-dflash2
+"kv_window_parity" start time: Oct 20 20:17 CEST
+Output:
+----------------------------------------------------------
+kv_window_parity: verify-window KV calls on a streamed layer and on a ring, plain launches and graph replays
+  q4_0  direct: 11487 windows (311 attended), 586175 block lookups, 96471 misses, 3784 resident, overflow 0, host/ring-host bad 0, stale slots 0
+  q4_0  graph : 11382 windows (308 attended), 531446 block lookups, 91568 misses, 3784 resident, overflow 0, host/ring-host bad 0, stale slots 0
+  int8  direct: 11415 windows (309 attended), 569814 block lookups, 89968 misses, 3784 resident, overflow 0, host/ring-host bad 0, stale slots 0
+  int8  graph : 11386 windows (308 attended), 544671 block lookups, 88250 misses, 3784 resident, overflow 0, host/ring-host bad 0, stale slots 0
+  k8v4  direct: 11361 windows (308 attended), 521080 block lookups, 89673 misses, 3784 resident, overflow 0, host/ring-host bad 0, stale slots 0
+  k8v4  graph : 11498 windows (311 attended), 515173 block lookups, 83954 misses, 3784 resident, overflow 0, host/ring-host bad 0, stale slots 0
+PASS
+<end of output>
+Test time =   5.28 sec
+----------------------------------------------------------
+Test Passed.
+"kv_window_parity" end time: Oct 20 20:17 CEST
+"kv_window_parity" time elapsed: 00:00:05
+----------------------------------------------------------
+
+115/164 Testing: dflash_policy_test
+115/164 Test: dflash_policy_test
+Command: "<repo-dir>/build-dflash2/dflash_policy_test"
+Directory: <repo-dir>/build-dflash2
+"dflash_policy_test" start time: Oct 20 20:17 CEST
+Output:
+----------------------------------------------------------
+dflash_policy_test: ok
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"dflash_policy_test" end time: Oct 20 20:17 CEST
+"dflash_policy_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+116/164 Testing: dflash_load_test
+116/164 Test: dflash_load_test
+Command: "<repo-dir>/build-dflash2/dflash_load_test"
+Directory: <repo-dir>/build-dflash2
+"dflash_load_test" start time: Oct 20 20:17 CEST
+Output:
+----------------------------------------------------------
+refused wrong architecture           dflash: general.architecture is 'qwen3', a DFlash artifact declares 'dflash'
+refused missing block_size           dflash: missing metadata key dflash.block_size in /tmp/strata_dflash_load_test/nokey.gguf
+refused dflash.embedding_length      dflash: invalid integer metadata dflash.embedding_length
+refused dflash.embedding_length      dflash: invalid integer metadata dflash.embedding_length
+refused dflash.embedding_length      dflash: empty tap list or geometry products exceed the supported integer range
+refused dflash.attention.key_length  dflash: invalid integer metadata dflash.attention.key_length
+refused dflash.attention.causal      dflash: invalid boolean metadata dflash.attention.causal
+refused dflash.markov_rank           dflash: this artifact carries DSpark extras (Markov head / confidence gate); this implementation supports plain DeepSpec DFlash only
+refused dflash.attention.head_count_kv dflash: implausible geometry (hidden=32 layers=2 heads=4/3 head_dim=8 intermediate=16 vocab=64 block_size=3)
+refused dflash.attention.layer_norm_rms_epsilon dflash: unsupported metadata dflash.attention.layer_norm_rms_epsilon
+refused dflash.embedding_scale       dflash: unsupported metadata dflash.embedding_scale
+refused dflash.rope.scaling.type     dflash: unsupported RoPE scaling: dflash.rope.scaling.type
+refused dflash.rope.dimension_count  dflash: partial rotary dimensions are unsupported: dflash.rope.dimension_count
+refused dflash.attention.key_length  dflash: attention.key_length must be positive when present
+refused dflash.rope.frequency_base   dflash: rope.frequency_base must be a finite positive number
+refused floating tap indices         dflash: target_layers must contain non-negative int32 layer indices
+refused missing tensor               dflash: missing required tensor 'layers.0.self_attn.q_proj' (looked for 'blk.0.attn_q.weight', 'layers.0.self_attn.q_proj.weight', in /tmp/strata_dflash_load_test/missing.gguf)
+refused wrong shape                  dflash: tensor 'blk.0.attn_q.weight' has shape [32,40], expected [32,32] for 'layers.0.self_attn.q_proj'
+refused quantized norm               dflash: tensor 'enc.output_norm.weight' is Q4_0; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused quantized norm               dflash: tensor 'enc.output_norm.weight' is Q5_0; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused quantized norm               dflash: tensor 'enc.output_norm.weight' is Q8_0; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused F32 tensor                   dflash: tensor 'blk.0.ffn_norm.weight' is F32; expected BF16 norms and BF16, Q8_0, Q5_0 or Q4_0 matrices
+refused taps not increasing          dflash: target_layers must be strictly increasing and non-negative, got [1, ..., 0]
+refused taps not increasing          dflash: target_layers must be strictly increasing and non-negative, got [0, ..., 1]
+refused no target_layers             dflash: missing dflash.target_layers (the taps this drafter was trained against)
+refused 1+N layout                   dflash: this artifact declares the generic 1+N fill-in layout (dflash.sample_from_anchor=false); this implementation supports only the DeepSpec anchor layout (query_zero_predicts_next)
+refused causal attention             dflash: this artifact declares causal block attention; the DeepSpec drafter is trained non-causal (dflash.attention.causal=false)
+refused DSpark markov head           dflash: this artifact carries DSpark extras (Markov head / confidence gate); this implementation supports plain DeepSpec DFlash only
+refused DFlash2 selector             dflash2: invalid conv/selector geometry or anchor layout (block 2..8, top-k 1..64, rank 1..1024)
+refused own embedding                dflash: the artifact ships its own 'token_embd.weight'; the DeepSpec drafter strips both and binds them from the target at load
+refused unknown tensor               dflash: unknown tensor 'something.else.weight' in the artifact
+refused block_size 0                 dflash: implausible geometry (hidden=32 layers=2 heads=4/1 head_dim=8 intermediate=16 vocab=64 block_size=0)
+refused truncated                    dflash: tensor 'blk.1.ffn_down.weight' lies outside its file's data section
+dflash_load_test: ok
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"dflash_load_test" end time: Oct 20 20:17 CEST
+"dflash_load_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+120/164 Testing: draft_kv_plan_test
+120/164 Test: draft_kv_plan_test
+Command: "<repo-dir>/build-dflash2/draft_kv_plan_test"
+Directory: <repo-dir>/build-dflash2
+"draft_kv_plan_test" start time: Oct 20 20:17 CEST
+Output:
+----------------------------------------------------------
+draft_kv_plan_test
+  unset is off                                                             ok
+  empty is off                                                             ok
+  0 is off                                                                 ok
+  text that is not a number is off                                         ok
+  1 is on                                                                  ok
+  any other whole number is on                                             ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  one GPU: the batched pass is tried, nothing is reported                  ok
+  split, variable off: the drafter's own pass, silently                    ok
+  split, variable off, no token table: still silent                        ok
+  split, variable on: the batched pass is tried on the last stage          ok
+  split, variable on, no token table: declined with a reason               ok
+  no draft layer: nothing tried, nothing said                              ok
+  no draft layer: nothing tried, nothing said                              ok
+  no draft layer: nothing tried, nothing said                              ok
+  no draft layer: nothing tried, nothing said                              ok
+draft_kv_plan_test: all ok
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"draft_kv_plan_test" end time: Oct 20 20:17 CEST
+"draft_kv_plan_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 20 20:17 CEST

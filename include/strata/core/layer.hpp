@@ -287,6 +287,8 @@ struct QsaStateInitOptions {
     bool force_f16_kv = false;     ///< FP16 K/V regardless of the process KV format
     bool disable_streaming = false;  ///< never a ring / residency map (ring_cells forced to 0)
     bool disable_elastic = false;  ///< never in the elastic VMM registry
+    bool force_ring = false;       ///< use ring_cells even when target KV streaming is off
+    bool disable_ring_host_copy = false; ///< ring is authoritative on the device; no full-context host duplicate
     int64_t elastic_init_cells = 0; ///< explicit per-state VMM allocation, independent of the target's policy
     bool no_indexer = false;        ///< direct attention (DFlash): no pooled sparse-indexer history
 };

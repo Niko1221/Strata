@@ -46,13 +46,15 @@ struct Fixture {
             cuda_check(cudaMalloc(&raw, n)); device.push_back(raw); p = static_cast<T*>(raw);
         }
     }
-    Fixture(int fmt, int mode) {
+    Fixture(int fmt, int mode, bool device_only_ring = false) {
         auto& st = state;
+        check(!device_only_ring || mode==2,"device-only ring fixture uses ring mode");
         st.kv_mode = mode; st.kv_int8 = fmt==kKvInt8; st.kv_q4 = fmt==kKvQ4; st.kv_hybrid = fmt==3;
         st.n_pages = 24; st.n_slots = mode ? 4 : st.n_pages;
         st.max_cells = st.n_pages * 4; st.idx_pooled_rows = mode==2 ? 2 : st.max_cells/4+2;
         const size_t per = fmt==kKvQ4 ? kv_q4_bytes_per_head((int)g.head_dim) : g.head_dim*((st.kv_int8 || st.kv_hybrid) ? 1:2);
-        const size_t rows = st.max_cells*g.n_head_kv, slot_rows = st.n_slots*4*g.n_head_kv;
+        const size_t slot_rows = st.n_slots*4*g.n_head_kv;
+        const size_t rows = (device_only_ring ? slot_rows : st.max_cells*g.n_head_kv);
         sizes = {rows*per, rows*per, fmt==kKvInt8 ? rows*(g.head_dim/64)*2:0,
                  fmt==kKvInt8 ? rows*(g.head_dim/64)*2:0, (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
         if (fmt==3) {
@@ -62,21 +64,25 @@ struct Fixture {
             sources[0]=st.k_q; sources[1]=st.v_q4; sources[2]=st.k_scale;
         } else if (fmt==kKvQ4) {
             alloc(st.k_q4,slot_rows*per); alloc(st.v_q4,slot_rows*per);
-            if (mode) {alloc(st.host.k_q4,sizes[0],true); alloc(st.host.v_q4,sizes[1],true);}
-            sources[0]=mode?st.host.k_q4:st.k_q4; sources[1]=mode?st.host.v_q4:st.v_q4;
+            if (mode && !device_only_ring) {alloc(st.host.k_q4,sizes[0],true); alloc(st.host.v_q4,sizes[1],true);}
+            sources[0]=mode && !device_only_ring?st.host.k_q4:st.k_q4;
+            sources[1]=mode && !device_only_ring?st.host.v_q4:st.v_q4;
         } else if (fmt==kKvInt8) {
             alloc(st.k_q,slot_rows*per); alloc(st.v_q,slot_rows*per);
             alloc(st.k_scale,slot_rows*(g.head_dim/64)*2); alloc(st.v_scale,slot_rows*(g.head_dim/64)*2);
-            if (mode) {
+            if (mode && !device_only_ring) {
                 alloc(st.host.k_q,sizes[0],true); alloc(st.host.v_q,sizes[1],true);
                 alloc(st.host.k_scale,sizes[2],true); alloc(st.host.v_scale,sizes[3],true);
             }
-            sources[0]=mode?st.host.k_q:st.k_q; sources[1]=mode?st.host.v_q:st.v_q;
-            sources[2]=mode?st.host.k_scale:st.k_scale; sources[3]=mode?st.host.v_scale:st.v_scale;
+            sources[0]=mode && !device_only_ring?st.host.k_q:st.k_q;
+            sources[1]=mode && !device_only_ring?st.host.v_q:st.v_q;
+            sources[2]=mode && !device_only_ring?st.host.k_scale:st.k_scale;
+            sources[3]=mode && !device_only_ring?st.host.v_scale:st.v_scale;
         } else {
             alloc(st.k_pool,slot_rows*per); alloc(st.v_pool,slot_rows*per);
-            if (mode) {alloc(st.host.k_pool,sizes[0],true); alloc(st.host.v_pool,sizes[1],true);}
-            sources[0]=mode?st.host.k_pool:st.k_pool; sources[1]=mode?st.host.v_pool:st.v_pool;
+            if (mode && !device_only_ring) {alloc(st.host.k_pool,sizes[0],true); alloc(st.host.v_pool,sizes[1],true);}
+            sources[0]=mode && !device_only_ring?st.host.k_pool:st.k_pool;
+            sources[1]=mode && !device_only_ring?st.host.v_pool:st.v_pool;
         }
         alloc(st.idx_pooled,sizes[4]); sources[4]=st.idx_pooled;
         alloc(st.page_table,st.n_pages*4);
@@ -108,6 +114,50 @@ struct Fixture {
 };
 bool equal(const ConversationKv& a,const ConversationKv& b) {
     return a.k==b.k && a.v==b.v && a.k_scale==b.k_scale && a.v_scale==b.v_scale && a.pooled==b.pooled;
+}
+
+void device_only_ring_snapshots() {
+    Fixture source(kKvF16,2,true), destination(kKvF16,2,true);
+    check(!source.state.host.present() && !destination.state.host.present(),"device-only rings do not allocate a full host K/V copy");
+    const int64_t page = qsa_real_shapes().page_size;
+    for (int64_t upto : {1,3,4,5,65,96}) {
+        std::string err;
+        source.fill(13);
+        ConversationKv image, restored, copied;
+        check(conversation_kv_save(image,source.state,source.g,upto,false,err),"capture device-only ring");
+        const int64_t end_page=(upto+page-1)/page;
+        const int64_t pages=std::min(end_page,source.state.n_slots);
+        check(image.first_page==end_page-pages && image.cells==pages*page,
+              "device-only snapshot stores the final logical ring pages");
+        check(image.bytes()==conversation_kv_bytes(source.state,source.g,upto,false),
+              "device-only ring byte estimate matches the compact payload");
+        source.fill(177);
+        check(conversation_kv_restore(image,source.state,source.g,upto,false,err),"restore device-only ring snapshot");
+        cuda_check(cudaDeviceSynchronize());
+        check(conversation_kv_save(restored,source.state,source.g,upto,false,err) && equal(image,restored),
+              "device-only ring snapshot round-trips after wrap");
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(image,source.state,source.g,upto,false,fingerprint,err),
+              "verify device-only ring resident bytes");
+        destination.fill(201);
+        check(conversation_kv_copy(source.state,destination.state,source.g,upto,false,err),
+              "copy between compatible device-only rings");
+        check(conversation_kv_save(copied,destination.state,destination.g,upto,false,err) && equal(image,copied),
+              "direct device-only ring copy preserves logical pages");
+    }
+    std::string err;
+    source.fill(17);
+    ConversationKv image, restored;
+    check(conversation_kv_save(image,source.state,source.g,96,false,err),"capture full device-only ring for prefix checks");
+    SessionKvSource disk_source;
+    check(!conversation_kv_source(disk_source,source.state,source.g,96,false,err),
+          "device-only local ring is refused as a full-context disk session");
+    check(!conversation_kv_restore_prefix(image,source.state,source.g,96,80,false,err),
+          "a prefix before the captured ring pages falls back safely");
+    check(conversation_kv_restore_prefix(image,source.state,source.g,96,95,false,err),
+          "a prefix within the captured ring pages restores");
+    check(conversation_kv_save(restored,source.state,source.g,95,false,err) && equal(image,restored),
+          "restored ring prefix retains the captured page bytes");
 }
 
 void full_session(int fmt, int mode, int experts) {
@@ -305,6 +355,7 @@ void full_session(int fmt, int mode, int experts) {
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
+    device_only_ring_snapshots();
     for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
         if (fmt==3 && mode!=0) continue;
         Fixture f(fmt,mode);

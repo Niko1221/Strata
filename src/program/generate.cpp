@@ -5699,6 +5699,18 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        if (dg.is_dflash2() && dg.sliding_window > 0) {
+            // The published DFlash2 checkpoint has local attention. Its private
+            // K/V is a fixed ring, so neither it nor its scratch needs to grow by
+            // taking physical chunks from the expert cache.
+            dflash_elastic = false;
+            const int64_t ring_cells = dg.sliding_window + strata::kernels::kVerifyMaxT +
+                                       strata::kernels::qsa_real_shapes().page_size - 1;
+            const int64_t ring_pages = (ring_cells + strata::kernels::qsa_real_shapes().page_size - 1) /
+                                       strata::kernels::qsa_real_shapes().page_size;
+            std::fprintf(stderr, "dflash2: local K/V ring uses %lld cells per draft layer across the full logical context\n",
+                         (long long) (ring_pages * strata::kernels::qsa_real_shapes().page_size));
+        }
         dflash_capture_layers = dg.target_layers;
         for (auto& l : dflash_capture_layers) {
             if (!dg.target_layer_inputs) ++l;   // HF output tap -> next attention input; llama GGUF already uses inputs
@@ -8124,7 +8136,13 @@ int main(int argc, char** argv) {
         if (!kvg.on || cells <= kvg.cells) return true;
         const int64_t target = std::min<int64_t>(o.max_context, (cells + kvg.step - 1) / kvg.step * kvg.step);
         const int64_t need = strata::core::qsa_kv_elastic_need(target) + dflash.scratch_chunks_needed(target);
-        if (need == 0) { kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells()); return true; }
+        if (need == 0) {
+            // The mapped attention scratch may already cover this physical
+            // chunk while its logical context limit still needs to advance.
+            if (!dflash.grow_scratch(target, [] { return (strata::core::VmmChunk) 0; })) return false;
+            kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
+            return true;
+        }
         quiesce();
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
