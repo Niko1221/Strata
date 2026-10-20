@@ -96,6 +96,7 @@
 #include "strata/program/prefill_plan.hpp"
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
+#include "pl_sched.hpp"   // --pipeline-windows: the new pipelined decode loop's scheduler
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -418,8 +419,9 @@ bool refill_blocking() {
 using Clock = std::chrono::steady_clock;
 
 // --pipeline-windows: every STRATA_PIPELINE_* test and tuning variable (THETA, FORCE_MISS, SWITCH, LOG, TRACE, DOOM_SKIP,
-// LOOKUP_PON, PRESTAGE, AGREE, SNAP_OVERLAP, SPEC_DEPTH) is read only with STRATA_PIPELINE_DEBUG=1; without it the
-// defaults apply.
+// LOOKUP_PON, PRESTAGE, AGREE, SNAP_OVERLAP, SPEC_DEPTH; the new loop's NEWLOOP, THETA3, FORCE_MISS_C, CHECK_STATE) is
+// read only with STRATA_PIPELINE_DEBUG=1; without it the defaults apply.  The slot pool's STRATA_PIPELINE_UNDO_PER_STAGE
+// and STRATA_PIPELINE_SLOTS are read always (they choose a mode, not a test).
 static const char* pipe_dbg_env(const char* name) {
     static const bool on = [] { const char* v = std::getenv("STRATA_PIPELINE_DEBUG"); return v != nullptr && v[0] != 0 && v[0] != '0'; }();
     return on ? std::getenv(name) : nullptr;
@@ -996,7 +998,8 @@ void usage() {
                  "  --pipeline-windows N --serve with a layer split on two GPUs (on by default for 2+ stages on AMD gfx12;\n"
                  "                       STRATA_PIPELINE_AUTO=0 or N=0 turns it off): one conversation's verify windows\n"
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
-                 "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
+                 "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md;\n"
+                 "                       3 = a third window in flight (three or more stages; experimental)\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
                  "  --prompt-cache-tail  --serve, single GPU: one extra checkpoint near the prompt's end, at an existing\n"
@@ -1318,6 +1321,8 @@ struct GpuStage {
     int32_t* d_res = nullptr;                            ///< the residency table on its device
     strata::core::Verifier ver;
     strata::core::Verifier ver_b;                        ///< --pipeline-windows: the odd windows' verifier
+    /// --pipeline-windows, the slot pool: the verifiers of slots 2.. (slot 0 is `ver`, 1 `ver_b`)
+    std::unique_ptr<strata::core::Verifier> ver_x[strata::pl::kMaxSlots - 2];
     strata::prefill::Prefill sp;
     cudaStream_t adapt_stream = nullptr;
     cudaEvent_t adapt_ev = nullptr;
@@ -1495,11 +1500,49 @@ double drive_read_gbps(const std::string& path, std::string& why) {
 
 // --pipeline-windows: what the watchdog prints about the pipelined decode loop (set while it runs)
 struct PlDiag {
-    strata::core::Verifier* v[2][2] = {};
+    strata::core::Verifier* v[2][strata::pl::kMaxSlots] = {};   // [first stage, last stage][parity / slot]
     std::atomic<int> a_seq{0}, a_bits{0}, b_bits{0}, d_bits{0}, chain_kind{0}, doomed{0}, ending{0}, chain_live{0};
     std::atomic<long long> iters{0};
+    // the new loop (pl_sched): its mode (-1: the old loop), windows not verified, doomed, the undo's stages pending
+    std::atomic<int> nl_mode{-1}, nl_nwin{0}, nl_ndoom{0}, nl_undo{0}, nl_seq{0};
 };
 PlDiag g_pl_diag;
+
+// The new pipelined decode loop: what pl_sched asks of the engine, each call forwarded to a function
+// the loop sets from its own lambdas (it lives in the request's scope)
+struct PlIoFns final : strata::pl::PlIo {
+    std::function<int(int, int, bool)> f_front;
+    std::function<int(int, int32_t*)> f_last;
+    std::function<int()> f_chain_ready, f_chain_poll, f_chain_n;
+    std::function<bool()> f_chain_live;
+    std::function<const int32_t*()> f_chain_tok;
+    std::function<const float*()> f_chain_prob;
+    std::function<void(int32_t*)> f_ple_prev;
+    std::function<int(int, strata::pl::Lookup&)> f_lookup_propose;
+    std::function<bool(int, int, int, int&)> f_lookup_choose;
+    std::function<bool(const strata::pl::PlOp&)> f_exec;
+    std::function<bool(const strata::pl::PW&, int, const int32_t*, bool&)> f_verdict;
+    std::function<void(const strata::pl::PW&, int, double)> f_observe;
+    std::function<double()> f_now;
+    std::function<void(const char*, int, int, int)> f_trace;
+    int front_poll(int st, int slot, bool doomed) override { return f_front(st, slot, doomed); }
+    int last_poll(int slot, int32_t* outp) override { return f_last(slot, outp); }
+    int chain_ready() override { return f_chain_ready(); }
+    int chain_poll() override { return f_chain_poll(); }
+    bool chain_live() override { return f_chain_live(); }
+    int chain_n() override { return f_chain_n(); }
+    const int32_t* chain_tok() override { return f_chain_tok(); }
+    const float* chain_prob() override { return f_chain_prob(); }
+    void ple_prev(int32_t out[2]) override { f_ple_prev(out); }
+    int lookup_propose(int max_k, strata::pl::Lookup& out) override { return f_lookup_propose(max_k, out); }
+    bool lookup_choose(int T, int k, int match, int& t) override { return f_lookup_choose(T, k, match, t); }
+    bool exec(const strata::pl::PlOp& op) override { return f_exec(op); }
+    bool verdict(const strata::pl::PW& w, int a, const int32_t* outp, bool& last) override { return f_verdict(w, a, outp, last); }
+    void observe(const strata::pl::PW& w, int a, double ms) override { f_observe(w, a, ms); }
+    double now_ms() override { return f_now(); }
+    void trace(const char* ev, int seq, int x0, int x1) override { f_trace(ev, seq, x0, x1); }
+};
+
 void pl_diag_print(std::FILE* f) {
     PlDiag& d = g_pl_diag;
     auto bits = [](int b, char* o) {
@@ -1512,10 +1555,18 @@ void pl_diag_print(std::FILE* f) {
                     "S1-launched S1-done); chain kind %d live %d; doomed %d ending %d\n", d.iters.load(), d.a_seq.load(),
                  bits(d.a_bits.load(), ba), bits(d.b_bits.load(), bb), bits(d.d_bits.load(), bd), d.chain_kind.load(),
                  d.chain_live.load(), d.doomed.load(), d.ending.load());
+    if (d.nl_mode.load() >= 0)
+        std::fprintf(f, "  new loop (%s): oldest seq %d, %d windows not verified, %d doomed, undo stages pending %x\n",
+                     strata::pl::mode_name((strata::pl::Mode) d.nl_mode.load()), d.nl_seq.load(), d.nl_nwin.load(),
+                     d.nl_ndoom.load(), d.nl_undo.load());
     const char* names[2][2] = {{"stage 0 even", "stage 0 odd"}, {"stage 1 even", "stage 1 odd"}};
     for (int st = 0; st < 2; ++st)
-        for (int par = 0; par < 2; ++par)
-            if (d.v[st][par] != nullptr) d.v[st][par]->diag_pipelined(f, names[st][par]);
+        for (int par = 0; par < strata::pl::kMaxSlots; ++par) {
+            if (d.v[st][par] == nullptr) continue;
+            char nm[48];
+            if (par >= 2) std::snprintf(nm, sizeof nm, "%s slot %d", st == 0 ? "first stage" : "last stage", par);
+            d.v[st][par]->diag_pipelined(f, par < 2 ? names[st][par] : nm);
+        }
 }
 
 // #1341 #964: CUDA_LAUNCH_BLOCKING=1 in the environment.  A verify window's graph waits on the GPU for flags the host
@@ -3210,7 +3261,7 @@ int main(int argc, char** argv) {
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
         else if (a == "--prefill-head-alias") o.prefill_head_alias = true;
-        else if (a == "--pipeline-windows") o.pipeline_windows = std::max(0, std::min(2, std::atoi(next("--pipeline-windows"))));
+        else if (a == "--pipeline-windows") o.pipeline_windows = std::max(0, std::min(3, std::atoi(next("--pipeline-windows"))));
         else if (a == "--suffix-draft") o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft")));
         else if (a == "--mtp-max-t") o.mtp_max_t = std::max(0, std::atoi(next("--mtp-max-t")));
         else if (a == "--lookup-chain") o.lookup_chain = std::clamp(std::atoi(next("--lookup-chain")), 0, 7);
@@ -4964,6 +5015,35 @@ int main(int argc, char** argv) {
                                            : "STRATA_MTP_STAGE0=1 asks for it");
         }
     }
+    // --pipeline-windows 3: a third window in flight needs three or more stages (with
+    // two, the third window could only wait at stage 0 behind the second); otherwise it is 2, said once
+    if (o.pipeline_windows == 3 && split_devs.size() < 2) {
+        std::fprintf(stderr, "strata generate: --pipeline-windows 3 is 2: a third window needs three or more stages\n");
+        o.pipeline_windows = 2;
+    }
+    // The slot pool: NS verifiers per stage, a hand-off per boundary and a GDN snapshot per front stage
+    // each, one per window in flight.  Today's loop uses two (slot 0 `ver`, slot 1 `ver_b`).  --pipeline-windows 3
+    // takes 4; STRATA_PIPELINE_UNDO_PER_STAGE=1 (B0: depth 2 with the per-stage undo) 3; STRATA_PIPELINE_SLOTS=k at
+    // least k (at most 5), so a server started with them can be switched per request (STRATA_PIPELINE_SWITCH).  Every
+    // verifier of the process is registered for the watchdog's GPU-wait release, 16 at most (verify.cpp kLiveMax).
+    int pl_ns = 2;
+    const int pl_slots_env = [] { const char* v = std::getenv("STRATA_PIPELINE_SLOTS"); return v != nullptr ? std::atoi(v) : 0; }();
+    const bool pl_ups_env = [] { const char* v = std::getenv("STRATA_PIPELINE_UNDO_PER_STAGE"); return v != nullptr && std::atoi(v) != 0; }();
+    if (o.pipeline_windows >= 2) {
+        pl_ns = o.pipeline_windows >= 3 ? 4 : pl_ups_env ? 3 : 2;
+        pl_ns = std::max(pl_ns, std::min(strata::pl::kMaxSlots, pl_slots_env));
+        const int stages_n = (int) split_devs.size() + 1;
+        const int fit = std::max(2, std::min(strata::pl::kMaxSlots, 16 / std::max(1, stages_n)));
+        if (pl_ns > fit) {
+            std::fprintf(stderr, "strata generate: --pipeline-windows: %d slots per stage on %d stages exceed the 16 "
+                                 "verifiers a process registers; %d slots\n", pl_ns, stages_n, fit);
+            pl_ns = fit;
+        }
+        if (o.pipeline_windows >= 3 && pl_ns < 4) {
+            std::fprintf(stderr, "strata generate: --pipeline-windows 3 is 2: it needs 4 slots per stage\n");
+            o.pipeline_windows = 2;
+        }
+    }
     // ---- layer split across GPUs: each later stage's own copy of the dense weights, its session and (the last) the
     // head, made on its device before the host arena is mapped (as the drafter below, for the same WDDM reason)
     std::vector<std::unique_ptr<GpuStage>> stages;
@@ -5182,8 +5262,9 @@ int main(int argc, char** argv) {
     // 64 MiB left two RTX 5070 Ti under Linux short of it) and, with the decode pipelined, two copies of the first
     // stage's GDN state (sized from its session where the first card's cache is sized; this is the split search's
     // estimate).  Allocated after the caches, so kept out of them.
-    const int64_t kPipeWindowMib = o.pipeline_windows > 0 ? 160 : 0;
-    const int64_t kPipeSnapMib = o.pipeline_windows >= 2 ? 96 : 0;   // ~3 MiB per GDN layer, twice, ~15 layers
+    // The slot pool (pl_ns > 2): one more verifier and one more snapshot per slot past the second.
+    const int64_t kPipeWindowMib = o.pipeline_windows > 0 ? 160 * (pl_ns - 1) : 0;
+    const int64_t kPipeSnapMib = o.pipeline_windows >= 2 ? 48 * pl_ns : 0;   // ~3 MiB per GDN layer, per slot, ~15 layers
     auto gdn_snapshot_bytes = [&](const strata::core::SessionState& s0) -> size_t {
         return (size_t) s0.gdn_alloc * ((size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                         (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1)) * sizeof(float);
@@ -6781,11 +6862,15 @@ int main(int argc, char** argv) {
     bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small card's cache fits
     // --pipeline-windows: what it allocates on CUDA0 after the cache (see kPipeWindowMib)
     const int64_t pipe_first = o.pipeline_windows <= 0 ? 0
-        : (kPipeWindowMib << 20) + (o.pipeline_windows >= 2 ? 2 * (int64_t) gdn_snapshot_bytes(ss) : 0);
-    if (pipe_first > 0)
+        : (kPipeWindowMib << 20) + (o.pipeline_windows >= 2 ? pl_ns * (int64_t) gdn_snapshot_bytes(ss) : 0);
+    if (pipe_first > 0 && pl_ns <= 2)
         std::fprintf(stderr, "strata generate: --pipeline-windows %d: %lld MiB of CUDA0 kept out of the expert cache "
                              "(the second verifier%s)\n", o.pipeline_windows, (long long) (pipe_first >> 20),
                      o.pipeline_windows >= 2 ? ", the GDN snapshots" : "");
+    else if (pipe_first > 0)
+        std::fprintf(stderr, "strata generate: --pipeline-windows %d: %lld MiB of CUDA0 kept out of the expert cache "
+                             "(%d slots: %d more verifiers, the GDN snapshots)\n", o.pipeline_windows,
+                     (long long) (pipe_first >> 20), pl_ns, pl_ns - 1);
     // The MiB the prompt path's OWN buffers (no loan) take, which the cache sizing leaves out.  0.1.39's rule is
     // 160 + chunk * 680 / 1024 (~16 GiB at 24576 against ~2.4 GiB really allocated); STRATA_OWNED_PRICE=exact prices the
     // real allocation instead (Prefill::bytes_needed_owned: 2 MiB pages, the ring in one piece, as PR #796 measured)
@@ -9943,6 +10028,13 @@ int main(int argc, char** argv) {
             if (st == 0) return par == 0 ? ver : ver_b;
             return par == 0 ? stages[(size_t) st - 1]->ver : stages[(size_t) st - 1]->ver_b;
         };
+        // the slot pool (pl_ns slots): slot 0 and 1 are the two parities' verifiers, slots 2.. their own
+        std::unique_ptr<strata::core::Verifier> ver_x[strata::pl::kMaxSlots - 2];
+        SplitDrive split_drive_x[strata::pl::kMaxSlots - 2];
+        auto stage_ver_q = [&](int st, int q) -> strata::core::Verifier& {
+            if (q < 2) return stage_ver_p(st, q);
+            return st == 0 ? *ver_x[q - 2] : *stages[(size_t) st - 1]->ver_x[q - 2];
+        };
         if (pipe) {
             bool ok_p = true;
             ok_p = cudaStreamCreateWithFlags(&pl_stream[0], cudaStreamNonBlocking) == cudaSuccess;   // the current card
@@ -10113,6 +10205,83 @@ int main(int argc, char** argv) {
             // the setters reach the later stages; the pipeline never chains run/commit
             for (int st = 0; st + 1 < n_stages; ++st) stage_ver_p(st, 1).set_next(&stage_ver_p(st + 1, 1), &split_drive_b);
         }
+        // --pipeline-windows, the slot pool: slots 2..pl_ns-1, each a verifier on every stage and a
+        // hand-off per boundary of its own (initialized before `ver`, as the odd windows' are).  What does not fit
+        // gives the pool back to two slots, said once - today's loop and the N2 arm need only two (a missing third
+        // verifier used to end the engine; it no longer does).
+        std::vector<float*> pl_hand_x;   // the extra hand-offs' host pointers
+        auto pl_pool_shrink = [&](const std::string& why) {
+            std::fprintf(stderr, "strata serve: --pipeline-windows: the slot pool stays at two slots: %s%s\n", why.c_str(),
+                         vram_free_note().c_str());
+            cudaGetLastError();
+            for (int q = 2; q < strata::pl::kMaxSlots; ++q) {
+                ver_x[q - 2].reset();
+                for (auto& st : stages) {
+                    const strata::core::OnDevice on(st->dev);
+                    st->ver_x[q - 2].reset();
+                }
+            }
+            for (float* h : pl_hand_x) (void) cudaFreeHost(h);
+            pl_hand_x.clear();
+            pl_ns = 2;
+            err.clear();
+            if (o.pipeline_windows >= 3) {
+                std::fprintf(stderr, "strata serve: --pipeline-windows 3 is 2 (it needs 4 slots)\n");
+                o.pipeline_windows = 2;
+            }
+        };
+        if (pipe && pl_ns > 2) {
+            const size_t hb = (size_t) strata::kernels::kVerifyMaxT *
+                              (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
+            std::string why;
+            for (int q = 2; q < pl_ns && why.empty(); ++q) {
+                std::vector<float*> hand_q((size_t) n_stages - 1, nullptr);   // device pointers
+                for (float*& h : hand_q) {
+                    float* hh = nullptr;
+                    if (cudaHostAlloc((void**) &hh, hb, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                        cudaHostGetDevicePointer((void**) &h, hh, 0) != cudaSuccess) {
+                        if (hh != nullptr) pl_hand_x.push_back(hh);
+                        why = "a hand-off allocation failed";
+                        break;
+                    }
+                    pl_hand_x.push_back(hh);
+                    std::memset(hh, 0, hb);
+                }
+                for (int st = n_stages - 1; st >= 0 && why.empty(); --st) {   // stage 0 last, as the odd windows'
+                    const bool last = st + 1 == n_stages;
+                    std::unique_ptr<strata::core::Verifier>& up = st == 0 ? ver_x[q - 2] : stages[(size_t) st - 1]->ver_x[q - 2];
+                    up = std::make_unique<strata::core::Verifier>();
+                    strata::core::Verifier& v = *up;
+                    v.set_stream(pl_stream[(size_t) st]);
+                    v.set_always_publish(true);
+                    v.set_stage(st == 0 ? 0 : split_at[(size_t) st - 1], last ? -1 : split_at[(size_t) st],
+                                st == 0 ? nullptr : hand_q[(size_t) st - 1], last ? nullptr : hand_q[(size_t) st]);
+                    bool ok_v = false;
+                    if (st == 0) {
+                        ok_v = v.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err);
+                    } else {
+                        GpuStage& gs = *stages[(size_t) st - 1];
+                        const strata::core::OnDevice on(gs.dev);
+                        strata::core::VerifyHits vs;
+                        vs.d_res = gs.d_res;
+                        vs.h_res = host_res.empty() ? nullptr : host_res.data();
+                        vs.cache_base = gs.cache.device_slot(0);
+                        vs.blob = thits.blob;
+                        vs.slot_off = gs.cache.slot_offsets();
+                        vs.n_slots = gs.cache.slots();
+                        ok_v = v.init(gs.wt, g, gs.ss, vs, gs.head.loaded() ? &gs.head : nullptr, o.spec, err);
+                    }
+                    if (!ok_v)
+                        why = "slot " + std::to_string(q) + "'s verifier on CUDA" +
+                              std::to_string(st == 0 ? 0 : stages[(size_t) st - 1]->dev) + " (stage " + std::to_string(st + 1) +
+                              "): " + err;
+                }
+                if (why.empty())
+                    for (int st = 0; st + 1 < n_stages; ++st)
+                        stage_ver_q(st, q).set_next(&stage_ver_q(st + 1, q), &split_drive_x[q - 2]);
+            }
+            if (!why.empty()) pl_pool_shrink(why);
+        }
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
@@ -10183,6 +10352,15 @@ int main(int argc, char** argv) {
                 stage_ver_p(st, 1).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
             }
         }
+        for (int q = 2; q < pl_ns && pipe; ++q) {   // the slot pool's other slots: the same routing, their own plans
+            SplitDrive& sd = split_drive_x[q - 2];
+            sd = split_drive;
+            for (int st = 0; st < n_stages; ++st) {
+                sd.plan[st] = stage_ver_q(st, q).plan_sink();
+                stage_ver_q(st, q).set_split(o.spec_split);
+                stage_ver_q(st, q).set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+            }
+        }
         // the pool the verify windows call: with a layer split, the wrapper that routes each layer to its stage
         const strata::core::PoolMultiFn win_pool_fn = n_stages > 1 ? &drive_pool_split : &drive_pool_multi;
         const strata::core::PoolMultiFn invariant_win_pool_fn = n_stages > 1 ? &drive_pool_split_invariant : &drive_pool_multi_invariant;
@@ -10204,9 +10382,9 @@ int main(int argc, char** argv) {
             int dev = 0;
             size_t bytes = 0;
             void* state = nullptr;            // the stage's GDN state (its session's)
-            float* buf[2] = {nullptr, nullptr};
+            float* buf[strata::pl::kMaxSlots] = {};   // [0], [1] by parity (today's loop); [slot] in the slot pool
             cudaStream_t side = nullptr;
-            cudaEvent_t pre[2] = {nullptr, nullptr}, ev[2] = {nullptr, nullptr};
+            cudaEvent_t pre[strata::pl::kMaxSlots] = {}, ev[strata::pl::kMaxSlots] = {};
         };
         const int pl_nf = pipe ? n_stages - 1 : 0;   // the front stages
         std::vector<PlSnap> pl_snaps((size_t) pl_nf);
@@ -10242,16 +10420,53 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // the slot pool: a snapshot (and its events) per slot past the second on every front stage, beside the window
+        // only (the new loop takes every snapshot on the side stream)
+        if (pipe && pl_ns > 2) {
+            std::string why = !pl_snap_ok ? "the GDN snapshots do not fit"
+                            : !pl_snap_overlap ? "the GDN snapshots are not beside the window (STRATA_PIPELINE_SNAP_OVERLAP)"
+                                               : "";
+            for (int st = 0; st < pl_nf && why.empty(); ++st) {
+                PlSnap& sn = pl_snaps[(size_t) st];
+                const strata::core::OnDevice on(sn.dev);
+                for (int q = 2; q < pl_ns && why.empty(); ++q)
+                    if (cudaMalloc((void**) &sn.buf[q], sn.bytes) != cudaSuccess ||
+                        cudaEventCreateWithFlags(&sn.pre[q], cudaEventDisableTiming) != cudaSuccess ||
+                        cudaEventCreateWithFlags(&sn.ev[q], cudaEventDisableTiming) != cudaSuccess)
+                        why = "the GDN snapshot of slot " + std::to_string(q) + " on stage " + std::to_string(st + 1) +
+                              " does not fit";
+            }
+            if (!why.empty()) {
+                for (PlSnap& sn : pl_snaps) {
+                    const strata::core::OnDevice on(sn.dev);
+                    for (int q = 2; q < strata::pl::kMaxSlots; ++q) {
+                        if (sn.buf[q] != nullptr) (void) cudaFree(sn.buf[q]);
+                        if (sn.pre[q] != nullptr) (void) cudaEventDestroy(sn.pre[q]);
+                        if (sn.ev[q] != nullptr) (void) cudaEventDestroy(sn.ev[q]);
+                        sn.buf[q] = nullptr;
+                        sn.pre[q] = sn.ev[q] = nullptr;
+                    }
+                }
+                pl_pool_shrink(why);
+            }
+        }
         if (pipe)
             std::fprintf(stderr, "strata serve: --pipeline-windows %d: two verifiers per stage, %d stages overlap across "
                                  "windows%s\n", o.pipeline_windows, n_stages,
                          !pl_snap_ok ? "" : pl_snap_overlap ? " (decode too; the GDN snapshots beside the window)"
                                                             : " (decode too; the GDN snapshot on the critical path)");
+        if (pipe && pl_ns > 2)
+            std::fprintf(stderr, "strata serve: --pipeline-windows %d: the slot pool holds %d slots (a verifier on every "
+                                 "stage, a hand-off per boundary and a GDN snapshot per front stage each)\n",
+                         o.pipeline_windows, pl_ns);
         // the verifiers by [stage][parity] - the first stage and the LAST (stage 1 of a two-stage split; the decode loop
         // reaches the middle stages through stage_ver_p) - their pool routing, and the drafter's events (in a pipelined
         // prompt read, a stage-1 window waits until the drafter has read the rows of the same parity's previous window)
         strata::core::Verifier* PV[2][2] = {{&ver, &ver_b}, {pipe ? &stages.back()->ver : nullptr, pipe ? &stages.back()->ver_b : nullptr}};
         SplitDrive* PSD[2] = {&split_drive, &split_drive_b};
+        // the same by slot (the new loop): every slot's plan sink, [0] and [1] the parities'
+        SplitDrive* PSDq[strata::pl::kMaxSlots] = {&split_drive, &split_drive_b, &split_drive_x[0], &split_drive_x[1],
+                                                   &split_drive_x[2]};
         cudaEvent_t pl_mtp_ev[2] = {nullptr, nullptr};
         bool pl_mtp_live[2] = {false, false};
         bool pl_prepared = false;
@@ -10259,8 +10474,8 @@ int main(int argc, char** argv) {
         auto pl_prepare = [&](std::string& e) -> bool {
             if (pl_prepared) return true;
             for (int st = 0; st < n_stages; ++st)
-                for (int par = 0; par < 2; ++par) {
-                    strata::core::Verifier& v = stage_ver_p(st, par);
+                for (int par = 0; par < pl_ns; ++par) {   // every slot (two: the parities)
+                    strata::core::Verifier& v = stage_ver_q(st, par);
                     const strata::core::OnDevice on(v.device());
                     if (!v.capture_all(e)) return false;
                 }
@@ -10284,11 +10499,11 @@ int main(int argc, char** argv) {
             for (int round = 0; round < 10000000; ++round) {
                 bool any = false;
                 for (int st = 0; st < n_stages && pipe; ++st)
-                    for (int par = 0; par < 2; ++par) {
-                        strata::core::Verifier& v = stage_ver_p(st, par);
+                    for (int par = 0; par < pl_ns; ++par) {   // every slot (two: the parities)
+                        strata::core::Verifier& v = stage_ver_q(st, par);
                         if (!v.in_flight()) continue;
                         any = true;
-                        if (v.service(&drive_pool_split, PSD[par], e2) < 0) return;
+                        if (v.service(&drive_pool_split, PSDq[par], e2) < 0) return;
                         if (v.done(e2)) v.pl_finish(nullptr, e2);
                         else if (!e2.empty()) return;
                     }
@@ -10300,6 +10515,96 @@ int main(int argc, char** argv) {
             }
             const strata::core::OnDevice on(mtp.device());
             cudaStreamSynchronize(mtp.stream());
+        };
+        // STRATA_PIPELINE_CHECK_STATE=1 (testing): at the end of a request, every stage's
+        // state over the committed tokens [0, end) under pl_state_mask(end) - the GDN recurrent and conv state whole,
+        // the QSA KV cells below `end`, the indexer's completed pooled blocks and the tail slots in use, stage 0's PLE
+        // history and ss.ple_prev - one FNV-1a line per stage.  The same function for the serial loop and both
+        // pipelined loops, so two arms of an A/B compare line by line (compare `end` first: a window cut by max_new
+        // commits its own a + 1).  What the mask leaves out legitimately differs (cells past `end`, the tail block's
+        // pooled row, block_pos, the drafter).
+        static const bool pl_check_state = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_CHECK_STATE"); return v != nullptr && std::atoi(v) != 0; }();
+        auto pl_state_dump = [&](int64_t end, const char* loop) -> bool {
+            const strata::pl::StateMask m0 = strata::pl::pl_state_mask(end);
+            const strata::kernels::QsaShapes qs = [&] {
+                strata::kernels::QsaShapes q = strata::kernels::qsa_real_shapes();
+                q.n_head_kv = g.n_head_kv; q.head_dim = g.head_dim; q.idx_dim = g.idx_key_dim;
+                return q;
+            }();
+            const int64_t ib = qs.idx_block > 0 ? qs.idx_block : 4;
+            const int64_t idx_blocks = ib == 4 ? m0.idx_blocks : end / ib;
+            const int64_t idx_tail = ib == 4 ? m0.idx_tail : end % ib;
+            const int nst = split_same ? 1 : n_stages;
+            for (int st = 0; st < nst; ++st) {
+                const strata::core::OnDevice on(st == 0 ? ver.device() : stages[(size_t) st - 1]->dev);
+                if (cudaDeviceSynchronize() != cudaSuccess) return false;
+            }
+            std::vector<uint8_t> buf((size_t) 1 << 16);
+            bool ok = true;
+            auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+                for (size_t off = 0; ok && p != nullptr && off < bytes;) {
+                    const size_t k = std::min(buf.size(), bytes - off);
+                    if (cudaMemcpy(buf.data(), static_cast<const uint8_t*>(p) + off, k, cudaMemcpyDefault) != cudaSuccess) {
+                        ok = false;
+                        break;
+                    }
+                    h = fnv1a(buf.data(), k, h);
+                    off += k;
+                }
+                return h;
+            };
+            auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+                const int64_t ps = qs.page_size;
+                for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
+                    for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
+                        const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
+                        const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+                        h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
+                    }
+                return h;
+            };
+            const int64_t kvb = qs.head_dim, scb = (qs.head_dim / 64) * 2;
+            auto kv_arrays = [&](const strata::core::QsaState& q) {
+                const bool h = q.kv_mode != 0;
+                std::vector<std::pair<const void*, int64_t>> a;
+                if (q.kv_q4) {
+                    const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                    a = {{h ? q.host.k_q4 : q.k_q4, q4b}, {h ? q.host.v_q4 : q.v_q4, q4b}};
+                } else if (q.kv_hybrid) {
+                    const int64_t q4b = (int64_t) strata::kernels::kv_q4_bytes_per_head((int) qs.head_dim);
+                    a = {{h ? q.host.k_q : q.k_q, kvb}, {h ? q.host.v_q4 : q.v_q4, q4b}, {h ? q.host.k_scale : q.k_scale, scb}};
+                } else if (q.kv_int8) {
+                    a = {{h ? q.host.k_q : q.k_q, kvb}, {h ? q.host.v_q : q.v_q, kvb},
+                         {h ? q.host.k_scale : q.k_scale, scb}, {h ? q.host.v_scale : q.v_scale, scb}};
+                } else {
+                    a = {{h ? q.host.k_pool : q.k_pool, qs.head_dim * 2}, {h ? q.host.v_pool : q.v_pool, qs.head_dim * 2}};
+                }
+                return a;
+            };
+            for (int st = 0; st < nst; ++st) {
+                const strata::core::SessionState& sst = st == 0 ? ss : stages[(size_t) st - 1]->ss;
+                const strata::core::OnDevice on(st == 0 ? ver.device() : stages[(size_t) st - 1]->dev);
+                const uint64_t h0 = 1469598103934665603ull;
+                const uint64_t h_gdn = sst.gdn_alloc > 0 ? hash_dev(sst.gdn_state, gdn_snapshot_bytes(sst), h0) : h0;
+                uint64_t h_kv = h0, h_idx = h0, h_ple = h0;
+                for (int64_t j = 0; j < sst.qsa_alloc; ++j) {   // this stage's own QSA layers
+                    const strata::core::QsaState& q = sst.qsa_states[sst.qsa_ord0 + j];
+                    for (const auto& [pool, w] : kv_arrays(q))
+                        if (pool != nullptr) h_kv = hash_cells(pool, w, 0, std::min<int64_t>(end, q.max_cells), h_kv);
+                    h_idx = hash_dev(q.idx_pooled, (size_t) (idx_blocks * qs.idx_dim) * sizeof(float), h_idx);
+                    h_idx = hash_dev(q.idx_tail, (size_t) (idx_tail * qs.idx_dim) * sizeof(float), h_idx);
+                }
+                if (sst.ple_hist != nullptr) {
+                    const ConvStateSizes z = conv_state_sizes(g, sst);
+                    h_ple = hash_dev(sst.ple_hist, z.ple, h_ple);
+                    h_ple = fnv1a(sst.ple_prev, sizeof sst.ple_prev, h_ple);
+                }
+                if (!ok) return false;
+                std::fprintf(stderr, "strata pipeline state: st=%d gdn %016llx kv %016llx idx %016llx ple %016llx end %lld "
+                                     "loop %s\n", st, (unsigned long long) h_gdn, (unsigned long long) h_kv,
+                             (unsigned long long) h_idx, (unsigned long long) h_ple, (long long) end, loop);
+            }
+            return true;
         };
         std::vector<int64_t> cur;
         // ---- the conversation cache (see ConvCheckpoint).  `live` is what the session holds right now: the tokens
@@ -14660,10 +14965,22 @@ int main(int argc, char** argv) {
                         if (sp.embd_rows[i] != nullptr) return false;
                 return true;
             };
-            // --pipeline-windows, testing: STRATA_PIPELINE_SWITCH=<file> is read at every request, "pw=<0|1|2>
-            // theta=<f> force_miss=<k> short_read=<n>" - an A/B of the pipelined and the serial loops (and forced
-            // rollbacks) on one server, with the same expert placement
+            // --pipeline-windows, testing: STRATA_PIPELINE_SWITCH=<file> is read at every request, "pw=<0|1|2|3>
+            // theta=<f> force_miss=<k> short_read=<n> ups=<0|1> newloop=<0|1> theta3=<f> force_miss_c=<k>" - an A/B of
+            // the pipelined and the serial loops (and forced rollbacks) on one server, with the same expert placement
             int pl_pw = pipe ? o.pipeline_windows : 0;
+            // the new loop: ups = the per-stage undo with the slot pool (B0 at pw 2,
+            // always at pw 3); newloop = the new loop with today's semantics (N2: global undo, two slots; testing)
+            int pl_ups = pl_ups_env ? 1 : 0;
+            int pl_newloop = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_NEWLOOP"); return v != nullptr && std::atoi(v) != 0 ? 1 : 0; }();
+            float pl_theta3 = [] {   // the gate of a window behind two guesses (depth 3; < 0: theta)
+                const char* v = pipe_dbg_env("STRATA_PIPELINE_THETA3");
+                return v ? (float) std::atof(v) : -1.0f;
+            }();
+            int pl_force_miss_c = [] {   // exactness test: every k-th window behind two guesses gets a wrong first token
+                const char* v = pipe_dbg_env("STRATA_PIPELINE_FORCE_MISS_C");
+                return v ? std::max(0, std::atoi(v)) : 0;
+            }();
             float pl_theta = [] {   // a speculative window is launched only when its estimated chance is at least this
                 const char* v = pipe_dbg_env("STRATA_PIPELINE_THETA");
                 return v ? (float) std::atof(v) : 0.2f;
@@ -14678,12 +14995,49 @@ int main(int argc, char** argv) {
                     const size_t nr = std::fread(buf, 1, sizeof buf - 1, f);
                     std::fclose(f);
                     buf[nr] = 0;
-                    if (const char* q = std::strstr(buf, "pw=")) pl_pw = std::max(0, std::min(2, std::atoi(q + 3)));
+                    if (const char* q = std::strstr(buf, "pw=")) pl_pw = std::max(0, std::min(3, std::atoi(q + 3)));
                     if (const char* q = std::strstr(buf, "theta=")) pl_theta = (float) std::atof(q + 6);
                     if (const char* q = std::strstr(buf, "force_miss=")) pl_force_miss = std::max(0, std::atoi(q + 11));
                     if (const char* q = std::strstr(buf, "short_read=")) req_short_read = std::max(0LL, std::atoll(q + 11));
-                    std::fprintf(stderr, "strata pipeline switch: pw=%d theta=%.3f force_miss=%d short_read=%lld\n", pl_pw,
-                                 pl_theta, pl_force_miss, (long long) req_short_read);
+                    if (const char* q = std::strstr(buf, "ups=")) pl_ups = std::atoi(q + 4) != 0 ? 1 : 0;
+                    if (const char* q = std::strstr(buf, "newloop=")) pl_newloop = std::atoi(q + 8) != 0 ? 1 : 0;
+                    if (const char* q = std::strstr(buf, "theta3=")) pl_theta3 = (float) std::atof(q + 7);
+                    if (const char* q = std::strstr(buf, "force_miss_c=")) pl_force_miss_c = std::max(0, std::atoi(q + 13));
+                    std::fprintf(stderr, "strata pipeline switch: pw=%d theta=%.3f force_miss=%d short_read=%lld ups=%d "
+                                         "newloop=%d theta3=%.3f force_miss_c=%d\n", pl_pw, pl_theta, pl_force_miss,
+                                 (long long) req_short_read, pl_ups, pl_newloop, pl_theta3, pl_force_miss_c);
+                }
+            }
+            // Which loop decodes this request (pw >= 2): today's (-1), or the new one in a pl_sched mode - pw 3 depth 3
+            // (B), ups B0, newloop N2.  What the server was started with bounds it (the slot pool's size, the
+            // snapshots beside the window); what it cannot run is said once and runs today's loop.
+            int pl_mode = -1;
+            if (pipe && pl_pw >= 2 && (pl_pw >= 3 || pl_ups != 0 || pl_newloop != 0)) {
+                const char* note = nullptr;
+                strata::pl::Mode m = pl_pw >= 3 ? strata::pl::Mode::B : pl_ups != 0 ? strata::pl::Mode::B0
+                                                                                    : strata::pl::Mode::N2;
+                if (m == strata::pl::Mode::B) {
+                    // the new loop is wired at depth 2 here; depth 3 (the third window, the 11-output chain) follows
+                    note = "--pipeline-windows 3: depth 3 is not wired yet; the windows run as B0 (depth 2, per-stage undo)";
+                    m = strata::pl::Mode::B0;
+                }
+                if (mtp_first) {
+                    note = "the new pipelined loop does not run with the draft layer on the first stage "
+                           "(STRATA_MTP_STAGE0); today's loop";
+                    pl_mode = -1;
+                } else if (m != strata::pl::Mode::N2 && pl_ns < 3) {
+                    note = "the per-stage undo needs 3 slots (start with STRATA_PIPELINE_UNDO_PER_STAGE=1, "
+                           "STRATA_PIPELINE_SLOTS=3 or --pipeline-windows 3); today's loop";
+                    pl_mode = -1;
+                } else if (!pl_snap_ok || !pl_snap_overlap) {
+                    note = "the new loop needs the GDN snapshots beside the window; today's loop";
+                    pl_mode = -1;
+                } else {
+                    pl_mode = (int) m;
+                }
+                if (note != nullptr) {   // said once per reason
+                    static std::set<std::string> said;
+                    if (said.insert(note).second) std::fprintf(stderr, "strata serve: %s\n", note);
                 }
             }
             // --pipeline-windows: tokens [a, b) through the windows with the stages overlapped.  The tokens are known,
@@ -15540,6 +15894,7 @@ int main(int argc, char** argv) {
             }
             ver.set_sampling(req_sp);
             if (pipe) ver_b.set_sampling(req_sp);   // (reaches the later stage's odd verifier)
+            for (int q = 2; q < pl_ns && pipe; ++q) stage_ver_q(0, q).set_sampling(req_sp);   // the slot pool's, likewise
             if (use_mtp) mtp.set_draft_sampling(req_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
             const bool gated_proposal = use_mtp && mtp.prob() && strata::core::spec_gate_pick() &&
                 gated_proposal_usable(o.pipeline_windows < 2 && o.batch == 0 && n_stages == 1 && !multi_gpu && drive.d.remote_count == 0,
@@ -15562,9 +15917,12 @@ int main(int argc, char** argv) {
                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
                                                ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
             if (pipe) for (int st = 0; st < split_drive.n; ++st) split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
+            for (int q = 2; q < pl_ns && pipe; ++q)
+                for (int st = 0; st < split_drive.n; ++st) split_drive_x[q - 2].pcie_num[st] = split_drive.pcie_num[st];
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
+            for (int q = 2; q < pl_ns && pipe; ++q) stage_ver_q(0, q).set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
             tr("prompt start", n - 1);
             // The prompt is read in two parts when it has a turn boundary past `resume`: up to the last <|im_start|>
@@ -15832,8 +16190,11 @@ int main(int argc, char** argv) {
             // and a window row computes what it would in any other window, so every emitted token is the serial loop's
             // (with STRATA_IQ_MT_MIN=1 bit for bit; sampled requests with the same Philox draw per position).
             bool pl_ran = false;
-            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
-            const char* pl_serial = !pl_want ? nullptr
+            // the new loop decodes (see pl_mode); not a first window merged with the prompt's last tokens
+            // (STRATA_ADMIT_MERGE_FIRST), which today's loop takes
+            const bool pl_new = pipe && pl_pw >= 2 && pl_snap_ok && pl_mode >= 0 && merge_T == 0;
+            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok && !pl_new;
+            const char* pl_serial = !pl_want && !pl_new ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
                                   : mtp.coupled() ? "coupled draft sampling" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
@@ -15841,6 +16202,442 @@ int main(int argc, char** argv) {
                 if (said.insert(pl_serial).second)
                     std::fprintf(stderr, "strata serve: --pipeline-windows: a request with %s decodes serially\n",
                                  pl_serial);
+            }
+            // ======== --pipeline-windows, the new loop: pl_sched decides what happens and in
+            // which order, this block turns each of its operations into the verifier, snapshot or drafter call it names.
+            // N2 (STRATA_PIPELINE_NEWLOOP=1, testing) runs today's loop operation for operation, so the translation can
+            // be checked against it (same events, same speed); B0 (STRATA_PIPELINE_UNDO_PER_STAGE=1) is depth 2 with the
+            // slot pool and the per-stage undo: a wrong guess is undone on each front stage as soon as no doomed window
+            // runs there, and the fresh window goes on without waiting for the others.  Every emitted token is still the
+            // serial loop's: only the oldest window runs the last stage and is emitted; a wrong
+            // guess is undone per stage (the snapshot of the verified window restored, its commit replayed with the real
+            // count); a slot - its verifier on every stage, its hand-offs, plan sink and snapshots - is not reused before
+            // its last reader is done with it.
+            if (pl_new && pl_serial == nullptr && !cancelled && produced_n < max_new) {
+                pl_ran = true;
+                if (!pl_prepare(err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
+                const strata::pl::Mode pl_m = (strata::pl::Mode) pl_mode;
+                // stage st's verifier of slot q (st == pl_nf: the last stage)
+                auto SV = [&](int st, int q) -> strata::core::Verifier& { return stage_ver_q(st, q); };
+                static const bool pl_log = pipe_dbg_env("STRATA_PIPELINE_LOG") != nullptr;
+                drive.d.layers = 0;
+                drive.d.experts = 0;
+                drive.d.failed = false;
+                // the adaptive tier beside the pipeline, as in today's loop (see there)
+                std::thread pl_adapt_thr;
+                std::atomic<bool> pl_adapt_done{true};
+                bool pl_adapt_ok = true;
+                auto die = [&](const std::string& m) -> int {
+                    std::fprintf(stderr, "strata serve: pipelined decode: %s\n", m.c_str());
+                    strata::core::diag_pipeline_fn().store(nullptr);
+                    g_pl_diag.nl_mode.store(-1);
+                    strata::core::release_gpu_waits(stderr);
+                    if (pl_adapt_thr.joinable()) pl_adapt_thr.join();
+                    if (ajob) {
+                        ajob->wait();
+                        a_pl_idle = nullptr;
+                    }
+                    std::printf("ERR %s\n", m.c_str());
+                    std::fflush(stdout);
+                    return 1;
+                };
+                // STRATA_PIPELINE_TRACE=<file>: every event of the loop with its time (appended per request; the new
+                // loop's events: CD2 a window behind two guesses made, CW a chain request waiting, CX a chain step
+                // queued, US one stage's undo queued, SW a window waiting for a slot; L0's x1 = 10 k + st)
+                static const char* pl_trace_path = pipe_dbg_env("STRATA_PIPELINE_TRACE");
+                std::string pl_trace;
+                const Clock::time_point pl_tr0 = Clock::now();
+                auto tre = [&](const char* ev, int seq, int x0, int x1) {
+                    if (pl_trace_path == nullptr) return;
+                    char b[96];
+                    std::snprintf(b, sizeof b, "%.3f %s %d %d %d\n",
+                                  std::chrono::duration<double, std::milli>(Clock::now() - pl_tr0).count(), ev, seq, x0, x1);
+                    pl_trace += b;
+                };
+                // events after all the work every stage's stream holds now, and whether they have passed
+                std::vector<cudaEvent_t> fence_ev((size_t) n_stages, nullptr), exch_ev((size_t) n_stages, nullptr);
+                for (int st = 0; st < n_stages; ++st) {
+                    const strata::core::OnDevice on(stage_ver_p(st, 0).device());
+                    cudaEventCreateWithFlags(&fence_ev[(size_t) st], cudaEventDisableTiming);
+                    cudaEventCreateWithFlags(&exch_ev[(size_t) st], cudaEventDisableTiming);
+                }
+                auto stage_record = [&](std::vector<cudaEvent_t>& ev) {
+                    for (int st = 0; st < n_stages; ++st) {
+                        const strata::core::OnDevice on(stage_ver_p(st, 0).device());
+                        cudaEventRecord(ev[(size_t) st], pl_stream[(size_t) st]);
+                        (void) cudaStreamQuery(pl_stream[(size_t) st]);
+                    }
+                };
+                auto stage_passed = [&](std::vector<cudaEvent_t>& ev) {
+                    for (cudaEvent_t e : ev)
+                        if (cudaEventQuery(e) == cudaErrorNotReady) return false;
+                    return true;
+                };
+                adapt_fence = [&]() {
+                    stage_record(fence_ev);
+                    while (!stage_passed(fence_ev)) std::this_thread::yield();
+                };
+                src.prepare_overrides();
+                bool exch_wait = false;
+                std::vector<int32_t> pl_landed;
+                auto pl_release = [&]() {
+                    unpin_blobs(pin_live);
+                    src.commit_exchanges();
+                    for (const int32_t i : pl_landed) srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
+                    pl_landed.clear();
+                    exch_wait = false;
+                };
+                auto pl_apply = [&]() {
+                    if (exch_wait) {
+                        if (stage_passed(exch_ev)) pl_release();
+                        return;
+                    }
+                    if (pending.empty() || cudaEventQuery(adapt_ev) != cudaSuccess) return;
+                    for (auto& st : stages)
+                        if (st->adapt_live && cudaEventQuery(st->adapt_ev) != cudaSuccess) return;
+                    for (auto& st : stages) st->adapt_live = false;
+                    for (const auto& [i, slot] : pending) {
+                        host_res[(size_t) i] = slot;
+                        pl_landed.push_back(i);
+                    }
+                    pending.clear();
+                    pending_age = 0;
+                    res_upload();
+                    stage_record(exch_ev);
+                    exch_wait = true;
+                };
+                // --adapt-async: a stage is idle when none of its slots has a window in flight (two stages only)
+                if (ajob)
+                    a_pl_idle = [&](int st) {
+                        for (int q = 0; q < pl_ns; ++q)
+                            if (SV(st == 0 ? 0 : pl_nf, q).in_flight()) return false;
+                        return true;
+                    };
+                double a_poll_ms = 0.0;
+                auto pl_adapt = [&]() -> bool {   // the blocking tier (--adapt-async 0)
+                    if (pl_adapt_thr.joinable() && pl_adapt_done.load()) {
+                        pl_adapt_thr.join();
+                        if (!pl_adapt_ok) return false;
+                    }
+                    if (pl_adapt_thr.joinable()) return true;   // still adapting
+                    pl_apply();
+                    if (!drive.d.usage.empty() && o.adapt_every > 0 && (rounds % o.adapt_every) == 0 && pending.empty() &&
+                        !exch_wait) {
+                        pl_adapt_done = false;
+                        pl_adapt_thr = std::thread([&] { strata::platform::name_this_thread("strata-adapt"); strata::aux_cpus::pin_current_thread(); pl_adapt_ok = adapt(); pl_adapt_done = true; });
+                    }
+                    return true;
+                };
+                // the scheduler's configuration: today's switches, and the new loop's
+                strata::pl::Config cfg;
+                cfg.mode = pl_m;
+                cfg.n_front = pl_nf;
+                // N2 two (today's parities); B0 three unless STRATA_PIPELINE_SLOTS asks more; B four
+                cfg.slots = pl_m == strata::pl::Mode::N2 ? 2
+                          : std::min(pl_ns, std::max(pl_m == strata::pl::Mode::B0 ? 3 : 4, pl_slots_env));
+                cfg.S = S;
+                cfg.S_mtp = S_mtp;
+                cfg.spec_min_p = req_spec_min_p;
+                cfg.theta = pl_theta;
+                cfg.theta3 = pl_theta3;
+                cfg.max_context = o.max_context;
+                cfg.chain_out2 = strata::kernels::kVerifyMaxT - 1;
+                cfg.chain_max = strata::core::MtpDrafter::kChainMax;
+                cfg.chain_stop = false;   // depth 3 only
+                cfg.force_miss = pl_force_miss;
+                cfg.force_miss_c = pl_force_miss_c;
+                cfg.prestage = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_PRESTAGE"); return v == nullptr || std::atoi(v) != 0; }();
+                cfg.agree = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_AGREE"); return v == nullptr || std::atoi(v) != 0; }();
+                cfg.suffix = o.suffix_draft > 0;
+                cfg.lookup_pon = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_LOOKUP_PON"); return v ? (float) std::atof(v) : 0.75f; }();
+                cfg.spec_depth = [] { const char* v = pipe_dbg_env("STRATA_PIPELINE_SPEC_DEPTH"); return v ? std::max(1, std::atoi(v)) : 1 << 20; }();
+                // a doomed window served without its pool work (today's STRATA_PIPELINE_DOOM_SKIP; the zero-doorbell
+                // graphs do not read the plans, but N2 keeps today's calls)
+                static const bool doom_skip = [] { const char* e = pipe_dbg_env("STRATA_PIPELINE_DOOM_SKIP"); return e == nullptr || std::atoi(e) != 0; }();
+                const Clock::time_point pl_t0 = Clock::now();
+                auto ms_now = [&]() { return std::chrono::duration<double, std::milli>(Clock::now() - pl_t0).count(); };
+                // ---- the engine's side of the scheduler (PlIo)
+                PlIoFns io;
+                // a window in flight on stage st (st == pl_nf: the last), served; once done, finished (picks to `out`)
+                auto poll = [&](int st, int q, bool doomed, int32_t* out) -> int {
+                    strata::core::Verifier& v = SV(st, q);
+                    if (v.service(doom_skip && doomed ? nullptr : &drive_pool_split, (void*) PSDq[q], err) < 0) return -1;
+                    if (drive.d.failed) {
+                        err = drive.d.fail ? drive.d.fail : "the expert pool failed";
+                        return -1;
+                    }
+                    if (v.done(err)) return v.pl_finish(out, err) ? 1 : -1;
+                    return err.empty() ? 0 : -1;
+                };
+                io.f_front = [&](int st, int q, bool doomed) { return poll(st, q, doomed, nullptr); };
+                io.f_last = [&](int q, int32_t* outp) { return poll(pl_nf, q, false, outp); };
+                io.f_chain_ready = [&]() { return mtp.chain_outputs_ready(err); };
+                io.f_chain_poll = [&]() { return mtp.chain_poll(err); };
+                io.f_chain_live = [&]() { return mtp.chain_live(); };
+                io.f_chain_n = [&]() { return mtp.chain_n(); };
+                io.f_chain_tok = [&]() { return mtp.chain_tok(); };
+                io.f_chain_prob = [&]() { return mtp.chain_prob(); };
+                io.f_ple_prev = [&](int32_t* out) {
+                    out[0] = ss.ple_prev[0];
+                    out[1] = ss.ple_prev[1];
+                };
+                io.f_lookup_propose = [&](int max_k, strata::pl::Lookup& L) {
+                    L.k = sfx.propose(std::min(max_k, (int) (sizeof L.tok / sizeof L.tok[0])), L.tok);
+                    L.match = sfx.last_match();
+                    return L.k;
+                };
+                io.f_lookup_choose = [&](int T, int k, int match, int& t) {
+                    const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, match);
+                    t = pk.t;
+                    return pk.lookup;
+                };
+                io.f_exec = [&](const strata::pl::PlOp& op) -> bool {
+                    using strata::pl::Op;
+                    switch (op.op) {
+                        case Op::Gap:   // --adapt-async: the stage is idle until the launch that follows
+                            if (ajob) a_gap(op.st == 0 ? 0 : 1);
+                            return true;
+                        case Op::Prestage:
+                            return SV(0, op.slot).prestage(op.T, op.tok, op.p, op.ple, err);
+                        case Op::SnapTake: {   // the GDN state slot op.slot's window reads on stage op.st, beside it
+                            PlSnap& sn = pl_snaps[(size_t) op.st];
+                            const strata::core::OnDevice on(sn.dev);
+                            cudaStream_t cs = pl_stream[(size_t) op.st];
+                            const int q = op.slot;
+                            if (cudaEventRecord(sn.pre[q], cs) != cudaSuccess || cudaStreamWaitEvent(sn.side, sn.pre[q], 0) != cudaSuccess ||
+                                cudaMemcpyAsync(sn.buf[q], sn.state, sn.bytes, cudaMemcpyDeviceToDevice, sn.side) != cudaSuccess ||
+                                cudaEventRecord(sn.ev[q], sn.side) != cudaSuccess) {
+                                err = "the GDN snapshot failed";
+                                return false;
+                            }
+                            (void) cudaStreamQuery(sn.side);
+                            return true;
+                        }
+                        case Op::SnapWait: {   // the stage's stream waits for that copy (before a speculative commit)
+                            PlSnap& sn = pl_snaps[(size_t) op.st];
+                            const strata::core::OnDevice on(sn.dev);
+                            if (cudaStreamWaitEvent(pl_stream[(size_t) op.st], sn.ev[op.slot], 0) != cudaSuccess) {
+                                err = "the GDN snapshot failed";
+                                return false;
+                            }
+                            return true;
+                        }
+                        case Op::Launch:
+                            return SV(op.st, op.slot).pl_launch(op.T, op.tok, op.p, err);
+                        case Op::SrcWait: {   // the last stage waits until the chain has copied this slot's rows
+                            const cudaEvent_t e = mtp.source_done();
+                            if (e == nullptr) return true;
+                            const strata::core::OnDevice on(SV(pl_nf, op.slot).device());
+                            if (cudaStreamWaitEvent(pl_stream[(size_t) pl_nf], e, 0) != cudaSuccess) {
+                                err = "waiting for the drafter's source copy failed";
+                                return false;
+                            }
+                            return true;
+                        }
+                        case Op::Commit:
+                            return SV(op.st, op.slot).pl_commit_async(op.keep, err);
+                        case Op::Restore: {   // an undo: the stage's GDN state back from the verified window's snapshot
+                            PlSnap& sn = pl_snaps[(size_t) op.st];
+                            const strata::core::OnDevice on(sn.dev);
+                            if (cudaMemcpyAsync(sn.state, sn.buf[op.slot], sn.bytes, cudaMemcpyDeviceToDevice,
+                                                pl_stream[(size_t) op.st]) != cudaSuccess) {
+                                err = "restoring the GDN snapshot failed";
+                                return false;
+                            }
+                            return true;
+                        }
+                        case Op::PleSet:
+                            ss.ple_prev[0] = op.ple[0];
+                            ss.ple_prev[1] = op.ple[1];
+                            return true;
+                        case Op::ChainWaitIdle:
+                            while (mtp.chain_live())
+                                if (mtp.chain_poll(err) < 0) return false;
+                            return true;
+                        case Op::ChainLaunch:
+                            mtp.set_source_R(SV(pl_nf, op.slot).final_R(0));
+                            return mtp.chain_launch(op.T, op.outp, op.p, op.a, op.n_force > 0 ? op.force : nullptr, op.n_force,
+                                                    op.n_out, op.n_early, err, op.n_queue);
+                        case Op::ChainExtend:
+                            return mtp.chain_extend(op.k, err) >= 0;
+                        case Op::ChainClose:
+                            mtp.chain_close();
+                            return true;
+                        case Op::AdaptVerdict:
+                            if (!ajob && !pl_adapt()) {
+                                err = "an adaptive refill failed";
+                                return false;
+                            }
+                            return true;
+                        case Op::AdaptTick:   // --adapt-async: the verdict's tick, once the drafter's chain is asked for
+                            if (ajob && !adapt_tick(false)) {
+                                err = "an adaptive refill failed";
+                                return false;
+                            }
+                            return true;
+                    }
+                    err = "pipelined decode: an unknown operation";
+                    return false;
+                };
+                // the verdict's emission (today's, line for line): the oldest window's picks outp[0..a]
+                io.f_verdict = [&](const strata::pl::PW& w, int a, const int32_t* outp, bool& last) -> bool {
+                    for (int i = 0; i <= a; ++i) consumed.push_back(w.tok[i]);
+                    draft_offered += w.T - 1;
+                    draft_accepted += a;
+                    ++rounds;
+                    if (drive.d.fs) drive.d.fs->completed.fetch_add(1, std::memory_order_release);
+                    ++dec_windows;
+                    dec_T += w.T;
+                    const bool nf = nonfinite_hit(SV(pl_nf, w.slot), "decode");   // #879: none of its tokens goes out
+                    bool eos = false;
+                    for (int i = 0; !nf && i <= a && produced_n < max_new && !eos; ++i) {
+                        std::printf("T %d\n", (int) outp[i]);
+                        strata::core::progress_beat();
+                        ++produced_n;
+                        if (o.suffix_draft > 0) sfx.append(outp[i]);
+                        eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outp[i]) != o.eos_ids.end();
+                    }
+                    std::fflush(stdout);
+                    if (nf) finish = "nonfinite";
+                    else if (eos) finish = "stop";
+                    else if (stop_req.load()) finish = "cancel";
+                    last = nf || eos || produced_n >= max_new || stop_req.load();
+                    if (w.sfx) { ++sfx_windows; sfx_drafts += w.T - 1; sfx_ok += a; }
+                    if (pl_log) {
+                        std::fprintf(stderr, "strata pipeline: verdict p=%lld T=%d a=%d slot %d (A com %x) out", (long long) w.p,
+                                     w.T, a, w.slot, w.com);
+                        for (int i = 0; i <= a; ++i) std::fprintf(stderr, " %d", (int) outp[i]);
+                        std::fprintf(stderr, "\n");
+                    }
+                    x = outp[a];
+                    p = w.p + a + 1;
+                    pcie_auto_step(req_pcie_frac);   // the measured share, as the pw-2 loop takes it after each verdict
+                    return true;
+                };
+                io.f_observe = [&](const strata::pl::PW& w, int a, double ms) { policy.observe(w.sfx, w.T, a, w.sfx_match, ms); };
+                io.f_now = [&]() { return ms_now(); };
+                io.f_trace = [&](const char* ev, int seq, int x0, int x1) { tre(ev, seq, x0, x1); };
+                strata::pl::Sched sched;
+                {
+                    std::string serr;
+                    if (!sched.begin(cfg, p, x, ss.ple_prev, 0.0, serr)) return die(serr);
+                }
+                // the chain records its source copy (the slot's next window on the last stage waits for it there)
+                mtp.set_source_done(pl_m != strata::pl::Mode::N2);
+                for (int st = 0; st < 2; ++st)
+                    for (int q = 0; q < strata::pl::kMaxSlots; ++q)
+                        g_pl_diag.v[st][q] = q < pl_ns ? &SV(st == 0 ? 0 : pl_nf, q) : nullptr;
+                g_pl_diag.nl_mode.store((int) pl_m);
+                strata::core::diag_pipeline_fn().store(&pl_diag_print);
+                auto pw_bits = [](const strata::pl::PW& w) {
+                    return (w.ready ? 1 : 0) | (w.launched ? 2 : 0) | (w.finished ? 4 : 0) | (w.com != 0 ? 8 : 0) |
+                           (w.s1 ? 16 : 0) | (w.s1_done ? 32 : 0);
+                };
+                while (true) {
+                    g_pl_diag.iters.fetch_add(1, std::memory_order_relaxed);
+                    g_pl_diag.a_seq.store(sched.nwin() > 0 ? sched.win(0).seq : -1, std::memory_order_relaxed);
+                    g_pl_diag.a_bits.store(sched.nwin() > 0 ? pw_bits(sched.win(0)) : 0, std::memory_order_relaxed);
+                    g_pl_diag.b_bits.store(sched.nwin() > 1 ? pw_bits(sched.win(1)) : 0, std::memory_order_relaxed);
+                    g_pl_diag.d_bits.store(sched.ndoom() > 0 ? pw_bits(sched.doom(0)) : 0, std::memory_order_relaxed);
+                    g_pl_diag.chain_kind.store(sched.chain_kind(), std::memory_order_relaxed);
+                    g_pl_diag.chain_live.store(mtp.chain_live() ? 1 : 0, std::memory_order_relaxed);
+                    g_pl_diag.doomed.store(sched.ndoom(), std::memory_order_relaxed);
+                    g_pl_diag.ending.store(sched.ending() ? 1 : 0, std::memory_order_relaxed);
+                    g_pl_diag.nl_seq.store(sched.nwin() > 0 ? sched.win(0).seq : -1, std::memory_order_relaxed);
+                    g_pl_diag.nl_nwin.store(sched.nwin(), std::memory_order_relaxed);
+                    g_pl_diag.nl_ndoom.store(sched.ndoom(), std::memory_order_relaxed);
+                    g_pl_diag.nl_undo.store(sched.undo().active ? (int) sched.undo().pending : 0, std::memory_order_relaxed);
+                    // ---- --adapt-async: the round in flight moves on between verdicts too (at most every 0.5 ms)
+                    if (ajob && astate != AState::Idle) {
+                        const double t = ms_now();
+                        if (t - a_poll_ms >= 0.5) {
+                            a_poll_ms = t;
+                            if (!adapt_tick(false, false)) return die("an adaptive refill failed");
+                        }
+                    }
+                    const int r = sched.step(io);
+                    if (r < 0) return die(!err.empty() ? err : sched.err());
+                    if (r == 0) break;
+                }
+                pl_drain();   // nothing in flight: every stage's commits and the drafter have landed
+                strata::core::diag_pipeline_fn().store(nullptr);
+                g_pl_diag.nl_mode.store(-1);
+                if (pl_adapt_thr.joinable()) pl_adapt_thr.join();
+                adapt_fence = nullptr;
+                if (exch_wait) pl_release();
+                a_pl_settle();
+                for (cudaEvent_t ev : fence_ev) if (ev) cudaEventDestroy(ev);
+                for (cudaEvent_t ev : exch_ev) if (ev) cudaEventDestroy(ev);
+                if (pl_trace_path != nullptr && !pl_trace.empty()) {
+                    if (std::FILE* f = std::fopen(pl_trace_path, "a")) {
+                        std::fprintf(f, "# request p0=%lld\n# mode=%s\n", (long long) (n - 1), strata::pl::mode_name(pl_m));
+                        std::fwrite(pl_trace.data(), 1, pl_trace.size(), f);
+                        std::fclose(f);
+                    }
+                }
+                // every other slot's counters and GPU profiles into slot 0's verifiers, which report them
+                for (int st = 0; st < n_stages; ++st)
+                    for (int q = 1; q < pl_ns; ++q) SV(st, 0).absorb_stats(SV(st, q));
+                if (!pl_adapt_ok) {
+                    std::printf("ERR an adaptive refill failed\n");
+                    return 1;
+                }
+                mtp.chain_close();
+                while (mtp.chain_live() && mtp.chain_poll(err) == 0) {}
+                mtp.set_source_done(false);
+                mtp.set_source_R(ver.final_R_all());   // the serial loop's rows again
+                const double pl_ms = std::chrono::duration<double, std::milli>(Clock::now() - pl_t0).count();
+                dt_run += pl_ms;
+                if (dec_timing) {
+                    const strata::pl::Stats& st4 = sched.stats();
+                    auto avg = [](double s_, double n_) { return n_ > 0 ? s_ / n_ : 0.0; };
+                    // the three lines as today's loop prints them (the timing tools parse them), then the new loop's
+                    std::fprintf(stderr, "strata pipeline: %lld windows in %.0f ms (%.2f ms/window): %lld speculative, %lld on "
+                                         "the path, %lld rolled back, %lld below the gate (theta %.2f)\n",
+                                 (long long) dec_windows, pl_ms, avg(pl_ms, (double) dec_windows), (long long) st4.spec,
+                                 (long long) st4.on, (long long) st4.undo, (long long) st4.gate, pl_theta);
+                    std::fprintf(stderr, "strata pipeline classes: fresh %.0f windows %.2f ms %.2f tok | speculative %.0f "
+                                         "windows %.2f ms %.2f tok | forced-chain disagreements %lld, chain late %lld\n",
+                                 st4.cls_n[0], avg(st4.cls_ms[0], st4.cls_n[0]), avg(st4.cls_tok[0], st4.cls_n[0]), st4.cls_n[1],
+                                 avg(st4.cls_ms[1], st4.cls_n[1]), avg(st4.cls_tok[1], st4.cls_n[1]), (long long) st4.disagree,
+                                 (long long) st4.late);
+                    std::string cal;
+                    char b[48];
+                    for (int i = 0; i < 10; ++i)
+                        if (st4.cal_n[i] > 0) {
+                            std::snprintf(b, sizeof b, " %.1f:%lld/%lld", i / 10.0, (long long) st4.cal_on[i], (long long) st4.cal_n[i]);
+                            cal += b;
+                        }
+                    std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
+                    // held1/held2 = the windows held on the path right after a fresh window / after a held
+                    // one (rho = held2 / (held1 + held2)), their time from the verdict before; the windows two guesses
+                    // deep (C); the per-stage undo; the slot pool; prestage misses; the chain requests
+                    std::fprintf(stderr, "strata pipeline depth3: held1 %lld windows %.2f ms | held2 %lld windows %.2f ms | C made "
+                                         "%lld launched %lld on %lld doomed %lld | undo jobs %lld stage-waits %lld (%.1f ms) | slot "
+                                         "waits %lld (%.1f ms) | restage %lld (%lld guesses) | chain waits %lld (%.1f ms) late %lld | "
+                                         "chain steps %.2f/verdict | mode %s slots %d\n",
+                                 (long long) st4.held_n[0], avg(st4.held_ms[0], (double) st4.held_n[0]), (long long) st4.held_n[1],
+                                 avg(st4.held_ms[1], (double) st4.held_n[1]), (long long) st4.c_made, (long long) st4.c_launched,
+                                 (long long) st4.c_on, (long long) st4.c_doomed, (long long) st4.undo_jobs,
+                                 (long long) st4.stage_waits, st4.stage_wait_ms, (long long) st4.slot_waits, st4.slot_wait_ms,
+                                 (long long) st4.restage, (long long) st4.restage_spec, (long long) st4.chain_waits,
+                                 st4.chain_wait_ms, (long long) st4.chain_late,
+                                 avg((double) st4.chain_steps, (double) st4.windows), strata::pl::mode_name(pl_m),
+                                 sched.config().ns());
+                    if (pl_log) {
+                        std::string cs;
+                        char cb[96];
+                        for (int c = 0; c < strata::pl::kCaseN; ++c)
+                            if (st4.case_hits[c] > 0) {
+                                std::snprintf(cb, sizeof cb, " [%s] %lld", strata::pl::case_name(c), (long long) st4.case_hits[c]);
+                                cs += cb;
+                            }
+                        std::fprintf(stderr, "strata pipeline cases:%s\n", cs.c_str());
+                    }
+                }
             }
             if (pl_want && pl_serial == nullptr && !cancelled && produced_n < max_new) {
                 pl_ran = true;
@@ -16879,6 +17676,13 @@ int main(int argc, char** argv) {
             // the last commit (set_commit_async): the session is complete before anything reads or copies it
             if (!ver.wait_commit(err)) {
                 std::printf("ERR %s\n", err.c_str());
+                return 1;
+            }
+            // STRATA_PIPELINE_CHECK_STATE=1: every stage's state over the committed tokens, whichever loop decoded
+            if (pl_check_state && !cancelled &&
+                !pl_state_dump((int64_t) consumed.size(),
+                               !pl_ran ? "serial" : pl_new ? strata::pl::mode_name((strata::pl::Mode) pl_mode) : "pw2")) {
+                std::printf("ERR reading the pipeline state\n");
                 return 1;
             }
             if (dec_timing && dec_windows > 0) {
