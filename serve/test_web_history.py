@@ -17,6 +17,9 @@ class WebHistory(unittest.TestCase):
     def test_default_off_preserves_controls_and_request(self):
         self.run_case("default_off")
 
+    def test_edits_and_retries_preserve_model_card_sampling_and_overrides(self):
+        self.run_case("history_sampling")
+
     def test_user_edit_retains_attachments_and_replaces_descendants(self):
         self.run_case("user_edit")
 
@@ -43,6 +46,9 @@ class WebHistory(unittest.TestCase):
 
     def test_new_chat_invalidates_old_history_undo(self):
         self.run_case("new_chat_invalidates_undo")
+
+    def test_new_chat_invalidates_undo_after_removing_all_history(self):
+        self.run_case("empty_new_chat_invalidates_undo")
 
     def test_composer_does_not_submit_during_edit(self):
         self.run_case("composer_during_edit")

@@ -61,9 +61,10 @@ const end = source.indexOf("// -------------------------------------------------
 assert(start >= 0 && end > start, "the actual Chat section must be loaded");
 const chatSource = source.slice(start, end);
 
-function setup({enabled = true, history = []} = {}) {
+function setup({enabled = true, history = [], sampling} = {}) {
   const elements = new Map(), saved = new Map([["chat", JSON.parse(JSON.stringify(history))]]);
   if (enabled) saved.set("editHistory", true);
+  if (sampling) saved.set("sampling", sampling);
   const requests = [], toasts = [], blobs = [], pending = [];
   let hold = false, nextFrame = 1, failure = null;
   const get = id => {
@@ -140,7 +141,30 @@ const cases = {
     a.get("input").value = "next"; await a.run("send()");
     assert.deepEqual(a.requests[0], {model: "mock-model", messages: [
       {role: "user", content: "first"}, {role: "assistant", content: "answer"}, {role: "user", content: "next"}],
-      stream: true, reasoning_effort: "high", temperature: 0.6, top_p: 0.95, top_k: 20});
+      stream: true, reasoning_effort: "high"});
+  },
+  async history_sampling() {
+    // Editing and retrying must use main's model-card defaults, including migrated old settings,
+    // while retaining an explicit override or greedy mode. Exercise the real generation path.
+    const modes = [
+      {sampling: undefined, expected: {}, thinking: "high"},
+      {sampling: {temperature: 0.6, top_p: 0.95, top_k: 20, thinking: "none"}, expected: {}, thinking: "none"},
+      {sampling: {temperature: 0.3, top_p: 0.9, top_k: 40}, expected: {temperature: 0.3, top_p: 0.9, top_k: 40}, thinking: "high"},
+      {sampling: {temperature: 0}, expected: {temperature: 0}, thinking: "high"},
+    ];
+    for (const {sampling, expected, thinking} of modes) {
+      const a = setup({history: history(), sampling});
+      a.run('editMessage(0); saveMessageEdit(0, "edited question")'); await a.settle();
+      a.run('retryMessage(1)'); await a.settle();
+      assert.equal(a.requests.length, 2);
+      for (const request of a.requests) {
+        const actual = Object.fromEntries(["temperature", "top_p", "top_k"]
+          .filter(key => key in request).map(key => [key, request[key]]));
+        assert.deepEqual(actual, expected);
+        assert.equal(request.reasoning_effort, thinking);
+        assert.equal(request.messages.length, 1);
+      }
+    }
   },
   async user_edit() {
     const a = setup({history: history()});
@@ -222,6 +246,15 @@ const cases = {
     const oldActions = a.toasts.map(t => t[4]).filter(x => x && x.label === "Undo");
     a.get("new-btn").onclick(); assert.equal(a.run("historyUndo"), null);
     a.run("undoHistory()"); for (const action of oldActions) action.run();
+    assert.deepEqual(a.value("messages"), []);
+  },
+  async empty_new_chat_invalidates_undo() {
+    const a = setup({history: history()}); a.run("removeHistoryFrom(0)");
+    assert.equal(a.value("messages").length, 0);
+    assert(a.run("historyUndo"));
+    a.get("new-btn").onclick();
+    assert.equal(a.run("historyUndo"), null);
+    assert.equal(a.run("undoHistory()"), false);
     assert.deepEqual(a.value("messages"), []);
   },
   async composer_during_edit() {

@@ -1043,11 +1043,11 @@ $("input").addEventListener("input", autosize);
 $("new-btn").onclick = () => {
   if (busy) { toast("warn", "Still writing", "Stop the answer first."); return; }
   if (editState) { toast("warn", "Finish editing first", "Save or cancel the current edit."); return; }
+  historyUndo = null;
+  renderHistoryUndo();
   if (!messages.length) return;
   const backup = messages;
   messages = [];
-  historyUndo = null;
-  renderHistoryUndo();
   const cleared = messages, guardUndo = historyEditing;
   saveChat();
   renderChat();
