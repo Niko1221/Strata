@@ -3435,8 +3435,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     // decode kernel, 32 queries at a time (K8V4 runs the tensor kernel's mode 3: INT8 K,
                     // V dequantized from its q4_0 blocks to fp16 at gather)
                     static const bool old_attn = std::getenv("STRATA_PROMPT_ATTN_OLD") != nullptr;
-                    if (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev, m.cap, s,
-                                                                            m.attn, T, m.cs))
+                    // STRATA_PROMPT_ATTN_RDNA2=1 (HIP gfx103x, INT8 K/V): one block per query and KV head, no split and merge
+#if defined(STRATA_USE_HIP)
+                    const bool rdna2_attn = !old_attn && strata::kernels::qsa_prompt_attn_rdna2(m.q, pools, m.sel_ids, m.steps_dev,
+                                                                                               m.cap, s, m.attn, T, m.cs);
+#else
+                    const bool rdna2_attn = false;   // HIP only (the CUDA, SYCL and Metal builds never reference it)
+#endif
+                    if (!rdna2_attn && (old_attn || !strata::kernels::qsa_prompt_attn_batch(m.q, pools, m.sel_ids, m.steps_dev,
+                                                                                            m.cap, s, m.attn, T, m.cs)))
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
                             strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,

@@ -47,6 +47,10 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
 
 /// Plan v0.3 P5: `n_q` queries at once, each with its own selection: q [n_q, n_head, 256], ids [n_q, cap], steps
 /// [n_q, kStepCount], attn [n_q, n_head, 256]; scratch is `n_q` times the single-query size.
+/// STRATA_PROMPT_ATTN_RDNA2=1 (HIP gfx103x, INT8 K/V): the prompt's n_q queries without the split and merge
+/// (one block per query and KV head, online softmax); false when it does not apply (the caller keeps its path).
+bool qsa_prompt_attn_rdna2(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                           int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
 

@@ -8,6 +8,8 @@
 //   2. the new and old outputs agree to a relative 1e-4 of the output scale;
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
 // HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
+// Built with STRATA_PARITY_RDNA2 (hip_prompt_attn_rdna2): the same checks for the gfx103x kernel instead
+// (STRATA_PROMPT_ATTN_RDNA2=1, qsa_prompt_attn_rdna2), skipped (77) off gfx103x.
 // Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -28,6 +30,7 @@
 namespace k = strata::kernels;
 
 namespace {
+bool g_rdna2 = false;   // the kernel under test is qsa_prompt_attn_rdna2 (gfx103x), not qsa_prompt_attn_batch
 void ck(cudaError_t e, const char* w) {
     if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", w, cudaGetErrorString(e)); std::exit(2); }
 }
@@ -210,9 +213,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                                      scratch, d_old + t0 * NH * HD, std::min(batch, nq - t0), nullptr);
     };
     // int8 KV: v2 here, and the opt-in INT8-MMA kernel (STRATA_PROMPT_ATTN_IMMA) checked and timed below beside it
-    if (fmt == 1) k::qsa_prompt_attn_set_imma(0);
+    const bool imma = fmt == 1 && !g_rdna2;   // the INT8-MMA kernel is qsa_prompt_attn_batch's (not on gfx103x)
+    if (imma) k::qsa_prompt_attn_set_imma(0);
     auto new_run = [&]() {
-        if (!k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
+        if (g_rdna2 ? !k::qsa_prompt_attn_rdna2(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)
+                    : !k::qsa_prompt_attn_batch(d_q, pl, d_ids, d_steps, cap, s, d_new, nq, nullptr)) {
             std::fprintf(stderr, "qsa_prompt_attn_batch refused the pools\n");
             std::exit(2);
         }
@@ -227,10 +232,10 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     };
     old_run();
     new_run();
-    if (fmt == 1) imma_run();
+    if (imma) imma_run();
     ck(cudaDeviceSynchronize(), "run");
-    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), im(fmt == 1 ? o.size() : 0);
-    if (fmt == 1) ck(cudaMemcpy(im.data(), d_im, im.size() * 4, cudaMemcpyDeviceToHost), "down");
+    std::vector<float> o((size_t) (nq * NH * HD)), nw(o.size()), im(imma ? o.size() : 0);
+    if (imma) ck(cudaMemcpy(im.data(), d_im, im.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(o.data(), d_old, o.size() * 4, cudaMemcpyDeviceToHost), "down");
     ck(cudaMemcpy(nw.data(), d_new, nw.size() * 4, cudaMemcpyDeviceToHost), "down");
     {   // a hash of the new kernel's output bits (bitwise A/B of two builds / switches)
@@ -273,7 +278,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
                 ref_scale = std::max(ref_scale, std::fabs(r));
                 err_old = std::max(err_old, std::fabs(o[at] - r));
                 err_new = std::max(err_new, std::fabs(nw[at] - r));
-                if (fmt == 1) err_im = std::max(err_im, std::fabs(im[at] - r));
+                if (imma) err_im = std::max(err_im, std::fabs(im[at] - r));
             }
         }
     }
@@ -299,7 +304,7 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
     ck(cudaEventSynchronize(e1), "time");
     cudaEventElapsedTime(&ms_new, e0, e1);
     bool ok_im = true;
-    if (fmt == 1) {   // the INT8-MMA kernel: the same bounds as v2's, against FP64 and against v2
+    if (imma) {   // the INT8-MMA kernel: the same bounds as v2's, against FP64 and against v2
         double d_iv = 0;
         for (size_t i = 0; i < o.size(); ++i) d_iv = std::max(d_iv, (double) std::fabs(im[i] - nw[i]));
         float ms_im = 0, ms_v2 = 0;
@@ -350,14 +355,24 @@ int main(int argc, char** argv) {
         int dev = 0;
         hipDeviceProp_t prop{};
         if (hipGetDevice(&dev) != hipSuccess || hipGetDeviceProperties(&prop, dev) != hipSuccess) return 2;
+#if defined(STRATA_PARITY_RDNA2)
+        if (std::strncmp(prop.gcnArchName, "gfx103", 6) != 0) {
+            std::printf("SKIP: %s is not gfx103x (the RDNA2 prompt attention)\n", prop.gcnArchName);
+            return 77;
+        }
+        g_rdna2 = true;
+        const char* var = "STRATA_PROMPT_ATTN_RDNA2";
+#else
         if (std::strncmp(prop.gcnArchName, "gfx12", 5) != 0 && std::strncmp(prop.gcnArchName, "gfx11", 5) != 0) {
             std::printf("SKIP: %s is not gfx11 / gfx12 (the matrix-core prompt attention)\n", prop.gcnArchName);
             return 77;
         }
+        const char* var = "STRATA_HIP_WMMA";
+#endif
 #if defined(_WIN32)
-        _putenv_s("STRATA_HIP_WMMA", "1");
+        _putenv_s(var, "1");
 #else
-        setenv("STRATA_HIP_WMMA", "1", 1);
+        setenv(var, "1", 1);
 #endif
     }
 #endif
