@@ -1,4 +1,4 @@
-"""The elastic image encoder (the vision section's "elastic": true with "vram_elastic"): the first picture makes the
+"""The on-demand CPU encoder and elastic GPU encoder ("elastic": true, plus "vram_elastic" for GPU): the first picture makes the
 expert cache keep the encoder's VRAM free and then starts it, later pictures use it as it is, an idle encoder stops and
 the cache takes its VRAM back, a POST /v1/vram reserve stacks on the encoder's share, and the engine's load never starts
 it on its own."""
@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service, Vision
@@ -17,7 +18,8 @@ IMAGE = {"type": "image", "source": "x.png"}
 
 class ElasticVision:
     """An encoder process stand-in: starts, stops, and turns every picture into three image tokens."""
-    def __init__(self, d, elastic=True):
+    def __init__(self, d, elastic=True, gpu=True):
+        self.gpu = gpu
         self.elastic, self.elastic_mib, self.elastic_idle_s = elastic, 2048, 60.0
         self.up, self.starts, self.unloads = False, 0, 0
         self.dir = Path(d)
@@ -117,6 +119,60 @@ class Elastic(unittest.TestCase):
         v = Vision({"exe": "e", "mmproj": "m", "model": "t"}, lazy=True)
         self.assertFalse(v.elastic)
         self.assertEqual((v.elastic_mib, v.elastic_idle_s), (2048, 120.0))
+
+    def test_cpu_text_then_images_idle_and_reload_never_touch_vram(self):
+        self.vision.gpu = False
+        self.engine.loaded = False
+        with mock.patch.object(self.engine, "vram", side_effect=AssertionError("CPU vision resized VRAM")), \
+                mock.patch.object(self.svc, "free_vram_mib", side_effect=AssertionError("CPU vision queried VRAM")):
+            self.svc.ensure_loaded()                       # first text request loads only the text engine
+            self.svc.prepare([{"role": "user", "content": "hello"}], None, {})
+            self.assertEqual(self.engine.starts, 1)
+            self.assertEqual(self.vision.starts, 0)
+            self.assertFalse(self.vision.alive())
+            self.picture()
+            self.assertEqual(self.vision.starts, 1)
+            self.assertFalse(self.svc.vision_held)
+            self.picture()                                 # reuse while warm
+            self.assertEqual(self.vision.starts, 1)
+            self.assertEqual(self.svc._vision_idle_down(), "busy")
+            self.svc.last_image_at = time.time() - 61
+            with self.svc.fifo:
+                self.assertEqual(self.svc._vision_idle_down(), "busy")
+            self.assertEqual(self.svc._vision_idle_down(), "down")
+            self.assertFalse(self.vision.alive())
+            self.assertEqual(self.vision.unloads, 1)
+            self.assertEqual(self.svc._vision_idle_down(), "nothing")
+            self.svc.ensure_loaded()                        # text after idle still leaves vision down
+            self.assertEqual(self.vision.starts, 1)
+            self.picture()
+            self.assertEqual(self.vision.starts, 2)
+            self.svc.unload()
+            self.assertFalse(self.vision.alive())
+
+    def test_cpu_opt_in_and_gpu_gate(self):
+        for gpu in (False, True):
+            for elastic in (False, True):
+                for vram in (False, True):
+                    with self.subTest(gpu=gpu, elastic=elastic, vram=vram):
+                        self.assertEqual(Vision.elastic_enabled({"gpu": gpu, "elastic": elastic}, vram),
+                                         elastic and (not gpu or vram))
+        self.assertFalse(Vision.elastic_enabled({"gpu": False, "elastic": "yes"}))
+        self.assertFalse(Vision.elastic_enabled({"gpu": True, "elastic": True}, "yes"))
+
+    def test_cpu_startup_is_eager_unless_elastic_or_lazy(self):
+        cfg = {"exe": "e", "mmproj": "m", "model": "t", "gpu": False}
+        with mock.patch.object(Vision, "_start") as start:
+            v = Vision(cfg)
+            self.assertFalse(v.gpu or v.elastic)
+            start.assert_called_once_with()
+            start.reset_mock()
+            v = Vision({**cfg, "elastic": True})
+            self.assertTrue(v.elastic)
+            self.assertFalse(v.gpu)
+            start.assert_not_called()
+            Vision(cfg, lazy=True)
+            start.assert_not_called()
 
 
 if __name__ == "__main__":

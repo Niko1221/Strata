@@ -1725,6 +1725,10 @@ took 1,339 MiB and started in 4.7 s (2.7 s the next time); a request with one pi
 5.0 s on a later cold start, and 2 / 5 / 10 pictures with the encoder running took 3.8 / 5.6 / 9.0 s (~0.45 s to encode
 each, the same as on a second card). Without the key nothing changes.
 
+For a CPU encoder (`"gpu": false`), `"elastic": true` uses the same on-demand start and idle stop without
+`"vram_elastic"` or any VRAM reserve; text requests leave it unloaded. See the configuration in
+[VRAM_ELASTIC.md](VRAM_ELASTIC.md#the-image-encoder-on-demand).
+
 ### Sending a picture
 
 **Terminal chat:** type `/image <path to a picture>`, press Enter, then type your question.
