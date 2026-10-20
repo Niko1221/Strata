@@ -14,6 +14,8 @@
 > - **Ler páginas de resultado:** as melhores páginas de resultado são obtidas e injetadas como texto extraído (nav/rodapé/scripts removidos, `main`/`article` preferidos), com modos de leitura Direct / Jina como reserva / Jina para todas e aviso explícito sempre que um terceiro pudesse ver suas URLs.
 > - **Respostas auditáveis:** cada resposta ganha uma linha `Sources` (motor, consulta exata, links clicáveis, selos `read`) que acompanha a exportação em Markdown, e uma busca que falha deixa um aviso nomeado por causa (chave ausente, motor inacessível, checagem bot) em vez de falhar em silêncio.
 > - **Blindado:** `/search` fica atrás da proteção own-page do app (origens estranhas rejeitadas), verificações de URL só http(s) para que a leitura de páginas nunca vire um leitor de arquivos locais, o texto web injetado é enquadrado como não confiável, e o backend (`serve/websearch.py`) é só stdlib, sem novas dependências, Windows/Linux/macOS.
+>
+
 > Duas coisas antes de baixar:
 >
 > 1. **Os links de download abaixo são o app upstream original** do Niko1221/Strata. Os binários prontos **não** contêm a busca deste fork. A versão com busca só existe no código-fonte: `git clone`, branch `web-search`, depois START-HERE.bat / setup.sh.

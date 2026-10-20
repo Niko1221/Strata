@@ -14,6 +14,8 @@
 > - **Ergebnisseiten lesen:** die besten Ergebnisseiten werden geholt und als extrahierter Text injiziert (Nav/Footer/Skripte entfernt, `main`/`article` bevorzugt), mit Direct- / Jina-Fallback- / Jina-für-alle-Lesemodus und explizitem Warnhinweis, sobald ein Dritter deine URLs sehen könnte.
 > - **Nachvollziehbare Antworten:** jede Antwort bekommt eine `Sources`-Zeile (Engine, exakte Query, klickbare Links, `read`-Badges), die auch im Markdown-Export mitfährt, und eine fehlgeschlagene Suche hinterlässt eine benannte Ursache-Warnung (fehlender Key, Engine nicht erreichbar, Bot-Check) statt still zu scheitern.
 > - **Abgehärtet:** `/search` sitzt hinter dem Own-Page-Schutz der App (fremde Origins abgelehnt), http(s)-only-URL-Prüfungen, damit Seitenlesen nie ein lokaler Datei-Leser wird, injizierter Webtext wird als nicht vertrauenswürdig markiert, und das Backend (`serve/websearch.py`) ist stdlib-only, keine neuen Abhängigkeiten, Windows/Linux/macOS.
+>
+
 > Zwei Dinge vor dem Download:
 >
 > 1. **Die Download-Links unten sind die Vanilla-Upstream-App** von Niko1221/Strata. Die fertigen Binaries enthalten **nicht** die Suche dieses Forks. Die Version mit Suche gibt es nur aus dem Source: `git clone`, Branch `web-search`, dann START-HERE.bat / setup.sh.
