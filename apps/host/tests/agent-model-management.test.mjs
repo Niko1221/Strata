@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
+import { resolveHarness } from '../server/agent/harness-runtime.mjs';
+import { startScriptedWorker } from './helpers/scripted-worker.mjs';
+const skip = !process.env.STRATA_HARNESS_DIR || !resolveHarness().ok ? 'Set STRATA_HARNESS_DIR to the shipped Harness.' : false;
+
+test('model preparation detects an active Harness goal between turns and refuses unknown goal state', { skip, timeout: 120_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'strata-model-management-agent-'));
+  const workspace = join(directory, 'workspace'); mkdirSync(workspace);
+  const worker = await startScriptedWorker({});
+  const bridge = createAgentBridge({ dataDir: directory, localInstances: () => [{ id: 'fixture', label: 'Scripted', baseUrl: worker.url, modelId: 'scripted-model', context: 32768 }], connections: () => [], startTimeoutMs: 90_000 });
+  t.after(async () => { await bridge.close(); await worker.close(); rmSync(directory, { recursive: true, force: true }); });
+  assert.equal(await bridge.modelManagementBusy(), false);
+  await bridge.runTurn({ chatId: 'management-qa', message: 'SCRIPT:echo ready', workspacePath: workspace, mode: 'manual', onFrame: () => {} });
+  assert.equal(await bridge.modelManagementBusy(), false);
+  const { rt } = bridge._debug();
+  const agentId = bridge.sessionOf('management-qa');
+  await rt.gw.rpc('goals/create', { agentId, request: { objective: 'Synthetic management idle check', maxGoalRounds: 1 } });
+  assert.equal(bridge.status().activeTurns, 0);
+  assert.equal(await bridge.modelManagementBusy(), true, 'an idle turn does not mean an active goal is idle');
+  const goal = await rt.gw.rpc('goals/get', { agentId });
+  await rt.gw.rpc('goals/pause', { agentId, ref: { id: goal.id, revision: goal.revision } });
+  assert.equal(await bridge.modelManagementBusy(), false);
+  const rpc = rt.gw.rpc;
+  rt.gw.rpc = async (...args) => { if (args[0] === 'goals/get') throw new Error('Synthetic read failure'); return rpc.apply(rt.gw, args); };
+  await assert.rejects(bridge.modelManagementBusy(), /Synthetic read failure/);
+  rt.gw.rpc = rpc;
+});

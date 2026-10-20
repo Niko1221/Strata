@@ -114,7 +114,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onFrame: observeFrame = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
@@ -181,6 +181,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
 
   /** The capability state the app shows. Never carries a token or a key. */
+  async function modelManagementBusy() {
+    if (starting || [...chats.values()].some(chat => chat.turn || chat.starting) || pending.size || [...queues.values()].some(list => list.length)) return true;
+    if (!rt?.hp.running) return false;
+    // A goal can be active between turns. Failed reads must prevent preparation.
+    for (const sessionId of new Set(Object.values(sessionMap).map(entry => entry.sessionId).filter(Boolean))) {
+      const goal = await rt.gw.rpc('goals/get', { agentId: sessionId });
+      if (goal?.phase === 'active') return true;
+    }
+    return [...chats.values()].some(chat => chat.turn || chat.starting) || pending.size > 0;
+  }
+
   function status() {
     const h = harnessInfo();
     if (!h.ok) return { state: 'unavailable', reason: 'The coding assistant isn’t installed on this computer yet. Chat works without it.', detail: h.reason, code: 'component-missing' };
@@ -338,7 +349,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     const written = { all: '', step: '' };
     // The turn guard (turn-guard.mjs): counts failing searches, searches, plan rewrites and a nearly full context. Set up once the route is known.
     let guard = null;
-    const raw = frame => { try { send(frame); } catch { send = () => {}; attached = false; } };
+    const raw = frame => {
+      // A detached desktop/phone still has one durable transcript and live observers.
+      try { observeFrame(chatId, frame); } catch {}
+      try { send(frame); } catch { send = () => {}; attached = false; }
+    };
     // What the turn made (files) and compact activity lines (notes-split-agent8.md): derived from the cards the turn already sends.
     const tracker = new DeliverableTracker(workspacePath, trackerFolders());
     let toolsRan = false;   // a turn that ran no tool wrote nothing, so there is nothing to look for at its end
@@ -1194,7 +1209,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { modelManagementBusy, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

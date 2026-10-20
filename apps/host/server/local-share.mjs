@@ -1,8 +1,9 @@
-/** A separate, key-protected listener for inference only. Never serves the UI or host APIs. */
+/** A separate key-protected listener. Model administration is explicitly opt-in. */
 import http from 'node:http';
 import os from 'node:os';
 import { apiPath } from './api-paths.mjs';
-export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0.0.0.0', port = 8792 }) {
+import { managementPath } from './model-management.mjs';
+export function createLocalShare({ handle, hasKey, allowModelManagement = () => false, changed = () => {}, host = '0.0.0.0', port = 8792 }) {
   let listener = null, active = false;
   const address = () => Object.values(os.networkInterfaces()).flat().find(n => n?.family === 'IPv4' && !n.internal)?.address ?? '127.0.0.1';
   const state = () => ({ active, url: active ? `http://${host === '127.0.0.1' ? host : address()}:${listener.address().port}/v1` : null });
@@ -12,7 +13,7 @@ export function createLocalShare({ handle, hasKey, changed = () => {}, host = '0
     if (!hasKey()) throw new Error('Set an API key before sharing with other devices.');
     listener = http.createServer(async (req, res) => {
       const path = apiPath(new URL(req.url ?? '/', 'http://localhost').pathname);
-      if (!['/v1/models','/v1/chat/completions','/v1/messages'].includes(path)) { res.writeHead(404); res.end('Not found'); return; }
+      if (!['/v1/models','/v1/chat/completions','/v1/messages'].includes(path) && !(allowModelManagement() && managementPath(path))) { res.writeHead(404); res.end('Not found'); return; }
       try { await handle(req, res, path, req.method ?? 'GET'); }
       catch { if (!res.headersSent) res.writeHead(500); res.end('Request failed'); }
     });

@@ -1,0 +1,44 @@
+.settings-companion { max-width: 800px; }
+.companion-heading,
+.companion-invitation__head,
+.companion-invitation__actions,
+.companion-disable { display: flex; justify-content: space-between; align-items: center; gap: var(--st-s-4); flex-wrap: wrap; }
+.companion-heading .st-pill { flex-shrink: 0; }
+.companion-enable { display: flex; flex-direction: column; align-items: flex-start; gap: var(--st-s-5); padding: var(--st-s-6); }
+.companion-enable p { margin: var(--st-s-2) 0 0; max-width: 52ch; }
+.companion-mark { display: grid; place-items: center; width: 56px; height: 56px; border-radius: var(--st-r-md); background: var(--st-accent-tint); color: var(--st-accent-text); }
+.companion-invitation { padding: var(--st-s-6); }
+.companion-expiration { display: inline-flex; align-items: center; gap: var(--st-s-1); font-variant-numeric: tabular-nums; }
+.companion-pairing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); align-items: center; gap: var(--st-s-6); margin-block: var(--st-s-6); }
+.companion-qr-frame { display: grid; place-items: center; justify-self: center; width: min(100%, 240px); min-height: 240px; padding: var(--st-s-2); border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); }
+.companion-qr { display: block; width: 100%; max-width: 224px; height: auto; border-radius: var(--st-r-sm); }
+.companion-qr-fallback { display: grid; justify-items: center; gap: var(--st-s-3); padding: var(--st-s-4); text-align: center; color: var(--st-accent-text); }
+.companion-instructions { display: flex; flex-direction: column; gap: var(--st-s-5); min-width: 0; }
+.companion-instructions ol { display: grid; gap: var(--st-s-3); margin: 0; padding-left: var(--st-s-5); font-size: var(--st-fs-md); }
+.companion-instructions li::marker { color: var(--st-accent-text); font-weight: var(--st-fw-bold); }
+.companion-instructions p { margin: 0; }
+.companion-code-row { display: flex; align-items: center; gap: var(--st-s-3); margin-top: var(--st-s-1); }
+.companion-code { font-family: var(--st-font-mono); font-size: var(--st-fs-stat); letter-spacing: .12em; line-height: var(--st-lh-tight); font-variant-numeric: tabular-nums; color: var(--st-ink); user-select: all; }
+.companion-manual { border-top: 1px solid var(--st-line-soft); padding-block: var(--st-s-4); }
+.companion-manual summary { width: fit-content; color: var(--st-ink-soft); font-size: var(--st-fs-sm); cursor: pointer; }
+.companion-manual[open] > .stack { margin-top: var(--st-s-4); }
+.companion-detail { min-width: 0; }
+.companion-detail__value { display: flex; align-items: center; gap: var(--st-s-2); margin-top: var(--st-s-1); padding: var(--st-s-2) var(--st-s-3); background: var(--st-surface-2); border: 1px solid var(--st-line); border-radius: var(--st-r-sm); }
+.companion-detail__value code { min-width: 0; flex: 1; font-size: var(--st-fs-xs); overflow-wrap: anywhere; user-select: all; }
+.companion-detail__value button { flex-shrink: 0; }
+.companion-invitation__actions { padding-top: var(--st-s-4); border-top: 1px solid var(--st-line-soft); }
+.companion-invitation__actions > span { display: inline-flex; align-items: center; gap: var(--st-s-1); }
+.companion-section-title { margin-bottom: var(--st-s-3); }
+.companion-devices { list-style: none; margin: 0; padding: 0; }
+.companion-device { display: flex; align-items: center; gap: var(--st-s-3); padding: var(--st-s-4); }
+.companion-device + .companion-device { border-top: 1px solid var(--st-line-soft); }
+.companion-device__icon { display: grid; place-items: center; width: 40px; height: 40px; flex-shrink: 0; border-radius: var(--st-r-sm); background: var(--st-surface-2); color: var(--st-ink-muted); }
+.companion-device__name { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: var(--st-s-1); }
+.companion-device__name strong { font-size: var(--st-fs-md); overflow-wrap: anywhere; }
+.companion-empty { margin: 0; padding: var(--st-s-5); }
+.companion-disable { align-items: flex-start; padding-block: var(--st-s-2); }
+.companion-disable > div { flex: 1; min-width: 180px; }
+.companion-disable p { margin: var(--st-s-1) 0 0; max-width: 48ch; }
+@media (max-width: 700px) {
+  .companion-enable, .companion-invitation { padding: var(--st-s-5); }
+}

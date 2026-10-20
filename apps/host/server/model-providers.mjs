@@ -39,6 +39,23 @@ export function normalizeBaseUrl(value) {
 const publicConnection = ({ apiKey, ...connection }) => ({ ...connection, apiKeySet: !!apiKey });
 const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 
+/** Connection-specific SSH settings. Authentication remains in the system SSH agent/config. */
+export function normalizeModelManagement(value) {
+  if (value === undefined || value === null) return undefined;
+  if (!value || Array.isArray(value) || typeof value !== 'object' || Object.keys(value).some(key => !['transport', 'host', 'user', 'port', 'sourcePath'].includes(key)) || value.transport !== 'ssh') fail('Choose API or SSH model management.');
+  const field = (name, limit) => {
+    if (value[name] === undefined || value[name] === '') return '';
+    if (typeof value[name] !== 'string' || value[name].length > limit || /[\x00-\x1f\x7f]/.test(value[name])) fail('Enter valid SSH connection details.');
+    return value[name].trim();
+  };
+  const host = field('host', 253), user = field('user', 128), sourcePath = field('sourcePath', 4096);
+  if (!/^[a-zA-Z0-9:][a-zA-Z0-9._:-]*$/.test(host)) fail('Enter an SSH host or an alias from your SSH configuration.');
+  if (user && !/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*\$?$/.test(user)) fail('Enter a valid SSH username, or leave it blank to use your SSH configuration.');
+  if (value.port !== undefined && (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535)) fail('Enter an SSH port from 1 to 65535, or leave it blank.');
+  if (sourcePath && !sourcePath.startsWith('/') && !sourcePath.startsWith('~/')) fail('Use an absolute Strata source folder or a path beginning with ~/.');
+  return { transport: 'ssh', host, ...(user ? { user } : {}), ...(value.port === undefined ? {} : { port: value.port }), ...(sourcePath ? { sourcePath } : {}) };
+}
+
 export function createModelProviders({ directory, changed = () => {}, fetchImpl = fetch }) {
   mkdirSync(directory, { recursive: true });
   const file = join(directory, 'model-providers.json');
@@ -47,7 +64,12 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     // Do not silently erase connections if a credentials file needs repair.
     const saved = JSON.parse(readFileSync(file, 'utf8'));
     if (!Array.isArray(saved)) fail('The model connections file is invalid.');
-    connections = saved; makePrivate(file);
+    connections = saved.map(connection => {
+      if (connection.modelManagement === undefined) return connection;
+      if (connection.kind !== 'custom') fail('SSH model management is only available for custom Strata connections.');
+      const modelManagement = normalizeModelManagement(connection.modelManagement);
+      return { ...connection, modelManagement };
+    }); makePrivate(file);
   }
   function list() { return { catalog: PROVIDER_CATALOG, connections: connections.map(publicConnection) }; }
   function persist(next) {
@@ -67,6 +89,8 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
     const name = text(body.name) || catalog?.name;
     if (!name) fail('Give this connection a display name.');
     const baseUrl = normalizeBaseUrl(body.baseUrl || catalog?.baseUrl);
+    const modelManagement = normalizeModelManagement(body.modelManagement === undefined ? existing?.modelManagement : body.modelManagement);
+    if (modelManagement && kind !== 'custom') fail('SSH model management is only available for custom Strata connections.');
     const sameDestination = existing && existing.baseUrl === baseUrl && existing.protocol === protocol;
     // An unchanged blank key means keep it; changing the destination requires a new key.
     const apiKey = body.clearKey ? '' : text(body.apiKey, 4096) || (sameDestination ? existing.apiKey : '') || '';
@@ -79,11 +103,11 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       return { id, name: text(row.name) || id, contextMax: numeric(row.contextMax), maxOutput: numeric(row.maxOutput), vision: row.vision === true ? true : row.vision === false ? false : null, reasoning: row.reasoning === true ? true : row.reasoning === false ? false : null };
     });
     if (new Set(models.map(m => m.id)).size !== models.length) fail('Each model ID must be unique within this connection.');
-    return { id: existing?.id ?? randomUUID(), kind, provider: catalog?.id ?? null, name, baseUrl, protocol, apiKey, models };
+    return { id: existing?.id ?? randomUUID(), kind, provider: catalog?.id ?? null, name, baseUrl, protocol, apiKey, models, ...(modelManagement ? { modelManagement } : {}) };
   }
   function save(body) {
     const connection = draft(body);
-    if (!connection.models.length) fail('Choose at least one model or add its ID.');
+    if (connection.kind !== 'custom' && !connection.models.length) fail('Choose at least one model or add its ID.');
     return persist(connections.some(c => c.id === connection.id) ? connections.map(c => c.id === connection.id ? connection : c) : [...connections, connection]);
   }
   function remove(id) { return persist(connections.filter(c => c.id !== id)); }

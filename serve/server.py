@@ -3535,6 +3535,11 @@ class Service:
         self.queue_timeouts = 0
         self.client_disconnect_cancels = 0
         self.draining = False
+        # Only an owned launch enables this private local control channel. API keys do not authorize it.
+        self.owner_control_token = None
+        self.owner_idle_claim = None
+        self.owner_control_reserved = 0
+        self.owner_shutdown_started = False
         self.active_cancels: set[threading.Event] = set()
         # #332: the API request monitor (/api-monitor) keeps the last 100 requests' prompts and answers in memory,
         # so it is off unless the config's "api_monitor" (or --api-monitor) turns it on
@@ -3670,9 +3675,43 @@ class Service:
     def begin_drain(self) -> int:
         """Stop new inference admission and return the number of owned calls to drain."""
         with self.admission_changed:
+            self.owner_shutdown_started = True
             self.draining = True
             self.admission_changed.notify_all()
             return self.admission_reserved
+
+    def owner_idle(self, action: str, instance: str, claim: str) -> tuple[int, dict]:
+        """Atomically close admission only when an owned instance has no work to interrupt."""
+        if instance != self.instance_id:
+            return 409, {"ok": False, "error": "instance_changed"}
+        if action == "release":
+            with self.status_lock:
+                if self.owner_idle_claim != claim or self.owner_shutdown_started:
+                    return 409, {"ok": False, "error": "idle_claim_changed"}
+                self.owner_idle_claim = None
+                self.draining = False
+            self.fifo.release()
+            return 200, {"ok": True, "instance_id": instance, "released": True}
+        # Holding the FIFO until release or process exit also excludes timer-driven engine controls.
+        if not self.fifo.acquire(blocking=False):
+            return 409, {"ok": False, "error": "runtime_busy"}
+        claimed = False
+        try:
+            with self.status_lock:
+                if (self.draining or self.owner_idle_claim is not None or self.admission_reserved or
+                        self.owner_control_reserved or self.status.get("busy") or self.status.get("queued") or
+                        self.live_reqs or self.terminal_requests or self.active_cancels):
+                    return 409, {"ok": False, "error": "runtime_busy"}
+                # These auxiliary services can do work outside the inference admission gate.
+                if self.images is not None or self.mcp is not None:
+                    return 409, {"ok": False, "error": "auxiliary_service_not_idle_qualified"}
+                self.owner_idle_claim = claim
+                self.draining = True
+                claimed = True
+            return 200, {"ok": True, "instance_id": instance, "claim_id": claim}
+        finally:
+            if not claimed:
+                self.fifo.release()
 
     def wait_for_drain(self, timeout: float) -> int:
         """Wait for reserved inference calls; return the number still in flight."""
@@ -6295,6 +6334,66 @@ def make_handler(svc: Service):
                 self._json(e.status, {"error": {"type": "invalid_request_error", "message": str(e)}})
 
         def _post(self):
+            if self.path == "/_strata/owner/idle":
+                self._owner_idle()
+                return
+            if getattr(svc, "owner_control_token", None) is None:
+                self._post_request()
+                return
+            # Count every owned-server POST before reading its body: load, slots and other controls
+            # must participate in the same gate as inference, including their queued/body-read phase.
+            with svc.status_lock:
+                draining = svc.draining
+                if not draining:
+                    svc.owner_control_reserved += 1
+            if draining:
+                self._json(503, {"error": {"code": "server_draining", "message": "this instance is draining"}})
+                return
+            try:
+                self._post_request()
+            finally:
+                with svc.status_lock:
+                    svc.owner_control_reserved -= 1
+
+        def _owner_idle(self):
+            token = getattr(svc, "owner_control_token", None)
+            if token is None:
+                self._json(404, {"error": {"message": "not found"}})
+                return
+            port = self.server.server_address[1]
+            hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+            if (self.client_address[0] not in ("127.0.0.1", "::1") or
+                    len(self.headers.get_all("Host", [])) != 1 or self.headers.get("Host") not in hosts or
+                    self.headers.get_all("Origin") is not None or
+                    any(k.lower().startswith(("sec-fetch-", "x-forwarded-")) or k.lower() == "forwarded"
+                        for k in self.headers)):
+                self._json(403, {"error": {"message": "owner control requires a direct local client"}})
+                return
+            given = self.headers.get_all("X-Strata-Owner-Control", [])
+            if (len(given) != 1 or not re.fullmatch(r"[0-9a-f]{64}", given[0]) or
+                    not hmac.compare_digest(given[0], token)):
+                self._json(401, {"error": {"message": "owner control credential required"}})
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if self.headers.get_all("Transfer-Encoding") is not None or \
+                        len(self.headers.get_all("Content-Length", [])) != 1 or not 1 <= length <= 2048 or \
+                        self.headers.get("Content-Type") != "application/json":
+                    raise ValueError()
+                self.connection.settimeout(2)
+                body = json.loads(self._body())
+                if (not isinstance(body, dict) or set(body) != {"action", "instance_id", "claim_id"} or
+                        body["action"] not in ("claim", "release") or
+                        any(not isinstance(body[k], str) or not re.fullmatch(r"[0-9a-f]{32}", body[k])
+                            for k in ("instance_id", "claim_id"))):
+                    raise ValueError()
+            except (ValueError, OSError):
+                self._json(400, {"error": {"message": "invalid owner idle request"}})
+                return
+            code, result = svc.owner_idle(body["action"], body["instance_id"], body["claim_id"])
+            self._json(code, result)
+
+        def _post_request(self):
             if not self._authorized():
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
@@ -7819,11 +7918,14 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         cfg = apply_saved_tuning(cfg)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)
     launch_attestation = None
+    owner_control_token = None
     if a.owner_fd is not None:
         if attestation_key is None or not re.fullmatch(r"[0-9a-f]{64}", attestation_key):
             ap.error("owned server needs a private launch attestation key")
         launch_attestation = launch_identity.attestation(bytes.fromhex(attestation_key),
                                                           config_bytes, launch_args)
+        owner_control_token = hmac.new(bytes.fromhex(attestation_key), b"strata-owner-idle-control-v1",
+                                       hashlib.sha256).hexdigest()
     if "batch_telemetry" in cfg and type(cfg["batch_telemetry"]) is not bool:
         ap.error("batch_telemetry must be true or false")
     try:
@@ -7995,6 +8097,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
     svc.launch_attestation = launch_attestation
+    svc.owner_control_token = owner_control_token
     svc.offline = a.offline
     svc.max_queue = max_queue
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None

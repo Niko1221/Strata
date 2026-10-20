@@ -1,0 +1,19 @@
+.serving-destination { display: flex; align-items: center; gap: 10px; }
+.serving-destination > span { white-space: nowrap; }
+.serving-destination-error { max-width: 260px; }
+.remote-serving-overview { display: grid; gap: 22px; }
+.remote-serving-heading { display: flex; align-items: center; gap: 14px; }
+.remote-serving-heading > .st-icon { flex: none; color: var(--st-accent); }
+.remote-serving-heading > div { flex: 1; min-width: 0; }
+.remote-serving-heading p { margin: 6px 0 0; }
+.remote-serving-overview code, .remote-serving-review code { overflow-wrap: anywhere; }
+.remote-serving-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.remote-serving-explanation { max-width: 680px; margin: 0; line-height: 1.6; }
+.remote-serving-warnings { margin: 0; padding-left: 20px; color: var(--st-ink-muted); font-size: 13px; line-height: 1.65; }
+.remote-serving-review { display: grid; gap: 20px; }
+.remote-serving-review > p { margin: 0; }
+@media (max-width: 620px) {
+  .serving-destination { flex-wrap: wrap; }
+  .remote-serving-heading { flex-wrap: wrap; }
+  .remote-serving-heading > .st-btn { margin-left: auto; }
+}

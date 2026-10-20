@@ -19,6 +19,8 @@ from strata_control.private_files import private_mkdir as _private_mkdir
 import argparse
 import errno
 import hashlib
+import hmac
+import http.client
 import json
 import os
 import re
@@ -427,6 +429,51 @@ def status(name: str) -> dict:
     return _rpc(name, "status")
 
 
+def inspect(name: str) -> dict:
+    """Read an owned instance's identity and admission state without loading or generating."""
+    name = _name(name)
+    state = _read_state(name)
+    if state is None:
+        return {"ok": True, "profile": name, "state": "stopped"}
+    try:
+        active = _host_lease_active(name)
+    except FileNotFoundError:
+        active = False
+    if not active:
+        return {"ok": False, "profile": name, "state": "stale", "error": "owner_host_lost", "exit_code": 6}
+    return _rpc(name, "inspect", timeout=10)
+
+
+def reap_if_exited(name: str, *, expected_owner_id: str, expected_source_sha256: str,
+                   timeout: float = 10) -> dict:
+    """Retire only a proven private owner whose own child is absent or has already exited."""
+    if (not isinstance(expected_owner_id, str) or not re.fullmatch(r"[0-9a-f]{32}", expected_owner_id) or
+            not isinstance(expected_source_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
+        raise ProfileError("failed-owner recovery requires the exact owner ID and source SHA-256")
+    if type(timeout) not in (int, float) or not 1 <= timeout <= 30:
+        raise ProfileError("failed-owner recovery wait must be 1..30 seconds")
+    name = _name(name)
+    result = _rpc(name, "reap_if_exited", timeout=timeout,
+                  params={"expected_owner_id": expected_owner_id,
+                          "expected_source_sha256": expected_source_sha256})
+    if not result.get("ok"):
+        return result
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _read_state(name) is None:
+            host = _STARTED_HOSTS.pop(name, None)
+            if host is not None:
+                try:
+                    host.wait(timeout=max(0.1, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    _STARTED_HOSTS[name] = host
+                    return {"ok": False, "profile": name, "state": "stopping",
+                            "error": "owner_retirement_pending", "exit_code": 8}
+            return result
+        time.sleep(0.05)
+    return {"ok": False, "profile": name, "state": "stopping", "error": "owner_retirement_pending", "exit_code": 8}
+
+
 def _start_candidate(name: str) -> tuple[dict, str]:
     from strata_cli.cli import _launch_plan
     plan, _ = _launch_plan(name)
@@ -643,9 +690,10 @@ def restart(name: str, *, timeout: float = 1000, startup_wait: float = 300,
             expected_instance_id: str | None = None,
             allow_source_switch: bool = False,
             allow_source_migration: bool = False,
-            expected_source_sha256: str | None = None) -> dict:
+            expected_source_sha256: str | None = None, refuse_busy: bool = False) -> dict:
     if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= 600 or
-            type(allow_source_switch) is not bool or type(allow_source_migration) is not bool):
+            type(allow_source_switch) is not bool or type(allow_source_migration) is not bool or
+            type(refuse_busy) is not bool):
         raise ProfileError("restart wait must be 1..1800 and startup wait 1..600 seconds")
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
                                                not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
@@ -666,16 +714,27 @@ def restart(name: str, *, timeout: float = 1000, startup_wait: float = 300,
         params["expected_owner_id"] = expected_owner_id
     if expected_instance_id is not None:
         params["expected_instance_id"] = expected_instance_id
-    return _rpc(_name(name), "restart", timeout=timeout, params=params)
+    return _rpc(_name(name), "restart_if_idle" if refuse_busy else "restart", timeout=timeout, params=params)
+
+
+def restart_if_idle(name: str, **kwargs) -> dict:
+    """Restart only after the owned server atomically refuses new work while idle."""
+    return restart(name, **kwargs, refuse_busy=True)
 
 
 def plan_restart(name: str, *, allow_source_switch: bool = False,
-                 allow_source_migration: bool = False) -> dict:
+                 allow_source_migration: bool = False, refuse_busy: bool = False) -> dict:
     if type(allow_source_switch) is not bool or type(allow_source_migration) is not bool:
         raise ProfileError("source change options must be true or false")
-    return _rpc(_name(name), "plan_restart", timeout=10,
+    if type(refuse_busy) is not bool:
+        raise ProfileError("refuse busy must be true or false")
+    return _rpc(_name(name), "plan_restart_if_idle" if refuse_busy else "plan_restart", timeout=10,
                 params={"allow_source_switch": allow_source_switch,
                         "allow_source_migration": allow_source_migration})
+
+
+def plan_restart_if_idle(name: str, **kwargs) -> dict:
+    return plan_restart(name, **kwargs, refuse_busy=True)
 
 
 class Host:
@@ -697,6 +756,7 @@ class Host:
         self.source: Path | None = None
         self.source_bytes: bytes | None = None
         self.expected_attestation: str | None = None
+        self.owner_control_token: str | None = None
         self.revision: str | None = None
         self.last_error: str | None = None
         self.running = True
@@ -788,6 +848,7 @@ class Host:
                        "--owner-fd", "0" if WINDOWS else str(reader)]
         attestation_key = secrets.token_bytes(32)
         expected_attestation = launch_identity.attestation(attestation_key, source_bytes, server_args)
+        owner_control_token = hmac.new(attestation_key, b"strata-owner-idle-control-v1", hashlib.sha256).hexdigest()
         child_env = os.environ.copy()
         child_env["STRATA_OWNER_ATTEST_KEY"] = attestation_key.hex()
         child_env["STRATA_NO_ACQUIRE"] = "1"      # a managed server never installs or downloads (acquisition.py)
@@ -831,6 +892,7 @@ class Host:
         self.ready_path = ready
         self.args, self.source, self.source_bytes, self.revision = list(args), source, source_bytes, revision
         self.expected_attestation = expected_attestation
+        self.owner_control_token = owner_control_token
         self.last_error = None
         self.probe_deadline = time.monotonic() + self.probe_timeout
         self.probe_key = None
@@ -906,14 +968,101 @@ class Host:
                 pass
         return {**base, "state": "starting"}
 
-    def _wait_ready(self, timeout: float) -> dict:
+    def _inspect(self) -> dict:
+        """The ready file is only a hint; authenticate the exact launched instance over raw telemetry."""
+        child = self.child
+        return_code = child.poll() if child is not None else None
+        base = {"ok": True, "profile": self.name, "owner_id": self.owner_id,
+                "profile_revision": self.revision,
+                "source_sha256": hashlib.sha256(self.source_bytes).hexdigest() if self.source_bytes
+                    else self.expected_source_sha256,
+                "source_config": str(self.source) if self.source else None,
+                "generation_ready": False, "owner_host_alive": True,
+                "child_alive": child is not None and return_code is None}
+        if child is None or return_code is not None:
+            failed = self.last_error is not None or child is not None and return_code != 0
+            return {**base, "state": "failed" if failed else "stopped", "ok": not failed,
+                    "error": self.last_error or ("server_exited" if failed else None)}
+        if self.ready_path is None:
+            return {**base, "state": "starting"}
+        try:
+            ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
+            if ready.get("pid") != child.pid or not isinstance(ready.get("instance_id"), str):
+                raise readiness.ReadinessError("probe_instance_mismatch")
+            host = self.args[self.args.index("--host") + 1]
+            host, port = readiness._address(ready, host)
+            # Owner control is deliberately direct loopback even when the public listener is on the LAN.
+            if host not in ("127.0.0.1", "::1", "localhost"):
+                raise readiness.ReadinessError("owned_listener_not_local_control_qualified")
+            telemetry = readiness._request(host, port, "GET", "/v1/telemetry",
+                                           readiness._credential(self.source_bytes), 3)
+            instance, model, work = (telemetry.get(k) for k in ("instance", "model", "work"))
+            if not isinstance(instance, dict) or instance.get("id") != ready["instance_id"]:
+                raise readiness.ReadinessError("probe_instance_mismatch")
+            proof = instance.get("launch_attestation")
+            if (not isinstance(proof, str) or not isinstance(self.expected_attestation, str) or
+                    not hmac.compare_digest(proof, self.expected_attestation)):
+                raise readiness.ReadinessError("probe_launch_attestation_mismatch")
+            cfg = json.loads(self.source_bytes)
+            if (not isinstance(model, dict) or model.get("id") != ready.get("model_id") or
+                    (cfg.get("model_name") is not None and model.get("id") != cfg["model_name"]) or
+                    type(model.get("loaded")) is not bool):
+                raise readiness.ReadinessError("probe_model_mismatch")
+            if not isinstance(work, dict) or any(type(work.get(k)) is not int or work[k] < 0
+                                                for k in ("active", "queued", "admission_reserved")):
+                raise readiness.ReadinessError("probe_admission_state_unavailable")
+            display = f"[{host}]" if ":" in host else host
+            return {**base, "state": "ready", "instance_id": instance["id"],
+                    "api_identity_verified": True, "launch_attested": True,
+                    "api_url": f"http://{display}:{port}", "model_id": model["id"], "loaded": model["loaded"],
+                    "model_state": "ready" if model["loaded"] else "unloaded",
+                    "busy": any(work[k] > 0 for k in ("active", "queued", "admission_reserved")),
+                    "draining": instance.get("state") == "draining"}
+        except FileNotFoundError:
+            return {**base, "state": "starting"}
+        except (OSError, ValueError, TypeError, KeyError, IndexError, readiness.ReadinessError) as exc:
+            error = str(exc) if isinstance(exc, readiness.ReadinessError) else "probe_invalid_ready_file"
+            return {**base, "ok": False, "state": "failed", "error": error, "exit_code": 6}
+
+    def _owner_idle(self, action: str, instance: str, claim: str) -> dict:
+        if self.ready_path is None or not self.owner_control_token:
+            raise ProfileError("owner_idle_control_unavailable", 6)
+        ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
+        if self.child is None or ready.get("pid") != self.child.pid or ready.get("instance_id") != instance:
+            raise ProfileError("instance_changed_after_restart_plan", 6)
+        host = self.args[self.args.index("--host") + 1]
+        host, port = readiness._address(ready, host)
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            raise ProfileError("owned_listener_not_local_control_qualified", 6)
+        payload = json.dumps({"action": action, "instance_id": instance, "claim_id": claim}).encode()
+        connection = http.client.HTTPConnection(host, port, timeout=3)
+        try:
+            connection.request("POST", "/_strata/owner/idle", payload,
+                               {"Content-Type": "application/json", "X-Strata-Owner-Control": self.owner_control_token})
+            response = connection.getresponse()
+            raw = response.read(4097)
+            if len(raw) > 4096:
+                raise ProfileError("owner_idle_response_invalid", 6)
+            result = json.loads(raw)
+            if not isinstance(result, dict) or response.status not in (200, 409):
+                raise ProfileError("owner_idle_control_failed", 6)
+            if result.get("ok") is not True:
+                raise ProfileError(result.get("error", "owner_idle_control_failed"), 6)
+            if result.get("instance_id") != instance:
+                raise ProfileError("instance_changed_after_restart_plan", 6)
+            return result
+        finally:
+            connection.close()
+
+    def _wait_ready(self, timeout: float, *, read_only: bool = False) -> dict:
+        status = self._inspect if read_only else self._status
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            current = self._status()
+            current = status()
             if current["state"] in ("ready", "failed"):
                 return current
             time.sleep(0.15)
-        current = self._status()
+        current = status()
         if current["state"] in ("ready", "failed"):
             return current
         return {**current, "ok": False, "error": "startup_wait_expired", "exit_code": 8}
@@ -976,8 +1125,9 @@ class Host:
                  allow_source_migration: bool = False,
                  expected_source_sha256: str | None = None,
                  expected_owner_id: str | None = None,
-                 expected_instance_id: str | None = None) -> dict:
-        old = self._status()
+                 expected_instance_id: str | None = None, *, refuse_busy: bool = False) -> dict:
+        status = self._inspect if refuse_busy else self._status
+        old = status()
         if expected_owner_id is not None and old.get("owner_id") != expected_owner_id:
             return {"ok": False, "error": "owner_changed_after_restart_plan", "exit_code": 6}
         if expected_instance_id is not None and old.get("instance_id") != expected_instance_id:
@@ -997,7 +1147,7 @@ class Host:
             return {"ok": False, "state": "ready", "error": "source_changed_after_preview", "exit_code": 6}
         if expected_profile_revision is not None and plan["profile_revision"] != expected_profile_revision:
             return {"ok": False, "state": "ready", "error": "profile_changed_after_preview", "exit_code": 6}
-        current = self._status()
+        current = status()
         if expected_instance_id is not None and current.get("instance_id") != expected_instance_id:
             return {"ok": False, "error": "instance_changed_after_restart_plan", "exit_code": 6}
         if current["state"] != "ready":
@@ -1014,14 +1164,55 @@ class Host:
                     self._retire_snapshot(rollback_source)
                 return {"ok": False, "state": "ready", "error": "rollback_snapshot_failed", "exit_code": 6}
         self.probe_timeout = startup_wait
-        stopped = self._stop_child()
+        claim = uuid.uuid4().hex if refuse_busy else None
+        if claim is not None:
+            try:
+                self._owner_idle("claim", old["instance_id"], claim)
+                # The network await above is a mutation boundary. Revalidate while admission is closed.
+                checked, checked_args, checked_source, checked_bytes = self._plan()
+                if (checked["profile_revision"] != plan["profile_revision"] or checked_args != new_args or
+                        checked_source != source or checked_bytes != source_bytes):
+                    raise ProfileError("candidate_changed_during_idle_claim", 6)
+                if rollback_source.read_bytes() != old_bytes:
+                    raise ProfileError("rollback_source_changed_during_idle_claim", 6)
+            except (ProfileError, OSError, ValueError, KeyError, readiness.ReadinessError, http.client.HTTPException) as exc:
+                if isinstance(exc, ProfileError) and str(exc) in (
+                        "runtime_busy", "auxiliary_service_not_idle_qualified", "instance_changed"):
+                    if rollback_source != old_source:
+                        self._retire_snapshot(rollback_source)
+                    return {"ok": False, "state": "ready", "error": str(exc), "exit_code": 6}
+                # Also release after a lost response: the server may have accepted the claim.
+                released = True
+                try:
+                    self._owner_idle("release", old["instance_id"], claim)
+                except (ProfileError, OSError, ValueError, KeyError, readiness.ReadinessError, http.client.HTTPException):
+                    released = False
+                if rollback_source != old_source:
+                    self._retire_snapshot(rollback_source)
+                return {"ok": False, "state": "ready", "error": str(exc) if isinstance(exc, ProfileError)
+                        else "owner_idle_control_failed", "exit_code": 6,
+                        "idle_claim_release_confirmed": released}
+        try:
+            stopped = self._stop_child()
+        except OSError:
+            if claim is None:
+                raise
+            released = True
+            try:
+                self._owner_idle("release", old["instance_id"], claim)
+            except (ProfileError, OSError, ValueError, KeyError, readiness.ReadinessError, http.client.HTTPException):
+                released = False
+            if rollback_source != old_source:
+                self._retire_snapshot(rollback_source)
+            return {"ok": False, "state": "ready", "error": "owned_stop_not_started", "exit_code": 6,
+                    "idle_claim_release_confirmed": released}
         if not stopped["ok"]:
             return {**stopped, "profile": self.name, "previous_instance_id": old.get("instance_id")}
         try:
             if source.read_bytes() != source_bytes:
                 raise ProfileError("source changed during drain", 6)
             self._launch(new_args, source, source_bytes, plan["profile_revision"])
-            result = self._wait_ready(startup_wait)
+            result = self._wait_ready(startup_wait, read_only=True) if refuse_busy else self._wait_ready(startup_wait)
             if result.get("ok") and result["state"] == "ready":
                 cleanup_ok = True
                 if rollback_source != source:
@@ -1044,7 +1235,7 @@ class Host:
         if old_source_unchanged:
             try:
                 self._launch(rollback_args, rollback_source, old_bytes, old_revision)
-                rollback = self._wait_ready(startup_wait)
+                rollback = self._wait_ready(startup_wait, read_only=True) if refuse_busy else self._wait_ready(startup_wait)
             except (OSError, ProfileError):
                 rollback = {"state": "failed"}
             if rollback.get("ok") and rollback.get("state") == "ready":
@@ -1061,8 +1252,8 @@ class Host:
                 "exit_code": 6, "rolled_back": False}
 
     def _plan_restart(self, allow_source_switch: bool = False,
-                      allow_source_migration: bool = False) -> dict:
-        current = self._status()
+                      allow_source_migration: bool = False, *, refuse_busy: bool = False) -> dict:
+        current = self._inspect() if refuse_busy else self._status()
         if current["state"] != "ready":
             return {"ok": False, "state": current["state"], "error": "runtime_not_ready", "exit_code": 6}
         try:
@@ -1100,6 +1291,26 @@ class Host:
         command = request.get("command")
         if command == "status":
             return self._status()
+        if command == "inspect":
+            return self._inspect()
+        if command == "reap_if_exited":
+            owner, digest = request.get("expected_owner_id"), request.get("expected_source_sha256")
+            if (not isinstance(owner, str) or not re.fullmatch(r"[0-9a-f]{32}", owner) or
+                    not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                return {"ok": False, "error": "invalid_failed_owner_recovery_guards", "exit_code": 2}
+            if owner != self.owner_id:
+                return {"ok": False, "error": "owner_changed_before_recovery", "exit_code": 6}
+            current_digest = (hashlib.sha256(self.source_bytes).hexdigest() if self.source_bytes
+                              else self.expected_source_sha256)
+            if digest != current_digest:
+                return {"ok": False, "error": "source_changed_before_recovery", "exit_code": 6}
+            if self.child is not None and self.child.poll() is None:
+                return {"ok": False, "error": "runtime_child_still_alive", "exit_code": 6}
+            # The owner's normal finally block only closes resources for an exited/absent child.
+            # No signal, process-name lookup, PID adoption or generation probe is involved.
+            self.running = False
+            return {"ok": True, "profile": self.name, "state": "stopped", "owner_reaped": True,
+                    "owner_id": self.owner_id}
         if command == "verify":
             timeout, force_load = request.get("wait", 300), request.get("load", False)
             if type(timeout) not in (int, float) or not 1 <= timeout <= 600 or type(force_load) is not bool:
@@ -1153,7 +1364,7 @@ class Host:
             result = self._stop_child()
             self.running = False
             return {**result, "profile": self.name}
-        if command == "restart":
+        if command in ("restart", "restart_if_idle"):
             startup_wait = request.get("startup_wait", 300)
             if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= 600:
                 return {"ok": False, "error": "invalid_startup_wait", "exit_code": 2}
@@ -1185,13 +1396,15 @@ class Host:
                 return {"ok": False, "error": "invalid_expected_instance_id", "exit_code": 2}
             return self._restart(startup_wait, revision, allow_source_switch,
                                  allow_source_migration, expected_source_sha256,
-                                 expected_owner_id, expected_instance_id)
-        if command == "plan_restart":
+                                 expected_owner_id, expected_instance_id,
+                                 **({"refuse_busy": True} if command == "restart_if_idle" else {}))
+        if command in ("plan_restart", "plan_restart_if_idle"):
             allow_source_switch = request.get("allow_source_switch", False)
             allow_source_migration = request.get("allow_source_migration", False)
             if type(allow_source_switch) is not bool or type(allow_source_migration) is not bool:
                 return {"ok": False, "error": "invalid_source_change_options", "exit_code": 2}
-            return self._plan_restart(allow_source_switch, allow_source_migration)
+            return self._plan_restart(allow_source_switch, allow_source_migration,
+                                      **({"refuse_busy": True} if command == "plan_restart_if_idle" else {}))
         return {"ok": False, "error": "unsupported_runtime_command", "exit_code": 2}
 
     def serve(self) -> int:

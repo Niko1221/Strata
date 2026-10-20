@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {NATIVE_FIELDS} from '../../server/native-settings.mjs';
 import {createNativeControl} from '../../server/native-control.mjs';
-export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
+export function nativeFixture({modelsDirectory,tuneHandler,engineStatus,beforePrepare}={}){
  const root=mkdtempSync(join(tmpdir(),'strata-native-test-')),repo=join(root,'repo'),directory=join(root,'data');
  const venvBin=process.platform==='win32'?'.venv/Scripts':'.venv/bin',venvPython=process.platform==='win32'?'.venv/Scripts/python.exe':'.venv/bin/python';
  for(const path of ['tools','serve',venvBin,'engine/.previous'])mkdirSync(join(repo,path),{recursive:true});
@@ -36,7 +36,7 @@ export function nativeFixture({modelsDirectory,tuneHandler,engineStatus}={}){
   if(url.endsWith('/v1/chat/completions')){if(benchmarkWait)await new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Stopped','AbortError')),{once:true}));return Response.json({usage:{prompt_tokens:30,completion_tokens:200},timings:{predicted_per_second:41,prompt_per_second:1000}});}
   return Response.json({status:'ok'});
  };
- const control=createNativeControl({directory,defaultRepo:repo,spawnProcess,fetcher,modelsDirectory,requests:()=>requests});
+ const control=createNativeControl({directory,defaultRepo:repo,spawnProcess,fetcher,modelsDirectory,beforePrepare,requests:()=>requests});
  return {control,repo,directory,catalog,installed,requests,calls,rpcCalls,children,setExternal:value=>external=value,setHardware:value=>hardware=value,setBenchmarkWait:value=>benchmarkWait=value,setProgramWait:value=>programWait=value,setHealthWait:value=>healthWait=value,hasPendingHealth:()=>!!releaseHealth,releaseHealth:()=>{healthWait=false;releaseHealth?.();releaseHealth=null;},cleanup:async()=>{await control.close();rmSync(root,{recursive:true,force:true});}};
 }
 export async function finishJob(control,id){for(let n=0;n<400;n++){const job=control.state().jobs.find(j=>j.id===id);if(job.state!=='running')return job;await new Promise(r=>setTimeout(r,10));}throw new Error('Fixture operation timed out');}

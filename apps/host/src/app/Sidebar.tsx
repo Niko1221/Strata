@@ -18,7 +18,7 @@ import { MOD, runCommand } from '../lib/commands';
 import { bindingFor, bindingKeys, useBindings } from '../lib/shortcut-bindings';
 import { Btn, Dialog, Icon, IconBtn, type IconName } from '../components/ui';
 import { Brand } from '../components/Brand';
-import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, useStore } from '../lib/store';
+import { addWorkspace, deleteSession, go, isUnread, pickWorkspace, renameSession, removeWorkspace, renameWorkspace, selectSession, setActiveWorkspace, setNavOpen, togglePin, toggleRail, setTheme, setSettingsSection, useStore } from '../lib/store';
 export function Sidebar({ containerRef }: {
     containerRef: RefObject<HTMLElement | null>;
 }) {
@@ -37,6 +37,7 @@ export function Sidebar({ containerRef }: {
     const workspaces = useStore(s => s.workspaces);
     const activeWorkspace = useStore(s => s.activeWorkspace);
     const activeSession = useStore(s => s.activeSession);
+    const settingsSection = useStore(s => s.settingsSection);
     const [query, setQuery] = useState('');
     const [searchOpen, setSearchOpen] = useState(false);
     const searchInput = useRef<HTMLInputElement>(null);
@@ -106,6 +107,7 @@ export function Sidebar({ containerRef }: {
         <NavLink route="skills" label={tr("Skills")} icon="skills" current={location.route}/>
         <NavLink route="monitor" label={tr("Monitor")} icon="activity" current={location.route}/>
         <NavLink route="models" label={tr("Models")} icon="models" current={location.route === 'tuning' ? 'models' : location.route}/>
+        <button type="button" className="navitem" title={tr("Pair iPhone")} aria-label={tr("Pair iPhone")} aria-current={location.query.has('settings') && settingsSection === 'iPhone' ? 'page' : undefined} onClick={() => { setSettingsSection('iPhone'); go('settings'); }}><Icon name="link"/><span className="navitem__text">{tr("Pair iPhone")}</span></button>
         <div className="nav__bottom"><MoreMenu current={location.route}/><button className="st-btn st-btn--icon theme-switch" aria-label={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} title={tr(dark ? 'Switch to light mode' : 'Switch to dark mode')} onClick={() => setTheme(dark ? 'light' : 'dark')}><span key={String(dark)} className="theme-switch__icon"><Icon name={dark ? 'sun' : 'moon'} size={19}/></span></button></div>
       </div>
     </aside>

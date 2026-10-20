@@ -1,0 +1,56 @@
+.remote-model-manager .dialog-body { display: grid; gap: 20px; }
+.remote-model-target { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 1px solid var(--st-line); border-radius: 12px; background: var(--st-surface); }
+.remote-model-target > .st-icon { flex: none; color: var(--st-accent); }
+.remote-model-target p { margin: 4px 0 0; }
+.remote-model-toolbar, .remote-model-folder, .remote-model-job__head, .remote-model-job__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.remote-model-toolbar { flex-wrap: wrap; }
+.remote-model-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--st-line); border-radius: 10px; }
+.remote-model-tabs > button { padding: 8px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--st-ink-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.remote-model-tabs > button[aria-pressed="true"] { background: var(--st-accent-tint); color: var(--st-accent-text); font-weight: 600; }
+.remote-model-tabs > button:disabled { opacity: .45; cursor: default; }
+.remote-model-catalog, .remote-model-import, .remote-model-review, .remote-model-jobs { display: grid; gap: 14px; min-width: 0; }
+.remote-model-row { display: flex; align-items: center; gap: 12px; padding: 15px 0; border-bottom: 1px solid var(--st-line); }
+.remote-model-row:last-child { border-bottom: 0; }
+.remote-model-row > .st-icon { flex: none; color: var(--st-ink-muted); }
+.remote-model-row__body { flex: 1; min-width: 0; }
+.remote-model-row__body > p { margin: 5px 0 0; }
+.remote-model-pictures { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.remote-model-pictures input { accent-color: var(--st-accent); }
+.remote-model-empty { display: grid; justify-items: center; gap: 12px; padding: 25px; text-align: center; }
+.remote-model-empty > .st-icon { color: var(--st-ink-muted); }
+.remote-model-empty > p { margin: 0; max-width: 440px; }
+.remote-model-path { display: flex; gap: 8px; }
+.remote-model-path > input { flex: 1; min-width: 0; }
+.remote-model-folder > code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.remote-model-files { max-height: 290px; overflow: auto; border: 1px solid var(--st-line); border-radius: 12px; padding: 6px; }
+.remote-model-files > p { padding: 20px; text-align: center; }
+.remote-model-file { width: 100%; display: flex; align-items: center; gap: 10px; padding: 12px; border: 0; border-radius: 8px; background: transparent; color: var(--st-ink); font: inherit; text-align: left; cursor: pointer; }
+.remote-model-file:hover { background: var(--st-surface); }
+.remote-model-file:disabled { opacity: .5; cursor: default; }
+.remote-model-file > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.remote-model-file > .st-icon { flex: none; color: var(--st-ink-muted); }
+.remote-model-job { border: 1px solid var(--st-line); border-radius: 12px; padding: 16px; }
+.remote-model-job > p { margin: 8px 0; }
+.remote-model-job progress { width: 100%; height: 7px; accent-color: var(--st-accent); }
+.remote-model-job__footer { margin-top: 9px; }
+.remote-model-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0; padding: 16px; border-radius: 12px; background: var(--st-surface); }
+.remote-model-facts dt { color: var(--st-ink-muted); font-size: 12px; }
+.remote-model-facts dd { margin: 5px 0 0; font-weight: 600; }
+.remote-model-warnings { margin: 0; padding-left: 20px; color: var(--st-ink-muted); font-size: 13px; line-height: 1.65; }
+.remote-model-import-files ul { max-height: 180px; overflow: auto; padding-left: 18px; }
+.remote-model-import-files code { font-size: 12px; overflow-wrap: anywhere; }
+.remote-model-notice { display: flex; align-items: flex-start; gap: 8px; margin: 0; }
+.remote-model-notice > .st-icon { flex: none; color: var(--st-accent); }
+.provider-card__actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.provider-ssh-settings { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--st-line); border-radius: 12px; }
+.provider-ssh-settings > p { margin: 0; }
+.provider-ssh-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 560px) {
+  .remote-model-row { flex-wrap: wrap; }
+  .remote-model-row > .st-btn { margin-left: 33px; }
+  .remote-model-row__body { flex-basis: calc(100% - 34px); }
+  .remote-model-toolbar > .st-btn { margin-left: auto; }
+  .remote-model-facts { grid-template-columns: 1fr; }
+  .provider-card__actions { flex-direction: column; }
+  .provider-ssh-fields { grid-template-columns: 1fr; }
+}

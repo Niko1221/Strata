@@ -127,15 +127,19 @@ export interface ImageModelLibrary {
 export type ModelProtocol = 'openai-chat' | 'openai-responses' | 'anthropic';
 export interface ApiModel { id: string; name: string; contextMax?: number | null; /** What the person ticked ("This model reads pictures"): true, false, or null for not set. */ vision?: boolean | null; /** The answer in use: the tick, else what the server said; null when nobody knows. */ reads?: boolean | null; /** The provider says the model can think (OpenRouter's supported_parameters): the Reasoning menu then works. */ reasoning?: boolean | null; thinks?: boolean | null }
 export interface ModelProviderPreset { id: string; name: string; baseUrl: string; protocol: ModelProtocol; baseUrlHint?: string }
+export interface SSHModelManagement { transport: 'ssh'; host: string; user?: string; port?: number; sourcePath?: string }
 export interface ModelConnection {
   id: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
   baseUrl: string; protocol: ModelProtocol; apiKeySet: boolean; models: ApiModel[];
+  modelManagement?: SSHModelManagement;
 }
 export interface ModelProviders { catalog: ModelProviderPreset[]; connections: ModelConnection[] }
 export interface RemoteModelSelection { connectionId: string; modelId: string }
 export interface ModelConnectionDraft {
   id?: string; kind: 'provider' | 'custom'; provider: string | null; name: string;
   baseUrl: string; protocol: ModelProtocol; apiKey: string; clearKey?: boolean; models: ApiModel[];
+  /** null explicitly returns an existing connection to API management. */
+  modelManagement?: SSHModelManagement | null;
 }
 
 export type Effort = 'fastest' | 'balanced' | 'quality' | 'max';
@@ -233,7 +237,7 @@ export interface ServingState {
   baseUrl: string;
   port: number;
   endpoints: { openai: string; anthropic: string; models: string };
-  access: { otherDevices: boolean; apiKeySet: boolean; apiKeyHint: string | null; allowOrigin: string };
+  access: { otherDevices: boolean; apiKeySet: boolean; apiKeyHint: string | null; allowOrigin: string; remoteModelManagement?: boolean };
   stats: { running: number; waiting: number; completed: number; failed: number; tokensOut: number };
   requests: ServeRequest[];
   pauseServing: boolean;
@@ -427,6 +431,10 @@ export interface LoopRecord {
 }
 
 export interface Session {
+  /** Shared host revision and live activity; localStorage remains an offline cache. */
+  revision?: number;
+  active?: boolean;
+  status?: string | null;
   /** The person dismissed this chat's (or its loop's) card on the board at this time. A later problem brings it back. */
   ackedAt?: string;
   loop?: LoopRecord;
@@ -436,7 +444,7 @@ export interface Session {
   previewOpen?: string;
   closedPreviews?: string[];
   showcaseAgentStates?: boolean;
-  preferences?: { access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
+  preferences?: { nativeModelId?: string; access?: 'read' | 'write' | 'full'; thinking?: string; thinkingBudget?: number; mode?: ChatMode; useTools?:boolean; /** false: plain conversation, no tools of any kind. */ agent?: boolean; /** This chat's API model; absent or null means the local model. */ remoteModel?: RemoteModelSelection | null };
   /** A branch does not have retained per-turn input usage. */
   statsAvailable?: boolean;
   id: string;
