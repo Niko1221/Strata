@@ -1,7 +1,8 @@
 # Packages only the NVIDIA FP4-Local (QAD) conversion needs (#3227): setup installs them right before tools/nvfp4_local_pack.py prepare runs,
 # and only then. llama.cpp's converter imports torch and transformers; safetensors reads NVIDIA's shards.
 # Licenses: torch BSD-3-Clause, transformers Apache-2.0, safetensors Apache-2.0 (all permissive; nothing of them is shipped with Strata).
-# Pinned to the versions of the PC the conversion is developed on (torch 2.9.1 is the CPU build on Windows; on Linux setup asks for the CPU wheel).
-torch==2.9.1
+# Pinned to the versions of the PC the conversion is developed on (torch is the CPU build; on Linux setup asks for the CPU wheel).
+# torch raised 2.9.1 -> 2.14.1: the PyTorch CPU index has no cp315 wheel for 2.9.1, so setup died on Python 3.15 with "No matching distribution found for torch==2.9.1"; 2.14.1 has +cpu cp310-cp315 wheels on that index (no free-threaded cp313t builds, and its macOS wheels need macOS >= 14). On Windows setup resolves from PyPI instead, where no cp315 torch exists for any version yet.
+torch==2.14.1
 transformers==4.57.6
 safetensors==0.7.0
