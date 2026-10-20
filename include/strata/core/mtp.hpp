@@ -139,6 +139,14 @@ public:
     // ---- --pipeline-windows 2: the chain as one asynchronous launch (the round and its steps back to back, no host
     // wait), its first `n_force` steps fed the given tokens instead of their own picks (teacher forcing: the drafts of
     // a window already in flight), each output read once the event after its step has completed.
+    /// The most outputs a chain can have whatever max_t is (--pipeline-windows 3: forced through two windows in
+    /// flight, then the next window's row 0 and drafts).  Step j >= max_t stages its cell after output 0's row, so a
+    /// chain of up to max_t - 1 outputs keeps the staging rows it always had.
+    static constexpr int kChainMax = 11;
+    /// Before prepare_chain: chains of up to `k` outputs (1..kChainMax; 0, the default: max_t - 1, as before).  The
+    /// step graphs past max_t - 2 are captured only when this asks for them.
+    void set_chain_max(int k) { chain_max_req_ = k; }
+    int chain_max() const { return chain_max_req_ > 0 ? std::min(chain_max_req_, kChainMax) : max_t_ - 1; }
     /// Before `load`: the round/step graphs get the forcing kernel (a no-op while its token is -1), and the drafter's
     /// stream the highest priority (STRATA_MTP_PRIORITY=0: the default priority).
     void set_force_capture(bool on) { force_on_ = on; }
@@ -149,9 +157,22 @@ public:
     /// The catch-up over T cells from `p` (as draft()), then `n_out` outputs from row `a`: output j is the chain's
     /// own pick, and step j (1 <= j <= n_force) takes force[j - 1] as its input token instead of output j - 1.
     /// `n_early`: an event after each of the first `n_early` outputs (chain_outputs_ready).
+    /// `n_out` (at most chain_max()) is clamped so that the chain's last cell, p + a + n_out - 1, stays below the
+    /// drafter's max_cells - 1; chain_n() is what it became.  `n_queue` (STRATA_MTP_CHAIN_STOP): queue only the first
+    /// `n_queue` outputs now (0, or >= n_out: all of them, as before); the chain then stays open for chain_extend
+    /// until it has queued its `n_out` outputs or chain_close() is called, and chain_poll reports it done only then.
     bool chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force, int n_out,
-                      int n_early, std::string& err);
-    /// 1: every output is in chain_tok()/chain_prob(); 0: still running; -1: an error.
+                      int n_early, std::string& err, int n_queue = 0);
+    /// An open chain (n_queue): the host wants its first `k` outputs - queue the steps through output k (one step
+    /// ahead of what the host asked for, so the drafter's stream never waits on the host), at most the n_out it was
+    /// launched with.  Returns the outputs queued so far (-1: an error).  A no-op for a chain that is not open.
+    int chain_extend(int k, std::string& err);
+    /// An open chain queues nothing more: the steps already queued run, and chain_poll then reports it done.
+    void chain_close() { chain_open_ = false; }
+    bool chain_open() const { return chain_live_ && chain_open_; }
+    /// The outputs the current (or last) chain queued: n_out after the cell clamp, or fewer for a closed open chain.
+    int chain_n() const { return chain_n_; }
+    /// 1: every output is in chain_tok()/chain_prob(); 0: still running (or open); -1: an error.
     int chain_poll(std::string& err);
     /// How many of the chain's first outputs (up to `n_early`; all of them once the chain is done) have landed in
     /// chain_tok()/chain_prob(); -1: an error.  A window's size is often decided by its first outputs (a draft below
@@ -160,6 +181,12 @@ public:
     bool chain_live() const { return chain_live_; }
     const int32_t* chain_tok() const { return chain_tok_; }
     const float* chain_prob() const { return chain_prob_; }
+    /// Opt-in (default off: a chain records nothing more than before): each chain_launch records source_done() on the
+    /// drafter's stream right after set_source_R's rows are copied into the bound buffer, so the next writer of those
+    /// rows (the slot's next window on the last stage) can wait for the copy on the device instead of on the host.
+    void set_source_done(bool on) { src_done_on_ = on; }
+    /// The event after the last chain_launch's source copy (null unless set_source_done(true) and prepare_chain ran).
+    cudaEvent_t source_done() const { return src_done_on_ ? ev_src_ : nullptr; }
 
     double ms_draft = 0, ms_prefill = 0;
     double ms_src = 0;      ///< the host time spent staging the source rows (a cross-card copy when the drafter is on another card)
@@ -210,7 +237,10 @@ private:
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);
     bool capture_step(int j, bool coupled, std::string& err);
-    cudaGraphExec_t step_exec_[9] = {};
+    /// The staging row of chain step j (1 <= j < kChainMax): max_t + j - 1 up to j = max_t - 1, then after output
+    /// 0's row 2*max_t - 1, so chains of up to max_t - 1 outputs use the rows they always used.
+    int step_row(int j) const { return j <= max_t_ - 1 ? max_t_ + j - 1 : 2 * max_t_ + (j - max_t_); }
+    cudaGraphExec_t step_exec_[12] = {};   // [j]: chain step j, 1 <= j < kChainMax
     // coupled draft sampling: its own round/step graphs (the argmax ones stay as they were), the request's
     // parameters and the penalty ring (mapped staging + device copies), the split scratch, token id -> subset index
     bool setup_coupled(std::string& err);
@@ -253,13 +283,18 @@ private:
     // --pipeline-windows 2 (chain_launch)
     bool stage_source_R(int T, std::string& err);   ///< set_source_R's rows into the bound buffer
     bool force_on_ = false, chain_live_ = false;
+    bool chain_open_ = false;      ///< chain_launch's n_queue: more steps may still be queued (chain_extend)
+    bool src_done_on_ = false;     ///< set_source_done
+    int chain_max_req_ = 0;        ///< set_chain_max (0: max_t - 1)
+    int chain_cap_ = 0;            ///< the outputs the current chain staged (n_out after the cell clamp)
     const float* src_R_ = nullptr;
     int32_t *h_force_ = nullptr, *m_force_ = nullptr;   ///< the forced tokens (mapped), -1 = the step's own pick
     cudaEvent_t ev_chain_ = nullptr;
-    cudaEvent_t ev_step_[8] = {};                       ///< after each of the first n_early outputs
+    cudaEvent_t ev_src_ = nullptr;                      ///< source_done()
+    cudaEvent_t ev_step_[12] = {};                      ///< after each of the first n_early outputs
     int steps_seen_ = 0, chain_n_ = 0, chain_early_ = 0;
-    int32_t chain_tok_[8] = {};
-    float chain_prob_[8] = {};
+    int32_t chain_tok_[12] = {};
+    float chain_prob_[12] = {};
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     cudaStream_t cs_ = nullptr;
@@ -283,8 +318,8 @@ private:
     QsaState st_;
     void* arena_ = nullptr;
 
-    // mapped staging: tokens, step records (2*max_t rows), positions per head (2*max_t rows), the selected row,
-    // the drafts out
+    // mapped staging: tokens, step records (2*max_t + 3 rows at max_t 8, see step_row), positions per head (as many
+    // rows), the selected row, the drafts out (16)
     int32_t *h_tok_ = nullptr, *m_tok_ = nullptr, *h_step_ = nullptr, *m_step_ = nullptr;
     int32_t *h_pos_ = nullptr, *m_pos_ = nullptr, *h_row_ = nullptr, *m_row_ = nullptr;
     int32_t *h_out_ = nullptr, *m_out_ = nullptr;
