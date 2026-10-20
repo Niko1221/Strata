@@ -10,6 +10,8 @@ On iPhone, open **Chat → History** to reopen a Mac conversation and continue i
 
 The updated Mac app imports existing desktop chat history into a private conversation store. If you enable pairing for the first time while a Mac reply is already running, that conversation is shared after the current reply finishes; keep its Mac window open until then. Earlier phone-only chats remain available separately. Existing paired phones stay paired through this update. The iPhone includes the Mac's Thinking text in an expandable section and keeps progress text and activity summaries in their original order. Browser action cards show addresses, progress and text results; they do not stream the browser's screen.
 
+The iPhone's **Models → Download models** can prepare models on the paired Mac or its saved Strata connections. Review the named destination, storage and preparation warnings before starting. Downloads continue on that computer when the phone closes. See [models on another computer](../host/REMOTE-MODELS.md) for remote downloads and GGUF imports from the Mac app.
+
 ## Build the Mac app
 
 Follow the [desktop packaging instructions](../../packaging/README.md) to prepare Node, Control, Harness and the engine resources. From `apps/desktop`, the normal build commands stage the pairing service and compile the local Core Image QR helper before building the app:

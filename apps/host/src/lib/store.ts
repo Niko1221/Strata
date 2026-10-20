@@ -951,7 +951,7 @@ export async function setLocalSharing(enabled: boolean) {
   set({ serving: newestServingState(state.serving, result) });
 }
 
-export async function setServingAccess(patch: { otherDevices?: boolean; apiKey?: string | null }) {
+export async function setServingAccess(patch: { otherDevices?: boolean; apiKey?: string | null; remoteModelManagement?: boolean }) {
   const result = await api.patch<ServingState>('/api/serving', patch);
   set({ serving: newestServingState(state.serving, result) });
 }

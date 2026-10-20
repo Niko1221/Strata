@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { removeModelConnection, saveModelConnection, useStore } from '../lib/store';
 import type { ApiModel, ModelConnection, ModelConnectionDraft, ModelProtocol } from '../lib/types';
 import { Btn, Dialog, ErrorNotice, Icon, Select } from './ui';
+import { RemoteModelManager } from './RemoteModelManager';
 const protocols: {
     value: ModelProtocol;
     label: string;
@@ -18,6 +19,7 @@ export function SettingsModels() {
     const [modelId, setModelId] = useState(''), [modelName, setModelName] = useState('');
     const [pending, setPending] = useState(false), [fetching, setFetching] = useState(false);
     const [error, setError] = useState(''), [notice, setNotice] = useState(''), [remove, setRemove] = useState(false);
+    const [managing, setManaging] = useState<{ id: string; name: string } | null>(null);
     const discovery = useRef<AbortController | null>(null);
     const editor = useRef<HTMLDivElement>(null);
     useEffect(() => () => discovery.current?.abort(), []);
@@ -82,7 +84,7 @@ export function SettingsModels() {
             await saveModelConnection(draft);
             setDraft(null);
             reset();
-            setNotice('Models added. Choose one from the model picker in chat.');
+            setNotice(draft.models.length ? 'Models added. Choose one from the model picker in chat.' : 'Connection saved. Use Manage models to download or import models on that computer.');
         }
         catch (err) {
             setError(err instanceof Error ? err.message : 'Could not save the connection.');
@@ -101,7 +103,7 @@ export function SettingsModels() {
     {tr(providers?.connections.length ? <div className="stack stack--sm">{tr(providers.connections.map(connection => <div className="st-card provider-card" key={connection.id}>
       <Icon name={connection.kind === 'custom' ? 'computer' : 'models'} size={22}/>
       <div className="provider-card__text"><strong>{connection.name}</strong><p className="small muted">{tr(connection.models.length)} {tr(connection.models.length === 1 ? 'model' : 'models')} · {tr(connection.apiKeySet ? 'API key saved' : 'No API key')}</p><p className="xs muted provider-address" title={connection.baseUrl}>{connection.baseUrl}</p></div>
-      <Btn size="sm" disabled={pending || fetching} onClick={() => edit(connection)} title={tr("Edit {0}", [connection.name])}>{tr("Edit")}</Btn>
+      <div className="provider-card__actions"><Btn size="sm" icon="models" disabled={pending || fetching} onClick={() => setManaging({ id: connection.id, name: connection.name })} title={tr("Manage models on {0}", [connection.name])}>{tr("Manage models")}</Btn><Btn size="sm" disabled={pending || fetching} onClick={() => edit(connection)} title={tr("Edit {0}", [connection.name])}>{tr("Edit")}</Btn></div>
     </div>))}</div> : !draft ? <div className="provider-empty"><Icon name="models" size={26}/><strong>{tr("Add models to your chat picker")}</strong><p className="small muted">{tr("Your local model stays available. Add an API connection to use more models in Strata.")}</p></div> : null)}
     {tr(!draft ? <Btn icon="plus" block disabled={!providers} onClick={add}>{tr("Add model provider")}</Btn> : <div className="st-card provider-editor" ref={editor}>
       <div className="provider-kind" aria-label={tr("Connection type")}>
@@ -119,7 +121,7 @@ export function SettingsModels() {
           <div className="provider-models__head"><h3 className="h4">{tr("Models in chat")}</h3><Btn size="sm" icon="refresh" disabled={fetching || !draft.baseUrl.trim() || (draft.kind === 'provider' && !draft.apiKey.trim() && (!saved?.apiKeySet || !!draft.clearKey))} onClick={() => void fetchModels()}>{tr(fetching ? 'Fetching…' : 'Fetch available models')}</Btn></div>
           {tr(notice ? <p className="small muted" role="status">{tr(notice)}</p> : null)}
           {tr(available.length ? <><input className="st-input" type="search" aria-label={tr("Filter available models")} placeholder={tr("Filter models…")} value={filter} onChange={e => setFilter(e.target.value)}/><div className="provider-model-list">{tr(available.filter(m => `${m.name} ${m.id}`.toLowerCase().includes(filter.toLowerCase())).map(m => <label className="provider-model-row" key={m.id}><input type="checkbox" checked={draft.models.some(v => v.id === m.id)} onChange={e => update({ models: e.target.checked ? [...draft.models, m] : draft.models.filter(v => v.id !== m.id) })}/><span><strong>{m.name}</strong><small className="muted">{m.id}</small></span></label>))}</div></> : null)}
-          {tr(draft.models.length ? <div className="stack stack--sm">{tr(draft.models.map(m => <div className="provider-selected" key={m.id}><Icon name="check" size={15}/><span><strong>{m.name}</strong><small className="muted">{m.id}</small>{tr(draft.protocol === 'openai-chat' ? <label className="row xs"><input type="checkbox" checked={m.vision ?? m.reads ?? true} onChange={e => update({ models: draft.models.map(v => v.id === m.id ? { ...v, vision: e.target.checked } : v) })}/>{tr("Read pictures with this model")}{tr(m.vision != null ? null : <span className="muted"> {tr(m.reads === false ? "(its server says it cannot)" : "(on by default)")}</span>)}</label> : null)}</span><button type="button" className="st-iconbtn" aria-label={tr("Remove {0} from chat picker", [m.name])} onClick={() => update({ models: draft.models.filter(v => v.id !== m.id) })}><Icon name="x" size={16}/></button></div>))}</div> : <p className="small muted">{tr("No models selected yet. Fetch the list or add a model ID.")}</p>)}
+          {tr(draft.models.length ? <div className="stack stack--sm">{tr(draft.models.map(m => <div className="provider-selected" key={m.id}><Icon name="check" size={15}/><span><strong>{m.name}</strong><small className="muted">{m.id}</small>{tr(draft.protocol === 'openai-chat' ? <label className="row xs"><input type="checkbox" checked={m.vision ?? m.reads ?? true} onChange={e => update({ models: draft.models.map(v => v.id === m.id ? { ...v, vision: e.target.checked } : v) })}/>{tr("Read pictures with this model")}{tr(m.vision != null ? null : <span className="muted"> {tr(m.reads === false ? "(its server says it cannot)" : "(on by default)")}</span>)}</label> : null)}</span><button type="button" className="st-iconbtn" aria-label={tr("Remove {0} from chat picker", [m.name])} onClick={() => update({ models: draft.models.filter(v => v.id !== m.id) })}><Icon name="x" size={16}/></button></div>))}</div> : <p className="small muted">{tr(draft.kind === 'custom' ? 'Save this connection to manage models on another Strata computer, or fetch/add models for chat.' : 'No models selected yet. Fetch the list or add a model ID.')}</p>)}
           <div className="provider-manual"><label className="input-field"><span>{tr("Model ID")}</span><input className="st-input" value={modelId} placeholder={tr("Model ID from your provider or server")} spellCheck={false} onChange={e => setModelId(e.target.value)} onKeyDown={e => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
@@ -133,10 +135,11 @@ export function SettingsModels() {
         </div>
       </fieldset>
       {tr(error ? <ErrorNotice message={error}/> : null)}
-      <div className="provider-actions">{tr(draft.id ? <Btn variant="ghost" size="sm" disabled={pending || streaming} onClick={() => setRemove(true)}>{tr("Remove connection")}</Btn> : null)}<span className="spacer"/><Btn disabled={pending} onClick={() => { reset(); setDraft(null); }}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || fetching || !draft.models.length || !draft.name.trim() || !draft.baseUrl.trim()} onClick={() => void apply()}>{tr(pending ? 'Saving…' : 'Apply')}</Btn></div>
+      <div className="provider-actions">{tr(draft.id ? <Btn variant="ghost" size="sm" disabled={pending || streaming} onClick={() => setRemove(true)}>{tr("Remove connection")}</Btn> : null)}<span className="spacer"/><Btn disabled={pending} onClick={() => { reset(); setDraft(null); }}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || fetching || draft.kind === 'provider' && !draft.models.length || !draft.name.trim() || !draft.baseUrl.trim()} onClick={() => void apply()}>{tr(pending ? 'Saving…' : 'Apply')}</Btn></div>
     </div>)}
     {tr(!draft && notice ? <p role="status" className="small muted">{tr(notice)}</p> : null)}
     {tr(!draft && error ? <ErrorNotice message={error}/> : null)}
+    {managing ? <RemoteModelManager key={managing.id} connectionId={managing.id} name={managing.name} onClose={() => setManaging(null)}/> : null}
     <Dialog open={remove} compact title={tr("Remove {0}?", [draft?.name])} onClose={() => !pending && setRemove(false)} actions={<><Btn disabled={pending} onClick={() => setRemove(false)}>{tr("Keep connection")}</Btn><Btn variant="danger" disabled={pending} onClick={async () => {
                 if (!draft?.id)
                     return;

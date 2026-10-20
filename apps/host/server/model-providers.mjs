@@ -83,7 +83,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
   }
   function save(body) {
     const connection = draft(body);
-    if (!connection.models.length) fail('Choose at least one model or add its ID.');
+    if (connection.kind !== 'custom' && !connection.models.length) fail('Choose at least one model or add its ID.');
     return persist(connections.some(c => c.id === connection.id) ? connections.map(c => c.id === connection.id ? connection : c) : [...connections, connection]);
   }
   function remove(id) { return persist(connections.filter(c => c.id !== id)); }

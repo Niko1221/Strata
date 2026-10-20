@@ -19,6 +19,28 @@ const encode = value => encodeURIComponent(String(value));
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value);
 const safeToolId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,300}$/.test(value);
 const shortText = (value, max) => typeof value === 'string' ? value.slice(0, max) : '';
+const managementTarget = '(?:local|remote-[a-f0-9]{16,64})';
+const managementRoute = new RegExp(`^/api/model-management/targets(?:/(${managementTarget})(?:/(plan|downloads)(?:/([a-zA-Z0-9_-]{1,120})/cancel)?)?)?$`);
+
+function managementRequest(path, method, body, deviceId) {
+  const match = managementRoute.exec(path);
+  if (!match || !/^[a-f0-9]{32}$/.test(deviceId ?? '')) throw fail(403, 'Unsupported model management request.');
+  const [, targetId, action, jobId] = match;
+  const expected = action ? 'POST' : 'GET';
+  if (method !== expected || (jobId && action !== 'downloads')) throw fail(403, 'Unsupported model management method.');
+  if (!action) {
+    if (body !== undefined) throw fail(400, 'Read model information without changing settings.');
+  } else if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw fail(400, 'Send a model management request.');
+  } else if (action === 'plan') {
+    if (Object.keys(body).some(key => !['modelId', 'readPictures'].includes(key)) || !safeId(body.modelId) || typeof body.readPictures !== 'boolean') throw fail(400, 'Choose a catalog model and its picture-reading option.');
+  } else if (jobId) {
+    if (Object.keys(body).length) throw fail(400, 'Stop only this download.');
+  } else if (Object.keys(body).length !== 1 || !safeId(body.planId)) {
+    throw fail(400, 'Review a download plan before starting.');
+  }
+  return { targetId, action, jobId };
+}
 
 function privateJSON(file, value) {
   const temp = `${file}.${process.pid}.tmp`;
@@ -142,8 +164,9 @@ export class HostClient {
     try { return this.cached = await this.discovery; }
     finally { this.discovery = null; }
   }
-  async request(path, { method = 'GET', body, signal } = {}) {
+  async request(path, { method = 'GET', body, signal, deviceId } = {}) {
     const conversation = /^\/api\/companion\/conversations(?:\/[a-zA-Z0-9_-]{1,120}(?:\/(messages|stop|approval))?)?$/.exec(path);
+    const management = path.startsWith('/api/model-management/') ? managementRequest(path, method, body, deviceId) : null;
     // Callers cannot supply full URLs, query strings, arbitrary files, settings or operations.
     if (!/^\/api\/(setup|hardware|monitor|models|native|runtime|serving|model-providers|chat\/stream)$/.test(path)
       && !/^\/api\/models\/[a-zA-Z0-9_-]+\/load$/.test(path)
@@ -151,9 +174,11 @@ export class HostClient {
       && path !== '/api/native/operations'
       && !/^\/api\/native\/instances\/[a-zA-Z0-9_-]+\/unload$/.test(path)
       && !/^\/api\/serving\/requests\/[a-zA-Z0-9_-]+\/cancel$/.test(path)
-      && !conversation) throw fail(403, 'Unsupported host control.');
+      && !conversation && !management) throw fail(403, 'Unsupported host control.');
     const mutation = path.endsWith('/load') || path.endsWith('/unload') || path.endsWith('/cancel') || path === '/api/native/operations' || path === '/api/chat/stream';
-    if (conversation) {
+    if (management) {
+      // The paired device comes from the bridge's authenticated session, never a phone field.
+    } else if (conversation) {
       const create = path === '/api/companion/conversations' && method === 'POST';
       if (method !== (conversation[1] || create ? 'POST' : 'GET')) throw fail(403, 'Unsupported host control method.');
       if (path === '/api/companion/conversations/sync') throw fail(403, 'Desktop synchronization is unavailable from iPhone.');
@@ -161,7 +186,7 @@ export class HostClient {
     if (path === '/api/native/operations' && (body?.kind !== 'load' || !safeId(body?.args?.model) || Object.keys(body).some(key => !['kind', 'args'].includes(key)) || Object.keys(body.args).some(key => !['model', 'values'].includes(key)) || Object.keys(body.args.values ?? {}).length)) throw fail(403, 'Only an installed model can be loaded from iPhone.');
     const origin = await this.origin();
     try {
-      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(15_000) });
+      return await this.fetcher(`${origin}${path}`, { method, redirect: 'error', headers: { 'content-type': 'application/json', ...(this.authorization ? { authorization: this.authorization } : {}), ...(management ? { 'x-strata-companion-device': deviceId } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: signal ?? AbortSignal.timeout(management ? 170_000 : 15_000) });
     } catch (error) {
       if (!this.fixed) this.cached = null;
       if (error.name === 'AbortError') throw error;
@@ -217,6 +242,83 @@ export function providerModels(providers) {
     name: model.name ?? model.id, size: null, state: 'installed', detail: `API model via Mac · ${connection.name}`,
     remoteModel: { connectionId: connection.id, modelId: model.id },
   })));
+}
+
+function managementText(value, fallback, max = 1_000) {
+  const text = shortText(value, max).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+  // The host supplies display text. A future host must not accidentally export
+  // an installer command, filesystem path, endpoint or credential in that text.
+  return !text || /https?:\/\/|file:\/\/|~[\\/]|[a-z]:[\\/]|(?:^|[\s('"=])\/[\w.-]+\/|bearer\s+[a-z0-9_-]{16,}|(?:api[_-]?key|token)\s*[=:]\s*\S+/i.test(text) ? fallback : text;
+}
+
+function managementNumber(value) {
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function publicDownloadJob(job) {
+  if (!job || !safeId(job.id)) throw fail(502, 'Strata returned an unreadable download.');
+  const state = ['queued', 'running', 'done', 'error', 'cancelled'].includes(job.state) ? job.state : 'error';
+  const result = {
+    id: job.id, name: managementText(job.name, 'Model download', 200), kind: 'download', state,
+    summary: managementText(job.summary, state === 'done' ? 'Download complete.' : state === 'cancelled' ? 'Download stopped. Completed files are kept.' : state === 'error' ? 'The download could not finish. Check Strata on that computer.' : 'Downloading model files…'),
+  };
+  if (safeId(job.modelId)) result.modelId = job.modelId;
+  if (typeof job.canCancel === 'boolean') result.canCancel = job.canCancel;
+  for (const key of ['doneGb', 'totalGb']) if (managementNumber(job[key]) !== undefined) result[key] = job[key];
+  if (managementNumber(job.percent) !== undefined) result.percent = Math.min(100, job.percent);
+  if (typeof job.error === 'string' && job.error) result.error = managementText(job.error, 'The download could not finish. Check Strata on that computer.');
+  return result;
+}
+
+function publicManagement(body, { targetId, action, jobId }) {
+  if (!targetId) {
+    return { targets: (Array.isArray(body?.targets) ? body.targets : []).slice(0, 100).filter(target =>
+      target && new RegExp(`^${managementTarget}$`).test(target.id) && ['local', 'remote'].includes(target.kind)
+      && (target.id === 'local') === (target.kind === 'local'))
+      .map(target => ({ id: target.id, name: managementText(target.name, 'Strata computer', 200), kind: target.kind })),
+      ...(typeof body?.reason === 'string' ? { reason: managementText(body.reason, 'Model downloads are unavailable on this Strata build.') } : {}),
+    };
+  }
+  if (action === 'plan') {
+    if (!body || !safeId(body.planId) || !Number.isFinite(body.expiresAt)) throw fail(502, 'Strata returned an unreadable download plan.');
+    const result = {
+      planId: body.planId, targetName: managementText(body.targetName, 'Strata computer', 200), modelName: managementText(body.modelName, 'Catalog model', 200),
+      readPictures: body.readPictures === true, expiresAt: body.expiresAt,
+      warnings: (Array.isArray(body.warnings) ? body.warnings : []).slice(0, 20).filter(warning => typeof warning === 'string')
+        .map(warning => managementText(warning, 'Review this download in Strata on the target computer for more details.')),
+    };
+    for (const key of ['downloadGb', 'diskFreeGb', 'diskNeededGb']) if (managementNumber(body[key]) !== undefined) result[key] = body[key];
+    if (typeof body.diskShort === 'string' && body.diskShort) result.diskShort = managementText(body.diskShort, 'There is not enough free disk space on this computer.');
+    return result;
+  }
+  if (action === 'downloads' || jobId) return { job: publicDownloadJob(body?.job) };
+  if (!body || typeof body.supported !== 'boolean') throw fail(502, 'Strata returned unreadable model management information.');
+  return {
+    supported: body.supported, targetName: managementText(body.targetName, 'Strata computer', 200),
+    capabilities: { downloads: body.capabilities?.downloads === true, imports: false },
+    models: (Array.isArray(body.models) ? body.models : []).slice(0, 500).filter(model => model && safeId(model.id)).map(model => ({
+      id: model.id, name: managementText(model.name, 'Catalog model', 200),
+      state: ['available', 'installed', 'loaded', 'imported', 'downloading', 'loading', 'unloading', 'error'].includes(model.state) ? model.state : 'unknown', readPictures: model.readPictures === true,
+      ...(managementNumber(model.sizeGb) !== undefined ? { sizeGb: model.sizeGb } : {}),
+      ...(typeof model.detail === 'string' ? { detail: managementText(model.detail, 'Available from the target computer’s catalog.') } : {}),
+    })),
+    jobs: (Array.isArray(body.jobs) ? body.jobs : []).slice(0, 100).map(publicDownloadJob),
+    ...(typeof body.reason === 'string' ? { reason: managementText(body.reason, 'Model downloads are unavailable on this computer.') } : {}),
+  };
+}
+
+function managementFailure(error) {
+  const messages = {
+    400: 'This model request is no longer valid. Refresh the catalog and try again.',
+    401: 'Model management is not enabled for this connection. Check Strata on the Mac.',
+    403: 'Model management is not enabled for this connection. Check Strata on the Mac.',
+    404: 'This model management option is unavailable. Refresh the catalog and try again.',
+    409: 'Finish active work on the target computer, then review a new download plan.',
+    410: 'This download plan expired. Review a new plan before starting.',
+    507: 'There is not enough free disk space on the target computer.',
+  };
+  const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 600 ? error.status : 502;
+  return fail(status, messages[status] ?? 'Model management is unavailable. Open Strata on the target computer and try again.');
 }
 
 // Share the same human-readable conversation and action cards as the Mac. Raw
@@ -466,6 +568,27 @@ export async function createBridge({ directory = join(homedir(), 'Library', 'App
         const [library, native, providers] = await Promise.all([host.json('/api/models'), host.json('/api/native'), host.json('/api/model-providers')]);
         const { models, loadedModelId } = choices(session, library, native, providers);
         return sendJSON(res, 200, { models, loadedModelId });
+      }
+      if (path === '/v1/model-management' || path.startsWith('/v1/model-management/')) {
+        const upstreamPath = path.replace(/^\/v1\//, '/api/');
+        const input = method === 'POST' ? await readBody(req, 2_000) : undefined;
+        const route = managementRequest(upstreamPath, method, input, session.id);
+        requireCurrentSession();
+        let body;
+        const controller = new AbortController();
+        const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        req.once('aborted', disconnected); res.once('close', disconnected);
+        try {
+          body = await host.json(upstreamPath, { method, ...(input !== undefined ? { body: input } : {}), deviceId: session.id, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(170_000)]) });
+        } catch (error) {
+          requireCurrentSession();
+          if (!route.targetId && [404, 501].includes(error.status)) return sendJSON(res, 200, { targets: [], reason: 'Update Strata on your Mac to manage model downloads from your iPhone.' });
+          throw managementFailure(error);
+        } finally {
+          req.removeListener('aborted', disconnected); res.removeListener('close', disconnected);
+        }
+        requireCurrentSession();
+        return sendJSON(res, route.action === 'downloads' && !route.jobId ? 202 : 200, publicManagement(body, route));
       }
       if (path === '/v1/conversations' && method === 'GET') {
         const body = await host.json('/api/companion/conversations');

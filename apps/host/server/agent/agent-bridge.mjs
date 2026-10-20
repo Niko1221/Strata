@@ -181,6 +181,17 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
 
   /** The capability state the app shows. Never carries a token or a key. */
+  async function modelManagementBusy() {
+    if (starting || [...chats.values()].some(chat => chat.turn || chat.starting) || pending.size || [...queues.values()].some(list => list.length)) return true;
+    if (!rt?.hp.running) return false;
+    // A goal can be active between turns. Failed reads must prevent preparation.
+    for (const sessionId of new Set(Object.values(sessionMap).map(entry => entry.sessionId).filter(Boolean))) {
+      const goal = await rt.gw.rpc('goals/get', { agentId: sessionId });
+      if (goal?.phase === 'active') return true;
+    }
+    return [...chats.values()].some(chat => chat.turn || chat.starting) || pending.size > 0;
+  }
+
   function status() {
     const h = harnessInfo();
     if (!h.ok) return { state: 'unavailable', reason: 'The coding assistant isn’t installed on this computer yet. Chat works without it.', detail: h.reason, code: 'component-missing' };
@@ -1192,7 +1203,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { modelManagementBusy, goalState, goalControl, harnessDir, status, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */

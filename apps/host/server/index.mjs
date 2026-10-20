@@ -7,6 +7,7 @@ import { saveSnapshot } from './snapshot.mjs';
 import { resolvePython, shellPrefix } from './python-resolver.mjs';
 import { chooseFolder, chooserUnavailable, typedFolder } from './folder-dialog.mjs';
 import { createLocalShare } from './local-share.mjs';
+import { createModelManagement, createModelManagementProxy, createModelManagementRoutes } from './model-management.mjs';
 import { createTaskService, validateTask } from './tasks.mjs';
 import { createAgentTaskRunner } from './agent/task-run.mjs';
 import { migrateSetup } from './setup.mjs';
@@ -60,7 +61,7 @@ import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
 import { createAppUi } from './app-ui.mjs';
 import { createCompanionManager } from './companion.mjs';
-import { createCompanionRoutes } from './companion-routes.mjs';
+import { createCompanionRoutes, isLocalCompanionRequest } from './companion-routes.mjs';
 import { createConversations } from './conversations.mjs';
 import { createConversationRoutes, addConversationEvents } from './conversation-routes.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
@@ -71,7 +72,7 @@ import { nativeUnloadPlan } from './storage-check.mjs';
 import { installBundledEngine } from './bundled-engine.mjs';
 import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
@@ -138,7 +139,7 @@ const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
   : Promise.resolve({ action: 'none' });
 let bundledEngineSettled = !(control && !process.env.STRATA_NO_BUNDLED_ENGINE);
 bundledEngine.then(() => { bundledEngineSettled = true; }, () => { bundledEngineSettled = true; });
-const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
+const native=createNativeControl({control,ready:bundledEngine,appUpdater,beforePrepare:()=>assertModelManagementIdle({ignoreNativeJob:true}),hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
    state and the chat falls back to the direct path with a notice, never silently to another model. */
@@ -951,9 +952,33 @@ const tasks = createTaskService({
 const taskTimer = setInterval(() => tasks.tick(), 15000);
 taskTimer.unref();
 
-const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
+const managementEnabled = () => !!store.get().serving?.apiKey && store.get().serving?.remoteModelManagement === true;
+const companionAllowed = device => companion.state().enabled && companion.state().devices.some(saved => saved.id === device);
+async function assertModelManagementIdle({ ignoreNativeJob = false } = {}) {
+  const busy = () => storageChanging || serving.state().requests.some(request => ['queued','generating'].includes(request.state))
+    || tasks.list().some(task => task.status === 'running') || conversations.list().conversations.some(chat => chat.active)
+    || (!ignoreNativeJob && native.state().jobs.some(job => ['queued','running'].includes(job.state)));
+  if (busy() || await agent.modelManagementBusy() || busy()) throw Object.assign(new Error('Finish current conversations, goals and model operations before preparing files.'), { status: 409 });
+}
+const modelManagement = createModelManagement({
+  native, name: 'This computer', modelsDirectory: () => store.MODELS_DIR,
+  browse: browseLocalModels, inspect: inspectLocalModel, imported: () => localModels.list(),
+  adopt: preview => {
+    if (storageChanging) throw Object.assign(new Error('Wait for the model folder check to finish.'), { status: 409 });
+    const previous = variant(preview.variant.id);
+    if (previous && runtimeModels.hasVariant(previous.id) && JSON.stringify(previous.local) !== JSON.stringify(preview.variant.local)) throw Object.assign(new Error('Unload this local model before replacing its file reference.'), { status: 409 });
+    localModels.add(preview); runtimeModels.libraryState(models.localModelAdded());
+  },
+  assertIdle: assertModelManagementIdle,
+  validateCaller: owner => {
+    if (owner.startsWith('phone:') && !companionAllowed(owner.slice(6))) throw Object.assign(new Error('This phone is no longer paired.'), { status: 401 });
+    if (owner.startsWith('remote:') && (!managementEnabled() || owner.slice(7) !== createHash('sha256').update(store.get().serving.apiKey).digest('hex'))) throw Object.assign(new Error('Remote model management is disabled or the API key changed.'), { status: 403 });
+  },
+});
+const modelManagementRoutes = createModelManagementRoutes({ service: modelManagement, proxy: createModelManagementProxy({ providers: modelProviders }), port: PORT, allowRemote: managementEnabled, companionAllowed });
+const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, allowModelManagement: managementEnabled, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
 const tunnelPort = Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2);
-const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, host: '127.0.0.1', port: tunnelPort });
+const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, allowModelManagement: managementEnabled, host: '127.0.0.1', port: tunnelPort });
 const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine', 'cloudflare'), componentDirectory: join(componentsDirectory(), 'cloudflared') });
 const cloudflare = createCloudflare({ origin: tunnelOrigin, originUrl: `http://127.0.0.1:${tunnelPort}`, hasKey: () => !!store.get().serving?.apiKey, changed: serving.setTunnel, locate: connector.locate, prepareConnector: connector.ensure, connectorInfo: connector.connector, findRunning: findRunningConnector });
 await cloudflare.inspect();
@@ -968,6 +993,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-strata-client');
   res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  if (path === '/api/model-management' || path.startsWith('/api/model-management/')) return modelManagementRoutes(req, res, path, method);
   if (path === '/api/companion/conversations' || path.startsWith('/api/companion/conversations/')) return conversationRoutes(req, res, url);
   if (path === '/api/companion' || path.startsWith('/api/companion/')) return companionRoutes(req, res, url);
   if (method === 'OPTIONS') {
@@ -1578,7 +1604,9 @@ async function api(req, res, path, method, url) {
   if (path === '/api/serving' && method === 'GET') return json(res, 200, serving.state());
   if (path === '/api/serving' && method === 'PATCH') {
     const body = await readBody(req);
-    return json(res, 200, serving.patch(body));
+    if (Object.hasOwn(body, 'remoteModelManagement') && !isLocalCompanionRequest(req, PORT)) return error(res, 403, 'Change remote model management in the local Strata app.');
+    try { return json(res, 200, serving.patch(body)); }
+    catch (cause) { return error(res, 400, cause.message); }
   }
   const cancelMatch = /^\/api\/serving\/requests\/([^/]+)\/cancel$/.exec(path);
   if (cancelMatch && method === 'POST') return json(res, 200, serving.cancel(cancelMatch[1]));
@@ -2016,6 +2044,7 @@ async function api(req, res, path, method, url) {
 
 async function openai(req, res, path, method) {
   if (!serving.authorized(req)) return error(res, 401, 'Invalid API key');
+  if (path === '/v1/strata/models' || path.startsWith('/v1/strata/models/')) return modelManagementRoutes(req, res, path, method, true);
   if(native.state().instances.length){
     if(path==='/v1/models'&&method==='GET')return json(res,200,{object:'list',data:native.state().instances.filter(i=>i.status==='ready').map(i=>({id:i.apiModelId,object:'model',owned_by:'strata',meta:{instanceId:i.id,gpus:i.gpus,label:i.label,aliases:i.aliases}}))});
     if(method==='POST'&&['/v1/chat/completions','/v1/messages','/v1/responses'].includes(path)){if(store.get().serving?.pauseServing)return error(res,503,'New API requests are paused.');if(path==='/v1/responses'&&!native.state().capabilities.responses)return error(res,501,'Update the native Strata installation to use the Responses API.');return nativeGateway({req,res,path,body:await readBody(req,12*1024*1024),control:native,serving});}

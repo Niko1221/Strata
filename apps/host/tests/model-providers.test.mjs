@@ -22,7 +22,9 @@ test('connections persist, redact keys, retain unchanged keys, and validate endp
   assert.deepEqual(reopened.list(), service.list());
   reopened.save({ ...saved, apiKey: '', baseUrl: 'http://192.168.1.21:1234/v1' });
   assert.equal(reopened.list().connections[0].apiKeySet, false);
-  assert.throws(() => service.save({ ...draft, models: [] }), /at least one/);
+  const empty = service.save({ ...draft, id: undefined, name: 'Strata before loading', models: [] }).connections.at(-1);
+  assert.deepEqual(empty.models, [], 'an empty custom Strata connection can be saved for remote model management');
+  assert.throws(() => service.save({ kind: 'provider', provider: 'openai', apiKey: 'fixture-key', models: [] }), /at least one/);
   assert.throws(() => service.save({ ...draft, models: [{ id: 'a' }, { id: 'a' }] }), /unique/);
   for (const url of ['file:///tmp', 'https://user:pass@example.com/v1', 'https://a/v1?key=secret', 'https://a/v1/chat/completions']) assert.throws(() => normalizeBaseUrl(url));
   reopened.remove(saved.id); assert.equal(reopened.list().connections.length, 0);

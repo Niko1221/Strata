@@ -27,7 +27,7 @@ function readJson(path,fallback={}){try{return JSON.parse(readFileSync(path,'utf
 
 /** The plain words for "no usable engine": the model still downloads, but loading needs the engine (owner decision 2026-10-18). */
 export const ENGINE_NOT_RECOGNISED='Strata didn’t recognise an engine for this computer. The model is downloaded, but it can’t run until the right engine is installed. Open Settings → Engine.';
-export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
+export function createNativeControl({directory,requests=()=>[],changed=()=>{},spawnProcess=spawn,fetcher=fetch,modelsDirectory,nativeDataDirectory=value=>value,beforeLoad=async()=>{},beforePrepare=async()=>{},hardwareProbe=()=>[],control=null,ready=null,appUpdater=null,defaultRepo=process.env.STRATA_NATIVE_REPO??resolve(ROOT,'../../Strata')}={}){
  mkdirSync(directory,{recursive:true});
  const settingsPath=join(directory,'native-host.json');
  let preferences=readJson(settingsPath,{repo:defaultRepo});
@@ -139,6 +139,8 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  function externalRunning(){return Array.isArray(snapshot.external)?snapshot.external.filter(s=>![...instances.values()].some(i=>i.port===s.port)):[];}
  async function install(job,args){
   if(ready)await ready.catch(()=>{});
+  if(job.state!=='running')return;
+  if(args.managedDownload)await beforePrepare();
   if(job.state!=='running')return;
   if(externalRunning().length)throw new Error('Stop the native server running outside this UI before preparing files.');
   if(busy(requests().filter(r=>instances.has(r.instanceId))))throw new Error('Finish or cancel requests before preparing model files.');

@@ -46,6 +46,7 @@ export function state() {
     access: {
       otherDevices: !isLocal() || sharing.active || tunnelActive(),
       apiKeySet: !!s.serving?.apiKey,
+      ...(s.serving?.apiKey && s.serving?.remoteModelManagement === true ? { remoteModelManagement: true } : {}),
       apiKeyHint: s.serving?.apiKey ? `Ends in ${s.serving.apiKey.slice(-4)}` : null,
       allowOrigin: '*',
     },
@@ -74,6 +75,9 @@ export function patch(body) {
   if (body.apiKey === null) serving.apiKey = null;
   else if (typeof body.apiKey === 'string' && body.apiKey.trim()) serving.apiKey = body.apiKey.trim();
   else if (body.generateKey) serving.apiKey = `sk-strata-${randomBytes(12).toString('hex')}`;
+  if (body.remoteModelManagement === true && !serving.apiKey) throw new Error('Set an API key before allowing remote model management.');
+  if (typeof body.remoteModelManagement === 'boolean') serving.remoteModelManagement = body.remoteModelManagement;
+  if (!serving.apiKey && Object.hasOwn(serving, 'remoteModelManagement')) serving.remoteModelManagement = false;
   if (typeof body.pauseServing === 'boolean') serving.pauseServing = body.pauseServing;
   update({ serving });
   emit();

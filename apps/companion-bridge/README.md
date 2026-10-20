@@ -41,13 +41,16 @@ The default private data folder is `~/Library/Application Support/Strata Compani
 
 - View Mac connection, memory, model and active-request status.
 - Choose among the API models already configured on the Mac. Provider credentials and endpoint addresses stay on the Mac. An API choice belongs to that paired phone and does not switch the desktop's selected chat model.
-- Load an already downloaded local model or unload the phone's selected instance. Choosing an already running local model selects that instance for the phone without restarting it or changing the desktop's default. The existing host applies its own memory and active-request safeguards. Downloads, install operations, settings edits, files, shell commands, and arbitrary proxy routes are unavailable from the bridge.
+- Load an already downloaded local model or unload the phone's selected instance. Choosing an already running local model selects that instance for the phone without restarting it or changing the desktop's default. The existing host applies its own memory and active-request safeguards.
+- Review and start a catalog model download on the Mac or a saved Strata computer that supports model management. The preview names the computer, download size, free and needed disk space, picture-reading choice, and any engine or unload effects. Starting is a separate action after that preview. Downloads do not automatically load a model. Progress and **Stop download** apply to the selected download; completed files are kept for a later retry. A retry requires a new preview. The integrated Mac pairing service must be enabled, and the target's management access must be configured on the Mac. Older hosts and ordinary inference-only API connections show that management is unavailable.
 - Read and continue the Mac's conversations. Messages, browser actions and other tool cards update while the Chat tab is open. Existing chats keep their model, working folder and permission mode. New chats use the phone's selected model and start in Manual mode.
 - Answer a pending action with **Allow** or **Deny**, or stop the selected conversation. Closing the phone app leaves Mac agent work running. Stop is an explicit action.
 
 The Mac imports its existing web-view history into a private host conversation store. If you enable pairing for the first time while a Mac reply is already running, that conversation is shared after the current reply finishes; keep its Mac window open until then. Both screens use the same conversation IDs. Versioned updates prevent a stale desktop cache from replacing newer phone messages. Removing a conversation on the Mac also removes it from the shared catalog.
 
 Paired devices can access the shared Mac conversation catalog and approve its pending actions. Earlier phone-only conversations remain in **Earlier iPhone chats** and stay private to their original paired device; their existing text-only route is retained for compatibility. Those earlier chats do not run agent tools.
+
+Model downloads accept catalog IDs and short-lived plans created by the target computer. Phone requests cannot choose provider credentials, addresses, filesystem paths, installer commands, or engine-operation arguments. The bridge does not expose model imports or arbitrary native operations. The target checks active work before starting and applies its own installation safeguards. Removing a paired device prevents further management access. A download already accepted by the target continues independently of the phone connection; stopping it is an explicit action.
 
 Browser activity is shown as action cards with the address, state and available text result. This is an activity view, not a live browser video feed. Raw tool arguments, runtime protocol and saved provider configuration are excluded from the phone API. Conversation text and human-readable tool results are shared with the paired phone.
 
@@ -67,6 +70,11 @@ All routes use HTTPS. The iPhone must compare the leaf certificate's SHA-256 DER
 | GET | `/v1/models` | `{models:[{id,name,size,state,detail,loaded,selected}],loadedModelId}` |
 | POST | `/v1/models/load` | `{id}`; alias `/v1/models/:id/load` with `{}` |
 | POST | `/v1/models/unload` | `{}` |
+| GET | `/v1/model-management/targets` | `{targets:[{id,name,kind}],reason?}`; target IDs are opaque and stay on this Mac |
+| GET | `/v1/model-management/targets/:targetId` | `{supported,targetName,capabilities:{downloads,imports:false},models,jobs,reason?}` |
+| POST | `/v1/model-management/targets/:targetId/plan` | `{modelId,readPictures:boolean}` → `{planId,targetName,modelName,downloadGb?,diskFreeGb?,diskNeededGb?,diskShort?,readPictures,warnings,expiresAt}` |
+| POST | `/v1/model-management/targets/:targetId/downloads` | `{planId}` → 202 with `{job}`; starts only the reviewed download |
+| POST | `/v1/model-management/targets/:targetId/downloads/:jobId/cancel` | `{}` → `{job}`; stops that device's relevant download |
 | GET | `/v1/conversations` | Shared Mac conversation summaries and `activeChatId` |
 | POST | `/v1/conversations` | `{}` → `{conversation,pending}`; creates a shared conversation |
 | GET | `/v1/conversations/:id` | `{conversation,pending}` with messages, tool cards and active state |
@@ -85,10 +93,12 @@ The earlier phone-only chat route uses SSE events named `frame`, with a JSON `da
 
 `selected` identifies this phone's model choice. Several native models can have `state: "loaded"`; chat and unload resolve the selected model's ready instance explicitly. The initial native selection follows the Mac's default instance, rather than catalog order. Unloading clears the phone's selection, so another loaded instance is not selected silently.
 
+Management catalog models contain `id`, `name`, `sizeGb?`, `state`, `detail?`, and `readPictures`. Download jobs contain `id`, `modelId?`, `name`, `kind: "download"`, `state`, `summary`, and optional `canCancel`, `percent`, `doneGb`, `totalGb`, and `error`. Show **Stop download** only when `canCancel` is true and the job is active. Job states are `queued`, `running`, `done`, `error`, or `cancelled`; percentages use 0–100. A plan's `expiresAt` is Unix time in milliseconds. A nonempty `diskShort` blocks starting. The target binds each plan and download to the paired device and target; the phone cannot substitute a catalog ID or installation option when starting. The bridge strips saved connection IDs, endpoint addresses, raw installer results, and diagnostic paths from management responses.
+
 ## Verification
 
 ```sh
 npm test
 ```
 
-Tests use a temporary TLS identity and mock host. They cover certificate fingerprint/stability, default TLS rejection without a pin, pairing expiry/guess limits/replay, private token hashes, auth/revocation, narrow routes and methods, admin CSRF/DNS rebinding/escaping, sanitized provider selection, real NDJSON framing into SSE, per-device private history, stream truncation, and concurrent conversation rejection. They do not claim physical iPhone acceptance or real model inference; record those separately when performed.
+Tests use a temporary TLS identity and mock host. They cover certificate fingerprint/stability, default TLS rejection without a pin, pairing expiry/guess limits/replay, private token hashes, auth/revocation, narrow routes and methods, admin CSRF/DNS rebinding/escaping, sanitized provider selection, real NDJSON framing into SSE, per-device private history, stream truncation, and concurrent conversation rejection. Management tests cover capability fallback, explicit preview/start/cancel, typed options, paired-device ownership headers, refusal of arbitrary URLs/paths/imports/operations, redacted responses, and revocation during pending host requests. They do not download model files, claim physical iPhone acceptance, or prove real model inference; record those separately when performed.

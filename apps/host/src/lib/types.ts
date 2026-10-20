@@ -233,7 +233,7 @@ export interface ServingState {
   baseUrl: string;
   port: number;
   endpoints: { openai: string; anthropic: string; models: string };
-  access: { otherDevices: boolean; apiKeySet: boolean; apiKeyHint: string | null; allowOrigin: string };
+  access: { otherDevices: boolean; apiKeySet: boolean; apiKeyHint: string | null; allowOrigin: string; remoteModelManagement?: boolean };
   stats: { running: number; waiting: number; completed: number; failed: number; tokensOut: number };
   requests: ServeRequest[];
   pauseServing: boolean;
