@@ -699,6 +699,13 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
 - **Windows** (the report above): setup's ready-made Windows engine 0.1.39 runs the RX 6800 beside a 780M iGPU
   (HIP numbers the RX 6800 1; setup points the engine at it), and `tools/hip/build_windows.bat` with
   `STRATA_HIP_ARCHS=gfx1030` builds a working engine from the `gfx103X-all` 10.2.0a20260930 wheels.
+- **Linux engine package (`VARIANT=rx6900`):** `packaging/build_hip_linux.sh` builds an RX 6000 package for gfx1030
+  and gfx1031 from TheRock's `gfx103X-all` 7.13.0a20260515 wheels (setup's version for this family): the engine, both
+  picture readers and the rocBLAS kernels of both chips (hipBLASLt has none for gfx103x). It is not in the 0.2.0-beta
+  release. Run on one RX 6900 XT (Ryzen 9 5950X, 128 GB, Arch Linux, engine 0.1.45.3): `strata launch` picks it, the
+  `strata connect --check` prompt and tool call pass for opencode, codex, claude-code and pi, and both readers describe a
+  test picture; a UD-Q4_K_XL prompt reads within 2% of the same engine built by hand against ROCm 7.2.4. The package's
+  rocBLAS (5.4.0) has no table in `tools/hip` yet, so it runs rocBLAS's own kernels. Not run: a gfx1031 card.
 - **gfx1031** (RX 6700 XT, #524): setup knows it (the `gfx103X-all` wheels, unvalidated); its reporter runs it daily
   on one card. More reports: an RX 6700 XT 12 GB run as gfx1030 on ROCm 7.2.4 (#1027: IQ2_XS, decode 30-32 tok/s, prompt about 300 tok/s, 6 of 6
   needles), and an RX 6800M 12 GB on Windows with a self-built engine (#915, #1078: Q2_0, decode 9-27 tok/s, prompt 50-114 tok/s; the

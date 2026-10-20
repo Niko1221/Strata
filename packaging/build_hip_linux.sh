@@ -4,7 +4,8 @@
 # Run on a Linux box that has ROCm (TheRock Python wheels are enough); the tester packages were built in an Ubuntu 22.04 chroot
 # (glibc 2.35) so they run on every distribution since.  All settings are environment variables:
 #
-#   VARIANT=rx9070     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102) | halo (gfx1151) | igpu (gfx1103 gfx1150) | a name + ARCHS=
+#   VARIANT=rx9070     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102) | rx6900 (gfx1030 gfx1031) | halo (gfx1151) |
+#                      igpu (gfx1103 gfx1150) | a name + ARCHS=
 #   ARCHS="gfx1200;gfx1201"          the code objects (default: the variant's)
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       at the pinned commit (setup.py LLAMA_CPP_COMMIT); mtmd and ggml come from it
@@ -17,7 +18,7 @@
 # Both readers get RUNPATH $ORIGIN (tools/vision/CMakeLists.txt), and every bundled library is patched to $ORIGIN, so the
 # component folder runs from anywhere with nothing from the environment (packaging/binary_deps.py checks it).
 set -u
-V=${VARIANT:?VARIANT=rx9070|rx7900|halo|igpu|<name> with ARCHS=}
+V=${VARIANT:?VARIANT=rx9070|rx7900|rx6900|halo|igpu|<name> with ARCHS=}
 SRC=${SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 LLAMA=${LLAMA:?LLAMA=<llama.cpp checkout at the pinned commit>}
 HP=${HP:?HP=<ROCm devel root>}
@@ -30,6 +31,7 @@ JOBS=${JOBS:-16}
 case "$V" in
   rx9070) ARCHS=${ARCHS:-gfx1200;gfx1201} ;;
   rx7900) ARCHS=${ARCHS:-gfx1100;gfx1101;gfx1102} ;;
+  rx6900) ARCHS=${ARCHS:-gfx1030;gfx1031} ;;
   halo)   ARCHS=${ARCHS:-gfx1151} ;;
   igpu)   ARCHS=${ARCHS:-gfx1103;gfx1150} ;;
   *)      ARCHS=${ARCHS:?ARCHS=gfx...} ;;

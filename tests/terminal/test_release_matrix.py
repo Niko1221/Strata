@@ -36,6 +36,7 @@ RELEASE = [
     pkg("linux-x86_64", "cuda", "cuda12", SM_OLD, "575.51"),
     pkg("linux-x86_64", "hip", "rx9070", ("gfx1200", "gfx1201")),
     pkg("linux-x86_64", "hip", "rx7900", ("gfx1100", "gfx1101", "gfx1102")),
+    pkg("linux-x86_64", "hip", "rx6900", ("gfx1030", "gfx1031")),
     pkg("linux-x86_64", "hip", "halo", ("gfx1151",)),
     pkg("macos-arm64", "metal", "", ("apple-gpu",)),
 ]
@@ -60,6 +61,7 @@ class ReleaseSelection(unittest.TestCase):
             self.pick(pc("linux-x86_64", "cuda", "575.51", ["sm_60"]))[0],        # Tesla P100
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1201"]))[0],             # Radeon AI PRO R9700
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1100"]))[0],             # RX 7900 XTX
+            self.pick(pc("linux-x86_64", "hip", gfx=["gfx1030"]))[0],             # RX 6900 XT
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1151"]))[0],             # Ryzen AI Max (Strix Halo)
             self.pick(pc("macos-arm64", "metal"))[0],
         }
@@ -98,6 +100,13 @@ class ReleaseSelection(unittest.TestCase):
         for gfx in ("gfx1100", "gfx1101", "gfx1102"):
             self.assertEqual(self.pick(pc("linux-x86_64", "hip", gfx=[gfx]))[0][2], "rx7900", gfx)
 
+    def test_rx6000_on_linux_gets_the_rx6900_build_and_windows_has_none(self):
+        for gfx in ("gfx1030", "gfx1031"):
+            self.assertEqual(self.pick(pc("linux-x86_64", "hip", gfx=[gfx]))[0], ("linux-x86_64", "hip", "rx6900"), gfx)
+            got, why = self.pick(pc("windows-x86_64", "hip", gfx=[gfx]))
+            self.assertIsNone(got, gfx)
+            self.assertTrue(any(gfx in r for r in why))
+
     def test_no_amd_card_matches_two_hip_builds_of_one_platform(self):
         """A tie between two builds of the same version would be settled by list order: no arch may be in two hip builds of a platform."""
         for platform in ("windows-x86_64", "linux-x86_64"):
@@ -111,7 +120,7 @@ class ReleaseSelection(unittest.TestCase):
     def test_other_unified_memory_radeons_get_no_engine_and_the_plain_family_line(self):
         from strata_control import engine_component as ec
         for platform in ("windows-x86_64", "linux-x86_64"):
-            for gfx in ("gfx1103", "gfx1150", "gfx1152", "gfx1030"):
+            for gfx in ("gfx1103", "gfx1150", "gfx1152"):
                 got, why = self.pick(pc(platform, "hip", gfx=[gfx]))
                 self.assertIsNone(got, f"{gfx} on {platform}")
                 self.assertTrue(any(gfx in r for r in why))
