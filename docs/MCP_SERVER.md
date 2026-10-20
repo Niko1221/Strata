@@ -128,7 +128,7 @@ Every result is JSON with a one-line `summary`. It is sent both as text and as M
 - the size setup itself would pick: IQ3_XXS from 60 GB of RAM, Q2_0 from about 44 GB, the Coder from about 28 GB,
   and the Coder in the low-RAM mode below that when the GPU makes up for the RAM;
 - the context setup recommends for the GPU's VRAM;
-- images off.
+- pictures on where the model can read them (the reader runs on the CPU under 24 GB of VRAM and on the GPU from 24 GB, on NVIDIA and AMD cards; a Mac reads on its GPU).
 
 The first call returns the plan: the download size (58-111 GB), the free disk space, the RAM check, and the exact
 setup command. The assistant should show you the plan and call again with `confirm: true` once you agree.

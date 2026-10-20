@@ -416,6 +416,22 @@ class CalibrationKey(unittest.TestCase):
                              "NVIDIA GeForce RTX 5070 + NVIDIA GeForce RTX 5070|24GB|AMD Ryzen 9 7950X|64GB|"
                              "qwen3.8-flash-next-iq3_xxs|32768|text")
 
+    def test_nvidia_string_dual_keys_like_the_list(self):
+        """A dual config's string "0,1" keys like [0, 1] (calibrate died with "there is no GPU 0,1")."""
+        def amd(*a, **k):
+            raise AssertionError("amd_gpus called for an NVIDIA config")
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            self.assertEqual(setup.hardware_key(self.cfg("0,1", backend="cuda")),
+                             setup.hardware_key(self.cfg([0, 1], backend="cuda")))
+            self.assertEqual(setup.gpu_sel("0,1"), [0, 1])
+            self.assertEqual(setup.gpu_sel("0"), [0])
+        asked = []
+        with mock.patch.object(setup, "amd_gpus", amd), \
+                mock.patch.object(setup, "gpu_info", lambda i=None: asked.append(i) or {"name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.94}):
+            setup.hardware_key(self.cfg(1, backend="cuda"))      # a single card given as a number still asks for that card
+            self.assertEqual(asked, [1])
+
     def test_setup_reuses_a_saved_calibration_on_linux_hip(self):
         cfg = self.cfg(1)
         saved = {"settings": {"pcie_frac": 0.0}, "tok_s": 40.1, "date": "2026-10-03"}
@@ -429,13 +445,44 @@ class CalibrationKey(unittest.TestCase):
                 self.assertIsNone(setup.setup_calibration(cfg, hip=True))             # Windows HIP: defaults for now
 
 
-class WindowsHipVision(unittest.TestCase):
-    def test_no_cpu_encoder_on_windows(self):
-        with mock.patch.object(setup, "WIN", True), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "none")
-            self.assertEqual(setup.hip_vision("yes"), "none")
-        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "warn", lambda *a: None):
-            self.assertEqual(setup.hip_vision("cpu"), "cpu")
+class HipVisionWish(unittest.TestCase):
+    """AMD pictures are on by default, on Linux and Windows: the wish is "gpu" (hip_reader() settles it against the readers the
+    engine folder carries: the HIP one, else the CPU one), "cpu" when asked for, "none" for no."""
+
+    def test_wish(self):
+        for win in (True, False):
+            with mock.patch.object(setup, "WIN", win):
+                self.assertEqual(setup.hip_vision(None), "gpu")
+                self.assertEqual(setup.hip_vision("yes"), "gpu")
+                self.assertEqual(setup.hip_vision("gpu"), "gpu")
+                self.assertEqual(setup.hip_vision("cpu"), "cpu")
+                self.assertEqual(setup.hip_vision("no"), "none")
+                self.assertEqual(setup.hip_vision("none"), "none")
+                # owner decision 2026-10-18: nothing asked / yes = the CPU reader under 24 GB, the GPU reader from 24 GB; gpu / cpu are kept
+                self.assertEqual(setup.hip_vision(None, 16.0), "cpu")
+                self.assertEqual(setup.hip_vision("yes", 16.0), "cpu")
+                self.assertEqual(setup.hip_vision("yes", 23.9), "gpu")
+                self.assertEqual(setup.hip_vision(None, 32.0), "gpu")
+                self.assertEqual(setup.hip_vision("gpu", 16.0), "gpu")
+                self.assertEqual(setup.hip_vision("cpu", 32.0), "cpu")
+
+    def test_reader_settled_against_the_engine_folder(self):
+        for win, suffix in ((False, ""), (True, ".exe")):
+            with tempfile.TemporaryDirectory() as d, mock.patch.object(setup, "WIN", win),                     mock.patch.object(setup, "warn", lambda *a: None):
+                eng = Path(d)
+                (eng / ("strata-vision" + suffix)).write_bytes(b"x")
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1201"})[0], "cpu")        # no HIP reader: the CPU one
+                (eng / ("strata-vision-hip" + suffix)).write_bytes(b"x")
+                mode, r = setup.hip_reader(eng, "gpu", {"arch": "gfx1201"})
+                self.assertEqual((mode, r.exe.name, r.cpu_exe.name),
+                                 ("gpu", "strata-vision-hip" + suffix, "strata-vision" + suffix))
+                (eng / "BUILD.json").write_text('{"vision_archs": ["gfx1100"]}')
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1201"})[0], "cpu")        # the card is not in its build
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1100"})[0], "gpu")
+                self.assertEqual(setup.hip_reader(eng, "cpu", {"arch": "gfx1100"})[0], "cpu")
+                (eng / ("strata-vision" + suffix)).unlink()
+                (eng / ("strata-vision-hip" + suffix)).unlink()
+                self.assertEqual(setup.hip_reader(eng, "gpu", {"arch": "gfx1100"})[0], "none")
 
 
 class HipRuntimeBesideExe(unittest.TestCase):

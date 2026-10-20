@@ -1156,7 +1156,9 @@ struct SmallTraits<IQ4NLBlock, 4> {
 // equal to ncols = 1 only to float rounding (the cross-warp reduction groups partial sums differently).
 bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
 // B6 STRATA_B6_MMVQ_ROWS (lab, default 0 = off): see native_mmvq_set_b6_rows
-int g_b6_rows = [] { const char* v = std::getenv("STRATA_B6_MMVQ_ROWS"); return v ? std::atoi(v) : 0; }();
+// read at first use (not at load): a per-architecture default set at start (nv_defaults.hpp) must be seen
+int g_b6_rows = -1;
+int b6_rows_mode() { if (g_b6_rows < 0) { const char* v = std::getenv("STRATA_B6_MMVQ_ROWS"); g_b6_rows = v ? std::atoi(v) : 0; } return g_b6_rows; }
 
 // S26 STRATA_TSUM=1 (TS): warp 0's NCOLS x ROWS sums as one transposed butterfly (s26_tsum.cuh), bitwise the same
 static bool s26_tsum_on() {
@@ -1456,8 +1458,8 @@ bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in
     if constexpr (!B6X<F>::ok) {
         return false;
     } else {
-        if (g_b6_rows <= 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
-        const int rows = g_b6_rows == 1 ? 2 : g_b6_rows;
+        if (b6_rows_mode() <= 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
+        const int rows = b6_rows_mode() == 1 ? 2 : b6_rows_mode();
         const dim3 threads(WARP, WARPS);
         if (rows == 2)
             b6_mmvq_rows_kernel<F, NCOLS, 2><<<unsigned((n_out + 1) / 2), threads, 0, s>>>(w, x, y, n_in, n_out);
@@ -1730,12 +1732,17 @@ void launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_
 #define STRATA_IL_CASE(N) case N: native_mmvq_il_kernel<I, N, R><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); break;
         STRATA_IL_CASE(2) STRATA_IL_CASE(3) STRATA_IL_CASE(4)
 #undef STRATA_IL_CASE
-        default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 4");
+        // 147-verify: 5..8 columns (the cp = 8 copy) at 1 or 2 rows a warp; launch_il_rows maps 4 rows to 2 there
+#define STRATA_IL_CASE(N) case N: if constexpr (R <= 2) native_mmvq_il_kernel<I, N, R><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); break;
+        STRATA_IL_CASE(5) STRATA_IL_CASE(6) STRATA_IL_CASE(7) STRATA_IL_CASE(8)
+#undef STRATA_IL_CASE
+        default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 8");
     }
 }
 
 template <typename I>
 void launch_il_rows(int r, const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+    if (ncols > 4 && r == 4) r = 2;   // 5..8 columns: 1 or 2 rows a warp
     switch (r) {
     case 1: launch_il<I, 1>(weights, x_il, y, n_in, n_out, ncols, s); break;
     case 4: launch_il<I, 4>(weights, x_il, y, n_in, n_out, ncols, s); break;
@@ -1920,6 +1927,25 @@ void small_f32(const void* weights, const float* x, void* scratch_q8_1,
     small_mmvq<Weight, Qi>(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
+// STRATA_Q8_SM60=1 (opt-in, written for Pascal GP100): every Q8_0 dense matrix and the head get the packed planes
+// below and run q8sm60::kernel on them (q8_sm60.cuh) instead of the exact kernels.
+bool q8_sm60_on() {
+#if defined(__HIPCC__)
+    return false;   // a CUDA kernel for one NVIDIA chip: HIP builds never compile it
+#else
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_Q8_SM60");
+        const bool yes = v && v[0] == '1' && v[1] == '\0';
+        if (yes) std::fprintf(stderr, "strata q8 sm60: Q8_0 decode GEMVs on the Pascal kernel (STRATA_Q8_SM60=1)\n");
+        return yes;
+    }();
+    return on;
+#endif
+}
+#if !defined(__HIPCC__)
+#include "q8_sm60.cuh"
+#endif
+
 // ============================ STRATA_Q8_PACKED=1: the packed Q8_0 decode layout (opt-in) ============================
 //
 // A lossless load-time repack of a Q8_0 matrix: the SAME int8 values in a qs plane (row-major, n_in bytes per row)
@@ -2019,8 +2045,30 @@ void q8_packed_launch(const Q8Packed& w, const Q81Block* x, float* y, cudaStream
                                                                                     persist ? grid : w.n_out);
 }
 
+bool q8_packed_shape(int n_in, int n_out) {   // the shapes native_q8_0_packed_kernel was measured on
+    return n_in > 0 && n_in % 32 == 0 && n_in / 32 >= 2 * WARPS * WARP / 8 && n_in <= Q8P_PERSIST_MAX_IN &&
+           n_out >= 2048;
+}
+
 bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     auto& registry = q8_packed_registry();
+#if !defined(__HIPCC__)
+    if (q8_sm60_on() && !registry.empty()) {
+        const auto found = registry.find(weights);
+        if (found != registry.end() && found->second.n_in == n_in && found->second.n_out == n_out) {
+            validate_pointer(x_q8_1);
+            validate_pointer(y);
+            validate_stream(stream);
+            if (q8sm60::launch(found->second.qs, found->second.d, static_cast<const Q81Block*>(x_q8_1), y, n_in,
+                               n_out, ncols, static_cast<cudaStream_t>(stream))) {
+                launch_check();
+                return true;
+            }
+            // a shape the Pascal kernel declines: the exact packed kernel only where it was measured, else the GGUF layout
+            if (!q8_packed_shape(n_in, n_out)) return false;
+        }
+    }
+#endif
     if (registry.empty() || (ncols > 1 && !g_multi_exact)) return false;   // packed = the EXACT layout only
     const auto found = registry.find(weights);
     if (found == registry.end() || found->second.n_in != n_in || found->second.n_out != n_out) return false;
@@ -2186,12 +2234,61 @@ bool native_q8_0_packed_enabled() {
         const char* v = std::getenv("STRATA_Q8_PACKED");
         return v && v[0] == '1' && v[1] == '\0';
     }();
-    return enabled;
+    return enabled || q8_sm60_on();
 }
 
 bool native_q8_0_packed_eligible(int n_in, int n_out) {
-    return n_in > 0 && n_in % 32 == 0 && n_in / 32 >= 2 * WARPS * WARP / 8 && n_in <= Q8P_PERSIST_MAX_IN &&
-           n_out >= 2048;
+    if (q8_sm60_on()) return n_in >= 128 && n_in % 32 == 0 && n_out > 0;   // the Pascal kernel takes any of them
+    return q8_packed_shape(n_in, n_out);
+}
+
+namespace {
+std::unordered_map<const void*, void*>& q8_sm60_owned() {   // packed copies made here (the head), freed by release
+    static std::unordered_map<const void*, void*> owned;
+    return owned;
+}
+} // namespace
+
+bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char* what) {
+#if defined(__HIPCC__)
+    (void) weights; (void) n_in; (void) n_out; (void) what;
+    return false;
+#else
+    if (!q8_sm60_on() || !weights || !native_q8_0_packed_eligible(n_in, n_out)) return false;
+    if (q8_packed_registry().count(weights)) return true;
+    const std::size_t count = std::size_t(n_in / 32) * std::size_t(n_out);
+    const std::size_t bytes = count * 34;
+    void* packed = nullptr;
+    if (cudaMalloc(&packed, bytes) != cudaSuccess) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: no VRAM for the packed %s (%.0f MiB); it keeps the GGUF layout\n", what,
+                     double(bytes) / 1048576.0);
+        return false;
+    }
+    auto* qs = static_cast<int8_t*>(packed);
+    auto* d = reinterpret_cast<half*>(qs + std::size_t(n_in) * n_out);
+    q8sm60::pack_kernel<<<unsigned((count + 255) / 256), 256>>>(static_cast<const Q80Block*>(weights), qs, d, count);
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        cudaGetLastError();
+        cudaFree(packed);
+        std::fprintf(stderr, "strata q8 sm60: packing the %s failed; it keeps the GGUF layout\n", what);
+        return false;
+    }
+    q8_packed_registry()[weights] = Q8Packed{qs, d, n_in, n_out};
+    q8_sm60_owned()[weights] = packed;
+    std::fprintf(stderr, "strata q8 sm60: packed %s (%d x %d, %.0f MiB more VRAM)\n", what, n_out, n_in,
+                 double(bytes) / 1048576.0);
+    return true;
+#endif
+}
+
+void native_q8_0_sm60_release(const void* weights) {
+    auto& owned = q8_sm60_owned();
+    const auto it = owned.find(weights);
+    if (it == owned.end()) return;
+    q8_packed_registry().erase(weights);
+    cudaFree(it->second);
+    owned.erase(it);
 }
 
 void native_q8_0_pack_host(const void* gguf_blocks, void* out, int n_in, int n_out) {
@@ -2346,7 +2443,7 @@ void native_q6_k_unpack(const void* weights) {
 void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 bool native_mmvq_multi_exact() { return g_multi_exact; }
 void native_mmvq_set_b6_rows(int mode) { g_b6_rows = mode; }
-int native_mmvq_b6_rows() { return g_b6_rows; }
+int native_mmvq_b6_rows() { return b6_rows_mode(); }
 
 std::size_t native_q8_1_bytes(int n_in, int ncols) {
     validate_shape(n_in, ncols);
@@ -2866,7 +2963,7 @@ void native_quantize_q8_1_il(const float* x, void* x_q8_1, void* x_il, int n_in,
 
 void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols, void* stream) {
     validate_shape(n_in, ncols);
-    if (ncols < 2 || ncols > 4) throw std::invalid_argument("native_q8_1_interleave requires 2 <= ncols <= 4");
+    if (ncols < 2 || ncols > 8) throw std::invalid_argument("native_q8_1_interleave requires 2 <= ncols <= 8");
     validate_pointer(x_q8_1);
     validate_pointer(x_il);
     validate_stream(stream);
@@ -2938,6 +3035,16 @@ constexpr IlRows kIlRows_86[] = {
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
     {11, {{1, 2, 2, 2, 2}, {1, 1, 1, 2, 2}, {1, 1, 1, 1, 1}}},   // Q3_K (two runs; 2560x10240 at 4 columns 120 -> 70 us)
 };
+// RTX PRO 5000 Blackwell (sm_120), 147-verify: read off mmvq_il_parity --bench --emit-table with the engine's shapes, the
+// same 3% rule; it takes the interleaved kernels in more cells than the shared table (e.g. the Q5_K head at 2 columns
+// 507 -> 367 us, IQ4_XS 2560x10240 at 3 columns 20.7 -> 14.9 us).  Bitwise equal to native_mmvq.
+constexpr IlRows kIlRows_120[] = {
+    {23, {{0, 1, 2, 2, 2}, {0, 4, 4, 4, 4}, {0, 2, 2, 4, 2}}},   // IQ4_XS
+    {12, {{0, 0, 2, 1, 1}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 1, 2, 1, 1}, {0, 1, 4, 2, 4}, {0, 1, 2, 1, 2}}},   // Q5_K
+    {14, {{0, 0, 2, 1, 1}, {0, 0, 4, 2, 4}, {0, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{0, 1, 2, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q3_K
+};
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on an RTX 2080 Ti 22 GB (SM 1650 MHz), the same 3% rule.
 // The plain multi-column kernels are bound by dp4a throughput on Turing from 2 columns on (IQ4_XS 2560x10240 at 4
 // columns 81.1 -> 37.4 us, the Q5_K head 1671 -> 1045 us); bitwise equal to native_mmvq.  No one-column table here:
@@ -2948,6 +3055,23 @@ constexpr IlRows kIlRows_75[] = {
     {13, {{0, 4, 2, 2, 4}, {1, 4, 2, 2, 2}, {1, 1, 2, 2, 2}}},   // Q5_K
     {14, {{0, 0, 1, 2, 1}, {0, 2, 2, 4, 4}, {0, 4, 4, 4, 4}}},   // Q6_K
     {11, {{1, 2, 4, 4, 4}, {1, 2, 4, 4, 4}, {1, 2, 2, 2, 2}}},   // Q3_K
+};
+// 147-verify: 5-8 columns (a verify window of 5+ rows) by n_out class, per architecture; 0 = native_mmvq's kernels.  Every
+// choice is bitwise native_mmvq's output (mmvq_il_parity, T 1-8), so a table is only speed.  Measured on an RTX PRO 5000
+// Blackwell (sm_120) with mmvq_il_parity --bench --emit-table; other cards have no table yet and keep native_mmvq's
+// kernels at 5+ columns.  STRATA_MMVQ_IL_WIDE=0 turns the 5-8 column path off.
+struct IlRows58 { int type; uint8_t r[4][5]; };
+constexpr IlRows58 kIlRows58_120[] = {   // 4 = 2 rows a warp here (launch_il_rows)
+    {23, {{0, 4, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 4, 2, 4, 2}, {0, 4, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 4, 4, 4}, {0, 4, 4, 4, 4}, {0, 2, 2, 2, 2}, {0, 4, 2, 4, 4}}},   // Q4_K
+    {13, {{0, 2, 2, 2, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 2, 4, 2, 2}}},   // Q5_K
+    {14, {{0, 2, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 4, 4, 4, 2}}},   // Q6_K
+    {11, {{0, 2, 4, 2, 4}, {0, 2, 2, 4, 4}, {0, 2, 2, 2, 4}, {0, 4, 2, 2, 2}}},   // Q3_K
+};
+struct Il58Arch { int cc; const IlRows58* t; size_t n; };
+constexpr Il58Arch kIl58Arch[] = {
+    {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
+    {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
 };
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).
 struct Il1Rows { int type; uint8_t r[5]; };
@@ -2978,6 +3102,9 @@ constexpr IlArch kIlArch[] = {
     {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on an RTX 2080 Ti
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
+    // 147-verify: RTX PRO 5000 Blackwell (110 SMs).  Only 12.0 cards with 80+ SMs (il_cc's 1201) take it: the shared table
+    // was measured on an RTX 5070 (48 SMs) and stays that card's
+    {1201, kIlRows_120, sizeof(kIlRows_120) / sizeof(IlRows)},
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
 // type 23/12/13/14, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.
@@ -3014,8 +3141,18 @@ const std::vector<IlEnvRow>& il_env_rows() {
 // The rows a warp for a card of compute capability `cc` (major * 10 + minor); 0: native_mmvq's kernels.  Pure, so a test
 // can check every architecture's table without that card.
 int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 4) return 0;
+    if (ncols < 1 || ncols > 8) return 0;
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
+    if (ncols > 4) {   // 147-verify: 5..8 columns, only where a card measured its table
+        static const bool wide = il_env_on("STRATA_MMVQ_IL_WIDE");
+        if (!wide) return 0;
+        if (type == 11 && !il_q3k_on()) return 0;
+        for (const Il58Arch& a : kIl58Arch)
+            if (a.cc == cc)
+                for (size_t i = 0; i < a.n; ++i)
+                    if (a.t[i].type == type) return a.t[i].r[ncols - 5][cls];
+        return 0;
+    }
     for (const IlEnvRow& e : il_env_rows())
         if (e.type == type && e.ncols == ncols) return e.r[cls];
     if (ncols == 1) {   // 143-dense: one column (the plain q8_1 blocks, no interleaved copy); STRATA_MMVQ_IL_T1=0 turns it off
@@ -3029,8 +3166,9 @@ int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
     if (type == 11 && !il_q3k_on()) return 0;   // STRATA_MMVQ_IL_Q3K=0: Q3_K keeps native_mmvq's kernels
     const IlRows* t = kIlRowsShared;
     size_t n = sizeof(kIlRowsShared) / sizeof(IlRows);
+    static const bool own120 = il_env_on("STRATA_MMVQ_IL_120");   // 147-verify: =0 gives a big 12.0 card the shared table again
     for (const IlArch& a : kIlArch)
-        if (a.cc == cc && a.t != nullptr) { t = a.t; n = a.n; }
+        if (a.cc == cc && a.t != nullptr && (cc != 1201 || own120)) { t = a.t; n = a.n; }
     for (size_t i = 0; i < n; ++i)
         if (t[i].type == type) return t[i].r[ncols - 2][cls];
     return 0;
@@ -3045,6 +3183,12 @@ int il_cc() {
         if (cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { cudaGetLastError(); return 0; }
         cc[dev] = maj * 10 + mnr;
+        // 147-verify: a 12.0 card with 80+ SMs (RTX PRO 5000 / 6000, RTX 5080 / 5090) answers 1201, its own table's key;
+        // a smaller one (RTX 5070: 48 SMs) keeps 120 and the shared table it was measured into
+        int sms = 0;
+        if (cc[dev] == 120 && cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && sms >= 80)
+            cc[dev] = 1201;
+        cudaGetLastError();
     }
     return cc[dev];
 }
@@ -3083,7 +3227,7 @@ bool il_arch_ok() {
 }  // namespace
 
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 4 || !g_multi_exact || !il_arch_ok()) return false;
+    if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
            (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
 }

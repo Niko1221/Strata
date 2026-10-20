@@ -2,6 +2,8 @@
 
 This guide accompanies PR #2473. The chat model decides when to call configured MCP tools; `image_results` only enables raster transport, previews and downloads. It does not install search, ComfyUI, a diffusion model, or a GPU handoff controller. An image encoder is needed for the model to inspect pictures; user-visible previews also work without one.
 
+This guide targets the Python server and its web chat (`serve/server.py` and `serve/web`) on the 0.2 release series. The separate desktop app (`apps/host` and `apps/desktop`) has its own UI; this PR does not add cached-image cards there. Keep using the server's run configuration for the steps below.
+
 ## 1. Keep the working model configuration
 
 Back up the JSON used by your existing run script. Merge the fragments below into that file; keep its `exe`, `args`, tokenizer, model paths and memory settings. Restart the Python server after changing MCP configuration. Refresh the chat page afterwards.

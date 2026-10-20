@@ -6,6 +6,7 @@ install removing a stale strata_kq library.
 """
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 import unittest
@@ -20,7 +21,7 @@ import setup  # noqa: E402
 class FamilyOrder(unittest.TestCase):
     def test_the_menu_order_on_nvidia(self):
         fams = setup.menu_families(False) + list(setup.OWN_PATH_FAMILIES)
-        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth", "nvfp4", "qwen36"])
+        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth", "gyro", "nvfp4", "qwen36"])
 
     def test_the_default_stays_the_first_family(self):
         self.assertEqual(setup.menu_families(False)[0], "qwen")
@@ -29,7 +30,7 @@ class FamilyOrder(unittest.TestCase):
     def test_nvfp4_is_not_listed_on_amd_and_intel(self):
         fams = setup.menu_families(True)
         self.assertNotIn("nvfp4", fams)
-        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth"])
+        self.assertEqual(fams, ["qwen", "swift", "coder", "unsloth", "gyro"])
         self.assertIn("nvfp4", setup.FAMILIES)             # --family nvfp4 still exists, and says why not
 
     def test_the_unsloth_line_names_the_alternative_on_amd_and_intel(self):
@@ -109,7 +110,11 @@ class RecommendedSizes(unittest.TestCase):
     def test_without_the_ram_the_largest_that_fits_and_iq3_s_stays_marked(self):
         n = self.names("qwen")
         self.assertEqual(setup.recommended_size("qwen", n, 61.0), "IQ3_XXS")      # IQ3_S needs 62 GB
-        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ2_XS")
+        self.assertEqual(setup.recommended_size("qwen", n, 50.0), "IQ3_XXS")      # 48 GB tier (RAM + VRAM)
+        self.assertEqual(setup.recommended_size("qwen", n, 40.0, 8.0), "IQ3_XXS")  # 40 + 8 = 48 GB together
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 12.0), "IQ2_XS")  # 44 GB: the 40 GB tier
+        self.assertEqual(setup.recommended_size("swift", self.names("swift"), 32.0, 12.0), "IQ2_XS")
+        self.assertEqual(setup.recommended_size("qwen", n, 32.0, 32.0), "IQ3_S")   # 64 GB together
         self.assertEqual(setup.size_tag("qwen", "IQ3_S"), " (recommended)")
 
     def test_coder_has_nothing_marked(self):
@@ -151,7 +156,12 @@ class EnginePlaceholders(unittest.TestCase):
         self.assertEqual(setup.MIN_ENGINE, (0, 1, 45))
         for m in ("UD-Q5_K_XL", "UD-Q6_K_XL", "NVFP4", "NVFP4-NVIDIA"):
             self.assertEqual(setup.MODELS[m]["engine"], (0, 1, 44), m)
-        self.assertIn("0.1.45", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").split("project(strata VERSION", 1)[1][:12])
+        # No minimum may name an engine newer than this tree (a placeholder for a release that does not exist yet would make setup
+        # ask for an engine nobody can download). The tree's version is read from CMakeLists.txt, so this does not go stale each release.
+        text = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        tree = tuple(int(n) for n in re.search(r"project\(strata VERSION ([0-9.]+)", text).group(1).split("."))
+        for what, minimum in [("MIN_ENGINE", setup.MIN_ENGINE), ("NVFP4_ENGINE", setup.NVFP4_ENGINE)] + [(m, setup.MODELS[m]["engine"]) for m in setup.MODELS if "engine" in setup.MODELS[m]]:
+            self.assertLessEqual(tuple(minimum), tree[:len(minimum)], f"{what} {minimum} is ahead of the tree {tree}")
 
 
 class KqLibrary(unittest.TestCase):

@@ -1,7 +1,54 @@
 # Something went wrong?
 
-The common problems and what to do. Back to the [README](../README.md#something-went-wrong). The full table of
+The common problems and what to do, for the desktop app, the Terminal (`strata launch`) and the installer. Back to the [README](../README.md#something-went-wrong). The full table of
 error messages, with the older engine fixes, is in the [details](DETAILS.md#troubleshooting).
+
+## The desktop app and the Terminal
+
+**A warning says Strata "couldn't find an engine for this computer".**
+The engine is the part that talks to your graphics card. Strata only warns and still downloads the
+model, and the model files stay on your computer, but the model may not run until the right engine is installed. The usual
+reasons are that no engine is installed yet and the update source has none for your card, that the engine found is for
+another make of card, or that the graphics driver is too old. In the app, open Settings, then Engine. In the Terminal, the
+message names the next step: run `strata update` and start again. If your computer has no NVIDIA or AMD graphics card
+(only an Intel UHD or Iris chip, an AMD processor graphics chip, a virtual machine, or Windows on ARM), Strata says so and
+there is nothing to install: it needs a computer that has one. The model files stay where they are.
+
+**"This model needs a newer engine." (the app), or a button called Update engine.**
+Some models need an engine newer than the one installed: Gyro needs 0.1.45.1 or newer, NVFP4 needs 0.1.44, and NVFP4 (NVIDIA,
+trained for FP4) needs 0.1.45. In the app, open Settings, then Engine, and press Update engine. It asks first, keeps your
+model files and settings, and wants running models unloaded. In the Terminal: `strata update --check` says what would
+change, `strata update` installs it (it switches to the new engine only after a test start). If the engine you
+installed is the newest and the message stays, the update source has no newer engine for your card yet.
+
+**On a Mac: "Strata is damaged and can't be opened", "cannot be opened", or "unidentified developer".**
+Nothing is wrong with the file. macOS marks everything a browser downloads, and only lets a marked program run if Apple
+has checked it. Strata's release builds are checked by Apple ("notarised"): drag Strata onto Applications and open it; the
+first time, macOS asks "Are you sure you want to open it?" and you press Open. A test build that is not notarised says
+"damaged". Do not move it to the Trash. Open the Terminal app and remove the mark, with the line that matches what you have
+(drag the file from Finder into the Terminal window to type its path):
+
+    xattr -dr com.apple.quarantine ~/Downloads/<the .dmg file>        # the .dmg, before opening it
+    xattr -dr com.apple.quarantine /Applications/Strata.app           # the app, after dragging it over
+    xattr -dr com.apple.quarantine <the folder you unzipped>          # an unzipped Terminal folder
+
+Then open it again. If macOS says only "the developer cannot be verified", you can instead try to open it once, then open
+System Settings > Privacy & Security and press "Open Anyway" next to the message about Strata. Installs made with
+`curl ... | sh` carry no mark and need none of this. To see which kind you have: `spctl -a -vv /Applications/Strata.app`
+answers "accepted" and "Notarized Developer ID" for a notarised build. (How the builds are signed: `packaging/mac/README.md`.)
+
+**Checking what is installed: `strata doctor`.**
+It is a read-only check of the installed engine parts (it changes nothing): which engine and helper files a saved model
+needs, and whether they are there. `strata doctor --live` also asks the computer which graphics cards it sees and compares
+them with the cards the model is set to use; `--output json` prints the same as data. Put its output into a bug report.
+
+**Sending logs for a bug report.**
+In the app: Settings, Engine, Diagnostics, View logs, then Save logs. It writes one text file,
+`strata-diagnostics-<date>.txt`, into your Downloads folder and shows where. It holds the engine's messages, the failed
+steps and the end of each model's server log. In the Terminal, send the output of `strata doctor`. If the Linux app window
+crashes or will not open, run the AppImage with `--save-logs` in a terminal instead; it writes the crash log and the other
+logs to one file in Downloads. If the Windows app closes right after you start it, it shows a message with the reason and writes
+`desktop-crash-<date>.log` in `%LOCALAPPDATA%\Strata\logs`; Save logs includes it, and so can you, by hand. Look through a log before you send it, and never send an API key.
 
 ## While installing or starting
 
@@ -11,6 +58,32 @@ the graphics card, and works out how much of the model fits on your GPU. The mou
 **Wait, and don't close the window.** The next starts are much faster. Still frozen after 10 minutes? Restart the
 PC, close other programs (browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0
 or IQ2_XS).
+
+**The engine stops while it starts, on a small graphics card or a PC with little RAM. Can I turn the draft layer (MTP) off?**
+Yes. The draft layer is what makes answers faster, and it takes about 1 GB of graphics memory (plus some RAM and a memory
+copy that grows with the context). Without it the expert cache gets that memory back and answers are slower. Turn it off
+for one model: in the app, Models, Expert settings, "Draft layer (MTP)": Off; in the Terminal,
+`strata launch --model q2_0 --mtp off` (older Terminals: `--set mtp=off --set spec-min-p=off`); by hand, add `"mtp": false` to the
+model's `strata-<model>.json`. The choice is kept per model and applied on every start.
+
+**I changed `strata-<model>.json` by hand and the change came back.**
+Engine options you add to `args` by hand (control vectors, `--spec`, `--vram-reserve-mib 0`, anything the app does not offer)
+are kept. The file has two helper keys for this. `user_args` lists your options; every start and every setup run puts them
+over the ones the app generates, and for the same option your value wins. `args_written` is a copy of `args` as the app last
+wrote it, so an option you added or changed in `args` is noticed and moved into `user_args` the next time the app or setup
+touches the file. To undo one, delete it from both `args` and `user_args`. A value you save in the app's Expert settings
+("GPU memory for other apps") is put in `user_args` for you.
+
+Two things the app still chooses itself: the context size, KV type, picture reading and draft layer. Set them in the Models
+screen, or with `"mtp": false` (draft layer). The app keeps the earlier file as `strata-<model>.json.bak`.
+
+**The app keeps more graphics memory free than I want (decode is slower than in 0.1.45).**
+Without a value of yours the app keeps 1536 MiB free (2048 with picture reading) on a card that drives a display, and 512 MiB
+(700 with pictures) on a card that has no display attached, such as a second GPU with the screen on the integrated one. It
+reads that from the driver (nvidia-smi `display_active`, or the Windows adapter that has the desktop); when it cannot tell, it
+assumes a display. Your own value is never raised or lowered: set "GPU memory for other apps" in Expert settings, or
+`--vram-reserve-mib 0` in `args`. The engine's own warning about low free memory stays; a card that also draws the desktop
+can freeze or slow to a few tokens a second with a very small reserve.
 
 **It stopped while downloading or installing.**
 Run `START-HERE.bat` (Linux: `./setup.sh`) again. It continues where it stopped.
@@ -78,6 +151,9 @@ Your PC is out of free RAM. Close other programs, or pick a smaller size (Q2_0 o
 Usually not enough RAM (on Linux the system then stops the engine). Just send your message again: Strata starts the
 engine by itself. If it keeps happening, close other programs or pick a smaller size.
 
+**On Linux the engine stops with "exit code -9", but nothing ran out of RAM.**
+Check `ulimit -R`. If it prints 0 (or any number), the desktop session sets a real-time CPU limit: the audio system (PipeWire) does that when rtkit is not installed, and every program started from the desktop inherits it. The kernel can then end a program with signal 9 and no message. Install `rtkit`, or start Strata outside the session's limits, for example `systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...`. Strata prints a warning at start when it sees this limit.
+
 **It says the prompt exceeds the context.**
 The conversation is longer than the context you chose. Start a new chat, or run `SETUP.bat` and pick more
 context.
@@ -131,9 +207,14 @@ with 13.0. If you compile it yourself, use CUDA 13.0, 13.1 or 13.2.2 (13.2.2, nv
 setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 13.x when one is installed.
 
 **Pictures are refused, or slow.**
-"this server was started without the vision encoder": the model was set up for text only - run setup again with
-`--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
-(NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
+"this server was started without the vision encoder": the model was set up for text only (someone chose "No", or the
+engine has no picture reader) - run setup again with `--vision yes` (or `--vision gpu` / `--vision cpu`), or switch pictures
+on in the app or on the Pictures step of `strata launch`. Pictures are on by default wherever a model can read them. The
+reader runs on the CPU under 24 GB of graphics memory and on the card from 24 GB, on NVIDIA and AMD cards. Pictures that take
+several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU;
+`--vision gpu` (NVIDIA and AMD, ~1.4 GB of VRAM) makes it 0.1-0.5 s. On AMD the card's reader is `strata-vision-hip`; if it
+cannot start, the server prints "the GPU picture reader did not start (...); pictures are read on the CPU" and goes on with
+the CPU reader. On a Mac the reader runs on the GPU; `--vision cpu` takes about 50 s per picture there. On Intel Arc, pictures are off by default for now (`--vision yes` turns them on).
 
 ## AMD cards
 
@@ -192,4 +273,7 @@ R9700) in the `env` block of the server JSON, then a restart. Experimental, one 
 ## Still stuck?
 
 Look in the [full troubleshooting table](DETAILS.md#troubleshooting), or open an
-[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder.
+[issue](https://github.com/Niko1221/Strata/issues) and attach the log: in the app, the file Save logs writes (see
+[above](#the-desktop-app-and-the-terminal)); in the Terminal, the output of `strata doctor`; with the installer,
+`strata-<model>.log` from the Strata folder. Say which one you use (app, Terminal or the installer), your Strata and
+engine versions and your card.

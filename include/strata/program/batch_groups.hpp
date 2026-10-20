@@ -16,7 +16,7 @@
 namespace strata::program::batch_groups {
 
 /// What kept `auto` from pipelining.
-enum class Serial { None, BatchMtp, AdaptAsync };
+enum class Serial { None, BatchMtp, AdaptAsync, TwoCardsSerialFaster };
 
 struct Input {
     bool set = false;          ///< --batch-groups was given (a number or `auto`)
@@ -27,6 +27,7 @@ struct Input {
     bool batch_mtp = false;    ///< --batch-mtp is on (it passed the gates that do not concern the groups)
     bool adapt_async = false;  ///< --adapt-async 1 was asked for
     bool mtp_serial = false;   ///< STRATA_BATCH_MTP_SERIAL=1: --batch-mtp with no --batch-groups runs one serial group (0.1.43)
+    bool nv_serial_faster = false;   ///< PROPOSED (0.2.1, owner decides): NVIDIA build, STRATA_BATCH_GROUPS_NV_SERIAL not 0 - two cards run faster in serial windows (z440 2x A4000, aggregate tok/s: +16% at 2 slots, +12% at 4, +15% at 8)
 };
 
 struct Result {
@@ -57,6 +58,7 @@ inline Result resolve(const Input& in) {
     r.groups = r.would_be;
     if (!in.set && r.would_be > 1) {   // only the default gives way; `--batch-groups auto` asked for the pipeline
         if (in.batch_mtp && in.mtp_serial) r.serial = Serial::BatchMtp;
+        else if (in.nv_serial_faster && in.later_stages == 1 && !in.batch_mtp && !in.adapt_async) r.serial = Serial::TwoCardsSerialFaster;
         else if (in.adapt_async) r.serial = Serial::AdaptAsync;
         r.mtp_dropped = in.batch_mtp && r.serial == Serial::None;
         if (r.serial != Serial::None) r.groups = 1;
@@ -65,7 +67,8 @@ inline Result resolve(const Input& in) {
 }
 
 inline const char* serial_what(Serial s) {
-    return s == Serial::BatchMtp ? "--batch-mtp" : s == Serial::AdaptAsync ? "--adapt-async 1" : "";
+    return s == Serial::BatchMtp ? "--batch-mtp" : s == Serial::AdaptAsync ? "--adapt-async 1"
+         : s == Serial::TwoCardsSerialFaster ? "serial windows (measured faster than pipelined groups on two NVIDIA cards; STRATA_BATCH_GROUPS_NV_SERIAL=0 keeps the pipeline)" : "";
 }
 
 }  // namespace strata::program::batch_groups

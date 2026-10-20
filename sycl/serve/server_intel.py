@@ -47,6 +47,24 @@ def install_xe_reader():
     T.gpu_reader = gpu_reader
 
 
+def install_shared_embeddings():
+    """Pictures: the engine runs in a container, and a request's image embeddings reach it as a file named on its GENI line.
+    serve/server.py writes that file to /dev/shm when that has room, and strata-sycl.sh shares the host's /dev/shm with the
+    container, so the path means the same on both sides.  Anywhere else (a full /dev/shm) the container cannot see the file:
+    said once, in the log, in plain words."""
+    orig = S.combined_embeddings_path
+    said = []
+
+    def path(vision_dir, nbytes):
+        p = orig(vision_dir, nbytes)
+        if not str(p).startswith("/dev/shm/") and not said:
+            said.append(1)
+            print("[strata] /dev/shm has no room for this picture: the engine runs in a container that sees only the host's /dev/shm, so it "
+                  "cannot read the picture. Free /dev/shm (or enlarge it: mount -o remount,size=4G /dev/shm) and send it again.", flush=True)
+        return p
+    S.combined_embeddings_path = path
+
+
 def model_switcher(url: str, port, model, mode: str = "") -> dict:
     """The host's model swapper: the models it serves on THIS port, which one holds the card, whether one is loading.
     With `mode`, asks for that one first; this server is then usually the one stopped, so the web app waits for
@@ -308,6 +326,7 @@ def top_logprobs(req: dict):
 
 if __name__ == "__main__":
     install_xe_reader()
+    install_shared_embeddings()
     install_narrator()
     install_switcher(sys.argv[1:])
     install_logprobs()

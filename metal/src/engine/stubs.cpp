@@ -325,7 +325,8 @@ namespace strata::kernels { void topk_512_step(const float * p0, const QsaShapes
 namespace strata::kernels { void wait_flag_ge(const uint32_t * p0, uint32_t p1, void * p2) { strata::metal_engine::missing("strata::kernels::wait_flag_ge"); } }
 namespace strata::kernels { void wait_flag_ge_or(const uint32_t * p0, uint32_t p1, const uint32_t * p2, void * p3) { strata::metal_engine::missing("strata::kernels::wait_flag_ge_or"); } }
 namespace strata::kernels { void window_ids(int32_t * p0, int p1, int p2, int32_t * p3, int64_t p4, void * p5) { strata::metal_engine::missing("strata::kernels::window_ids"); } }
-auto strata::prefill::Gemm::bf16(const uint16_t * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, int64_t p5, int64_t p6, float p7, int64_t p8) -> void { strata::metal_engine::missing("strata::prefill::Gemm::bf16"); }
+auto strata::prefill::Gemm::bf16(const uint16_t * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, int64_t p5, int64_t p6, float p7, int64_t p8, bool p9) -> void { strata::metal_engine::missing("strata::prefill::Gemm::bf16"); }
+auto strata::prefill::Gemm::bf16_converts_x() const -> bool { strata::metal_engine::missing("strata::prefill::Gemm::bf16_converts_x"); return {}; }
 auto strata::prefill::Gemm::bf16_hcd_exact(const uint16_t * p0, int64_t p1, const uint16_t * p2, float * p3, int64_t p4, int64_t p5, int64_t p6) -> bool { strata::metal_engine::missing("strata::prefill::Gemm::bf16_hcd_exact"); return {}; }
 auto strata::prefill::Gemm::f16(const uint16_t * p0, const uint16_t * p1, float * p2, int64_t p3, int64_t p4, int64_t p5, int64_t p6, float p7) -> void { strata::metal_engine::missing("strata::prefill::Gemm::f16"); }
 auto strata::prefill::Gemm::native(const uint16_t * p0, int p1, const void * p2, float * p3, int64_t p4, int64_t p5, int64_t p6, int64_t p7, float p8, int64_t p9) -> void { strata::metal_engine::missing("strata::prefill::Gemm::native"); }

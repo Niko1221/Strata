@@ -60,6 +60,23 @@ inline bool file_cache_keeps(uint64_t avail, uint64_t arena_bytes, uint64_t read
     return room >= need;
 }
 
+/// #3237: with the room rule saying the file cache could keep the experts that come back, but holding only
+/// `held_fraction` (< 0.5) of the read set: whether the unbuffered reads win, from a start-up timing of the drive both
+/// ways (`direct_bps`: O_DIRECT preads on the I/O threads, `cached_bps`: first touches of a mapping's pages).
+/// On a PCIe 5 NVMe (8.2 GB/s direct against 4.9 through the cache, the cache holding 13%) the cached path read prompts at
+/// half the speed and decoded 3-4x slower than unbuffered reads (#3237).  On a 1.7-2.5 GB/s NVMe (ext4, notes-021-iD) the
+/// cache decoded 1.1-1.6x faster at 10-60% held while direct reads read prompts 1.1-1.4x faster, so a timing ratio alone
+/// (2.0x there, 1.66x on the reporter's) cannot separate the two: a miss costs 1/bandwidth, and only on a fast drive is
+/// a miss cheap enough that the cache's faults and read-ahead cost more than the hits save.  Hence an absolute floor: the
+/// direct path must run at 4 GB/s or more.  Then a cache that holds under 30% needs the direct path 1.3x faster; up to
+/// half, 1.5x.
+inline bool file_tier_prefers_direct(double held_fraction, double direct_bps, double cached_bps) {
+    if (!(direct_bps > 0.0) || !(cached_bps > 0.0)) return false;
+    if (held_fraction >= 0.5 || direct_bps < 4.0e9) return false;
+    const double ratio = direct_bps / cached_bps;
+    return held_fraction < 0.3 ? ratio >= 1.3 : ratio >= 1.5;
+}
+
 /// Whether `advise_willneed` asks the OS for anything: not on Windows, nor with STRATA_READ_AHEAD=0.
 bool read_ahead_enabled();
 /// Asks the OS to start reading [p, p + bytes) of a file mapping, without waiting.  Linux reads at most one

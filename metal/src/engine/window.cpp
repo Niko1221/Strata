@@ -13,6 +13,7 @@
 // (layer 0 | layers 1..47 + head).
 #include "gguf_lite.h"
 #include "mtl_rt.h"
+#include "resource_path.h"
 #include "ref_quant.h"
 #include "arena_budget.h"
 #include "stream.h"
@@ -462,7 +463,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
-    lple_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
+    lple_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
 
     const int MAXC = (int) std::max<int64_t>(4096, (max_cells + 64) / 4 * 4 + 64), MB = MAXC / 4 + 2;
     max_cells_ = MAXC;
@@ -1197,7 +1198,7 @@ bool Window::stream_arena(std::string& err) {
     }
     std::string prof;
     if (const char* e = std::getenv("STRATA_METAL_EXPERT_PROFILE")) prof = e;
-    else prof = std::string(STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
+    else prof = strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
     std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena (the process holds %.2f GB, %.2f GB resident); "
                          "RAM %.1f GB (%.1f GB available, %.1f GB kept for macOS), GPU working set %.1f GB\n", used / gb,
                  pm0.footprint / gb, pm0.rss / gb, phys / gb, avail / gb, keep / gb, cx_->recommended_working_set() / gb);
@@ -1525,7 +1526,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         float* dst = (float*) (mnorm_.as<uint8_t>() + kv.second);
         for (uint64_t i = 0; i < x.bytes / 4; ++i) dst[i] = src[i] + 1.0f;
     }
-    lmtp_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
+    lmtp_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
     {
         const char* e = std::getenv("STRATA_METAL_MTP_Q8");
         if (!(e && std::string(e) == "0")) {
@@ -1578,7 +1579,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         const std::string beside = gguf_path.substr(0, gguf_path.find_last_of('/') + 1) + "rt/draft_vocab.bin";
         if (const char* e = std::getenv("STRATA_METAL_DRAFT_VOCAB")) vp = e;
         else if (FILE* t = std::fopen(beside.c_str(), "rb")) { std::fclose(t); vp = beside; }
-        else vp = std::string(STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
+        else vp = strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
         FILE* f = vp == "full" ? nullptr : std::fopen(vp.c_str(), "rb");
         if (f) {
             int32_t id;
@@ -1604,7 +1605,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         const char* e = std::getenv("STRATA_METAL_MTP_CHAIN");
         chain_ = !(e && std::string(e) == "0") && std::find(std::begin(ok_types), std::end(ok_types), ty) != std::end(ok_types);
         if (chain_) {
-            lchain_ = cx_->compile({"quant.metal", "units.metal", std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp_chain.metal"});
+            lchain_ = cx_->compile({"quant.metal", "units.metal", strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp_chain.metal"});
             dout_ = A(4 * MAXT); dprob_ = A(4 * MAXT); posv_ = A(4 * N);
             for (int i = 0; i < N; ++i) posv_.as<float>()[i] = (float) i;
             dmap_ = A(4 * std::max<size_t>(1, dvocab_.size()));

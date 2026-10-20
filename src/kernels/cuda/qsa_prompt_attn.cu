@@ -2,6 +2,7 @@
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1505,7 +1507,7 @@ struct Smem70 {
     float alpha[16];
     float lsum[16];
     float mrow[16];
-    long long row[CH];
+    long long row[2][CH];        // double-buffered pool rows: the next chunk's lookups hide under p.v
 };
 
 template <int KV_MODE>
@@ -1556,40 +1558,54 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
 #pragma unroll
             for (int i = 0; i < 8; ++i) acc[rb][nt][i] = 0.0f;
 
-    for (int c0 = 0; c0 < n; c0 += CH) {
-        const int nh = min(CH, n - c0);
-        if (t < CH) {
-            long long r = -1;
-            if (t < nh) {
-                const int cell = ids[c0 + t];
-                const long long page = (long long) p.page_table[cell / page_size];
-                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-            }
-            S.row[t] = r;
+    // the pool rows of a chunk: -1 past the selection and for a page the KV streaming left non-resident (the
+    // decode kernel masks those, so this kernel does too).  Chunk 0's rows fill one buffer here; every later
+    // chunk's lookups fill the other just before the previous p.v, where their global latency hides.
+    int rbuf = 0;
+    if (t < CH) {
+        long long r = -1;
+        if (t < min(CH, n)) {
+            const int cell = ids[t];
+            const long long page = (long long) p.page_table[cell / page_size];
+            r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
-        __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v, s
+        S.row[0][t] = r;
+    }
+    for (int c0 = 0; c0 < n; c0 += CH, rbuf ^= 1) {
+        const int nh = min(CH, n - c0);
+        __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v
         // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
         // and their scales
         {
             constexpr int KPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::KElem) / 16;   // per K row
-            for (int i = t; i < CH * KPIECES; i += THREADS) {
-                const int c = i / KPIECES, pc = i % KPIECES;
-                const long long r = S.row[c];
-                uint4 kx = make_uint4(0, 0, 0, 0);
+            constexpr int KPT = (CH * KPIECES + THREADS - 1) / THREADS;
+            static_assert((CH * KPIECES) % THREADS == 0, "the staging pieces divide evenly");
+            // issue every global load of a thread before any of its stores: they then overlap each other instead
+            // of paying the HBM latency one at a time
+            uint4 kx[KPT];
+            int kc[KPT], kp[KPT];
+#pragma unroll
+            for (int s = 0; s < KPT; ++s) {
+                const int i = t + s * THREADS;
+                kc[s] = i / KPIECES; kp[s] = i % KPIECES;
+                const long long r = S.row[rbuf][kc[s]];
+                kx[s] = make_uint4(0, 0, 0, 0);
                 if (r >= 0) {
                     if constexpr (KV_MODE == 0)
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + pc);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + kp[s]);
                     else   // modes 1 and 3: the K side is INT8
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + kp[s]);
                 }
-                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[c][0]) + pc * 16) = kx;
             }
+#pragma unroll
+            for (int s = 0; s < KPT; ++s)
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[kc[s]][0]) + kp[s] * 16) = kx[s];
             if constexpr (KV_MODE == 3) {   // V: dequantize the row's q4_0 blocks straight into the fp16 V row
                 constexpr int BLKS = HD / QK4_0;
                 constexpr int BYTES = BLKS * (int) sizeof(block_q4_0);
                 for (int i = t; i < CH * BLKS; i += THREADS) {
                     const int c = i / BLKS, b = i % BLKS;
-                    const long long r = S.row[c];
+                    const long long r = S.row[rbuf][c];
 #pragma unroll
                     for (int j = 0; j < QK4_0; ++j) S.v[c][b * QK4_0 + j] = __half(0);
                     if (r >= 0) {
@@ -1605,22 +1621,30 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 }
             } else {
                 constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16;   // per V row
-                for (int i = t; i < CH * VPIECES; i += THREADS) {
-                    const int c = i / VPIECES, pc = i % VPIECES;
-                    const long long r = S.row[c];
-                    uint4 vx = make_uint4(0, 0, 0, 0);
+                constexpr int VPT = (CH * VPIECES + THREADS - 1) / THREADS;
+                static_assert((CH * VPIECES) % THREADS == 0, "the staging pieces divide evenly");
+                uint4 vx[VPT];
+                int vc[VPT], vp[VPT];
+#pragma unroll
+                for (int s = 0; s < VPT; ++s) {
+                    const int i = t + s * THREADS;
+                    vc[s] = i / VPIECES; vp[s] = i % VPIECES;
+                    const long long r = S.row[rbuf][vc[s]];
+                    vx[s] = make_uint4(0, 0, 0, 0);
                     if (r >= 0) {
                         if constexpr (KV_MODE == 1)
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + vp[s]);
                         else
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + vp[s]);
                     }
-                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
                 }
+#pragma unroll
+                for (int s = 0; s < VPT; ++s)
+                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[vc[s]][0]) + vp[s] * 16) = vx[s];
             }
             for (int i = t; i < CH * 4; i += THREADS) {
                 const int c = i / 4, g = i % 4;
-                const long long r = S.row[c];
+                const long long r = S.row[rbuf][c];
                 float a = 0.0f, b = 0.0f;
                 if (r >= 0) {
                     if constexpr (KV_MODE == 1) {
@@ -1782,6 +1806,17 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                     for (int i = 0; i < 8; ++i)
                         acc[rb][nt][i] = fmaf(acc[rb][nt][i], a_[(i >> 1) & 1], (tmp[rb][nt][i] + tmpl[rb][nt][i]) * vdown);
             }
+        }
+        // the next chunk's pool rows, into the other buffer: the two global lookups per cell hide under p.v
+        if (c0 + CH < n && t < CH) {
+            long long r = -1;
+            const int idx = c0 + CH + t;
+            if (idx < n) {
+                const int cell = ids[idx];
+                const long long page = (long long) p.page_table[cell / page_size];
+                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            }
+            S.row[rbuf ^ 1][t] = r;
         }
     }
     __syncthreads();
@@ -2142,30 +2177,66 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #endif
 }
 
-// gfx12 (RDNA4) and gfx11 (RDNA3 / RDNA3.5), only on request: the output differs from the default kernel's in its
-// last bits
-bool hip_wmma_usable() {
-    static const bool want = [] {
+// gfx12 (RDNA4): on by default on Linux (148-amd; STRATA_HIP_WMMA=0 turns it off; Windows: opt-in with =1 until tested there).  gfx11 (RDNA3 / RDNA3.5): only on request
+// (STRATA_HIP_WMMA=1).  STRATA_HIP_WMMA=auto (151-amd) takes the matrix-core kernel on a gfx12 card for a batch of
+// STRATA_HIP_WMMA_MIN_Q (64) or more queries and keeps the FP32 kernel for smaller calls.  The output differs from the
+// old kernel's in its last bits (FP32-level accuracy, another summation order): teacher-forced KL against the old kernel
+// 0.0003 (28 prompts) / 0.0014 (8 long documents) on an R9700.  A launch that fails switches the path off for the rest of
+// the process (the caller then runs the FP32 kernel) instead of ending it.
+int hip_wmma_mode_env() {   // -1 unset (the arch default), 0 off, 1 forced, 2 auto
+    static const int mode = [] {
         const char* e = std::getenv("STRATA_HIP_WMMA");
-        return e != nullptr && e[0] == '1';
+        if (e == nullptr || e[0] == '\0') return -1;
+        if (e[0] == '1') return 1;
+        if (!std::strcmp(e, "auto")) return 2;
+        return 0;
     }();
-    if (!want) return false;
-    static int arch[64] = {};   // 0 unknown, 1 gfx11 / gfx12, 2 other
-    int dev = 0;
-    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
+    return mode;
+}
+std::atomic<bool> g_wmma_failed{false};
+// the device's class: 1 gfx11 matrix-core part, 2 gfx12 (RDNA4), 3 anything else
+int hip_wmma_arch(int dev) {
+    static int arch[64] = {};
+    if (dev < 0 || dev >= 64) return 3;
     if (arch[dev] == 0) {
         hipDeviceProp_t prop{};
-        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
-        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 || strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName)
-                        ? 1 : 2;
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return 3; }
+        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 2
+                    : strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ? 1 : 3;
+        const int mode = hip_wmma_mode_env();
         static bool told = false;
-        if (!told) {
+        if (!told && (mode >= 1 || arch[dev] == 2)) {
             told = true;
-            std::fprintf(stderr, "strata: STRATA_HIP_WMMA: the prompt attention on matrix cores %s (%s)\n",
-                         arch[dev] == 1 ? "on" : "unavailable", prop.gcnArchName);
+            const bool on = (arch[dev] == 2 && (mode >= 1 || strata::core::kGfx12PromptDefaultsOn)) || (arch[dev] == 1 && mode >= 1);
+            if (mode >= 1 || on)
+                std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", mode >= 1 ? "STRATA_HIP_WMMA: " : "",
+                             !on ? "unavailable" : (mode == 2 ? "chosen per call" : "on"), prop.gcnArchName,
+                             mode >= 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
+            else
+                std::fprintf(stderr, "strata: the prompt attention on matrix cores is off by default on Windows (opt-in until tested on Windows); "
+                                     "STRATA_HIP_WMMA=1 turns it on (%s)\n", prop.gcnArchName);
         }
     }
-    return arch[dev] == 1;
+    return arch[dev];
+}
+// auto: where the matrix-core kernel beats the FP32 one.  Measured on the R9700 (gfx1201) only; the gfx11 parts take
+// it only when forced with =1.
+bool hip_wmma_auto_pick(int arch, int64_t n_q, int64_t cap) {
+    if (arch != 2) return false;
+    static const int64_t min_q = [] { const char* e = std::getenv("STRATA_HIP_WMMA_MIN_Q"); return e ? (int64_t) std::atoll(e) : (int64_t) 64; }();
+    static const int64_t min_cap = [] { const char* e = std::getenv("STRATA_HIP_WMMA_MIN_CAP"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
+    return n_q >= min_q && cap >= min_cap;
+}
+bool hip_wmma_usable(int64_t n_q, int64_t cap) {
+    const int mode = hip_wmma_mode_env();
+    if (mode == 0 || g_wmma_failed.load(std::memory_order_relaxed)) return false;
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    const int arch = hip_wmma_arch(dev);
+    if (arch == 3) return false;
+    if (mode == 1) return true;
+    if (mode == 2) return hip_wmma_auto_pick(arch, n_q, cap);
+    return arch == 2 && strata::core::kGfx12PromptDefaultsOn;   // unset: the gfx12 default (Linux; Windows is opt-in until tested there)
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
@@ -2186,8 +2257,9 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s\n", cudaGetErrorString(e));
-        std::exit(1);
+        std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s; the FP32 prompt attention runs from here on\n", cudaGetErrorString(e));
+        g_wmma_failed.store(true);
+        return false;
     }
     return true;
 }
@@ -2250,6 +2322,18 @@ bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int3
 #endif
 }
 void qsa_prompt_attn_set_imma(int on) { g_pa_imma = on < 0 ? -1 : (on ? 1 : 0); }
+bool qsa_prompt_attn_matrix_cores_requested() {
+#if defined(__HIPCC__)
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    const int mode = hip_wmma_mode_env(), arch = hip_wmma_arch(dev);
+    return mode != 0 && arch != 3 && !g_wmma_failed.load(std::memory_order_relaxed) && (mode >= 1 || (arch == 2 && strata::core::kGfx12PromptDefaultsOn));
+#else
+    return false;
+#endif
+}
+
+bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
@@ -2272,10 +2356,13 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                 cudaGetLastError();
                 return false;
             }
-            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card that has the Turing MMA (sm_75
+            // and newer), as RTX 20 runs them.  A card below sm_75 has no m16n8k8: its builds hold a __trap() in those
+            // kernels, so forcing them there killed the engine ("prefill copy_i32: unspecified launch failure" on a
+            // Tesla P100); such a card ignores the switch and keeps the kernel it runs without it.
             const char* w = std::getenv("STRATA_QSA_WARP");
-            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 75
-                      : 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+            const int real_cc = 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) && real_cc >= 75 ? 75 : real_cc;
         }
         if (cc[dev] < 70) return false;
         volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (STRATA_PA_VOLTA); STRATA_QSA_WARP=1 still forces the old one
@@ -2288,7 +2375,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
-        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable())
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     return false;
 #endif
