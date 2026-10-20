@@ -5,13 +5,18 @@
 An arm is NAME:key=value,...; `exe` replaces the config's engine, `xargs` appends ';'-separated engine arguments,
 every other key is set in the engine's environment.  Each round starts the server once per arm (the arms' order alternates), warms it up with one short
 answer, then sends the same requests: greedy, fixed prompts, a short chat set and one long prompt.  Prints the
-server's own timings (llama.cpp's `timings`: decode and prompt tokens per second) per request and the per-arm
+Prints the server's own timings (llama.cpp's `timings`: decode and prompt tokens per second) per request and the per-arm
 medians.  Decode numbers move run to run (the adaptive expert tier, the OS), so compare medians over rounds.
+
+With `--stats` (needs `pip install -r requirements-bench.txt`) each arm is also compared against the first arm slot by slot:
+Wilcoxon signed-rank on the log ratios, Holm-adjusted across metrics, with the Hodges-Lehmann speedup factor and its
+confidence interval.  A verdict needs the interval to clear a floor (`--floor-decode 0.05 --floor-prefill 0.02`);
+with 3 rounds there are 3 pairs per metric and no verdict can be significant - run `--rounds 7` or more.
 """
 from __future__ import annotations
 
 import argparse
-import json
+import math
 import os
 import random
 import statistics
@@ -73,6 +78,9 @@ def main() -> int:
     ap.add_argument("--max-new", type=int, default=256)
     ap.add_argument("--long-words", type=int, default=6000)
     ap.add_argument("--log", default="ab_engine.jsonl")
+    ap.add_argument("--stats", action="store_true", help="paired Wilcoxon verdicts per metric (needs scipy and statsmodels)")
+    ap.add_argument("--floor-decode", type=float, default=0.05, help="speed factor that counts: 0.05 = 5%% (decode)")
+    ap.add_argument("--floor-prefill", type=float, default=0.02, help="speed factor that counts: 0.02 = 2%% (prompt)")
     a = ap.parse_args()
     base = json.loads(Path(a.config).read_text())
     arms = []
@@ -132,7 +140,44 @@ def main() -> int:
             pr = statistics.median([x["prompt"] for x in rows if x["prompt"]]) if rows else float("nan")
             cells.append(f"{name}: decode {d:6.1f}  prompt {pr:7.1f}")
         print(f"  {tag:6s} | " + " | ".join(cells))
+    if a.stats:
+        report_stats(res, arms, reqs, a)
     return 0
+
+
+def report_stats(res: dict, arms, reqs, a) -> None:
+    """Paired verdicts through tools/paired_stats.py (scipy + statsmodels): every arm against
+    the first, one pair per request slot and round, log-ratios; Holm across all metrics."""
+    try:
+        import paired_stats as ps
+    except ImportError:
+        ps = None
+    if ps is None or not ps.available():
+        print("verdicts need scipy and statsmodels: pip install -r requirements-bench.txt", file=sys.stderr)
+        return
+    base = arms[0][0]
+    dims: list[tuple[str, str, list]] = []
+    for other, _ in arms[1:]:
+        for tag, _p in reqs:
+            for metric in ("decode", "prompt"):
+                if metric == "prompt" and not tag.startswith("long"):
+                    continue                    # the short chats barely measure prefill
+                ra = {r["round"]: r for r in res[base].get(tag, [])}
+                rb = {r["round"]: r for r in res[other].get(tag, [])}
+                diffs = [math.log(rb[k][metric] / ra[k][metric]) for k in sorted(ra)
+                         if k in rb and ra[k].get(metric) and rb[k].get(metric)]
+                dims.append((f"{other} vs {base} {tag} {metric}", metric, diffs))
+    stats = [ps.signed_rank(d) for _, _, d in dims]
+    adj = ps.holm([s["p"] for s in stats])
+    print("\npaired verdicts (Wilcoxon signed-rank on log ratios, Holm-adjusted; the CI must clear the floor):")
+    for (label, metric, _d), s, pa in zip(dims, stats, adj):
+        floor = a.floor_decode if metric == "decode" else a.floor_prefill
+        ci = "" if s["ci_lo"] is None else f" [{ps.factor(s['ci_lo'])}-{ps.factor(s['ci_hi'])}]"
+        p = "-" if s["p"] is None else f"{s['p']:.4f}"
+        print(f"  {label:38s} n={s['n']:2d}  {ps.factor(s['hl'])}{ci:20s}  p={p:7s} Holm p={pa:.4f}  "
+              + ps.verdict(s, pa, floor))
+    if any(s["n"] < 7 for s in stats):
+        print("  (metrics with fewer than 7 pairs cannot reach significance at Holm 0.05 two-sided: run more rounds)")
 
 
 if __name__ == "__main__":

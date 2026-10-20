@@ -23,7 +23,11 @@ short and the runs comparable.  The default run takes about 3-10 minutes after t
 The result goes to bench/results/<date>-community-<gpu>-<model>/ : README.md in the format of
 docs/COMMUNITY_BENCHMARKS.md, results.json (every request) and an engine log excerpt.  Home folders, user and host names,
 IP addresses and API keys are replaced by placeholders before anything is written; read it once before you share it.
-`--compare <older results folder>` prints the two side by side.  Standard library only.
+`--compare <older results folder>` prints the two side by side with two extra columns: the test result on its own
+(the ground result: Wilcoxon signed-rank p, Holm-corrected - the floors can never hide it) and a size note (whether the
+change clears the practical floors, --floor-prefill 2% / --floor-decode 5%).  Those columns use scipy and statsmodels
+(requirements-bench.txt); without them the table prints as before.  The measurement run itself needs only the
+standard library.
 This is the quick speed check, not the standard benchmark: `strata bench run` follows docs/BENCHMARK_PROTOCOL.md (fixed prompts, thinking on,
 the model card sampling, twelve sanity checks) and writes results other people can compare with.
 """
@@ -33,6 +37,7 @@ import argparse
 import datetime
 import getpass
 import json
+import math
 import os
 import platform
 import re
@@ -68,14 +73,14 @@ BURST_MAX_TOKENS = 128
 def redactor(extra: list[str] = (), key: str = ""):
     """-> f(text) -> text with this machine's home folders, user and host names, the Strata folder, IP addresses and the
     API key replaced.  Applied to everything that is written or printed from the server's or the machine's own text."""
-    subs: list[tuple[re.Pattern, str]] = []
+    subs: list[tuple[re.Pattern, str, int]] = []
 
     def add(value, label, word=False):
         if value and len(str(value)) >= 4:
             v = str(value)
             for form in sorted({v, v.replace("\\", "/"), v.replace("/", "\\")}, key=len, reverse=True):
                 pat = re.escape(form)
-                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, re.I), label))
+                subs.append((re.compile(r"(?<![\w-])" + pat + r"(?![\w-])" if word else pat, re.I), label, len(form)))
 
     add(ROOT, "<strata>")
     add(Path.home(), "<home>")
@@ -89,7 +94,7 @@ def redactor(extra: list[str] = (), key: str = ""):
     for x in extra:
         add(x, "<private>", True)
     add(key, "<key>")
-    subs.sort(key=lambda p: -len(p[0].pattern))
+    subs.sort(key=lambda p: -p[2])          # longest target wins: /home/user/Strata before the user name inside it
     path_user = re.compile(r"(?i)([A-Za-z]:)?([\\/])(Users|home)([\\/])(?!<)[^\\/\s\"':;,]+")
     ip4 = re.compile(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])|169\.254)\.\d{1,3}\.\d{1,3}\b")
     bearer = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}")
@@ -97,7 +102,7 @@ def redactor(extra: list[str] = (), key: str = ""):
     def f(text):
         if not isinstance(text, str):
             return text
-        for pat, label in subs:
+        for pat, label, _ in subs:
             text = pat.sub(label, text)
         text = path_user.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}{m.group(3)}{m.group(4)}<user>", text)
         text = bearer.sub(r"\1<key>", text)
@@ -845,7 +850,11 @@ def render_readme(res: dict) -> str:
           f"and continue from the model's own earlier answers (the way agent clients resend a conversation), {AGENT_MAX_TOKENS} new tokens per turn, "
           f"{p['runs']} sessions; the cache numbers come from the answer's usage (`cached_tokens`) and timings (`prompt_n`)",
           "- concurrency (when run): N requests sent at the same moment, total tokens over the wall time of the burst, "
-          "latency over all requests", "",
+          "latency over all requests",
+          f"- significance: the test result (Wilcoxon signed-rank p, Holm-corrected) is the ground truth of whether anything changed and the "
+          f"--compare table always shows it; the floors (--floor-decode 5% / --floor-prefill 2%) only judge size, never the test. With "
+          f"{p['runs']} runs the prompt tests hold {p['runs']} pairs and the chats {p['runs']}x3, and no metric "
+          f"can be significant below n>={sig_floor_runs(2 + 2 * len(out.get('prompts') or {}))} pairs", "",
           "## Results", ""]
     L += results_table(out)
     L += ["", "Ranges are the lowest and highest of the runs; `Runs` counts requests that returned a token."]
@@ -876,19 +885,106 @@ def render_readme(res: dict) -> str:
     return "\n".join(L)
 
 
-def compare_table(old: dict, new: dict) -> str:
+def sig_floor_runs(dims: int) -> int:
+    """The smallest --runs at which a --compare verdict can be significant at all: the prompt tests hold pairs=runs,
+    and with Holm over `dims` metrics p must beat 0.05/dims while p >= 2**(1-pairs) for n pairs."""
+    return next(k for k in range(1, 40) if 2.0 ** (1 - k) <= 0.05 / max(1, dims))
+
+
+def compare_verdicts(old: dict, new: dict, floor_decode: float = 0.05, floor_prefill: float = 0.02) -> tuple[dict, dict, list[str]] | None:
+    """Paired verdicts, significance and power notes for the --compare table: the two sessions are matched slot by
+    slot (run x question for the chats, run for the prompt sizes) and tested with Wilcoxon signed-rank on the log
+    ratios (tools/paired_stats.py: scipy for the test, statsmodels for Holm across metrics).  The significance entry
+    is the test result alone and the floors (--floor-decode / --floor-prefill) only annotate the verdict - a floor
+    can never hide a test result.  The agent rows cannot be paired - the two sessions are different conversations -
+    so they stay descriptive.  None when the packages are missing.  The power notes answer "were there enough
+    runs?": the pair spread, the smallest effect these many pairs could detect at 80% power, and the run counts a
+    floor effect and any significance at all would need."""
+    try:
+        import paired_stats as ps
+    except ImportError:
+        ps = None
+    if ps is None or not ps.available():
+        return None
+
+    def rows_of(res, *path) -> list:
+        v = res.get("results") or {}
+        for part in path:
+            v = (v.get(part) if isinstance(part, str) else v) or {}
+        return v if isinstance(v, list) else []
+
+    def paired(rows_a, rows_b, slot, field, faster_up) -> list:
+        ka = {slot(r): r for r in rows_a if isinstance(r, dict)}
+        kb = {slot(r): r for r in rows_b if isinstance(r, dict)}
+        out = []
+        for k, ra in ka.items():
+            rb = kb.get(k)
+            if rb is None:
+                continue
+            x, y = ra.get(field), rb.get(field)
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)) and x > 0 and y > 0:
+                out.append(math.log(y / x) if faster_up else math.log(x / y))
+        return out
+
+    slot_cr = lambda r: (r.get("run"), r.get("prompt"))
+    slot_r = lambda r: r.get("run")
+    chats = rows_of(old, "chat", "requests"), rows_of(new, "chat", "requests")
+    dims = [("chat decode tok/s", floor_decode, paired(chats[0], chats[1], slot_cr, "decode_tps", True)),
+            ("chat first token (s)", floor_decode, paired(chats[0], chats[1], slot_cr, "ttft_s", False))]
+    labels = sorted(set(((old.get("results") or {}).get("prompts") or {})) | set(((new.get("results") or {}).get("prompts") or {})))
+    for k in labels:
+        pa, pb = rows_of(old, "prompts", k, "requests"), rows_of(new, "prompts", k, "requests")
+        dims.append((f"{k} prompt tok/s", floor_prefill, paired(pa, pb, slot_r, "prompt_tps", True)))
+        dims.append((f"{k} first token (s)", floor_prefill, paired(pa, pb, slot_r, "ttft_s", False)))
+    stats = [ps.signed_rank(d) for _, _, d in dims]
+    adj = ps.holm([s["p"] for s in stats])
+    out: dict = {}
+    sigs: dict = {}
+    for (name, floor, _d), s, pa in zip(dims, stats, adj):
+        ci = "" if s["ci_lo"] is None else f" {ps.factor(s['ci_lo'])}-{ps.factor(s['ci_hi'])}"
+        out[name] = f"{ps.verdict(s, pa, floor)}: {ps.factor(s['hl'])}{ci} n={s['n']}"
+        sigs[name] = ps.significance(s, pa)
+    for name in ("agent cache hit %", "agent re-read tokens/session", "agent turn first token (s)", "agent decode tok/s"):
+        out[name] = sigs[name] = "descriptive only (different conversations)"
+    per = 0.05 / max(1, len(dims))
+    power = []
+    for name, floor, d in dims:
+        pn = ps.power_note(d, per, floor)
+        if pn:
+            power.append(f"  {name:24s} pairs={pn['n']:2d}  pair spread sd {100 * pn['sd']:5.2f}%  "
+                         f"80% power down to {100 * pn['mde']:4.1f}%  the {100 * floor:.0f}% floor needs n>={pn['n_need']:2d}  "
+                         f"any significance needs n>={pn['n_floor']}")
+    return out, sigs, power
+
+
+def compare_table(old: dict, new: dict, floor_decode: float = 0.05, floor_prefill: float = 0.02) -> str:
     a, b = summary_metrics(old["results"]), summary_metrics(new["results"])
-    rows = [f"{'':32s} {'old':>12s} {'new':>12s} {'change':>9s}"]
+    pv = compare_verdicts(old, new, floor_decode, floor_prefill)
+    verd, sigs, power = pv if pv is not None else (None, {}, [])
+    rows = ["the test column is the ground result - whether anything changed at all; the size column only says whether a "
+            "real change is big enough to act on (--floor-decode / --floor-prefill).",
+            f"{'':32s} {'old':>12s} {'new':>12s} {'change':>9s}"
+            + (f" {'the test says (Wilcoxon, Holm)':30s} {'size vs the floor':44s}" if verd is not None else "")]
     for k in dict.fromkeys([*a, *b]):
         x, y = (a.get(k) or {}).get("median"), (b.get(k) or {}).get("median")
         if x is None and y is None:
             continue
         ch = f"{(y - x) / x * 100:+.1f}%" if x and y is not None else ""
-        rows.append(f"{k:32s} {('-' if x is None else format(x, '.2f')):>12s} {('-' if y is None else format(y, '.2f')):>12s} {ch:>9s}")
+        line = f"{k:32s} {('-' if x is None else format(x, '.2f')):>12s} {('-' if y is None else format(y, '.2f')):>12s} {ch:>9s}"
+        if verd is not None:
+            line += f" {sigs.get(k) or '-':30s} {verd.get(k) or '-':44s}"
+        rows.append(line)
     ho, hn = old["machine"], new["machine"]
     notes = [f"  {n}: {ho.get(f)} -> {hn.get(f)}" for n, f in (("GPU", "gpu"), ("engine", "engine_version"), ("model", "model"), ("quant", "quant"),
                                                               ("context", "context")) if ho.get(f) != hn.get(f)]
-    return "\n".join(rows + (["", "differences:"] + notes if notes else []))
+    tail = ["", "differences:"] + notes if notes else []
+    if verd is None:
+        tail += ["", "significance and verdicts (Wilcoxon signed-rank, Holm-adjusted) need scipy and statsmodels: "
+                 "pip install -r requirements-bench.txt"]
+    else:
+        tail += ["", "was this many runs enough?  (spread comes from these pairs; drift between sessions can add more)",
+                 "  the runs these pairs could support (the verdict used --floor-decode / --floor-prefill):"] + power
+    return "\n".join(rows + tail)
 
 
 def load_results(path: Path) -> dict:
@@ -943,6 +1039,8 @@ def main(argv=None) -> int:
     ap.add_argument("--out", help="where to write the results folder (default: bench/results)")
     ap.add_argument("--compare", metavar="DIR", help="a results folder (or its results.json) to put beside this run")
     ap.add_argument("--compare-only", metavar="NEW", help="print --compare of two existing results folders and stop")
+    ap.add_argument("--floor-decode", type=float, default=0.05, help="the change the verdict column calls real: 0.05 = 5%% (chats)")
+    ap.add_argument("--floor-prefill", type=float, default=0.02, help="the change the verdict column calls real: 0.02 = 2%% (prompt tests)")
     ap.add_argument("--ready-timeout", type=float, default=1800, help="seconds to wait for the model to load")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
@@ -951,7 +1049,7 @@ def main(argv=None) -> int:
     if a.compare_only:
         if not a.compare:
             ap.error("--compare-only NEW needs --compare OLD")
-        print(compare_table(load_results(Path(a.compare)), load_results(Path(a.compare_only))))
+        print(compare_table(load_results(Path(a.compare)), load_results(Path(a.compare_only)), a.floor_decode, a.floor_prefill))
         return 0
 
     cfg_path, cfg, proc, log_path = None, None, None, None
@@ -1003,6 +1101,11 @@ def main(argv=None) -> int:
         slots = pre.get("parallel_slots") or 1
         if a.clients and a.clients > slots:
             say(f"Note: the server runs {slots} request(s) at a time (--batch), so {a.clients} clients will partly wait their turn.")
+        need = sig_floor_runs(6 + (2 if a.long else 0))
+        if max(1, a.runs) < need:
+            say(f"Note: with --runs {a.runs} the --compare verdicts can never call a change a finding: the 4K/16K tests "
+                f"give {a.runs} pairs and their p cannot drop below {2.0 ** (1 - max(1, a.runs)):.2f}. --runs {need} or "
+                f"more can decide; each run repeats every test, so it takes about {need / max(1, a.runs):.1f} times as long.")
         say("Running the suite (about 3-10 minutes) ...")
         out = suite.run()
         machine = collect_machine(base, key, cfg, a.gpu)      # again: VRAM and the cache after the work
@@ -1022,7 +1125,7 @@ def main(argv=None) -> int:
             say(f"  ({len(out['failures'])} failed request(s), {len(out['skipped'])} skipped test(s): see the report)")
         if a.compare:
             say("\nCompared with " + a.compare + ":")
-            say(red(compare_table(load_results(Path(a.compare)), redact_obj(res, lambda s: s))))
+            say(red(compare_table(load_results(Path(a.compare)), redact_obj(res, lambda s: s), a.floor_decode, a.floor_prefill)))
         try:
             shown = d.relative_to(ROOT)
         except ValueError:

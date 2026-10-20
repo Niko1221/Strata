@@ -230,6 +230,7 @@ class ReportTests(unittest.TestCase):
                          "## Method", "## Results", "## Correctness and limitations", "### Agent session", "### Concurrency: 2 clients",
                          "| Configuration | Actual prompt tokens | Reused tokens |"):
                 self.assertIn(part, readme)
+            self.assertIn("no metric can be significant below n>=8 pairs", readme)      # --runs 2: below the floor
             raw = json.loads((dirs[0] / "results.json").read_text(encoding="utf-8"))
             self.assertEqual(raw["schema"], B.SCHEMA)
             self.assertEqual(raw["machine"]["engine_version"], "9.9.9")
@@ -256,6 +257,34 @@ class ReportTests(unittest.TestCase):
             self.assertIn("chat decode tok/s", table)
             self.assertIn("+100.0%", table)
             self.assertIn("engine: 1.0 -> 9.9.9", table)
+
+    def test_significance_and_floor_are_separate_columns(self):
+        """The test result stands on its own; the floor only annotates and never hides it."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        with tempfile.TemporaryDirectory() as d:
+            self.run_main(srv, d)
+            old = next(Path(d).iterdir())
+            self.run_main(srv, d)
+            new = max(Path(d).iterdir(), key=lambda p: p.name)
+            table = B.compare_table(B.load_results(old), B.load_results(new), floor_decode=0.5, floor_prefill=0.5)
+        self.assertIn("the test says (Wilcoxon, Holm)", table)
+        self.assertIn("size vs the floor", table)
+        self.assertTrue("no (p=" in table or "too few pairs to test" in table)          # 2 runs: never significant
+
+    def test_few_runs_warn_before_the_suite_starts(self):
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()) as cap:
+            self.assertEqual(B.main(["--url", srv.base, "--out", d, "--runs", "2"]), 0)
+        note = cap.getvalue()
+        self.assertIn("can never call a change a finding", note)
+        self.assertIn("--runs 8 or more", note)
+
+    def test_sig_floor_runs_values(self):
+        self.assertEqual(B.sig_floor_runs(6), 8)          # 2**-7 <= 0.05/6 < 2**-6
+        self.assertEqual(B.sig_floor_runs(8), 9)
+        self.assertEqual(B.sig_floor_runs(1), 6)
 
     def test_only_the_gpus_the_engine_uses_are_listed(self):
         """#1985: a PC with two cards, the engine on one: the report names that one, with its VRAM."""
