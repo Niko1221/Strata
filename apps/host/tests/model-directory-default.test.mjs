@@ -20,9 +20,71 @@ test('Linux respects localized XDG Documents and rejects shell expressions',()=>
 });
 test('new hosts create the default; custom folders and legacy weights remain in place',t=>{
  const root=realpathSync(mkdtempSync(join(tmpdir(),'strata-documents-')));t.after(()=>rmSync(root,{recursive:true,force:true}));
- function boot(name,state,weights=false){const home=join(root,name),documents=join(root,name+'-documents');mkdirSync(join(home,'data'),{recursive:true});mkdirSync(join(home,'models'),{recursive:true});if(state)writeFileSync(join(home,'data','state.json'),JSON.stringify(state));if(weights){mkdirSync(join(home,'models','native','qwen'),{recursive:true});writeFileSync(join(home,'models','native','qwen','model.gguf'),'GGUFfixture');}const env={...process.env,STRATA_HOME:home,STRATA_DOCUMENTS_DIR:documents,STRATA_TEST_NATIVE:'1'};delete env.STRATA_MODELS_DIR;const result=spawnSync(process.execPath,['--input-type=module','-e',"const store=await import('./server/store.mjs');if(process.env.STRATA_TEST_NATIVE==='1'&&store.MODELS_DIR.endsWith('/Strata/Models')){const {statSync}=await import('node:fs');const {join}=await import('node:path');const native=store.nativeDataDirectory(store.MODELS_DIR);const a=statSync(join(native,'models')),b=statSync(store.MODELS_DIR);if(a.ino!==b.ino||a.dev!==b.dev)throw new Error('Native weights miss requested model folder');}console.log(store.MODELS_DIR);"],{cwd:fileURLToPath(new URL('..',import.meta.url)),env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);return {path:result.stdout.trim(),home,documents};}
+ function boot(name,state,weights=false){const home=join(root,name),documents=join(root,name+'-documents');mkdirSync(join(home,'data'),{recursive:true});mkdirSync(join(home,'models'),{recursive:true});if(state)writeFileSync(join(home,'data','state.json'),JSON.stringify(state));if(weights){mkdirSync(join(home,'models','native','qwen'),{recursive:true});writeFileSync(join(home,'models','native','qwen','model.gguf'),'GGUFfixture');}const env={...process.env,STRATA_HOME:home,STRATA_DOCUMENTS_DIR:documents,STRATA_TEST_NATIVE:'1',STRATA_TEST_DEFAULT:join(documents,'Strata','Models')};delete env.STRATA_MODELS_DIR;const result=spawnSync(process.execPath,['--input-type=module','-e',"const store=await import('./server/store.mjs');if(process.env.STRATA_TEST_NATIVE==='1'&&store.MODELS_DIR===process.env.STRATA_TEST_DEFAULT){const {statSync}=await import('node:fs');const {join}=await import('node:path');const native=store.nativeDataDirectory(store.MODELS_DIR);const a=statSync(join(native,'models')),b=statSync(store.MODELS_DIR);if(a.ino!==b.ino||a.dev!==b.dev)throw new Error('Native weights miss requested model folder');}console.log(store.MODELS_DIR);"],{cwd:fileURLToPath(new URL('..',import.meta.url)),env,encoding:'utf8',windowsHide:true});assert.equal(result.status,0,result.stderr);return {path:result.stdout.trim(),home,documents};}
  const fresh=boot('fresh');assert.equal(fresh.path,join(fresh.documents,'Strata','Models'));
- const target=join(root,'redirected-target');mkdirSync(target);symlinkSync(target,join(root,'redirected-documents'));assert.equal(boot('redirected').path,join(target,'Strata','Models'));
+ const target=join(root,'redirected-target');mkdirSync(target);symlinkSync(target,join(root,'redirected-documents'),process.platform==='win32'?'junction':'dir');assert.equal(boot('redirected').path,join(target,'Strata','Models'));
  const custom=join(root,'custom');mkdirSync(custom);assert.equal(boot('custom-host',{modelsDir:custom}).path,custom);
  const legacy=boot('legacy',{},true);assert.equal(legacy.path,join(legacy.home,'models'));
+});
+
+
+test('legacy model libraries resolve to a guarded native data root without moving weights',t=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'strata-legacy-models-')));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ for(const choice of ['detected','saved','environment']){
+  const home=join(root,choice),models=join(home,'models');mkdirSync(join(home,'data'),{recursive:true});mkdirSync(models);
+  writeFileSync(join(models,'model.gguf'),'GGUFfixture');
+  if(choice==='saved')writeFileSync(join(home,'data','state.json'),JSON.stringify({modelsDir:models}));
+  const env={...process.env,STRATA_HOME:home,STRATA_DOCUMENTS_DIR:join(root,'documents')};delete env.STRATA_MODELS_DIR;
+  if(choice==='environment')env.STRATA_MODELS_DIR=models;
+  const result=spawnSync(process.execPath,['--input-type=module','-e',`
+   import assert from 'node:assert/strict';import {join,basename} from 'node:path';
+   import {readFileSync,realpathSync,existsSync,readdirSync} from 'node:fs';
+   const store=await import('./server/store.mjs');const models=realpathSync(join(store.HOME,'models'));
+   assert.equal(store.MODELS_DIR,models);
+   const data=store.nativeDataDirectory(models);
+   assert.match(basename(data),/^strata/i,'a new native data root must satisfy the installer guard');
+   assert.equal(realpathSync(join(data,'models')),models,'native setup must write to the existing library');
+   assert.equal(readFileSync(join(models,'model.gguf'),'utf8'),'GGUFfixture');
+   assert.equal(store.nativeDataDirectory(models),data,'resolution is idempotent');
+   assert.deepEqual(readdirSync(models),['model.gguf'],'weights stay in the original library');
+  `],{cwd:fileURLToPath(new URL('..',import.meta.url)),env,encoding:'utf8',windowsHide:true});
+  assert.equal(result.status,0,result.stderr);
+ }
+});
+
+
+test('native data roots leave explicit custom libraries and new installer folders unchanged',t=>{
+ const root=realpathSync(mkdtempSync(join(tmpdir(),'strata-custom-models-')));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const custom=join(root,'chosen-library');mkdirSync(custom);writeFileSync(join(custom,'keep.gguf'),'GGUFfixture');
+ for(const choice of ['saved','environment']){
+  const home=join(root,choice);mkdirSync(join(home,'data'),{recursive:true});
+  if(choice==='saved')writeFileSync(join(home,'data','state.json'),JSON.stringify({modelsDir:custom}));
+  const env={...process.env,STRATA_HOME:home,STRATA_DOCUMENTS_DIR:join(root,'documents'),STRATA_TEST_CUSTOM:custom};delete env.STRATA_MODELS_DIR;
+  if(choice==='environment')env.STRATA_MODELS_DIR=custom;
+  const result=spawnSync(process.execPath,['--input-type=module','-e',`
+   import assert from 'node:assert/strict';import {join} from 'node:path';import {existsSync,readFileSync} from 'node:fs';
+   const store=await import('./server/store.mjs'),custom=process.env.STRATA_TEST_CUSTOM;
+   assert.equal(store.MODELS_DIR,custom);assert.equal(store.nativeDataDirectory(custom),custom);
+   const requested=join(store.HOME,'Strata-new');assert.equal(store.nativeDataDirectory(requested),requested);
+   assert.equal(existsSync(requested),false);assert.equal(existsSync(join(store.HOME,'Strata-data')),false);
+   assert.equal(readFileSync(join(custom,'keep.gguf'),'utf8'),'GGUFfixture');
+  `],{cwd:fileURLToPath(new URL('..',import.meta.url)),env,encoding:'utf8',windowsHide:true});
+  assert.equal(result.status,0,result.stderr);
+ }
+});
+
+test('legacy native aliases never overwrite a conflicting library',t=>{
+ const home=realpathSync(mkdtempSync(join(tmpdir(),'strata-conflicting-models-')));t.after(()=>rmSync(home,{recursive:true,force:true}));
+ const original=join(home,'models'),other=join(home,'Strata-data','models');mkdirSync(original);mkdirSync(other,{recursive:true});
+ writeFileSync(join(original,'original.gguf'),'GGUForiginal');writeFileSync(join(other,'other.gguf'),'GGUFother');
+ const env={...process.env,STRATA_HOME:home,STRATA_DOCUMENTS_DIR:join(home,'documents')};delete env.STRATA_MODELS_DIR;
+ const result=spawnSync(process.execPath,['--input-type=module','-e',`
+  import assert from 'node:assert/strict';import {join} from 'node:path';import {readFileSync,realpathSync} from 'node:fs';
+  const store=await import('./server/store.mjs');
+  assert.throws(()=>store.nativeDataDirectory(store.MODELS_DIR),/conflicts with another library/);
+  assert.equal(realpathSync(store.MODELS_DIR),realpathSync(join(store.HOME,'models')));
+  assert.equal(readFileSync(join(store.MODELS_DIR,'original.gguf'),'utf8'),'GGUForiginal');
+  assert.equal(readFileSync(join(store.HOME,'Strata-data','models','other.gguf'),'utf8'),'GGUFother');
+ `],{cwd:fileURLToPath(new URL('..',import.meta.url)),env,encoding:'utf8',windowsHide:true});
+ assert.equal(result.status,0,result.stderr);
 });

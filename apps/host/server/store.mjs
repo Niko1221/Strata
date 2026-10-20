@@ -72,15 +72,22 @@ export let MODELS_DIR = initialModelsDirectory();
 
 /** Native setup writes weights to data_dir/models. Keep its data root one level up. */
 export function nativeDataDirectory(input) {
- if(!input||process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY))return input;
- const root=realpathSync(DEFAULT_MODELS_DIRECTORY);
- if(resolve(input)!==resolve(DEFAULT_MODELS_DIRECTORY)&&realpathSync(input)!==root)return input;
- const data=dirname(root),nativeModels=join(data,'models');
+ if(!input||!existsSync(input))return input;
+ const root=realpathSync(input),legacy=realpathSync(join(HOME,'models'));
+ let data;
+ // Retained legacy libraries are model folders too, not native data roots.
+ // A named data root satisfies the installer's guard; its alias leaves weights in place.
+ if(root===legacy){data=join(HOME,'Strata-data');mkdirSync(data,{recursive:true});}
+ else {
+  if(process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY)||root!==realpathSync(DEFAULT_MODELS_DIRECTORY))return input;
+  data=dirname(root);
+ }
+ const nativeModels=join(data,'models');
  // On Windows/macOS case-insensitive volumes, Models already resolves as models.
- // On Linux, a relative alias keeps the native layout inside the requested folder.
- if(!existsSync(nativeModels))symlinkSync(process.platform==='win32'?root:'Models',nativeModels,process.platform==='win32'?'junction':'dir');
+ // Otherwise a directory alias preserves the native data_dir/models layout.
+ if(!existsSync(nativeModels))symlinkSync(process.platform==='win32'?root:relative(data,root),nativeModels,process.platform==='win32'?'junction':'dir');
  const a=statSync(nativeModels),b=statSync(root);
- if(realpathSync(nativeModels)!==root&&!(a.ino&&a.ino===b.ino&&a.dev===b.dev))throw new Error('The default model folder conflicts with another library. Choose a different folder.');
+ if(realpathSync(nativeModels)!==root&&!(a.ino&&a.ino===b.ino&&a.dev===b.dev))throw new Error('The model folder conflicts with another library. Choose a different folder.');
  return data;
 }
 
