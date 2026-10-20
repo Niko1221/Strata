@@ -571,7 +571,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result["profile_running_check"]["after"]["matched"])
         output_json = io.StringIO()
         with redirect_stdout(output_json):
-            code = main(["bench", "run", "--profile", "local", "--require-managed-match",
+            code = main(["bench", "run", "--suite", "serving-smoke", "--profile", "local", "--require-managed-match",
                          "--concurrency", "1", "--out", str(self.root / "cli-managed"),
                          "--output", "json"])
         self.assertEqual(code, 0)

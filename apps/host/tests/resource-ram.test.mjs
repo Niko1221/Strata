@@ -74,3 +74,19 @@ test('a start that died gets ONE safer second try: pin less when the locked memo
   assert.equal(saferStart(config, pc64, iq3s, 'Some model files are missing'), null, 'not a memory failure: no second try');
   assert.equal(config.args.includes('--resident-budget-gib'), false, 'the input config is not changed');
 });
+
+test('an engine that stopped because the GPU expert cache got no room is started again with less VRAM kept free, then a shorter context (#3192)', () => {
+  const tenGb = { cpu: { cores: 16 }, ram_gb: 64, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 3080', vram_gb: 10 }] };
+  const cfg = { gpu: 0, args: ['--native', 'x.gguf', '--max-context', '131072', '--vision', '--vram-reserve-mib', '2048'] };
+  const log = "server_exited (exit code 1): strata generate: no VRAM is left for the expert cache: it needs at least 288 slots (639 MiB), about 727 MiB more than this card has free. To make room: a smaller --max-context (the session, mostly its KV cache, takes 1931 MiB at 131072 tokens), --kv q4_0 | strata serve: verify: needs the profile-filled VRAM expert tier";
+  const safer = saferStart(cfg, tenGb, iq3s, log);
+  assert.equal(flag(safer.config.args, '--vram-reserve-mib'), '1065', '2048 - (727 + 256 margin)');
+  assert.equal(flag(safer.config.args, '--max-context'), '131072', 'the reserve alone was enough: the context stays');
+  assert.match(safer.words, /no room left/);
+  const tight = saferStart({ ...cfg, args: ['--max-context', '131072', '--vram-reserve-mib', '1100'] }, tenGb, iq3s, log);
+  assert.equal(flag(tight.config.args, '--vram-reserve-mib'), '1024', 'never below 1024 MiB (#2065)');
+  assert.ok(Number(flag(tight.config.args, '--max-context')) < 131072, 'the rest comes from the context');
+  assert.equal(saferStart({ ...cfg, args: ['--max-context', '16384', '--vram-reserve-mib', '1024'] }, tenGb, iq3s, log), null, 'nothing left to give');
+  assert.equal(flag(saferStart(cfg, tenGb, undefined, 'server_exited: strata serve: verify: needs the profile-filled VRAM expert tier').config.args, '--vram-reserve-mib'), '1092', 'without the numbers: a fixed step, no model size needed');
+  assert.equal(cfg.args[cfg.args.indexOf('--vram-reserve-mib') + 1], '2048', 'the input config is not changed');
+});

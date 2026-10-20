@@ -34,6 +34,8 @@ const cases = [
   ['component-missing', 'assistant-missing', /coding assistant/],
   ['Strata Control did not answer within 60 s (models list).', 'control', /couldn’t read its own components/],
   ['Prepare this model’s vision files before enabling picture reading.', 'picture-reading', /Picture reading isn’t available/],
+  ['server_exited (exit code 1): strata generate: GPU 0 (AMD Radeon 760M Graphics, gfx1103) is not an architecture this Strata engine was compiled for (gfx1200,gfx1201); compile it for this card', 'gpu-no-code', /no code for the graphics card/],
+  ['server_exited (exit code 1): [strata] none of this computer\'s graphics cards has code in this Strata engine (it is built for gfx1200,gfx1201). Cards found: AMD Radeon RX 6800 XT (gfx1030).', 'gpu-no-code', /no code for the graphics card/],
   ['Traceback (most recent call last):\n  File "x.py", line 3', 'technical', /Something went wrong/],
 ];
 

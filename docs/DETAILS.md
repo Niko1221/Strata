@@ -270,8 +270,9 @@ engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) w
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
 **Linux file tier, 0.2.0 defaults (zero-copy page-cached experts, io prefetch, the decode gate):** when experts are read
-from a GGUF read in place (the native packs, also with `--mmap-experts`), Linux now runs three things by default (an
-`experts.bin` pack, such as the NVFP4 ones, keeps them off unless you set them: not measured there yet).
+from a GGUF read in place (the native packs, also with `--mmap-experts`), Linux now runs three things by default
+(0.2.1: an `experts.bin` pack gets io prefetch and the decode gate when the page cache has room for at least 55% of the experts, see below; zero-copy
+does not apply to it, its blob is one range the kernels already read from the mapping).
 (1) **Zero-copy** (`STRATA_COLD_OVERLAP=4`): an expert of a GGUF read in place whose three tensors' pages are all in the page
 cache (mincore) is computed straight from the mapping; before, every such expert was first assembled into a staging buffer
 (a copy of ~1.5 MB per Q2_0 expert, on the decode's critical path). Same bytes, same rows, same output (identity gates
@@ -292,6 +293,9 @@ the container RAM check counts a cgroup's clean page cache (active and inactive)
 host: before, the 18 GiB RAM tier in a 32 GiB cgroup re-checked "1.2 GiB available" once io prefetch's startup reads had left
 their cache in the group, and its file tier switched to unbuffered reads (which also left zero-copy off). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
 `STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged.
+
+**Linux, `experts.bin` packs (0.2.1):** io prefetch and the decode gate are on by default when the page cache has room for at least 55% of the experts
+(the tightest cgroup limit or MemAvailable over the pack's expert bytes, asked once at start; `STRATA_IO_PF_GATE_LO`). Below that the pack reads as before and the log says so; `STRATA_IO_PREFETCH=1` forces it, `0` turns it off. Measured on an RTX 3060 12 GB, IQ3_XXS pack (43 GB `experts.bin`), `--mmap-experts`, cgroup RAM limit, page cache dropped before each engine, 5 interleaved pairs: 32 GB decode 1.38x / 1.21x / 1.33x (story / code / doc8k, 5/5 pairs faster each), prompts 4K 1.04x, 20K 1.06x. At 16 GB io prefetch gave decode +3..8% but the cold 4K prompt 4-6% slower, so it stays off there (room 38%). Identity gates (fixed flags, no RAM limit and a 32 GB cgroup): 10/10 texts, exact_pp 4K / 20K residual dumps IDENTICAL.
 
 **Linux file-tier I/O path (`STRATA_IO_PREFETCH=1`; 0.1.40.2, on by default on Linux since 0.2.0 - see above):** the mapped file tier reads experts through
 page faults. With this on, the layer's uncached experts and the router-predicted ones of the next layer (`STRATA_LOOKAHEAD_K`,
@@ -634,6 +638,20 @@ with the recommended number at start (`strata cpu pool: warning: ...`). Setup wr
 CPU's, capped the same way, and gives the CPU vision encoder at most 16 threads (`--threads` in the `vision` entry of the
 config changes that).
 
+**Two sockets (community measurements, #3201; the default is the host's socket only).** Two dual-socket boxes gave opposite
+results for workers on both sockets, so measure on yours: `--pool-workers N` with N above one socket's cores, a fresh server
+for each value, the same prompt, decode tok/s from the log. On 2x Xeon Gold 6226 (2x12 cores, 4 of 6 memory channels per socket,
+RTX 3090, IQ4_XS at 262K, about 25% of the experts computed on the CPU) the default (11 workers) gave 52.6 tok/s and 22 workers
+gave 50.3, lower and noisier. On 2x Xeon E5-2670 v2 (AVX only, 2x CMP 50HX, IQ3_XXS at 393K, a 98% VRAM hit rate: the CPU computes
+about 2% of the experts) the default (9 workers) gave 65.5 tok/s and `--pool-workers 19` gave 75.1 (+15%, six runs, 74.9 to 75.1).
+So the cores of the second socket can pay off when the CPU's part of a window is short and its slowest expert sets the pace, and cost
+when the sockets wait for each other's counters. Prompt speed did not change in either. Check the IOMMU too: on a distro kernel
+with it translating every DMA (`cat /sys/kernel/iommu_groups/*/type | sort | uniq -c` shows `DMA-FQ`), pinned host-to-device copies ran at
+7.7 to 9.2 GB/s on PCIe 3.0 x16 and at 12.3 GB/s with `iommu=pt` on the kernel command line, which moved prompt speed by about 30% there.
+A NUMA-aware pool (one slice of workers per socket, each reading its own socket's copy of the CPU experts) gave +10 to +14% on
+the first box in a contributor's branch; it is not in this build. Do not wrap the server in `numactl --cpunodebind` when you test
+workers across sockets: it pins them to one node.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
@@ -676,6 +694,7 @@ The same questions, the same automatic install (it uses `sudo apt` for Python an
 for the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly. Options as on Windows (`./setup.sh --setup`, `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`).
 Terminal chat: `.venv/bin/python chat.py`.
+Building from git, trying a pull request, the monitor from a checkout: [INSTALL.md](INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code).
 
 - **Updating:** `git pull`, then `./setup.sh`: it compiles the engine again when its source changed (a minute or
   two for the changed files). If that compile fails, it says so and starts the engine you had.
@@ -1071,6 +1090,9 @@ print(r.choices[0].message.content)
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
   page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
+  `cors_origins` belongs to the engine's own server (`strata serve`, `./setup.sh`, port 8080 by default). The desktop
+  app answers browser pages on its own API address (the one under Serving, port 47831 or the next free one) and already allows pages of
+  any site there, so its "Allow browser origins" switch in the Expert parameters does nothing.
 - **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
   this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
   it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their
@@ -1631,11 +1653,10 @@ The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://
 (0.9 GB, a 27-layer ViT plus the projector into the language model). Pictures are **on by default** wherever a model can read
 them. The app, `strata launch` and setup use one rule for the reader: the **CPU reader under 24 GB** of graphics memory (nothing is
 taken from the card's memory, so the experts keep their room) and the **graphics card's reader from 24 GB**, on NVIDIA and AMD
-cards. You can switch pictures off (`--vision no`, or "No" in the app and in `strata launch`) or pick the reader per model
+cards; a Mac reads on its GPU (Metal) whatever its memory. You can switch pictures off (`--vision no`, or "No" in the app and in `strata launch`) or pick the reader per model
 (`--vision gpu` or `--vision cpu`). The setup downloads the encoder and puts a small helper (`strata-vision`, from llama.cpp's
 `mtmd` library) beside the engine; it adds it to your start script. Nothing else changes. Where a reader is missing, pictures
-stay off and the screen says so: the Mac app and the Mac Terminal have no picture reader yet, and neither has the Intel Arc
-engine. On AMD the card's reader is `strata-vision-hip`, a second program in the engine package; if it cannot start, the server
+stay off and the screen says so: the Intel Arc engine has none yet. On AMD the card's reader is `strata-vision-hip`, a second program in the engine package; if it cannot start, the server
 starts the CPU reader by itself and prints one line ([AMD_HIP.md](AMD_HIP.md)).
 
 | Encoder on | Time per picture | Cost |

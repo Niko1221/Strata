@@ -41,8 +41,7 @@ export const READ_ONLY_TOOLS = new Set([
   'read', 'glob', 'grep', 'read_image', 'working_directory', 'todo_write', 'skill', 'present', 'lsp',
   'get_goal', 'create_goal', 'update_goal', 'list_agents', 'list_subagent_models', 'job_list', 'job_output',
   'ask_user_question', 'exit_plan_mode',
-  // Reading the internet is part of what the app promises; changing nothing here.
-  'web_fetch', 'web_search',
+  // (web_search and web_fetch are not here: the first use in a chat asks, see webDecision.)
   // Delegation: the child it starts is governed by this same gate.
   'subagent', 'subagent_fork', 'send_message', 'interrupt_agent', 'workflow',
 ]);
@@ -103,14 +102,37 @@ const clip = (value, max) => {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 };
 
+/** The tools that reach the internet. In Manual the first one in a chat asks once; the answer holds for the rest of that chat. */
+export const WEB_TOOLS = new Set(['web_search', 'web_fetch']);
+/** What the model reads when the person says no. Plain words, and it tells the model what to do next. */
+export const WEB_REFUSAL = 'The person did not allow web access, so nothing was searched or opened. Go on without it and say so.';
+
+/**
+ * The question for a web call, in plain words: what is about to leave this computer and where it goes.
+ * @param {{name:string, arguments:any}} exec
+ * @param {{provider?: string}} [options] provider is the search service's name as the person knows it
+ */
+export function webDecision(exec, options = {}) {
+  const tool = String(exec.name ?? '');
+  const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
+  if (tool === 'web_search') {
+    const queries = Array.isArray(args.queries) ? args.queries : [args.query ?? args.q];
+    const words = clip(queries.filter(q => typeof q === 'string' && q.trim()).join('; '), 160);
+    return { kind: 'ask', web: true, reason: `The assistant wants to search the web for: ${words}. Search words go to ${options.provider || 'the search service'}.` };
+  }
+  return { kind: 'ask', web: true, reason: `The assistant wants to open the web page ${clip(args.url, 200)}. The page's site sees the request.` };
+}
+
 /**
  * The decision for one call in Manual mode, or null when it needs no question.
  * @param {{name:string, arguments:any}} exec
- * @returns {{kind:'ask', reason:string}|null}
+ * @param {{provider?: string}} [options]
+ * @returns {{kind:'ask', reason:string, web?:true}|null}
  */
-export function manualDecision(exec) {
+export function manualDecision(exec, options = {}) {
   const tool = String(exec.name ?? '');
   const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
+  if (WEB_TOOLS.has(tool)) return webDecision(exec, options);
   if (READ_ONLY_TOOLS.has(tool)) return null;
   if (SHELL_TOOLS.has(tool)) {
     if (isReadOnlyShell(args.command)) return null;
@@ -150,7 +172,40 @@ export function planDecision(exec) {
   return { kind: 'deny', reason: 'Plan mode only looks and changes nothing, so it cannot use this tool. Switch to Manual or Bypass to use it.' };
 }
 
-export function apply(ctx) {
+/**
+ * @param {object} ctx
+ * @param {{web?: {provider?: string, skipAsk?: boolean}}} [config] `web.provider`: the search service's name for the question;
+ *        `web.skipAsk`: the person's switch in Settings -> Tools, "search the web without asking" (off unless they turned it on)
+ */
+export function apply(ctx, config = {}) {
+  const web = config.web ?? {};
+  /** Chats (their first session) where the person said yes to the web. One yes holds for the rest of the chat. */
+  const webAllowed = new Set();
+  /** A question already on the screen for a chat, so two searches started together share one card. */
+  const webAsking = new Map();
+  const chatOf = (session, depth = 0) => {
+    const parentId = session.header?.parentSession;
+    if (session.header?.origin === 'subagent' && parentId && depth < 6) {
+      const parent = ctx.sessions.get(parentId);
+      if (parent) return chatOf(parent, depth + 1);
+    }
+    return session.id;
+  };
+  async function askWeb(exec, gate, agent) {
+    const chat = chatOf(agent.session);
+    let question = webAsking.get(chat);
+    if (!question) {
+      question = ctx.approval.request({ agent, toolName: exec.name, callId: exec.callId, reason: gate.reason, displayReason: { en: gate.reason }, signal: exec.signal });
+      webAsking.set(chat, question);
+      const forget = () => { if (webAsking.get(chat) === question) webAsking.delete(chat); };
+      question.then(forget, forget);
+    }
+    const outcome = await question;
+    if (outcome === 'allowed-once') { webAllowed.add(chat); return null; }
+    if (outcome === 'cancelled') return { kind: 'cancel' };
+    return { kind: 'deny', reason: WEB_REFUSAL };
+  }
+
   /** The preset a session is really working under: a child follows the chat that started it. */
   const effectivePreset = (session, depth = 0) => {
     const parentId = session.header?.parentSession;
@@ -173,8 +228,17 @@ export function apply(ctx) {
     }
     if (preset === PLAN_PRESET) return planDecision(exec) ?? next();
     if (preset !== MANUAL_PRESET) return next();
-    const gate = manualDecision(exec);
+    const gate = manualDecision(exec, { provider: web.provider });
     if (!gate) return next();
+    if (gate.web) {
+      // The person's switch, or a yes already given in this chat: no question.
+      if (web.skipAsk === true || webAllowed.has(chatOf(agent.session))) return next();
+      // A helper's own approval policy is `never`; it must be `ask` for the question to reach the person.
+      if (agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) !== 'ask') {
+        agent.session.append('approval/policy', { policy: 'ask' });
+      }
+      return (await askWeb(exec, gate, agent)) ?? next();
+    }
     // A child's approval policy is pinned to `never` by the Harness; asking is how its request reaches the person.
     if (agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) !== 'ask') {
       agent.session.append('approval/policy', { policy: 'ask' });

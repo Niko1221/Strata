@@ -16,7 +16,7 @@ import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, take
 import { applyNativeEvent, nativeState } from './native';
 import { pictureStatus } from './pictures';
 import { noModelNotice } from './no-model';
-import { taskHandoverMessage, taskHandoverTitle } from './task-handover';
+import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
@@ -1475,9 +1475,54 @@ const loopScheduler = new LoopScheduler({
   now: () => Date.now(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  track: (sessionId, loop) => patchSession(sessionId, s => ({ ...s, loop })),
 });
 
 export function loopIsRunning(sessionId: string | null): boolean { return loopScheduler.isRunning(sessionId); }
+
+/* ------------------------------------------------------------- task board */
+
+/** The chats with a turn going, and the chats with a loop going: what the board needs besides the sessions themselves. */
+export function liveChatIds(): string[] { return [...liveTurns.keys()]; }
+export function loopChatIds(): string[] { return loopScheduler.ids(); }
+
+/** Stop any chat's turn, not only the open one (the board's Stop). Same two-step as stopStreaming. */
+export function stopChat(id: string) {
+  const turn = liveTurns.get(id);
+  if (!turn) return;
+  const abort = () => { turn.abort.abort(); };
+  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
+    result => { if (!result.stopped) abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
+    abort,
+  );
+}
+
+/** Stop a chat's loop from the board. The chat gets the same line /loop stop writes. */
+export function stopLoop(id: string) {
+  if (loopScheduler.stop(id)) addNote(id, tr('The loop is stopped.'));
+}
+
+/** Dismiss a chat's (or its loop's) card: it leaves the board until something newer goes wrong. The chat itself is untouched. */
+export function dismissChat(id: string) {
+  const sessions = state.sessions.map(s => (s.id === id ? { ...s, ackedAt: new Date().toISOString() } : s));
+  persistSessions(sessions);
+  set({ sessions });
+}
+
+/** Answer a waiting tool card in any chat (the board's Approve and Deny). Only a live card has an approval behind it. */
+export function answerChatTool(sessionId: string, messageId: string, toolId: string, approved: boolean) {
+  const tool = state.sessions.find(s => s.id === sessionId)?.messages.find(m => m.id === messageId)?.tools?.find(t => t.id === toolId);
+  if (tool?.live && tool.state === 'proposed') answerAgentTool(sessionId, messageId, tool, approved);
+}
+
+/** "Continue in a new chat" on a chat or a loop that went wrong: a new chat that starts from what happened (src/lib/task-handover.ts). */
+export function continueChatInNewChat(sessionId: string) {
+  const old = state.sessions.find(s => s.id === sessionId);
+  if (!old) return;
+  const session = newSession();
+  go('chat', session.id);
+  void sendMessage(chatHandoverMessage(old), { title: chatHandoverTitle(old), markdown: true });
+}
 
 async function runLoopCommand(command: LoopCommand) {
   const sessionId = state.activeSession ?? newSession().id;
@@ -1526,6 +1571,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   }
   // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
   if (state.connection === 'live') {
+    // The first read of the engine's state has not come back yet: do not say "no model" about something not known yet, and do not send.
+    if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
     const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
     if (why) { pushToast('info', why.title, why.message); return; }
   }
@@ -1803,6 +1850,12 @@ export function bootOnce() {
   if ((globalThis as { __strataBooted?: boolean }).__strataBooted) return;
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
   for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) { markTurn(session.id, { abort: new AbortController(), agent: false }); void followTimeSkip(session.id, run.id); } }
+  // A loop lives in the window: one the last window left "running" has ended, and the board says so.
+  if (state.sessions.some(s => s.loop?.state === 'running')) {
+    const sessions = state.sessions.map(s => s.loop?.state === 'running' ? { ...s, loop: { ...s.loop, state: 'ended' as const, endedWhy: 'closed' as const, endedAt: Date.parse(s.updatedAt) || Date.now() } } : s);
+    persistSessions(sessions);
+    set({ sessions });
+  }
   void bootstrap();
   void reconcileAgentTools();
 }

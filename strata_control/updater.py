@@ -42,10 +42,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from strata_control import acquisition, components, engine_component as ec, feed as feedmod, preset_marks, signing, transfer
+from strata_control import acquisition, components, engine_component as ec, feed as feedmod, longpath, preset_marks, signing, transfer
 from strata_control.targets import host_platform
 
 STATE_DIR = ".updates"
+STAGE_DIR = ".s"                 # staging is short on purpose: <components>\.s\<4 hex>\engine\<folder> (see longpath.py)
 SKEW_FREE_BYTES = 1.15
 
 
@@ -348,6 +349,7 @@ def extract(archive: Path, destination: Path, fmt: str, installed_bytes: int, *,
         raise UpdateError(f"the downloaded archive cannot be read ({type(exc).__name__})", 5) from None
     if total > installed_bytes:
         raise UpdateError(f"the archive holds {total} bytes, the signed feed says the package is {installed_bytes}; not unpacked", 5)
+    destination = longpath.long_path(destination)        # extended-length form: a long user name must not stop the unpacking
     if destination.exists():
         shutil.rmtree(destination, ignore_errors=True)
     try:
@@ -358,6 +360,9 @@ def extract(archive: Path, destination: Path, fmt: str, installed_bytes: int, *,
     except components.ComponentError as exc:
         shutil.rmtree(destination, ignore_errors=True)
         raise UpdateError(f"the archive was refused: {exc}", 5) from None
+    except OSError as exc:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise UpdateError(f"the package could not be unpacked: {longpath.describe_oserror(exc)}", 6) from None
 
 
 def _free_space_check(root: Path, need: int) -> None:
@@ -490,12 +495,25 @@ def check(ctx: Context) -> dict:
         return report
 
 
+def new_stage(root: Path, prefix: str = "") -> Path:
+    r"""A fresh, short staging folder: ``<components>\.s\<4 hex>``. Old leftovers (a crashed update; the update lock is held, so
+    nothing else uses them) are swept first, along with the longer folder older versions used."""
+    base = root / STAGE_DIR
+    for old in [base, updates_dir(root) / "staging"]:
+        if old.exists():
+            shutil.rmtree(longpath.long_path(old), ignore_errors=True)
+    while True:
+        stage = base / (prefix + uuid.uuid4().hex[:4])
+        if not stage.exists():
+            return stage
+
+
 def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, archive: Path) -> tuple[Path, ec.EngineComponent]:
     """Unpack and check a downloaded engine package in a staging component folder. Returns (staging root, component)."""
-    stage_root = updates_dir(ctx.components) / "staging" / uuid.uuid4().hex[:12]
+    stage_root = new_stage(ctx.components)
     folder = stage_root / "engine" / folder_name(pkg)
     ctx.say("verify", f"Unpacking {pkg.label}", component="engine")
-    folder.parent.mkdir(parents=True, exist_ok=True)
+    longpath.long_path(folder.parent).mkdir(parents=True, exist_ok=True)
     try:
         extract(archive, folder, pkg.format, pkg.installed_bytes)
         manifest = folder / ec.MANIFEST
@@ -528,9 +546,10 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
         why = feedmod.engine_fit_reasons(pkg, ctx.hardware)
         if why:
             raise UpdateError("; ".join(why), 5)
+        _warn_if_deep(ctx, ctx.components / "engine" / folder_name(pkg), max((len(rel) for rel, _, _ in component.files), default=0) + 1)
         return stage_root, component
     except BaseException:
-        shutil.rmtree(stage_root, ignore_errors=True)
+        shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
         raise
 
 
@@ -622,6 +641,17 @@ def _keep_log(sandbox: Path, component: ec.EngineComponent, ctx: Context) -> Non
         pass
 
 
+def _warn_if_deep(ctx: Context, folder: Path, longest_inside: int) -> None:
+    """Tell the person, in plain words, when the engine will sit too deep for Windows' ordinary path limit and long paths are
+    off. The install continues: Strata's own file work uses extended paths; only the engine's own loading may not."""
+    if getattr(ctx, "_deep_warned", False):
+        return
+    words = longpath.warning_for(folder, longest_inside)
+    if words and not longpath.plain_long_paths_work(ctx.components):
+        ctx._deep_warned = True
+        ctx.say("warn", words, component="engine")
+
+
 def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Context) -> dict:
     """Start the staged engine through the real start path (owner runtime, `component:strata-engine`, a saved model), wait for
     the one-token generation probe, and stop it. Everything runs in an isolated runtime, profile and component folder, so a
@@ -632,7 +662,7 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
             raise TestStartFailed(component.version, "no installed model to test with")
         return binary_smoke(component)
     from strata_control import profiles, runtime
-    sandbox = Path(tempfile.mkdtemp(prefix="test-start-", dir=stage_root))
+    sandbox = Path(tempfile.mkdtemp(prefix="t-", dir=stage_root))
     try:
         cfg = json.loads(source.read_text(encoding="utf-8-sig"))
         cfg["exe"] = ec.REFERENCE_PREFIX + ec.COMPONENT_ID
@@ -675,7 +705,7 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
                 except Exception:                       # noqa: BLE001 - stopping a sandbox is best effort
                     pass
     finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+        shutil.rmtree(longpath.long_path(sandbox), ignore_errors=True)
 
 
 def _move_dir(source: Path, destination: Path) -> None:
@@ -698,7 +728,7 @@ def prune_engines(root: Path, keep: set[str]) -> list[str]:
     for entry in sorted(folder.iterdir()):
         if entry.is_dir() and not entry.name.startswith(".") and entry.name not in keep:
             try:
-                shutil.rmtree(entry)
+                shutil.rmtree(longpath.long_path(entry))
                 removed.append(entry.name)
             except OSError:
                 pass                                     # in use: it goes with the next update
@@ -718,6 +748,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
             result["reasons"] = decision["reasons"]
         return result
     root = ctx.components
+    _warn_if_deep(ctx, ec.engine_dir(root) / folder_name(pkg), longpath.LONGEST_IN_PACKAGE.get(pkg.backend, longpath.LONGEST_IN_PACKAGE_DEFAULT) + 1)
     _free_space_check(root, pkg.size + pkg.installed_bytes)
     archive = _download(ctx, "engine", pkg.url, pkg.size, pkg.sha256, f"engine {pkg.label}", feed)
     # busy check after the long download: a model may have been started meanwhile; the verified archive is kept for the retry
@@ -754,7 +785,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         staged_folder = stage_root / "engine" / name
         if final.exists():
             if (final / ec.MANIFEST).is_file() and _manifest_sha(final) == pkg.manifest_sha256:
-                shutil.rmtree(staged_folder, ignore_errors=True)       # already installed byte for byte: only the state changes
+                shutil.rmtree(longpath.long_path(staged_folder), ignore_errors=True)       # already installed byte for byte: only the state changes
             else:
                 final = live / f"{name}-{pkg.manifest_sha256[:8]}"
                 _move_dir(staged_folder, final)
@@ -773,7 +804,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
                 section["pinned"] = old_pin
                 state.save()
             # the rename did not give a working engine: put it back where it cannot be picked
-            shutil.rmtree(live / ".rejected", ignore_errors=True)
+            shutil.rmtree(longpath.long_path(live / ".rejected"), ignore_errors=True)
             (live / ".rejected").mkdir(parents=True, exist_ok=True)
             if final.exists():
                 _move_dir(final, live / ".rejected" / final.name)
@@ -798,7 +829,7 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         ctx.say("done", f"Engine {pkg.version} is installed and will be used on the next start", component="engine")
         return result
     finally:
-        shutil.rmtree(stage_root, ignore_errors=True)
+        shutil.rmtree(longpath.long_path(stage_root), ignore_errors=True)
 
 
 def rollback_engine(ctx: Context) -> dict:
@@ -886,7 +917,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
     root = ctx.components
     _free_space_check(root, pkg.size + pkg.installed_bytes)
     archive = _download(ctx, "control", pkg.url, pkg.size, pkg.sha256, f"Control {pkg.version}", feed)
-    stage = updates_dir(root) / "staging" / ("control-" + uuid.uuid4().hex[:8])
+    stage = new_stage(root, "c")
     try:
         ctx.say("verify", f"Unpacking Control {pkg.version}", component="control")
         extract(archive, stage, pkg.format, pkg.installed_bytes, allow_links=pkg.format != "zip")
@@ -907,7 +938,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         final = control_dir(root) / pkg.version
         control_dir(root).mkdir(parents=True, exist_ok=True)
         if final.exists():
-            shutil.rmtree(final, ignore_errors=True)
+            shutil.rmtree(longpath.long_path(final), ignore_errors=True)
         _move_dir(stage, final)
         section = state.section("control")
         previous = active_control(root)
@@ -919,7 +950,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         keep = {pkg.version} | ({previous["folder"]} if previous else set())
         for entry_dir in control_dir(root).iterdir():
             if entry_dir.is_dir() and entry_dir.name not in keep:
-                shutil.rmtree(entry_dir, ignore_errors=True)
+                shutil.rmtree(longpath.long_path(entry_dir), ignore_errors=True)
         state.history({"at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat(), "action": "update-control",
                        "from": decision["installed"], "to": pkg.version, "ok": True})
         archive.unlink(missing_ok=True)
@@ -927,7 +958,7 @@ def update_control(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
                        "note": "Control switches on the next start of the app or the terminal"})
         return result
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
+        shutil.rmtree(longpath.long_path(stage), ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------------------------- app

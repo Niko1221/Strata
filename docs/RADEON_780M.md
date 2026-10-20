@@ -18,7 +18,7 @@ GSQ-RCO Q2_0 with the MTP draft layer, 32K context, Int8 KV.
   `hip_prefill_fused_iq`, `qsa_*`, `hip_gemm_f16_io_parity`, `hip_prefill_mmq_parity`).
 - **A hipBLASLt table** for gfx1103 + hipBLASLt `100401`: `tools/hip/gfx1103-hipblaslt-100401.txt` (section 3).
 - **The gfx1103 exact speed switches** (section 4), written into the config's `env` by setup for the opt-in install
-  (the engine keeps gfx1103 out of its arch defaults, as it does for gfx1150). Whether the chip leaves the
+  (the engine keeps gfx1103 out of its exact-switch arch defaults (the prompt set of section 5 is separate), as it does for gfx1150). Whether the chip leaves the
   `STRATA_EXPERIMENTAL_GFX1103=1` opt-in is the maintainers' call; the numbers here are what they need to make it.
 
 ## 2. Toolchain and build
@@ -66,7 +66,7 @@ skips because the table picks no 1176 / 1177 for the HC down GEMM (the gfx1150 t
 ## 4. The exact speed switches
 
 With `STRATA_EXPERIMENTAL_GFX1103=1` setup writes the 17 exact switches below into the config's `env`, the same way
-it writes the hipBLASLt table; turning the opt-in off takes them out again. The engine keeps gfx1103 out of its
+it writes the hipBLASLt table; turning the opt-in off takes them out again. The engine keeps gfx1103 out of its exact-switch
 arch defaults (`arch_default_env("gfx1103")` stays empty, checked by `arch_defaults_test`). Measured on the 780M:
 +13% to +15% prompt with the table (183-186 -> 211-212 tok/s at 4K) and +3.2% decode (16.63 -> 17.17 tok/s, 640
 greedy tokens, 3 of 3 pairs), with the greedy token ids unchanged. They are the gfx1151 table less
@@ -79,9 +79,20 @@ greedy tokens, 3 of 3 pairs), with the greedy token ids unchanged. They are the 
 | `STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL` | decode layouts and kernels (packed Q8_0 / Q6_K weights, 4-row BF16 GEMV, one-cell-per-thread attention scores) |
 | `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE`, `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH`, `STRATA_SH_STREAM` | grouped decode experts, butterfly warp sums, fewer launches, the GDN step over four blocks per head, producer-written activation images, batched PLE projections, the shared expert on its own stream |
 
-## 5. Opt-in switches (they change bits)
+## 5. The matrix-core prompt set (on by default on the 780M; it changes bits)
 
-Opt-in, and the measured wins are below. The prompt levers need the table to pay: with the table, the WMMA set
+On by default on the Radeon 780M (`gfx1103`, integrated, Linux; AMD_HIP.md, "Integrated GPUs"): the engine sets `STRATA_HIP_WMMA`, `STRATA_PF_GEMM`,
+`STRATA_PA_FAST`, `STRATA_SELECT_WMMA` and `STRATA_HC_UPMIX` itself. `STRATA_IGPU_PROMPT_SET=0` turns the whole set off, `NAME=0` one switch. The 880M / 890M
+(`gfx1150`) and Windows keep it off (no hardware / not tested); `STRATA_IGPU_PROMPT_SET=1` turns it on there. `STRATA_PF_FUSED` stays opt-in.
+
+Measured (021-minipc, P2006, Q2_0, fresh engine per run, 10 interleaved rounds, 6 complete pairs): prompt 1K 98.5 -> 157.3 tok/s (x1.60, 6/6 pairs faster),
+4K 115.1 -> 233.3 (x2.03, 6/6), decode 22.02 -> 21.99 (code) and 15.09 -> 15.05 (story) (x0.999), greedy token ids identical in 6 of 6 pairs.
+
+**GPU resets.** The 780M's current Ubuntu firmware (gc 11.0.1 MES) can still reset the GPU now and then, with or without this set: when the kernel moves memory that the
+GPU has registered, the process's queues are evicted, and a kernel that sits in a barrier at that moment never answers. The engine recovers
+("device wedged, but recovered through reset") but the running request fails. In the same runs the default engine crashed 4 of 10 times and the set 0 of 10, so it did
+not add resets. Until AMD fixes the firmware a mini PC may still see them; the engine does not touch the firmware. A newer `linux-firmware` is the thing to try.
+The prompt levers need the table to pay: with the table, the WMMA set
 read 248 tok/s at 4K against 186 without it, and at 32K 272 against 178. No KL was measured on this chip.
 
 ```sh

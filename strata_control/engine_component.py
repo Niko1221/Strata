@@ -48,7 +48,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from strata_control import acquisition
+from strata_control import acquisition, longpath
 from strata_control.targets import BACKEND_MATRIX, backend_supported, host_platform
 
 SCHEMA_VERSION = 2
@@ -361,19 +361,20 @@ def _sha256(path: Path) -> str:
 def verify(component: EngineComponent, *, full: bool = False) -> None:
     """Raise IntegrityProblem unless the files are what the manifest says. `full` hashes every file; without it only
     the entrypoint is hashed (sizes are always checked)."""
-    root = component.root.resolve()
+    # extended-length paths: under a long user name an AMD engine's files pass 259 characters, which Windows (long paths off)
+    # reports as "missing" for an ordinary path
+    folder = longpath.long_path(component.root)
+    root = folder.resolve()
     for rel, digest, size in component.files:
-        target = component.root / rel
+        target = folder / rel
         try:
             info = target.lstat()
         except OSError:
             raise IntegrityProblem(f"{rel} is missing") from None
         if target.is_symlink() or not target.is_file():
             raise IntegrityProblem(f"{rel} is not a regular file")
-        try:
-            target.resolve().relative_to(root)
-        except ValueError:
-            raise IntegrityProblem(f"{rel} resolves outside the component folder") from None
+        if not longpath.same_tree(target.resolve(), root):
+            raise IntegrityProblem(f"{rel} resolves outside the component folder")
         if info.st_size != size:
             raise IntegrityProblem(f"{rel} is {info.st_size} bytes, the manifest says {size}")
         if (full or rel == component.entrypoint) and _sha256(target) != digest:
@@ -638,13 +639,41 @@ def hip_family(arch: str) -> str:
     return next((name for name, archs in HIP_FAMILIES if arch in archs), arch)
 
 
+#: AMD architectures no ready-made engine package of this release covers (the packages: RX 9000, RX 7000 + Ryzen AI Max): the RX 6000 series.
+#: Setup and a source build can still target them (docs/AMD_HIP.md); the app's one-click engine cannot.
+NO_PACKAGE_HIP = {"gfx1030": "RX 6000", "gfx1031": "RX 6000"}
+NO_PACKAGE_SENTENCE = ("This release has no ready-made Strata engine for the AMD {0} series. Strata can only run on it with an engine built for "
+                       "that card (docs/AMD_HIP.md, \"RDNA2\").")
+
+
+def no_package_note(archs) -> str | None:
+    """One plain sentence when some of these architectures (gfx1030 ...) have no ready-made package in this release, else None."""
+    families = sorted({NO_PACKAGE_HIP[a] for a in archs if a in NO_PACKAGE_HIP})
+    return NO_PACKAGE_SENTENCE.format(" and ".join(families)) if families else None
+
+
 def arch_notice(built: tuple[str, ...], here: list[str]) -> str:
     """The plain sentence for an AMD engine that has code for other cards than this computer's (a tester build for another card)."""
+    if here and all(a in NO_PACKAGE_HIP for a in here):      # asking for "the RX 6000 build" would send the person to one that does not exist
+        have = sorted({hip_family(a) for a in here})
+        return (f"This computer has an AMD {' and '.join(have)} card ({', '.join(sorted(set(here)))}). {no_package_note(here)}")
     built_for = sorted({hip_family(a) for a in built})
     have = sorted({hip_family(a) for a in here})
     make = lambda names: " and ".join(names)  # noqa: E731
     return (f"This build of Strata is for AMD {make(built_for)} cards. This computer has an AMD {make(have)} card ({', '.join(sorted(set(here)))}). "
             f"Ask for the {make(have)} build.")
+
+
+RELEASES_URL = "https://github.com/Niko1221/Strata/releases"
+MAKE_NAMES = {"cuda": "NVIDIA", "hip": "AMD", "sycl": "Intel"}
+
+
+def wrong_make_notice(built: str, archs: tuple[str, ...], here: str) -> str:
+    """The plain sentence for a build made for another make of graphics card than this computer has (an AMD build on an NVIDIA PC)."""
+    families = sorted({hip_family(a) for a in archs if any(a in group for _, group in HIP_FAMILIES)})
+    built_for = f"AMD {' and '.join(families)}" if built == "hip" and families else MAKE_NAMES.get(built, built)
+    make = MAKE_NAMES.get(here, here)
+    return f"This Strata is for {built_for} cards. Your PC has an {make} card: download the {make} version from {RELEASES_URL}"
 
 
 def resolve(root: Path | None = None, *, backend: str | None = None, target: str | None = None,
@@ -714,6 +743,12 @@ def resolve(root: Path | None = None, *, backend: str | None = None, target: str
         plain = None
         if arch_blocked and len(arch_blocked) == compatible and not broken:      # every engine that fits this PC is built for other cards
             plain = arch_notice(tuple(sorted({a for item in arch_blocked for a in item.hip_archs})), hip_here)
+        if plain is None and not compatible and not broken and wanted in MAKE_NAMES:       # every engine here is for another make of card
+            here_target = [item for item in found if item.platform == target]
+            other = [item for item in here_target if item.backend in MAKE_NAMES and item.backend != wanted]
+            if other and len(other) == len(here_target):
+                top = max(other, key=lambda item: _version_key(item.version))
+                plain = wrong_make_notice(top.backend, top.archs, wanted)
         missing = EngineMissing("; ".join(everything) or "nothing matched", base, problems=problems, notice=plain)
         if driver_blocked and len(driver_blocked) == compatible and not broken:
             # the only thing in the way is the NVIDIA driver: one plain line that names the version to install

@@ -99,6 +99,7 @@ PAYLOAD = (
     "docs/MANAGEMENT_PROTOCOL.md",
     "docs/TERMINAL_LAUNCH.md",         # the README below points at it (`strata launch`); it used to be missing from the archive
     "data/gguf_fingerprints.json",     # `strata models import --plan` names a known file set from this table
+    "bench/prompts/standard-v1",       # `strata bench run` (the standard benchmark) sends these frozen requests; hashed byte for byte
 )
 
 #: `tools/` modules the terminal paths import. Adding one here is a deliberate act: this list is what keeps
@@ -280,6 +281,19 @@ def write_archive(root: Path, name: str, out_dir: Path, kind: str) -> Path:
     return path
 
 
+def source_commit() -> str:
+    """The commit the sources are from. STRATA_BUILD_COMMIT wins (a Docker build copies the files without .git and without git);
+    otherwise `git rev-parse HEAD`, when git exists and ROOT is a checkout. Empty when neither answers: the archive just has no COMMIT."""
+    given = os.environ.get("STRATA_BUILD_COMMIT", "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", given):
+        return given
+    try:
+        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    except OSError:                     # no git installed
+        return ""
+    return out.strip().lower()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="directory to write the archive into")
@@ -343,6 +357,10 @@ def main() -> int:
             shutil.copy2(src, tools_dir / item)
         installer = None if args.no_installer else add_installer(root)
         (root / "VERSION").write_text(version + "\n", encoding="utf-8")
+        # the commit the archive was built from: `strata bench run` records it (an archive has no .git to ask)
+        built = source_commit()
+        if re.fullmatch(r"[0-9a-f]{40}", built):
+            (root / "COMMIT").write_text(built + "\n", encoding="utf-8")
 
         bin_dir = root / "bin"
         bin_dir.mkdir(exist_ok=True)

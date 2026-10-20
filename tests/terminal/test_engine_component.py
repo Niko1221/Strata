@@ -312,6 +312,12 @@ class WrongCardFamily(unittest.TestCase):
         self.assertIn("(gfx1100)", note)
         self.assertNotIn("component", note)
 
+    def test_an_amd_build_on_an_nvidia_pc_names_the_nvidia_download(self):
+        with mock.patch.object(ec, "hip_archs_present", return_value=[]):
+            note = ec.status(self.root, backend="cuda")["notice"]
+        self.assertTrue(note.startswith("This Strata is for AMD RX 9000 cards. Your PC has an NVIDIA card: download the NVIDIA version from "), note)
+        self.assertIn("https://github.com/Niko1221/Strata/releases", note)
+
     def test_the_matching_family_is_not_blocked(self):
         with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1201"]):
             self.assertEqual(ec.resolve(self.root, backend="hip", runtime="1").backend, "hip")

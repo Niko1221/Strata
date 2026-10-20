@@ -230,6 +230,12 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     if log:
         cfg["log"] = log
     apply_cards(cfg, gpus)
+    if s.mtp == "off":                                       # no draft layer for this launch (serve/server.py applies "mtp": false at every start)
+        from strata_control import draft_layer
+        cfg["mtp"] = False
+        draft_layer.apply(cfg)
+    elif s.mtp == "on":
+        cfg["mtp"] = True
     if s.extra:
         a_changes, e_changes = S.as_argv_changes(s.extra, bool_flags)
         cfg["args"] = tune_knobs.apply_to_argv([str(x) for x in cfg.get("args") or []], a_changes)
@@ -269,12 +275,21 @@ def launch_dir() -> Path:
 
 # ----------------------------------------------------------------------------------------------- the runner
 
+
+def download_text(dl: dict, already: bool) -> str:
+    """The step line for the model download. A model whose files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
+    if already:
+        return f"Model already downloaded ({dl['total_gb']:.1f} GB), checking the files"
+    return f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
+
+
 class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
                  components_dir: str | None = None, hardware: dict | None = None,
-                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False):
+                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False, move_data: bool = False):
         self.s = s
+        self.move_data = move_data            # --move-data / the answer "move": the model files already here go to the new --data-dir
         self.confirm = confirm                # asked (title, text) before a model is downloaded with no engine; True = go on
         self.assume_yes = assume_yes          # --yes: no questions
         self.engine_problem: str | None = None
@@ -382,7 +397,10 @@ class Runner:
             if ev.get("event") == "progress":
                 self.emit("engine", f"Downloading the engine… {ev.get('percent', 0)}%", float(ev.get("percent", 0)))
             elif ev.get("event") in ("phase", "waiting"):
-                self.emit("engine", str(ev.get("message") or ""))
+                if ev.get("phase") == "warn":
+                    self.emit("engine", str(ev.get("message") or ""), level="warn")
+                else:
+                    self.emit("engine", str(ev.get("message") or ""))
             last = ev
         code = p.wait()
         if code == 0:
@@ -487,6 +505,8 @@ class Runner:
         data = s.data_dir or self.existing_data_dir()
         if data:
             args += ["--data-dir", str(data)]
+            if self.move_data and s.data_dir:             # only when the person said so: setup moves nothing otherwise
+                args.append("--move-data")
         if s.model_path:
             p = Path(s.model_path)
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
@@ -494,14 +514,15 @@ class Runner:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
-            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir"}
+            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data"}
+            flags = ("--yes", "--no-start", "--move-data")
             out, i = [], 0
             while i < len(args):
                 if args[i] in keep:
                     out.append(args[i])
-                    if args[i] not in ("--yes", "--no-start") and i + 1 < len(args):
+                    if args[i] not in flags and i + 1 < len(args):
                         out.append(args[i + 1])
-                    i += 2 if args[i] not in ("--yes", "--no-start") else 1
+                    i += 2 if args[i] not in flags else 1
                 else:
                     i += 2 if i + 1 < len(args) and not args[i + 1].startswith("--") else 1
             args = out
@@ -596,6 +617,7 @@ class Runner:
         env["PYTHONPATH"] = str(cat.src)
         p = self._spawn(argv, env=env, cwd=str(cat.src))
         lines: list[str] = []
+        already: bool | None = None                          # all the model's files were on disk before this run wrote anything
         folder = str(cat.data_dir() / "models" / cat.tag_of(s.family, s.model))
         total = float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)
         for line in p.stdout:                                # type: ignore[union-attr]
@@ -611,7 +633,10 @@ class Runner:
             prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
             dl = prog.get("download")
             if dl and not s.model_path and dl.get("total_gb", 0) >= 0.05:
-                self.emit("model", f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB", float(dl["percent"]), step=prog.get("step"))
+                if already is None:
+                    already = float(dl["percent"]) >= 99.5
+                text = download_text(dl, already)
+                self.emit("model", text, float(dl["percent"]), step=prog.get("step"))
             elif prog.get("step"):
                 self.emit("model", f"Setup step {prog['step']}", None, step=prog.get("step"))
         code = p.wait()

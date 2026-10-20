@@ -177,12 +177,12 @@ class EngineUpdate(UpdaterCase):
                          "the previous version stays for a manual rollback")
         # the test start ran the staged copy, not a file in the live folder
         ran = (self.root / "ran.txt").read_text().splitlines()[0]
-        self.assertIn(os.sep + ".updates" + os.sep + "staging" + os.sep, ran)
+        self.assertIn(os.sep + ".s" + os.sep, ran)
         phases = [e.get("phase") for e in events if e.get("event") == "phase"]
         self.assertEqual(phases, ["feed", "download", "verify", "verify", "test", "switch", "done"])
         progress = [e for e in events if e.get("event") == "progress"]
         self.assertTrue(progress and progress[-1]["percent"] == 100 and progress[-1]["done"] == progress[-1]["total"])
-        self.assertEqual(sorted(p.name for p in (self.components / ".updates" / "staging").iterdir()), [], "staging is cleaned")
+        self.assertEqual(sorted(p.name for p in (self.components / ".s").iterdir()), [], "staging is cleaned")
         self.assertEqual(list((self.components / ".updates" / "partial").iterdir()), [], "the archive is removed after the switch")
         state = json.loads((self.components / ".updates" / "state.json").read_text())
         self.assertEqual(state["engine"]["previous"], old.name)
@@ -220,7 +220,7 @@ class EngineUpdate(UpdaterCase):
         self.assertIn("unchanged", result["error"])
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertEqual(self.engine_folders(), [f"0.1.45-{PLATFORM}-cuda-cuda13"], "the failed engine was never put in the live folder")
-        self.assertEqual(sorted(p.name for p in (self.components / ".updates" / "staging").iterdir()), [])
+        self.assertEqual(sorted(p.name for p in (self.components / ".s").iterdir()), [])
         self.assertEqual(preset_marks.pending(self.state_base), [])
         self.assert_user_data_untouched()
         # it is not offered again until forced, and the archive is not downloaded twice

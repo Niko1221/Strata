@@ -31,10 +31,12 @@ RELEASE = [
     pkg("windows-x86_64", "cuda", "cuda13", SM_NEW, "580.65"),
     pkg("windows-x86_64", "cuda", "cuda12", SM_OLD, "576.02"),
     pkg("windows-x86_64", "hip", "rx9070", ("gfx1200", "gfx1201")),
+    pkg("windows-x86_64", "hip", "rdna3", ("gfx1100", "gfx1101", "gfx1102", "gfx1151")),
     pkg("linux-x86_64", "cuda", "cuda13", SM_NEW, "580.65"),
     pkg("linux-x86_64", "cuda", "cuda12", SM_OLD, "575.51"),
     pkg("linux-x86_64", "hip", "rx9070", ("gfx1200", "gfx1201")),
     pkg("linux-x86_64", "hip", "rx7900", ("gfx1100", "gfx1101", "gfx1102")),
+    pkg("linux-x86_64", "hip", "halo", ("gfx1151",)),
     pkg("macos-arm64", "metal", "", ("apple-gpu",)),
 ]
 
@@ -53,10 +55,12 @@ class ReleaseSelection(unittest.TestCase):
             self.pick(pc("windows-x86_64", "cuda", "590.10", ["sm_120"]))[0],     # RTX 5070
             self.pick(pc("windows-x86_64", "cuda", "576.02", ["sm_61"]))[0],      # GTX 1080 on an older driver
             self.pick(pc("windows-x86_64", "hip", gfx=["gfx1201"]))[0],           # RX 9070
+            self.pick(pc("windows-x86_64", "hip", gfx=["gfx1100"]))[0],           # RX 7900 XTX
             self.pick(pc("linux-x86_64", "cuda", "615.71", ["sm_86"]))[0],        # RTX 3060
             self.pick(pc("linux-x86_64", "cuda", "575.51", ["sm_60"]))[0],        # Tesla P100
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1201"]))[0],             # Radeon AI PRO R9700
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1100"]))[0],             # RX 7900 XTX
+            self.pick(pc("linux-x86_64", "hip", gfx=["gfx1151"]))[0],             # Ryzen AI Max (Strix Halo)
             self.pick(pc("macos-arm64", "metal"))[0],
         }
         self.assertEqual(chosen, {(p["platform"], p["backend"], p["variant"]) for p in RELEASE})
@@ -80,11 +84,57 @@ class ReleaseSelection(unittest.TestCase):
     def test_amd_gets_its_own_build_and_never_a_cuda_one(self):
         self.assertEqual(self.pick(pc("linux-x86_64", "hip", gfx=["gfx1200"]))[0][2], "rx9070")
         self.assertEqual(self.pick(pc("linux-x86_64", "hip", gfx=["gfx1102"]))[0][2], "rx7900")
-        got, why = self.pick(pc("windows-x86_64", "hip", gfx=["gfx1100"]))         # no Windows RX 7000 build in this release
-        self.assertIsNone(got)
-        self.assertTrue(any("gfx1100" in r for r in why))
         for hw in (pc("windows-x86_64", "hip", gfx=["gfx1201"]), pc("linux-x86_64", "hip", gfx=["gfx1201"])):
             self.assertEqual(self.pick(hw)[0][1], "hip")
+
+    def test_rx7000_and_strix_halo_on_windows_get_the_rdna3_build(self):
+        for gfx in ("gfx1100", "gfx1101", "gfx1102", "gfx1151"):
+            self.assertEqual(self.pick(pc("windows-x86_64", "hip", gfx=[gfx]))[0], ("windows-x86_64", "hip", "rdna3"), gfx)
+        self.assertEqual(self.pick(pc("windows-x86_64", "hip", gfx=["gfx1201"]))[0][2], "rx9070")
+        self.assertEqual(self.pick(pc("windows-x86_64", "hip", gfx=["gfx1200"]))[0][2], "rx9070")
+
+    def test_strix_halo_on_linux_gets_the_halo_build_and_rx7000_keeps_rx7900(self):
+        self.assertEqual(self.pick(pc("linux-x86_64", "hip", gfx=["gfx1151"]))[0], ("linux-x86_64", "hip", "halo"))
+        for gfx in ("gfx1100", "gfx1101", "gfx1102"):
+            self.assertEqual(self.pick(pc("linux-x86_64", "hip", gfx=[gfx]))[0][2], "rx7900", gfx)
+
+    def test_no_amd_card_matches_two_hip_builds_of_one_platform(self):
+        """A tie between two builds of the same version would be settled by list order: no arch may be in two hip builds of a platform."""
+        for platform in ("windows-x86_64", "linux-x86_64"):
+            seen = {}
+            for p in RELEASE:
+                if p["platform"] == platform and p["backend"] == "hip":
+                    for arch in p["archs"]:
+                        self.assertNotIn(arch, seen, f"{arch} is in {seen.get(arch)} and {p['variant']} on {platform}")
+                        seen[arch] = p["variant"]
+
+    def test_other_unified_memory_radeons_get_no_engine_and_the_plain_family_line(self):
+        from strata_control import engine_component as ec
+        for platform in ("windows-x86_64", "linux-x86_64"):
+            for gfx in ("gfx1103", "gfx1150", "gfx1152", "gfx1030"):
+                got, why = self.pick(pc(platform, "hip", gfx=[gfx]))
+                self.assertIsNone(got, f"{gfx} on {platform}")
+                self.assertTrue(any(gfx in r for r in why))
+        self.assertEqual(ec.arch_notice(("gfx1100", "gfx1151"), ["gfx1201"]),
+                         "This build of Strata is for AMD RX 7000 and Ryzen AI Max cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
+        self.assertEqual(ec.arch_notice(("gfx1151",), ["gfx1201"]),
+                         "This build of Strata is for AMD Ryzen AI Max cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
+
+    def test_rx6000_has_no_ready_made_package_and_the_notice_says_so_instead_of_naming_a_build_that_does_not_exist(self):
+        """#3203: an RX 6800 XT (gfx1030) is in none of the release's engine packages on either OS; the line must not say "Ask for the RX 6000 build"."""
+        from strata_control import engine_component as ec
+        covered = {a for p in RELEASE if p["backend"] == "hip" for a in p["archs"]}
+        for gfx in ec.NO_PACKAGE_HIP:
+            self.assertNotIn(gfx, covered, f"{gfx} is in a package now: drop it from NO_PACKAGE_HIP")
+        for platform in ("windows-x86_64", "linux-x86_64"):
+            self.assertIsNone(self.pick(pc(platform, "hip", gfx=["gfx1030"]))[0])
+        text = ec.arch_notice(("gfx1200", "gfx1201"), ["gfx1030"])
+        self.assertIn("This computer has an AMD RX 6000 card (gfx1030).", text)
+        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", text)
+        self.assertNotIn("Ask for", text)
+        self.assertIsNone(ec.no_package_note(["gfx1201", "gfx1100"]))
+        # a PC with an RX 9000 card next to the RX 6000 one is told the ordinary way (a build exists for one of them)
+        self.assertIn("Ask for the", ec.arch_notice(("gfx1100",), ["gfx1201", "gfx1030"]))
 
     def test_the_platform_decides_first(self):
         self.assertIsNone(self.pick(pc("macos-arm64", "cuda", "590.10", ["sm_86"]))[0])

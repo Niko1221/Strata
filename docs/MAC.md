@@ -11,8 +11,8 @@ kernels are replaced by Metal ones (`metal/`), and the host code and the server 
 - **From source: `./setup.sh`.** It sets things up the way `START-HERE.bat` does on Windows and builds the engine on your Mac
   (about 1-15 minutes).
 
-**Pictures:** the app and the Terminal have no picture reader on the Mac yet. Only the source build can read pictures
-([Limits](#limits-this-version)). The NVIDIA, AMD and Intel engines are unchanged.
+**Pictures:** on by default in the app, the Terminal and the source build. The reader (`strata-vision`) comes in the engine package
+and runs on the Mac's GPU through Metal ([Limits](#limits-this-version)). The NVIDIA, AMD and Intel engines are unchanged.
 
 **Status:** new. It is measured on three Macs: an M5 Max with 128 GB, where the model stays in memory; and an M4 Mac mini
 with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the M1 Max: 7.9 tok/s decode, 186 tok/s on a
@@ -188,10 +188,22 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 ## Limits (this version)
 
-- **Images (vision): the source build only.** `./setup.sh` asks "Should the model also read images?" (`--vision yes|no`) and
-  builds the picture reader (`strata-vision`) itself. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal
-  the HIP engine's, and text output is unchanged with vision on. No other tests yet. The app and the Terminal have no
-  picture reader on the Mac yet. They show models as text only and do not turn pictures on.
+- **Images (vision):** on by default. The app and the Terminal use the `strata-vision` that sits beside `strata` in the engine package;
+  `./setup.sh` builds it itself and asks "Should the model also read images?" (default yes). One program does both jobs: with `--gpu` it
+  reads on the Mac's GPU (ggml's Metal backend, the shaders are built into the program), without it on the CPU. A Mac always gets the GPU
+  reader, whatever its memory. The 24 GB rule of the PC cards does not apply: the Mac has no separate card memory to keep free, and the
+  reader's footprint is about the same on either side (1.18 GB on the GPU, 1.05 GB on the CPU, mostly the 0.9 GB projector file).
+  Measured on a Mac mini M4 (32 GB), Qwen3.8-Flash-Next's BF16 projector:
+
+  | Picture | GPU reader | CPU reader |
+  |---|---|---|
+  | 260 tokens (640x400) | 0.45 s | 50.7 s |
+  | 972 tokens (1600x1200) | 2.4 s | 194 s |
+
+  `--vision cpu` is still allowed and prints that note. The CPU reader is slow because ggml has no vector kernel for BF16 on ARM (a build
+  for newer chips, with the BF16 and int8 instructions, took the same 50.7 s). If the GPU reader cannot start, the server prints one line
+  and starts the same program on the CPU. With Q2_0 streaming from the SSD on that M4, the STRATA 42 test picture (red circle, blue square,
+  green triangle, the text "STRATA 42") was described correctly with both readers. Checked on one Mac only; the M5 Max is untested for pictures.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).

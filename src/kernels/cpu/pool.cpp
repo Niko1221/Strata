@@ -429,12 +429,14 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
     // CPU is an E-core when its capacity is under 90% of the largest.  Turbo Boost Max 3.0 gives the "favored"
     // P-cores a slightly higher capacity (1024 against 1012 on a Core Ultra 7 270K Plus): "capacity == the maximum"
     // counted 2 of its 8 P-cores and started 1 pool worker.
-    std::vector<int> pmu_core, pmu_atom;
+    // #3262: Meteor Lake and Arrow Lake-H list their LP-E cores (SoC tile, no L3, ~2.5 GHz) in a third set,
+    // /sys/devices/cpu_lowpower/cpus, that is in neither of the other two; they are E-cores too (and sort last).
+    std::vector<int> pmu_core, pmu_atom, pmu_lowpower;
     const bool pmu = cpulist_read("/sys/devices/cpu_core/cpus", pmu_core) &&
                      cpulist_read("/sys/devices/cpu_atom/cpus", pmu_atom);
+    cpulist_read("/sys/devices/cpu_lowpower/cpus", pmu_lowpower);
     auto is_e = [&](const CoreLinux& cl) {
-        if (pmu) return std::find(pmu_atom.begin(), pmu_atom.end(), cl.cpu) != pmu_atom.end();
-        return max_cap > 0 && cl.cap > 0 && cl.cap * 10 < max_cap * 9;
+        return hybrid_cpu_is_efficiency(cl.cpu, cl.cap, max_cap, pmu, pmu_core, pmu_atom, pmu_lowpower);
     };
     bool any_e = false, any_p = false;
     for (const auto& cl : all_cpus) (is_e(cl) ? any_e : any_p) = true;
