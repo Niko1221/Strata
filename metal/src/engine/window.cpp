@@ -163,6 +163,10 @@ public:
     bool commit(int n_keep, std::string& err);
     bool finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, double t0);
     bool copy_logits(int t, float* host) const;
+    // row t of the last window's head logits, in place; null past the window's rows
+    const float* logits_row(int t) const {
+        return t >= 0 && t < head_rows_ ? lm_.as<float>() + (size_t) t * (size_t) n_vocab_ : nullptr;
+    }
     int64_t vocab() const { return n_vocab_; }
     bool ready() const { return cx_ != nullptr; }
     bool streaming() const { return stream_; }
@@ -398,6 +402,7 @@ private:
     std::vector<float> ple_hist_;    // NG_HIST x hc_dim normalized rows, row-fastest
     bool ple_on_ = false;
     int last_T_ = 0;
+    int head_rows_ = 0;              // rows of lm_ the last window's head wrote (logits_row)
     double last_gpu_ms_ = 0;
     int last_n_disp_ = 0;
     int32_t last_tokens_[MAXT] = {};
@@ -1388,6 +1393,7 @@ bool Window::finish_rows(int Tn, const int32_t* tokens, int32_t* out, double t0)
     win_ms_[Tn] += now_ms() - t0;
     win_gpu_[Tn] += last_gpu_ms_;
     for (int t = 0; t < Tn; ++t) out[t] = tokout_.as<int32_t>()[t];
+    head_rows_ = Tn;
     for (int t = 0; t < Tn; ++t) {
         SeqSet& s = *sets_[(size_t) rows_set_[t]];
         s.hp = 1 - s.hp;
@@ -1644,6 +1650,7 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
     last_head_ = head;
     for (int t = 0; t < Tn; ++t) out[t] = head ? tokout_.as<int32_t>()[t] : -1;
     last_T_ = Tn;
+    head_rows_ = head ? Tn : 0;
     for (int t = 0; t < Tn; ++t) last_tokens_[t] = tokens[t];
     static const bool trace = std::getenv("STRATA_METAL_TRACE") != nullptr;
     if (trace && head) {
@@ -1792,8 +1799,11 @@ bool Window::run_slots(const int* rows, int S, const int32_t* tokens, const int6
         // a one-token window commits its row in its own step; commit(1) adds the PLE history and the session's token pair,
         // which read buffers the next window rewrites
         ok = run(1, tokens + t, pos[t], true, out + t, err) && commit(1, err);
+        // row t's head logits move to row t, where a one-window batch leaves them (logits_row: the slots' sampling)
+        if (ok && t > 0) std::memcpy(lm_.as<float>() + (size_t) t * (size_t) n_vocab_, lm_.as<float>(), (size_t) n_vocab_ * 4);
     }
     activate(0);
+    if (ok) head_rows_ = S;
     return ok;
 }
 
@@ -3002,6 +3012,7 @@ bool window_commit(void* w, int n_keep, std::string& err) {
     return ok;
 }
 bool window_copy_logits(void* w, int t, float* host) { return ((Window*) w)->copy_logits(t, host); }
+const float* window_logits(void* w, int t) { return ((Window*) w)->logits_row(t); }
 
 // the MTP hook (src/core/mtp.cpp under STRATA_GPU_METAL): the drafter lives beside the decode window it reads
 namespace {
