@@ -34,6 +34,7 @@ from __future__ import annotations
 import collections
 import copy
 import hashlib
+import json
 import os
 import threading
 import time
@@ -45,6 +46,8 @@ CONV_MAX = 4096                     # conversations remembered (each keeps its r
 CONV_MAX_LEN = 128                  # characters kept of a conversation id
 NEW_TALK_SLACK = 2 * BLOCK          # tokens a prompt may lose to its own tail (a template boundary) and still be a turn
 HEAL_COOLDOWN_S = 60.0              # a replica that died is started again at most this often
+SESSION_MAP = ".map"                # next to the session files: the router's conversation->replica bindings
+SESSION_MAP_MAX = 256               # bindings kept in it: the most recently used conversations
 
 
 class ReplicaConfigError(ValueError):
@@ -248,7 +251,7 @@ class Router:
 class ReplicaEngine:
     """Stands in for one engine (the interface Service uses), over several."""
 
-    NOT_HERE = {"session_file", "vram", "ctl", "slot_cv"}       # not offered: one conversation file / VRAM resize / control line
+    NOT_HERE = {"vram", "ctl", "slot_cv"}       # not offered: VRAM resize, the control line (session files are per replica)
     PROPAGATE = {"silence_s", "gpu_busy"}
 
     def __init__(self, engines: list, load_tokens: int = LOAD_TOKENS):
@@ -301,6 +304,12 @@ class ReplicaEngine:
         """Parallel slots, in total: the Service lets this many requests run at once (it holds no FIFO).  An engine
         without slots counts one."""
         return sum(max(1, int(getattr(e, "batch", 0) or 0)) for e in self.engines)
+
+    @property
+    def session_serial(self) -> bool:
+        """Disk sessions are safe here: every replica runs one request at a time, so a save can wait for it
+        (serve/server.py's slot_action asks this before its parallel-requests refusal)."""
+        return all(not int(getattr(e, "batch", 0) or 0) for e in self.engines)
 
     @property
     def waiting(self) -> int:
@@ -381,6 +390,87 @@ class ReplicaEngine:
         """For /metrics: each replica's state, requests running, and requests routed to it so far."""
         return [{"replica": k, "alive": e.alive(), "running": self.inflight[k], "routed": self.routed[k],
                  "batch": int(getattr(e, "batch", 0) or 0)} for k, e in enumerate(self.engines)]
+
+    # ---- disk sessions
+    def session_file(self, action: str, path: str) -> dict:
+        """Disk sessions for a replicas deployment: the engine's single-slot SAVE / RESTORE, once per replica.
+
+        Each engine has its own slot 0, so replica 0 keeps PATH and replica k (k >= 1) PATH.r<k>, and the counts of
+        all replicas are summed for the caller.  A replica that refuses (its own fingerprint, a missing file) does
+        not stop the others: it only loses that card's cache, which a restart costs anyway.
+
+        One file cannot name the conversation it holds, but the router can: on a save its conversation->replica
+        bindings go to PATH.map, and a restore reads them back before the files, so a continuation is routed to the
+        replica that holds it again and uses the restored state instead of whichever card placement picks.  A caller
+        that deletes PATH after a restore should delete its PATH.r<k> siblings and PATH.map as well (serve/images.py
+        saves and restores around its own unload job)."""
+        if not self.session_serial:
+            raise ValueError("session save/restore is not available with parallel requests (\"parallel\" / --batch)")
+        files = [path] + [_suffixed(path, k) for k in range(1, len(self.engines))]
+        if action == "restore":
+            self._restore_bindings(path)
+        total, refused, done = {"tokens": 0, "bytes": 0, "ms": 0.0}, None, 0
+        for k, (engine, file) in enumerate(zip(self.engines, files)):
+            if action == "restore" and k and not os.path.exists(file):
+                continue                                # nothing was saved for this replica
+            lock = self.run_locks[k]                    # a request running here ends first: one control line per engine
+            while not lock.acquire(timeout=0.25):
+                pass
+            try:
+                result = engine.session_file(action, file)
+            except Exception as exc:                    # noqa: BLE001 - one card's cache, not the whole call
+                refused = exc
+                print(f"[strata] replica {k}: session {action} of {os.path.basename(file)} failed: {exc}", flush=True)
+                continue
+            finally:
+                lock.release()
+            done += 1
+            total["tokens"] += int(result.get("tokens") or 0)
+            total["bytes"] += int(result.get("bytes") or 0)
+            total["ms"] = max(total["ms"], float(result.get("ms") or 0.0))
+        if not done and refused is not None:
+            raise refused
+        if action == "save":
+            self._save_bindings(path)
+        return total
+
+    def _save_bindings(self, path: str) -> None:
+        """The conversations each replica serves, for the next start (newest last, a few hundred at most)."""
+        with self.router.lock:
+            bindings = dict(self.router.convs)
+        if not bindings:
+            return
+        if len(bindings) > SESSION_MAP_MAX:
+            bindings = dict(list(bindings.items())[-SESSION_MAP_MAX:])
+        target = path + SESSION_MAP
+        temporary = target + ".tmp"
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"bindings": bindings}, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        except OSError as exc:
+            print(f"[strata] session bindings not written next to {path}: {exc}", flush=True)
+
+    def _restore_bindings(self, path: str) -> None:
+        """Put the saved conversations back on their replicas before a continuation of one is routed."""
+        try:
+            with open(path + SESSION_MAP, encoding="utf-8") as handle:
+                saved = json.load(handle)
+        except (OSError, ValueError):
+            return                                      # no map: placement decides, as it did before this feature
+        bindings = saved.get("bindings") if isinstance(saved, dict) else None
+        if not isinstance(bindings, dict):
+            return
+        placed = 0
+        for conversation, replica in bindings.items():
+            if isinstance(conversation, str) and isinstance(replica, int) and 0 <= replica < len(self.engines):
+                self.router.bind(conversation, replica)
+                placed += 1
+        if placed:
+            print(f"[strata] restored {placed} conversation bindings (each back on the replica that held it)",
+                  flush=True)
 
     # ---- life cycle
     def restart(self, tries: int = 3):

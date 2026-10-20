@@ -11,8 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.replicas import (BLOCK, ReplicaConfigError, ReplicaEngine, Router, conversation_id, conversation_key,
-                            cpu_sets, gpu_groups, replica_cfg, request_conversation)
+from serve.replicas import (BLOCK, SESSION_MAP, SESSION_MAP_MAX, ReplicaConfigError, ReplicaEngine, Router,
+                            conversation_id, conversation_key, cpu_sets, gpu_groups, replica_cfg,
+                            request_conversation)
 from serve.server import ByteTokenizer, Service, StrataEngine, serve
 from serve.test_parallel import FAKE_BATCH
 
@@ -311,6 +312,121 @@ class Conversations(unittest.TestCase):
         self.assertEqual(list(e.generate([1] * 100, 1, {}, cancel)), [7])
         self.assertEqual(e.router.held("c4"), 0)
         self.assertEqual(e.inflight, [0, 2])
+
+
+class SessionEngine(FakeEngine):
+    """A fake engine that answers SAVE / RESTORE like the real one, so the fan-out is testable."""
+
+    def __init__(self, n=0, refuse=None):
+        super().__init__()
+        self.batch = 0                      # one request at a time, like every replica of the deployment
+        self.k, self.calls, self.refuse = n, [], refuse
+
+    def session_file(self, action, path):
+        self.calls.append((action, path))
+        if self.refuse:
+            raise self.refuse
+        Path(path).write_bytes(b"%d" % self.k)
+        return {"tokens": 10 + self.k, "bytes": 2, "ms": 1.0 + self.k}
+
+
+class SessionFiles(unittest.TestCase):
+    """llama-server's single-slot SAVE / RESTORE, once per replica (serve/replicas.py)."""
+
+    def test_a_save_writes_one_file_per_replica_and_the_binding_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            engines = [SessionEngine(0), SessionEngine(1)]
+            engine = ReplicaEngine(engines)
+            engine.router.bind("conv-a", 1)
+            engine.router.bind("conv-b", 0)
+            out = engine.session_file("save", path)
+            self.assertEqual(out, {"tokens": 21, "bytes": 4, "ms": 2.0})
+            self.assertEqual(engines[0].calls, [("save", path)])
+            self.assertEqual(engines[1].calls, [("save", str(Path(tmp) / "auto.r1.bin"))])
+            self.assertTrue((Path(tmp) / "auto.bin").exists())
+            self.assertTrue((Path(tmp) / "auto.r1.bin").exists())
+            self.assertEqual(json.loads(Path(str(path) + SESSION_MAP).read_text())["bindings"],
+                             {"conv-a": 1, "conv-b": 0})
+
+    def test_a_restore_reads_the_bindings_and_skips_a_missing_replica_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            (Path(tmp) / "auto.bin").write_bytes(b"0")
+            (Path(tmp) / "auto.r1.bin").write_bytes(b"1")
+            (Path(str(path) + SESSION_MAP)).write_text(json.dumps({"bindings": {"conv-a": 1, "conv-b": 0}}))
+            engines = [SessionEngine(0), SessionEngine(1)]
+            engine = ReplicaEngine(engines)
+            out = engine.session_file("restore", path)
+            self.assertEqual(out["tokens"], 21)
+            self.assertEqual([c[0] for c in engines[0].calls], ["restore"])
+            self.assertEqual([c[0] for c in engines[1].calls], ["restore"])
+            self.assertEqual(engine.router.held("conv-a"), 1)
+            self.assertEqual(engine.router.held("conv-b"), 0)
+
+    def test_a_replica_without_a_saved_file_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            (Path(tmp) / "auto.bin").write_bytes(b"0")
+            engines = [SessionEngine(0), SessionEngine(1)]
+            engine = ReplicaEngine(engines)
+            engine.session_file("restore", path)
+            self.assertEqual([c[0] for c in engines[0].calls], ["restore"])
+            self.assertEqual(engines[1].calls, [])
+
+    def test_one_replica_refusing_does_not_stop_the_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            engines = [SessionEngine(0), SessionEngine(1, refuse=RuntimeError("no complete session to save"))]
+            out = ReplicaEngine(engines).session_file("save", path)
+            self.assertEqual(out["tokens"], 10)
+            self.assertTrue((Path(tmp) / "auto.bin").exists())
+            self.assertFalse((Path(tmp) / "auto.r1.bin").exists())
+
+    def test_all_replicas_refusing_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            engines = [SessionEngine(0, refuse=RuntimeError("a")), SessionEngine(1, refuse=RuntimeError("b"))]
+            with self.assertRaises(RuntimeError):
+                ReplicaEngine(engines).session_file("save", path)
+
+    def test_the_map_keeps_the_newest_bindings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            engine = ReplicaEngine([SessionEngine(0), SessionEngine(1)])
+            for i in range(SESSION_MAP_MAX + 5):
+                engine.router.bind("conv-%d" % i, i % 2)
+            engine.session_file("save", path)
+            saved = json.loads((Path(str(path) + SESSION_MAP)).read_text())["bindings"]
+            self.assertEqual(len(saved), SESSION_MAP_MAX)
+            self.assertNotIn("conv-0", saved)
+            self.assertIn("conv-%d" % (SESSION_MAP_MAX + 4), saved)
+
+    def test_parallel_slots_refuse_sessions(self):
+        engines = [SessionEngine(0), SessionEngine(1)]
+        for engine in engines:
+            engine.batch = 4
+        replica_engine = ReplicaEngine(engines)
+        self.assertFalse(replica_engine.session_serial)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                replica_engine.session_file("save", str(Path(tmp) / "auto.bin"))
+
+    def test_a_save_waits_for_the_request_running_on_that_replica(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "auto.bin")
+            engines = [SessionEngine(0), SessionEngine(1)]
+            engine = ReplicaEngine(engines)
+            done = threading.Event()
+            busy = engine.run_locks[1]
+            self.assertTrue(busy.acquire(timeout=0))          # a request is running on replica 1
+            thread = threading.Thread(target=lambda: (engine.session_file("save", path), done.set()))
+            thread.start()
+            self.assertFalse(done.wait(0.5))                   # the save waits for it
+            busy.release()
+            self.assertTrue(done.wait(10))
+            thread.join()
+            self.assertTrue((Path(tmp) / "auto.r1.bin").exists())
 
 
 class ReplicaService(unittest.TestCase):
