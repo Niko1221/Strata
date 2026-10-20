@@ -1651,12 +1651,15 @@ struct Engine {
                         for (int l = 0; l < 32; ++l) u[l] = t[l] + t[l ^ off];
                         std::memcpy(t, u, sizeof(u));
                     }
-                    unsigned ds_a, ds_b;
+                    unsigned ds_a, ds_b, hb;
                     std::memcpy(&ds_a, &a[o], 4);
                     std::memcpy(&ds_b, &b[o], 4);
-                    std::fprintf(stderr, "VDEBUG block %zu: ds new %08x old %08x, qs bytes %s, cpu butterfly sum %.9g (half %04x)\n",
+                    std::memcpy(&hb, &t[0], 4);      // f32 bits: __half_as_ushort/__float2half are __device__ only,
+                                                      // and a host function cannot call them (CUDA 12.0/12.1 reject it;
+                                                      // 0.1.44.1 did the same by hand for the widening direction, ab638a56)
+                    std::fprintf(stderr, "VDEBUG block %zu: ds new %08x old %08x, qs bytes %s, cpu butterfly sum %.9g (f32 %08x)\n",
                                  blk, ds_a, ds_b, std::memcmp(&a[o + 4], &b[o + 4], 32) == 0 ? "equal" : "DIFFER", (double) t[0],
-                                 (unsigned) __half_as_ushort(__float2half(t[0])));
+                                 hb);
                     break;
                 }
         }
