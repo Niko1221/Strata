@@ -5,7 +5,7 @@ Measured on 2026-10-15 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 ## Hardware and software
 
 - GPU and VRAM: NVIDIA GeForce RTX 5070 Ti, 16 GiB VRAM
-- CPU: AMD Ryzen 7 5700X 8-Core Processor (8 cores, 16 threads); installed RAM: 63.9 GiB; storage: not measured
+- CPU: AMD Ryzen 7 5700X 8-Core Processor (8 cores, 16 threads); installed RAM: 63.9 GiB DDR4-3600 (type and speed reported by the submitter); storage: not measured
 - OS: Windows 10 (10.0.19045); GPU driver: 616.64; CUDA: not read
 - Strata: project 0.1.44.1, commit 296b59d2; engine 0.1.44.1
 - Background workloads and power limits: not recorded
