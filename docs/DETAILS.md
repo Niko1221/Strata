@@ -911,7 +911,11 @@ print(r.choices[0].message.content)
   thinking at N tokens: when it gets there the server ends it with a short wrap-up line and `</think>`, and the model
   answers from there (the engine continues from what it already holds, so nothing is read again). The wrap-up is
   part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
-  `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. Off by default;
+  `strata-<model>.json` sets it for every request; a request's own value wins, and `0` means no budget. A request may
+  also send one of the other providers' names for the same budget - `"thinking_token_budget": N` (vLLM),
+  `"thinking_budget": N` (Qwen) or `"thinking_budget_tokens": N` (llama.cpp), what pi's `thinkingTokenBudgetField`
+  sends; `reasoning_budget_tokens` wins over them, and if several of the aliases are sent, the first of the three does.
+  Off by default;
   Anthropic's `"thinking": {"budget_tokens": N}` chooses the level, as above, and since 0.1.45 is also the budget (a
   `reasoning_budget_tokens` in the same request wins).
 - **max_tokens counts the thinking, so the answer keeps its room (0.1.45).** A client that caps the whole reply (the
