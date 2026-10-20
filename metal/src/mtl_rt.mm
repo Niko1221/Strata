@@ -3,6 +3,7 @@
 #import <Metal/Metal.h>
 
 #include "mtl_rt.h"
+#include "resource_path.h"
 
 #include <chrono>
 #include <cstdio>
@@ -36,6 +37,13 @@ struct Context::Impl {
 };
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
+// the MTLBuffer and offset that bind byte `off` of b (a chunked buffer: the chunk the offset selects)
+static inline id<MTLBuffer> BO(const Buffer& b, size_t off, size_t& o) {
+    if (!b.chunks) { o = off; return B(b); }
+    const size_t k = std::min(off / b.stride, b.chunks->size() - 1);
+    o = off - k * b.stride;
+    return (__bridge id<MTLBuffer>)(*b.chunks)[k];
+}
 static inline id<MTLComputePipelineState> P(const Pipeline* p) { return (__bridge id<MTLComputePipelineState>)p->handle; }
 static std::string g_device_name = "unknown GPU";
 
@@ -46,10 +54,9 @@ Context::Context() : impl_(new Impl) {
         std::exit(2);
     }
     impl_->q = [impl_->dev newCommandQueue];
-    const char* g = std::getenv("STRATA_GGML_COMMON");
-    ggml_common_path = g ? g : STRATA_GGML_COMMON_DEFAULT;
-    const char* k = std::getenv("STRATA_METAL_KERNELS");
-    kernel_dir = k ? k : STRATA_METAL_KERNELS_DEFAULT;
+    // env, then <exe dir>/metal/ (a component package), then the compiled-in source-tree path
+    ggml_common_path = strata_metal::resource("STRATA_GGML_COMMON", "ggml-common.h", STRATA_GGML_COMMON_DEFAULT);
+    kernel_dir = strata_metal::resource("STRATA_METAL_KERNELS", "kernels", STRATA_METAL_KERNELS_DEFAULT);
 }
 
 Context::~Context() { delete impl_; }
@@ -183,6 +190,38 @@ Buffer Context::alloc(size_t bytes) {
     return r;
 }
 
+Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
+    const size_t pg = 16384, maxlen = [impl_->dev maxBufferLength] / pg * pg;
+    if (bytes <= maxlen || std::getenv("STRATA_METAL_WRAP_SPLIT") && std::string(std::getenv("STRATA_METAL_WRAP_SPLIT")) == "0")
+        return wrap(p, bytes);
+    const size_t span = (max_span + pg - 1) / pg * pg;
+    if (span >= maxlen / 2) {
+        std::fprintf(stderr, "mtl: wrap %zu: a tensor of %zu bytes does not fit the chunks\n", bytes, max_span);
+        std::exit(4);
+    }
+    Buffer r;
+    r.chunks = std::make_shared<std::vector<void*>>();
+    r.stride = maxlen - span;
+    for (size_t base = 0; base < bytes; base += r.stride) {
+        const size_t len = std::min(maxlen, (bytes - base + pg - 1) / pg * pg);
+        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:(uint8_t*) p + base length:len
+                                                        options:MTLResourceStorageModeShared deallocator:nil];
+        if (!b) {
+            std::fprintf(stderr, "mtl: wrap chunk %zu+%zu failed\n", base, len);
+            std::exit(4);
+        }
+        r.chunks->push_back((__bridge_retained void*)b);
+        if (base + len >= bytes) break;
+    }
+    allocated_ += bytes;
+    r.handle = (*r.chunks)[0];
+    r.ptr = p;
+    r.bytes = bytes;
+    std::fprintf(stderr, "mtl: wrapped %.2f GB as %zu overlapping buffers (maxBufferLength %.2f GB, overlap %.2f GB)\n",
+                 bytes / 1e9, r.chunks->size(), maxlen / 1e9, span / 1e9);
+    return r;
+}
+
 Buffer Context::wrap(void* p, size_t bytes) {
     id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
     if (!b) {
@@ -198,6 +237,11 @@ Buffer Context::wrap(void* p, size_t bytes) {
 }
 
 void Context::free(Buffer& b) {
+    if (b.chunks) {
+        for (void* h : *b.chunks) { id<MTLBuffer> x = (__bridge_transfer id<MTLBuffer>)h; x = nil; }
+        b = Buffer{};
+        return;
+    }
     if (b.handle) {
         id<MTLBuffer> x = (__bridge_transfer id<MTLBuffer>)b.handle;
         x = nil;
@@ -210,8 +254,11 @@ static void encode(id<MTLComputeCommandEncoder> enc, const Dispatch& d) {
     [enc setComputePipelineState:P(d.p)];
     for (size_t i = 0; i < d.args.size(); ++i) {
         const Arg& a = d.args[i];
-        if (a.buf)
-            [enc setBuffer:B(*a.buf) offset:a.off atIndex:i];
+        if (a.buf) {
+            size_t o;
+            id<MTLBuffer> mb = BO(*a.buf, a.off, o);
+            [enc setBuffer:mb offset:o atIndex:i];
+        }
         else
             [enc setBytes:a.bytes.data() length:a.bytes.size() atIndex:i];
     }
@@ -352,8 +399,10 @@ double Context::run_icb(const std::vector<Dispatch>& ds, int reps, bool barrier_
                     std::fprintf(stderr, "mtl: run_icb needs buffer arguments only\n");
                     std::exit(5);
                 }
-                [c setKernelBuffer:B(*d.args[a].buf) offset:d.args[a].off atIndex:a];
-                [used addObject:B(*d.args[a].buf)];
+                size_t o;
+                id<MTLBuffer> mb = BO(*d.args[a].buf, d.args[a].off, o);
+                [c setKernelBuffer:mb offset:o atIndex:a];
+                [used addObject:mb];
             }
             if (d.tg_mem) [c setThreadgroupMemoryLength:(d.tg_mem + 15) / 16 * 16 atIndex:0];
             [c concurrentDispatchThreadgroups:MTLSizeMake(d.grid[0], d.grid[1], d.grid[2])

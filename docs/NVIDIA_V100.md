@@ -27,7 +27,7 @@ select "old" kernels everywhere: which kernel runs is decided per architecture w
 
 | Part of the prompt path | On sm_70 |
 | --- | --- |
-| MoE experts (ggml MMQ) | `dp4a` kernels (Volta has no int8 tensor cores) |
+| MoE experts | opt-in (`STRATA_PF_WMMA=1`, only when every visible card is compute capability 7+; MMQ otherwise): `gemm_iq_f16_grouped`: a group of experts per launch on the FP16 tensor cores, the weights dequantized in shared memory (+10% prompt speed against MMQ's `dp4a` kernels, [bench](../bench/results/2026-10-07-v100-prompt-experts/README.md); FP16 activations instead of MMQ's q8_1, so the answers differ) |
 | Dense projections (dequantized weights) | FP16 tensor-core GEMMs (cuBLAS / CUTLASS `s884`) |
 | BF16 projections (hyper-connection, router, indexer, ...) | converted to FP16 and run on the FP16 tensor cores (#655, #540; `STRATA_BF16_TC=0`: cuBLAS BF16, an FP32 SIMT kernel on Volta) |
 | QSA attention for decode and verify windows (and prompts with `STRATA_PROMPT_ATTN_OLD=1`) | #540's kernel (fewer shuffles, bit-exact; `STRATA_ATTN_PRE75=0`: the one other cards run) |
@@ -89,3 +89,17 @@ kernels' output, GPU work per verify window 22.8 -> 21.2 ms on a V100-SXM2 in th
 sm_70 only when `STRATA_SM70_TABLE=1` is set. They become the default once the contributor has confirmed them on a V100 with
 the 0.1.41 code. Without the variable sm_70 runs what 0.1.40.3 ran. The single switches (`STRATA_EXP_MODE`, `STRATA_MMVQ_IL`,
 `STRATA_GR_FAST`) still apply on top.
+
+## More opt-in switches (CUDA 12 experimental build)
+
+None of these is on by default. Each was measured by its contributor on a V100, not by the maintainers.
+
+| Switch | What it does | Contributor's number |
+| --- | --- | --- |
+| `STRATA_FUSE_DECODE=1` | the decode GEMV / MoE operator fusions of #1097 (gate/up + SwiGLU in one kernel, SwiGLU + quantizer in one kernel, all activation images of a vector in one pass, two BF16 projections in one kernel); bitwise the unfused kernels | 4-16 us per token saved, not visible end to end |
+| `STRATA_PF_WMMA=1` | the FP16 tensor-core prompt experts (above); also takes IQ4_NL down projections (K=640, #1771) | +10% prompt speed (#1401) |
+| `STRATA_PF_WMMA2=1` | a second prompt-expert kernel for IQ2_S gate/up and IQ4_NL down (#2356) | +2.5-4.3% prompt speed |
+| `STRATA_ARGMAX_ROWS_SM70=1` | the multi-block greedy pick on sm_7x (#2357), bitwise the one-block pick | +0.7-0.8% decode |
+| `STRATA_GR_NORM_FAST=1` | the register-split hyper-connection norm on CUDA (#2358) | +0.5-0.6% decode |
+| `STRATA_Q8_GATHER_WIDE=0` | turns off the 8-wide int8 KV gather (#1095) that the experimental build uses below compute capability 7.5 | +11% on the gather kernel |
+| `STRATA_GDN_REC_WARP=2` | the chain-split DeltaNet recurrence of the prompt on a V100 (#1098); changes the summation order (FP32 level), so the default stays the pipelined kernel; `1` is the bit-exact sync-free variant, `STRATA_GDN_CHUNK=1` the chunked path | +6-9% on the recurrence |

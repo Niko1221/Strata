@@ -13,6 +13,7 @@
 // (layer 0 | layers 1..47 + head).
 #include "gguf_lite.h"
 #include "mtl_rt.h"
+#include "resource_path.h"
 #include "ref_quant.h"
 #include "arena_budget.h"
 #include "stream.h"
@@ -207,6 +208,14 @@ private:
     gguf::File f_;
     std::unique_ptr<mtl::Context> cx_;
     mtl::Buffer W_;
+    // a model wrapped in chunks (mtl::Context::wrap): the routed experts are bound at the layer's first expert tensor,
+    // their offsets made relative to it; returns that binding offset (0 when W_ is one buffer or the experts stream)
+    size_t moe_rebase(uint64_t& g, uint64_t& u, uint64_t& d) const {
+        if (stream_ || !W_.chunks) return 0;
+        const uint64_t b = std::min({g, u, d});
+        g -= b; u -= b; d -= b;
+        return (size_t) b;
+    }
     int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
@@ -431,7 +440,20 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
         if (!st_->open(f_, err)) return false;
     } else {
         madvise(f_.map, f_.map_bytes, MADV_WILLNEED);
-        W_ = cx_->wrap(f_.map, f_.map_bytes);
+        // the chunks of a model bigger than one Metal buffer overlap by the largest range bound at one offset: a tensor,
+        // or a layer's routed experts (gate, up and down, bound together at the first of them: moe_rebase)
+        size_t span = 0;
+        for (const auto& kv : f_.tensors) span = std::max<size_t>(span, kv.second.bytes);
+        for (int l = 0; l < 48; ++l) {
+            const std::string b = "blk." + std::to_string(l) + ".";
+            const gguf::Tensor *g = f_.find(b + "ffn_gate_exps.weight"), *u = f_.find(b + "ffn_up_exps.weight"),
+                               *d = f_.find(b + "ffn_down_exps.weight");
+            if (!g || !u || !d) continue;
+            const uint64_t lo = std::min({g->offset, u->offset, d->offset});
+            const uint64_t hi = std::max({g->offset + g->bytes, u->offset + u->bytes, d->offset + d->bytes});
+            span = std::max<size_t>(span, hi - lo);
+        }
+        W_ = cx_->wrap(f_.map, f_.map_bytes, span);
         if (W_.handle == nullptr) { err = "metal window: cannot wrap " + shard1 + " as a Metal buffer"; return false; }
     }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
@@ -441,7 +463,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
-    lple_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
+    lple_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
 
     const int MAXC = (int) std::max<int64_t>(4096, (max_cells + 64) / 4 * 4 + 64), MB = MAXC / 4 + 2;
     max_cells_ = MAXC;
@@ -793,6 +815,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             a.up_off = st_->up_in_slot(l);
             a.down_off = st_->down_in_slot(l);
         }
+        const size_t ebase = moe_rebase(a.gate_off, a.up_off, a.down_off);
         a.gu_row = (uint32_t) ref::row_bytes(tg_.type, N);
         a.d_row = (uint32_t) ref::row_bytes(td.type, NFF);
         a.gu_stride = (uint64_t) a.gu_row * NFF;
@@ -851,7 +874,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         ac.b(23, ct);
         const std::string ak = std::string(stream_ ? "#arena" : "") + (ct ? "#ct" : "");
         g.p = P(lib_, gun, ac, gun + ak);
-        g.args = {mtl::Arg::B(EW), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
+        g.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(XF_.b, XF_.plane_bytes() * xkind(tg_.type)), mtl::Arg::B(h_), mtl::Arg::B(plan_),
                   mtl::Arg::V(a), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4)};
         if (stream_)
             for (int c = -1; c < 3; ++c)
@@ -865,7 +888,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "ffn_down_shexp.weight"), XH_, ysh_, N, ntok);
         mtl::Dispatch dd;
         dd.p = P(lib_, dnn, ac, dnn + ak);
-        dd.args = {mtl::Arg::B(EW), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
+        dd.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(h_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a), mtl::Arg::B(h_)};
         if (stream_)
             for (int c = -1; c < 3; ++c)
                 dd.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
@@ -1175,7 +1198,7 @@ bool Window::stream_arena(std::string& err) {
     }
     std::string prof;
     if (const char* e = std::getenv("STRATA_METAL_EXPERT_PROFILE")) prof = e;
-    else prof = std::string(STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
+    else prof = strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/expert-profile.bin";
     std::fprintf(stderr, "strata metal stream: %.2f GB allocated before the arena (the process holds %.2f GB, %.2f GB resident); "
                          "RAM %.1f GB (%.1f GB available, %.1f GB kept for macOS), GPU working set %.1f GB\n", used / gb,
                  pm0.footprint / gb, pm0.rss / gb, phys / gb, avail / gb, keep / gb, cx_->recommended_working_set() / gb);
@@ -1503,7 +1526,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         float* dst = (float*) (mnorm_.as<uint8_t>() + kv.second);
         for (uint64_t i = 0; i < x.bytes / 4; ++i) dst[i] = src[i] + 1.0f;
     }
-    lmtp_ = cx_->compile({std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
+    lmtp_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
     {
         const char* e = std::getenv("STRATA_METAL_MTP_Q8");
         if (!(e && std::string(e) == "0")) {
@@ -1556,7 +1579,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         const std::string beside = gguf_path.substr(0, gguf_path.find_last_of('/') + 1) + "rt/draft_vocab.bin";
         if (const char* e = std::getenv("STRATA_METAL_DRAFT_VOCAB")) vp = e;
         else if (FILE* t = std::fopen(beside.c_str(), "rb")) { std::fclose(t); vp = beside; }
-        else vp = std::string(STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
+        else vp = strata_metal::resource(nullptr, "data", STRATA_METAL_DATA_DEFAULT) + "/draft_vocab.bin";
         FILE* f = vp == "full" ? nullptr : std::fopen(vp.c_str(), "rb");
         if (f) {
             int32_t id;
@@ -1582,7 +1605,7 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         const char* e = std::getenv("STRATA_METAL_MTP_CHAIN");
         chain_ = !(e && std::string(e) == "0") && std::find(std::begin(ok_types), std::end(ok_types), ty) != std::end(ok_types);
         if (chain_) {
-            lchain_ = cx_->compile({"quant.metal", "units.metal", std::string(STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp_chain.metal"});
+            lchain_ = cx_->compile({"quant.metal", "units.metal", strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp_chain.metal"});
             dout_ = A(4 * MAXT); dprob_ = A(4 * MAXT); posv_ = A(4 * N);
             for (int i = 0; i < N; ++i) posv_.as<float>()[i] = (float) i;
             dmap_ = A(4 * std::max<size_t>(1, dvocab_.size()));
@@ -2314,6 +2337,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         ma.gu_stride = (uint64_t) ma.gu_row * NFF;
         ma.d_stride = (uint64_t) ma.d_row * N;
         if (stream_) { ma.gate_off = 0; ma.up_off = st_->up_in_slot(l); ma.down_off = st_->down_in_slot(l); }
+        const size_t ebase = moe_rebase(ma.gate_off, ma.up_off, ma.down_off);
         const uint32_t ne_ = N;
         {
             mtl::Dispatch g;
@@ -2345,7 +2369,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             gu.p = PP(p.lib, fn, c, fn + ak);
             gu.tg[0] = 64;
         }
-        gu.args = {mtl::Arg::B(EW), mtl::Arg::B(p.XS), mtl::Arg::B(p.HS), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
+        gu.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(p.XS), mtl::Arg::B(p.HS), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
         arena_args(gu);
         gu.indirect = &p.meta;
         gu.ind_off = 2 * 4;
@@ -2365,7 +2389,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
             dn.p = PP(p.lib, fn, c, fn + ak);
             dn.tg[0] = 64;
         }
-        dn.args = {mtl::Arg::B(EW), mtl::Arg::B(p.HS), mtl::Arg::B(p.YE), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
+        dn.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(p.HS), mtl::Arg::B(p.YE), mtl::Arg::B(p.tiles), mtl::Arg::V(ma)};
         arena_args(dn);
         dn.indirect = &p.meta;
         dn.ind_off = 5 * 4;

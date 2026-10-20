@@ -221,7 +221,8 @@ class Main(Base):
         self.assertEqual(code, 0, out)
         self.assertNotIn("EXPERIMENTAL", out)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/"
-        self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_SHARDS])   # no image encoder
+        self.assertEqual(self.downloads[:-1], [base + n for n in setup.UNSLOTH_SHARDS])   # then the image encoder: pictures are on by default
+        self.assertIn("mmproj", self.downloads[-1])
         self.assertEqual([v[0] for v in self.verified], list(setup.UNSLOTH_SHARDS))
         self.assertEqual([v[1:] for v in self.verified], list(setup.UNSLOTH_SHARDS.values()))
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
@@ -232,12 +233,12 @@ class Main(Base):
         args = cfg["args"]
         self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")
         self.assertTrue(args[args.index("--native") + 1].endswith("-00001-of-00004.gguf"))
-        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision", "--control-vector-scaled",
+        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--control-vector-scaled",
                      "--kv-resident"):
             self.assertNotIn(flag, args)
         self.assertEqual(args[args.index("--max-context") + 1], "8192")
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-q4_k_xl")
-        self.assertNotIn("vision", cfg)
+        self.assertFalse(cfg["vision"]["gpu"])                               # 11.9 GB: the CPU reader
 
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
@@ -372,7 +373,7 @@ class Main(Base):
         self.assertAlmostEqual(need, setup.MODELS[M]["download_gb"] + setup.UNSLOTH_RAM_LEFT_GB)
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8)       # no --gpus: stays on one GPU
         self.assertEqual(code, 0, out)
-        self.assertIn("uses them together anyway", out)
+        self.assertNotIn("uses them together anyway", out)                      # one card + RAM is the default now: nothing to warn about
         self.assertNotIn("layer_split", cfg)
         self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "71")   # all of them
         code, out, cfg = self.main(["--context", "8192", "--gpus", "0,1"], n_gpus=2, ram=127.8)   # asked for by name
@@ -428,8 +429,8 @@ class Main(Base):
     def test_yes_alone_keeps_one_gpu(self):
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=165.0)
         self.assertEqual(code, 0, out)
-        self.assertIn("runs on one GPU: using", out)
-        self.assertIn("--gpus 0,1 shares it", out)
+        self.assertIn("layer split", out)                                       # the second card is offered as a split
+        self.assertIn("(recommended)", out)
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--resident-budget-gib", cfg["args"])
 
@@ -472,7 +473,8 @@ class IQ4XS(Base):
         self.assertEqual(code, 0, out)
         self.assertNotIn("is EXPERIMENTAL", out)                               # (the menu still lists UD-Q4_K_XL)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-IQ4_XS/"
-        self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_IQ4_XS_SHARDS])
+        self.assertEqual(self.downloads[:-1], [base + n for n in setup.UNSLOTH_IQ4_XS_SHARDS])   # then the image encoder (pictures on by default)
+        self.assertIn("mmproj", self.downloads[-1])
         self.assertEqual(self.verified, [(n, *v) for n, v in setup.UNSLOTH_IQ4_XS_SHARDS.items()])
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertEqual(len(packs), 1, self.runs)
@@ -482,14 +484,15 @@ class IQ4XS(Base):
         args = cfg["args"]
         self.assertEqual(args[args.index("--resident-budget-gib") + 1], "40")
         self.assertTrue(args[args.index("--native") + 1].endswith("UD-IQ4_XS-00001-of-00003.gguf"))
-        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts", "--vision"):
+        for flag in ("--ple-gguf", "--mmap-experts", "--resident-experts"):
             self.assertNotIn(flag, args)
+        self.assertIn("--vision", args)                                       # pictures are on by default
         self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-ud-iq4_xs")
         pack = self.t / "data" / "packs" / "unsloth-ud-iq4_xs"                 # its own pack and tokenizer
         self.assertEqual(packs[0][packs[0].index("--out") + 1], str(pack))
         self.assertEqual(args[args.index("--pack") + 1], str(pack))
         self.assertEqual(cfg["tokenizer"], str(pack / "tokenizer"))
-        self.assertNotIn("vision", cfg)                                        # images: asked, off by default
+        self.assertFalse(cfg["vision"]["gpu"])                                 # pictures on by default, the CPU reader under 24 GB
         with tempfile.TemporaryDirectory() as t:                               # a start reads the choice back
             p = Path(t) / "strata-unsloth-ud-iq4_xs.json"
             p.write_text(json.dumps(cfg))
@@ -629,10 +632,10 @@ class LayerSplit(unittest.TestCase):
         argv = ["--family", "unsloth", "--model", M, "--context", "32768", "--no-start"]
         code, out, cfg, asked = install(165.0, self.found, argv, answers={"which GPUs?": "1", "Which GPUs?": "1"})
         self.assertEqual(code, 0, out)
-        self.assertTrue(any(f"{M}: which GPUs?" in q and "[1]" in q for q in asked), asked)
+        self.assertTrue(any("Which GPUs? [1]" in q for q in asked), asked)     # the fit rule's question: the largest card + RAM is the default
         self.assertEqual(cfg["gpu"], 0)
         self.assertIn("--resident-budget-gib", cfg["args"])
-        code, out, cfg, asked = install(165.0, self.found, argv, answers={f"{M}: which GPUs?": "2"})
+        code, out, cfg, asked = install(165.0, self.found, argv, answers={"Which GPUs?": "2", f"{M}: which GPUs?": "2"})
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], [0, 1])
         self.assertEqual(cfg["layer_split"], "auto")
@@ -791,7 +794,7 @@ class Resident(Base):
 
     def test_two_gpus_split_with_every_expert_in_ram(self):
         """Where the experts fit, two cards are the GGUF models' layer split (no budget question, no #498 note)."""
-        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8)
+        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8, answers={"Which GPUs?": "2"})     # the split chosen
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], [0, 1])
         self.assertEqual(cfg["layer_split"], "auto")
@@ -824,8 +827,9 @@ class BigFiles(Base):
         self.assertEqual(code, 0, out)
         base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/Q8_0/"
         names = [setup.model_file(setup.FAMILIES["unsloth"], Q8, i) for i in range(1, 7)]
-        self.assertEqual(self.downloads, [base + n for n in names])
-        self.assertEqual([v[0] for v in self.verified], names)
+        self.assertEqual(self.downloads[:-1], [base + n for n in names])   # then the image encoder (pictures on by default)
+        self.assertIn("mmproj", self.downloads[-1])
+        self.assertEqual([v[0] for v in self.verified][:len(names)], names)
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertIn("--compat-bf16", packs[0])
         args = cfg["args"]

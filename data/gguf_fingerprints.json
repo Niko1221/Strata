@@ -186,6 +186,35 @@
   ],
   "repo": "unsloth/Qwen3.8-Flash-Next-GGUF"
  },
+ "gyro/Gyro-S": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 58475973120,
+  "expert_bytes": {
+   "TQK6": 16357785600,
+   "TQK7": 9437184000
+  },
+  "experts_bpw": 1.708,
+  "bpw": 2.644,
+  "files": [
+   "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf"
+  ],
+  "repo": "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF"
+ },
+ "gyro/Gyro-M": {
+  "arch": "qwen4exp",
+  "tensors": 1224,
+  "bytes": 91954731520,
+  "expert_bytes": {
+   "TQ2_T": 32086425600
+  },
+  "experts_bpw": 2.125,
+  "bpw": 4.157,
+  "files": [
+   "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf"
+  ],
+  "repo": "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF"
+ },
  "_roles": {
   "blk.N.attn_gate.weight": [
    "IQ3_S",
@@ -252,7 +281,9 @@
    "IQ4_NL",
    "Q2_0",
    "Q5_1",
-   "Q8_0"
+   "Q8_0",
+   "TQ2_T",
+   "TQK7"
   ],
   "blk.N.ffn_down_shexp.weight": [
    "IQ4_NL",
@@ -271,7 +302,9 @@
    "IQ4_XS",
    "Q2_0",
    "Q4_K",
-   "Q5_K"
+   "Q5_K",
+   "TQ2_T",
+   "TQK6"
   ],
   "blk.N.ffn_gate_inp.weight": [
    "BF16",
@@ -301,7 +334,9 @@
    "IQ4_XS",
    "Q2_0",
    "Q4_K",
-   "Q5_K"
+   "Q5_K",
+   "TQ2_T",
+   "TQK6"
   ],
   "blk.N.ffn_up_shexp.weight": [
    "IQ3_S",
@@ -315,11 +350,13 @@
   ],
   "blk.N.hc_attn_down.weight": [
    "BF16",
+   "Q6_K",
    "Q8_0"
   ],
   "blk.N.hc_attn_inject.weight": [
    "BF16",
-   "F32"
+   "F32",
+   "Q6_K"
   ],
   "blk.N.hc_attn_norm.weight": [
    "F32"
@@ -330,11 +367,13 @@
   ],
   "blk.N.hc_ffn_down.weight": [
    "BF16",
+   "Q6_K",
    "Q8_0"
   ],
   "blk.N.hc_ffn_inject.weight": [
    "BF16",
-   "F32"
+   "F32",
+   "Q6_K"
   ],
   "blk.N.hc_ffn_norm.weight": [
    "F32"
@@ -362,6 +401,7 @@
   "blk.N.ple_key.weight": [
    "BF16",
    "Q2_0",
+   "Q6_K",
    "Q8_0"
   ],
   "blk.N.ple_norm_conv.weight": [
@@ -375,6 +415,7 @@
   ],
   "blk.N.ple_value.weight": [
    "BF16",
+   "Q6_K",
    "Q8_0"
   ],
   "blk.N.ssm_a": [
@@ -382,11 +423,13 @@
   ],
   "blk.N.ssm_alpha.weight": [
    "BF16",
-   "F32"
+   "F32",
+   "Q5_K"
   ],
   "blk.N.ssm_beta.weight": [
    "BF16",
-   "F32"
+   "F32",
+   "Q5_K"
   ],
   "blk.N.ssm_conv1d.weight": [
    "F32"
@@ -414,6 +457,7 @@
   ],
   "output_hc_down.weight": [
    "BF16",
+   "IQ4_NL",
    "Q8_0"
   ],
   "output_hc_norm.weight": [
@@ -421,6 +465,7 @@
   ],
   "output_hc_up.weight": [
    "BF16",
+   "IQ4_NL",
    "Q8_0"
   ],
   "per_layer_token_embd.weight": [
@@ -430,6 +475,7 @@
    "IQ3_S",
    "IQ4_XS",
    "Q3_K",
+   "Q6_K",
    "Q8_0"
   ]
  }

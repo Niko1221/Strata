@@ -128,6 +128,34 @@ class Ranges(FetchCase):
         self.assertEqual({r["name"]: r["sha256"] for r in manifest}, HASHES)
         self.assertEqual(M.verify(str(self.out)), [])
 
+    def test_ranges_are_read_in_parallel_and_come_back_in_order(self):
+        data = bytes(range(256)) * 40
+        seen = []
+
+        def get(url, a, b):
+            seen.append((a, b))
+            return data[a:b + 1]
+
+        for workers in (1, 4, 32):
+            seen.clear()
+            with self.subTest(workers=workers), mock.patch.object(M, "get", get):
+                got = b"".join(M.ranged("u", 100, len(data) - 1, 1000, workers))
+            self.assertEqual(got, data[100:])
+            self.assertEqual(sorted(seen)[0], (100, 1099))
+        with mock.patch.dict(M.os.environ, {"STRATA_DL_CONNECTIONS": "1"}):
+            self.assertEqual(M.connections(), 1)
+        with mock.patch.dict(M.os.environ, {"STRATA_DL_CONNECTIONS": ""}):
+            self.assertEqual(M.connections(), 8)
+
+    def test_a_failing_range_stops_the_parallel_read(self):
+        def get(url, a, b):
+            if a >= 2000:
+                raise IOError("boom")
+            return bytes(b - a + 1)
+
+        with mock.patch.object(M, "get", get), self.assertRaises(IOError):
+            list(M.ranged("u", 0, 9999, 1000, 4))
+
     def test_wrong_bytes_are_fetched_again_once_then_refused(self):
         self.fetch(Mirror())
         bad = bytes(len(A))                       # an install the #327 mirror corrupted: right size, wrong bytes
