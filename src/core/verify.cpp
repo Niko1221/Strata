@@ -83,6 +83,11 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
+// the head logits of row t of the last window, host memory (unified); null past the window
+const float* window_logits(void* w, int t);
+// the request's sampling over one row of them, on the CPU (metal/src/engine/host_sampler.h: the CUDA sampler's chain)
+int sample_row(const float* logits, int n_vocab, const int32_t* history, int history_len,
+               const strata::kernels::SamplerParams& p, const float* logit_bias, uint64_t counter);
 }  // namespace strata::metal_engine
 #endif
 
@@ -636,7 +641,7 @@ Verifier::~Verifier() {
 
 bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) {
     if (next_ && !next_->set_logit_bias(bias, err)) return false;
-    if (le_ < g_->n_layers) return true;
+    if (le_ >= 0 && le_ < g_->n_layers) return true;   // an earlier stage (-1: the whole model, as the Metal init leaves it)
     const OnDevice on_device(device_);
     if (!bias.empty() && bias.size() != (size_t) n_vocab_) {
         err = "logit_bias vocabulary size mismatch"; return false;
@@ -2691,7 +2696,24 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #if defined(STRATA_GPU_METAL)
     (void) pool;
     (void) user;
-    return strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err);
+    if (!strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err)) return false;
+    {   // a sampled or penalized request (or one with a logit_bias): the CUDA path's host-side sampling below, on the
+        // CPU over the window's logits (unified memory).  Row t draws Philox(seed, pos0 + t) with its own penalty row.
+        // Greedy without either keeps the window's argmax: the tokens are the ones it always gave.
+        const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
+        if (head_sampling_ && (sampled || hist_d_ != nullptr || !logit_bias_host_.empty())) {
+            const int32_t* hist = hist_d_ != nullptr ? (const int32_t*) strata::gpu::host_view(hist_d_) : nullptr;
+            for (int t = 0; t < T; ++t) {
+                const float* row = strata::metal_engine::window_logits(metal_, t);
+                if (row == nullptr) { err = "verify: the window's head logits are missing"; return false; }
+                out[t] = strata::metal_engine::sample_row(row, (int) n_vocab_, hist ? hist + (size_t) t * hist_len_ : nullptr,
+                                                          hist ? hist_len_ : 0, sampling_,
+                                                          logit_bias_host_.empty() ? nullptr : logit_bias_host_.data(),
+                                                          (uint64_t) (pos0 + t));
+            }
+        }
+    }
+    return true;
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
