@@ -20,6 +20,7 @@
 #include "../../tests/coop_probe.h"
 
 #include "strata/core/layer.hpp"
+#include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/ngram.hpp"
@@ -2711,16 +2712,8 @@ std::string g_mtp_path;
 int g_mtp_max_t = 0;
 bool mtp_load(const std::string& rt_dir, int max_t, std::string& err) {
     (void) err;
-    // the MTP model in GGUF form (tools/mtp_pack.py) beside the rt directory: STRATA_METAL_MTP_GGUF, else
-    // <rt>/../mtp-q2_0.gguf
-    std::string path;
-    if (const char* e = std::getenv("STRATA_METAL_MTP_GGUF")) path = e;
-    else {
-        std::string d = rt_dir;
-        while (!d.empty() && d.back() == '/') d.pop_back();
-        const size_t s = d.rfind('/');
-        path = (s == std::string::npos ? std::string(".") : d.substr(0, s)) + "/mtp-q2_0.gguf";
-    }
+    // the MTP model in GGUF form (tools/mtp_pack.py) beside the rt directory; the session fingerprint resolves it the same way
+    const std::string path = strata::core::metal_mtp_gguf_path(rt_dir);
     g_mtp_path = path;
     g_mtp_max_t = max_t;
     return true;
