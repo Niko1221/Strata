@@ -2344,6 +2344,11 @@ class PeerDevice(unittest.TestCase):
         self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1]}), args)
         self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1], "split_skip_if_fits": True}), args)
 
+    def test_no_split_with_expert_parallel(self):
+        args = ["--native", "x", "--expert-parallel-device", "1"]
+        self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1]}), args)
+        self.assertEqual(engine_args({"args": list(args), "gpu": [0, 1], "split_skip_if_fits": True}), args)
+
     def test_both_cards_visible(self):
         from serve.server import child_env
         env = child_env({"args": ["--peer-device", "1"], "gpu": [0, 1]})

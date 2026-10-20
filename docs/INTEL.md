@@ -170,6 +170,43 @@ SYCL build (`sycl/CMakeLists.txt`) takes every other source from the original lo
 is edited. `sycl/include/dpct/` is the vendored SYCLomatic helper library, so the port builds without the
 migration tool.
 
+**Expert-parallel prompt row reduction (opt-in).** With `--expert-parallel-device`, the peer card returns one
+FP32 row per routed expert of every prompt token, and the primary combines them. `STRATA_EP_PREFILL_REDUCE=1` sums
+the peer-owned routed experts of each token on the peer first and returns one FP32 row per token; the primary adds
+its own routed sum and the shared expert. Decode is unchanged. Unset keeps the per-expert rows and the original
+combine. The FP32 addition order changes, so generated text can change. `STRATA_EP_PREFILL_PUSH=1` (with the
+reduction) moves the sum region to the primary and has the peer write it through the IPC mapping, each producer
+work item fencing at system scope; the host peer wait stays, and the primary still copies the sum uncached before
+using it. PUSH changes the transport, not the arithmetic: its outputs are bitwise those of the reduction alone.
+
+Measured on 0.2.0-beta, two B70s, IQ3_XXS, `--expert-parallel-device 1 --prefill 8192 --max-context 65536 --kv int8
+--spec 4 --mtp`, one slot, fresh prompts, one engine per arm (prompt tok/s at 4K / 32K):
+
+| | 4K | 32K | decode tok/s, two prompts |
+|---|---:|---:|---|
+| unset | 635 | 720 | 80.0 / 81.3 |
+| `STRATA_EP_PREFILL_REDUCE=1` | 993 | 1,264 | 80.6 / 83.8 |
+| `+ STRATA_EP_PREFILL_PUSH=1` | 1,148 | 1,514 | 80.2 / 83.4 |
+
+A one-off posted write of 256,235,520 bytes takes 22.8 ms (11.2 GB/s) against 77.2 ms (3.3 GB/s) for an uncached
+peer read, measured on 0.1.x; it excludes the primary's later uncached copy. These are bounded screens at one slot,
+not a stability or 200K-context qualification.
+
+`sycl/probe/ep_prefill_reduce.cpp` checks two-card IPC updates against an independent FP32 FMA oracle in the
+original router order: all-primary, all-peer and mixed ownership, up to 4,096 tokens, repeated updates and a cached
+GPU consumer. Run it without arguments and with `--push`; both 26-case suites pass with a largest error of 9.54e-7
+(tolerance scaled by contribution magnitude). Build it in the oneAPI development image and run it with both cards;
+Docker needs `--cap-add SYS_PTRACE` for the Level Zero IPC import under its default seccomp profile:
+
+```sh
+icpx -O2 -fsycl -fsycl-targets=spir64_gen \
+  -Xsycl-target-backend=spir64_gen "-device bmg-g31 -options -cl-fp32-correctly-rounded-divide-sqrt" \
+  -I sycl/include -I include sycl/probe/ep_prefill_reduce.cpp \
+  sycl/src/kernels/cuda/ep_kernels.dp.cpp -lze_loader -o ep-prefill-reduce-probe
+ONEAPI_DEVICE_SELECTOR='level_zero:*' SYCL_CACHE_PERSISTENT=0 ./ep-prefill-reduce-probe
+ONEAPI_DEVICE_SELECTOR='level_zero:*' SYCL_CACHE_PERSISTENT=0 ./ep-prefill-reduce-probe --push
+```
+
 **How it was made, so it can be redone.**
 
 1. `sycl/tools/Dockerfile` - the dev image: the llama.cpp SYCL image plus SYCLomatic (`dpct` 2025.3),
@@ -793,6 +830,42 @@ identical old against new on the A750 (1.4K, 2.5K and 4K prompts) and on the Arc
 against 1,240), and on the B70 without `--stream-experts` the prompt is faster (680-740 against 77-456 tok/s). The
 regression test is `sycl/tools/test_prompt_deadlock.sh` (the 2,744-token prompt; it times out on the old build and passes on
 the fix).
+
+## Two cards computing each layer's experts together: `--expert-parallel-device` (2026-10-08)
+
+Measured on 2x Arc Pro B70 (32 GB each, `xe`), Flash-Next IQ3_XXS, Ryzen 9 9950X3D, 60 GB RAM, through the server
+(`sycl/serve/server_intel.py`, 131,072 context, INT8 KV with `--kv-resident 32768`, `--vram-reserve-mib 2048`, the
+default drafting), greedy, thinking off, the same request 3 times (the table: the 2nd and 3rd, the 1st reads the prompt):
+
+| | `--layer-split auto` | `--expert-parallel-device 1` |
+|---|---|---|
+| where the experts live | layers 0-28 on card 0, 29-47 on card 1, every expert in VRAM | card 0: 283 per layer, card 1: the other 229, every expert in VRAM |
+| decode, a BST class (600 tokens) | 94.3 tok/s | **107.9 tok/s** (+14.4%) |
+| decode, a 300-word explanation (384 tokens) | 64.2 tok/s | **72.6 tok/s** (+13.1%) |
+| output | | byte-identical to the layer split, all 6 requests of each |
+
+`--expert-parallel-device N` uses two cards, card 0 and card N (N is a card number, not a count). Card 0 runs every
+layer and card N holds the experts card 0 does not; for each layer the two cards compute their own experts at the same
+time, card N writes its rows into card 0's memory, and card 0 combines them as on one card. Only the experts run on
+both cards; the rest of each layer runs on card 0 alone. Each layer's experts are dealt to the two cards hottest
+first, in pairs alternating 0,1 / 1,0, so both serve about the same share of the routing (in a unitrace of 96 decoded
+tokens each card's expert kernels take 160-170 ms of the trace's 1.1 s). The sets are fixed at the start (no prompt
+loans, no adaptive swaps).
+
+- Needs `--stream-experts` and every expert in one of the two cards' VRAM; not with `--layer-split`, `--peer-device`
+  or `--pipeline-windows`.
+- In a server config: `"gpu": [0, 1]`, `"--expert-parallel-device", "1"` in `"args"` and
+  `"ONEAPI_DEVICE_SELECTOR": "level_zero:*"` in `"env"` (setup writes the last for a list of cards). The server adds
+  no `--layer-split` beside the option. With every expert in VRAM nothing is mirrored in RAM.
+- `--batch N` works with it: 4 requests at once give the same outputs as one at a time.
+- The prompt path computes card N's experts on card N, with card 0's FP16 expert path (byte-identical rows).
+  `STRATA_EP_PREFILL=0` reads them from the GGUF on card 0 instead; `STRATA_EP_MIRROR=1` then mirrors them in pinned
+  RAM (18 GB for IQ3_XXS).
+- Checks: `STRATA_EP_VERIFY=1` (with `STRATA_EP_MIRROR=1`) has card 0 compute every row itself and compare card N's
+  rows with them word for word: no row differed in the 448 windows the three runs reported. `STRATA_EP_SELF=1` runs
+  the window on card 0's own rows only; its output is byte-identical to the expert-parallel one.
+- Through `--tokens` (no server, 32K context), 512 tokens of the BST prompt: 107.3 tok/s; one card with the other
+  experts in the RAM mirror: 50.8 (1,024 tokens).
 
 ## Not done
 
