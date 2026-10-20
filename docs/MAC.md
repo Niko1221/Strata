@@ -145,6 +145,37 @@ Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac tested her
 checks the decoder against the format definition and the expert kernels against a double-precision reference.
 `STRATA_METAL_GYRO_TILES=0` turns off the dense-weight tiles.
 
+### Sampling
+
+A request's sampling settings work as on the PC, on the solo path and in batch slots: `temperature`, `top_p`, `top_k`
+(1-64; 0 or more than 64 keeps 64), `min_p`, `seed`, the penalties and `logit_bias`, in the PC engine's order
+(logit_bias, penalties, top_k, top_p, min_p, temperature) with one Philox draw per token keyed by the seed and the
+token's position, so a request with a fixed seed gives the same text again. Temperature 0, or none, is greedy and gives the same tokens as before. The server's default
+sampling (the model card's, when neither the request nor the config sets one) reaches the Mac engine too; send
+`temperature: 0` for greedy answers (and `presence_penalty: 0`: the card's presence penalty is added to a
+temperature-0 request too, and on the Mac it now applies).
+
+- **Solo path:** the MTP drafts stay greedy, and a draft is kept when the sampled token equals it (as on the PC), so
+  fewer drafts are kept than with greedy decoding.
+- **Batch slots:** each slot draws with its own request's temperature, top_p, top_k, min_p and seed; penalties are not
+  applied in slots and `logit_bias` is refused with `--batch` (both as on the PC).
+- The Mac picks the token on the CPU from the window's logits (unified memory, no copy): 9-46 µs per token row,
+  11 µs at temperature 0.7, top_p 0.95, top_k 20 (`metal/tests/engine/host_sampler_parity --bench`, 248,320 logits).
+
+Measured on the M5 Max (128 GB) with Qwen3.8-Flash-Next IQ3_S at 262K context, 2026-11-01 (`tools/metal_sampling_test.py
+--bench`, 256 tokens per request; sampled = temperature 0.7, top_p 0.95, top_k 20). Solo, 4 short prompts with MTP: greedy
+88.8 / 104.6 / 96.6 / 94.5 tok/s (mean 96.2), sampled 94.7 / 103.0 / 93.2 / 89.2 tok/s (mean 95.0); drafts kept 0.71 in
+both. Two slots (`--batch 2`, one row per slot in each window): greedy 17.76 ms per window = 112.0 tok/s together, sampled
+17.67 ms per window = 112.6 tok/s together.
+
+Checked with `tools/metal_sampling_test.py` (18 checks, all pass): the same seed gives the same text twice and in a
+second engine process, another seed another text; 208 one-token requests drew exactly the token a reference sampler
+(written in the test from the PC engine's sampler code) draws from the same logits, with top_k, top_p, min_p, penalties
+and a logit_bias. With temperature 0 the tokens equal 0.2.0's (a 28-, a 2,257- and a 16,180-token prompt). Two slots
+with their own settings each give the tokens the same request gives alone, and so does a greedy slot beside a sampled
+one. Not ported: the opt-in draft schemes `STRATA_SPEC_COUPLED`, `STRATA_SPEC_PROB` and `STRATA_SPEC_GUMBEL` (the Mac
+drafts greedily). Not measured: other Macs and models.
+
 ## Measured (M5 Max, 128 GB)
 
 **Measured on:** Apple M5 Max, 128 GB, macOS 27.2, Qwen3.8-Flash-Next packs, greedy, 200 generated tokens, Strata engine version
