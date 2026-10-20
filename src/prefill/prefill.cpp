@@ -41,6 +41,7 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/expert_nibble.hpp"
 #include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
@@ -2388,6 +2389,31 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
 bool Prefill::ring_bytes_enabled() { return ring_bytes_on(); }
 size_t Prefill::slot_guard_bytes() { return mmq::direct_slot_guard(); }
 
+bool Prefill::nibble_prompt_check(std::string& why) {
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    if (mmq::direct_mode() != 0) {
+        why = "STRATA_MMQ_DIRECT (the prompt MMQ would read the 4-bit slots in place)";
+        return false;
+    }
+    for (int64_t l = 0; lay.native && l < (int64_t) lay.fmt.size(); ++l) {
+        if (!core::nibble::layer(l).on) continue;
+        const auto& f = lay.fmt[(size_t) l];
+        const char* w = !mmq_plan().any || (size_t) l >= mmq_plan().layer.size() || !mmq_plan().layer[(size_t) l]
+                            ? "no prompt MMQ for it (the FP16 path dequantizes GGUF blocks)"
+                        : mmq_plan().wmma_only[(size_t) l] ? "the WMMA tiles read GGUF blocks"
+                        : fused::native_supported(f.gu_type, f.d_type) ? "the fused prompt kernels read GGUF blocks"
+                        : mmq::matrix_bytes(f.gu_type, 1280, N) != (size_t) core::nibble::kRows * f.gu_row ||
+                                  mmq::matrix_bytes(f.d_type, N, 640) != f.bytes - f.down_off
+                            ? "MMQ's matrices are not the blob's [gate | up] and down"
+                            : nullptr;
+        if (w != nullptr) {
+            why = "layer " + std::to_string(l) + ": " + w;
+            return false;
+        }
+    }
+    return true;
+}
+
 namespace {
 
 const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::string& err) {
@@ -3550,6 +3576,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const bool had_gu = lay.native && lay.fmt[(size_t) l].had_gu;
                     const bool had_d = lay.native && lay.fmt[(size_t) l].had_d;
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
+                    // STRATA_EXPERT_NIBBLE=1: a layer whose gate/up experts are 4-bit codes in their slots is gathered
+                    // for MMQ as the GGUF blocks rebuilt from them (core::nibble::gather_gguf); every other expert path
+                    // reads GGUF blocks in the slot, so it stops there instead (never a wrong answer)
+                    const core::nibble::LayerVram& nib_l = core::nibble::layer(l);
                     const int had_block = lay.native ? lay.fmt[(size_t) l].had_block : 0;
                     const float* had_sx = had_gu ? m.had_sx[(size_t) l] : nullptr;   // resolved in init
                     const float* had_sh = had_d ? m.had_sh[(size_t) l] : nullptr;
@@ -3587,6 +3617,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     bool cpu_arm = true;                  // auto: this layer may share (false: the arm without)
                     int cpu_set = -1;                     // auto: the wall events' set, -1 when not measured
                     bool cpu_cold = false;                // auto: one-time costs in the window (no reading)
+                    if (fused_l && nib_l.on) core::nibble::fatal(l, "the prompt path's fused experts", "they read GGUF blocks");
                     if (fused_l) {
                         if (static bool said = false; !said) {
                             said = true;
@@ -4429,6 +4460,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
                                 pt.mark(kPfDequant, cs);
                             }
+#if STRATA_EXPERT_NIBBLE_BUILT
+                            if (nib_l.on) {   // the GGUF blocks rebuilt from the 4-bit slots: the bytes the copy gives
+                                if (const int rc = core::nibble::gather_gguf(nib_l, gg.blob, gg.first, gg.n, m.grp_gu, mmq_gub,
+                                                                             m.grp_d, mmq_db, zero, m.cs); rc != 0)
+                                    core::nibble::fatal(l, "the prompt path's group gather", cudaGetErrorString((cudaError_t) rc));
+                            } else
+#endif
                             // NVFP4: each expert's scales go next to its group slot in the same launch
                             if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
                                                           m.grp_d, mmq_db, m.cs, f.tail_off,
@@ -4454,6 +4492,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // a ring slot or the peer's), which STRATA_MMQ_DIRECT reads in place
                         auto compute = [&](size_t j, const uint8_t* blob_dev, int slot, int32_t cslot) -> bool {
                             const int32_t e = order[j];
+                            if (nib_l.on && (!use_mmq || direct || wmma_l || cslot < 0 || !lay.native ||
+                                             mmq_gub != (size_t) core::nibble::kRows * nib_l.raw_gu_row ||
+                                             mmq_db != nib_l.down_bytes))
+                                core::nibble::fatal(l, "the prompt path",
+                                                    !use_mmq ? "no MMQ for the layer (the FP16 path dequantizes GGUF blocks)"
+                                                    : direct ? "STRATA_MMQ_DIRECT reads the slots in place"
+                                                    : wmma_l ? "the WMMA tiles read GGUF blocks"
+                                                    : cslot < 0 ? "an expert not in this GPU's slots (streamed or the peer's)"
+                                                                : "the MMQ group buffers are not the blob's [gate | up] and down");
                             pt.mark(kPfDequant, cs);
                             if (use_mmq) {
                                 // gather the expert into its group slot (GGUF blocks, unchanged or converted)
@@ -4500,6 +4547,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     gg = mmq::GatherGroup{};
                                 } else if (lay.native) {
                                     const auto& f = lay.fmt[(size_t) l];
+#if STRATA_EXPERT_NIBBLE_BUILT
+                                    if (nib_l.on) {   // as the group gather (flush), one expert at its group position q
+                                        const uint8_t* one[mmq::kGatherGroupMax] = {};
+                                        one[q] = blob_dev;
+                                        if (const int rc = core::nibble::gather_gguf(nib_l, one, (int) q, (int) q + 1, m.grp_gu,
+                                                                                     mmq_gub, m.grp_d, mmq_db,
+                                                                                     last_of_group ? MMQ_TAIL : 0, m.cs); rc != 0)
+                                            core::nibble::fatal(l, "the prompt path's gather", cudaGetErrorString((cudaError_t) rc));
+                                    } else
+#endif
                                     // NVFP4: this expert's scales go next to its group slot in the same launch
                                     mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off,
                                                        mmq_db, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs,
