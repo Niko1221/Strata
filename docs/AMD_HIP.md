@@ -671,8 +671,13 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
   the directory, from which it takes the file of its own rocBLAS build) and runs those solutions in place of rocBLAS's
   choice, the default kernel for every shape without a row. Solution indices are valid for one architecture and one
   rocBLAS build (the full version string, `5.6.0.8d1ae90e` for ROCm 10.0.0's), and the engine refuses any other
-  table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured
-  on an RX 6900 XT. Other gfx1030 cards (RX 6800 / 6800 XT / 6950 XT, Radeon PRO W6800 / V620) run it as well - the
+  table. Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu) and
+  `gfx1030-rocblas-5.4.0.ad84daa81c.txt` (TheRock's `gfx103X-all` 7.13.0a20260515 wheels, which setup installs into
+  `.venv` when there is no system ROCm 7), both measured on an RX 6900 XT. With the 7.13 table, a 268-395-token
+  follow-up on a cached conversation read in 1,635 ms instead of 1,851 (median of 6 each, every pair 10-13% faster),
+  a fresh 745-1,569-token prompt in 3,435 instead of 3,554 ms and a fresh 4.9-6.7K-token one in 8,976 instead of
+  9,070 ms (UD-Q4_K_XL with `STRATA_HIP_PROMPT_F16=1`, which the table needs; nothing else differed between the two).
+  Other gfx1030 cards (RX 6800 / 6800 XT / 6950 XT, Radeon PRO W6800 / V620) run it as well - the
   indices are valid on every gfx1030 - but have fewer CUs or other clocks, so their own table may pick differently;
   `tune_rocblas` makes one in about 5 minutes ([Tuning table](#tuning-table)), and a report of what it changed is welcome. Setup
   points the engine at the directory when a table for the card's architecture exists, and the engine's log says
