@@ -6998,6 +6998,11 @@ class Server(ThreadingHTTPServer):
     # (STRATA_HTTP_BACKLOG overrides it)
     request_queue_size = max(5, int(os.environ.get("STRATA_HTTP_BACKLOG") or 256))
 
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        if ":" in server_address[0]:
+            self.address_family = socket.AF_INET6
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], ConnectionError):   # a client that hangs up needs no stack trace
             super().handle_error(request, client_address)
@@ -7656,7 +7661,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                                      "written by setup.py")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
-                         "on your network (set an API key); also \"host\" in the config")
+                         "on your network, :: = all IPv6 interfaces (set an API key); also \"host\" in the config")
     ap.add_argument("--script-cycle", action="store_true",
                     help="with --script given more than once: repeat the scripts by position instead of advancing "
                          "to the last one and staying there, so extra requests a harness makes (a session title, "
@@ -8103,18 +8108,19 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()
-    here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
+    here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"
           f"{', API key required' if svc.api_key else ''})", flush=True)
     print(f"       open http://{here}:{bound_port}/ in a browser to chat; close this window to stop the model", flush=True)
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         # issue #26: reachable from other devices - say at which address, and what can still block it
-        ips = lan_addresses()
+        ips = [f"[{a.host}]"] if ":" in a.host and a.host != "::" else [] if a.host == "::" else lan_addresses()
         for ip in ips:
             print(f"       from other devices: http://{ip}:{bound_port}/   (API: http://{ip}:{bound_port}/v1)", flush=True)
         if not ips:
-            print("       from other devices: http://<this PC's IP address>:" + str(bound_port) + "/", flush=True)
+            address = "[<this PC's IPv6 address>]" if a.host == "::" else "<this PC's IP address>"
+            print(f"       from other devices: http://{address}:{bound_port}/", flush=True)
         if not svc.api_key:
             print("       WARNING: no API key - anyone on your network can use this model. Add \"api_key\": \"...\" "
                   "to the config (clients send it as their API key; the web page asks for it)", flush=True)
@@ -8128,7 +8134,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         # on its own thread: webbrowser.open waits for the browser launcher, which on Linux can run for as long as
         # the browser does, and the main thread must be free to take Ctrl+C and SIGTERM (#1872)
         threading.Thread(target=webbrowser.open, daemon=True, name="strata-open-browser",
-                         args=(f"http://{'127.0.0.1' if a.host in ('0.0.0.0', '') else a.host}:{bound_port}/",)).start()
+                         args=(f"http://{here}:{bound_port}/",)).start()
     if ready_path is not None or event_sink is not None:
         ready_host = f"[{here}]" if ":" in here and not here.startswith("[") else here
         record = {"schema_version": 1, "instance_id": svc.instance_id, "pid": os.getpid(),

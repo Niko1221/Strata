@@ -248,6 +248,8 @@ strata doctor                                  # check the installed engine file
 you choose a model) and `strata update` do. To reach Strata from your phone or another PC, use
 `strata launch --access lan`. It makes an API key and will not start on a network without one. No browser opens unless
 you add `--open`. Guide: [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). Whole client: [docs/TERMINAL.md](docs/TERMINAL.md).
+For an IPv6-only network, use `strata launch --access lan --host ::`; IPv6 URLs put the address in brackets, for example
+`http://[2001:db8::7]:8080/v1`.
 
 ### With AI agents
 

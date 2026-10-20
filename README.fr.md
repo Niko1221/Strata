@@ -255,6 +255,8 @@ strata doctor                                  # check the installed engine file
 choisissez un modèle) et `strata update` le font. Pour joindre Strata depuis votre téléphone ou un autre PC, utilisez
 `strata launch --access lan`. La commande crée une clé d'API et refuse de démarrer sur un réseau sans elle. Aucun
 navigateur ne s'ouvre, sauf si vous ajoutez `--open`. Guide : [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). Le client complet : [docs/TERMINAL.md](docs/TERMINAL.md).
+Pour un réseau IPv6 uniquement, utilisez `strata launch --access lan --host ::` ; les URL IPv6 mettent l'adresse entre
+crochets, par exemple `http://[2001:db8::7]:8080/v1`.
 
 ### Avec des agents d'IA
 
