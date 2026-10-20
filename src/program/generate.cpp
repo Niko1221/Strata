@@ -9580,6 +9580,11 @@ int main(int argc, char** argv) {
             checks.push_back(std::move(c));
             const Clock::time_point te0 = Clock::now();
             const size_t before_evict = checks.size();
+            // the chain's root - the checkpoint at the end of the system prompt - is not always item 0: a system
+            // prompt that ends past the first periodic chunk end leaves grid checkpoints ahead of it (#2228,
+            // #3090).  Its length comes from the conversation itself (conv_cache.hpp), scanned once, and only
+            // when something must leave
+            int64_t root_len = -1;
             while ((int) checks.size() > o.prompt_cache) {
                 std::vector<uint64_t> stamps;
                 std::vector<char> is_tail;
@@ -9601,11 +9606,16 @@ int main(int argc, char** argv) {
                     }
                 std::vector<int64_t> lens;
                 for (const ConvCheckpoint& k : checks) lens.push_back((int64_t) k.ids.size());
+                if (root_len < 0)
+                    root_len = strata::program::conv_cache::root_length(cur.data(), cur.size(), o.turn_token,
+                                                                        o.prompt_cache_root);
+                const size_t root_i = strata::program::conv_cache::root_index(lens.data(), lens.size(), root_len);
                 const size_t victim = o.prompt_cache_spread
                     ? strata::program::conv_cache::spread_victim(lens.data(), stamps.data(), stamps.size(),
-                                                                 o.prompt_cache, tail_flags.get(), pin_flags.get())
+                                                                 o.prompt_cache, tail_flags.get(), pin_flags.get(),
+                                                                 root_i)
                     : strata::program::conv_cache::eviction_victim(stamps.data(), stamps.size(), o.prompt_cache,
-                                                                   tail_flags.get(), pin_flags.get());
+                                                                   tail_flags.get(), pin_flags.get(), root_i);
                 ckpt_pool.give(std::move(checks[victim]));   // (STRATA_CKPT_POOL; else nothing)
                 checks.erase(checks.begin() + (std::ptrdiff_t) victim);
             }

@@ -7845,19 +7845,29 @@ int main(int argc, char **argv) try {
                 tail_ckpt_len = -1;   // the flagged tail was dropped and a normal checkpoint takes its length
             }
             checks.push_back(std::move(c));
+            // the chain's root is not always item 0: a system prompt that ends past the first periodic chunk end
+            // leaves grid checkpoints ahead of it (#2228, #3090).  Its length comes from the conversation itself,
+            // scanned once, and only when something must leave
+            int64_t root_len = -1;
             while ((int) checks.size() > o.prompt_cache) {
                 std::vector<uint64_t> stamps;
                 std::vector<char> is_tail;
+                std::vector<int64_t> lens;
                 stamps.reserve(checks.size());
                 for (const ConvCheckpoint& k : checks) {
                     stamps.push_back(k.used);
                     is_tail.push_back(tail_ckpt_len >= 0 && (int64_t) k.ids.size() == tail_ckpt_len);
+                    lens.push_back((int64_t) k.ids.size());
                 }
                 // the tail checkpoint serves only a branch of the last request: it leaves before a periodic one
                 std::unique_ptr<bool[]> tail_flags(new bool[is_tail.size()]);
                 for (size_t i = 0; i < is_tail.size(); ++i) tail_flags[i] = is_tail[i] != 0;
+                if (root_len < 0)
+                    root_len = strata::program::conv_cache::root_length(cur.data(), cur.size(), o.turn_token,
+                                                                        o.prompt_cache_root);
+                const size_t root_i = strata::program::conv_cache::root_index(lens.data(), lens.size(), root_len);
                 const size_t victim = strata::program::conv_cache::eviction_victim(
-                    stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get());
+                    stamps.data(), stamps.size(), o.prompt_cache, tail_flags.get(), nullptr, root_i);
                 checks.erase(checks.begin() + (std::ptrdiff_t) victim);
             }
             return true;
