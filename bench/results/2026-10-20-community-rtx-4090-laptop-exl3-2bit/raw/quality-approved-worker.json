@@ -1,0 +1,405 @@
+{
+  "teacher_reference": "<DATA_DIR>/Strata-EXL3-tuning/results/quality/baseline.tsv",
+  "teacher_top64": {
+    "<DATA_DIR>/Strata-EXL3-tuning/results/quality/baseline.tsv": {
+      "code": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 2.0507312703295493,
+        "ppl": 2.0507312703295493
+      },
+      "docs": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 10.270690497984473,
+        "ppl": 10.270690497984473
+      },
+      "english": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 4.379202485413796,
+        "ppl": 4.379202485413796
+      },
+      "multilingual": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 2.696823469016868,
+        "ppl": 2.696823469016868
+      },
+      "agent": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 3.974824458652158,
+        "ppl": 3.974824458652158
+      },
+      "all": {
+        "positions": 4995,
+        "top1": 1.0,
+        "kl": 0.0,
+        "kl_p99": 0.0,
+        "ppl_ref": 3.972050660872459,
+        "ppl": 3.972050660872459
+      }
+    },
+    "<DATA_DIR>/Strata-EXL3-tuning/results/quality/control.tsv": {
+      "code": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 2.0507312703295493,
+        "ppl": 2.0507312703295493
+      },
+      "docs": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 10.270690497984473,
+        "ppl": 10.270690497984473
+      },
+      "english": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 4.379202485413796,
+        "ppl": 4.379202485413796
+      },
+      "multilingual": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 2.696823469016868,
+        "ppl": 2.696823469016868
+      },
+      "agent": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 3.974824458652158,
+        "ppl": 3.974824458652158
+      },
+      "all": {
+        "positions": 4995,
+        "top1": 1.0,
+        "kl": 0.0,
+        "kl_p99": 0.0,
+        "ppl_ref": 3.972050660872459,
+        "ppl": 3.972050660872459
+      }
+    },
+    "<DATA_DIR>/Strata-EXL3-tuning/results/quality/p7.tsv": {
+      "code": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 2.0507312703295493,
+        "ppl": 2.0507312703295493
+      },
+      "docs": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 10.270690497984473,
+        "ppl": 10.270690497984473
+      },
+      "english": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 4.379202485413796,
+        "ppl": 4.379202485413796
+      },
+      "multilingual": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 2.696823469016868,
+        "ppl": 2.696823469016868
+      },
+      "agent": {
+        "positions": 999,
+        "top1": 1.0,
+        "kl": 0.0,
+        "ppl_ref": 3.974824458652158,
+        "ppl": 3.974824458652158
+      },
+      "all": {
+        "positions": 4995,
+        "top1": 1.0,
+        "kl": 0.0,
+        "kl_p99": 0.0,
+        "ppl_ref": 3.972050660872459,
+        "ppl": 3.972050660872459
+      }
+    }
+  },
+  "prompt_full_vocab": {
+    "<DATA_DIR>/Strata-EXL3-tuning/results/quality/control-prompt": {
+      "prompts": 20,
+      "top1": 1.0,
+      "kl": 0.0,
+      "kl_median": 0.0,
+      "kl_max": 0.0,
+      "details": [
+        {
+          "segment": "code",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "code",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "code",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "code",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        }
+      ]
+    },
+    "<DATA_DIR>/Strata-EXL3-tuning/results/quality/p7-prompt": {
+      "prompts": 20,
+      "top1": 1.0,
+      "kl": 0.0,
+      "kl_median": 0.0,
+      "kl_max": 0.0,
+      "details": [
+        {
+          "segment": "code",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "code",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "code",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "code",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "docs",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "english",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "multilingual",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 256,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 512,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 768,
+          "kl": 0.0,
+          "top1_agrees": true
+        },
+        {
+          "segment": "agent",
+          "tokens": 1000,
+          "kl": 0.0,
+          "top1_agrees": true
+        }
+      ]
+    }
+  },
+  "notes": [
+    "Teacher KL is Strata top-64-renormalized approximation; PPL uses actual target-token probabilities.",
+    "Prompt KL uses the entire vocabulary at 20 fixed prefix endpoints.",
+    "Reference is the original 2-bit EXL3 runtime, not BF16."
+  ]
+}

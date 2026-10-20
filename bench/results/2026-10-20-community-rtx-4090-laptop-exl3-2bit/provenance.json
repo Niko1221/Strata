@@ -1,0 +1,116 @@
+{
+  "measured_on": "2026-10-20",
+  "source_repository": "https://github.com/sociolog/Strata",
+  "source_commit": "fa21db8bb1a9017e875717acb2b7c546f109b941",
+  "tracked_diff_sha256": "00207cc3501218970e81564c63ccd248a1a776f501a701691c876efd29ad80f7",
+  "binary_sha256": "5f9e44e0e98ac19a7e97bba106d0ec84af5933124cdb372d4d3ad02af4d22948",
+  "harness_sha256": "431aeea508adc9a42d06468286214b8c951bfbedbad56f01dc59bb39689f0f9d",
+  "checkpoint_repository": "scorpoon/Qwen3.8-Flash-Next-exl3-SC",
+  "checkpoint_revision": "3b646f450626c4143c92ed76bf60bdfa7f74ed75",
+  "checkpoint_variant": "2.05bpw_h8",
+  "build": {
+    "type": "Release",
+    "cuda_architecture": "89",
+    "cuda_compiler": "13.1.115",
+    "cxx_compiler": "15.2.0"
+  },
+  "redaction": "Only the original data-volume and home-directory path prefixes were replaced by <DATA_DIR> and <HOME>; metrics unchanged. Hashes of original source/binary refer to measurement time.",
+  "exports": {
+    "raw/control-confirmation.json": {
+      "original_sha256": "f3e2535fef0ccf3c08fb5a3e641981686730c623de14f61be43701cb5a494838",
+      "shared_sha256": "1b81db8aad5249fa19632a43032d1ec717a4415d7e5a8ecaf851cf301306ce9b"
+    },
+    "raw/winner-confirmation.json": {
+      "original_sha256": "347c2f9ea81882efd3cc28848309ace0dd4f9b07adb3badd8b7293f3036e63c4",
+      "shared_sha256": "939755e46b6cf5b8ad94b772dccda542a11170f517018b3c631ae0d578f50c56"
+    },
+    "raw/control-repeat-512.json": {
+      "original_sha256": "cc2523aa92457cde851d1cba14fb7ac31748304ce014846c572355e8cfd01de8",
+      "shared_sha256": "4c8d6fd68c04c900a47715fabff9d62b016d62e733270f123fc30cd999f88ba9"
+    },
+    "raw/quality-approved-worker.json": {
+      "original_sha256": "c986d4393c4a6e97a75c5b7cdf693eb9c30f05625232002ee136cfbaf8a58d0f",
+      "shared_sha256": "3fff5de2fc46b335c7edaaa11ed4def5d248ecfd78444eb5f90b6dd97c04ed87"
+    },
+    "raw/quality-byte-equivalence.json": {
+      "original_sha256": "c28da657cf26edd85fae8cc00486b2413d8e9929197dde5ae9b1497b726b74ea",
+      "shared_sha256": "c28da657cf26edd85fae8cc00486b2413d8e9929197dde5ae9b1497b726b74ea"
+    },
+    "raw/generation-repeatability.json": {
+      "original_sha256": "c4be66f364183cb151379bca9c52c1bc3e61a5895c212c987c0e29676a4c1c56",
+      "shared_sha256": "c4be66f364183cb151379bca9c52c1bc3e61a5895c212c987c0e29676a4c1c56"
+    },
+    "raw/control-confirmation.engine.log": {
+      "original_sha256": "e53cc4af0439a882bd2127b6d5fc3ef3ea87cb80ee4c8a65310e5bc20641ca74",
+      "shared_sha256": "993741c9564a4f2e45ed5b28a01c04f65e6454704eb34eb90b4d34a9b84dd3df"
+    },
+    "raw/winner-confirmation.engine.log": {
+      "original_sha256": "7f9d21751340741aa846b71310027e4694801c9b2efcc6856bb4f4ce80bd7c8c",
+      "shared_sha256": "7ab19dc7589f9d9a18ae05c619128d2d919888d1eb0ecd94812eae0eb9f211f0"
+    },
+    "raw/stock-control.json": {
+      "original_sha256": "2ab1ce37e80bdb883f2f9028b75016f59f887dcad847fdd65255c09dfba3fc95",
+      "shared_sha256": "2ab1ce37e80bdb883f2f9028b75016f59f887dcad847fdd65255c09dfba3fc95"
+    },
+    "raw/stock-control.engine.log": {
+      "original_sha256": "271e3036de50542fd9108ee87f9cca2848c36c21c14e26088adeda88e071c37e",
+      "shared_sha256": "271e3036de50542fd9108ee87f9cca2848c36c21c14e26088adeda88e071c37e"
+    },
+    "reproduce/control.json": {
+      "original_sha256": "72915ce1d68945059506a02063fd3de5ea0771256d3e3f46aa602002bd1cf0cf",
+      "shared_sha256": "acbff16a1bc3222c8d12b269951a008c7031f4519b61bb2e81f99ff0123abc53"
+    },
+    "raw/stock-winner.json": {
+      "original_sha256": "f08943bcc30696f3ae580115bffb03cc7133ff96630a83d3bae1a4ab21a8ac50",
+      "shared_sha256": "f08943bcc30696f3ae580115bffb03cc7133ff96630a83d3bae1a4ab21a8ac50"
+    },
+    "raw/stock-winner.engine.log": {
+      "original_sha256": "271e3036de50542fd9108ee87f9cca2848c36c21c14e26088adeda88e071c37e",
+      "shared_sha256": "271e3036de50542fd9108ee87f9cca2848c36c21c14e26088adeda88e071c37e"
+    },
+    "reproduce/winner.json": {
+      "original_sha256": "eabbb810c18d9671407b611f3724a240b01559c9f27836efd4954e8a3c8da7ab",
+      "shared_sha256": "a496469a6b5f9c588e9150b6f915398e510ad41f7bfd9c42d894cb26d8b109f2"
+    },
+    "raw/quality-baseline.tsv.gz": {
+      "original_sha256": "eb2bc3998503c166d1adbaab580af921c909b5e434d268d31836979317b08cf5",
+      "shared_sha256": "c295ce128ff30f959851aef43798df2d7a1726cc907731b47807f712966b5f8c",
+      "encoding": "gzip; decompressed bytes identical to original baseline, control and p7 TSVs"
+    },
+    "reproduce/measured-source-with-new-files.patch": {
+      "shared_sha256": "fec0b144fac5ea0c825112b7f8d7558965b9cb4e0dc3648136428388dbc525d1"
+    },
+    "reproduce/local_quality.py": {
+      "shared_sha256": "14ae1db7ae441edf8e9698a2cbea2336678761e35fc484d9e09d4b3416530159"
+    },
+    "reproduce/local_tune.py": {
+      "shared_sha256": "431aeea508adc9a42d06468286214b8c951bfbedbad56f01dc59bb39689f0f9d"
+    },
+    "reproduce/measured-tracked-source.patch": {
+      "shared_sha256": "00207cc3501218970e81564c63ccd248a1a776f501a701691c876efd29ad80f7"
+    },
+    "reproduce/corpus.txt": {
+      "shared_sha256": "422d02f9a77f8eee4fe20330b9584f186e307ea0d06bc501da0ad08431326445"
+    },
+    "reproduce/local_quality_compare.py": {
+      "shared_sha256": "cf4aec524f62710890caeb045d1d5127a20bec506e20284b77f18fe894d310ed"
+    },
+    "reproduce/expert-profile.bin": {
+      "shared_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
+    }
+  },
+  "llama_cpp_pinned_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+  "llama_cpp_note": "Reused source directory has no git metadata; this is the fork-pinned revision, not an independently recovered checkout identity.",
+  "current_runtime_input_sha256": {
+    "mtp/dense.bin": "c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a",
+    "mtp/dense.txt": "991456cf4eb266eb8a888c349e548d11bc640f5dbd9149439aa9786af0f732fd",
+    "mtp/draft_vocab.bin": "b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91",
+    "mtp/experts.bin": "09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f"
+  },
+  "runtime_input_note": "MTP fingerprints collected during report editing; not hashes retained at measurement time.",
+  "teacher_tsv_original_sha256": {
+    "baseline": "eb2bc3998503c166d1adbaab580af921c909b5e434d268d31836979317b08cf5",
+    "control": "eb2bc3998503c166d1adbaab580af921c909b5e434d268d31836979317b08cf5",
+    "p7": "eb2bc3998503c166d1adbaab580af921c909b5e434d268d31836979317b08cf5"
+  }
+}
