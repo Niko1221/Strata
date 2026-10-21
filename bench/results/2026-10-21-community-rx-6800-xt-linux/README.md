@@ -98,6 +98,16 @@ Final configuration (v0.2.2, switches, `--prefill auto:32768`, conversation cach
 requests, **12/12 sanity (instruction 4/4, retrieval 4/4, tool calls 4/4)**, 4 min 2 s after load. Prompt 4K 951.9 t/s,
 16K 1,099.8 t/s; decode 44.6 (short) / 47.6 (4K) / 43.2 (16K) t/s; TTFT 1.72 / 4.34 / 14.94 s. See the standard folder.
 
+### Standard benchmark, default vs tuned (both v0.2.2 on this card, freshly loaded, same protocol)
+| | setup's default config ([folder](../2026-10-21-standard-unknown-69b059a3/README.md), track default) | tuned: switches + `--prefill auto:32768` + conversation cache ([folder](../2026-10-21-standard-unknown-35dea42b/README.md), track custom) |
+|---|---|---|
+| prompt 4K / 16K (tok/s) | 504.5 / 539.9 | **951.9 / 1,099.8** |
+| decode short / 4K / 16K (tok/s) | 44.3 / 39.5 / 45.0 | 44.6 / 47.6 / 43.2 |
+| TTFT short / 4K / 16K (s) | 1.54 / 8.16 / 30.40 | 1.72 / **4.34 / 14.94** |
+| sanity | 12/12 | 12/12 |
+| time after load | 5 min 41 s | 4 min 2 s |
+Both folders read "AMD Radeon"/"unknown" because the runner could not read the card's name; both are this RX 6800 XT.
+
 ## Limits
 - One machine, one card, two repetitions per arm; the 10-21 runs were at PCIe x8 (another card idle beside it).
 - No needle/recall runs in the community sweep (the standard benchmark's retrieval checks passed 4/4).

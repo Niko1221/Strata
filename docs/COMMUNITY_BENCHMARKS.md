@@ -78,7 +78,7 @@ and their limits. Report what you actually measured and label estimates separate
   Stock 521 / 546 / 525 tok/s prompt at 4K / 32K / 128K, with the gfx103x switches 986 / 1,112 / 1,033 (decode 48-52);
   v0.2.2 + `--prefill auto:32768` 1,054 at 125K. Sweep of RDNA2 prompt switches, `--resident-experts`, a rocBLAS table
   calibrated on the card (tables included), ROCm 10.1 vs 10.0, the conversation cache (7.7K-token chat resumed 8.6 -> 2.5 s),
-  and a standard-benchmark run (12/12 sanity). Vibe-coded: run and written by an AI agent for the card's owner.
+  and standard-benchmark runs of the default and the tuned config (12/12 each; prompt 505 -> 952 tok/s at 4K). Vibe-coded: run and written by an AI agent for the card's owner.
 
 ## Run the standard benchmark
 
