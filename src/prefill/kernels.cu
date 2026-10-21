@@ -2285,24 +2285,45 @@ __global__ void to_bf16_kernel(const float* __restrict__ x, uint16_t* __restrict
 // mix (x_c = R * rs * w, sum of x_c * sigmoid(gated_c), / 4) runs in registers, in gr_mix_r_kernel's order.  The
 // GEMM sums K in another order than hipBLASLt: rounding-level, hence opt-in and quality-gated.
 #if defined(__HIPCC__)
+#if defined(__gfx1200__) || defined(__gfx1201__)
+typedef __bf16 um_b16 __attribute__((ext_vector_type(8)));
+#else
 typedef __bf16 um_b16 __attribute__((ext_vector_type(16)));
+#endif
 typedef float um_f8 __attribute__((ext_vector_type(8)));
 __device__ __forceinline__ um_f8 um_wmma(um_b16 a, um_b16 b, um_f8 c) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
+#elif defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
 #else
-    (void) a; (void) b; return c;   // not a gfx11 device pass: never launched (runtime gate)
+    (void) a; (void) b; return c;   // not a gfx11/gfx12 device pass: never launched (runtime gate)
 #endif
 }
 constexpr int UM_T = 128, UM_D = 16, UM_LD = LR + 8;   // a block: 128 tokens x 16 columns x the 4 streams
-__device__ __forceinline__ um_b16 um_frag(const uint16_t* p) {   // 16 BF16 (32 bytes, 16-byte aligned)
+__device__ __forceinline__ um_b16 um_frag(const uint16_t* p, int hi) {   // 16 BF16 (32 bytes, 16-byte aligned)
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    const uint4 a = *reinterpret_cast<const uint4*>(p + 8 * hi);
+    const uint32_t w[4] = {a.x, a.y, a.z, a.w};
+    return __builtin_bit_cast(um_b16, w);
+#else
+    (void) hi;
     const uint4 a = *reinterpret_cast<const uint4*>(p), b = *reinterpret_cast<const uint4*>(p + 8);
     const uint32_t w[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
     return __builtin_bit_cast(um_b16, w);
+#endif
+}
+__device__ __forceinline__ uint32_t um_bf16x2_finite(float f0, float f1) {
+    uint32_t i0 = __float_as_uint(f0);
+    uint32_t i1 = __float_as_uint(f1);
+    i0 = i0 + ((i0 >> 16) & 1u) + 0x7FFFu;
+    i1 = i1 + ((i1 >> 16) & 1u) + 0x7FFFu;
+    return (i0 >> 16) | (i1 & 0xFFFF0000u);
 }
 // The block's w_up rows (16 columns x 4 streams x all 320 k) are staged in LDS once; each wave streams its own 16
 // tokens' lo16 rows from global memory (every A fragment feeds the 4 streams' WMMAs) - one barrier per block.
 __global__ void __launch_bounds__(256) gr_upmix_kernel(const uint16_t* __restrict__ lo16, const uint16_t* __restrict__ wu,
+                                                       const uint8_t* __restrict__ wu_q8,
                                                        const float* __restrict__ R, const float* __restrict__ rs,
                                                        const float* __restrict__ w, float* __restrict__ mixed,
                                                        uint16_t* __restrict__ mixed16, uint16_t* __restrict__ mixed_h,
@@ -2313,12 +2334,54 @@ __global__ void __launch_bounds__(256) gr_upmix_kernel(const uint16_t* __restric
     // along rows (token-tile fastest scattered them over 512 rows x 40 KB per block: 28 ms instead of 3.7 at 8K)
     const int64_t t0 = (int64_t) blockIdx.y * UM_T + 16 * wave;
     const int d0 = blockIdx.x * UM_D;
-    for (int i = tid; i < HC * UM_D * (LR / 8); i += 256) {
-        const int rr = i / (LR / 8), q = i % (LR / 8);
-        const int c = rr / UM_D, dd = rr % UM_D;
-        *reinterpret_cast<uint4*>(&sB[rr][8 * q]) = *reinterpret_cast<const uint4*>(wu + (size_t) (c * N + d0 + dd) * LR + 8 * q);
+    if (wu_q8 != nullptr) {
+        for (int i = tid; i < HC * UM_D * (LR / 8); i += 256) {
+            const int rr = i / (LR / 8), q = i % (LR / 8);
+            const int c = rr / UM_D, dd = rr % UM_D;
+            const int64_t b = (int64_t) (c * N + d0 + dd) * (LR / 32) + (q >> 2);
+            const int sub = q & 3;
+            const uint8_t* p = wu_q8 + b * 34;
+            const uint16_t d_u16 = *(const uint16_t*) p;
+            const float d = __half2float(__ushort_as_half(d_u16));
+            const uint8_t* qs = p + 2 + 8 * sub;
+            const uint32_t q01 = *(const uint16_t*) (qs + 0);
+            const uint32_t q23 = *(const uint16_t*) (qs + 2);
+            const uint32_t q45 = *(const uint16_t*) (qs + 4);
+            const uint32_t q67 = *(const uint16_t*) (qs + 6);
+            const float f0 = d * (float) (int8_t) (q01 & 0xFFu);
+            const float f1 = d * (float) (int8_t) (q01 >> 8);
+            const float f2 = d * (float) (int8_t) (q23 & 0xFFu);
+            const float f3 = d * (float) (int8_t) (q23 >> 8);
+            const float f4 = d * (float) (int8_t) (q45 & 0xFFu);
+            const float f5 = d * (float) (int8_t) (q45 >> 8);
+            const float f6 = d * (float) (int8_t) (q67 & 0xFFu);
+            const float f7 = d * (float) (int8_t) (q67 >> 8);
+            uint4 packed;
+            if (__builtin_expect((d_u16 & 0x7C00u) != 0x7C00u, 1)) {
+                packed.x = um_bf16x2_finite(f0, f1);
+                packed.y = um_bf16x2_finite(f2, f3);
+                packed.z = um_bf16x2_finite(f4, f5);
+                packed.w = um_bf16x2_finite(f6, f7);
+            } else {
+                packed.x = (uint32_t) act16(f0) | ((uint32_t) act16(f1) << 16);
+                packed.y = (uint32_t) act16(f2) | ((uint32_t) act16(f3) << 16);
+                packed.z = (uint32_t) act16(f4) | ((uint32_t) act16(f5) << 16);
+                packed.w = (uint32_t) act16(f6) | ((uint32_t) act16(f7) << 16);
+            }
+            *reinterpret_cast<uint4*>(&sB[rr][8 * q]) = packed;
+        }
+    } else {
+        for (int i = tid; i < HC * UM_D * (LR / 8); i += 256) {
+            const int rr = i / (LR / 8), q = i % (LR / 8);
+            const int c = rr / UM_D, dd = rr % UM_D;
+            *reinterpret_cast<uint4*>(&sB[rr][8 * q]) = *reinterpret_cast<const uint4*>(wu + (size_t) (c * N + d0 + dd) * LR + 8 * q);
+        }
     }
+#if defined(__gfx1200__) || defined(__gfx1201__)
+    asm volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#else
     __syncthreads();
+#endif
     if (t0 >= T) return;
     const int64_t ta = t0 + l16 < T ? t0 + l16 : T - 1;
     const uint16_t* arow = lo16 + ta * LR;
@@ -2327,14 +2390,18 @@ __global__ void __launch_bounds__(256) gr_upmix_kernel(const uint16_t* __restric
     for (int c = 0; c < HC; ++c) acc[c] = um_f8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
     for (int ks = 0; ks < LR; ks += 16) {
-        const um_b16 a = um_frag(arow + ks);
+        const um_b16 a = um_frag(arow + ks, hi);
 #pragma unroll
-        for (int c = 0; c < HC; ++c) acc[c] = um_wmma(a, um_frag(&sB[c * UM_D + l16][ks]), acc[c]);
+        for (int c = 0; c < HC; ++c) acc[c] = um_wmma(a, um_frag(&sB[c * UM_D + l16][ks], hi), acc[c]);
     }
     const int d = d0 + l16;
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
+#if defined(__gfx1200__) || defined(__gfx1201__)
+        const int64_t t = t0 + 8 * hi + i;
+#else
         const int64_t t = t0 + 2 * i + hi;
+#endif
         if (t >= T) continue;
         float s = 0.0f;
 #pragma unroll
@@ -2565,20 +2632,24 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
     check("gr_mix_r");
 }
 bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const float* rs, const float* w_norm,
-              float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream) {
+              float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream,
+              const uint8_t* w_up_q8) {
 #if defined(__HIPCC__)
-    static const bool gfx11 = [] {
+    static const bool wmma_ok = [] {
         int dev = 0;
         cudaDeviceProp p;
         if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess) return false;
-        return strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName);
+        return strata::kernels::gfx_arch_is_gfx11_wmma(p.gcnArchName) ||
+               strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
     }();
-    if (!gfx11 || T <= 0) return false;
+    if (!wmma_ok || T <= 0 || (w_up == nullptr && w_up_q8 == nullptr)) return false;
     gr_upmix_kernel<<<dim3(N / UM_D, (unsigned) ((T + UM_T - 1) / UM_T)), 256, 0, (cudaStream_t) stream>>>(
-        lo16, w_up, R, rs, w_norm, mixed, mixed16, mixed_h, T);
+        lo16, w_up, w_up_q8, R, rs, w_norm, mixed, mixed16, mixed_h, T);
     check("gr_upmix");
     return true;
 #else
+    (void) w_up_q8;
+    if (w_up == nullptr) return false;
     static int ok_dev[64] = {};   // per device: 0 not asked yet, 1 sm_80+, 2 no
     int dev = 0;
     if (T <= 0 || cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }

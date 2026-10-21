@@ -646,6 +646,70 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
 #endif
         cudaFree(d_q); cudaFree(d_ref); cudaFree(d_cnt);
     }
+    // P1: vectorized fused_gr_dequant_q8_0 + fused_gr_dequant_q8_0_pair bitwise parity against scalar reference
+    // across normal, subnormal, zero, +-Inf, and NaN fp16 scales, plus aligned and unaligned pointers.
+    {
+        const int64_t nb = 1093; // non-multiple of 64 blocks to exercise tail and special blocks
+        std::vector<uint8_t> h_q8_0((size_t) nb * 34), h_q8_1((size_t) nb * 34);
+        for (int64_t b = 0; b < nb; ++b) {
+            uint16_t d_u16 = (uint16_t) ((b * 40503u) & 0xFFFFu);
+            if (b == 0) d_u16 = 0x0000u;      // +0.0
+            else if (b == 1) d_u16 = 0x8000u; // -0.0
+            else if (b == 2) d_u16 = 0x0001u; // smallest subnormal
+            else if (b == 3) d_u16 = 0x7C00u; // +Inf
+            else if (b == 4) d_u16 = 0xFC00u; // -Inf
+            else if (b == 5) d_u16 = 0x7E00u; // qNaN
+            else if (b == 6) d_u16 = 0x7C01u; // sNaN
+            h_q8_0[(size_t) b * 34 + 0] = (uint8_t) (d_u16 & 0xFFu);
+            h_q8_0[(size_t) b * 34 + 1] = (uint8_t) (d_u16 >> 8);
+            const uint16_t d1_u16 = (uint16_t) (d_u16 ^ 0x3C00u);
+            h_q8_1[(size_t) b * 34 + 0] = (uint8_t) (d1_u16 & 0xFFu);
+            h_q8_1[(size_t) b * 34 + 1] = (uint8_t) (d1_u16 >> 8);
+            for (int j = 0; j < 32; ++j) {
+                h_q8_0[(size_t) b * 34 + 2 + j] = (uint8_t) ((b * 31 + j * 17 - 128) & 0xFF);
+                h_q8_1[(size_t) b * 34 + 2 + j] = (uint8_t) ((b * 13 - j * 29 + 64) & 0xFF);
+            }
+        }
+        uint8_t *d_q8_0 = nullptr, *d_q8_1 = nullptr;
+        uint16_t *d_ref_0 = nullptr, *d_ref_1 = nullptr, *d_out_0 = nullptr, *d_out_1 = nullptr;
+        check(cudaMalloc(&d_q8_0, h_q8_0.size() + 34), "deq q8_0");
+        check(cudaMalloc(&d_q8_1, h_q8_1.size() + 34), "deq q8_1");
+        check(cudaMalloc(&d_ref_0, ((size_t) nb * 32 + 8) * sizeof(uint16_t)), "deq ref_0");
+        check(cudaMalloc(&d_ref_1, ((size_t) nb * 32 + 8) * sizeof(uint16_t)), "deq ref_1");
+        check(cudaMalloc(&d_out_0, ((size_t) nb * 32 + 8) * sizeof(uint16_t)), "deq out_0");
+        check(cudaMalloc(&d_out_1, ((size_t) nb * 32 + 8) * sizeof(uint16_t)), "deq out_1");
+        check(cudaMemcpyAsync(d_q8_0, h_q8_0.data(), h_q8_0.size(), cudaMemcpyHostToDevice, stream), "deq cp q0");
+        check(cudaMemcpyAsync(d_q8_1, h_q8_1.data(), h_q8_1.size(), cudaMemcpyHostToDevice, stream), "deq cp q1");
+        // Use unaligned output pointer (+1 uint16_t) to force scalar reference path on the device
+        strata::kernels::fused_gr_dequant_q8_0(d_q8_0, d_ref_0 + 1, nb, stream);
+        strata::kernels::fused_gr_dequant_q8_0(d_q8_1, d_ref_1 + 1, nb, stream);
+        // Vectorized single and pair paths on aligned output pointers
+        strata::kernels::fused_gr_dequant_q8_0(d_q8_0, d_out_0, nb, stream);
+        std::vector<uint16_t> hr0((size_t) nb * 32), hr1((size_t) nb * 32), ho0((size_t) nb * 32), ho1((size_t) nb * 32);
+        check(cudaMemcpyAsync(hr0.data(), d_ref_0 + 1, hr0.size() * 2, cudaMemcpyDeviceToHost, stream), "deq r0");
+        check(cudaMemcpyAsync(hr1.data(), d_ref_1 + 1, hr1.size() * 2, cudaMemcpyDeviceToHost, stream), "deq r1");
+        check(cudaMemcpyAsync(ho0.data(), d_out_0, ho0.size() * 2, cudaMemcpyDeviceToHost, stream), "deq o0 single");
+        check(cudaStreamSynchronize(stream), "deq sync 1");
+        int dbad = (std::memcmp(hr0.data(), ho0.data(), hr0.size() * 2) != 0) ? 1 : 0;
+        check(cudaMemsetAsync(d_out_0, 0x5a, ho0.size() * 2, stream), "deq poison 0");
+        check(cudaMemsetAsync(d_out_1, 0x5a, ho1.size() * 2, stream), "deq poison 1");
+        strata::kernels::fused_gr_dequant_q8_0_pair(d_q8_0, d_out_0, d_q8_1, d_out_1, nb, stream);
+        check(cudaMemcpyAsync(ho0.data(), d_out_0, ho0.size() * 2, cudaMemcpyDeviceToHost, stream), "deq o0 pair");
+        check(cudaMemcpyAsync(ho1.data(), d_out_1, ho1.size() * 2, cudaMemcpyDeviceToHost, stream), "deq o1 pair");
+        check(cudaStreamSynchronize(stream), "deq sync 2");
+        if (std::memcmp(hr0.data(), ho0.data(), hr0.size() * 2) != 0 ||
+            std::memcmp(hr1.data(), ho1.data(), hr1.size() * 2) != 0) {
+            ++dbad;
+        }
+        std::printf("  fused GR Q8_0 dequant (vec8 + pair), finite/Inf/NaN scales: %s\n", dbad ? "FAIL" : "pass");
+        bad += dbad;
+        check(cudaFree(d_q8_0), "free deq q8_0");
+        check(cudaFree(d_q8_1), "free deq q8_1");
+        check(cudaFree(d_ref_0), "free deq ref_0");
+        check(cudaFree(d_ref_1), "free deq ref_1");
+        check(cudaFree(d_out_0), "free deq out_0");
+        check(cudaFree(d_out_1), "free deq out_1");
+    }
     std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
                 bad == 0 ? "pass" : "FAIL");
     check(cudaGraphExecDestroy(graph_exec), "multi graph exec destroy");

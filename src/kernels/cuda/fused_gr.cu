@@ -2410,7 +2410,49 @@ __global__ void __launch_bounds__(256) gr_quantize_q8_0_kernel(const uint16_t* _
     o[2 + lane] = (uint8_t) (int8_t) lrintf(roundf(v * id));
 }
 
-__global__ void __launch_bounds__(256) gr_dequant_q8_0_kernel(const uint8_t* __restrict__ q8, uint16_t* __restrict__ out, int64_t nb) {
+__device__ __forceinline__ uint32_t bf16x2_from_f32_finite(float f0, float f1) {
+    uint32_t i0 = __float_as_uint(f0);
+    uint32_t i1 = __float_as_uint(f1);
+    i0 = i0 + ((i0 >> 16) & 1u) + 0x7FFFu;
+    i1 = i1 + ((i1 >> 16) & 1u) + 0x7FFFu;
+    return (i0 >> 16) | (i1 & 0xFFFF0000u);
+}
+
+__device__ __forceinline__ void dequant_q8_0_vec8_item(const uint8_t* __restrict__ q8, uint16_t* __restrict__ out,
+                                                       int64_t b, int sub) {
+    const uint8_t* p = q8 + b * 34;
+    const uint16_t d_u16 = *(const uint16_t*) p;
+    const float d = __half2float(__ushort_as_half(d_u16));
+    const uint8_t* qs = p + 2 + 8 * sub;
+    const uint32_t q01 = *(const uint16_t*) (qs + 0);
+    const uint32_t q23 = *(const uint16_t*) (qs + 2);
+    const uint32_t q45 = *(const uint16_t*) (qs + 4);
+    const uint32_t q67 = *(const uint16_t*) (qs + 6);
+    const float f0 = d * (float) (int8_t) (q01 & 0xFFu);
+    const float f1 = d * (float) (int8_t) (q01 >> 8);
+    const float f2 = d * (float) (int8_t) (q23 & 0xFFu);
+    const float f3 = d * (float) (int8_t) (q23 >> 8);
+    const float f4 = d * (float) (int8_t) (q45 & 0xFFu);
+    const float f5 = d * (float) (int8_t) (q45 >> 8);
+    const float f6 = d * (float) (int8_t) (q67 & 0xFFu);
+    const float f7 = d * (float) (int8_t) (q67 >> 8);
+    uint4 packed;
+    if (__builtin_expect((d_u16 & 0x7C00u) != 0x7C00u, 1)) {
+        packed.x = bf16x2_from_f32_finite(f0, f1);
+        packed.y = bf16x2_from_f32_finite(f2, f3);
+        packed.z = bf16x2_from_f32_finite(f4, f5);
+        packed.w = bf16x2_from_f32_finite(f6, f7);
+    } else {
+        packed.x = (uint32_t) bf16_from_f32(f0) | ((uint32_t) bf16_from_f32(f1) << 16);
+        packed.y = (uint32_t) bf16_from_f32(f2) | ((uint32_t) bf16_from_f32(f3) << 16);
+        packed.z = (uint32_t) bf16_from_f32(f4) | ((uint32_t) bf16_from_f32(f5) << 16);
+        packed.w = (uint32_t) bf16_from_f32(f6) | ((uint32_t) bf16_from_f32(f7) << 16);
+    }
+    reinterpret_cast<uint4*>(out)[b * 4 + sub] = packed;
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_scalar_kernel(const uint8_t* __restrict__ q8,
+                                                                     uint16_t* __restrict__ out, int64_t nb) {
     const int64_t b = (int64_t) blockIdx.x * 8 + (threadIdx.x >> 5);
     const int lane = threadIdx.x & 31;
     if (b >= nb) return;
@@ -2419,8 +2461,43 @@ __global__ void __launch_bounds__(256) gr_dequant_q8_0_kernel(const uint8_t* __r
     out[b * 32 + lane] = bf16_from_f32(d * (float) (int8_t) p[2 + lane]);
 }
 
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_kernel(const uint8_t* __restrict__ q8,
+                                                              uint16_t* __restrict__ out, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 64 + (threadIdx.x >> 2);
+    if (b >= nb) return;
+    dequant_q8_0_vec8_item(q8, out, b, threadIdx.x & 3);
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_pair_kernel(const uint8_t* __restrict__ q8_0,
+                                                                   uint16_t* __restrict__ out_0,
+                                                                   const uint8_t* __restrict__ q8_1,
+                                                                   uint16_t* __restrict__ out_1, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 64 + (threadIdx.x >> 2);
+    if (b >= nb) return;
+    const uint8_t* __restrict__ q8 = blockIdx.y ? q8_1 : q8_0;
+    uint16_t* __restrict__ out = blockIdx.y ? out_1 : out_0;
+    dequant_q8_0_vec8_item(q8, out, b, threadIdx.x & 3);
+}
+
 void fused_gr_dequant_q8_0(const uint8_t* q8, uint16_t* bf16, int64_t n_blocks, void* stream) {
-    gr_dequant_q8_0_kernel<<<(unsigned) ((n_blocks + 7) / 8), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+    if (n_blocks <= 0) return;
+    if ((((uintptr_t) q8 & 1u) | ((uintptr_t) bf16 & 15u)) == 0u) {
+        gr_dequant_q8_0_kernel<<<(unsigned) ((n_blocks + 63) / 64), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+    } else {
+        gr_dequant_q8_0_scalar_kernel<<<(unsigned) ((n_blocks + 7) / 8), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+    }
+}
+
+void fused_gr_dequant_q8_0_pair(const uint8_t* q8_0, uint16_t* bf16_0, const uint8_t* q8_1, uint16_t* bf16_1,
+                                int64_t n_blocks, void* stream) {
+    if (n_blocks <= 0) return;
+    if ((((uintptr_t) q8_0 & 1u) | ((uintptr_t) q8_1 & 1u) | ((uintptr_t) bf16_0 & 15u) | ((uintptr_t) bf16_1 & 15u)) == 0u) {
+        const dim3 grid((unsigned) ((n_blocks + 63) / 64), 2);
+        gr_dequant_q8_0_pair_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(q8_0, bf16_0, q8_1, bf16_1, n_blocks);
+    } else {
+        fused_gr_dequant_q8_0(q8_0, bf16_0, n_blocks, stream);
+        fused_gr_dequant_q8_0(q8_1, bf16_1, n_blocks, stream);
+    }
 }
 
 void fused_gr_quantize_q8_0(const uint16_t* bf16, uint8_t* out, int64_t n_blocks, void* stream) {
