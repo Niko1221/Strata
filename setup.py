@@ -493,14 +493,15 @@ MODELS = {
                              "Agreement) with Qwen3.8-Flash-Next's Qwen Community License 1.0: "
                              "https://huggingface.co/nvidia/Qwen3.8-Flash-Next-FP4-Local"},
     # agentionai's Signal (docs/SIGNAL_AP_Q4_K_XL.md): one GGUF per size, Q4_K (AP-Q4_K_XL) or IQ3_S (AP-IQ4_XS)
-    # gate/up experts with IQ4_NL downs, a RAM budget of them like Unsloth's.  AP-Q4_K_XL was run (RTX 4090, images
-    # too); AP-IQ4_XS's header differs from it only in the gate/up type, and it has not been run.  Neither is
-    # NVIDIA-only: every format the two use has AMD kernels - Q4_K experts run on an R9700 as UD-Q4_K_XL's
-    # (docs/QUANTS.md), IQ3_S gate/up and IQ4_NL downs as UD-IQ4_XS's - but neither Signal file itself has run on AMD
-    "AP-Q4_K_XL": {"about": "4-bit (Agention Precision), Q4_K experts; on a PC with less than ~90 GB of RAM part of "
+    # gate/up experts with IQ4_NL downs, the RAM rule of Unsloth's files (every expert in RAM from the arena's size
+    # plus UNSLOTH_RESIDENT_BESIDE_GB: ~80 and ~70 GB; a RAM budget of them below that).  Both sizes were run through
+    # setup on an RTX 4090 with images on.  Neither is NVIDIA-only: every format the two use has AMD kernels - Q4_K
+    # experts run on an R9700 as UD-Q4_K_XL's (docs/QUANTS.md), IQ3_S gate/up and IQ4_NL downs as UD-IQ4_XS's - but
+    # neither Signal file itself has run on AMD
+    "AP-Q4_K_XL": {"about": "4-bit (Agention Precision), Q4_K experts; on a PC with less than ~80 GB of RAM part of "
                             "its experts are read from the SSD", "download_gb": 101.1, "ram_gb": 48, "arena_gb": 67.9,
                    "families": ("signal",), "budget": True, "vision": True},
-    "AP-IQ4_XS": {"about": "~4-bit (Agention Precision), IQ3_S experts, 10 GB smaller; on a PC with less than ~80 GB "
+    "AP-IQ4_XS": {"about": "~4-bit (Agention Precision), IQ3_S experts, 10 GB smaller; on a PC with less than ~70 GB "
                            "of RAM part of its experts are read from the SSD", "download_gb": 90.4, "ram_gb": 48,
                   "arena_gb": 57.3, "families": ("signal",), "budget": True, "vision": True},
 }
