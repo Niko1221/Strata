@@ -5717,7 +5717,7 @@ class VisionCacheEviction(unittest.TestCase):
     def make(self, d):
         import serve.server as server
         v = server.Vision.__new__(server.Vision)
-        v.dir, v.cache, v.lock = d, {}, threading.Lock()
+        v.dir, v.cache, v.lock, v.in_use = d, {}, threading.Lock(), set()
         v.load = lambda src: src
 
         class Pipe:

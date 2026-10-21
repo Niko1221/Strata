@@ -2544,6 +2544,7 @@ class Vision:
         self.stopped = True
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
+        self.in_use: set[str] = set()        # files a request has not finished copying (never evicted)
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
@@ -2756,8 +2757,10 @@ class Vision:
         with self.lock:
             self._ensure_dir()
             if key in self.cache:
-                self.cache[key] = self.cache.pop(key)                  # most recently used last
-                return self.cache[key]
+                path, n = self.cache.pop(key)
+                if path.is_file():                                     # a hit whose file is gone (an eviction in
+                    self.cache[key] = (path, n)                        # another request, a temp cleaner) is not
+                    return path, n                                     # a hit: encode the picture again below
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
             try:
@@ -2778,9 +2781,22 @@ class Vision:
             for old in list(self.cache):                               # oldest first, but never one still in use
                 if len(self.cache) <= 64:
                     break
-                if str(self.cache[old][0]) not in held:
+                path = self.cache[old][0]
+                if str(path) not in held and str(path) not in self.in_use:
                     self.cache.pop(old)[0].unlink(missing_ok=True)
             return self.cache[key]
+
+    def hold(self, paths) -> None:
+        """Keep these files out of eviction until release(): a request encodes under the FIFO turn, then copies its
+        pictures into one file after it.  Without this, a request that took the turn next could evict a file the first
+        one had not copied yet: read_bytes() raised FileNotFoundError, the handler died before writing a response, and
+        the client saw a 502 with an empty body."""
+        with self.lock:
+            self.in_use.update(str(p) for p in paths)
+
+    def release(self, paths) -> None:
+        with self.lock:
+            self.in_use.difference_update(str(p) for p in paths)
 
     def close(self):
         proc, self.proc = self.proc, None
@@ -4494,6 +4510,9 @@ class Service:
                                else [self.vision.encode(src) for src in images])
                 finally:
                     self.last_image_at = time.time()
+                hold = getattr(self.vision, "hold", None)      # the copy below is after the turn: keep these files
+                if hold:                                       # out of the next request's eviction
+                    hold([p for p, _ in encoded])
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
@@ -4553,7 +4572,12 @@ class Service:
             # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
             self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
-            write_temporary(combined, [p for p, _ in encoded])
+            try:
+                write_temporary(combined, [p for p, _ in encoded])
+            finally:
+                release = getattr(self.vision, "release", None)
+                if release:
+                    release([p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
