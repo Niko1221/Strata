@@ -333,7 +333,9 @@ By default the model stays loaded until you close Strata. Three server options, 
 | | `"before_load_timeout_s": 120` | How long that command may run. When it fails or times out, the free VRAM decides: with `min_free_vram_mib` set and not enough free, the request gets **503** with `Retry-After`; otherwise the model loads with a warning. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads. |
 
 `POST /unload` unloads now (`409` while a request is running; `?wait=1` waits for the running turn, up to 300 s, or
-`?wait=<seconds>`). `POST /load` loads ahead of a request. Both need `Content-Type: application/json`:
+`?wait=<seconds>`). `POST /load` loads ahead of a request. Both need `Content-Type: application/json`. Strata's own web
+page has both calls as one Load / Unload button in the header of every tab (it says Load while the model is unloaded,
+Unload otherwise, and holds its own state until a poll agrees):
 
 ```sh
 curl -X POST -H "Content-Type: application/json" localhost:8080/unload

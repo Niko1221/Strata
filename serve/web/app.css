@@ -11,6 +11,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .card-title { font-weight: var(--st-fw-bold); font-size: var(--st-fs-base); color: var(--st-ink); }
 .st-header { position: relative; z-index: 2; flex: none; }
 .st-header .st-tabs { margin-left: var(--st-s-4); }
+#unload-btn { flex: none; height: 32px; padding: 0 12px; min-width: 7.75rem; }
+.st-header--clip #pill-text { display: none; }
 #drawer-close .st-icon { transform: rotate(-90deg); }
 
 /* ---------------------------------------------------------------- chat */
@@ -177,12 +179,26 @@ main { flex: 1; min-height: 0; display: flex; }
   .cfg-form { grid-template-columns: 1fr; gap: 4px; }
   .cfg-form .st-input { margin-bottom: var(--st-s-2); }
 }
-@media (max-width: 640px) {
+/* The tab strip keeps a width it can scroll. Pill text hides only when the row overflows. */
+@media (max-width: 955px) {
   .st-header { padding: 0 var(--st-s-3); gap: var(--st-s-2); }
-  .st-header .st-tabs { margin-left: 0; }
+  .st-header__brand, #theme-btn, #pill, #unload-btn { flex: none; }
+  .st-header .st-tabs { margin-left: 0; flex: 1 1 auto; min-width: 9rem; overflow-x: auto; }
   .st-tab { padding: 0 10px; }
   .st-tab .st-icon { display: none; }
-  #pill-text { display: none; }
+}
+/* 9rem of tabs plus the 7.75rem button fits from 458px. Below that the
+   tighter floors keep Unload and the theme button in the viewport. */
+@media (max-width: 457px) {
+  #unload-btn { min-width: 0; padding: 0 8px; }
+  .st-header .st-tabs { min-width: 5.5rem; }
+}
+/* The name plus "Unloading…" still overflows at 374px in Firefox 158. */
+@media (max-width: 382px) {
+  .st-header__brand { display: none; }
+  .st-header .st-tabs { min-width: 4.75rem; }
+}
+@media (max-width: 640px) {
   .chat { padding: var(--st-s-5) var(--st-s-4); }
   .composer-wrap { padding: 0 var(--st-s-3) var(--st-s-3); }
   .monitor, .about { padding: var(--st-s-4); }
