@@ -360,5 +360,152 @@ class ReplicaService(unittest.TestCase):
         self.assertEqual(self.served()[1], 3)
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def free_port() -> int:
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def answers(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as r:
+            return json.loads(r.read().decode()).get("service") == "strata"
+    except Exception:          # noqa: BLE001 - closed, refused or not ours
+        return False
+
+
+def until(pred, timeout: float) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.2)
+    return pred()
+
+
+class PortMode(unittest.TestCase):
+    """Port mode: every replica its own server on its own port (the mock engine: no GPU)."""
+
+    def setUp(self):
+        import subprocess
+        self.subprocess = subprocess
+        self.tmp = tempfile.TemporaryDirectory()
+        self.p0, self.p1, self.pm = free_port(), free_port(), free_port()
+        self.proc, self.lines = None, []
+
+    def tearDown(self):
+        import signal
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGTERM)
+            try:
+                self.proc.wait(60)
+            except self.subprocess.TimeoutExpired:
+                self.proc.kill()
+        until(lambda: not answers(self.p0) and not answers(self.p1), 30)
+        self.tmp.cleanup()
+
+    def cfg(self, **extra) -> dict:
+        return {"replicas": [{"gpus": [0], "port": self.p0}, {"gpus": [1], "port": self.p1}], **extra}
+
+    def start(self, cfg: dict, cmd=None, new_session=False):
+        path = Path(self.tmp.name) / "cfg.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        cmd = cmd or [sys.executable, "-m", "serve.server", "--engine", "mock", "--config", str(path),
+                      "--port", str(self.pm)]
+        self.proc = self.subprocess.Popen(cmd, cwd=ROOT, stdout=self.subprocess.PIPE, stderr=self.subprocess.STDOUT,
+                                          text=True, start_new_session=new_session)
+        threading.Thread(target=lambda: self.lines.extend(self.proc.stdout), daemon=True).start()
+        return path
+
+    def out(self) -> str:
+        return "".join(self.lines)
+
+    def both_up(self):
+        self.assertTrue(until(lambda: answers(self.p0) and answers(self.p1) and "replica 1 on" in self.out(), 60),
+                        self.out())
+
+    def test_two_ports_two_servers(self):
+        self.start(self.cfg())
+        self.both_up()
+        self.assertFalse(answers(self.pm))
+        self.assertIn("replica 0", self.out())
+        self.assertIn("replica 1", self.out())
+
+    def test_stop_ends_children_and_deletes_arena(self):
+        import signal
+        arena = Path(self.tmp.name) / "a.arena"
+        arena.write_bytes(b"x")
+        self.start(self.cfg(replica_shared_arena=str(arena)))
+        self.both_up()
+        self.proc.send_signal(signal.SIGTERM)
+        self.assertEqual(self.proc.wait(90), 0)
+        self.assertTrue(until(lambda: not answers(self.p0) and not answers(self.p1), 10))
+        self.assertFalse(arena.exists())
+        self.assertNotIn("Traceback", self.out())
+
+    def test_sigint_to_group(self):
+        import os
+        import signal
+        self.start(self.cfg(), new_session=True)
+        self.both_up()
+        os.killpg(self.proc.pid, signal.SIGINT)
+        self.assertEqual(self.proc.wait(90), 0)
+        self.assertTrue(until(lambda: not answers(self.p0) and not answers(self.p1), 10))
+        self.assertNotIn("Traceback", self.out())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the parent-death signal is Linux only")
+    def test_supervisor_killed_children_follow(self):
+        self.start(self.cfg())
+        self.both_up()
+        self.proc.kill()
+        self.proc.wait(10)
+        self.assertTrue(until(lambda: not answers(self.p0) and not answers(self.p1), 30))
+
+    def test_port_in_use_refused(self):
+        import socket
+        held = socket.socket()
+        held.bind(("127.0.0.1", self.p1))
+        held.listen()
+        try:
+            self.start(self.cfg())
+            self.assertEqual(self.proc.wait(15), 2)
+            self.assertIn(str(self.p1), self.out())
+            self.assertFalse(answers(self.p0))
+        finally:
+            held.close()
+
+    def test_child_failure_stops_the_rest(self):
+        wrapper = Path(self.tmp.name) / "wrapper.py"
+        server = ROOT / "serve" / "server.py"
+        wrapper.write_text(
+            "import runpy, sys\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "argv = sys.argv[1:]\n"
+            f"if argv[argv.index('--port') + 1] == {str(self.p1)!r}:\n"
+            "    sys.exit(3)\n"
+            f"sys.argv = [{str(server)!r}] + argv\n"
+            f"runpy.run_path({str(server)!r}, run_name='__main__')\n", encoding="utf-8")
+        path = Path(self.tmp.name) / "cfg.json"
+        code = ("import json, sys; from serve.replicas import run_port_mode; "
+                f"sys.exit(run_port_mode(json.load(open({str(path)!r})), ['--engine', 'mock'], '127.0.0.1', "
+                f"server_py={str(wrapper)!r}))")
+        self.start(self.cfg(), cmd=[sys.executable, "-c", code])
+        self.assertEqual(self.proc.wait(60), 1)
+        self.assertIn("replica 1", self.out())
+        self.assertTrue(until(lambda: not answers(self.p0), 10))
+
+    def test_mixed_ports_refused(self):
+        self.start({"replicas": [{"gpus": [0], "port": self.p0}, {"gpus": [1]}]})
+        self.assertEqual(self.proc.wait(15), 2)
+        self.assertIn("every replica", self.out())
+        self.assertFalse(answers(self.p0))
+
+
 if __name__ == "__main__":
     unittest.main()

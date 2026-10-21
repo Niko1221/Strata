@@ -174,6 +174,121 @@ def cpu_sets(n: int, enabled: bool = True):
         return None
 
 
+def _loaded(host: str, port: int) -> bool:
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=2) as r:
+            return json.loads(r.read() or b"{}").get("loaded") is True
+    except (OSError, ValueError):
+        return False
+
+
+def _port_free(host: str, port: int) -> bool:
+    import socket
+    s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: str,
+                  ready_timeout_s: float = 900.0) -> int:
+    """Port mode: one ordinary server per replica, each on its own port, started one after another (the first fills a
+    shared arena, the next ones attach). This process only supervises: it forwards a stop to the servers, ends them
+    with itself (they get the parent-death signal) and deletes the shared arena when it stops. Returns the exit code."""
+    import json
+    import shutil
+    import signal
+    import subprocess
+    import sys
+    import tempfile
+    from serve import lifeline
+
+    ports = port_mode(cfg) or []
+    for i, port in enumerate(ports):
+        if not _port_free(host, port):
+            print(f"[strata] replica {i}: port {port} is in use", flush=True)
+            return 2
+    groups = gpu_groups(cfg)
+    cpus = cpu_sets(len(ports), cfg.get("replica_cpus") is not False)
+    ready_timeout_s = float(os.environ.get("STRATA_REPLICA_READY_S") or ready_timeout_s)
+    stop = threading.Event()
+    stopped_by: list[str] = []
+
+    def on_signal(signum, frame):
+        stopped_by.append(signal.Signals(signum).name)
+        stop.set()
+    old = {}
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None and not (name == "SIGHUP" and signal.getsignal(sig) == signal.SIG_IGN):
+            old[sig] = signal.signal(sig, on_signal)
+
+    tmp = tempfile.mkdtemp(prefix="strata-replicas-")
+    children: list[subprocess.Popen] = []
+    code = 0
+    try:
+        for i, (gpus, port) in enumerate(zip(groups, ports)):
+            path = os.path.join(tmp, f"replica{i}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(port_child_cfg(cfg, i, gpus, port), f)
+            pin = cpus[i] if cpus else None
+            child = lifeline.popen([sys.executable, server_py, *child_argv(launch_args, path, port)],
+                                   role="replica", start_new_session=True,
+                                   preexec_fn=(lambda c=pin: os.sched_setaffinity(0, c)) if pin else None)
+            children.append(child)
+            deadline, why = time.monotonic() + ready_timeout_s, None
+            while not _loaded(host, port):
+                if child.poll() is not None:
+                    why = f"exit {child.returncode}"
+                elif stop.is_set():
+                    why = "stopped"
+                elif time.monotonic() > deadline:
+                    why = f"not loaded after {ready_timeout_s:.0f} s"
+                if why:
+                    break
+                stop.wait(0.5)
+            if why:
+                print(f"[strata] replica {i} did not start: {why}", flush=True)
+                return 0 if stopped_by else 1
+            print(f"[strata] replica {i} on cards {gpus}: http://{host}:{port}/v1", flush=True)
+        print("[strata] replicas each on their own port; this process only supervises them (its own --port is "
+              "not used)", flush=True)
+        while not stop.is_set():
+            for k, c in enumerate(children):
+                if c.poll() is not None:
+                    print(f"[strata] replica {k} stopped (exit {c.returncode})", flush=True)
+                    code = code or c.returncode or 1
+                    stop.set()
+            stop.wait(1.0)
+        return 0 if stopped_by else code
+    finally:
+        for c in children:
+            if c.poll() is None:
+                c.send_signal(signal.SIGTERM)
+        for c in children:
+            try:
+                c.wait(60)
+            except subprocess.TimeoutExpired:
+                c.kill()
+                c.wait()
+        for sig, h in old.items():
+            signal.signal(sig, h)
+        arena = cfg.get("replica_shared_arena")
+        if arena:
+            try:
+                os.unlink(arena)
+            except OSError:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 class Router:
     """Which replica holds the start of a prompt: chained hashes of its 64-token blocks, each with the set of replicas
     that served it (a bit mask)."""
