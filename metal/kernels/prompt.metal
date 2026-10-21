@@ -55,6 +55,52 @@ kernel void route_topk(device const float* logits [[buffer(0)]], device int* ids
     if (lane < 10) w[t * 10 + lane] = selected * (1.0f / ssum);
 }
 
+kernel void route_topk_256(device const float* logits [[buffer(0)]], device int* ids [[buffer(1)]],
+                           device float* w [[buffer(2)]], constant uint& n_tok [[buffer(3)]],
+                           uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                           ushort lane [[thread_index_in_simdgroup]]) {
+    const uint t = tg.x * 8 + sg;
+    if (t >= n_tok) return;
+    device const float* l = logits + ulong(t) * 256;
+    float v[8];
+    for (int i = 0; i < 8; ++i) v[i] = l[lane + 32 * i];
+    float mx = -INFINITY;
+    for (int i = 0; i < 8; ++i) mx = max(mx, v[i]);
+    for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
+    float sum = 0.0f;
+    for (int i = 0; i < 8; ++i) {
+        v[i] = exp(v[i] - mx);
+        sum += v[i];
+    }
+    for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
+    const float rcp = 1.0f / sum;
+    for (int i = 0; i < 8; ++i) {
+        v[i] *= rcp;
+        if (isnan(v[i])) v[i] = -FLT_MAX;
+    }
+    float selected = 0.0f, ssum = 0.0f;
+    for (int rank = 0; rank < 10; ++rank) {
+        float best = v[0];
+        int ex = lane;
+        for (int i = 1; i < 8; ++i)
+            if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
+        for (ushort m = 16; m > 0; m >>= 1) {
+            const float ob = simd_shuffle_xor(best, m);
+            const int oe = simd_shuffle_xor(ex, m);
+            if (ob > best || (ob == best && oe < ex)) { best = ob; ex = oe; }
+        }
+        if ((ex & 31) == lane) {
+            v[ex / 32] = -INFINITY;
+            ids[t * 10 + rank] = ex;
+            ssum += best;
+        }
+        if (rank == lane) selected = best;
+    }
+    for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
+    ssum = max(ssum, 6.103515625e-5f);
+    if (lane < 10) w[t * 10 + lane] = selected * (1.0f / ssum);
+}
+
 struct EpiArgs {
     uint n_tok;
     uint n_embd;   // 2560

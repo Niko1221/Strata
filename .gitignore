@@ -29,6 +29,7 @@ td.log
 /.venv/
 /build/
 /third_party/llama.cpp
+/third_party/metal-cpp/
 /models/
 /packs/
 /mtp/

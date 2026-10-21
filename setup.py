@@ -7646,12 +7646,19 @@ def mac_control_setup(a) -> int:
         fail(problems[0])
 
     step(2, "your choices")
-    app_sizes = [m for m, d in MF.MAC_MODELS.items() if d.get("family", "qwen") in ("qwen", "gyro")]   # Gyro: one file, no repack
-    if a.family not in (None, "qwen", "gyro"):
+    is_coder = a.family == "coder" or a.model == "IQ1_M"
+    target_family = "coder" if is_coder else ("gyro" if a.family == "gyro" or (a.model and MF.MAC_MODELS.get(a.model, {}).get("family") == "gyro") else None)
+    if target_family:
+        app_sizes = [m for m, d in MF.MAC_MODELS.items() if d.get("family", "qwen") == target_family]
+    else:
+        app_sizes = [m for m, d in MF.MAC_MODELS.items() if d.get("family", "qwen") in ("qwen", "gyro", "coder")]
+    if a.family not in (None, "qwen", "gyro", "coder"):
         fail(f"the app on a Mac runs the Qwen3.8-Flash-Next sizes ({', '.join(app_sizes)}); {a.family} is not one of them",
-             "choose Qwen3.8-Flash-Next")
+             "choose Qwen3.8-Flash-Next, coder or gyro")
     rec, notes = MF.recommend_model(ram)
-    if rec not in app_sizes:
+    if target_family == "coder":
+        rec = "IQ1_M"
+    elif rec not in app_sizes:
         rec = "Q2_0"
     model = a.model or rec
     if model not in app_sizes:
