@@ -1442,6 +1442,53 @@ __global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile flo
     for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < n4; i += (long long) gridDim.x * blockDim.x)
         dst[i] = zero ? make_float4(0.f, 0.f, 0.f, 0.f) : const_cast<const float4*>(src)[i];
 }
+
+// STRATA_VERIFY_ECAP (relaxed MTP, vLLM #60689's moe_expert_cap adapted to our plan): the verify window's
+// speculative tail (tokens 1..n-1) runs with a capped expert set - token 0 keeps all k picks, the tail keeps the
+// top (cap - k) entries by routing weight.  A dropped entry joins a KEPT expert's group round-robin with weight
+// 0: no expert is read for it that the kept set does not read anyway, its contribution is exactly 0 (every
+// combine path multiplies by w), and the dropped rows spread over the kept groups instead of piling into one
+// (a single M=k+drops group serialized the grouped GEMV and cost more than the traffic saved).  Rank is
+// (weight desc, index asc) - deterministic.  n <= 80 entries: thread 0 builds the whole decision in shared
+// memory serially (no atomics, no races), the barrier hands every thread its verdict.
+__global__ void __launch_bounds__(kResidentPlanMax) ecap_redirect_kernel(int32_t* __restrict__ ids, float* __restrict__ w,
+                                                                         int n, int k, int cap) {
+    __shared__ int32_t s_keep[kResidentPlanMax];
+    __shared__ int s_nkeep;
+    __shared__ int s_verdict[kResidentPlanMax];  // per entry: >= 0 the kept group to fold into, -1 keep as routed
+    const int tid = threadIdx.x;
+    if (tid == 0) {
+        const int keep = cap - k;
+        s_nkeep = 0;
+        for (int i = 0; i < n; ++i) s_verdict[i] = -1;
+        for (int i = 0; i < k; ++i) {             // token 0's picks are always kept, in index order
+            s_keep[s_nkeep++] = ids[i];
+            s_verdict[i] = -1;
+        }
+        if (keep > 0) {
+            for (int sel = 0; sel < keep; ++sel) {  // the top-`keep` speculative entries by (w desc, index asc)
+                int best = -1;
+                for (int j = k; j < n; ++j) {
+                    if (s_verdict[j] != -1) continue;
+                    if (best < 0 || w[j] > w[best]) best = j;
+                }
+                if (best < 0) break;
+                s_verdict[best] = -2;             // kept by rank (marker; not folded)
+                s_keep[s_nkeep++] = ids[best];
+            }
+            int fold = 0;
+            for (int j = k; j < n; ++j)           // the rest fold round-robin over the kept experts
+                if (s_verdict[j] == -1) s_verdict[j] = fold++ % s_nkeep;
+        }
+    }
+    __syncthreads();
+    if (tid >= n || s_nkeep <= 0) return;
+    const int v = s_verdict[tid];
+    if (v >= 0) {                                 // dropped: fold into kept group v, zero weight
+        ids[tid] = s_keep[v];
+        w[tid] = 0.0f;
+    }
+}
 }  // namespace
 
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
@@ -1450,6 +1497,11 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     resident_plan_kernel<<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
                                                               blob, plan, capx, skip, ring, plan_err);
     check("resident_plan");
+}
+void verify_ecap(int32_t* ids, float* w, int n, int k, int cap, void* stream) {
+    if (n <= k || cap <= k) return;              // a single token's window, or nothing to drop
+    ecap_redirect_kernel<<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, w, n, k, cap);
+    check("verify_ecap");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
     wait_flag_ge_or_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, skip);
