@@ -4634,10 +4634,16 @@ class Service:
             return req
         req = dict(req)
         for key, value in alias.items():
-            if key in s or key == "reasoning_effort" or req.get(key) is not None:
+            if key in s or key == "reasoning_effort" or (req.get(key) if key == "max_tokens" else req.get(key) is not None):
                 continue
             if key == "max_tokens" and req.get("max_completion_tokens"):
                 continue
+            if key == "reasoning_budget_tokens":           # set by the request through llama.cpp's or Anthropic's name
+                thinking = req.get("thinking")
+                if req.get("thinking_budget_tokens") is not None or (api == "anthropic" and (
+                        (isinstance(thinking, dict) and thinking.get("budget_tokens"))
+                        or (thinking is None and not self.anthropic_think_unasked))):
+                    continue
             req[key] = value
         if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]

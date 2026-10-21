@@ -82,6 +82,20 @@ class WithShared(unittest.TestCase):
         self.assertEqual(svc.with_shared({"model": "m-low"}, "anthropic")["output_config"], {"effort": "low"})
         self.assertNotIn("reasoning_effort", svc.with_shared({"model": "m-low"}, "anthropic"))
 
+    def test_request_budget_wins(self):
+        svc = service({"m-u": {"reasoning_budget_tokens": 512}})
+        req = svc.with_shared({"model": "m-u", "thinking": {"type": "enabled", "budget_tokens": 16000}}, "anthropic")
+        self.assertNotIn("reasoning_budget_tokens", req)
+        self.assertNotIn("reasoning_budget_tokens", svc.with_shared({"model": "m-u", "thinking_budget_tokens": 9},
+                                                                    "openai"))
+        self.assertEqual(svc.with_shared({"model": "m-u"}, "anthropic")["reasoning_budget_tokens"], 512)
+        svc.anthropic_think_unasked = False               # "anthropic_thinking": "on_request": no thinking unasked
+        self.assertNotIn("reasoning_budget_tokens", svc.with_shared({"model": "m-u"}, "anthropic"))
+
+    def test_max_tokens_zero_as_shared(self):
+        svc = service({"m-u": {"max_tokens": 512}})
+        self.assertEqual(svc.with_shared({"model": "m-u", "max_tokens": 0}, "openai")["max_tokens"], 512)
+
     def test_odd_model_field(self):
         svc = service({"m-u": {"top_k": 20}})
         for model in (["m-u"], {"a": 1}, None, 3):
