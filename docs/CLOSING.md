@@ -68,7 +68,8 @@ containment, the Windows Job and Linux/macOS behavior are unchanged. This adds n
 Tray icon, startup entry, launcher, HTTP endpoint or frontend permission.
 
 The [acceptance record](windows-close-to-tray/README.md) records this candidate's
-live Web baseline separately from the deployed Extension's lifecycle evidence.
+native X, same-window Tray Reopen and hidden-window Web inference separately from
+the earlier deployed Extension reference.
 
 ## Leftovers, and how they are found
 

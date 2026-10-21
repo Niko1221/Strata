@@ -56,15 +56,56 @@ restarted.
 
 ![Submitted Candidate: Actual Owner Web Baseline Reply](candidate-web-baseline.jpg)
 
-This baseline does **not** establish native X hide, Tray Reopen or hidden-window
-inference for the submitted candidate. A Windows Security firewall prompt for
-the copied Node executable interrupted native GUI acceptance. No network access
-was granted and automation did not dismiss that security prompt. Those GUI
-steps remain pending manual dismissal; the PR stays Draft until they pass.
+This was the initial Web baseline. A Windows Security firewall prompt for the
+copied Node executable interrupted the first native GUI attempt. The user later
+allowed that executable manually; automation did not operate the security dialog.
+The App Host and both shared API listeners still bound only to loopback. The
+completed native GUI acceptance below supersedes that earlier blocker.
 
 The screenshot contains only QA text and generic UI. It contains no account
 identity, private path, hostname, credential or unrelated chat. Incidental usage
 figures are not a benchmark.
+
+## Submitted Candidate: Completed GUI Acceptance
+
+The same CI executable and unchanged official resources were tested on
+2026-10-22 (Asia/Kuala_Lumpur). No Rust or build input changed after the successful
+CI run. The [sanitized observation record](gui-acceptance.json) contains the
+source/checksum, identity comparisons and preservation results, without private
+paths, process IDs, account details or conversation identifiers.
+
+- The native App completed `PR3612_APP_OK`. Clicking the actual title-bar X
+  removed its window from the visible Windows inventory while the same App,
+  official Node Host, Tray and 8080/8081 listeners remained alive.
+- The running companion's real `StrataTray.exe --open-app` entry restored the
+  exact same native window, App and Host. This invokes its normal Open App
+  handler; the physical notification-area icon was not clicked by automation.
+- After a second actual X, the owner Web completed `PR3612_FINAL_WEB_OK` while
+  the native window stayed hidden. The same on-demand model was loaded for that
+  request. Authenticated Models metadata and Monitor each returned HTTP 200.
+- Effective Context remained 204800 (200K), idle unload remained 1800 seconds
+  (30 Minutes), and Codex Sync reported `synced`. This does not establish that an
+  already running Codex client has reloaded its catalog.
+- Explicit candidate `--quit` ended the candidate App and Host. The real Tray
+  reopened the original native Extension. All 17 recorded private files and all
+  29,400 official resource files passed preservation checks. The original native
+  activation pointers and on-demand, unloaded model state were restored.
+
+![Submitted Candidate Restored By The Actual Tray Entry](candidate-tray-reopened.jpg)
+
+![Submitted Candidate: Completed Web Reply While Hidden](candidate-web-hidden.jpg)
+
+GUI acceptance exposed a separate companion bug: its Win32 restore shortcut
+reported success while this hidden native window stayed hidden. Launching the
+same App executable directly restored it. The companion was corrected to always
+use its validated launcher and the App's own single-instance restore entry;
+313 companion assertions and its build passed. The final GUI run above used
+that corrected companion. Its C# implementation and site-specific deployment
+are external to this native PR; they are not presented as submitted Rust changes.
+
+These are real QA captures, not mockups. The collapsed sidebar and QA-only chat
+avoid exposing unrelated conversations. The published JPEGs have no
+EXIF/XMP/IPTC/comment metadata. Their incidental usage figures are not a benchmark.
 
 ## Separate Deployed Reference
 
@@ -113,9 +154,11 @@ the package version rather than a stale literal 0.2.0; runtime logging is unchan
 New regressions check missing/mismatched owners, an exact live executable handle,
 owner exit, and exact `--quit` argument handling.
 
-Candidate CI results are linked in the PR at the tested commit. The live Web
-baseline above uses the submitted native candidate. The deployed reference and
-its screenshot remain separate evidence. Signed-installer update, updater exit,
-Windows logoff, candidate native X/reopen/hidden inference, other App versions
-and Linux/macOS builds remain unverified.
+Windows CI passed 25 Rust tests and the release build. The native source and
+build inputs remain identical to tested commit `6a4202de18bd8c5b77ac3512875c8230722c0f16`.
+The live baseline and completed GUI run above use that submitted native candidate.
+The deployed reference remains separate evidence. Physical Tray-icon clicking,
+signed-installer update, updater exit, Windows logoff, actual candidate owner-exit
+execution, other App versions and Linux/macOS builds remain unverified. Owner-exit
+logic is covered by the Windows Rust tests; that is distinct from GUI execution.
 Scope agreement for this optional native hook is requested in #2034.

@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "observedAtUtc": "2026-10-21T21:54:53.050Z",
+  "testedNativeSource": "6a4202de18bd8c5b77ac3512875c8230722c0f16",
+  "nativeSha256": "2e08024cbbcda10415af59d53462e173c7f3e7aa424e858aef18ffbc3f1db4c2",
+  "ciRun": "https://github.com/medking82/Strata/actions/runs/39632085918",
+  "environment": {
+    "os": "Windows x64",
+    "officialApp": "0.2.2",
+    "engine": "0.1.47",
+    "gpu": "RTX 5080 16 GB",
+    "usableRamGb": 61.4
+  },
+  "companion": {
+    "scope": "External to this native PR",
+    "sourceCommit": "62dcbbd56f7161a612e231228c87104c5edcbf12",
+    "entry": "StrataTray.exe --open-app",
+    "assertionsPassed": 313,
+    "buildPassed": true,
+    "physicalTrayIconClicked": false
+  },
+  "observed": {
+    "actualNativeXHidden": true,
+    "sameWindowReopenedByRealTrayEntry": true,
+    "candidateAppAndHostIdentitiesPreserved": true,
+    "sharedListenerIdentitiesPreserved": true,
+    "hiddenWebReply": "PR3612_FINAL_WEB_OK",
+    "candidateExplicitQuitExitedAppAndHost": true,
+    "originalNativeExtensionReopened": true,
+    "modelsHttp": 200,
+    "monitorHttp": 200,
+    "sharedListenersLoopbackOnly": true
+  },
+  "configuration": {
+    "model": "huihui-v2-swift-qwen3.8-flash-next-iq3_s",
+    "contextTokens": 204800,
+    "idleUnloadSeconds": 1800,
+    "codexSync": "synced",
+    "runningCodexClientReloadVerified": false,
+    "initialAndRestoredModelLoaded": false
+  },
+  "preservation": {
+    "privateFiles": 17,
+    "officialResources": 29400,
+    "originalPointersRestored": true
+  },
+  "screenshots": [
+    {
+      "file": "candidate-tray-reopened.jpg",
+      "bytes": 57081,
+      "sha256": "112642bc3c599c06bc07a748dcaec50ac1353f5c13df430e454fe390a0ad26c8",
+      "exifXmpIptcCommentMetadata": false
+    },
+    {
+      "file": "candidate-web-hidden.jpg",
+      "bytes": 35523,
+      "sha256": "fba2d60723c7795d2b8bfaac2d4e6426e082bb5fc76f0ffa4af017fe5e2a57e2",
+      "exifXmpIptcCommentMetadata": false
+    }
+  ],
+  "notRun": [
+    "Physical notification-area icon click",
+    "Signed-installer update",
+    "Updater exit",
+    "Windows logoff",
+    "Candidate owner-exit GUI execution",
+    "Other App versions",
+    "Linux/macOS build"
+  ],
+  "performanceClaim": null
+}
