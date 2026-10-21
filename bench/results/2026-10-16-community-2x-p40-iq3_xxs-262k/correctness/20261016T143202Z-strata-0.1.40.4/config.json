@@ -1,0 +1,16 @@
+{
+  "base_url": "http://localhost:4000",
+  "model": "flash-next-strata",
+  "label": "strata-0.1.40.4",
+  "max_tokens": 400,
+  "temperature": 0.0,
+  "prompts": 20,
+  "note": "",
+  "argv": [
+    "correctness_test.py",
+    "--model",
+    "flash-next-strata",
+    "--label",
+    "strata-0.1.40.4"
+  ]
+}

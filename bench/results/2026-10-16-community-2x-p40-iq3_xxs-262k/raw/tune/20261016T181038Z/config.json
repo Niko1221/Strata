@@ -1,0 +1,34 @@
+{
+  "base_url": "http://localhost:4000",
+  "model": "flash-next-strata",
+  "tokenize_url": "http://localhost:8080/v1/messages/count_tokens",
+  "slots_url": "http://localhost:8080/slots",
+  "out_dir": "<HOME>/llm-hosts/flash-next-bench",
+  "prompt_tokens": 4096,
+  "max_tokens": 1024,
+  "rounds": 3,
+  "rss_pids": "3278038",
+  "timeout": 1800,
+  "note": "plan step C 2026-10-16: per-request strata_tune sweep on the live v0.1.44.1 held config (engine auto pcie_frac 0.36, spec_min_p 0.5 = control); no restart",
+  "arms": {
+    "control": null,
+    "minp0.7": {
+      "spec_min_p": 0.7
+    },
+    "minp0.3": {
+      "spec_min_p": 0.3
+    },
+    "pcie0.34+minp0.7": {
+      "pcie_frac": 0.34,
+      "spec_min_p": 0.7
+    }
+  },
+  "stamp": "20261016T181038Z",
+  "argv": [
+    "spec_minp_sweep.py",
+    "--rss-pids",
+    "3278038",
+    "--note",
+    "plan step C 2026-10-16: per-request strata_tune sweep on the live v0.1.44.1 held config (engine auto pcie_frac 0.36, spec_min_p 0.5 = control); no restart"
+  ]
+}

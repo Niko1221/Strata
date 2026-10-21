@@ -1,0 +1,22 @@
+[
+  "What is 17 * 23? Answer with the number only.",
+  "List the first ten prime numbers, comma-separated.",
+  "Write a Python function that returns the n-th Fibonacci number iteratively.",
+  "Explain the difference between TCP and UDP in three sentences.",
+  "Translate to French: 'The measurement must be dated.'",
+  "Sort these words alphabetically: pear, apple, fig, banana, cherry.",
+  "A train leaves at 09:40 and arrives at 13:05. How long is the journey?",
+  "Return a JSON object with keys name, port, healthy for a service called proxy on port 4000 that is healthy. JSON only.",
+  "Write a bash one-liner that counts lines in all .log files in the current directory.",
+  "What is the capital of Australia? One word.",
+  "Summarize the plot of Hamlet in two sentences.",
+  "Given the list [3, 1, 4, 1, 5, 9, 2, 6], what is the median?",
+  "Write a SQL query that returns the five most recent orders from a table orders(id, created_at, total).",
+  "Convert 72 degrees Fahrenheit to Celsius. Show the formula and the result.",
+  "Name three differences between a process and a thread.",
+  "Write a regular expression that matches an IPv4 address.",
+  "Is 221 a prime number? Explain briefly.",
+  "Rewrite in passive voice: 'The proxy routes every request to the active stack.'",
+  "Return a JSON array of the days of the week starting with Monday. JSON only.",
+  "Explain what a KV cache is in a transformer, in one paragraph."
+]
