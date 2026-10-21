@@ -1201,7 +1201,11 @@ def cpu_info():
     else:
         try:
             txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            mflags = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)
+            if mflags is None:
+                # aarch64 lists Features, not the x86 flags line. The normal engine is the native one.
+                return name, False, False
+            flags = set(mflags.group(1).split())
             avx2 = "avx2" in flags
             avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
             m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
@@ -1239,6 +1243,8 @@ def cpu_floor(avx2: bool) -> str:
     forced = os.environ.get("STRATA_ISA_FLOOR", "").strip().lower()
     if forced in ("avx", "none"):
         return forced
+    if platform.machine().lower() in ("aarch64", "arm64"):
+        return ""
     if avx2:
         return ""
     if WIN:
@@ -1323,7 +1329,19 @@ def gpus():
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
+            try:
+                mem_gb = float(mem) / 1024.0   # nvidia-smi nounits: MiB
+            except ValueError:
+                # GB10 unified memory: memory.total is [N/A]. The pool is the machine RAM.
+                mem_gb = 0.0
+                try:
+                    for info in open("/proc/meminfo"):
+                        if info.startswith("MemTotal:"):
+                            mem_gb = int(info.split()[1]) / 1024.0 / 1024.0
+                            break
+                except OSError:
+                    pass
+            found.append({"index": int(idx), "name": name, "vram_gb": mem_gb, "arch": cc.replace(".", ""),
                           "driver": drv})
         except ValueError:
             continue
