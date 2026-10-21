@@ -367,7 +367,7 @@ move on a Threadripper PRO 3975WX + R9700 (14.5 ms, +0.4%, 5 pairs); no case rea
 - `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off): the K/V takes VRAM only for the cells the requests
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
-  and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off.
+  and with `--batch` or `--peer-device`, the engine says so and stays off.
   On HIP (ROCm 6+) it runs through hipMemAddressReserve / hipMemCreate / hipMemMap (2 MiB chunks; the card must report
   virtual memory management, `STRATA_HIP_VMM=0` turns it off); until then every AMD card printed "--kv-grow is off".
   Radeon AI PRO R9700 with `--vram-reserve-mib 17084` (a 16 GB card), Q2_0 pack, `--max-context 196608`, 5 interleaved pairs:
@@ -2541,3 +2541,5 @@ CUDA card, where it measured +1..3 % prompt speed on a Tesla P100 at 30-60K toke
 Options that change answers (other summation order) are separate and explicit: `STRATA_SELECT_SIMT=1|2` (FP32 tiled block scorer,
 KL 0.01 against the warp scorer per #2071), `STRATA_PA_V2T=1` (v2 prompt attention, #2092/#2146), `STRATA_PF_FUSED=1
 STRATA_PF_FUSED_SM75=1` (fused int8 prompt experts for the Q2_0 pack, #2145; only on a 7.5 card, sm_80+ is unchanged), `STRATA_BF16_TC=1` with `STRATA_XN_F16` (#2091).
+
+With both `--kv-grow` and `--vram-elastic`, VRAM borrows from the same region the K/V grows into. See [VRAM_ELASTIC.md](VRAM_ELASTIC.md#with---kv-grow).

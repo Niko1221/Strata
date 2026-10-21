@@ -92,6 +92,17 @@ expert outside the cache), but I have not run a fault-injection test of these tw
    where the adaptive tier already brought an expert back, the layer's most-routed missing expert takes the slot **(code)**.
    Check `expert_cache_mib` against `expert_cache_full_mib` to know it is whole again.
 
+## With `--kv-grow`
+
+`--vram-elastic` with `--kv-grow` keeps `--kv-grow`'s cache: one address range of 2 MiB chunks, not segments. A shrink
+takes its VRAM where the K/V grows into, the slots just below the prompt path's loan (the loan is not touched, so the
+prompt chunk stays as it is): those slots give up their experts - a hotter one there first moves into the slot of the
+coldest expert in the loan region, as for the K/V - and their chunks go to the driver instead of to the K/V. A grow maps
+new chunks there and fills those slots with the profile's hottest experts the GPU does not hold, so after a grow the
+cache holds what the K/V's trim would leave, not necessarily the experts the shrink took (unlike the segments above,
+which put the same experts back). The K/V keeps growing while the cache is shrunk: it takes slots from the cache, not
+the reserve. `expert_slots` counts the slots that hold experts; `expert_cache_mib` the chunks mapped **(code)**.
+
 ## Unload, restart and crash
 
 - The server remembers the last `reserve_mib` **in memory** and sends it again after the engine has started again
@@ -122,7 +133,8 @@ and starts the encoder with the model, as before) the GPU encoder is not started
 - An unload of the model stops the encoder too. The log lines start with `[strata] images:` **(code; the unit tests in
   `serve/test_vision_elastic.py` pin each case)**.
 
-`--vram-elastic` turns `--kv-grow` off (the engine says so at start): with both asked, the whole K/V is in VRAM.
+With `--kv-grow` too, the encoder's share is taken where the K/V grows into ([With `--kv-grow`](#with---kv-grow)), and
+the K/V keeps growing while the encoder runs.
 
 ## What to build on
 
