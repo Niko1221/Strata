@@ -35,7 +35,9 @@ adaptive expert tier and the OS make single measurements noisy by a few percent.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import statistics
 import sys
 import threading
@@ -223,28 +225,38 @@ class Session:
 
 def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=None) -> dict:
     """Measure on the engine `cfg` describes; returns {"settings": {flag: value}, "report": {...}}.
-    `start_engine(args)` returns a started engine (serve.server.StrataEngine or a stand-in in tests)."""
-    if start_engine is None:
-        from serve.server import StrataEngine, child_env
+    `start_engine(args)` returns a started engine (serve.server.StrataEngine or a stand-in in tests).
+    A supplied factory manages its own auxiliary resources."""
+    with contextlib.ExitStack() as resources:
+        if start_engine is None:
+            from serve.server import StrataEngine, Vision, child_env, vision_env
+            env = child_env(cfg)
+            if cfg.get("vision"):
+                vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
+                            if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
+                        for k, v in cfg["vision"].items()}
+                log = resources.enter_context(open(cfg["log"], "a", encoding="utf-8")) if cfg.get("log") else None
+                vision = Vision(vcfg, log=log, env=vision_env(cfg, env))
+                resources.callback(vision.shutdown)
 
-        def start_engine(args, env=None):
-            e = child_env(cfg)
-            e.update(env or {})
-            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=e)
-    import strata_tokenizer as ST
-    tpath = Path(cfg["tokenizer"])
-    vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
-    toks = [None] * len(vocab)
-    for t, i in vocab.items():
-        toks[i] = t
-    tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
-                       json.loads((tpath / "token_type.json").read_text()))
-    ids_list = [chat_ids(tok, p) for p in PROMPTS]
-    if progress is None and cancel_event is None:
+            def start_engine(args, env=None):
+                e = child_env(cfg)
+                e.update(env or {})
+                return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=e)
+        import strata_tokenizer as ST
+        tpath = Path(cfg["tokenizer"])
+        vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
+        toks = [None] * len(vocab)
+        for t, i in vocab.items():
+            toks[i] = t
+        tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
+                           json.loads((tpath / "token_type.json").read_text()))
+        ids_list = [chat_ids(tok, p) for p in PROMPTS]
+        if progress is None and cancel_event is None:
+            return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
+                           hip=cfg.get("backend") == "hip")
         return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
-                       hip=cfg.get("backend") == "hip")
-    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
-                   hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event)
+                       hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event)
 
 
 def engine_args(cfg: dict) -> list[str]:
