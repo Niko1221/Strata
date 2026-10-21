@@ -388,6 +388,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     static const bool q8_inject = [] { const char* v = std::getenv("STRATA_HC_Q8_INJECT"); return v && v[0] == '1'; }();
                     const bool f32_inject = q8_inject && tensor.type == 0 && tensor.name.ends_with("_inject.weight");
                     if ((tensor.type != 8 && !f32_inject) || !hc_q8_name(tensor.name) || tensor.shape.size() != 2) continue;
+                    // a layer split: only this stage's layers (another stage's rows would cost VRAM and never be read)
+                    if (outside(tensor.name) || !in_range(tensor.name)) continue;
                     auto found = table.table_.find(tensor.name);
                     if (found == table.table_.end() || found->second.hc_q8 != nullptr) continue;
                     auto& ref = found->second;
