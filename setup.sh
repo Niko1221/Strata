@@ -4,6 +4,16 @@
 # Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 # NixOS (or STRATA_UV=1) with uv installed: uv makes the project venv; every other Linux uses the standard venv.
 cd "$(dirname "$0")" || exit 1
+# Strata ships prebuilt engine and NVIDIA/AMD library wheels for x86_64 only. Detect other architectures up front
+# so an ARM device (NVIDIA Jetson / AGX Xavier, Raspberry Pi, Apple Silicon running Linux) fails with a clear
+# message before it downloads gigabytes and then crashes: there is no aarch64 engine or wheel set today.
+if [ "$(uname -m)" != "x86_64" ]; then
+  echo "[X] Strata currently supports x86_64 only (this machine is $(uname -m))."
+  echo "    The prebuilt engine and the NVIDIA/AMD library wheels are built for x86_64; there is no aarch64 build"
+  echo "    path yet. Supported NVIDIA cards are RTX 20/30/40/50 (older Pascal/Volta via the experimental CUDA-12"
+  echo "    build, see docs/OLDER_GPUS.md). ARM platforms like Jetson / AGX are not supported."
+  exit 1
+fi
 # A bundled Python runtime (the python/ folder of the terminal archive) is used when it is there: nothing to find,
 # install or download. update.sh runs this file, so it uses it too.
 if [ -x python/bin/python3 ]; then
@@ -73,4 +83,4 @@ if [ ! -x .venv/bin/python ]; then
     $PY -m venv .venv || { rm -rf .venv; echo "could not create .venv: sudo apt install python3-venv"; exit 1; }
   fi
 fi
-exec .venv/bin/python setup.py "$@"
+exec .venv/bin/python setup.py "$@"rivate environment inside this folder (system Python stays untouched; newer distros refuse global pip)\n    $PY -m venv .venv || { rm -rf .venv; echo \"could not create .venv: sudo apt install python3-venv\"; exit 1; }\n  fi\nfi\nexec .venv/bin/python setup.py \"$@\"\n"}}]
