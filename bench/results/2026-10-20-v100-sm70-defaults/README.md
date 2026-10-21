@@ -65,3 +65,7 @@ Evidence is limited to dual **32 GB PCIe V100**, this model/quantization, MTP4, 
 [Extended report and raw results](extended/README.md) evaluate the applicable historical optimizations and record rejected candidates as well as the selected stack. Seven additional switches improve Japanese/code decode from 78.7/116.8 to 82.4/122.4 tok/s in the paired trial, with 10/10 decoded texts matching. Final restart check: 82.5/122.6 tok/s. These are additional gains over the six-switch baseline above, not a new paired comparison against the original untuned engine. The proposed table now contains all 13 switches.
 
 The selected stack passed four 32,000-input/512-output requests in two simultaneous pairs (43.55/43.58 s), with both sentinels present. The output-changing FP16/recurrence candidates, slower exact recurrence and one-group batching are excluded. This is a proposed default pending maintainer scope agreement and current-main GPU validation; no broad hardware compatibility is claimed.
+
+## PR-source verification
+
+[Current-source CUDA build and runtime validation](current-source/README.md) now passes on the measured dual V100 system. Automatic selection matched manual settings for all ten output hashes and passed four uncached 32K concurrent requests. This closes the current-source CUDA validation gap; broader hardware/backend coverage and maintainer scope review remain outstanding.
