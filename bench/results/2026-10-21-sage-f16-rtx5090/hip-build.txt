@@ -1,0 +1,69 @@
+[0/2] Re-checking globbed directories...
+[1/7] Building HIP object CMakeFiles/q36_attn_parity.dir/tools/qwen35/q36_attn_parity.cu.o
+[2/7] Linking HIP executable q36_attn_parity
+[3/7] Building HIP object CMakeFiles/strata_qwen35.dir/src/qwen35/q36_engine.cu.o
+In file included from <built-in>:2:
+In file included from <repo>/include/strata/hip_compat/cuda_runtime.h:12:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:57:
+<repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_hip_runtime.h:206:53: warning: unused parameter 'kernel' [-Wunused-parameter]
+  206 | std::tuple<Formals...> validateArgsCountType(void (*kernel)(Formals...),
+      |                                                     ^
+In file included from <repo>/src/qwen35/q36_engine.cu:29:
+<repo>/src/qwen35/q36_kernels.cuh:234:21: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  234 |     if (threadIdx.x < K_) pk[threadIdx.x] = parts + (size_t) (prow ? prow[t * K_ + threadIdx.x] : t * K_ + threadIdx.x) * n;
+      |         ~~~~~~~~~~~ ^ ~~
+<repo>/src/qwen35/q36_engine.cu:161:21: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  161 |     if (threadIdx.x < K_)   // pick k's row: t * K + k, or its sorted row (`prow`, the prompt's MMQ order)
+      |         ~~~~~~~~~~~ ^ ~~
+<repo>/src/qwen35/q36_engine.cu:1958:71: warning: unused variable 'D' [-Wunused-variable]
+ 1958 |         const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
+      |                                                                       ^
+In file included from <built-in>:2:
+In file included from <repo>/include/strata/hip_compat/cuda_runtime.h:12:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:57:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_hip_runtime.h:102:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_hip_atomic.h:26:
+<repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_device_functions.h:82:33: warning: unused function '__fns64' [-Wunused-function]
+   82 | __device__ static __hip_int32_t __fns64(__hip_uint64_t mask, __hip_uint32_t base,
+      |                                 ^~~~~~~
+<repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_device_functions.h:149:33: warning: unused function '__fns' [-Wunused-function]
+  149 | __device__ static __hip_int32_t __fns(unsigned int mask, unsigned int base, int offset) {
+      |                                 ^~~~~
+6 warnings generated when compiling for gfx1201.
+In file included from <built-in>:2:
+In file included from <repo>/include/strata/hip_compat/cuda_runtime.h:12:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:57:
+<repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_hip_runtime.h:206:53: warning: unused parameter 'kernel' [-Wunused-parameter]
+  206 | std::tuple<Formals...> validateArgsCountType(void (*kernel)(Formals...),
+      |                                                     ^
+In file included from <repo>/src/qwen35/q36_engine.cu:29:
+<repo>/src/qwen35/q36_kernels.cuh:234:21: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  234 |     if (threadIdx.x < K_) pk[threadIdx.x] = parts + (size_t) (prow ? prow[t * K_ + threadIdx.x] : t * K_ + threadIdx.x) * n;
+      |         ~~~~~~~~~~~ ^ ~~
+<repo>/src/qwen35/q36_engine.cu:161:21: warning: comparison of integers of different signs: 'unsigned int' and 'int' [-Wsign-compare]
+  161 |     if (threadIdx.x < K_)   // pick k's row: t * K + k, or its sorted row (`prow`, the prompt's MMQ order)
+      |         ~~~~~~~~~~~ ^ ~~
+<repo>/src/qwen35/q36_engine.cu:1958:71: warning: unused variable 'D' [-Wunused-variable]
+ 1958 |         const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
+      |                                                                       ^
+In file included from <built-in>:2:
+In file included from <repo>/include/strata/hip_compat/cuda_runtime.h:12:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/hip_runtime.h:57:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_hip_runtime.h:102:
+In file included from <repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_hip_atomic.h:26:
+<repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_device_functions.h:82:33: warning: unused function '__fns64' [-Wunused-function]
+   82 | __device__ static __hip_int32_t __fns64(__hip_uint64_t mask, __hip_uint32_t base,
+      |                                 ^~~~~~~
+<repo>/build-sage-hip-tools/venv/lib/python3.13/site-packages/_rocm_sdk_devel/include/hip/amd_detail/amd_device_functions.h:149:33: warning: unused function '__fns' [-Wunused-function]
+  149 | __device__ static __hip_int32_t __fns(unsigned int mask, unsigned int base, int offset) {
+      |                                 ^~~~~
+<repo>/src/qwen35/q36_engine.cu:201:17: warning: unused function 'k_add' [-Wunused-function]
+  201 | __global__ void k_add(float* x, const float* y, int64_t n) {
+      |                 ^~~~~
+<repo>/src/qwen35/q36_engine.cu:235:17: warning: unused function 'k_gate_rows' [-Wunused-function]
+  235 | __global__ void k_gate_rows(float* sh, const float* gate, int n, int T) {
+      |                 ^~~~~~~~~~~
+8 warnings generated when compiling for host.
+[4/7] Linking HIP static library libstrata_qwen35.a
+[5/7] Linking HIP executable strata
+[6/7] Linking HIP executable strata-q36

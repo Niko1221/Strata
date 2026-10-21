@@ -19,18 +19,26 @@ With a source build, start the engine protocol with:
 
 ```sh
 build/strata --native /path/to/Sage-A1.5-F16.gguf --f16-weights \
-  --max-context 262144 --prefill 512 --pool-workers 15 --mtp 0 --serve
+  --kv f16 --max-context 262144 --prefill 512 --pool-workers 15 --mtp 0 --serve
 ```
 
 For an existing manual server profile, put `"--f16-weights"` in its `"args"` and use the model's own tokenizer.
 The flag does not add a model to setup or the Terminal's catalog. CUDA execution has been checked; HIP has been compiled,
 but F16 execution on AMD has not been checked. Intel Arc and Mac do not run this family.
 
-The file is about 71 GB. On the tested RTX 5090 32 GB / Ryzen 9 9950X3D / 128 GB RAM machine, at a 262,144-token context and
-512-token prompt chunks, Strata places 30-31 of 256 experts per layer in VRAM and keeps 61.5 GiB of experts in pinned system RAM
-(the resident count depends on the VRAM other programs use).
-Its existing FP32 KV cache includes the MTP block even with `--mtp 0`. Context size takes room from the expert cache; a speed
-measured at a small context does not establish speed at 256K. These checks cover text; the Sage vision projector is untested.
+The file is about 71 GB. `--kv f16` stores keys and values in F16 and accumulates attention in FP32. This is a separate,
+explicit choice; omitting it or passing `--kv fp32` keeps the existing FP32 cache. On the tested RTX 5090 32 GB / Ryzen 9
+9950X3D / 128 GB RAM machine, at a 262,144-token context with 512-token prompt chunks and F16 KV, 59-60 of 256 experts
+per layer fit in VRAM. All 61.5 GiB of experts are also held in pinned system RAM. The resident count depends on the
+VRAM other programs use. The MTP block's cache is allocated even with `--mtp 0`.
+
+The F16 weight path and explicit F16 cache use grouped-query decode attention: the query heads share coalesced cache
+reads. The hybrid expert cache also limits the prompt's routing history and updates every layer's scores during decode,
+so a long prompt does not prevent it from adapting to the answer. Quantized models with the existing FP32 cache retain
+the release attention and expert-cache paths.
+
+Context size takes room from the expert cache; a speed measured at a small context does not establish speed at 256K.
+These checks cover text; the Sage vision projector is untested.
 
 ## Pictures
 
