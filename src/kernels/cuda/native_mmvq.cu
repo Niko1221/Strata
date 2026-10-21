@@ -3045,6 +3045,15 @@ constexpr IlRows kIlRows_120[] = {
     {14, {{0, 0, 2, 1, 1}, {0, 0, 4, 2, 4}, {0, 2, 2, 2, 2}}},   // Q6_K
     {11, {{0, 1, 2, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q3_K
 };
+// sm_80: read off mmvq_il_parity --bench --emit-table on a CMP 170HX (GA100, 70 SMs, HBM2e 1.5 TB/s), the same 3% rule;
+// bitwise equal to native_mmvq (the tool checks every case).
+constexpr IlRows kIlRows_80[] = {
+    {23, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 2, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 4, 4, 4}, {0, 0, 2, 2, 2}, {0, 0, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 0, 2, 2, 4}, {0, 0, 2, 2, 2}, {0, 0, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 2, 4, 2, 2}}},   // Q6_K
+    {11, {{1, 2, 2, 2, 2}, {1, 1, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q3_K
+};
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on an RTX 2080 Ti 22 GB (SM 1650 MHz), the same 3% rule.
 // The plain multi-column kernels are bound by dp4a throughput on Turing from 2 columns on (IQ4_XS 2560x10240 at 4
 // columns 81.1 -> 37.4 us, the Q5_K head 1671 -> 1045 us); bitwise equal to native_mmvq.  No one-column table here:
@@ -3068,8 +3077,16 @@ constexpr IlRows58 kIlRows58_120[] = {   // 4 = 2 rows a warp here (launch_il_ro
     {14, {{0, 2, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 4, 4, 4, 2}}},   // Q6_K
     {11, {{0, 2, 4, 2, 4}, {0, 2, 2, 4, 4}, {0, 2, 2, 2, 4}, {0, 4, 2, 2, 2}}},   // Q3_K
 };
+constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
+    {23, {{0, 4, 4, 2, 2}, {0, 2, 4, 4, 4}, {0, 2, 4, 1, 1}, {1, 4, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 4, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 4, 4, 4}, {0, 2, 2, 4, 4}}},   // Q4_K
+    {13, {{0, 0, 4, 2, 2}, {0, 4, 2, 2, 2}, {0, 4, 4, 2, 4}, {0, 2, 4, 4, 2}}},   // Q5_K
+    {14, {{0, 0, 4, 2, 4}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 0, 4, 2, 4}}},   // Q6_K
+    {11, {{0, 0, 4, 2, 4}, {0, 0, 4, 1, 4}, {0, 0, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
+    {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
 };
@@ -3084,8 +3101,15 @@ constexpr Il1Rows kIl1Rows_61[] = {
     {13, {0, 0, 0, 2, 2}},   // Q5_K
     {11, {0, 0, 2, 2, 2}},   // Q3_K
 };
+constexpr Il1Rows kIl1Rows_80[] = {   // CMP 170HX, as kIlRows_80
+    {23, {0, 0, 1, 4, 1}},   // IQ4_XS
+    {12, {0, 0, 2, 2, 2}},   // Q4_K
+    {13, {0, 0, 0, 4, 1}},   // Q5_K
+    {11, {0, 0, 2, 2, 2}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
+    {80, kIl1Rows_80, sizeof(kIl1Rows_80) / sizeof(Il1Rows)},
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
 };
@@ -3101,6 +3125,7 @@ constexpr IlArch kIlArch[] = {
     {61, kIlRows_61, sizeof(kIlRows_61) / sizeof(IlRows)},   // Pascal with dp4a: measured on a Tesla P40
     {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on an RTX 2080 Ti
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
+    {80, kIlRows_80, sizeof(kIlRows_80) / sizeof(IlRows)},   // sm_80: measured on a CMP 170HX
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
     // 147-verify: RTX PRO 5000 Blackwell (110 SMs).  Only 12.0 cards with 80+ SMs (il_cc's 1201) take it: the shared table
     // was measured on an RTX 5070 (48 SMs) and stays that card's
@@ -3188,6 +3213,8 @@ int il_cc() {
         int sms = 0;
         if (cc[dev] == 120 && cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && sms >= 80)
             cc[dev] = 1201;
+        // STRATA_MMVQ_IL_SM80=0: an sm_80 card takes the shared table as before kIlRows_80 (A/B)
+        if (cc[dev] == 80) { const char* v = std::getenv("STRATA_MMVQ_IL_SM80"); if (v != nullptr && v[0] == '0') cc[dev] = 81; }
         cudaGetLastError();
     }
     return cc[dev];
