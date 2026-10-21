@@ -7270,7 +7270,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     gguf = folder / fam["file"].format(q=model)
     size = fam["sha256"][gguf.name][0]
     part = gguf.with_name(gguf.name + ".part")
-    left = 0 if gguf.exists() and done(gguf) else (size - (part.stat().st_size if part.is_file() else 0)) / 1e9
+    def have(p: Path) -> bool:                         # --gguf-dir: the person's own file has no finish mark; verify_sha256 checks and writes it
+        return p.exists() and (done(p) or bool(a.gguf_dir))
+    left = 0 if have(gguf) else (size - (part.stat().st_size if part.is_file() else 0)) / 1e9
     if left and free_gb(folder) < left:
         fail(f"not enough free disk space in {folder}: need ~{left:.0f} GB, {free_gb(folder):.0f} GB free", "use --models-dir on a bigger drive")
     if left and free_gb(folder) < left + 1:
@@ -7294,7 +7296,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok("engine: the engine component (looked up when the model loads)" if CONTROL else f"engine: {eng / EXE}")
 
     step(5, f"downloading {fam['title']} {model}")
-    if gguf.exists() and done(gguf):
+    if have(gguf):
         ok(f"{gguf.name} already downloaded")
     else:
         if a.gguf_dir:
@@ -7304,7 +7306,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     ok(f"model file: {gguf}")
     mmproj = folder / fam["mmproj"]
     if vision != "none":                               # the image encoder: Unsloth's mmproj, pinned, size + SHA-256 checked
-        if mmproj.exists() and done(mmproj):
+        if have(mmproj):
             ok(f"{mmproj.name} already downloaded")
         else:
             if a.gguf_dir:
