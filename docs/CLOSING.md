@@ -67,8 +67,8 @@ exits, the App exits through the existing Host cleanup path. Updater exit, crash
 containment, the Windows Job and Linux/macOS behavior are unchanged. This adds no
 Tray icon, startup entry, launcher, HTTP endpoint or frontend permission.
 
-The [acceptance record](windows-close-to-tray/README.md) distinguishes the deployed
-Extension's real screenshot from build/test evidence for this upstream candidate.
+The [acceptance record](windows-close-to-tray/README.md) records this candidate's
+live Web baseline separately from the deployed Extension's lifecycle evidence.
 
 ## Leftovers, and how they are found
 

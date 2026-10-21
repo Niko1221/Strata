@@ -31,7 +31,42 @@ that is meant to contain only its server workers.
 5. Send `strata-desktop.exe --quit`. Confirm the App and its Host exit cleanly.
    A cold `--quit` must not start a Host. Test owner exit separately.
 
-## Real Deployed Reference
+## Submitted Candidate: Live Web Baseline
+
+The native executable from [Windows CI run 39632085918](https://github.com/medking82/Strata/actions/runs/39632085918)
+was run on Windows x64 with the unchanged official App 0.2.2 Host, UI and Control
+resources. The executable was built from candidate commit
+`6a4202de18bd8c5b77ac3512875c8230722c0f16`; its SHA-256 is
+`2e08024cbbcda10415af59d53462e173c7f3e7aa424e858aef18ffbc3f1db4c2`.
+Its source and checksum match the CI provenance artifact. No native source was
+patched for this local test. This was an unbundled candidate, not an installer.
+
+The running Tray opened this candidate. The authenticated owner Web then used
+the loaded Huihui V2 Swift IQ3_S model and completed `PR3612_WEB_BASELINE_OK`.
+Models metadata and Monitor returned HTTP 200. Effective Context stayed at
+204800 (200K), idle unload at 1800 seconds, and Codex Sync reported `synced`.
+The existing Tray and 8080/8081 listener identities were retained.
+
+After the capture, explicit `--quit` ended the candidate and its Host. The real
+Tray reopened the original native Extension. Its original settings and activation
+pointer were restored byte for byte. Preservation checks passed for 17 private
+files and all 29,400 official resource files. The original model, Context, idle
+unload and synchronized Codex state were retained; shared listeners were not
+restarted.
+
+![Submitted Candidate: Actual Owner Web Baseline Reply](candidate-web-baseline.jpg)
+
+This baseline does **not** establish native X hide, Tray Reopen or hidden-window
+inference for the submitted candidate. A Windows Security firewall prompt for
+the copied Node executable interrupted native GUI acceptance. No network access
+was granted and automation did not dismiss that security prompt. Those GUI
+steps remain pending manual dismissal; the PR stays Draft until they pass.
+
+The screenshot contains only QA text and generic UI. It contains no account
+identity, private path, hostname, credential or unrelated chat. Incidental usage
+figures are not a benchmark.
+
+## Separate Deployed Reference
 
 The screenshot below is an actual acceptance capture of a separately deployed
 native Extension derived from official App 0.2.2 commit
@@ -78,8 +113,9 @@ the package version rather than a stale literal 0.2.0; runtime logging is unchan
 New regressions check missing/mismatched owners, an exact live executable handle,
 owner exit, and exact `--quit` argument handling.
 
-Candidate CI results are linked in the PR at the tested commit. The deployed
-reference and its screenshot are separate evidence, not proof of candidate
-installation. Signed-installer update, updater exit, Windows logoff, candidate
-GUI execution, other App versions and Linux/macOS builds remain unverified.
+Candidate CI results are linked in the PR at the tested commit. The live Web
+baseline above uses the submitted native candidate. The deployed reference and
+its screenshot remain separate evidence. Signed-installer update, updater exit,
+Windows logoff, candidate native X/reopen/hidden inference, other App versions
+and Linux/macOS builds remain unverified.
 Scope agreement for this optional native hook is requested in #2034.
