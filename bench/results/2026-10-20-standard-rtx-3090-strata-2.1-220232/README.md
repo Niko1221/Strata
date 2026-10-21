@@ -117,9 +117,11 @@ string ("…3090 + …3090") matches no single card, so `bench_facts.py:262-266`
 follow-up run below records both cards. results.json here is left exactly as generated, and the follow-up inventory
 alone does not retroactively prove how this run's engine scheduled the two devices.
 
-## Follow-up run (2026-10-21)
+## Follow-up run (2026-10-21, shared-load intermediate)
 
-The same machine, same model, same custom track and tuning, run with the fixed command above. Full report:
+The same machine, same model, same custom track and tuning, run with the fixed command above while agent sessions
+shared the server. Kept as evidence that the fixes work under load; for the primary speed numbers see the final
+isolated run below. Full report:
 [../2026-10-21-standard-rtx-3090-strata-2.1-124948/README.md](../2026-10-21-standard-rtx-3090-strata-2.1-124948/README.md),
 run `20261021T120047Z-66e200f7`, **status: complete** (the protocol is still draft; `conformance` is null). The
 original run above keeps its nonconforming status; the follow-up is a separate run, not an edit of it.
@@ -147,3 +149,32 @@ original run above keeps its nonconforming status; the follow-up is a separate r
   the 0.2.1 launcher tree (build 0.1.46.2) with its `COMMIT` file. The engine binary is unchanged: 0.1.46.
 - The 6/6 long-context recall result above was not rerun and stays as supplementary evidence; it does not prove
   general model correctness, and a custom-track Swift derivative run cannot be a standard-profile conforming result.
+
+## Final isolated run (2026-10-21) — primary performance result
+
+The primary performance result of this PR is the isolated run
+[../2026-10-21-standard-rtx-3090-strata-2.1-135001/README.md](../2026-10-21-standard-rtx-3090-strata-2.1-135001/README.md),
+run `20261021T130039Z-36b71c5e`, **status: complete** (started 2026-10-21T13:00:39Z). Same machine, model, config
+and tuning; `--profile` with the run config (so both GPUs are recorded); `STRATA_NO_HANDOVER=1` runner path (so the
+commits are recorded). The operator restarted the server so the engine instance was freshly loaded, closed all agent
+sessions and clients, and the preflight saw no GPU compute apps outside the strata engine (`--background` says none).
+The protocol is draft and defines no Swift profile, so this is a custom-track standard-v1 workload, not a
+standard-profile conformance result; the 2026-10-20 run keeps its measurements and nonconforming status.
+
+- Speed (median, 3 reps, min-max): short 30.9 (30.7-44.3) prompt / 82.2 (81.8-87.4) decode tok/s, TTFT 2.5 s;
+  prompt-4k 515.3 (515.0-515.8) / 80.6 (80.5-90.0), TTFT 8.0 s; prompt-16k 1354.6 (1354.0-1356.9) /
+  83.0 (82.6-88.9), TTFT 12.1 s.
+- Quality: sanity **12 of 12** (instruction 4/4, retrieval 4/4, tool_call 4/4); 0 failed, 0 skipped. Truncated
+  (`finish_reason=length`; the output cap includes reasoning): the warm-up request and 6 of the 9 performance
+  requests — 7 of 22; no sanity request was truncated. Per protocol this is expected behaviour at the caps, not
+  a failure.
+- Verified metadata in results.json: all three commit fields =
+  `90767252f420e25223c739d604145ad15911d48b` (tag `v0.2.1`); engine 0.1.46 release, binary sha256
+  `e54498e95ee5974c5a2b92b430aa867861baf884d217e7761dd68e2d905a1e2e` (BUILD.json source `f-021-rel a7bdbfdabc9a`,
+  CUDA 13.0, portable, archs 75/86/89/120); `hardware.gpus` = both RTX 3090 cards at 300 W;
+  model revision `0142554c963a8653912c0c8283f05f13f63653f3`, quantization Q6_K, custom pack `packs/swift-q6`.
+- Unknown and recorded as missing, not guessed: `source_revision` (no GGUF key; the quant repo's model-card blob
+  is not cached locally and names no pinned base commit), `tokenizer_revision` (derived pack, no HF provenance
+  files), `model_card_revision` (protocol draft), `build_options` (release build).
+- Correctness evidence in this PR: the standard 12/12 sanity checks in every run plus the 6/6 long-context recall
+  test above. Neither is a comprehensive correctness test.

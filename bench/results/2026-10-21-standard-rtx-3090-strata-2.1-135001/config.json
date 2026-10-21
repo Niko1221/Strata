@@ -1,0 +1,52 @@
+{
+  "engine_options": {
+    "--pack": "swift-q6",
+    "--native": "Swift-1.5-Qwen3.8-Flash-Next-Q6_K-00001-of-00005.gguf",
+    "--resident-budget-gib": "100",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--spec": "4",
+    "--mtp": "rt",
+    "--max-context": "262144",
+    "--kv": "int8",
+    "--adapt-async": "1",
+    "--conversation-cache-mib": "12288",
+    "--conversation-cache-slots": "2",
+    "--conversation-cache-min-tokens": "<redacted>",
+    "--pipeline-windows": "2",
+    "--vram-reserve-mib": "896",
+    "--vram-reserve-later-mib": "1024",
+    "--aux-cpus": "auto",
+    "--pcie-frac": "0.00",
+    "--spec-min-p": "0.70",
+    "--adapt-every": "1",
+    "--adapt-swaps": "80",
+    "--adapt-decay": "0.97",
+    "--prefill": "auto:16384",
+    "--layer-split": "auto"
+  },
+  "other_engine_options": {
+    "--pack": "swift-q6",
+    "--native": "Swift-1.5-Qwen3.8-Flash-Next-Q6_K-00001-of-00005.gguf",
+    "--resident-budget-gib": "100",
+    "--max-context": "262144",
+    "--adapt-async": "1",
+    "--conversation-cache-mib": "12288",
+    "--conversation-cache-slots": "2",
+    "--conversation-cache-min-tokens": "<redacted>",
+    "--pipeline-windows": "2",
+    "--aux-cpus": "auto",
+    "--adapt-every": "1",
+    "--adapt-swaps": "80",
+    "--adapt-decay": "0.97"
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 262144,
+  "source": "effective engine arguments of the profile"
+}
