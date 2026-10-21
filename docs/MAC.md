@@ -235,6 +235,34 @@ reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplie
   - against the HIP engine on a Radeon AI PRO R9700 (Q2_0), 36 of 39 first tokens are identical.
   - The differences are near-ties between the two best tokens, from a different floating-point order.
 
+### Sampling
+
+A request's sampling settings work as on the PC: `temperature`, `top_p`, `top_k` (1-64; 0 or more than 64 keeps 64),
+`min_p`, `seed`, the penalties and `logit_bias`, in the PC engine's order (logit_bias, penalties, top_k, top_p, min_p,
+temperature) with one Philox draw per token keyed by the seed and the token's position, so a request with a fixed seed
+gives the same text again. Temperature 0, or none, is greedy and gives the same tokens as before. The server's default
+sampling (the model card's, when neither the request nor the config sets one) reaches the Mac engine too; send
+`temperature: 0` for greedy answers (and `presence_penalty: 0`: the card's presence penalty is added to a
+temperature-0 request too, and on the Mac it now applies).
+
+- The MTP drafts stay greedy, and a draft is kept when the sampled token equals it (as on the PC), so fewer drafts are
+  kept than with greedy decoding.
+- The Mac picks the token on the CPU from the window's logits (unified memory, no copy): 9-46 µs per token row,
+  11 µs at temperature 0.7, top_p 0.95, top_k 20 (`metal/tests/engine/host_sampler_parity --bench`, 248,320 logits).
+
+Measured on the M5 Max (128 GB) with Qwen3.8-Flash-Next IQ3_S at 262K context, 2026-10-20 (`tools/metal_sampling_test.py
+--bench`: 4 short prompts with MTP, 256 tokens each; sampled = temperature 0.7, top_p 0.95, top_k 20; 3 runs on a Mac
+that had been running tests for about an hour; a cool Mac decodes faster): greedy 76.3 / 83.3 /
+78.3 tok/s, sampled 74.8 / 72.9 / 68.8 tok/s (mean of the 4 prompts); drafts kept 0.72 greedy, 0.70 sampled. The
+sampled rate is lower because fewer drafts are kept and the sampled texts are other texts.
+
+Checked with `tools/metal_sampling_test.py` (13 checks, all pass; 0.2.0 without this change fails 11 of them): the same
+seed gives the same text twice and in a second engine process, another seed another text; 208 one-token requests drew
+exactly the token a reference sampler (written in the test from the PC engine's sampler code) draws from the same
+logits, with top_k, top_p, min_p, penalties and a logit_bias. With temperature 0 the tokens equal 0.2.0's (a 28-, a
+2,257- and a 16,180-token prompt). Not ported: the opt-in draft schemes `STRATA_SPEC_COUPLED`, `STRATA_SPEC_PROB` and
+`STRATA_SPEC_GUMBEL` (the Mac drafts greedily). Not measured: other Macs and models.
+
 ## Limits (this version)
 
 - **Images (vision):** on by default. The app and the Terminal use the `strata-vision` that sits beside `strata` in the engine package;
