@@ -195,6 +195,9 @@ public:
     /// Plan v0.3 P5: whether `blob(layer, expert)` lies in page-locked, CUDA-registered memory, so an
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
     virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// Bytes already in a host copy (a resident complement, or an arena that is not a demand-paged
+    /// file mapping). A file or mmap miss is false. The tail skip asks only while a helper is attached.
+    virtual bool host_copy(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
 
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
@@ -888,6 +891,7 @@ public:
     /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.
     uint64_t release(int64_t layer, int64_t expert) override;
     bool pinned(int64_t layer, int64_t expert) const override;
+    bool host_copy(int64_t layer, int64_t expert) const override { return has_resident(layer, expert); }
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     bool pcie_layer(int64_t layer) const override;
     bool transient(int64_t layer, int64_t expert) const override;
@@ -1252,6 +1256,7 @@ public:
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
     int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
+    bool host_copy(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     /// Prefix pinning: the old rule (device_alias(layer, 0)); pin by need: at least one pinned range in the layer.
     bool pcie_layer(int64_t layer) const override;
