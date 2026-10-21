@@ -8777,7 +8777,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if a.gpu is not None:
             cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
         return rp.run_port_mode(cfg, launch_args, a.host or cfg.get("host") or "127.0.0.1",
-                                server_py=os.path.abspath(__file__))
+                                server_py=os.path.abspath(__file__), cfg_path=a.config)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)

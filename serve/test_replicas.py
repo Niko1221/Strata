@@ -500,6 +500,33 @@ class PortMode(unittest.TestCase):
         self.assertIn("replica 1", self.out())
         self.assertTrue(until(lambda: not answers(self.p0), 10))
 
+    def test_lazy_refused(self):
+        self.start(self.cfg(lazy_load=True))
+        self.assertEqual(self.proc.wait(15), 2)
+        self.assertIn("lazy", self.out())
+        self.assertFalse(answers(self.p0))
+
+    def test_ready_through_a_proxy_setting(self):
+        import os
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
+                                          "NO_PROXY": "", "no_proxy": "", "STRATA_REPLICA_READY_S": "40"}):
+            self.start(self.cfg(), cmd=[sys.executable, "-m", "serve.server", "--engine", "mock", "--host", "0.0.0.0",
+                                        "--config", str(Path(self.tmp.name) / "cfg.json")])
+            self.both_up()
+
+    def test_shared_settings_kept_next_to_the_config(self):
+        import signal
+        path = self.start(self.cfg())
+        self.both_up()
+        req = urllib.request.Request(f"http://127.0.0.1:{self.p0}/settings", data=json.dumps({"defaults": {"top_k": 20}}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+        self.proc.send_signal(signal.SIGTERM)
+        self.assertEqual(self.proc.wait(90), 0)
+        kept = path.parent / "cfg.replica0.shared-settings.json"
+        self.assertEqual(json.loads(kept.read_text()), {"top_k": 20})
+        self.assertFalse((path.parent / "cfg.replica0.json").exists())
+
     def test_mixed_ports_refused(self):
         self.start({"replicas": [{"gpus": [0], "port": self.p0}, {"gpus": [1]}]})
         self.assertEqual(self.proc.wait(15), 2)

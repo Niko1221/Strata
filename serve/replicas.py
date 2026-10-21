@@ -181,9 +181,10 @@ def cpu_sets(n: int, enabled: bool = True):
 
 def _loaded(host: str, port: int) -> bool:
     import json
-    import urllib.request
+    from strata_control import loopback               # never through a proxy of the environment
+    probe = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
     try:
-        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=2) as r:
+        with loopback.urlopen(f"http://{probe}:{port}/health", timeout=2) as r:
             return json.loads(r.read() or b"{}").get("loaded") is True
     except (OSError, ValueError):
         return False
@@ -193,7 +194,8 @@ def _port_free(host: str, port: int) -> bool:
     import socket
     s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
     try:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name != "nt":                           # on Windows it would let a port already serving be bound
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port))
         return True
     except OSError:
@@ -202,11 +204,13 @@ def _port_free(host: str, port: int) -> bool:
         s.close()
 
 
-def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: str,
+def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: str, cfg_path: str | None = None,
                   ready_timeout_s: float = 900.0) -> int:
     """Port mode: one ordinary server per replica, each on its own port, started one after another (the first fills a
     shared arena, the next ones attach). This process only supervises: it forwards a stop to the servers, ends them
-    with itself (they get the parent-death signal) and deletes the shared arena when it stops. Returns the exit code."""
+    with itself (they get the parent-death signal) and deletes the shared arena when it stops. Returns the exit code.
+    With `cfg_path`, each replica's run config is written next to it as <name>.replica<i>.json (removed at stop), so
+    the replica's shared Chat settings (<name>.replica<i>.shared-settings.json) are kept there between starts."""
     import json
     import shutil
     import signal
@@ -216,6 +220,9 @@ def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: st
     from serve import lifeline
 
     ports = port_mode(cfg) or []
+    if "--lazy" in launch_args or cfg.get("lazy_load") is True:
+        print("[strata] replicas on their own ports start loaded: leave out --lazy / \"lazy_load\"", flush=True)
+        return 2
     for i, port in enumerate(ports):
         if not _port_free(host, port):
             print(f"[strata] replica {i}: port {port} is in use", flush=True)
@@ -236,11 +243,13 @@ def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: st
             old[sig] = signal.signal(sig, on_signal)
 
     tmp = tempfile.mkdtemp(prefix="strata-replicas-")
+    written: list[str] = []
     children: list[subprocess.Popen] = []
     code = 0
     try:
         for i, (gpus, port) in enumerate(zip(groups, ports)):
-            path = os.path.join(tmp, f"replica{i}.json")
+            path = os.path.splitext(cfg_path)[0] + f".replica{i}.json" if cfg_path else os.path.join(tmp, f"replica{i}.json")
+            written.append(path)
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(port_child_cfg(cfg, i, gpus, port), f)
             pin = cpus[i] if cpus else None
@@ -289,6 +298,11 @@ def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: st
         if arena:
             try:
                 os.unlink(arena)
+            except OSError:
+                pass
+        for path in written:
+            try:
+                os.unlink(path)
             except OSError:
                 pass
         shutil.rmtree(tmp, ignore_errors=True)
