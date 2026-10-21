@@ -4,6 +4,8 @@
   "hardware": {
     "gpu": "NVIDIA GeForce RTX 4070",
     "gpu_count": 1,
+    "power_limit_w": 165.0,
+    "default_power_limit_w": 200.0,
     "vram_mib": 12282,
     "vram_used_mib": 11700,
     "vram_free_headroom_mib": 582,

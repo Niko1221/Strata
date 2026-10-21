@@ -6,7 +6,7 @@ Evaluates steady-state decode throughput, prompt prefill scaling across DDR5-560
 
 ## Hardware and software
 
-- **GPU:** NVIDIA GeForce RTX 4070, 12 GB GDDR6X (AD104, 12,282 MiB addressable VRAM, sm_89, stock 200 W power limit). Driver 615.78.08, CUDA 12.8 / 13.0. PCIe link negotiated at Gen4 x16 (24.8 GB/s measured host-to-device throughput).
+- **GPU:** NVIDIA GeForce RTX 4070, 12 GB GDDR6X (AD104, 12,282 MiB addressable VRAM, sm_89, power limit capped at **165 W** via `nvidia-smi` [down from stock 200 W default; min 100 W, max 216 W]). Driver 615.78.08, CUDA 12.8 / 13.0. PCIe link negotiated at Gen4 x16 (24.8 GB/s measured host-to-device throughput).
 - **CPU / RAM:** Intel Core i5-12600K (10 cores / 16 threads: 6 Performance cores @ up to 4.9 GHz, 4 Efficient cores @ up to 3.6 GHz, AVX2, no AVX-512; 5 pool workers + 1 host thread). 64 GB installed RAM (4x16 GiB DDR5; currently operating at DDR5-5200 JEDEC/baseline, with scaling comparisons at DDR5-5600 and DDR5-5800).
 - **Storage:** WD_BLACK SN770 2 TB NVMe SSD (PCIe 4.0 x4, sequential read ~5,150 MB/s; PLE n-gram table mmap-streamed directly without host RAM caching).
 - **OS:** CachyOS Linux (x86_64, kernel `7.2.9-2-cachyos`). CPU scaling governor locked to `performance`, Energy Performance Preference (`epp`) set to `performance`.
