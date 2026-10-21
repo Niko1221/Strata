@@ -173,8 +173,13 @@ standard-profile conformance result; the 2026-10-20 run keeps its measurements a
   `e54498e95ee5974c5a2b92b430aa867861baf884d217e7761dd68e2d905a1e2e` (BUILD.json source `f-021-rel a7bdbfdabc9a`,
   CUDA 13.0, portable, archs 75/86/89/120); `hardware.gpus` = both RTX 3090 cards at 300 W;
   model revision `0142554c963a8653912c0c8283f05f13f63653f3`, quantization Q6_K, custom pack `packs/swift-q6`.
-- Unknown and recorded as missing, not guessed: `source_revision` (no GGUF key; the quant repo's model-card blob
-  is not cached locally and names no pinned base commit), `tokenizer_revision` (derived pack, no HF provenance
-  files), `model_card_revision` (protocol draft), `build_options` (release build).
+  Full lineage, pinned upstream links and one traceable post-run amendment (`tokenizer_revision` =
+  `0bd4fe22431372cdad1979267d3ab45aa7e6150a`, set from byte-verified vocab/merges/chat-template matches; no
+  measurement touched, report revalidated) are in
+  [../2026-10-21-standard-rtx-3090-strata-2.1-135001/provenance/model-lineage.md](../2026-10-21-standard-rtx-3090-strata-2.1-135001/provenance/model-lineage.md).
+- Unknown and recorded as missing, not guessed: `source_revision` (upstream pins no source-checkpoint commit;
+  the weights path has no published hash chain; the Swift repo's single published revision is a strong inference
+  — 40 s timeline caveat in the lineage doc), `model_card_revision` (protocol draft, no Swift profile),
+  `build_options` (the release publishes signed build identity, not compile flags).
 - Correctness evidence in this PR: the standard 12/12 sanity checks in every run plus the 6/6 long-context recall
   test above. Neither is a comprehensive correctness test.

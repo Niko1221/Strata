@@ -66,4 +66,4 @@ Sanity checks: **12 of 12**.
 - Prompt-prefix reuse is the shared template prefix only; the cache was not emptied between requests, and the expert cache stays warm and evolves. These are not cold-model measurements.
 - Output caps include reasoning; a request that reaches its cap is `truncated` and fails its sanity check.
 - The runner cannot see other programs on the machine, the repeat-stop and loop-recovery switches of the server, or the quantization repository's revision; see `missing` in results.json for every value it could not read.
-- The runner could not tell whether the server was freshly loaded.
+- The runner could not independently verify server-load freshness; the operator's notes record that the engine was freshly loaded before this run.

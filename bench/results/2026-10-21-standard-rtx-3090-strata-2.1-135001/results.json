@@ -101,7 +101,7 @@
         "sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf"
       }
     ],
-    "tokenizer_revision": null,
+    "tokenizer_revision": "0bd4fe22431372cdad1979267d3ab45aa7e6150a",
     "custom_pack": "packs/swift-q6"
   },
   "configuration": {
@@ -1493,9 +1493,8 @@
   "missing": {
     "/protocol/model_card_revision": "the profile's model-card revision is not pinned yet (protocol draft)",
     "/run/optional_duration_s": "the optional concurrency stage was not selected",
-    "/software/build_options": "the server does not report build options; pass --build-options for a source build",
-    "/model/source_revision": "not given: pass --source-revision",
-    "/model/tokenizer_revision": "not given: pass --tokenizer-revision",
+    "/software/build_options": "release build: the linux-x86_64 cuda13 engine package publishes build identity (build_id a7bdbfdabc9a+cuda13.0, archs, CUDA 13.0, portable) under an ed25519-signed manifest, not compile flags; no flags inferred (provenance/model-lineage.md)",
+    "/model/source_revision": "not populated: upstream pins no source-checkpoint commit and the weights path has no published hash chain; the Swift repo's single published revision 0bd4fe22431372cdad1979267d3ab45aa7e6150a is a strong inference, not a verified conversion input (provenance/model-lineage.md)",
     "/requests/0/round": "not applicable outside the concurrency stage",
     "/requests/0/error": "none: the request ended normally",
     "/requests/0/token_accounting_note": "none: the API and engine counts agree or only one exists",
