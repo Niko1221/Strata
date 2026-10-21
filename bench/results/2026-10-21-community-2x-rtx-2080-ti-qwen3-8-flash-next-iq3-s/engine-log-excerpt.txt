@@ -1,0 +1,7 @@
+[strata] card roles: Main GPU 1, Helper GPU 0 (numbers as nvidia-smi gives them)
+[strata] layer split across GPUs [0, 1] (auto)
+[strata] loading the experts into RAM (about 55 GB) and locking part of them for the GPU.
+         Please wait and don't close this window; the server says when it is ready.
+[strata] filling the GPU's expert cache (8450 experts, 15.18 GiB of VRAM) ...
+[strata] almost ready ...
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
