@@ -3,8 +3,10 @@
 //   dq_f16<F>  a quantized matrix -> half rows (ref_quant's values rounded to fp16), once per chunk
 //   gemm_f16   Y[t][n] = Xh[t] . Wh[n] (fp32) by MetalPerformancePrimitives matmul2d, TM x TN tiles, K dynamic;
 //              rows of Y past n_out / t past n_tok are not written (the tensors carry the extents)
+#if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
+#endif
 
 kernel void act_f16(device const float* x [[buffer(0)]], device half* xh [[buffer(1)]], constant uint& n [[buffer(2)]],
                     uint gid [[thread_position_in_grid]]) {
@@ -45,6 +47,7 @@ kernel void dq_f16(device const uchar* W [[buffer(0)]], device half* Wh [[buffer
 
 struct GemmArgs { int M, N, K; int pad; };   // Y is M rows of N floats
 
+#if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
 template <int TM, int TN, int SG>
 kernel void gemm_f16(device half* A [[buffer(0)]], device half* B [[buffer(1)]], device float* Y [[buffer(2)]],
                      constant GemmArgs& a [[buffer(3)]], uint3 tg [[threadgroup_position_in_grid]]) {
@@ -58,12 +61,16 @@ kernel void gemm_f16(device half* A [[buffer(0)]], device half* B [[buffer(1)]],
     auto mY = tY.slice(int(tg.x) * TN, int(tg.y) * TM);
     op.run(mA, mB, mY);
 }
+#endif
 
 #define DQ(F) template [[host_name("dq_f16_" #F)]] kernel decltype(dq_f16<F>) dq_f16<F>;
 #define DQ_(F) DQ(F)
 DQ_(T_F32) DQ_(T_BF16) DQ_(T_Q8_0) DQ_(T_Q4_0) DQ_(T_Q5_0) DQ_(T_IQ4_NL) DQ_(T_IQ4_XS) DQ_(T_Q2_0) DQ_(T_IQ3_S) DQ_(T_Q3_K)
 DQ_(T_Q4_K) DQ_(T_Q5_K) DQ_(T_Q6_K)
+#if __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
 template [[host_name("gemm_f16_64_64_4")]] kernel decltype(gemm_f16<64, 64, 4>) gemm_f16<64, 64, 4>;
 template [[host_name("gemm_f16_128_64_4")]] kernel decltype(gemm_f16<128, 64, 4>) gemm_f16<128, 64, 4>;
 template [[host_name("gemm_f16_64_128_4")]] kernel decltype(gemm_f16<64, 128, 4>) gemm_f16<64, 128, 4>;
 template [[host_name("gemm_f16_64_32_4")]] kernel decltype(gemm_f16<64, 32, 4>) gemm_f16<64, 32, 4>;
+#endif
+

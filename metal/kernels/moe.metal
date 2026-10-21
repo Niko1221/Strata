@@ -119,45 +119,87 @@ kernel void moe_route(device const float* logits [[buffer(0)]], device int* ids 
                       ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup int s_grp[32], s_ent[32];
     if (sg < a.n_tok) {
-        device const float* l = logits + sg * 512;
-        float v[16];
-        for (int i = 0; i < 16; ++i) v[i] = l[lane + 32 * i];
-        float mx = -INFINITY;
-        for (int i = 0; i < 16; ++i) mx = max(mx, v[i]);
-        for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
-        float sum = 0.0f;
-        for (int i = 0; i < 16; ++i) {
-            v[i] = exp(v[i] - mx);
-            sum += v[i];
-        }
-        for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
-        const float rcp = 1.0f / sum;
-        for (int i = 0; i < 16; ++i) {
-            v[i] *= rcp;
-            if (isnan(v[i])) v[i] = -FLT_MAX;
-        }
-        float selected = 0.0f, ssum = 0.0f;
-        for (int rank = 0; rank < 10; ++rank) {
-            float best = v[0];
-            int ex = lane;
-            for (int i = 1; i < 16; ++i)
-                if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
-            for (ushort m = 16; m > 0; m >>= 1) {
-                const float ob = simd_shuffle_xor(best, m);
-                const int oe = simd_shuffle_xor(ex, m);
-                if (ob > best || (ob == best && oe < ex)) { best = ob; ex = oe; }
+        if (a.n_expert == 256) {
+            device const float* l = logits + sg * 256;
+            float v[8];
+            for (int i = 0; i < 8; ++i) v[i] = l[lane + 32 * i];
+            float mx = -INFINITY;
+            for (int i = 0; i < 8; ++i) mx = max(mx, v[i]);
+            for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
+            float sum = 0.0f;
+            for (int i = 0; i < 8; ++i) {
+                v[i] = exp(v[i] - mx);
+                sum += v[i];
             }
-            if ((ex & 31) == lane) {
-                v[ex / 32] = -INFINITY;
-                ids[sg * 10 + rank] = ex;
-                ssum += best;
+            for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
+            const float rcp = 1.0f / sum;
+            for (int i = 0; i < 8; ++i) {
+                v[i] *= rcp;
+                if (isnan(v[i])) v[i] = -FLT_MAX;
             }
-            if (rank == lane) selected = best;
+            float selected = 0.0f, ssum = 0.0f;
+            for (int rank = 0; rank < 10; ++rank) {
+                float best = v[0];
+                int ex = lane;
+                for (int i = 1; i < 8; ++i)
+                    if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
+                for (ushort m = 16; m > 0; m >>= 1) {
+                    const float ob = simd_shuffle_xor(best, m);
+                    const int oe = simd_shuffle_xor(ex, m);
+                    if (ob > best || (ob == best && oe < ex)) { best = ob; ex = oe; }
+                }
+                if ((ex & 31) == lane) {
+                    v[ex / 32] = -INFINITY;
+                    ids[sg * 10 + rank] = ex;
+                    ssum += best;
+                }
+                if (rank == lane) selected = best;
+            }
+            for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
+            ssum = max(ssum, 6.103515625e-5f);
+            const float inv = 1.0f / ssum;
+            if (lane < 10) w[sg * 10 + lane] = selected * inv;
+        } else {
+            device const float* l = logits + sg * 512;
+            float v[16];
+            for (int i = 0; i < 16; ++i) v[i] = l[lane + 32 * i];
+            float mx = -INFINITY;
+            for (int i = 0; i < 16; ++i) mx = max(mx, v[i]);
+            for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
+            float sum = 0.0f;
+            for (int i = 0; i < 16; ++i) {
+                v[i] = exp(v[i] - mx);
+                sum += v[i];
+            }
+            for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
+            const float rcp = 1.0f / sum;
+            for (int i = 0; i < 16; ++i) {
+                v[i] *= rcp;
+                if (isnan(v[i])) v[i] = -FLT_MAX;
+            }
+            float selected = 0.0f, ssum = 0.0f;
+            for (int rank = 0; rank < 10; ++rank) {
+                float best = v[0];
+                int ex = lane;
+                for (int i = 1; i < 16; ++i)
+                    if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
+                for (ushort m = 16; m > 0; m >>= 1) {
+                    const float ob = simd_shuffle_xor(best, m);
+                    const int oe = simd_shuffle_xor(ex, m);
+                    if (ob > best || (ob == best && oe < ex)) { best = ob; ex = oe; }
+                }
+                if ((ex & 31) == lane) {
+                    v[ex / 32] = -INFINITY;
+                    ids[sg * 10 + rank] = ex;
+                    ssum += best;
+                }
+                if (rank == lane) selected = best;
+            }
+            for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
+            ssum = max(ssum, 6.103515625e-5f);
+            const float inv = 1.0f / ssum;
+            if (lane < 10) w[sg * 10 + lane] = selected * inv;
         }
-        for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
-        ssum = max(ssum, 6.103515625e-5f);
-        const float inv = 1.0f / ssum;
-        if (lane < 10) w[sg * 10 + lane] = selected * inv;
     }
     threadgroup_barrier(mem_flags::mem_device);
     plan_body(ids, w, plan, a, tid, nth, sg, lane, s_grp, s_ent);

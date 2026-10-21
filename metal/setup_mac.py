@@ -66,11 +66,13 @@ UD_SHARDS = {
 def model_shard_names(model: str) -> list[str]:
     """The model's files in order (shard 1 first)."""
     n = MAC_MODELS[model].get("shards", 2)
-    if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
+    fam_name = MAC_MODELS[model].get("family", "qwen")
+    if fam_name == "gyro":          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
-    if MAC_MODELS[model].get("family") == "unsloth":
+    if fam_name == "unsloth":
         return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
-    return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
+    return [S.model_file(S.FAMILIES[fam_name], model, i) for i in range(1, n + 1)]
+
 
 
 def shard_sha(name: str):
@@ -326,8 +328,8 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
-                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
+    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro", "coder"], default=None,
+                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), coder = Qwen3.8-Flash-Next Coder, unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
                          "(follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
@@ -392,7 +394,12 @@ def main(argv=None) -> int:
     if a.model:
         model = a.model
     else:
-        names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing")]   # --model offers the others
+        target_family = a.family or "qwen"
+        names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing") and MAC_MODELS[m].get("family", "qwen") == target_family]
+        if not names:
+            names = [m for m in MAC_MODELS if not MAC_MODELS[m].get("missing")]
+        if rec not in names:
+            rec = names[0]
         for i, m in enumerate(names, 1):
             S.say(f"  {i}) {m:8} {MAC_ABOUT[m]}  (maps {MAC_MODELS[m]['shard1_gb']:.0f} GB"
                   + ("" if MAC_MODELS[m]["tested"] else ", not measured on a Mac") + ")"
@@ -453,10 +460,17 @@ def main(argv=None) -> int:
     models_dir.mkdir(parents=True, exist_ok=True)
     files = [models_dir / n for n in model_shard_names(model)]
     for s in files:
-        if s.exists() and S.done(s):
-            S.ok(f"{s.name} already downloaded")
-            continue
-        S.download(fam["hf"].format(q=model) + s.name, s)
+        if s.exists() and not S.done(s) and S.whole_shard(s):
+            try:
+                S.mark(s, "whole (checked against its own tensor directory)")
+            except OSError as e:
+                S.warn(f"{s.name} is whole but its finish mark cannot be written ({e})")
+    if not a.gguf_dir:
+        for s in files:
+            if s.exists() and S.done(s):
+                S.ok(f"{s.name} already downloaded")
+                continue
+            S.download(fam["hf"].format(q=model) + s.name, s)
     S.check_shards(files)
     for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
         if shard_sha(s.name):
