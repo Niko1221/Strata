@@ -33,6 +33,7 @@
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
+  <button class="st-btn st-btn--secondary" id="unload-btn" type="button" title="Waiting for the server" disabled>&hellip;</button>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
     <svg class="st-icon"><use id="theme-icon" href="web/sprite.svg#i-moon"/></svg></button>
 </header>
@@ -102,6 +103,7 @@
           <span class="card-title">Model state</span>
           <span class="badges" id="state-badges">
             <span class="st-badge" data-s="idle">Idle</span>
+            <span class="st-badge" data-s="unloaded">Unloaded</span>
             <span class="st-badge st-badge--reading" data-s="reading">Reading</span>
             <span class="st-badge st-badge--generating" data-s="generating">Generating</span>
             <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
