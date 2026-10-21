@@ -71,3 +71,41 @@ Sanity checks: **12 of 12**.
 - Output caps include reasoning; a request that reaches its cap is `truncated` and fails its sanity check.
 - The runner cannot see other programs on the machine, the repeat-stop and loop-recovery switches of the server, or the quantization repository's revision; see `missing` in results.json for every value it could not read.
 - The server had answered 61 request(s) before this run.
+
+## Supplementary long-context recall test
+
+Run 2026-10-21 on the same server, after the benchmark above. This is supplementary evidence; it does not change the
+run's nonconforming status and is not part of the standard protocol.
+
+- Model: swift-1.5-q6_k
+- Server-reported context capacity: 262,144 tokens (`/health`: status ok, loaded true, max_context 262144, model
+  swift-1.5-q6_k, api_key true)
+- Test script: `tools/needle_bench.py` (single needle, matched on the exact needle word)
+- Test lengths: 32K and 128K
+- Test depths: 10%, 50% and 90%
+- API authentication: successful (key not disclosed)
+- Overall result: **6 of 6 retrieval checks passed**
+
+| Context | Depth | Result | Prompt tokens | Time |
+|---|---:|---|---:|---:|
+| 32K | 10% | FOUND | 31,722 | 22 s |
+| 32K | 50% | FOUND | 31,722 | 20 s |
+| 32K | 90% | FOUND | 31,723 | 19 s |
+| 128K | 10% | FOUND | 125,056 | 57 s |
+| 128K | 50% | FOUND | 125,054 | 52 s |
+| 128K | 90% | FOUND | 125,054 | 33 s |
+
+These six checks show successful needle retrieval for these six cases. They are not a comprehensive correctness test
+and say nothing general about model quality. Results: [long-context/needles.json](long-context/needles.json), log:
+[long-context/needles.txt](long-context/needles.txt).
+
+## GPU inventory note
+
+The follow-up inventory taken alongside the recall test (`nvidia-smi -L`, 2026-10-21) saw two cards:
+
+- GPU 0: NVIDIA GeForce RTX 3090
+- GPU 1: NVIDIA GeForce RTX 3090
+
+Both GPUs were visible during the follow-up test. The generated results.json above reports one GPU. That metadata
+discrepancy is unresolved and left as recorded: the follow-up inventory alone does not retroactively prove how the
+original benchmark recorded or used the devices, and results.json has not been edited.
