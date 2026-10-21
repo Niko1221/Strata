@@ -359,6 +359,10 @@ class Catalog:
     def kv_gb(self, tokens: int, kv: str = "int8") -> float:
         """The conversation memory for this many tokens, in GB (setup.py's UD_FIT_KV_BYTES: 13 attention layers)."""
         mod = self.strata.setup_module()
+        if kv == "q4lm8v":                     # its ring is resident, so bytes/cell fall with the context
+            eff = getattr(mod, "kv_cell_bytes", None)
+            if callable(eff):
+                return tokens * 13 * eff(kv, tokens) / 1e9
         table = getattr(mod, "UD_FIT_KV_BYTES", None) or {"fp16": 2112, "int8": 1056, "q4_0": 576, "k8v4": 816}
         return tokens * 13 * table.get(kv, 1056) / 1e9
 

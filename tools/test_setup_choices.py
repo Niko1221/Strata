@@ -491,6 +491,58 @@ class VramReserve(unittest.TestCase):
         self.assertTrue(call.called)
 
 
+class WindowKV(unittest.TestCase):
+    """q4lm8v: the exact-cell window's ring is always resident, so its effective bytes per token fall with the
+    context.  The opt-in must also read back from a config (docs/DETAILS.md, 128K gate)."""
+
+    def test_effective_bytes_fall_with_context(self):
+        self.assertEqual(setup.kv_cell_bytes("int8", 131072), 1056)
+        self.assertEqual(setup.kv_cell_bytes("q4lm8v", 131072), 625)   # 5.29 bit / 1,016 MiB at 128K
+        self.assertGreater(setup.kv_cell_bytes("q4lm8v", 32768), setup.kv_cell_bytes("q4lm8v", 65536))
+        self.assertGreater(setup.kv_cell_bytes("q4lm8v", 65536), setup.kv_cell_bytes("q4lm8v", 131072))
+
+    def test_read_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "strata-q2_0.json"
+            p.write_text(json.dumps({"args": ["--max-context", "131072", "--kv", "q4lm8v"],
+                                     "env": {"STRATA_KV_WINDOW": "1"}}))
+            ch = setup.choices_from_config(p)
+            self.assertEqual(ch["kv"], "q4lm8v")
+            self.assertEqual(ch["context"], 131072)
+
+
+class WindowKVWrite(unittest.TestCase):
+    """The opt-in's real write path: --kv q4lm8v and the 256/64 window in the config's env; the default stays int8."""
+
+    def install(self, *extra, answers=None):
+        from test_setup_golden import card, install
+        return install(63.7, [card(0, "NVIDIA GeForce RTX 5090", 31.8, "120")],
+                       ["--family", "qwen", "--model", "Q2_0", "--context", "131072", "--no-start", *extra],
+                       answers=answers)
+
+    def test_opt_in_writes_the_env(self):
+        code, out, cfg, _ = self.install("--kv", "q4lm8v")
+        self.assertEqual(code, 0, out)
+        self.assertIn("q4lm8v", cfg["args"])
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_S"], "256")
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_R"], "64")
+        # The production point keeps the engine's chunk choice; B = 6,144 on the Windows HIP build.
+        self.assertEqual(cfg["args"][cfg["args"].index("--prefill") + 1], "auto")
+
+    def test_the_third_choice(self):
+        code, out, cfg, _ = self.install(answers={"KV cache?": "3"})
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q4lm8v")
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_S"], "256")
+
+    def test_the_default_stays_int8(self):
+        code, out, cfg, _ = self.install()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "int8")
+        self.assertNotIn("STRATA_KV_WINDOW", cfg.get("env", {}))
+
+
 class SmallCardTip(unittest.TestCase):
     """#496: a card under 8 GB (a 6 GB laptop RTX 3060) gets a tip for when the start has no room for the expert cache;
     the engine chooses its own reserve there, so the config is the one any card gets.  An 8 GB card: no tip."""

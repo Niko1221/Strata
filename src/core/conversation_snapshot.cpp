@@ -49,6 +49,15 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
     // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
+    // A windowed state (kKvQ4lmW) has exact fp16 cells outside the five snapshot buffers: refusing is honest,
+    // restoring without them would silently read quantized values as exact. The window *is* the side pool's
+    // existence (any level-table mode, STRATA_KV_WINDOW), so the pointer is the whole test - `kLloydWin` with
+    // S + R = 0 allocates no pool and is a plain kLloyd cache (qsa_win_wanted / qsa_kv_format). Measurement never
+    // snapshots.
+    if (st.k_win != nullptr || st.v_win != nullptr) {
+        error = "conversation snapshot: windowed KV states cannot snapshot (exact side pool outside the image)";
+        return false;
+    }
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
     l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
     using conversation_detail::product;

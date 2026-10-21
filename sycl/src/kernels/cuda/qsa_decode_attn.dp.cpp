@@ -23,6 +23,13 @@ constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
 
+// `--kv q4lm32` / `--kv q4lm32s`: the nibble is the nearest of Max-Lloyd's 16 levels, not the uniform grid's
+// (code - 8). The shared header's kQ4lMap is a CUDA/HIP-only `__constant__` symbol, so the same 16 bytes live here
+// as a plain constant - the pattern s_gemv.dp.cpp uses for kIq4Nl. This is the reader side, and both level-table
+// modes read alike: the scale is in the block (q4_lloyd, kv_q4.hpp).
+static constexpr int8_t kQ4lMapDev[16] = {-87, -66, -52, -40, -30, -21, -12, -4,
+                                            4,  12,  21,  30,  40,  52,  66, 87};
+
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
     /*
@@ -77,6 +84,9 @@ __dpct_inline__ void load8_q8(const QsaAttnPools &p, bool value, long long row,
 #pragma unroll
     for (int j = 0; j < 8; ++j) out[j] = (float) c[j] * sc;
 }
+// q4_0: the nibble is the value (nibble - 8) on a uniform grid. q4lm32 / q4lm32s: the nibble indexes the Max-Lloyd
+// level. The blocks are the same 18 bytes either way, so only the map changes.
+template <bool LLOYD>
 __dpct_inline__ void load8_q4(const QsaAttnPools &p, bool value, long long row,
                               int d0, float *out) {
     constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
@@ -90,10 +100,16 @@ __dpct_inline__ void load8_q4(const QsaAttnPools &p, bool value, long long row,
     const uint8_t* bytes = blk->qs + j;
     if (rem < 16) {
 #pragma unroll
-        for (int k = 0; k < 8; ++k) out[k] = (float) ((int)(bytes[k] & 0x0F) - 8) * d;
+        for (int k = 0; k < 8; ++k) {
+            const int n = (int) (bytes[k] & 0x0F);
+            out[k] = (LLOYD ? (float) kQ4lMapDev[n] : (float) (n - 8)) * d;
+        }
     } else {
 #pragma unroll
-        for (int k = 0; k < 8; ++k) out[k] = (float) ((int)(bytes[k] >> 4) - 8) * d;
+        for (int k = 0; k < 8; ++k) {
+            const int n = (int) (bytes[k] >> 4);
+            out[k] = (LLOYD ? (float) kQ4lMapDev[n] : (float) (n - 8)) * d;
+        }
     }
 }
 template <int KV_MODE>
@@ -104,9 +120,10 @@ __dpct_inline__ void load8(const QsaAttnPools &p, bool value, long long row,
     else if constexpr (KV_MODE == 3) {
         // hybrid K8V4: both sides are defined - K unrotated INT8, V rotated Q4_0 - so a value=true call
         // reads the Q4_0 pool instead of dereferencing the null v_q (no call site does today; PR review)
-        if (value) load8_q4(p, value, row, d0, out);
+        if (value) load8_q4<false>(p, value, row, d0, out);
         else load8_q8(p, value, row, d0, out);
-    } else load8_q4(p, value, row, d0, out);
+    } else if constexpr (KV_MODE == 4) load8_q4<true>(p, value, row, d0, out);   // q4lm32 / q4lm32s
+    else load8_q4<false>(p, value, row, d0, out);
 }
 
 template <int KV_MODE, bool LANE_CELL = false, int RS = 0>
@@ -340,7 +357,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
                                   t / KV_Q8_GROUP]))
                     .convert<float, sycl::rounding_mode::automatic>()[0];
             v = (float) p.v_q[srow[c] * HD + t] * sc;
-        } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
+        } else {   // modes 2, 3, 4: V is rotated Q4_0 (or q4lm32 / q4lm32s - mode 4, kv_q4.hpp); the caller rotates the output back
             constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
             const int b = t / QK4_0;
             const int rem = t % QK4_0;
@@ -351,8 +368,8 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
                     .convert<float, sycl::rounding_mode::automatic>()[0];
             const int j = rem < 16 ? rem : (rem - 16);
             const uint8_t byte = blk->qs[j];
-            const int nibble = (rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8);
-            v = (float) nibble * d;
+            const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
+            v = (KV_MODE == 4 ? (float) kQ4lMapDev[n] : (float) (n - 8)) * d;
         }
         if constexpr (RS != 0) {
             // the cell's 12 probabilities as three vector loads (the layout is [cell][head]); the same fma per head in the same order
@@ -416,7 +433,7 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     } else if constexpr (KV_MODE == 1) {
         const float sc = __half2float(__ushort_as_half(p.v_scale[row * (HD / KV_Q8_GROUP) + d / KV_Q8_GROUP]));
         return (float) p.v_q[row * HD + d] * sc;
-    } else {   // modes 2 and 3: V is rotated Q4_0 (kv_q4.hpp); the caller rotates the output back
+    } else {   // modes 2, 3, 4: V is rotated Q4_0 (or q4lm32 / q4lm32s - mode 4, kv_q4.hpp); the caller rotates the output back
         constexpr int bytes_per_head = (HD / QK4_0) * sizeof(block_q4_0);
         const int b = d / QK4_0;
         const int rem = d % QK4_0;
@@ -424,8 +441,8 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
         const float dd = __half2float(__ushort_as_half(blk->d));
         const int j = rem < 16 ? rem : (rem - 16);
         const uint8_t byte = blk->qs[j];
-        const int nibble = (rem < 16) ? ((byte & 0x0F) - 8) : ((byte >> 4) - 8);
-        return (float) nibble * dd;
+        const int n = (rem < 16) ? (byte & 0x0F) : (byte >> 4);
+        return (KV_MODE == 4 ? (float) kQ4lMapDev[n] : (float) (n - 8)) * dd;
     }
 }
 
@@ -653,8 +670,8 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = pools.k_q4 != nullptr ? (q4_lloyd(pools.q4_mode) ? 4 : 2)
+                        : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3 : (pools.k_q != nullptr ? 1 : 0));
     const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
     // per query: [acc: n_chunks*n_head*HD][m: n_chunks*n_head][l: n_chunks*n_head], all offsets from one stride
     const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
@@ -747,16 +764,17 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     // (bit-exact too, but -1.5% here: the score phase is not shuffle bound); =0 the layout before
     static const int rs_on = [] { const char* v = std::getenv("STRATA_ATTN_RS"); return v ? std::atoi(v) : 2; }();
     if (lane_cell) {
-        if (kv_mode == 3) { STRATA_ATTN_LC(3); }
+        if (kv_mode == 4) { STRATA_ATTN_LC(4); }
+        else if (kv_mode == 3) { STRATA_ATTN_LC(3); }
         else if (kv_mode == 2) { STRATA_ATTN_LC(2); }
         else if (kv_mode == 1) { STRATA_ATTN_LC(1); }
         else { STRATA_ATTN_LC(0); }
-    } else if (rs_on == 1) {
+    } else if (rs_on == 1 && kv_mode != 4) {
         if (kv_mode == 3) { STRATA_ATTN_RSK(3, 1); }
         else if (kv_mode == 2) { STRATA_ATTN_RSK(2, 1); }
         else if (kv_mode == 1) { STRATA_ATTN_RSK(1, 1); }
         else { STRATA_ATTN_RSK(0, 1); }
-    } else if (rs_on == 2) {
+    } else if (rs_on == 2 && kv_mode != 4) {
         if (kv_mode == 3) { STRATA_ATTN_RSK(3, 2); }
         else if (kv_mode == 2) { STRATA_ATTN_RSK(2, 2); }
         else if (kv_mode == 1) { STRATA_ATTN_RSK(1, 2); }
@@ -764,7 +782,23 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     } else
 #undef STRATA_ATTN_LC
 #undef STRATA_ATTN_RSK
-    if (kv_mode == 3)
+    if (kv_mode == 4)
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+        dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});
+
+        st->parallel_for<dpct_kernel_name<class attn_chunk_kernel_4a17c9,
+                                          dpct_kernel_scalar<4>>>(
+            sycl::nd_range<3>(grid * sycl::range(1, 1, THREADS),
+                              sycl::range(1, 1, THREADS)),
+            exp_props,
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                attn_chunk_kernel<4>(q, pools, ids, steps, (int)s.n_head_kv,
+                                     (int)s.page_size, scale, part_acc, part_m,
+                                     part_l, n_chunks, (int)cap, stride);
+            });
+    } else if (kv_mode == 3)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -862,11 +896,13 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
     }
-    const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
-                        : (pools.k_q != nullptr ? 1 : 0));
+    const int kv_mode = pools.k_q4 != nullptr ? (q4_lloyd(pools.q4_mode) ? 4 : 2)
+                        : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3 : (pools.k_q != nullptr ? 1 : 0));
     if (kv_mode == 3 ? (!pools.k_scale || !pools.v_q4)
-                     : (kv_mode == 2 ? (!pools.v_q4) : (kv_mode == 1 ? (!pools.v_q || !pools.k_scale || !pools.v_scale)
-                                                                     : (!pools.k_pool || !pools.v_pool)))) {
+                     : ((kv_mode == 2 || kv_mode == 4)
+                            ? (!pools.v_q4)
+                            : (kv_mode == 1 ? (!pools.v_q || !pools.k_scale || !pools.v_scale)
+                                            : (!pools.k_pool || !pools.v_pool)))) {
         std::fprintf(stderr, "qsa_decode_attn: incomplete KV pools\n");
         std::exit(1);
     }
@@ -877,7 +913,23 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     const float scale = 1.0f / sqrtf((float) HD);
     const dpct::dim3 grid((unsigned)n_chunks, (unsigned)s.n_head_kv);
     dpct::queue_ptr st = strata::q_of(stream);
-    if (kv_mode == 3)
+    if (kv_mode == 4)
+    {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{
+            sycl::ext::oneapi::experimental::use_root_sync};
+        dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});
+
+        st->parallel_for<dpct_kernel_name<class attn_chunk_kernel_9d21b7,
+                                          dpct_kernel_scalar<4>>>(
+            sycl::nd_range<3>(grid * sycl::range(1, 1, THREADS),
+                              sycl::range(1, 1, THREADS)),
+            exp_props,
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                attn_chunk_kernel<4>(q, pools, ids, step, (int)s.n_head_kv,
+                                     (int)s.page_size, scale, part_acc, part_m,
+                                     part_l, n_chunks, 0, 0);
+            });
+    } else if (kv_mode == 3)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};

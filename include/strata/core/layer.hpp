@@ -219,6 +219,21 @@ struct QsaState {
     bool kv_q4 = false;
     uint8_t* k_q4 = nullptr;
     uint8_t* v_q4 = nullptr;
+    /// `--kv q4lm32` / `--kv q4lm32s` (qsa_set_kv_q4_mode): the same 144 B blocks and the same rotation as Q4_0,
+    /// with Max-Lloyd's 16 levels in place of ggml's uniform grid (kv_q4.hpp, kQ4lMap). Sets kv_q4 too - every pool,
+    /// page, stream and snapshot rule is Q4_0's - and this carries the two things that differ: the nibble -> value
+    /// map (both modes) and the writer's scale rule (kLloyd 1 = max|x|/87, kLloydLs 2 = the block's least-squares
+    /// scale). kUniform is plain q4_0; kLloydWin 6 is kLloyd's blocks with an exact fp16 window (below).
+    strata::kernels::Q4Mode kv_q4_mode = strata::kernels::Q4Mode::kUniform;
+    /// WP-2a window (kLloydWin `--kv q4lm32w`, or STRATA_KV_WINDOW=1 on any q4 arm): the first R (sink) and
+    /// most recent S cells read exact fp16 from here instead of q4. Rows [R sinks][S + B recent ring],
+    /// [(row, kv_head, head_dim)] fp16 per tensor - no paging, no streaming, no snapshot (refused, not silent):
+    /// the row is derived from the cell by `qsa_win_slot`, and every append writes next to the q4 blocks
+    /// (rotated, like them). B is the largest append batch (a prompt chunk whose queries each have their own
+    /// horizon), see STRATA_KV_WINDOW_BATCH. Null when the window is off (S + R = 0) or the state is a ring.
+    uint16_t* k_win = nullptr;
+    uint16_t* v_win = nullptr;
+    int32_t* win_tag = nullptr;   ///< cell id per recent ring row [(S + B)]: a stale row reads quantized, not wrong
     /// Hybrid K8V4: K in INT8 (unrotated - the scores stay exact), V in rotated Q4_0 (kv_q4.hpp): 816 B per cell.
     /// Uses k_q/k_scale + v_q4. Mode 0 only (no KV streaming, no ring); under this setting the MTP drafter's
     /// ring state stays plain INT8, so the block movers never see the hybrid layout.
@@ -315,18 +330,60 @@ bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
+/// `--kv q4lm32` / `--kv q4lm32s`: Q4_0's blocks and rotation with Max-Lloyd's levels instead of ggml's uniform
+/// grid (kv_q4.hpp). kUniform here is plain q4_0 (use qsa_set_kv_q4); anything else sets that too.
+void qsa_set_kv_q4_mode(strata::kernels::Q4Mode mode);
+strata::kernels::Q4Mode qsa_kv_q4_mode();
 /// Hybrid K8V4 (`--kv k8v4`): K in INT8, V in rotated Q4_0 - 816 B per cell; streams with --kv-resident too.
 void qsa_set_kv_hybrid(bool enabled);
 bool qsa_kv_hybrid();
-/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvHybrid).
+/// The state's KV format for the block-moving functions of kv_stream.hpp (kKvF16 / kKvInt8 / kKvQ4 / kKvQ4lm /
+/// kKvQ4lmS / kKvQ4lm8 / kKvQ4lm8K / kKvQ4lm8V / kKvQ4lmW / kKvHybrid).
 inline int qsa_kv_format(const QsaState& st) {
     if (st.kv_hybrid) return strata::kernels::kKvHybrid;   // K8V4: its own three runs (kv_stream.cu)
+    // WP-2a window overlay: the exact fp16 cells live outside the block image, so a windowed state is its own
+    // format whatever level table its blocks carry. The movers only ever see q4 bytes (kv_fmt_q4) and the
+    // reader's table travels in the pools (q4_mode), not here - so one format covers the window on any mode.
+    if (st.k_win != nullptr || st.v_win != nullptr) return strata::kernels::kKvQ4lmW;
+    // q4lm32 / q4lm32s: kKvQ4's blocks with another nibble -> value map (and, for q4lm32s, another scale rule) - a
+    // block is silent about both, so the format has to carry them.
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydLs) return strata::kernels::kKvQ4lmS;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd) return strata::kernels::kKvQ4lm;
+    // WP-2 3-bit probe: the same blocks, the 8-level table on both tensors / on K only / on V only.
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8) return strata::kernels::kKvQ4lm8;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8K) return strata::kernels::kKvQ4lm8K;
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloyd8V) return strata::kernels::kKvQ4lm8V;
+    // kLloydWin with S + R = 0 allocates no side pool (qsa_win_wanted), so the pool check at the top already
+    // caught every state that has one, and such a state is a plain kLloyd cache: kLloydWin's writer IS kLloyd's
+    // (kv_q4.cu) and its table is the 16-level one, so it is labelled kKvQ4lm and can be snapshotted.
+    if (st.kv_q4_mode == strata::kernels::Q4Mode::kLloydWin) return strata::kernels::kKvQ4lm;
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);
+/// WP-2a window grid (STRATA_KV_WINDOW_S/_R/_B): the staged prefill path overlays these on stage pools.
+int qsa_kv_win_s();
+int qsa_kv_win_r();
+/// Recent ring rows beyond S: the largest append batch the ring must serve at once (STRATA_KV_WINDOW_BATCH,
+/// default: the prompt chunk, at least 512 = the harness's `--prefill 512`; generate.cpp caps an auto-sized prompt
+/// chunk at 6,144 cells, the chunk setup.py's 152 MiB ring figure is measured at). Every query of a batch has its
+/// own horizon, so the batch's whole window span [pos0 - S, pos0 + B) has to be resident when its attention runs -
+/// a smaller ring cannot serve it, and the append refuses that loudly instead of overwriting rows a reader still
+/// needs.
+int qsa_kv_win_b();
+/// Size the ring for the prompt chunk the engine settled on (generate.cpp, before the state is carved). An
+/// explicit STRATA_KV_WINDOW_BATCH wins over this, and it only ever grows the ring (never shrinks an explicit one).
+void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk);
+/// True when the ring's size came from STRATA_KV_WINDOW_BATCH (the user sized it). Then the engine does not grow
+/// it, and the 6,144-cell cap that keeps setup.py's 152 MiB figure does not apply either: a chunk that does not
+/// fit the ring is refused by the append, which says what to change.
+bool qsa_kv_win_batch_is_explicit();
+/// The overlay switch itself (qsa_set_kv_q4_mode sets it from `--kv q4lm32w` / `STRATA_KV_WINDOW`): the MTP
+/// drafter turns it off around its state init so no side pool is carved for a state whose readers never take one.
+bool qsa_kv_win();
+void qsa_set_kv_win(bool on);
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
                     int64_t cap, void* stream);
 /// Zeroes the pools AND the indexer, so a fresh sequence matches the reference's own `zeros()`.  The KV pool

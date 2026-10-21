@@ -757,6 +757,11 @@ void usage() {
                  "                       VRAM; default fp16 until gate G-C accepts int8\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
+                 "                       ggml's uniform grid (kv_q4.hpp): the same 576 B/cell, lower 4-bit error\n"
+                 "  --kv q4lm32s         the same levels with each block's own least-squares scale instead of\n"
+                 "                       max|x|/87: one extra reduction per block in the writer, the lowest error\n"
+                 "                       of the three\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
@@ -2354,12 +2359,18 @@ int main(int argc, char **argv) try {
     }
 #endif
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "q4lm32" && o.kv != "q4lm32s" &&
+        o.kv != "k8v4") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, q4lm32, q4lm32s or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
-    strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    strata::core::qsa_set_kv_q4(o.kv == "q4_0" || o.kv == "q4lm32" || o.kv == "q4lm32s");   // PR #21: 4-bit after a Hadamard rotation
+    // `--kv q4lm32` / `q4lm32s`: the same 4-bit blocks with Max-Lloyd's levels instead of ggml's uniform grid,
+    // and either max|x|/87 or the block's own least-squares scale (kv_q4.hpp, Q4Mode).
+    strata::core::qsa_set_kv_q4_mode(o.kv == "q4lm32s" ? strata::kernels::Q4Mode::kLloydLs
+                                     : o.kv == "q4lm32" ? strata::kernels::Q4Mode::kLloyd
+                                                        : strata::kernels::Q4Mode::kUniform);
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");

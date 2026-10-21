@@ -2025,6 +2025,12 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         return false;
     dpct::queue_ptr st = strata::q_of(stream);
     if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)
+        // q4lm32 and q4lm32s stand in the same blocks with Max-Lloyd levels instead of a uniform grid, and mode 4
+        // reads `code - 8`, so it would silently dequantize them as q4_0.  Decline: the decode kernel takes the map
+        // from `pools.q4_mode` and is already the q4_0 prompt path on every non-sm_80 build.  (Mode 4 could carry the
+        // level table the way it carries the int8 codes; that is owed if a level-table format ships, and not needed
+        // to measure one.)
+        if (q4_lloyd(pools.q4_mode)) return false;
         static const bool q4_off = [] {
             const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
             return v != nullptr && v[0] == '0';

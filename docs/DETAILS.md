@@ -96,6 +96,30 @@ VRAM. RTX 3090, the Coder at 198K context: 99 instead of 85 tokens/s output, the
 slower. It streams its KV cache like the other formats (`--kv-resident N`): on an RTX 2060 SUPER 8 GB at 128K with
 20,480 resident cells, +780 expert slots over resident K8V4, and it scores better than 4-bit KV on long documents.
 
+**4-bit Lloyd KV with the exact-cell window (opt-in):** setup's third KV choice (offered at 32K and more; below the
+~28K break-even the ring costs more than the 4-bit base saves) writes `--kv q4lm8v` and the engine env
+`STRATA_KV_WINDOW=1`, `STRATA_KV_WINDOW_S=256`, `STRATA_KV_WINDOW_R=64`; a hand-written config needs both. The
+first 64 cells (sinks) and the most recent 256 cells of each QSA layer stay in exact fp16, the rest in the 4-bit
+Lloyd format, and the window's ring is sized for the prompt chunk and stays resident. The ring holds a chunk of at
+most 6,144 cells: a larger `--prefill` is capped at 6,144 with a note, the chunk the memory figure below is measured
+at. A ring the user sized (`STRATA_KV_WINDOW_BATCH`) is left as it is: then the engine does not cap the chunk, and a
+chunk that does not fit the ring is refused with a message that says what to change. At 128K (131,072 cells, B = 6,144, RX 9060 XT, Windows HIP): 5.29 bit / 1,016 MiB against 8-bit's 8.25 / 1,584
+MiB (-36%), prompt 528 vs 526
+tok/s and decode 34.2 vs 35.2 tok/s (inside 8-bit's run-to-run spread), 14% more expert slots, hit rate 0.76 vs
+0.74. On cwe-4k (32,746 teacher-forced positions) KL 0.02090 against 8-bit's 0.01688 and plain `q4lm8v`'s 0.03182
+- 73% of the gap closed, and in the answer region no longer distinguishable from 8-bit; needles 6/6 at 32K and
+128K. At 128K on cwe-128k (131,062 teacher-forced positions, the text of the workpackage measurement; port build
+0.1.47, Windows HIP, RX 9060 XT) the last 4,096 positions score KL 0.00663 for the window against 8-bit's 0.00959
+and plain `q4lm8v`'s 0.01587 (top-1 99.73 / 99.73 / 99.51%), 58% of the gap to plain closed; 8-bit stays ahead in
+the p99 (0.0166 vs 0.0298), in the last 1,024 positions (0.00265 vs 0.00444) and over the whole segment (0.10715
+against 0.13312 and 0.15758). A second 128K text from the same generator (same seed, alpha and 2,621 code words,
+drawn separately) reverses only the order of the two quantized arms - last 4,096: 8-bit 0.00324, window 0.00437,
+plain 0.00664, so the window keeps a third of the gap to plain closed and loses the p99 (0.0210 against 0.0165);
+whole segment 8-bit 0.06435, window 0.07524, plain 0.08834. The difference between the two quantized arms is
+therefore inside the text-to-text spread; the window's lead over plain is what both texts agree on. `--prefill 512`
+reaches 4.60 bit / 884 MiB but prompts at 105 tok/s (-80%):
+offline only. 8-bit stays the default.
+
 **Reproducible greedy output (0.1.30, opt-in, `STRATA_IQ_MT_MIN=1`):** with the IQ models, the CPU computes an
 expert for one token with ggml's dot product and for several tokens with Strata's multi-token kernels, which round
 slightly differently. How many tokens share an expert depends on the drafts in a verify window, so the same prompt

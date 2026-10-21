@@ -347,7 +347,13 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
     const bool kv_int8_was = qsa_kv_int8();
+    // WP-2a window: the drafter is never windowed (its readers take no win pools), so the overlay is off for the
+    // init below. Otherwise qsa_state_bytes sizes the arena for two side pools and qsa_state_init carves them,
+    // only for the pointers to be dropped right after - VRAM and the vram_ accounting given away for nothing
+    // (R6). The S/R grid itself is untouched, so switching back restores it.
+    const bool kv_win_was = qsa_kv_win();
     qsa_set_kv_hybrid(false);
+    qsa_set_kv_win(false);
     if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
     if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
@@ -364,6 +370,11 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
+    qsa_set_kv_win(kv_win_was);
+    // Belt and braces: the init above never saw the overlay on, so these are already null. Kept so that no future
+    // change can leak a window into draft attention, and so its appends skip the side pools by guard.
+    st_.k_win = nullptr;
+    st_.v_win = nullptr;
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;
@@ -961,16 +972,29 @@ bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err
             fwht256_inplace_cuda(vcur_, (int64_t) T * NKV, cs);
         }
         // stored in the state's own format (#293 appended rotated INT8 K/V as Q4_0, into pools INT8 never has)
-        if (!no_batch_kv && st_.kv_q4)
-            kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host);
+        if (!no_batch_kv && st_.kv_q4) {
+            kv_append_q4_steps(st_.k_q4, st_.v_q4, st_.page_table, step, 4, T, kcur_, vcur_, s, cs, &st_.host,
+                               st_.kv_q4_mode);
+            // WP-2a window twin (the drafter's state never carries win pools - guard skips; kept uniform).
+            if (st_.k_win != nullptr)
+                strata::kernels::kv_append_win_steps(st_.k_win, st_.v_win, st_.win_tag, step, 4, T, kcur_, vcur_,
+                                                     (int) NKV, (int) HD, cs, qsa_kv_win_s(), qsa_kv_win_r(),
+                                                     qsa_kv_win_b());
+        }
         else if (!no_batch_kv && st_.kv_int8)
             kv_append_q8_steps(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step, 4, kcur_, vcur_,
                                (int) (NKV * HD), T, s, cs, &st_.host);
         else
             for (int t = 0; t < T; ++t) {
-                if (st_.kv_q4)
+                if (st_.kv_q4) {
                     kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
-                                      vcur_ + t * NKV * HD, s, cs, &st_.host);
+                                      vcur_ + t * NKV * HD, s, cs, &st_.host, st_.kv_q4_mode);
+                    if (st_.k_win != nullptr)
+                        strata::kernels::kv_append_win_steps(st_.k_win, st_.v_win, st_.win_tag, step + t * 4, 4, 1,
+                                                             kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, (int) NKV,
+                                                             (int) HD, cs, qsa_kv_win_s(), qsa_kv_win_r(),
+                                                             qsa_kv_win_b());
+                }
                 else if (st_.kv_int8)
                     kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
                                       kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
