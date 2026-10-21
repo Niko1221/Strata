@@ -44,6 +44,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <type_traits>
 
 namespace strata::prefill::fused {
 namespace {
@@ -63,7 +64,7 @@ constexpr float MAGICF = 12582912.0f;
 // per launch by the rows per expert (pick_ww)
 constexpr int THREADS = 512;
 constexpr int WLD = 80;                 // bytes per decoded weight row of a stage: 64 int8 + 16 (no bank conflicts)
-__host__ __device__ constexpr int tile_rows(int ww) { return 256 / ww; }
+__host__ __device__ constexpr int tile_rows(int ww, int nt = THREADS) { return nt / 32 / ww * 16; }
 __host__ __device__ constexpr int weight_rows(int ww) { return 64 * ww; }
 constexpr int ASTAGES = 4;              // cp.async depth of the activations (64 values of K a stage)
 // Turing: 2 (its copies are plain loads, so depth buys nothing, and 4 does not fit its 64 KB of shared memory)
@@ -107,9 +108,9 @@ __host__ __device__ constexpr int grid_bytes(int t) {
     return t == T_IQ2_XXS ? 256 * 8 : t == T_IQ2_XS ? 512 * 8 : t == T_IQ2_S ? 1024 * 8 : t == T_IQ3_XXS ? 256 * 4
          : t == T_IQ3_S ? 512 * 4 : 0;
 }
-__host__ __device__ constexpr size_t smem_bytes(int t, int ww, int astages = ASTAGES) {
-    return (size_t) 2 * weight_rows(ww) * (WLD + 16) + (size_t) astages * tile_rows(ww) * AB +
-           (size_t) tile_rows(ww) * 4 + grid_bytes(t);
+__host__ __device__ constexpr size_t smem_bytes(int t, int ww, int astages = ASTAGES, int nt = THREADS) {
+    return (size_t) 2 * weight_rows(ww) * (WLD + 16) + (size_t) astages * tile_rows(ww, nt) * AB +
+           (size_t) tile_rows(ww, nt) * 4 + grid_bytes(t);
 }
 
 // moe_fused.cu's grouping tables (the same layout: fused::group writes them)
@@ -340,6 +341,58 @@ template <int T, int NW> __device__ __forceinline__ void load_unit(const uint8_t
     }
 }
 
+// load_unit's bytes in two passes (native_kernel's opt-in NT = 256 instances only, CUDA): `issue` loads the 16-bit and
+// 8-bit pieces into registers and `take` assembles the words from them a stage later, so no instruction waits on the
+// loads in the stage that issues them (in one pass the shifts and ORs right after the loads stalled every stage on a
+// memory round trip).  The same bytes in the same words as load_unit.
+constexpr int NP = 12;   // pieces: at most IQ4_XS's 10 halves and a byte
+struct LdIssue {
+    uint32_t* pc; int k;
+    __device__ __forceinline__ uint32_t h(const uint8_t* p) { pc[k++] = *(const uint16_t*) p; return 0; }
+    __device__ __forceinline__ uint32_t b(const uint8_t* p) { pc[k++] = *p; return 0; }
+};
+struct LdTake {
+    const uint32_t* pc; int k;
+    __device__ __forceinline__ uint32_t h(const uint8_t*) { return pc[k++]; }
+    __device__ __forceinline__ uint32_t b(const uint8_t*) { return pc[k++]; }
+};
+template <class L> __device__ __forceinline__ uint32_t lw(L& l, const uint8_t* p) {
+    const uint32_t lo = l.h(p);
+    const uint32_t hi = l.h(p + 2);
+    return lo | (hi << 16);
+}
+template <int T, class L, int NW> __device__ __forceinline__ void load_unit_l(L& l, const uint8_t* bp, int ib, uint32_t (&w)[NW]) {
+    static_assert(NW >= raw_words(T), "raw words");
+    if constexpr (T == T_IQ2_XXS || T == T_Q2_0) {
+        w[0] = lw(l, bp + 2 + 8 * ib); w[1] = lw(l, bp + 6 + 8 * ib); w[2] = l.h(bp);
+    } else if constexpr (T == T_IQ2_XS) {
+        w[0] = lw(l, bp + 2 + 8 * ib); w[1] = lw(l, bp + 6 + 8 * ib);
+        const uint32_t d = l.h(bp); const uint32_t s = l.b(bp + 66 + ib);
+        w[2] = d | (s << 16);
+    } else if constexpr (T == T_IQ2_S) {
+        w[0] = lw(l, bp + 2 + 4 * ib); w[1] = lw(l, bp + 34 + 4 * ib);
+        const uint32_t d = l.h(bp); const uint32_t qh = l.b(bp + 66 + ib); const uint32_t sc = l.b(bp + 74 + ib);
+        w[2] = d | (qh << 16) | (sc << 24);
+    } else if constexpr (T == T_IQ3_XXS) {
+        w[0] = lw(l, bp + 2 + 8 * ib); w[1] = lw(l, bp + 6 + 8 * ib); w[2] = lw(l, bp + 66 + 4 * ib); w[3] = l.h(bp);
+    } else if constexpr (T == T_IQ3_S) {
+        w[0] = lw(l, bp + 2 + 8 * ib); w[1] = lw(l, bp + 6 + 8 * ib); w[2] = lw(l, bp + 74 + 4 * ib);
+        const uint32_t d = l.h(bp); const uint32_t qh = l.b(bp + 66 + ib); const uint32_t sc = l.b(bp + 106 + ib / 2);
+        w[3] = d | (qh << 16) | (((sc >> (4 * (ib & 1))) & 15) << 24);
+    } else if constexpr (T == T_IQ4_XS) {
+#pragma unroll
+        for (int k = 0; k < 4; ++k) w[k] = lw(l, bp + 8 + 16 * ib + 4 * k);
+        const uint32_t lo = l.b(bp + 4 + ib / 2); const uint32_t hi = l.h(bp + 2); const uint32_t d = l.h(bp);
+        const uint32_t ls = ((lo >> (4 * (ib & 1))) & 15) | (((hi >> (2 * ib)) & 3) << 4);
+        w[4] = d | (ls << 16);
+    } else {   // IQ4_NL
+        static_assert(T == T_IQ4_NL, "the CUDA native formats");
+#pragma unroll
+        for (int k = 0; k < 4; ++k) w[k] = lw(l, bp + 2 + 4 * k);
+        w[4] = l.h(bp);
+    }
+}
+
 // The sub-block as 32 int8 (q[0..7], natural order) and its scales (s0: values 0-15, s1: 16-31).
 template <int T, int NW>
 __device__ __forceinline__ void convert(const uint32_t (&w)[NW], const uint8_t* grid, const uint32_t (&kv)[4],
@@ -475,13 +528,20 @@ template <int T> __device__ __forceinline__ const void* grid_src() {
 // tokens' activations, SwiGLU, H to int8 per 32 features into `out`.  !GU: down rows (format WT) against H, FP32 into
 // `dm`.  Warp (wf, wt): weight rows 64 wf.. as four m16 tiles (GU: a tile = 8 features, gate rows as mma rows 0-7 and
 // up rows as 8-15, so a lane holds gate and up of one feature), routed rows 16 wt.. as two n8.
-template <int WT, bool GU, int WW>
-__global__ void __launch_bounds__(THREADS, 1)
-native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
+// NT (STRATA_PF_FUSED_NT=256, sm_80+ opt-in): 256 threads, two blocks a multiprocessor - one block's products run while
+// the other waits at a barrier.  WW 2 only (its 2 WR = 256 decode units are the block's threads); a work item is 128
+// weight rows x one 64-row tile.  Every output is the same thread's sum in the same order: the same bits.  The NT = 256
+// instances take a WideBatch (STRATA_PF_BATCH up to kBatchRoom experts a launch), the default ones Batch.
+template <int NT> using BatchOf = std::conditional_t<NT == THREADS, Batch, WideBatch>;
+template <int WT, bool GU, int WW, int NT = THREADS>
+__global__ void __launch_bounds__(NT, NT == THREADS ? 1 : 2)
+native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const uint8_t* __restrict__ act,
               const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
-    constexpr int TR = tile_rows(WW), WR = weight_rows(WW);
+    constexpr int TR = tile_rows(WW, NT), WR = weight_rows(WW);
+    static_assert(2 * WR <= NT, "every decode unit is a thread of the block");
     constexpr int WT_BYTES = WR * WLD, WS_FLOATS = WR * 4, ACT_STAGE = TR * AB;
+    constexpr bool TWO_PASS = NT != THREADS;   // the two-pass loads (load_unit_l) only in the opt-in NT = 256 kernels
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;   // 64-value stages along K
     constexpr int NFB = (GU ? 1280 : 2560) / WR;          // weight-row blocks per tile
     constexpr int ACT_LD = NS * AB;                       // bytes per activation row: 3200 (a token), 800 (a row's H)
@@ -498,7 +558,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
     const int wf = warp % WW, nb0 = 16 * (warp / WW);
     if constexpr (grid_bytes(WT) > 0) {
         const uint32_t* gs = (const uint32_t*) grid_src<WT>();
-        for (int i = tid; i < grid_bytes(WT) / 4; i += THREADS) ((uint32_t*) sgrid)[i] = gs[i];
+        for (int i = tid; i < grid_bytes(WT) / 4; i += NT) ((uint32_t*) sgrid)[i] = gs[i];
     }
     uint32_t kv[4] = {0, 0, 0, 0};
     if constexpr (WT == T_IQ4_XS || WT == T_IQ4_NL) {
@@ -555,7 +615,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
         // of a partial one are never written (no reduction mixes columns)
         auto load_act = [&](int s) {
             uint8_t* st = stages + (s % ASTAGES_DEV) * ACT_STAGE;
-            for (int c = tid; c < TR * 5; c += THREADS) {
+            for (int c = tid; c < TR * 5; c += NT) {
                 const int r = c / 5, q = c % 5;
                 if (r < nrows) cp16(st + r * AB + q * 16, act + (size_t) srow[r] * ACT_LD + s * AB + q * 16);
             }
@@ -576,7 +636,11 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
             cp_commit();
         }
         uint32_t raw[5] = {0, 0, 0, 0, 0};
+        uint32_t pc[NP];   // stage s + 2's pieces in flight (load_unit_l)
+        auto issue = [&](int s) { LdIssue l{pc, 0}; uint32_t w[5]; load_unit_l<WT>(l, unit(s), sub(s), w); };
+        auto take = [&](int s) { LdTake l{pc, 0}; load_unit_l<WT>(l, unit(s), sub(s), raw); };
         if (dec) load_unit<WT>(unit(0), sub(0), raw);
+        if (dec && TWO_PASS && 2 < NS) issue(2);
         put(raw, 0);
         if (dec) load_unit<WT>(unit(1), sub(1), raw);
         // a warp whose rows are all past the tile's end only takes part in the loads
@@ -672,7 +736,14 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
             // 5.2 / 9.5 / 17.5 ms -> 6.0 / 10.2 / 18.3.)
             if (s + 1 < NS) {
                 put(raw, (s + 1) & 1);
-                if (dec && s + 2 < NS) load_unit<WT>(unit(s + 2), sub(s + 2), raw);
+                if (dec && s + 2 < NS) {
+                    if constexpr (TWO_PASS) {
+                        take(s + 2);
+                        if (s + 3 < NS) issue(s + 3);
+                    } else {
+                        load_unit<WT>(unit(s + 2), sub(s + 2), raw);
+                    }
+                }
             }
         }
         if (!on0) continue;
@@ -1190,6 +1261,7 @@ struct DevInfo {
     bool t75 = false;   // Turing (STRATA_PF_FUSED_SM75): the Q2_0 / Q2_0 layers only (what was set up and checked there)
     bool s120 = false;  // compute capability 12.0 (sm120_series.hpp): the default for the formats measured there
     int sms = 0, occ = 1;
+    int occ_nt = 0;     // blocks per multiprocessor of the NT = 256 kernels (0: not set up)
 };
 std::mutex g_mu;
 DevInfo g_dev[32];
@@ -1207,20 +1279,27 @@ int host_astages() {
     }
     return per[dev];
 }
-template <int T, bool GU, int WW> bool setup_ww(int& occ) {
+template <int T, bool GU, int WW, int NT = THREADS> bool setup_ww(int& occ) {
     cudaFuncAttributes fa{};
-    if (cudaFuncGetAttributes(&fa, native_kernel<T, GU, WW>) != cudaSuccess || fa.ptxVersion < 75) return false;
-    if (cudaFuncSetAttribute(native_kernel<T, GU, WW>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-                             (int) smem_bytes(T, WW, host_astages())) != cudaSuccess)
+    if (cudaFuncGetAttributes(&fa, native_kernel<T, GU, WW, NT>) != cudaSuccess || fa.ptxVersion < 75) return false;
+    const size_t sm = smem_bytes(T, WW, host_astages(), NT);
+    if (cudaFuncSetAttribute(native_kernel<T, GU, WW, NT>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) sm) != cudaSuccess)
         return false;
     int o = 0;
-    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&o, native_kernel<T, GU, WW>, THREADS, smem_bytes(T, WW, host_astages())) !=
-            cudaSuccess || o < 1)
+    if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&o, native_kernel<T, GU, WW, NT>, NT, sm) != cudaSuccess || o < 1)
         return false;
     occ = std::min(occ, o);
     return true;
 }
 template <int T, bool GU> bool setup_one(int& occ) { return setup_ww<T, GU, 4>(occ) && setup_ww<T, GU, 2>(occ); }
+// STRATA_PF_FUSED_NT=256 (sm_80+, opt-in): the 256-thread kernels (native_kernel's NT)
+bool nt256_requested() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PF_FUSED_NT"); return v != nullptr && std::atoi(v) == 256; }();
+    return on;
+}
+template <int T, bool GU> bool setup_nt(int& occ) {
+    return setup_ww<T, GU, 2, 256>(occ);
+}
 #endif
 
 #if defined(__HIPCC__)
@@ -1310,6 +1389,14 @@ const DevInfo& dev_info() {
            setup_one<T_IQ3_XXS, true>(occ) && setup_one<T_IQ3_S, true>(occ) && setup_one<T_IQ4_XS, true>(occ) &&
            setup_one<T_Q2_0, false>(occ) && setup_one<T_IQ4_NL, false>(occ);   // (Q2_0 gate/up is the Turing opt-in's only)
     d.occ = d.ok ? occ : 1;
+    if (d.ok && nt256_requested()) {
+        int o2 = 1 << 20;
+        const bool ok2 = setup_nt<T_IQ2_XXS, true>(o2) && setup_nt<T_IQ2_XS, true>(o2) && setup_nt<T_IQ2_S, true>(o2) &&
+                         setup_nt<T_IQ3_XXS, true>(o2) && setup_nt<T_IQ3_S, true>(o2) && setup_nt<T_IQ4_XS, true>(o2) &&
+                         setup_nt<T_Q2_0, false>(o2) && setup_nt<T_IQ4_NL, false>(o2);
+        d.occ_nt = ok2 ? o2 : 0;
+        if (!ok2) std::fprintf(stderr, "prefill fused experts (native): STRATA_PF_FUSED_NT=256 is not available here\n");
+    }
     cudaGetLastError();
 #endif
     return d;
@@ -1368,6 +1455,13 @@ void launch(int ww, unsigned grid, const Batch& b, const NativeGeom& g, const Ta
     uint8_t* o = (uint8_t*) out;
     if (ww == 4) native_kernel<T, GU, 4><<<grid, THREADS, smem_bytes(T, 4, host_astages()), s>>>(b, g, tb, a, src, o, dm);
     else native_kernel<T, GU, 2><<<grid, THREADS, smem_bytes(T, 2, host_astages()), s>>>(b, g, tb, a, src, o, dm);
+}
+// the NT = 256 kernels (WW 2)
+template <int T, bool GU>
+void launch(unsigned grid, const WideBatch& b, const NativeGeom& g, const Tables& tb, const void* act, const int32_t* src,
+            void* out, float* dm, cudaStream_t s) {
+    native_kernel<T, GU, 2, 256><<<grid, 256, smem_bytes(T, 2, host_astages(), 256), s>>>(b, g, tb, (const uint8_t*) act,
+                                                                                         src, (uint8_t*) out, dm);
 }
 
 // The work item's shape for a layer of `n` routed rows over `n_expert` experts: 128 routed rows when an expert has
@@ -1521,6 +1615,14 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
         return;
     }
 #endif
+    if (d.occ_nt > 0) {   // STRATA_PF_FUSED_NT=256: the NT = 256 kernels, which take a WideBatch
+        WideBatch w;
+        w.e0 = b.e0;
+        w.e1 = b.e1;
+        std::copy(b.blob, b.blob + (b.e1 - b.e0), w.blob);
+        experts_native(w, g, n_expert, n, scratch, xa, src, ha, dm, stream);
+        return;
+    }
     const int ww = pick_ww(n, n_expert);
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once
@@ -1539,6 +1641,37 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
     else launch<T_IQ4_NL, false>(ww, g_d, b, g, tb, ha, src, nullptr, dm, s);
     ck(cudaGetLastError(), "experts_native");
+}
+
+bool native_wide() { return dev_info().occ_nt > 0; }
+
+void experts_native(const WideBatch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
+                    const int32_t* src, void* ha, float* dm, void* stream) {
+    if (b.e1 <= b.e0 || n <= 0) return;
+    const DevInfo& d = dev_info();
+    if (d.occ_nt <= 0 || !gu_covered(g.gu_type) || !d_covered_on(g.d_type, d)) {
+        std::fprintf(stderr, "prefill fused experts (native, NT = 256): types %d / %d are not covered here\n", g.gu_type,
+                     g.d_type);
+        std::exit(1);
+    }
+    const cudaStream_t s = (cudaStream_t) stream;
+    const Tables tb = tables(const_cast<void*>(scratch), n_expert);
+    // WW 2 (128 x 64 items), as many blocks as are resident; the tiles as in experts_native(const Batch&)
+    const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(2)), (int64_t) d.sms * d.occ_nt);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(2)), (int64_t) d.sms * d.occ_nt);
+    switch (g.gu_type) {
+        case T_IQ2_XXS: launch<T_IQ2_XXS, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_XS: launch<T_IQ2_XS, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ2_S: launch<T_IQ2_S, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ3_XXS: launch<T_IQ3_XXS, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_IQ3_S: launch<T_IQ3_S, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        case T_Q2_0: launch<T_Q2_0, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+        default: launch<T_IQ4_XS, true>(g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
+    }
+    if (g.d_type == T_Q2_0) launch<T_Q2_0, false>(g_d, b, g, tb, ha, src, nullptr, dm, s);
+    else launch<T_IQ4_NL, false>(g_d, b, g, tb, ha, src, nullptr, dm, s);
+    ck(cudaGetLastError(), "experts_native (NT = 256)");
 }
 
 }  // namespace strata::prefill::fused

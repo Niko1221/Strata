@@ -58,6 +58,7 @@
 #include <cstring>
 #include <future>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -109,6 +110,9 @@ void experts(const Batch&, int, int64_t, const void*, const void*, const int32_t
 bool native_supported(int, int) { return false; }
 void quantize_act_native(const float*, int64_t, int64_t, void*, void*) {}
 void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, const void*, const int32_t*, void*,
+                    float*, void*) {}
+bool native_wide() { return false; }
+void experts_native(const WideBatch&, const NativeGeom&, int, int64_t, const void*, const void*, const int32_t*, void*,
                     float*, void*) {}
 }  // namespace strata::prefill::fused
 #endif
@@ -3629,23 +3633,36 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (fused_nat) fused::quantize_act_native(m.mixed, T, N, m.Xq, m.cs);
                         else fused::quantize_act(m.mixed, T, N, m.Xq, m.cs);
                         fused::group(m.ids, T * K, (int) K, (int) m.g->n_expert, m.GU, m.slot_dev, m.src_dev, m.cs);
-                        // launches over the experts in id order, each at most kMaxBatch experts of which at most a
-                        // third of the ring streamed: the next batch's blobs arrive while one computes.  An expert
-                        // the routing did not pick has no tiles; its ring slot is given back with its batch.
+                        // launches over the experts in id order, each at most kMaxBatch experts (STRATA_PF_BATCH: below)
+                        // of which at most a third of the ring streamed: the next batch's blobs arrive while one computes.
+                        // An expert the routing did not pick has no tiles; its ring slot is given back with its batch.
                         const size_t per = (size_t) std::max(1, m.ring / 3);
                         size_t k = seq_start[(size_t) l];
                         const size_t kend = seq_start[(size_t) l + 1];
+                        // STRATA_PF_BATCH=N (opt-in): experts per launch (the same rows, so the same bits; a launch is one
+                        // persistent grid, so fewer launches leave fewer grid tails) - at most kMaxBatch, or up to
+                        // kBatchRoom in a WideBatch on the native NT = 256 kernels (STRATA_PF_FUSED_NT=256)
+                        static const int pf_batch = [] {
+                            const char* v = std::getenv("STRATA_PF_BATCH");
+                            const int n = v ? std::atoi(v) : 0;
+                            return n > 0 ? std::min(n, fused::kBatchRoom) : fused::kMaxBatch;
+                        }();
+                        const bool wide = fused_nat && pf_batch > fused::kMaxBatch && fused::native_wide();
+                        const int per_launch = wide ? pf_batch : std::min(pf_batch, fused::kMaxBatch);
                         for (int32_t e = 0; e < m.g->n_expert;) {
                             fused::Batch b;
+                            std::optional<fused::WideBatch> wb;   // wide: the launch's pointers (b keeps e0 / e1)
+                            if (wide) wb.emplace();
+                            const uint8_t** blob = wb ? wb->blob : b.blob;
                             b.e0 = e;
                             const size_t k0 = k;
-                            for (; e < m.g->n_expert && e - b.e0 < fused::kMaxBatch; ++e) {
+                            for (; e < m.g->n_expert && e - b.e0 < per_launch; ++e) {
                                 if (k < kend && seq[k].e == e) {
                                     if (k - k0 == per) break;
-                                    b.blob[e - b.e0] = m.stage_dev[k % (size_t) m.ring];
+                                    blob[e - b.e0] = m.stage_dev[k % (size_t) m.ring];
                                     ++k;
                                 } else {                  // not streamed: resident (the walk streams all others)
-                                    b.blob[e - b.e0] = m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]);
+                                    blob[e - b.e0] = m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]);
                                     // counted whether routed or not (the routing stays on the GPU): at a streamed
                                     // chunk's size (>= 1024 tokens x 10 of 512) nearly every expert is routed
                                     ++stats_.experts_resident;
@@ -3662,8 +3679,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (fused_nat) {
                                 const auto& f = lay.fmt[(size_t) l];
                                 const fused::NativeGeom ng{f.gu_type, f.d_type, f.gu_row, f.d_row, f.up_off, f.down_off};
-                                fused::experts_native(b, ng, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev, m.H,
-                                                      m.Dm, m.cs);
+                                if (wb) {
+                                    wb->e0 = b.e0;
+                                    wb->e1 = b.e1;
+                                    fused::experts_native(*wb, ng, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev,
+                                                          m.H, m.Dm, m.cs);
+                                } else {
+                                    fused::experts_native(b, ng, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev, m.H,
+                                                          m.Dm, m.cs);
+                                }
                             } else {
                                 fused::experts(b, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev, m.H, m.Dm, m.cs);
                             }
