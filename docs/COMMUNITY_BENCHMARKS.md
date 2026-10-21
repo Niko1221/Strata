@@ -69,7 +69,7 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 - [2026-10-19: RTX 3070 Ti 8 GB, Ryzen 9 5900X, 64 GB DDR4-3600 (Windows 11)](../bench/results/2026-10-19-community-rtx3070ti-8gb-0.2.0-beta/README.md):
-  Strata v0.2.0-beta (`3d1fb48`, release engine 0.1.45.3), Flash-Next IQ2_XS at 32K and 128K, a re-run of the 0.1.40.3 measurements on the same PC:
+  Strata v0.2.0-beta (`3d1fb48`, release engine 0.1.45.3), Flash-Next IQ2_XS at 32K and 128K, a re-run of the [0.1.40.3 measurements](../bench/results/2026-10-07-community-rtx3070ti-8gb/README.md) on the same PC:
   `--kv-resident 20480` no longer beats setup's 32,768 at 128K with k8v4 (-2.8% to +2.7% in three comparisons, +39-41% on 0.1.40.3), because the CPU prefill
   share (on by default since 0.1.41) lifts the 768-token-chunk arm by 36-38%. Five runs per length, 128,000 x 3, needles 6/6, a 13-prompt task check;
   a display-on/off difference between the two sessions is reported.

@@ -7,11 +7,12 @@ plus one new arm with the CPU prefill share turned off. On 0.1.40.3, `--kv-resid
 40% faster than setup's 32,768 (arm B) at 128K with k8v4. On 0.2.0-beta that gap is gone: C was within -2.8% to +2.7%
 of B in three within-session comparisons, because the CPU share that 0.1.41 turned on by default for prompt chunks
 under 1,024 tokens now lifts B by 36-38%. Main limitations: one machine, one model, configurations measured as blocks
-(one server start each), and a display that was on for session 1 and off for session 2.
+(one server start each), and a display that was, by inference (see [Results](#results)), on for session 1 and off for
+session 2.
 
 ## Summary
 
-Session 1 (display on), blocks 1-4, five measured requests per prompt length, medians (ranges in [Results](#results)).
+Session 1 (display on, inferred), blocks 1-4, five measured requests per prompt length, medians (ranges in [Results](#results)).
 Every request generated 256 tokens and reported zero reused prompt tokens. All arms carry the same hand-added
 conversation cache on top of the context and KV settings 0.2.0-beta's setup wrote.
 
@@ -27,7 +28,8 @@ conversation cache on top of the context and KV settings 0.2.0-beta's setup wrot
   +38.8% to +41.4%.
 - The CPU share is what changed: in session 2, B with `STRATA_PREFILL_CPU_SHARE=0` (block 9) read 424.7 / 442.8 tok/s
   against B's 586.6 / 602.8 (block 8), so the share is worth +38.1% / +36.1% to B here. C was +40.4% / +32.3% above
-  the share-off B, close to the C-over-B gap 0.1.40.3 measured.
+  the share-off B: at 4,096 tokens close to the C-over-B gap 0.1.40.3 measured (+38.8% to +41.4%), at 16,384 tokens
+  below it.
 - Against A, B read prompts 10.5% / 14.9% slower, D 19.2% / 26.2% slower and C 8.1% / 15.8% slower.
 - Decode block medians at 4,096 and 16,384 tokens ranged from 46.8 to 52.1 tok/s in session 1, with overlapping
   ranges; these runs do not establish a decode difference between the arms.
@@ -37,11 +39,12 @@ conversation cache on top of the context and KV settings 0.2.0-beta's setup wrot
 
 ## What changed for this card between 0.1.40.3 and 0.2.0-beta
 
-The engine's plans are the same as on 0.1.40.3: B still gets 768-token prompt chunks and D 512, below the 1,024 from
-which the prompt path streams every non-resident expert ahead, so both still use the 8-slot staging ring. What is new
-is in `src/prefill/prefill.cpp` (lines 194-198 of this tree): since 0.1.41, CUDA builds with one GPU and no batch
-slots hand part of the experts of a chunk under 1,024 tokens to the idle CPU pool (`STRATA_PREFILL_CPU_SHARE` unset
-behaves as `auto` with `STRATA_PREFILL_CPU_SHARE_MAX=1024`; `STRATA_PREFILL_CPU_SHARE=0` gives the 0.1.40.3 output).
+The chunk and ring plans are the same as on 0.1.40.3: B still gets 768-token prompt chunks and D 512, below the 1,024
+from which the prompt path streams every non-resident expert ahead, so both still use the 8-slot staging ring. What is
+new is the default, `src/prefill/prefill.cpp` lines 194-198 of this tree: the CPU share (opt-in since 0.1.40.2, line
+185) is on by default since 0.1.41 in CUDA builds with one GPU and no batch slots, and hands part of the experts of a
+chunk under 1,024 tokens to the idle CPU pool (`STRATA_PREFILL_CPU_SHARE` unset behaves as `auto` with
+`STRATA_PREFILL_CPU_SHARE_MAX=1024`; `STRATA_PREFILL_CPU_SHARE=0` gives the 0.1.40.3 output).
 Every start except the share-off arm logged "prefill: the CPU share is ON by default for prompt chunks below 1024
 tokens".
 
@@ -57,8 +60,8 @@ arm in brackets:
 | B-share-off (9) | 2.14 GiB | 968 | 768 | 8 | 458 | 408 MiB | 1.20 GiB |
 
 Every arm has 16-17 fewer expert-cache slots than on 0.1.40.3, and B and D lend 26 more slots to the prompt path. The
-two values of "VRAM free after load" for B and C are session 1 (337-338 MiB, display on) and session 2 (408 MiB,
-display off). Repeated arms printed the same plan at every start.
+two values of "VRAM free after load" for B and C are session 1 (337-338 MiB, display on by inference) and session 2
+(408 MiB, display off by inference). Repeated arms printed the same plan at every start.
 
 ## Hardware and software
 
@@ -118,28 +121,34 @@ written by setup here, with the same arguments. Per-block configs are in [`confi
 
 - **Harness check:** before the runs, one 1,023-token request through the harness on arm A read the engine's
   `/metrics` counters as before (prompt_ms, decode_ms, generated, reused, drafts): [`harness-check.json`](harness-check.json).
-- **Harness:** the community [`benchmark.py`](../2026-09-30-community-rtx-5090/benchmark.py), the same file as in
-  0.1.40.3 apart from line endings: a nonce at the front of each request, the length set with Strata's tokenizer,
+- **Harness:** the community [`benchmark.py`](../2026-09-30-community-rtx-5090/benchmark.py), unchanged since 0.1.40.3
+  (byte-identical in the `3d1fb48` tree and at `d5ea713374`): a nonce at the front of each request, the length set with Strata's tokenizer,
   greedy, `reasoning_effort "none"`, a 256-token cap, streaming, one short warm-up per invocation (excluded). TTFT is
   the first non-empty streamed delta, always answer text; TTFT and total are client-side over loopback. Prompt tok/s =
   fresh tokens / `prompt_ms`, decode tok/s = `engine_generated` / `decode_ms`, from the engine's `/metrics`
   (per request in `results.json`; the engine's own timing lines are not attached).
 - **Requests:** 98 measured requests. Each generated 256 tokens, ended with `finish_reason "length"` and reported zero
-  reused prompt tokens; 18 distinct requests repeat across blocks, as in 0.1.40.3. Requests within a block share the
-  engine's cache state; each block is a new engine process; OS file caches were not flushed.
+  reused prompt tokens; 18 distinct requests in all, and the ten 4,096- and 16,384-token requests repeat in every
+  block, as in 0.1.40.3. Each block is a new engine process, started as `serve/server.py --engine strata --config
+  <block>.json --port 8080` from the `3d1fb48` tree (no browser); requests within a block share the engine's cache
+  state; OS file caches were not flushed.
 - **Order:** session 1 (17:23-18:29): 1-A, 2-B, 3-C, 4-D, 5-B, 6-C (6-C also 32,768 x 5, 128,000 x 3 and
   `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90`). Session 2 (18:30-18:44), order reversed: 7-C, 8-B,
   9-B-share-off. Then the task check on C (block 12). Timestamps: [`orchestrator-session1.txt`](orchestrator-session1.txt),
   [`orchestrator-session2.txt`](orchestrator-session2.txt), [`orchestrator-taskcheck.txt`](orchestrator-taskcheck.txt);
-  driver script [`bench_orchestrator.py`](bench_orchestrator.py), analysis [`analyze.py`](analyze.py).
+  driver script [`bench_orchestrator.py`](bench_orchestrator.py), analysis [`analyze.py`](analyze.py). The scripts are
+  kept as run; their folder names (`configs-arms/`, `runs/`, `task_check.py`) refer to the working folder, published
+  here as `configs/arms/`, `monitor/`, `results.json` and `quality/strata_eval.py`.
 - **E1 / E2 (the 0.1.40.3 isolation arms) were not run:** they were planned only if C was still clearly faster than B,
   and it was not (session 1: +2.6% to +2.7% at 4,096 tokens, -1.0% to -1.2% at 16,384).
-- **Monitor (new):** every 2 s during each block, `nvidia-smi` (GPU utilization, SM clock, power, temperature, clock
+- **Monitor (new):** about every 3 s during each block (a 2 s wait plus the sampling; median interval 2.6-3.2 s per
+  block), `nvidia-smi` (GPU utilization, SM clock, power, temperature, clock
   event reasons) and the CPU time of every process other than Strata's ([`monitor/`](monitor/)). A request counts as
   disturbed when other processes used more than 2.31 cores during it (the median request's 1.31 + 1) or the GPU
   reported a slowing reason (SW power cap, SW / HW thermal slowdown, HW slowdown or power brake). The flag and the
-  values are in `results.json`; 28 of 98 requests are flagged, almost all for the GPU's SW thermal slowdown (0x20) or
-  SW thermal + power cap (0x24) at 73-83 °C.
+  values are in `results.json` (with each request's start time, `engine_start_epoch`); 28 of 98 requests are flagged,
+  27 for the GPU's SW thermal slowdown (0x20) or SW thermal + power cap (0x24) at 72-84 °C (85 °C during the needle
+  run) and one for other processes at 2.33 cores.
 - **Memory and temperature:** snapshots after load and after each block, not peaks.
 
 ## Results
@@ -174,13 +183,16 @@ Every run is in [`results.json`](results.json); per-block medians and ranges (al
   and 5) differ by under 0.4% in prompt rate, those of C (3 and 6) by under 0.5%. With the disturbed requests left
   out, C against B is +2.7% / -1.0%, +4.5% / -1.1% and +1.7% / -2.8% for the three pairs: the same result.
 - **Between the sessions:** session 2 read prompts 18.7-20.8% faster and decoded 38.1-48.1% faster than session 1,
-  for the same arms (C 498.9 / 493.6 -> 596.3 / 585.9, B 485.9 / 498.8 -> 586.6 / 602.8). The display turns off after
-  60 minutes without input; the last input was at about 17:28, and the system log shows the session change at 18:27:59,
-  between the two sessions ([`system.txt`](system.txt)). In session 1 the Claude desktop app (about 0.2 of a core) and
-  the desktop compositor show up in the monitor and are gone in session 2, and the engine's free VRAM after load rose
-  from 337-338 to 408 MiB. GPU clock (1,965-1,980 MHz busy medians), power, temperature and available RAM were alike in
-  both. The display state is the most likely cause, but it was not tested on its own; comparisons in this report are
-  made within a session.
+  for the same arms (C 498.9 / 493.6 -> 596.3 / 585.9, B 485.9 / 498.8 -> 586.6 / 602.8). The display state was not
+  observed: it is inferred from the power plan (display off after 60 minutes without input), the last input at about
+  17:28 and a Kernel-Power event 566 ("system session has transitioned from 18 to 19") at 18:27:59, between the two
+  sessions ([`system.txt`](system.txt)). In session 1 the Claude desktop app (about 0.2 of a core) and the desktop
+  compositor show up in the monitor and fall to about 0.01 of a core in session 2, and the engine's free VRAM after
+  load rose from 337-338 to 408 MiB. Busy-sample medians from the monitor (GPU utilization at least 90%): GPU clock
+  1,965-1,980 MHz in both sessions; power 170-171 W (B) and 181-189 W (C) in session 1 against 182 W (B) and 194 W
+  (C) in session 2; temperature 76-82 °C in session 1, 81-82 °C in session 2; available RAM after load 14.5-14.8 GiB
+  in both. The display state is the most likely cause, but it was not tested on its own; comparisons in this report
+  are made within a session.
 - **Generated text:** inputs and output lengths matched across blocks, but none of the 10 repeated requests produced
   identical text between any two blocks (0.1.40.3: 3 and 4 of 10), the share-off arm included.
 - **Prompt rate across lengths (C, block 6):** 500.6, 491.2, 484.2 and 464.6 tok/s at 4,096, 16,384, 32,768 and
@@ -195,7 +207,8 @@ Every run is in [`results.json`](results.json); per-block medians and ranges (al
 - **Recall:** `tools/needle_bench.py --lengths 32k,128k --depths 10,50,90` on C (block 6) returned the exact target in
   all six cases, at 32,045-32,046 and 124,125-124,127 prompt tokens, one attempt each ([`needles.json`](needles.json)).
   The haystack is built from the repository's own files, which changed since 0.1.40.3, so the prompts differ from that
-  report's; the elapsed times (67-68 s and 219-268 s) include prefix reuse between depths and are not throughput.
+  report's; the elapsed times (67-68 s and 219-268 s) are not throughput: the output does not record reused tokens,
+  and the falling times at 128K (268, 236, 219 s) suggest prefix reuse between depths.
 - **Task check:** the 13 prompts of [`quality/strata_eval.py`](quality/strata_eval.py), built from the same files as in
   0.1.40.3, once on C (block 12, session 2), scored by [`quality/check_results.py`](quality/check_results.py)
   ([`quality/task-check-C.scored.txt`](quality/task-check-C.scored.txt)): the evaluator passes 15/15 expressions and
@@ -228,8 +241,8 @@ state was not recorded on 2026-10-07. Session 1 of each report, 4,096 / 16,384 t
 
 ## Limitations
 
-- One machine, one model; configurations measured as blocks, not interleaved per request; two sessions with different
-  display states.
+- One machine, one model; configurations measured as blocks, not interleaved per request; two sessions with, by
+  inference, different display states.
 - The engine binary is the release asset, built from `f6d65cb584c0`, not compiled from the `3d1fb48` tree.
 - The A / C slowdown at 16K against 0.1.40.3 and the session-to-session difference are reported, not isolated.
 - Not tested: other `--kv-resident` values, q4_0, vision, `"parallel"`, the 0.2.0-beta installer (`install.ps1` / the
@@ -242,5 +255,6 @@ state was not recorded on 2026-10-07. Session 1 of each report, 4,096 / 16,384 t
 - `git clone --branch v0.2.0-beta` + `START-HERE.bat` cannot find a ready-made engine: `setup.py` asks for
   `strata-windows-x64.zip` under `releases/download/v0.1.45.3/` and on the latest release (both HTTP 404), while
   `v0.2.0-beta` ships `strata-engine-0.1.45.3-windows-x86_64-cuda-cuda13.tar.gz`. With `--yes` it then installs
-  Visual Studio 2022 Build Tools and the CUDA Toolkit (about 8-10 GB) to compile.
+  Visual Studio 2022 Build Tools and the CUDA Toolkit to compile (setup's own estimate: "about 8-10 GB, 15-40
+  minutes"; here the Toolkit download failed and nothing was compiled).
 - `setup.py` still prints `KV cache: 4-bit (Hadamard-rotated)` for `--kv k8v4`.
