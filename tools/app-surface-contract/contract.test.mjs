@@ -4,7 +4,10 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink, open } from 
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { inspectApp, readCapabilities, validateCatalog } from './contract.mjs';
+import { reviewedSurface } from './surfaces.mjs';
+import { exportCandidate, verifyCandidate, inventory } from './assets.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '../..');
@@ -45,8 +48,8 @@ async function fixture(t) {
     await mkdir(join(root, dir), { recursive: true });
   await writeFile(join(host, 'package.json'), JSON.stringify({ type: 'module', version: '0.2.1' }));
   await writeFile(join(host, 'dist/index.html'), '<title>Official Fixture</title>');
-  await writeFile(join(host, 'server/index.mjs'),
-    '// /api/native /api/events /api/updates/check /api/model-providers\n');
+  // Read source as text only. Importing index.mjs would start the real Host.
+  await writeFile(join(host, 'server/index.mjs'), await readFile(join(repo, 'apps/host/server/index.mjs')));
   // Run the actual upstream resolver/environment logic against isolated component
   // directories. No production module import and no live installed App access.
   await writeFile(join(host, 'server/official-owner.mjs'), await readFile(join(repo, 'apps/host/server/control-runtime.mjs')));
@@ -107,6 +110,16 @@ test('reads official values, strips nested private fields, and issues only the r
   assert.deepEqual(result.idle, { minimum: 0, maximum: 86400, shortcuts: [300, 600, 1800] });
   assert.deepEqual(result.reasoning, { owner: 'official-composer', quickControl: false });
   assert.deepEqual(result.update, { owner: 'official-app', quickInstall: false });
+  assert.deepEqual(result.surface, reviewedSurface(await readFile(join(host, 'server/index.mjs'), 'utf8')));
+  assert.equal(result.surface.schema, 1);
+  assert.equal(result.surface.validation, 'source-anchors-only');
+  assert.deepEqual(result.surface.areas.find(a => a.area === 'context-idle'), {
+    area: 'context-idle', owner: 'official-app-control', routes: [
+      { path: '/api/native/models/:id/settings', method: 'GET' },
+      { path: '/api/native/models/:id/settings', method: 'PATCH' }],
+  });
+  assert.deepEqual(result.surface.areas.map(a => a.area), ['models', 'monitor', 'providers', 'lifecycle',
+    'context-idle', 'chat', 'tools-search', 'research', 'skills', 'tasks', 'workspaces', 'files', 'image-generation', 'updates']);
   assert.equal(result.catalog.recommendation.context, raw.recommendation.context);
   assert.equal(result.catalog.families[0].sizes[0].download_gb, 66.4);
   assert.equal(result.catalog.recommendation.gpu.name, 'Fixture GPU');
@@ -127,6 +140,63 @@ test('missing routes fail closed', async t => {
   const { host } = await fixture(t);
   await writeFile(join(host, 'server/index.mjs'), '// changed host routes');
   await rejects(() => inspectApp(host), 'official_host_contract_changed');
+});
+
+test('changed surface route, method and owner anchors fail before imports with safe CLI errors', async t => {
+  for (const [before, after] of [
+    ["path === '/api/model-providers' && method === 'GET'", "path === '/api/model-providers' && method === 'HEAD'"],
+    ['/api/monitor', '/api/changed-monitor'],
+    ['native.setDefault(nativeInstance[1])', 'changedOwner()'],
+    ['native.save(nativeSettings[1],await readBody(req))', 'changedSettings()'],
+    ['agent.researchCommand(', 'changedResearch('],
+    ['agentTools.update(await readBody(req))', 'changedTools()'],
+    ['/api/workspace/file', '/api/changed-file'],
+    ['checkComponentUpdates(', 'changedUpdates('],
+  ]) {
+    const { host } = await fixture(t), path = join(host, 'server/index.mjs');
+    const source = await readFile(path, 'utf8');
+    assert.equal(reviewedSurface(source).schema, 1, 'the unmodified source must pass first');
+    assert.ok(source.includes(before));
+    await writeFile(path, source.replaceAll(before, after));
+    await writeFile(join(host, 'server/control-runtime.mjs'), 'throw Error("secret-import-must-not-run");');
+    await rejects(() => inspectApp(host), 'official_host_contract_changed');
+    const cli = spawnSync(process.execPath, [join(here, 'cli.mjs'), 'snapshot', '--host', host],
+      { encoding: 'utf8', windowsHide: true });
+    assert.equal(cli.status, 1);
+    assert.equal(cli.stderr, '');
+    assert.deepEqual(JSON.parse(cli.stdout), { schema: 1, state: 'needs_validation', reason: 'official_host_contract_changed' });
+  }
+});
+
+test('surface descriptors cannot inherit private metadata or retain caller mutations', async t => {
+  const { host } = await fixture(t);
+  const source = await readFile(join(host, 'server/index.mjs'), 'utf8');
+  const first = reviewedSurface(source + '\n// secret-path secret-token https://private.invalid\n');
+  for (const area of first.areas) {
+    assert.deepEqual(Object.keys(area).sort(), ['area', 'owner', 'routes']);
+    for (const route of area.routes) assert.deepEqual(Object.keys(route).sort(), ['method', 'path']);
+  }
+  assert.doesNotMatch(JSON.stringify(first), /secret-|https:|"anchors":|"commands":/);
+  first.areas[0].routes[0].path = 'caller-value';
+  assert.equal(reviewedSurface(source).areas[0].routes[0].path, '/api/native');
+});
+
+test('export binds the reviewed surface to source identity and preserves source and settings bytes', async t => {
+  const { root, host, control } = await fixture(t), inspected = await inspectApp(host);
+  const before = await digest(host), controlBefore = await digest(control);
+  const settings = await readFile(join(root, 'app-settings.json'));
+  const snapshot = await readCapabilities(inspected, { run: async () => reply(catalog()) });
+  const output = join(root, 'candidate');
+  const receipt = await exportCandidate(inspected, output, snapshot);
+  const manifest = JSON.parse(await readFile(join(output, 'manifest.json')));
+  assert.deepEqual(manifest.capabilities.surface, snapshot.surface);
+  assert.equal(manifest.capabilities.app.fingerprint, inspected.fingerprint);
+  assert.deepEqual(await inventory(join(output, 'dist')), await inventory(join(host, 'dist')));
+  assert.doesNotMatch(JSON.stringify(manifest.capabilities), /secret-|hostDir|"commands":|"anchors":/);
+  await verifyCandidate(output, { manifestSha256: receipt.manifestSha256, current: snapshot });
+  assert.equal(await digest(host), before);
+  assert.equal(await digest(control), controlBefore);
+  assert.deepEqual(await readFile(join(root, 'app-settings.json')), settings);
 });
 
 test('host and selected Control drift before or during catalog reads fail closed', async t => {
@@ -184,7 +254,8 @@ test('catalog and idle compatibility gates preserve official bounds and no-fit r
     const changed = catalog(); mutate(changed);
     assert.throws(() => validateCatalog(changed, fields), { code: 'official_catalog_changed' });
   }
-  for (const changed of [[], [...fields, ...fields], [{ ...fields[0], min: 301 }], [{ ...fields[0], max: 1799 }]])
+  for (const changed of [undefined, [], [...fields, ...fields], [{ id: 'idle_unload_s', type: 'number' }],
+    [{ ...fields[0], min: 301 }], [{ ...fields[0], max: 1799 }]])
     assert.throws(() => validateCatalog(catalog(), changed), { code: 'official_idle_contract_changed' });
 });
 

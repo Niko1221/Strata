@@ -38,6 +38,34 @@ Context/Idle/host interfaces produce `needs_validation` and a nonzero exit. Do n
 turn a failed read into invented defaults. A source fingerprint is an identity check
 for files in the installation the user trusts; it does not replace vendor signatures.
 
+## Reviewed Surface Ownership
+
+The snapshot also exports `surface.schema: 1`, `surface.appVersion: "0.2.1"` and
+`surface.validation: "source-anchors-only"`. Each `surface.areas` entry contains an
+`area`, its `owner` and representative `routes` with only `path` and `method`.
+The version of this section is independent of the snapshot/asset manifest schema.
+Consumers should require a reviewed surface version before using these descriptors.
+
+The section covers Models, Monitor, provider selection, lifecycle, Context/Idle,
+Chat, Tools/Search, research, Skills, Tasks, Workspaces, Files, image-model
+configuration and updates. `official-host` means the native Node Host;
+`official-app-control` means the official App and bundled Control;
+`official-harness` means the agent machinery owned by that Host. Reasoning Effort
+and update installation retain their existing official ownership fields.
+
+Fixed route/method and owner-call string anchors are checked in the selected
+trusted Host's `server/index.mjs` before importing metadata modules. Missing or
+changed anchors fail with `needs_validation`; later source drift invalidates the
+same fingerprint used by the snapshot and asset manifest. The helper never calls
+these APIs. These descriptors are not a complete API inventory or an authorization
+proxy. `GET` describes reviewed read usage even where the Host has no method guard.
+String anchors do not verify all payload schemas, handler wiring, live state or
+future API semantics; unchanged strings can still conceal behavioral changes.
+
+See [Consuming The Contract](CONSUMING.md) for state and ownership boundaries a
+companion must preserve. This remains an optional compatibility/export helper;
+scope agreement for #3531 is still pending.
+
 ## Export And Verify Official Web Assets
 
 Export creates a new directory exclusively. Its parent must already exist. The

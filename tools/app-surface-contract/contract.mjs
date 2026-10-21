@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { reviewedSurface } from './surfaces.mjs';
 
 const CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288];
 const MAX_FILE = 32 * 1024 * 1024, MAX_TOTAL = 128 * 1024 * 1024;
@@ -188,8 +189,7 @@ export async function inspectApp(hostDir) {
     if (appVersion !== '0.2.1') throw failure('official_app_version_needs_validation');
     const hostFingerprint = await fingerprint(hostDir);
     const source = (await bytes(join(hostDir, 'server/index.mjs'))).toString('utf8');
-    for (const route of ['/api/native', '/api/events', '/api/updates/check', '/api/model-providers'])
-      if (!source.includes(route)) throw failure('official_host_contract_changed');
+    const surface = reviewedSurface(source);
     // Query strings also avoid stale module instances on a later inspection.
     const owner = await import(`${pathToFileURL(join(hostDir, 'server/control-runtime.mjs')).href}?contract=${hostFingerprint}`);
     const { NATIVE_FIELDS: fields } = await import(`${pathToFileURL(join(hostDir, 'server/native-settings.mjs')).href}?contract=${hostFingerprint}`);
@@ -203,7 +203,7 @@ export async function inspectApp(hostDir) {
     const controlVersion = bundle.version;
     if (typeof controlVersion !== 'string' || !/^\d+\.\d+\.\d+(?:\.\d+)?(?:[-+][\w.-]+)?$/.test(controlVersion))
       throw failure('official_control_unavailable');
-    const inspected = { hostDir, appVersion, controlVersion, control, owner, fields,
+    const inspected = { hostDir, appVersion, controlVersion, control, owner, fields, surface,
       pythonIdentity: identity(pythonInfo), fingerprint: await fingerprint(hostDir, control) };
     if (await fingerprint(hostDir) !== hostFingerprint ||
         (await jsonFile(join(hostDir, 'package.json'))).version !== appVersion ||
@@ -252,6 +252,7 @@ export async function readCapabilities(inspected, { run: runner = run } = {}) {
     const controls = validateCatalog(raw, inspected.fields);
     return { schema: 1, state: 'compatible', app: { version: inspected.appVersion,
       controlVersion: inspected.controlVersion, fingerprint: inspected.fingerprint }, ...controls,
+      surface: inspected.surface,
       reasoning: { owner: 'official-composer', quickControl: false },
       update: { owner: 'official-app', quickInstall: false } };
   });
