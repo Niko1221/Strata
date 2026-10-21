@@ -5,8 +5,10 @@
 
 #include "strata/spec/dflash_backend.hpp"
 
+#if defined(STRATA_DFLASH_LLAMA)
 #include "llama.h"
 #include "llama-ext.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -18,6 +20,7 @@
 
 namespace strata::spec {
 
+#if defined(STRATA_DFLASH_LLAMA)
 struct DflashDrafter::Impl {
     llama_model* model = nullptr;
     llama_context* ctx = nullptr;
@@ -39,24 +42,38 @@ struct DflashDrafter::Impl {
         if (model) llama_model_free(model);
     }
 };
+#else
+struct DflashDrafter::Impl {};   // built without the llama.cpp backend: only the native drafter answers
+#endif
 
 DflashDrafter::DflashDrafter() = default;
 DflashDrafter::~DflashDrafter() = default;
 
+#if defined(STRATA_DFLASH_LLAMA)
 bool DflashDrafter::loaded() const { return nat_ || (d_ && d_->ctx); }
 int DflashDrafter::target_hidden() const { return nat_ ? nat_->target_hidden() : d_ ? d_->n_tgt : 0; }
 int DflashDrafter::block() const { return nat_ ? nat_->block() : d_ ? d_->block : 0; }
 int DflashDrafter::pos_max() const { return nat_ ? nat_->pos_max() : d_ ? d_->pos_max : -1; }
 const float* DflashDrafter::lattice() const { return nat_ ? nat_->lattice() : d_ ? d_->lat : nullptr; }
+#else
+bool DflashDrafter::loaded() const { return nat_ != nullptr; }
+int DflashDrafter::target_hidden() const { return nat_ ? nat_->target_hidden() : 0; }
+int DflashDrafter::block() const { return nat_ ? nat_->block() : 0; }
+int DflashDrafter::pos_max() const { return nat_ ? nat_->pos_max() : -1; }
+const float* DflashDrafter::lattice() const { return nat_ ? nat_->lattice() : nullptr; }
+#endif
 
+#if defined(STRATA_DFLASH_LLAMA)
 static void quiet_log(ggml_log_level level, const char* text, void*) {
     if (level >= GGML_LOG_LEVEL_WARN || std::getenv("STRATA_DFLASH_LOG")) std::fputs(text, stderr);
 }
 
+#endif
+
 bool DflashDrafter::load(const std::string& path, std::string& err, Backend backend) {
-    if (backend == Backend::kAuto) {
+    if (backend == Backend::kAuto) {   // native unless STRATA_DFLASH_NATIVE=0 asks for llama.cpp's graph
         const char* e = std::getenv("STRATA_DFLASH_NATIVE");
-        backend = e && e[0] && e[0] != '0' ? Backend::kNative : Backend::kLlama;
+        backend = e && e[0] == '0' ? Backend::kLlama : Backend::kNative;
     }
     if (backend == Backend::kNative) {
         auto nat = make_dflash_native();
@@ -64,6 +81,10 @@ bool DflashDrafter::load(const std::string& path, std::string& err, Backend back
         nat_ = std::move(nat);
         return true;
     }
+#if !defined(STRATA_DFLASH_LLAMA)
+    err = "--dflash: llama.cpp's drafter is not in this build (STRATA_DFLASH_LLAMA); the native one is";
+    return false;
+#else
     llama_log_set(quiet_log, nullptr);
     llama_backend_init();
     auto d = std::make_unique<Impl>();
@@ -110,15 +131,18 @@ bool DflashDrafter::load(const std::string& path, std::string& err, Backend back
     }
     d_ = std::move(d);
     return true;
+#endif
 }
 
 void DflashDrafter::trim(int pos) {
     if (nat_) { nat_->trim(pos); return; }
+#if defined(STRATA_DFLASH_LLAMA)
     if (!loaded()) return;
     llama_memory_seq_rm(llama_get_memory(d_->ctx), 0, pos <= 0 ? -1 : pos, -1);
     if (pos <= 0) llama_memory_seq_rm(llama_get_memory(d_->ctx), 0, -1, -1);
     d_->pos_max = std::min(d_->pos_max, pos - 1);
     if (pos <= 0) d_->pos_max = -1;
+#endif
 }
 
 namespace {
@@ -134,6 +158,10 @@ bool DflashDrafter::inject(const float* feats, int n, int pos0, std::string& err
     Timer tm{ms_inject};
     ++n_inject;
     if (nat_) return nat_->inject(feats, n, pos0, err);
+#if !defined(STRATA_DFLASH_LLAMA)
+    (void) feats; (void) pos0; (void) err;
+    return true;
+#else
     Impl& d = *d_;
     if (pos0 <= d.pos_max) trim(pos0);
     else if (d.pos_max >= 0 && pos0 != d.pos_max + 1) trim(0);   // a gap: positions it never saw
@@ -162,6 +190,7 @@ bool DflashDrafter::inject(const float* feats, int n, int pos0, std::string& err
         d.pos_max = pos0 + off + c - 1;
     }
     return true;
+#endif
 }
 
 int DflashDrafter::draft(int32_t id_last, int pos0, int max_n, float p_min, int32_t* out, float* conf) {
@@ -169,6 +198,10 @@ int DflashDrafter::draft(int32_t id_last, int pos0, int max_n, float p_min, int3
     Timer tm{ms_draft};
     ++n_draft;
     if (nat_) return nat_->draft(id_last, pos0, max_n, p_min, out, conf);
+#if !defined(STRATA_DFLASH_LLAMA)
+    (void) id_last; (void) pos0; (void) p_min; (void) out; (void) conf;
+    return 0;
+#else
     Impl& d = *d_;
     if (d.pos_max != pos0 - 1) return 0;   // the features up to id_last's position are not all in
     const int nb = std::min(d.block, max_n + 1);
@@ -204,6 +237,7 @@ int DflashDrafter::draft(int32_t id_last, int pos0, int max_n, float p_min, int3
     llama_memory_seq_rm(llama_get_memory(d.ctx), 0, pos0, -1);   // the noise rows are not context
     d.pos_max = pos0 - 1;
     return n;
+#endif
 }
 
 }  // namespace strata::spec

@@ -8220,7 +8220,7 @@ int main(int argc, char** argv) {
             return df.inject(f, (int) n, (int) p0, e);
         };
 #else
-        if (use_df) { std::printf("ERR --dflash needs the Metal build with STRATA_DFLASH_LLAMA\n"); return 1; }
+        if (use_df) { std::printf("ERR --dflash needs the Metal build with STRATA_DFLASH=ON\n"); return 1; }
         auto df_feed = [](int64_t, int64_t, const int32_t*, bool, std::string&) { return true; };
 #endif
         // STRATA_PREFILL_HELPER_SOURCE (opt-in): the prompt path may take a blob a helper's VRAM cache already

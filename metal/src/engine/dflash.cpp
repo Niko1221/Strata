@@ -1,6 +1,6 @@
 // metal/src/engine/dflash.cpp - the native DFlash2 drafter: the same graph as llama.cpp's DFLASH (src/models/dflash.cpp,
 // native-spec/graph.md), fused into Strata's Metal kernels (kernels/dflash.metal + gemv.metal's Q8_0 tiles) on its
-// own mtl::Context.  Opt-in behind DflashDrafter (STRATA_DFLASH_NATIVE=1); the llama.cpp backend stays the default.
+// own mtl::Context.  DflashDrafter's default backend (llama.cpp's graph, when built in: STRATA_DFLASH_NATIVE=0).
 //
 //   inject  fc + norm of the target features, then every layer's k/v (norm, RoPE) into a per-layer f16 ring of 2064
 //           slots (position p lives in slot p % 2064; SP[slot] = the position it holds, -1 empty)

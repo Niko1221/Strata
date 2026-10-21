@@ -1,11 +1,12 @@
 // include/strata/spec/dflash_drafter.hpp - DFlash2 block-diffusion drafter (--dflash), in place of the MTP layer.
 //
-// The draft model (z-lab DFlash2, a 5-layer non-causal transformer) runs through llama.cpp's DFLASH graph on its own
-// Metal context. It keeps a positional K/V of the target's features: per committed token, the outputs of target
-// layers 5/15/25/35/45 averaged over the four hyper-connection streams (5 x 2560 floats). A draft decodes
-// [last token, mask x (block-1)] at the next positions and walks the selector lattice (DFlash2's candidate path).
+// The draft model (z-lab DFlash2, a 5-layer non-causal transformer) runs in fused Metal kernels
+// (metal/src/engine/dflash.cpp) on its own Metal context. It keeps a positional K/V of the target's features: per
+// committed token, the outputs of target layers 5/15/25/35/45 averaged over the four hyper-connection streams
+// (5 x 2560 floats). A draft decodes [last token, mask x (block-1)] at the next positions and walks the selector
+// lattice (DFlash2's candidate path).
 // The verify window checks every proposal, so the drafter changes the speed only, never the output.
-// An opt-in native backend (metal/src/engine/dflash.cpp) runs the same graph in fused Metal kernels.
+// A build with STRATA_DFLASH_LLAMA can run the same graph through llama.cpp's DFLASH instead (the parity reference).
 #pragma once
 
 #include <cstdint>
@@ -24,7 +25,8 @@ public:
     DflashDrafter& operator=(const DflashDrafter&) = delete;
 
     /// Load the draft GGUF (one that carries token_embd + output, see tools/dflash_head.py). False + err on failure.
-    /// Backend: llama.cpp's DFLASH graph (default), or the native fused-Metal drafter (STRATA_DFLASH_NATIVE=1, or kNative).
+    /// Backend: the native fused-Metal drafter (default), or llama.cpp's DFLASH graph when the build has it
+    /// (STRATA_DFLASH_LLAMA; STRATA_DFLASH_NATIVE=0, or kLlama).
     enum class Backend { kAuto, kLlama, kNative };
     bool load(const std::string& path, std::string& err, Backend backend = Backend::kAuto);
     bool loaded() const;
