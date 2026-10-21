@@ -31,6 +31,20 @@ if WINDOWS:
         _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
                     ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD), ("hEvent", wintypes.HANDLE)]
 
+    class _ProcessEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+    _k32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    _k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for _name in ("Process32FirstW", "Process32NextW"):
+        _fn = getattr(_k32, _name)
+        _fn.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry)]
+        _fn.restype = wintypes.BOOL
+
     _k32.LockFileEx.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
                                 ctypes.POINTER(_Overlapped)]
     _k32.LockFileEx.restype = wintypes.BOOL
@@ -93,6 +107,31 @@ if WINDOWS:
         finally:
             _k32.CloseHandle(handle)
 
+    def parent_pid(pid: int) -> int | None:
+        """The parent in a process snapshot, without opening the child's process handle.
+
+        A Windows venv's python.exe can be a redirector: Popen owns that launcher,
+        while the interpreter it starts writes the server's ready file.
+        This relationship alone is not proof of readiness; the runtime still
+        verifies the instance and launch attestation over HTTP.
+        """
+        if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+            return None
+        snapshot = _k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return None
+        try:
+            entry = _ProcessEntry()
+            entry.dwSize = ctypes.sizeof(entry)
+            more = _k32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                if entry.th32ProcessID == pid:
+                    return int(entry.th32ParentProcessID)
+                more = _k32.Process32NextW(snapshot, ctypes.byref(entry))
+            return None
+        finally:
+            _k32.CloseHandle(snapshot)
+
     def pid_alive(pid: int, started: int | None = None) -> bool:
         """Whether `pid` is a running process, and, when `started` is given, the one created at that time."""
         if type(pid) is not int or pid <= 0:
@@ -107,6 +146,9 @@ if WINDOWS:
             return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
         return started is None or now == started
 else:
+    def parent_pid(pid: int) -> int | None:
+        return None
+
     def try_lock(fd: int, *, exclusive: bool) -> bool:
         raise OSError("Windows only")
 

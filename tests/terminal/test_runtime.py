@@ -812,6 +812,25 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result["source_migrated"])
         self.assertEqual(list((self.root / "runtime").glob("*.rollback.json")), [])
 
+    def test_ready_file_cannot_name_an_unrelated_process(self):
+        host = runtime.Host("local", shutdown_timeout=2, startup_wait=10)
+        plan, args, source, original = host._plan()
+        try:
+            host._launch(args, source, original, plan["profile_revision"])
+            deadline = time.monotonic() + 10
+            while not host.ready_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(host.ready_path.exists())
+            ready = json.loads(host.ready_path.read_text(encoding="utf-8"))
+            # Keep a genuine instance ID, but name the test process rather than
+            # the owned server (or the interpreter below its Windows launcher).
+            ready["pid"] = os.getpid()
+            host.ready_path.write_text(json.dumps(ready), encoding="utf-8")
+            self.assertEqual(host._status()["state"], "starting")
+            self.assertIsNone(host.probe_key)
+        finally:
+            host._stop_child()
+
     def test_server_reading_changed_config_fails_launch_attestation(self):
         host = runtime.Host("local", shutdown_timeout=2, startup_wait=10)
         plan, args, source, original = host._plan()

@@ -49,6 +49,13 @@ WINDOWS = os.name == "nt"
 _STARTED_HOSTS: dict[str, subprocess.Popen] = {}
 
 
+def _ready_pid_matches(pid: int, child_pid: int) -> bool:
+    # A Windows venv redirector stays alive as our owned child, while its
+    # interpreter publishes its own PID. Only a direct child of the launcher
+    # qualifies; readiness still requires the instance and launch attestation.
+    return pid == child_pid or (WINDOWS and winproc.parent_pid(pid) == child_pid)
+
+
 def _is_private(details: os.stat_result, path: Path) -> bool:
     """Owner-only: POSIX owner and no group/other bits; Windows an ACL that shuts out every other account."""
     if WINDOWS:
@@ -883,7 +890,7 @@ class Host:
         if self.ready_path is not None:
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
-                if ready.get("pid") == child.pid and isinstance(ready.get("instance_id"), str):
+                if _ready_pid_matches(ready.get("pid"), child.pid) and isinstance(ready.get("instance_id"), str):
                     key = (child.pid, ready["instance_id"])
                     if self.probe_key != key:
                         self.probe_key, self.probe_result = key, None
@@ -1121,7 +1128,7 @@ class Host:
                 return {"ok": False, "state": current["state"], "error": "runtime_not_ready", "exit_code": 6}
             try:
                 ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
-                if ready.get("pid") != self.child.pid or ready.get("instance_id") != current["instance_id"]:
+                if not _ready_pid_matches(ready.get("pid"), self.child.pid) or ready.get("instance_id") != current["instance_id"]:
                     raise readiness.ReadinessError("probe_instance_mismatch")
                 host = self.args[self.args.index("--host") + 1]
                 result = readiness.verify(ready, self.source_bytes, expected_host=host,
