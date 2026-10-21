@@ -845,6 +845,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(plan["effective"]["host"], "0.0.0.0")
         self.assertNotIn("first", json.dumps(plan))
 
+    def test_remote_bind_without_a_key_is_planned_not_refused(self):
+        # owner decision 2026-10-20: a key is recommended on a network, never required
+        from strata_cli.cli import _launch_plan
+        for key in (None, "none"):
+            cfg = json.loads(self.config.read_text())
+            cfg["host"] = "0.0.0.0"
+            cfg.pop("api_key", None)
+            if key:
+                cfg["api_key"] = key
+            self.config.write_text(json.dumps(cfg))
+            with mock.patch.dict(os.environ, {"STRATA_API_KEY": ""}):
+                plan, args = _launch_plan("local")
+            self.assertEqual(plan["effective"]["host"], "0.0.0.0")
+
     def test_lazy_model_is_verified_as_unloaded_without_generation(self):
         cfg = json.loads(self.config.read_text())
         cfg["lazy_load"] = True
@@ -1130,6 +1144,21 @@ class RuntimeTests(unittest.TestCase):
             victim.kill()
             victim.wait(timeout=10)
 
+    def test_marker_without_creation_time_ignores_a_reused_pid_of_a_foreign_program(self):
+        # #3488: the marker had no `started`, the number was reused by another program, every load said "still present".
+        child = {"pid": 38552}
+        with mock.patch.object(runtime, "WINDOWS", True), \
+                mock.patch.object(runtime, "_pid_exists", return_value=True), \
+                mock.patch.object(runtime.winproc, "process_image", create=True) as image:
+            image.return_value = r"C:\Windows\System32\svchost.exe"
+            self.assertFalse(runtime._child_present(child))
+            image.return_value = r"C:\Users\a\AppData\Local\Strata\python\python.exe"
+            self.assertTrue(runtime._child_present(child))
+            image.return_value = None                                    # unreadable: keep refusing, never guess
+            self.assertTrue(runtime._child_present(child))
+            image.return_value = r"C:\Windows\System32\svchost.exe"
+            self.assertTrue(runtime._child_present({"pid": 1, "started": 5}))   # a creation time decides by itself
+
     @unittest.skipUnless(WINDOWS, "os.kill(pid, 0) ends a process on Windows; liveness is a handle query")
     def test_liveness_check_does_not_end_the_process_it_asks_about(self):
         victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
@@ -1153,7 +1182,17 @@ class RuntimeTests(unittest.TestCase):
         if done.returncode != 0:
             self.skipTest("icacls could not widen the test directory")
         with mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(shared)}):
-            with self.assertRaisesRegex(profiles.ProfileError, "owner-only"):
+            # a folder that names Everyone is the user's own state folder: it is locked down once and used (never a stop)
+            self.assertEqual(runtime.runtime_dir(), shared)
+            self.assertTrue(private_files.is_unshared(shared))
+        again = Path(self.temp.name) / "shared-runtime-2"
+        again.mkdir()
+        subprocess.run(["icacls", str(again), "/grant", "*S-1-1-0:(OI)(CI)R"], capture_output=True)
+        with mock.patch.dict(os.environ, {"STRATA_RUNTIME_DIR": str(again)}), \
+                mock.patch.object(private_files, "restrict_to_current_user"), \
+                mock.patch.object(private_files, "repair_access", return_value=False):
+            # when the lock-down does not happen it still refuses, in plain words and naming who can open it
+            with self.assertRaisesRegex(profiles.ProfileError, "Everyone"):
                 runtime.runtime_dir()
 
     def test_exclusive_lease_waits_for_shared_holders_and_shared_holders_coexist(self):

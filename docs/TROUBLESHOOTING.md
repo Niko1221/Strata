@@ -10,8 +10,9 @@ The engine is the part that talks to your graphics card. Strata only warns and s
 model, and the model files stay on your computer, but the model may not run until the right engine is installed. The usual
 reasons are that no engine is installed yet and the update source has none for your card, that the engine found is for
 another make of card, or that the graphics driver is too old. In the app, open Settings, then Engine. In the Terminal, the
-message names the next step: run `strata update --feed <address>` with the update source you were given (or ask whoever sent
-you Strata for the engine that matches your card), then run `strata launch` again.
+message names the next step: run `strata update` and start again. If your computer has no NVIDIA or AMD graphics card
+(only an Intel UHD or Iris chip, an AMD processor graphics chip, a virtual machine, or Windows on ARM), Strata says so and
+there is nothing to install: it needs a computer that has one. The model files stay where they are.
 
 **"This model needs a newer engine." (the app), or a button called Update engine.**
 Some models need an engine newer than the one installed: Gyro needs 0.1.45.1 or newer, NVFP4 needs 0.1.44, and NVFP4 (NVIDIA,

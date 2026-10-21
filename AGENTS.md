@@ -2,7 +2,7 @@
 
 Strata runs the Qwen3.8-Flash-Next mixture-of-experts model (and its Coder, Swift 1.5, Unsloth, Gyro and NVFP4
 variants, and Qwen3.6-35B-A3B) on a normal PC: one NVIDIA or AMD graphics card plus system RAM on Windows or Linux,
-or an Apple Silicon Mac. Version 0.2.1, engine 0.1.46. It has three parts:
+or an Apple Silicon Mac. Version 0.2.2, engine 0.1.47. It has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
   not want a terminal. The installer has the engine inside.
@@ -45,7 +45,7 @@ Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For an agent that has a shell, 
 4. Connect the user's apps: `strata connect` lists them, `strata connect <app> --check` sends one prompt and one tool
    call the way that app does.
 
-Never expose the server beyond `127.0.0.1` without an API key. `--access lan` makes a key for you. The old route (clone
+Keep the server on `127.0.0.1` unless the user asks for more. Beyond it an API key is recommended: `--access lan` makes one for you, and `--no-api-key` serves without one (a warning, never a refusal; on a public tunnel the warning is stronger). The old route (clone
 the repository and run `START-HERE.bat --yes` or `./setup.sh --yes`) still works and is the fallback when the
 Terminal cannot run. Strata's MCP server ([docs/MCP_SERVER.md](docs/MCP_SERVER.md)) offers the same steps as tools.
 

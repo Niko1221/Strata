@@ -83,7 +83,7 @@ FALLBACK_MODELS = {
                "download_gb": 58.5, "ram_gb": 27.6, "arena_gb": 25.8, "families": ("gyro",), "mem_total": True,
                "vision": True},
     "Gyro-M": {"about": "about IQ3_XXS quality with about 20% less GPU memory (35 GB of VRAM + RAM together); decodes "
-                        "about 20% slower than Q2_0 on 12 GB cards",
+                        "about 16-21% slower than Q2_0 on 12 GB cards",
                "engine": (0, 1, 45, 1),
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "vision": True},
@@ -118,6 +118,8 @@ FALLBACK_FAMILIES = {
 }
 OWN_PATH_ENGINE = (0, 1, 45)   # the first engine that runs Qwen3.6-35B-A3B with pictures and parallel requests (setup.py MIN_ENGINE note)
 MEMORY_TIERS = ((62.0, "qwen", "IQ3_S"), (46.0, "qwen", "IQ3_XXS"), (38.0, "swift", "IQ2_XS"))   # as setup.py's: RAM + VRAM floors of the owner's 64 / 48 / 40 GB tiers
+# #3425 (owner's rule, same as setup.py's TIER_SYSTEM_RESERVE_GB): the floors count RAM + VRAM less the 5 GB Windows and the system keep
+TIER_SYSTEM_RESERVE_GB = 5.0
 GYRO_ROOM_GB = 4.0     # recommend() suggests a Gyro size only when VRAM + RAM exceed its memory figure by this much
 FALLBACK_CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
 BENCH_PROMPT = ("Write a short story (about 300 words) about a lighthouse keeper who finds a message in a bottle. "
@@ -647,7 +649,7 @@ class Strata:
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
                 "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "off",
                 "port": cfg.get("port", DEFAULT_PORT), "host": cfg.get("host", "127.0.0.1"),
-                "gpu": cfg.get("gpu"), "api_key_set": bool(cfg.get("api_key")),
+                "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
                 "start_script": script.name if script.exists() else None,
                 "ready": not missing and bool(cfg), "missing_files": missing[:3], "parts_missing": len(gaps),
@@ -890,9 +892,9 @@ class Strata:
                 name, avx2, avx512 = S.cpu_info()
             else:
                 name, avx2, avx512 = platform.processor() or "unknown CPU", None, None
-            hw["cpu"] = {"name": name, "cores": os.cpu_count(), "avx2": avx2, "avx512": avx512}
+            hw["cpu"] = {"name": name, "cores": physical_cores(), "threads": os.cpu_count(), "avx2": avx2, "avx512": avx512}
         except Exception:                               # noqa: BLE001
-            hw["cpu"] = {"name": platform.processor(), "cores": os.cpu_count()}
+            hw["cpu"] = {"name": platform.processor(), "cores": physical_cores(), "threads": os.cpu_count()}
         if sys.platform == "darwin":                    # a Mac: one pool of unified memory, the Metal engine (strata_control/mac_fit.py)
             return self._mac_hardware(hw)
         nv = []
@@ -929,6 +931,11 @@ class Strata:
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
         hw["gpus"] = nv + amd
+        try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it
+            from strata_control import gpu_roles
+            gpu_roles.add_speeds(hw["gpus"])
+        except Exception:                               # noqa: BLE001 - unknown speed: the card with the most memory is Main
+            pass
         self._engine_code(hw)
         self._engine_vendor(hw)
         if WIN:
@@ -1014,11 +1021,12 @@ class Strata:
         hw["nvidia_smi"] = False
         return hw
 
-    def _mac_sizes(self, models: dict) -> list:
-        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack). Unsloth's many-shard files need
-        metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not offer them yet."""
+    def _mac_sizes(self, models: dict, family: str = "qwen") -> list:
+        """The sizes the app offers on a Mac: the GSQ-RCO files of the Qwen family (two shards, no repack) and agentionai's Gyro files (one
+        file, no repack). Unsloth's many-shard files need metal/tools/metal_repack.py, which the Terminal's setup uses; the app does not
+        offer them yet."""
         mf = self.mac()
-        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == "qwen" and m in models] if mf else []
+        return [m for m, d in mf.MAC_MODELS.items() if d.get("family", "qwen") == family and m in models] if mf else []
 
     def _mac_verdict(self, model: str, ram: float) -> str:
         mf = self.mac()
@@ -1061,18 +1069,24 @@ class Strata:
         models, families, _ctx, _src = self.tables()
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
-        fd = families["qwen"]
-        sizes = []
-        for m in self._mac_sizes(models):
-            d = models[m]
-            tag = (fd.get("tag", "") + m).lower()
-            sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
-                          "images": d.get("vision", fd.get("vision", True)) is not False,   # the Mac engine carries the picture reader (Metal)
-                          "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
-                          "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
-                          "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
-        return [{"family": "qwen", "title": fd["title"], "about": fd.get("about"), "experimental": False,
-                 "images": any(x["images"] for x in sizes), "sizes": sizes}]
+        out = []
+        for family in ("qwen", "gyro"):                # Gyro after the regular sizes, as on a PC: never the default
+            fd = families.get(family)
+            if fd is None:
+                continue
+            sizes = []
+            for m in self._mac_sizes(models, family):
+                d = models[m]
+                tag = (fd.get("tag", "") + m).lower()
+                sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"], "experimental": False,
+                              "images": d.get("vision", fd.get("vision", True)) is not False,   # the Mac engine carries the picture reader (Metal)
+                              "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
+                              "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                              "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
+            if sizes:
+                out.append({"family": family, "title": fd["title"], "about": fd.get("about"), "experimental": False,
+                            "images": any(x["images"] for x in sizes), "sizes": sizes})
+        return out
 
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the
@@ -1103,14 +1117,14 @@ class Strata:
         # 0.2.0, the owner's memory tiers (README "The other sizes"; setup.py MEMORY_TIERS holds the same floors): RAM + VRAM
         # together.  An APU's shared memory is the RAM itself, so only its BIOS carve-out counts as VRAM.
         tvram = float(best.get("dedicated_gb", 0.0)) if best.get("uma") else float(vram)
-        tier = next(((f, n) for lo, f, n in MEMORY_TIERS if ram + tvram >= lo), None)
+        tier = next(((f, n) for lo, f, n in MEMORY_TIERS if ram + tvram - TIER_SYSTEM_RESERVE_GB >= lo), None)
         if tier and tier[1] in models and tier[0] in families:
             fam, model = tier
-            total = f"{ram:.0f} GB of RAM + {tvram:.0f} GB of VRAM = {ram + tvram:.0f} GB"
+            total = f"{ram:.0f} GB of RAM + {tvram:.0f} GB of VRAM = {ram + tvram:.0f} GB, {TIER_SYSTEM_RESERVE_GB:.0f} GB of it kept for Windows and the system"
             if model == "IQ2_XS":
                 why = (f"{total}, the 40 GB tier: Swift 1.5's IQ2_XS (thinks for a shorter time)"
-                       + ("; Gyro-M (35 GB) is the other choice there, close to IQ3_XXS in quality but 17-21% slower at "
-                          "writing answers than Q2_0" if "Gyro-M" in models and best.get("vendor") in ("nvidia", "amd") else ""))
+                       + ("; Gyro-M (35 GB) is the other choice there, close to IQ3_XXS in quality but 16-21% slower at "
+                          "writing answers than Q2_0" if "Gyro-M" in models and best.get("vendor") in ("nvidia", "amd", "intel") else ""))
             elif model == "IQ3_XXS":
                 why = f"{total}, the 48 GB tier: IQ3_XXS (better quality, slower)"
             else:
@@ -1139,6 +1153,15 @@ class Strata:
                                                           "(the smallest model, the Coder, keeps ~23 GB of experts in "
                                                           "RAM)"}
         ctx = 32768 if vram < 14 else 65536 if vram < 20 else 131072
+        # #3425: the tiers count RAM + VRAM together, but the desktop keeps about 10 GB of the RAM and the card keeps ~6 GB for
+        # its dense weights, so a PC at the floor of its tier reads part of the experts from the SSD at every answer.  Said
+        # plainly beside the pick (the same arithmetic as the app's "This computer" card); the pick itself stays the owner's tier.
+        arena = float(models[model].get("arena_gb") or 0)
+        spill = arena - max(0.0, tvram - 6.0) - max(0.0, ram - 10.0)
+        if arena and spill >= 4.0:
+            notes.append(f"about {spill:.0f} GB of {model} would be read from the SSD while answering (this PC's RAM leaves about 10 GB "
+                         "for the system and the card holds the rest): expect a few tokens per second on a SATA or USB drive, more "
+                         "on a fast NVMe. A smaller size fits better; it is a recommendation, every size stays a choice")
         if vram < 11:
             notes.append("less than 12 GB of VRAM: it runs, but slowly (most experts stay on the CPU)")
         if hw.get("cpu", {}).get("avx2") is False:      # #623: a warning, not a stop (setup compiles for it)
@@ -1241,12 +1264,15 @@ class Strata:
 
     def api_key_for(self, port: int) -> str | None:
         """The key a config of this folder set for that port (used for our own requests; never shown)."""
+        def real(cfg):                                   # "api_key": "none" = served without a key on purpose
+            k = cfg.get("api_key")
+            return k if k and str(k).strip().lower() != "none" else None
         for c in self.configs():
             cfg = self.read_config(c)
-            if cfg.get("api_key") and int(cfg.get("port", DEFAULT_PORT)) == port:
+            if real(cfg) and int(cfg.get("port", DEFAULT_PORT)) == port:
                 return cfg["api_key"]
         for c in self.configs():
-            if self.read_config(c).get("api_key"):
+            if real(self.read_config(c)):
                 return self.read_config(c)["api_key"]
         return None
 
@@ -1316,7 +1342,7 @@ class Strata:
         res = self.state("install-result")
         running = proc_alive(j.get("pid"), j.get("ident"))
         log_path = Path(j.get("log", ""))
-        tail = read_tail(log_path, 400) if log_path.name else []
+        tail = read_tail(log_path, 1500) if log_path.name else []   # a step's heading must stay inside it: the pack tools print hundreds of lines
         prog = install_progress(tail)
         prog = combined_progress(prog, j)
         out = {"running": running, "started": j.get("started"), "model": j.get("model"), "family": j.get("family"),
@@ -1403,8 +1429,12 @@ def files_progress(prog: dict, job: dict, files: list) -> dict:
         except OSError:
             state, have = "waiting", 0
         total = f.get("bytes") or (have if state == "done" else 0)
-        if state == "downloading" and not total and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
-            total = int(cur_gb * 1e9)
+        if state == "downloading" and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
+            # The .part file is as long as the furthest byte written, which the parallel pieces push to the full size well before the
+            # download is done: the pieces setup counts are the truth.
+            have = min(have, int(float(log.get("done_gb") or 0) * 1e9)) if have else have
+            if not total:
+                total = int(cur_gb * 1e9)
         rows.append({"role": f.get("role", "model"), "state": state, "have": have, "total": max(total, have)})
     plan_total = float(job.get("total_gb") or 0) * 1e9
     parts = []
@@ -1440,12 +1470,12 @@ def draft_progress(prog: dict, job: dict, dl: dict) -> dict:
     if job.get("files"):
         base = files_progress({}, job, job["files"])
         parts = [dict(p, state="done", done_gb=p["total_gb"]) for p in base.get("parts", []) if p.get("state") == "done"]
-    parts.append({"kind": "draft", "name": "Speed-up layer", "state": "done" if int(dl.get("percent") or 0) >= 100 else "downloading",
+    parts.append({"kind": "draft", "name": "Draft layer", "state": "done" if int(dl.get("percent") or 0) >= 100 else "downloading",
                   "done_gb": round(done_gb, 3), "total_gb": round(total_gb, 3)})
     total = sum(p["total_gb"] for p in parts)
     done = min(sum(p["done_gb"] for p in parts), total)
     prog["parts"] = parts
-    prog["download"] = {"file": "Speed-up layer", "done_gb": round(done, 3), "total_gb": round(total, 3),
+    prog["download"] = {"file": "Draft layer", "done_gb": round(done, 3), "total_gb": round(total, 3),
                         "remaining_gb": round(max(0.0, total - done), 3),
                         "percent": min(99, int(100 * done / total)) if total else 0}
     return prog
@@ -1460,6 +1490,13 @@ def combined_progress(prog: dict, job: dict) -> dict:
     dl = prog.get("download") or {}
     if step.startswith("6/") and str(dl.get("file", "")).startswith("MTP draft layer"):
         return draft_progress(prog, job, dl)
+    if step.startswith("5/") and str(dl.get("file", "")).startswith("checking "):
+        # setup is hashing files that are all on disk: the figure is the check's own (not a download at "99%")
+        if job.get("files"):
+            prog = files_progress(prog, job, job["files"])
+        prog["download"] = {"file": "checking files", "done_gb": dl["done_gb"], "total_gb": dl["total_gb"],
+                            "remaining_gb": round(max(0.0, dl["total_gb"] - dl["done_gb"]), 3), "percent": int(dl["percent"])}
+        return prog
     if job.get("files") and step.startswith("5/"):      # the install knows its files: count each of them
         return files_progress(prog, job, job["files"])
     if not folder or not total or not step.startswith("5/"):
@@ -1491,7 +1528,7 @@ def install_progress(lines: list[str]) -> dict:
     for i, line in enumerate(lines):
         m = re.search(r"=== Step (\d+): (.+?) ===", line)
         if m:
-            step, title, err = int(m.group(1)), m.group(2), None
+            step, title, err, dl = int(m.group(1)), m.group(2), None, None      # a download figure belongs to its own step
         m = re.match(r"\s*(\S.*?): +([\d.]+) / ([\d.]+) GB \((\d+)%\)", line)
         if m:
             dl = {"file": m.group(1), "done_gb": float(m.group(2)), "total_gb": float(m.group(3)),
@@ -1505,7 +1542,34 @@ def install_progress(lines: list[str]) -> dict:
         out["download"] = dl
     if err:
         out["error"] = err
+    words = progress_words_for(step, lines, dl)
+    if words:
+        out["label"], out["phase"] = words
     return out
+
+
+def physical_cores() -> int | None:
+    """The CPU's physical cores (os.cpu_count() counts logical threads: 16 on an 8-core SMT chip, and the app's Work profile took
+    80% of that for --pool-workers, more than the cores, #3417).  Falls back to the thread count when the machine cannot say."""
+    try:
+        from strata_control import tune_machine
+        n = tune_machine.cpu().get("physical")
+        if isinstance(n, int) and n > 0:
+            return n
+    except Exception:                                   # noqa: BLE001 - a hardware report must never fail on this
+        pass
+    return os.cpu_count()
+
+
+def progress_words_for(step, lines, download):
+    """(the plain sentence, its phase) for what setup is doing now (strata_control/progress_words.py, the words the Terminal uses too);
+    None when this Strata folder does not carry the module."""
+    try:
+        from strata_control import progress_words
+    except ImportError:
+        return None
+    w = progress_words.describe(step, lines, download)
+    return w.label, w.phase
 
 
 def own_ram_gb() -> float:

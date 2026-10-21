@@ -56,6 +56,9 @@ static bool strata_wmma_gfx11_device() {
     return c == 1;
 }
 
+// The same answer for host code that decides whether to pad an activation's row stride (prefill.cpp, STRATA_PF_PAD).
+bool strata_pf_padded_gemm_available() { return strata_wmma_gfx11_device(); }
+
 template <typename ElemT>
 struct WmmaTraits;
 
@@ -716,6 +719,8 @@ bool strata_pf_gemm_f16_ld(const uint16_t*, int64_t, const uint16_t*, int64_t, f
                            int64_t, float, void*) {
     return false;
 }
+// No padded product in this build (no gfx11 target): prefill.cpp does not pad an activation's row stride.
+bool strata_pf_padded_gemm_available() { return false; }
 bool strata_pf_hcdown_bf16(const uint16_t*, int64_t, const uint16_t*, const uint16_t*, int64_t, int64_t, float*, float*,
                            int64_t, int64_t, void*) {
     return false;

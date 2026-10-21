@@ -346,6 +346,17 @@ class Validation(FakeRoot):
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
 
+    def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
+        """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
+        folder still needs a Strata... name."""
+        chosen = self.root.parent / "my-big-disk"
+        chosen.mkdir()
+        self.assertRejected("strata_install", {"data_dir": str(chosen)}, "named Strata")
+        settings = self.tools.s.settings_path()
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"data_dir": str(chosen)}))
+        self.assertEqual(M.norm(self.tools.check_data_dir(str(chosen))), M.norm(chosen))
+
     def test_other_tools_arguments(self):
         self.assertRejected("strata_start", {"model": "../../etc/passwd"}, "not valid")
         self.assertRejected("strata_start", {"model": "q2_0"}, "no model is installed")
@@ -652,6 +663,51 @@ class Helpers(unittest.TestCase):
         r = s.recommend({"ram_gb": 64, "gpus": [{**gpu[0], "vram_gb": 12.0}], "cpu": {"avx2": True}})
         self.assertEqual(r["context"], 32768)
 
+    def test_a_pick_that_reads_from_the_ssd_says_so(self):
+        # #3425: 36 GB RAM + 16 GB VRAM - 5 GB is the 48 GB tier; about 8 GB of IQ3_XXS would come from the SSD
+        s = M.Strata(HERE.parent)
+        gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
+        r = s.recommend({"ram_gb": 36.0, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
+        self.assertTrue(any("read from the SSD" in n for n in r["notes"]), r["notes"])
+        roomy = s.recommend({"ram_gb": 64, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertFalse(any("read from the SSD" in n for n in roomy["notes"]), roomy["notes"])
+
+    def test_3425_the_tiers_leave_5_gb_for_windows(self):
+        # the reporter: RTX 5080 (16 GB) + 32 GB of RAM used to sum to 48 GB and get IQ3_XXS; now the 40 GB tier
+        s = M.Strata(HERE.parent)
+        gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
+        self.assertEqual(M.TIER_SYSTEM_RESERVE_GB, 5.0)
+        r = s.recommend({"ram_gb": 31.9, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("swift", "IQ2_XS"))
+        # boundary: 43 GB of RAM + VRAM is the lowest 40 GB tier PC, 51 GB the lowest 48 GB tier PC
+        def pick(ram, vram):
+            g = [{**gpu[0], "vram_gb": vram}]
+            r = s.recommend({"ram_gb": ram, "gpus": g, "cpu": {"avx2": True}})
+            return r["family"], r["model"]
+        self.assertEqual(pick(30.0, 13.0), ("swift", "IQ2_XS"))
+        self.assertNotEqual(pick(30.0, 12.9), ("swift", "IQ2_XS"))
+        self.assertEqual(pick(38.0, 13.0), ("qwen", "IQ3_XXS"))
+        self.assertEqual(pick(38.0, 12.9), ("swift", "IQ2_XS"))
+        self.assertEqual(pick(54.0, 13.0), ("qwen", "IQ3_S"))
+        self.assertEqual(pick(54.0, 12.9), ("qwen", "IQ3_XXS"))
+
+
+class PhysicalCores(unittest.TestCase):
+    """#3417: the hardware report's cpu.cores is the physical cores; the Work profile takes 80% of it for --pool-workers."""
+
+    def test_physical_not_logical(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"model": "x", "logical": 16, "physical": 8, "hybrid": False}),                 mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 8)
+
+    def test_unknown_falls_back_to_threads(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"physical": None}), mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 16)
+        with mock.patch.object(tune_machine, "cpu", side_effect=OSError("no")), mock.patch.object(M.os, "cpu_count", return_value=4):
+            self.assertEqual(M.physical_cores(), 4)
+
 
 class MacCatalog(unittest.TestCase):
     """A Mac (Apple Silicon): one pool of unified memory, judged by strata_control/mac_fit.py (the rules metal/setup_mac.py uses)."""
@@ -699,18 +755,22 @@ class MacCatalog(unittest.TestCase):
     def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
         s, hw = self.hw(32)
         fams = s.model_table(hw)
-        self.assertEqual([f["family"] for f in fams], ["qwen"], "no Unsloth, Swift or NVFP4 on a Mac in the app")
+        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro"], "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes")
         by = {x["model"]: x for x in fams[0]["sizes"]}
         self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
+        gy = {x["model"]: x for x in fams[1]["sizes"]}
+        self.assertEqual(list(gy), ["Gyro-S", "Gyro-M"])
+        self.assertEqual(gy["Gyro-S"]["download_gb"], 58.5)
+        self.assertTrue(all(v["on_this_pc"] and "SSD" in v["on_this_pc"] for v in gy.values()), "32 GB: both stream (said, not refused)")
         self.assertIn("read from the SSD", by["Q2_0"]["on_this_pc"])
         self.assertIn("slower", by["Q2_0"]["on_this_pc"])
         self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
-        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"fits"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"fits"})
         s, hw = self.hw(8)
-        self.assertEqual({x["on_this_pc"] for x in s.model_table(hw)[0]["sizes"]}, {"does not fit"})
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"does not fit"})
 
     def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
         s, hw = self.hw(32)
@@ -768,7 +828,7 @@ class MixedGraphics(unittest.TestCase):
             M.Strata._engine_code(hw)
         by = {g["name"]: g for g in hw["gpus"]}
         self.assertFalse(by["AMD Radeon RX 6800 XT"]["usable"])
-        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", by["AMD Radeon RX 6800 XT"]["problem"])
+        self.assertIn("no code for gfx1030", by["AMD Radeon RX 6800 XT"]["problem"])
         self.assertEqual(by["AMD Radeon 760M"]["problem"], "integrated", "an earlier reason stays")
         self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
         self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])
@@ -928,7 +988,7 @@ class DraftLayerAndCancel(unittest.TestCase):
             shard.write_bytes(b"x" * 20_000_000)
             job = {"files": [{"path": str(shard), "bytes": None, "role": "model"}], "total_gb": 60}
             prog = M.combined_progress(M.install_progress(lines), job)
-        self.assertEqual(prog["download"]["file"], "Speed-up layer")
+        self.assertEqual(prog["download"]["file"], "Draft layer")
         self.assertEqual([p["kind"] for p in prog["parts"]], ["model", "draft"])
         self.assertEqual(prog["parts"][0]["state"], "done")
         self.assertAlmostEqual(prog["parts"][1]["done_gb"], 2.0)

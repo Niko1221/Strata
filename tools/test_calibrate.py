@@ -442,7 +442,7 @@ class SetupIntegration(unittest.TestCase):
         self.assertNotIn("an earlier start", out.getvalue())
         out = io.StringIO()
         with mock.patch.object(self.S, "ROOT", Path(self.tmp.name)), \
-                mock.patch.object(self.S, "data_folder", lambda d: (Path(self.tmp.name) / "data", [])), \
+                mock.patch.object(self.S, "data_folder", lambda d, *a, **k: (Path(self.tmp.name) / "data", [])), \
                 mock.patch.object(self.S, "update_installed_engine", lambda *a: None), \
                 mock.patch.object(sys, "argv", ["setup.py", "--calibrate", "--no-start"]), \
                 contextlib.redirect_stdout(out):

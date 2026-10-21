@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 
 from strata_control import paths
+from strata_control import atomic as _atomic_mod
 
 SCHEMA_VERSION = 1
 IDENTITY_KEYS = ("version", "build_id", "manifest_sha256", "backend", "platform", "variant")
@@ -58,7 +59,7 @@ def _write(path: Path, data: dict) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(data, stream, indent=1, sort_keys=True)
             stream.write("\n")
-        os.replace(temp, path)
+        _atomic_mod.replace(temp, path)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)

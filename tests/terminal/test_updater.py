@@ -48,6 +48,7 @@ class UpdaterCase(unittest.TestCase):
             patch = mock.patch.object(target, value, return_value=["sm_86"] if value == "cuda_archs_present" else "610.47")
             patch.start()
             self.addCleanup(patch.stop)
+        ec.register_signature_verifier(None)               # a verifier an earlier test file left behind (it holds the shipped keys only) must not decide here
         self.addCleanup(ec.register_signature_verifier, None)
         # the tests sign with throwaway keys that they hand over explicitly: the release key shipped in update_keys.json is not in play here
         # (ReleaseKeys below checks the shipped file itself)
@@ -629,6 +630,29 @@ class Cli(UpdaterCase):
 
     def common(self):
         return ["--feed", str(self.release), "--components-dir", str(self.components), "--model-config", str(self.config)]
+
+    def test_cached_update_notice_is_dropped_when_versions_change(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        self.assertEqual(self.cli("update", "--check", *self.common())[0], 0)
+        notice = "update available (engine 0.1.46): run `strata update`"
+        self.assertEqual(ec.cached_notice(self.components), notice)
+        state_file = self.components / ec.UPDATE_STATE
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved["last_check"]["engine_installed"], "0.1.45")
+        # a new app brings a new Control: the old result is not shown again
+        with mock.patch.object(ec, "runtime_version", return_value="9.9.9"):
+            self.assertIsNone(ec.cached_notice(self.components))
+        # the installed engine changed since the check (an update from elsewhere, a rollback)
+        with mock.patch.object(ec, "newest_installed_version", return_value="0.1.44"):
+            self.assertIsNone(ec.cached_notice(self.components))
+        # an old file without the recorded versions: still never offers an engine that is not newer
+        saved["last_check"] = {"at": "x", "engine": "0.1.45", "app": None}
+        state_file.write_text(json.dumps(saved), encoding="utf-8")
+        self.assertIsNone(ec.cached_notice(self.components))
+        saved["last_check"] = {"at": "x", "engine": "0.1.46", "app": None}
+        state_file.write_text(json.dumps(saved), encoding="utf-8")
+        self.assertEqual(ec.cached_notice(self.components), notice)
 
     def test_check_update_and_rollback_from_the_terminal(self):
         self.install_current()

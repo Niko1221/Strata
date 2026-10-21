@@ -96,6 +96,7 @@ class Command(unittest.TestCase):
     def test_env(self):
         env = images_api.image_env({"backend": "cuda", "gpu": 1, "env": {"X": 2}}, {"PATH": "p"})
         self.assertEqual((env["CUDA_VISIBLE_DEVICES"], env["CUDA_DEVICE_ORDER"], env["X"]), ("1", "PCI_BUS_ID", "2"))
+        self.assertEqual(images_api.image_env({"backend": "cuda", "gpu": [1, 0]}, {})["CUDA_VISIBLE_DEVICES"], "1,0")     # a list is a device list
         with tempfile.TemporaryDirectory() as d:
             env = images_api.image_env({"backend": "hip", "gpu": 0, "lib_dirs": [d, d + "-missing"]}, {})
             self.assertEqual(env["HIP_VISIBLE_DEVICES"], "0")

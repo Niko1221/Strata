@@ -86,12 +86,27 @@ class _Reader:
         return None
 
 
-def inspect_metadata(path: Path) -> dict:
-    """Return only bounded compatibility signals from one regular GGUF v3 shard."""
+def real_model_file(path: Path) -> Path:
+    """The regular file a model path stands for. A model file the person picked can be a link (a Hugging Face cache snapshot, an
+    Ollama blob, a shortcut to a bigger drive): it is followed here, once, and the target is what gets opened. Strata's own state files
+    (run configs, profiles, runtime records) keep the strict no-link rule in their readers."""
     try:
-        if stat.S_ISLNK(path.lstat().st_mode):
-            raise ProfileError("GGUF shard is a symlink", 5)
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        target = Path(os.path.realpath(path))
+        info = target.stat()
+    except OSError:
+        if os.path.islink(path):
+            raise ProfileError(f"{Path(path).name} is a link to a file that is not there", 5) from None
+        raise ProfileError(f"{Path(path).name} is missing", 5) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ProfileError("GGUF shard must be a regular file", 5)
+    return target
+
+
+def inspect_metadata(path: Path) -> dict:
+    """Return only bounded compatibility signals from one regular GGUF v3 shard (a link to one is followed)."""
+    try:
+        path = real_model_file(Path(path))
+        descriptor = os.open(path, os.O_RDONLY)
         with os.fdopen(descriptor, "rb") as stream:
             details = os.fstat(stream.fileno())
             if not stat.S_ISREG(details.st_mode):
@@ -102,7 +117,8 @@ def inspect_metadata(path: Path) -> dict:
             version, tensors, keys = reader.u32(), reader.u64(), reader.u64()
             if version != 3:
                 raise ProfileError("Strata metadata preflight requires GGUF v3", 5)
-            if not 1 <= tensors <= MAX_TENSORS or keys > MAX_METADATA_KEYS:
+            # tensors == 0 is a real file: a split set made with llama.cpp's gguf-split (Unsloth's) keeps only the metadata in its first shard
+            if not 0 <= tensors <= MAX_TENSORS or keys > MAX_METADATA_KEYS:
                 raise ProfileError("GGUF tensor or metadata count exceeds the inspection limit", 5)
             found: dict[str, object] = {}
             for _ in range(keys):
@@ -159,7 +175,7 @@ def inspect_metadata(path: Path) -> dict:
             extents.sort()
             if any(next_start < end for (_, end), (next_start, _) in zip(extents, extents[1:])):
                 raise ProfileError("GGUF tensor byte ranges overlap", 5)
-            if data_start + required_payload_bytes > details.st_size:
+            if tensors and data_start + required_payload_bytes > details.st_size:
                 raise ProfileError("GGUF tensor payload is shorter than its directory requires", 5)
             if tensors == 1 and details.st_size - (data_start + required_payload_bytes) >= 64:
                 raise ProfileError("single-tensor GGUF shard has unexplained trailing bytes", 5)

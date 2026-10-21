@@ -33,7 +33,7 @@ Strata は **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 - **無料です。** MIT ライセンス。アカウントもクラウドも不要です。
 - **プライバシーを守ります。** テレメトリはありません。Strata が何をダウンロードするか、いつインターネットを使うか、ダウンロードをどう検証するかは [docs/SAFETY.md](docs/SAFETY.md) に書いてあります。
 
-バージョン 0.2.1 · エンジン 0.1.46
+バージョン 0.2.2 · エンジン 0.1.47
 
 ## 必要な環境
 
@@ -72,16 +72,16 @@ Strata は **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next
 
 | OS | グラフィックスカード | ダウンロードするファイル |
 | --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.1-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-cuda13.exe) |
-| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.1-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-cuda12.exe) |
-| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.1-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-hip.exe) |
-| | AMD Radeon RX 7000 シリーズまたは Ryzen AI Max (Strix Halo) | [`Strata-0.2.1-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.1-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.1-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.1-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-rx9070.AppImage) |
-| | AMD Radeon RX 7000 シリーズ | [`Strata-0.2.1-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.1-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-linux-amd-strixhalo.AppImage) |
-| **Mac**（Apple Silicon、macOS 15 以降） | 内蔵 | [`Strata-0.2.1-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.1-mac.dmg) |
+| **Windows 10 / 11** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.2-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda13.exe) |
+| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.2-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda12.exe) |
+| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.2-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip.exe) |
+| | AMD Radeon RX 7000 シリーズまたは Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip-rdna3.exe) |
+| **Linux** | NVIDIA RTX、ドライバー 580 以降 | [`Strata-0.2.2-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda13.AppImage) |
+| | NVIDIA、古いカード、またはドライバーが 580 より古い場合 | [`Strata-0.2.2-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda12.AppImage) |
+| | AMD Radeon RX 9000 シリーズまたは Radeon AI PRO R9700 | [`Strata-0.2.2-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx9070.AppImage) |
+| | AMD Radeon RX 7000 シリーズ | [`Strata-0.2.2-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx7900.AppImage) |
+| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-strixhalo.AppImage) |
+| **Mac**（Apple Silicon、macOS 15 以降） | 内蔵 | [`Strata-0.2.2-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-mac.dmg) |
 
 **迷ったときは:** NVIDIA の場合、ドライバーがバージョン 580 以降なら `cuda13`、それより古ければ `cuda12` を選びます。`cuda12` は古いカードと古いドライバー向けです。
 `hip` と `amd` のファイルは AMD のカード用です。それ以外の AMD カード（RX 6000）には、まだ用意されたアプリがありません。
@@ -156,9 +156,9 @@ AI ツールは [MCP サーバー](docs/MCP_SERVER.md)を通じて、Strata の�
 | サイズ | 必要なメモリ（RAM + VRAM） | ダウンロード | 内容 |
 | --- | ---: | ---: | --- |
 | **Gyro-S** | 27.6 GB | 58.5 GB | ほかのサイズが入らないPC向け。品質は IQ2_XS より下がります。 |
-| **Gyro-M** | 35 GB | 92.0 GB | 品質は IQ3_XXS 程度で、GPUメモリの使用量は約20%少なくなります。12 GBのカードと R9700 では、回答の書き出しが Q2_0 より17〜21%遅くなります。 |
+| **Gyro-M** | 35 GB | 92.0 GB | 品質は IQ3_XXS 程度で、GPUメモリの使用量は約20%少なくなります。回答の書き出しは Q2_0 より、12 GBの RTX 3060 で16%、R9700 で21%遅くなります。 |
 
-Gyro は NVIDIA と AMD のカードで動きます（AMD は実験的）。Intel Arc と Mac では動きません。詳細と測定結果は
+Gyro は NVIDIA と AMD のカード（AMD は実験的）、および Linux 上の Intel Arc カード（Arc A750 で確認）で動きます。0.2.2 からは Apple Silicon の Mac でも動きます（32 GB の Mac mini で Gyro-S は 9 トークン/秒、エキスパートは SSD から読み込み）。詳細と測定結果は
 [docs/GYRO.md](docs/GYRO.md) にあります。`strata launch --model gyro-s` で起動します。
 
 ### ほかのサイズ
@@ -166,7 +166,7 @@ Gyro は NVIDIA と AMD のカードで動きます（AMD は実験的）。Inte
 | メモリ（RAM + VRAM） | 選ぶモデル | 備考 |
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**、またはコード向けの **[Coder](docs/MODELS.md#coder)** | Coder はRAM 32 GBが必要で、エキスパートを半分だけ保持するため、コード以外は弱くなります |
-| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS（39.2 GB）、または **Gyro-M**（35 GB） | Swift は答える前に考える時間が短くなります。Gyro-M は品質が IQ3_XXS に近いものの、回答の書き出しは Q2_0 より17〜21%遅くなります |
+| **40 GB** | **[Swift 1.5](docs/MODELS.md#swift-15)** IQ2_XS（39.2 GB）、または **Gyro-M**（35 GB） | Swift は答える前に考える時間が短くなります。Gyro-M は品質が IQ3_XXS に近いものの、回答の書き出しは Q2_0 より16〜21%遅くなります |
 | **48 GB** | **IQ3_XXS**（47.0 GB） | 遅くなりますが、品質は上がります |
 | **64 GB** | **IQ3_S**（54.8 GB）、オリジナルまたは Swift 1.5 | いちばん遅く、いちばん高品質です。公開されているテストでは完全版と同等です |
 | **96 GB 以上** | Unsloth の **UD-IQ4_XS**（RAM 約72 GB）から **Q8_0**（約136 GB）まで、4〜8ビット | 完全版に近づきます。RAM が足りないと、Strata は一部を SSD から読むため、ずっと遅くなります |

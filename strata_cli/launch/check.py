@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from strata_control import loopback
+
 #: harness id -> the endpoint family it speaks (the others use chat completions)
 WIRE = {"codex": "responses", "claude-code": "messages"}
 
@@ -37,7 +39,7 @@ def _post(url: str, key: str, body: dict, headers: dict | None = None, timeout: 
         h["Authorization"] = "Bearer " + key
         h["x-api-key"] = key
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=h, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with loopback.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 

@@ -347,12 +347,14 @@ export function idle(label = 'Waiting for a request') {
   hubRef?.send('monitor', snapshot());
 }
 
-export function record({ tokensIn, tokensOut, durationMs = 0, ttftMs = null, cachedTokens = null }) {
+export function record({ tokensIn, tokensOut, durationMs = 0, ttftMs = null, cachedTokens = null, tps: answerTps = null }) {
   if (Number.isFinite(tokensIn)) state.totals.tokensIn += tokensIn;
   if (Number.isFinite(tokensOut)) state.totals.tokensOut += tokensOut;
   state.totals.requests += 1;
-  if (Number.isFinite(tokensOut) && durationMs > 0) {
-    const tps = tokensOut / (durationMs / 1000);
+  // The average is of answer speeds (tokens over decode time). A request with no decode figure is left out: dividing by the whole request would
+  // put the prompt reading into it and read lower than the engine and the chat do.
+  if (Number.isFinite(answerTps) && answerTps > 0) {
+    const tps = answerTps;
     const n = ++state.totals.usageRequests;
     state.totals.avgTps = round((state.totals.avgTps * (n - 1) + tps) / n, 1);
   }

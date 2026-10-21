@@ -6,7 +6,7 @@ What it does, each step skipped when it is already done:
 
   1. checks the Mac: Apple Silicon, the chip, unified memory, macOS version, the Command Line Tools, free disk
   2. recommends a model by memory (recommend, never force: an explicit --model is kept, with what it risks)
-  3. installs the Python packages into .venv (cmake and ninja come from pip: no Homebrew, no sudo)
+  3. installs the Python packages into .venv (cmake and ninja come from pip, just before step 4: no Homebrew, no sudo)
   4. builds the Metal engine from source: metal-cpp (Apple's headers) and llama.cpp's ggml at the pinned commit
   5. downloads the model (setup.py's downloader: resumable, the pinned revision)
   6. prepares the model: the native pack (tools/iq_pack.py) and the MTP draft layer (tools/mtp_fetch.py, mtp_pack.py)
@@ -66,6 +66,8 @@ UD_SHARDS = {
 def model_shard_names(model: str) -> list[str]:
     """The model's files in order (shard 1 first)."""
     n = MAC_MODELS[model].get("shards", 2)
+    if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
+        return [S.model_file(S.FAMILIES["gyro"], model, 1)]
     if MAC_MODELS[model].get("family") == "unsloth":
         return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
@@ -127,6 +129,7 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
         S.ok(f"Metal engine: {EXE} (built for this source)")
         return EXE
     mcpp = metal_cpp()
+    S.ensure_build_tools()                                # cmake and ninja are in requirements-build.txt, not requirements.txt (#3403)
     S.say("  Building the Metal engine from source (5-15 minutes the first time) ...")
     BUILD_DIR.mkdir(exist_ok=True)
     log = BUILD_DIR / "build.log"
@@ -170,6 +173,7 @@ def build_vision(llama: Path) -> Path:
             return VISION_EXE
     except (OSError, ValueError):
         pass
+    S.ensure_build_tools()
     S.say("  Building the image encoder (1-3 minutes) ...")
     env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
     log = ROOT / "build-vision.log"
@@ -322,8 +326,9 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth"], default=None,
-                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL (follows --model)")
+    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
+                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
+                         "(follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--port", type=int)
@@ -416,9 +421,9 @@ def main(argv=None) -> int:
     if free < need:
         S.warn(f"about {need:.0f} GB are needed on the disk ({free:.0f} GB free): kept as you chose; it may run out")
 
-    # ---- 3. Python packages (cmake and ninja among them: the engine build's tools)
+    # ---- 3. Python packages (cmake and ninja come with the build in step 4, from requirements-build.txt)
     S.step(3, "Python packages")
-    S.pip_install(S.requirement_lines() if S.REQUIREMENTS.exists() else S.PY_PACKAGES, "numpy, jinja2, ..., cmake, ninja")
+    S.pip_install(S.requirement_lines() if S.REQUIREMENTS.exists() else S.PY_PACKAGES, "numpy, jinja2, ...")
 
     # ---- 4. the engine
     S.step(4, "the Strata engine (Metal)")
@@ -489,6 +494,8 @@ def main(argv=None) -> int:
             S.mark(native)
         ple = ple_shard(files)
         shards = [native, ple]
+    elif family == "gyro":
+        shards = [files[0], files[0]]                  # one file: the model and its n-gram table (--native, --ple-gguf)
     else:
         shards = files
     if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():

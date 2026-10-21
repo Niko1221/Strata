@@ -694,6 +694,24 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
     return proc
 
 
+def engine_log_since(console_log: Path, run_log: Path | None, offset: int) -> Path:
+    """The log to keep with a result when the runner started the engine. `strata serve --quiet` prints nothing, so the
+    console capture is empty; the engine's own lines are in the run config's `log` file, from `offset` (its size before
+    the start). Falls back to the console capture when there is no such file or nothing new in it."""
+    try:
+        if run_log is not None and run_log.is_file() and run_log.stat().st_size > offset:
+            with run_log.open("rb") as stream:
+                stream.seek(offset)
+                data = stream.read()
+            if data.strip():
+                merged = console_log.with_name("engine-run.log")
+                merged.write_bytes(data)
+                return merged
+    except OSError:
+        pass
+    return console_log
+
+
 def stop_engine(proc) -> None:
     """Stop only the process this run started."""
     if proc is None:
@@ -732,7 +750,7 @@ def slug(text: str, limit: int = 40) -> str:
 
 def run(target: Target, out: Path | None, *, out_root: Path | None = None, optional_concurrency: bool = False,
         corpus: Corpus | None = None, declared: dict | None = None, plan: dict | None = None,
-        engine_log: Path | None = None, command: str = "strata bench run --suite standard-v1",
+        engine_log: Path | None = None, engine_run_log: tuple[Path | None, int] | None = None, command: str = "strata bench run --suite standard-v1",
         log=lambda message: None, timeout_s: float = REQUEST_TIMEOUT_S, started_engine: bool = False,
         hash_model: bool = True) -> tuple[dict, Path]:
     """Run the protocol against `target` and write the report into the new directory `out` (or a new folder named
@@ -780,7 +798,8 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
     hardware_block, machine_facts = facts.hardware(why, selected=selected, served_gpu=served_gpu, model_dir=model_dir,
                                                    declared_background=list(declared.get("background") or []))
     software_block = facts.software(why, machine_facts, engine_version=engine_version,
-                                    build_options=declared.get("build_options"))
+                                    build_options=declared.get("build_options"),
+                                    engine_build=facts.engine_build_runtime(plan.get("engine_exe")))
     model_block = facts.model(why, props=props, status=status, files=files, declared=declared, log=log)
     template_ref = {"path": "provenance/chat_template.jinja", "sha256": facts.sha256_text(template_text)} if template_text else None
     configuration_block, other_options = facts.configuration(
@@ -878,6 +897,8 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
                                       "source": "effective engine arguments of the profile" if options is not None
                                       else "the server was already running; its engine options are not exposed"}, redact)
     put("config", "config.json", (json.dumps(config_doc, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8"))
+    if engine_log is not None and engine_run_log is not None:
+        engine_log = engine_log_since(engine_log, *engine_run_log)
     if engine_log is not None and engine_log.is_file():
         text = engine_log.read_text(encoding="utf-8", errors="replace")[-2_000_000:]
         put("engine_log", "engine.log", redact(text).encode("utf-8"))
@@ -1055,14 +1076,32 @@ def _minutes(seconds: float | None) -> str:
     return f"{int(seconds // 60)} min {int(seconds % 60)} s"
 
 
+SHORT_PROMPT_NOTE = ("short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not "
+                     "shown; read prompt speed from prompt-4k and prompt-16k")
+CAP_NOTE = ("Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the "
+            "time to the cap, not to an answer, and it has no first-answer time when it was still reasoning")
+
+
+def capped(doc: dict, phase: str, case: str) -> str:
+    """'k/n': how many of the case's measured requests stopped at the output cap."""
+    rows = [r for r in doc["requests"] if r["phase"] == phase and r["case_id"] == case]
+    return f"{sum(1 for r in rows if r['status'] == 'truncated')}/{len(rows)}"
+
+
+def prompt_cell(doc: dict, phase: str, case: str, digits: int = 1) -> str:
+    return "n/a" if case == "short" else _span(_find(doc, phase, case, "prompt_tps"), digits)
+
+
 def table_lines(doc: dict, phase: str, cases: tuple[str, ...]) -> list[str]:
-    head = ["Case", "Prompt tok/s", "Decode tok/s", "TTFT s", "Total s"]
+    head = ["Case", "Prompt tok/s", "Decode tok/s", "TTFT s", "Total s", "Capped"]
     rows = [head]
     for case in cases:
-        rows.append([case, _span(_find(doc, phase, case, "prompt_tps")), _span(_find(doc, phase, case, "decode_tps")),
-                     _span(_find(doc, phase, case, "ttft_s"), 2), _span(_find(doc, phase, case, "total_s"), 1)])
+        rows.append([case, prompt_cell(doc, phase, case), _span(_find(doc, phase, case, "decode_tps")),
+                     _span(_find(doc, phase, case, "ttft_s"), 2), _span(_find(doc, phase, case, "total_s"), 1),
+                     capped(doc, phase, case)])
     widths = [max(len(r[i]) for r in rows) for i in range(len(head))]
-    return ["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+    return (["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+            + ["  " + SHORT_PROMPT_NOTE + ".", "  " + CAP_NOTE + "."])
 
 
 def format_plain(doc: dict) -> str:
@@ -1146,12 +1185,13 @@ def report_markdown(doc: dict, redact=lambda text: text) -> str:
         "monotonic clock from dispatch to the first nonempty reasoning, answer or tool-call delta. No request was retried. "
         f"Time after the model loaded: {_minutes(run_block['required_duration_s'])}.", "",
         "## Results", ""]
-    lines += ["| Case | Prompt tok/s | Decode tok/s | TTFT s | First answer s | Total s |", "| --- | --- | --- | --- | --- | --- |"]
+    lines += ["| Case | Prompt tok/s | Decode tok/s | TTFT s | First answer s | Total s | Capped |", "| --- | --- | --- | --- | --- | --- | --- |"]
     for case in PERFORMANCE_CASES:
-        lines.append(f"| {case} | " + " | ".join(
-            _span(_find(doc, "performance", case, m), d) for m, d in (("prompt_tps", 1), ("decode_tps", 1), ("ttft_s", 2),
-                                                                      ("first_answer_s", 2), ("total_s", 1))) + " |")
-    lines += ["", "Cells are median (min-max) n=samples.", "",
+        lines.append(f"| {case} | " + prompt_cell(doc, "performance", case) + " | " + " | ".join(
+            _span(_find(doc, "performance", case, m), d) for m, d in (("decode_tps", 1), ("ttft_s", 2),
+                                                                      ("first_answer_s", 2), ("total_s", 1)))
+            + f" | {capped(doc, 'performance', case)} |")
+    lines += ["", "Cells are median (min-max) n=samples. " + SHORT_PROMPT_NOTE[0].upper() + SHORT_PROMPT_NOTE[1:] + ". " + CAP_NOTE + ".", "",
               "| Phase | Planned | Completed | Truncated | Failed | Skipped |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
     for phase in PHASES:
         c = counts[phase]
@@ -1177,7 +1217,9 @@ def report_markdown(doc: dict, redact=lambda text: text) -> str:
               "the quantization repository's revision; see `missing` in results.json for every value it could not read.",
               f"- The server had answered {doc['extensions']['server_requests_before_run']} request(s) before this run."
               if doc["extensions"]["server_requests_before_run"] else
-              "- The runner could not tell whether the server was freshly loaded.", ""]
+              ("- The server had answered no request before this run (a freshly loaded engine)."
+               if doc["extensions"]["server_requests_before_run"] == 0 else
+               "- The runner could not tell whether the server was freshly loaded."), ""]
     return redact("\n".join(lines))
 
 

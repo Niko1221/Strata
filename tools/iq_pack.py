@@ -731,16 +731,48 @@ def main() -> int:
     # experts.bin, and an experts.bin without its sidecar is never reused
     sidecar.unlink(missing_ok=True)
     part = out / "experts.bin.tmp"
-    with open(part, "wb") as fo:
-        for l, gt, dt, off, blob, ts in layout:
+    progress = out / "experts.bin.tmp.json"
+    # A stop part-way (a kill, a power cut) used to cost the whole write again (40 GB, minutes).  The finished layers are kept:
+    # after every layer the file is flushed to disk and experts.bin.tmp.json says how many layers are in it and which source they were
+    # cut from.  The next run continues at that layer when the source is the same and the last kept layer still matches the GGUF.
+    start = 0
+    if part.exists():
+        done = read_json(progress)
+        k = done.get("layers") if isinstance(done, dict) and done.get("want") == want else None
+        if isinstance(k, int) and 0 < k <= len(layout) and part.stat().st_size >= (layout[k][3] if k < len(layout) else offset):
+            l, gt, dt, off, blob, ts = layout[k - 1]
+            last = layer_blobs(l, blob, ts)
+            if last is not None:
+                with open(part, "rb") as f:
+                    f.seek(off)
+                    kept = f.read(n_expert * blob)
+                if kept == last.tobytes():
+                    start = k
+        if start:
+            print("the earlier packing was interrupted: keeping its first %d of %d layers and continuing with layer %d"
+                  % (start, len(layout), start), flush=True)
+        else:
+            print("the earlier packing was interrupted and cannot be continued: starting it again", flush=True)
+    resume_at = layout[start][3] if start < len(layout) else offset
+    with open(part, "r+b" if start else "wb") as fo:
+        if start:
+            fo.truncate(resume_at)       # whatever followed the last recorded layer is a partial write
+            fo.seek(resume_at)
+        for l, gt, dt, off, blob, ts in layout[start:]:
             chunk = layer_blobs(l, blob, ts)
             if chunk is None:
                 return 1
             fo.write(chunk.tobytes())
+            fo.flush()
+            os.fsync(fo.fileno())
+            note = out / "experts.bin.tmp.json.new"
+            note.write_text(json.dumps({"want": want, "layers": l + 1}), encoding="utf-8")
+            note.replace(progress)
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)
     part.replace(path)
+    progress.unlink(missing_ok=True)
     side_tmp = out / "experts.bin.src.json.tmp"
     side_tmp.write_text(json.dumps(want, indent=2) + "\n", encoding="utf-8")
     side_tmp.replace(sidecar)

@@ -8,6 +8,8 @@ Ubuntu 26.04, kernel 7.0, ROCm 7.14.1). Setup (`setup.sh`, `START-HERE.bat`) rec
 named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). The 0.2.0-beta release also has ready-made packages: `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` (engine `halo`, gfx1151, ROCm 7.14.1) and, on Windows, `Strata-0.2.0-beta-windows-hip-rdna3.exe` (engine `rdna3`: gfx1100, gfx1101, gfx1102 and gfx1151, ROCm 10.2.0a20260930); any app installer plus **Update engine** (or `strata update`) fetches the same package. What was run: both packages were built, linked and scanned, and the Linux package refuses to start on a card of another family (tried on an RX 9000 card); the maintainers have no Strix Halo and ran neither on one. The measurements on this page come from source builds on Linux (the maintainers' earlier box and community machines). Nobody has run a Strix Halo on Windows. The packaged engines do not carry the hipBLASLt table of section 3 yet (planned for 0.2.1), so their prompt reading is slower than the numbers below until then. A Windows zip of the 0.1.x START-HERE route without gfx1151 code is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
 (the GTT pool; on Windows half the RAM) and recommends UD-IQ4_XS from about 80 GB of memory; it changes no BIOS or kernel setting.
 
+**Windows start-up (0.2.1.2).** On a Strix Halo under Windows the engine no longer registers the expert arena with the GPU driver: registering it took all free VRAM (91 GiB before, 0 after, on a 64 GB carve-out + 32 GB shared PC), the expert cache got no slots and the engine stopped with "the embedding buffer failed" (0.2.1 and earlier). The arena stays in RAM, held by the working-set lock, and the cache gets its normal slots. `STRATA_ARENA_PIN_GIB=N` (or `0`) registers it as before, `STRATA_UMA_REGISTER=1` too. Linux is unchanged.
+
 What the engine does differently on this chip:
 
 - **Unified memory.** The GPU's "VRAM" is the GTT pool of the same RAM. `device_free_bytes()` (the figure `--expert-cache auto` and
@@ -137,6 +139,25 @@ It rounds differently from the int8 kernels. First-token KL against a run with n
 
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
+
+## 5b. The desktop, the RAM, and a discrete card beside the Strix Halo (Linux)
+
+The Strix Halo chip usually draws your desktop, and its graphics memory is your RAM. Two things follow, and the engine now takes both into account.
+
+- **One memory, counted once.** The expert cache of an integrated GPU lives in the same RAM as the expert arena. The automatic cache size is the smaller of
+  what the GPU reports free and what the OS reports available, less a reserve for the desktop (the larger of 8 GiB and 8% of the RAM; the start-up line says so
+  when it changes the size). `STRATA_UMA_RESERVE_GIB=N` sets the reserve (`0` = the old sizing, nothing kept back); `--expert-cache N` is never changed.
+- **A card of its own beside the chip** (for example a Radeon AI PRO R9700). A card of its own is the recommended Main card and the chip stays Off in the card roles.
+  If you name the chip in a layer split anyway (`--gpus 0,1`, or the config's `"gpu": [0, 1]`), the split runs as asked, the chip is placed on the first layers and
+  never on the last stage (the output head, the draft layer and the check of its guesses), the picture reader is started on the card of its own, and the
+  start prints one plain line about it. `"gpu_order": "as_given"` and a manual `layer_split` keep your order. `setup --gpus all` leaves the chip out
+  when two cards of their own are present; name it by number to use it.
+- **The CPU.** On Linux with built-in Radeon graphics the engine starts at nice +5, so the desktop keeps its share of the CPU while the engine's workers spin.
+  `STRATA_ENGINE_NICE=0` turns it off, `STRATA_ENGINE_NICE=N` sets another value.
+
+What is not known yet: how much of the screen freeze a long compute job on the same chip causes, and whether registering the whole expert arena with the driver
+(the Linux default on gfx1151; Windows uses the unregistered arena since 0.2.1.2) hurts when the GTT is small. `STRATA_ARENA_PIN_GIB=none` runs the unregistered
+arena on any OS; reports with `amdgpu_top` and `dmesg` are welcome.
 
 ## 6. Measured
 

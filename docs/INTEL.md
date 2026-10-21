@@ -829,6 +829,26 @@ by the SYCL reader 10 of 10; two pictures in one request, a picture kept in the 
 pictures all answered; a text request after every picture answered; 47 picture requests, outside and inside the container (inside, one
 answer was cut off by the 200-token limit of the test), no GPU fault in the kernel log, no 503.
 
+## Gyro on an Arc (2026-10-20, branch f-022-arcgyro)
+
+Gyro-S and Gyro-M (trellis-coded experts, [GYRO.md](GYRO.md#intel-arc-sycl)) run on the SYCL engine. Tested on the Arc A750 only (i915, 8 GB,
+Ryzen 5 5600X, 62 GB of RAM). Setup writes the usual A750 config for them (32K context, 300 MiB VRAM reserve), without `--ple-io ram`: the
+28 GB n-gram table stays on the SSD, because the expert arena already takes 24 GB (Gyro-S) of the RAM.
+
+| A750, Gyro-S | |
+| --- | ---: |
+| prompt, 1,406 tokens | 82 tok/s (40 with dequantize + oneMKL; the grouped XMX launch now takes the trellis types, 5/5 pairs) |
+| prompt, 2,377 / 20,000 tokens | 102 / 195 tok/s |
+| decode, MTP draft of 4 | 15-16 tok/s (13.7 with the old link share, 5/5 pairs) |
+| experts in the card's cache | 410 of 24,576 |
+
+Decode is bound by the CPU pool (5 workers, 8 GB/s) and the PCIe link (10.4 GB/s measured), not by the card's kernels (20 microseconds an
+expert). For trellis packs the engine takes the link share against a 12 GB/s reference instead of 20, which gives 0.48 on this card instead
+of 0.29. A smaller prompt chunk makes room for more cached experts and slows the prompt: `--prefill 1024` +13% decode, -24% prompt speed;
+the default stays `--prefill auto`. Gyro-M needs `--max-context 8192 --vram-reserve-mib 100 --prefill 1024` on 8 GB (14 tok/s decode,
+62 tok/s prompt). A second Arc card does not take Gyro's experts (the engine refuses and says so). The Battlemage AOT build (`bmg-g31`)
+compiles with the trellis kernels; it was not run, there is no B-series card here.
+
 ## Arc Pro B70 with a model that does not fit: Flash-Next IQ3_S (2026-10-07, branch f-141-intel)
 
 The earlier B70 rows are for models whose experts all fit in VRAM. IQ3_S has 24,576 experts of 1.97 MB (46 GB): the 32 GB

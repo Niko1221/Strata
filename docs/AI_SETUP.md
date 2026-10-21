@@ -13,10 +13,11 @@ Work through the steps in order. Tell the user what you are doing in plain words
 
 ## 0. Ground rules
 
-- **Never expose the server without an API key.** Keep the default (`--access local`, the server listens on
-  `127.0.0.1` only). Only if the user asks for access from other devices, use `--access lan`. Strata makes a long
-  random key for you then and will not start on a network without one. Give the user the key
-  (`strata launch --show-key`). Never put a tunnel or port forward in front of a server without a key.
+- **Recommend an API key beyond this computer; do not force it.** Keep the default (`--access local`, the server listens on
+  `127.0.0.1` only, no key needed). Only if the user asks for access from other devices, use `--access lan`. Strata makes a long
+  random key for you then. Give the user the key (`strata launch --show-key`). If the user says they do not want a key, use
+  `--no-api-key`: it starts and warns that anyone who can reach the port can use the model and its tools. Tell the user so.
+  Do not put a tunnel or port forward in front of a server without a key unless the user asks for it.
 - Do not change the user's system beyond what Strata does. The Terminal installs into the user's home folder and needs
   no administrator rights. It does not install drivers, Python packages or compilers. Ask before installing drivers.
 - The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with
@@ -114,6 +115,7 @@ The flags (all of them, with examples: `strata launch --help`):
 | `--access local\|lan\|cloudflare\|tailscale` | who can connect; beyond `local` a key is made for you |
 | `--port N` | the server port (default 8080) |
 | `--api-key KEY`, `--api-key-env NAME`, `--new-key` | the key clients must send |
+| `--no-api-key` | share without a key (a warning, not a refusal; recommended only on a network you trust) |
 | `--save-preset NAME` | keep these choices; `strata launch --preset NAME` starts them again |
 | `--plan` | show what would happen and exit |
 | `--yes`, `--no-tui` | no questions, no screens |

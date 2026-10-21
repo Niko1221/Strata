@@ -18,12 +18,12 @@ Docker on a **Mac** has no access to the Mac's graphics chip (no Metal): use the
 
 | Your graphics card | Image tag | Needs on the computer |
 | --- | --- | --- |
-| NVIDIA **RTX 20, 30, 40, 50** series (and the matching RTX A / Quadro cards) | `0.2.1-cuda13` | NVIDIA driver **580 or newer**, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
-| NVIDIA **GTX 10 (Pascal), Tesla P100, V100 (Volta)**, or any NVIDIA card whose driver is **575 to 579** | `0.2.1-cuda12` | NVIDIA driver **575 or newer**, the same toolkit |
-| AMD **RX 9000** series and Radeon AI PRO R9700 (RDNA 4, gfx1200 / gfx1201) | `0.2.1-rocm-gfx120x` | the `amdgpu` kernel driver (Linux 6.8+) |
-| AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.1-rocm-gfx110x` | the `amdgpu` kernel driver |
-| AMD **Ryzen AI Max** ("Strix Halo", Radeon 8060S, gfx1151) | `0.2.1-rocm-gfx1151` | the `amdgpu` kernel driver |
-| Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.1-sycl` (only for a release that carries the Intel engine package; otherwise [build it](#build-it-yourself)) | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
+| NVIDIA **RTX 20, 30, 40, 50** series (and the matching RTX A / Quadro cards) | `0.2.2-cuda13` | NVIDIA driver **580 or newer**, [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) |
+| NVIDIA **GTX 10 (Pascal), Tesla P100, V100 (Volta)**, or any NVIDIA card whose driver is **575 to 579** | `0.2.2-cuda12` | NVIDIA driver **575 or newer**, the same toolkit |
+| AMD **RX 9000** series and Radeon AI PRO R9700 (RDNA 4, gfx1200 / gfx1201) | `0.2.2-rocm-gfx120x` | the `amdgpu` kernel driver (Linux 6.8+) |
+| AMD **RX 7000** series (RDNA 3, gfx1100 / gfx1101 / gfx1102) | `0.2.2-rocm-gfx110x` | the `amdgpu` kernel driver |
+| AMD **Ryzen AI Max** ("Strix Halo", Radeon 8060S, gfx1151) | `0.2.2-rocm-gfx1151` | the `amdgpu` kernel driver |
+| Intel **Arc** A-series and B-series (including Arc Pro B70) | `0.2.2-sycl` (only for a release that carries the Intel engine package; otherwise [build it](#build-it-yourself)) | the `i915` or `xe` kernel driver; **prepared model files** (see [Intel](#intel-arc)) |
 
 Size of the images on disk (built from the engine packages of the 0.2.0-beta release): `cuda13` 2.2 GB, `cuda12` 2.9 GB, `rocm-gfx120x` 2.8 GB,
 `rocm-gfx110x` 2.4 GB, `rocm-gfx1151` 1.5 GB; the download is about a third of that (measured on the 0.1.45 packages: `cuda13` 640 MB, `cuda12` 845 MB,
@@ -33,15 +33,16 @@ Not sure which NVIDIA image? Take `cuda13` when `nvidia-smi` shows driver 580 or
 A wrong pick does no harm: the container starts, says in plain words that the engine does not fit this card, and stops.
 
 **Ready-made images are published from version 0.2.1 on**, to the GitHub Container Registry: `ghcr.io/niko1221/strata:<version>-<flavor>`
-(for example `0.2.1-cuda13`), and `ghcr.io/niko1221/strata:latest-<flavor>` for the newest release of that flavor. Pin the version
+(for example `0.2.2-cuda13`), and `ghcr.io/niko1221/strata:latest-<flavor>` for the newest release of that flavor. Pin the version
 tag if you want updates only when you decide. The examples below use these images. If you built an image yourself
-([Build it yourself](#build-it-yourself)), use the tag you gave it (for example `strata:0.2.1-cuda13`) in their place.
+([Build it yourself](#build-it-yourself)), use the tag you gave it (for example `strata:0.2.2-cuda13`) in their place.
 
 ## One command per card
 
 Each command runs Strata in the background, keeps your files in the volume `strata-data`, and listens only on this computer
 (`127.0.0.1:8080`). Replace `MODEL` and the key. The first start downloads the model (tens of GB): watch it with
-`docker logs -f strata`.
+`docker logs -f strata`. Already have the model's GGUF files? Add `-e MODEL_PATH=/models -v /your/folder:/models:ro` and nothing is
+downloaded for the model itself ([Files you already have](#files-you-already-have)).
 
 **NVIDIA**
 
@@ -49,7 +50,7 @@ Each command runs Strata in the background, keeps your files in the volume `stra
 docker run -d --name strata --gpus all -p 127.0.0.1:8080:8080 \
   --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
   -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
-  ghcr.io/niko1221/strata:0.2.1-cuda13
+  ghcr.io/niko1221/strata:0.2.2-cuda13
 ```
 
 **AMD**
@@ -59,7 +60,7 @@ docker run -d --name strata --device /dev/kfd --device /dev/dri \
   --group-add video --group-add $(getent group render | cut -d: -f3) -p 127.0.0.1:8080:8080 \
   --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
   -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=$(openssl rand -hex 24) \
-  ghcr.io/niko1221/strata:0.2.1-rocm-gfx120x
+  ghcr.io/niko1221/strata:0.2.2-rocm-gfx120x
 ```
 
 **Intel Arc**
@@ -68,7 +69,7 @@ docker run -d --name strata --device /dev/kfd --device /dev/dri \
 docker run -d --name strata --device /dev/dri --group-add $(getent group render | cut -d: -f3) \
   -p 127.0.0.1:8080:8080 --ulimit memlock=-1:-1 --shm-size 2g --stop-timeout 120 \
   -v strata-data:/data -e MODEL=IQ3_S -e MODEL_PATH=/models -v /srv/gguf/IQ3_S:/models:ro \
-  -e API_KEY=$(openssl rand -hex 24) ghcr.io/niko1221/strata:0.2.1-sycl
+  -e API_KEY=$(openssl rand -hex 24) ghcr.io/niko1221/strata:0.2.2-sycl
 ```
 
 What the options are for: `--ulimit memlock=-1:-1` lets the engine pin the RAM it uses for the model, `--shm-size 2g` gives
@@ -120,6 +121,7 @@ screens; leave out what you do not care about.
 | `VISION` | `off`, `on` (the model reads pictures), `gpu`, `cpu`; the picture-reader file (about 0.9 GB) is downloaded with the model | `off` |
 | `KV` | conversation memory format: `int8`, `q4_0` (half the memory), `k8v4`, `fp16` | `int8` |
 | `GPU` / `GPUS` | card numbers as the monitor lists them, `0` or `0,1`; empty or `all` = the engine's choice. Changing it later makes the model's run settings again (the files stay) | all that fit |
+| `GPU_ROLES` | a role for each card, `1=main,0=helper` (`main`, `helper`, `off`; cards you do not name are off; not together with `GPU` / `GPUS`). Passed to `launch --gpu-roles`; see [MULTI_GPU.md](MULTI_GPU.md) |
 | `TUNE` | `quick` (up to about 20 minutes, once), `thorough`, `skip`; done once and kept in the preset (`RETUNE=1` tunes again) | `skip` |
 | `API_KEY` / `API_KEY_FILE` | the key clients must send ([below](#the-api-key)); the file form is for Docker secrets | made for you |
 | `PORT` | the port inside the container | `8080` |
@@ -134,10 +136,24 @@ variable; the model and tuning stay in `/data`. Anything else: `docker exec stra
 What is in the volume `/data`: `Strata-data/` (model files, the prepared pack), `state/` (presets, tuning, the key), `install/`
 (run settings and logs), `home/`. The engine and the Terminal are in the image, so updating the image never touches your files.
 
+To keep it all on a big disk, mount a folder there instead of the named volume: `-v /mnt/big/strata:/data` (the folder must be writable by the
+container's user). Nothing large is written anywhere else in the container.
+
 ### Files you already have
 
 Mount the folder with the model's GGUF files read-only and name it: `-v /srv/gguf/IQ3_XXS:/models:ro -e MODEL_PATH=/models
 -e MODEL=IQ3_XXS`. Nothing is downloaded for the model itself; the prepared pack is made in the volume.
+
+- The folder holds the shards of one model directly (`...-00001-of-00002.gguf`, `...-00002-of-00002.gguf`), not a folder of folders.
+  If you mount a parent folder, the container says which sub-folder to name in `MODEL_PATH`.
+- The folder has to be mounted: a `MODEL_PATH` that is not in the container, or a folder with no `.gguf` files, stops the start at
+  once with a message, and nothing is downloaded.
+- Read-only (`:ro`) is fine. The pack (about 40 GB for IQ3_XXS) and the draft layer (about 6 GB, fetched once) are written to the
+  volume, so it needs that room. With pictures on (the default) the picture reader (0.9 GB) is fetched too; `VISION=off` skips it.
+- Links to the files work when the links' targets are mounted too, and `MODEL` is set (without `MODEL`, Strata identifies the files itself
+  and does not follow links).
+- Without `MODEL_PATH`, files you put into the volume by hand (`/data/Strata-data/models/<model folder>/`) are found as well, if they have the
+  published names.
 
 ## The API key
 
@@ -189,7 +205,7 @@ The health check asks `GET /v1/models` with the key. During the first download t
 ## Updating
 
 ```sh
-docker pull ghcr.io/niko1221/strata:0.2.1-cuda13      # the new tag (with a self-built image, build it again instead)
+docker pull ghcr.io/niko1221/strata:0.2.2-cuda13      # the new tag (with a self-built image, build it again instead)
 docker stop strata && docker rm strata
 # run the same docker run command again with the new tag (compose: docker compose pull && docker compose up -d)
 ```
@@ -257,8 +273,10 @@ package and start through `strata launch`. Mapping:
 | `HOST` | not needed: the server listens on every address inside the container; choose where it is reachable with `-p` |
 | `LOW_RAM`, `RESIDENT_BUDGET_GIB`, `KV_STREAMING`, `LAYER_SPLIT`, `CONFIG`, `REINSTALL` | ignored with a warning; use `STRATA_SET` for engine settings and `strata launch --help` for the rest |
 
-The old volume layout (`/data/config`, `/data/models`) is not read; the model files are found again if you point `MODEL_PATH` at
-the old model folder. The container name, the volume and the port can stay as they were.
+A volume from the older image is picked up: the first start moves `/data/models`, `/data/packs` and `/data/mtp` into
+`/data/Strata-data` (a rename inside the volume: nothing is copied or downloaded again, and the prepared pack is kept). The old
+`/data/config` is not read; the run settings are made again from the files. A folder you mounted yourself at one of those places
+is left alone: point `MODEL_PATH` at it. The container name, the volume and the port can stay as they were.
 
 ## Build it yourself
 
@@ -266,9 +284,9 @@ This is the way to get an image for a computer without registry access or after 
 folder (made by `packaging/package_engine.py`, or fetched by `strata update` into a components folder) and Docker on Linux:
 
 ```sh
-docker/build.sh --flavor cuda --engine ~/components/engine/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.1-cuda13
-docker/build.sh --flavor hip  --engine ~/components/engine/0.1.45.3-linux-x86_64-hip-rx9070 --tag strata:0.2.1-rocm-gfx120x
-docker/build.sh --flavor sycl --engine ~/components/engine/<a-sycl-package-folder> --tag strata:0.2.1-sycl
+docker/build.sh --flavor cuda --engine ~/components/engine/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.2-cuda13
+docker/build.sh --flavor hip  --engine ~/components/engine/0.1.45.3-linux-x86_64-hip-rx9070 --tag strata:0.2.2-rocm-gfx120x
+docker/build.sh --flavor sycl --engine ~/components/engine/<a-sycl-package-folder> --tag strata:0.2.2-sycl
 ```
 
 `build.sh` assembles the build context (the Terminal's files and the package) and runs `docker build`. The build makes the
@@ -279,7 +297,10 @@ library inside the finished image. A package that fails any of these stops the b
 `docker/smoke-test.sh` runs the checks we ran on real cards (serves, key, chat, tool call, monitor, clean stop, memory freed, restart); see its first lines for the variables.
 
 **From source.** `docker build -t strata:src .` in the repository compiles the CUDA 13 engine inside Docker, makes the package
-and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only, much faster). For AMD and Intel
+and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only, much faster). For a GTX 10, P100 or
+V100 build the CUDA 12 variant: `docker build -t strata:src-cuda12 --build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04
+--build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .` (the build turns on the Pascal / Volta code by itself
+when an architecture below 75 is listed, and names the package `cuda12` with driver 575.51). For AMD and Intel
 builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result with
 `packaging/package_engine.py` and use `docker/build.sh`.
 
@@ -290,13 +311,13 @@ files the signed update feed names. Nothing publishes by itself: a maintainer st
 
 1. Make the release first (its `strata-feed.json`, `strata-feed.json.sig` and the engine archives must be on the GitHub release).
 2. GitHub, **Actions, Docker images, Run workflow** ([.github/workflows/docker-images.yml](../.github/workflows/docker-images.yml); the file has to be on
-   the default branch to show up). Inputs: the release tag (`v0.2.1`), the flavors (empty: every flavor the release has a package
+   the default branch to show up). Inputs: the release tag (`v0.2.2`), the flavors (empty: every flavor the release has a package
    for), **push** and **latest**. Run it once with **push off**: it builds every image and publishes nothing (a dry run).
 3. Run it again with **push on**. It logs in to `ghcr.io` with the job's `GITHUB_TOKEN` (`packages: write`) and pushes
-   `ghcr.io/niko1221/strata:0.2.1-<flavor>` and `latest-<flavor>`. Turn **latest** off for a pre-release.
+   `ghcr.io/niko1221/strata:0.2.2-<flavor>` and `latest-<flavor>`. Turn **latest** off for a pre-release.
 4. The first push creates each package as private. In the repository's Packages, open every package, **Package settings, Change
    visibility, Public**, and check it is linked to the repository (the image carries the `org.opencontainers.image.source` label).
-5. Check one pull from a computer that is not logged in: `docker pull ghcr.io/niko1221/strata:0.2.1-cuda13`.
+5. Check one pull from a computer that is not logged in: `docker pull ghcr.io/niko1221/strata:0.2.2-cuda13`.
 
 For each flavor the job runs [docker/fetch-engines.py](../docker/fetch-engines.py), which reads the release's signed feed (the
 Ed25519 key in `strata_control/update_keys.json`), downloads the package, and checks the archive's size and SHA-256, the manifest
@@ -314,7 +335,7 @@ the job starts the image once to see that the Terminal inside it runs.
 | `sycl` | `linux-x86_64`, sycl; **only when the feed lists one** (the 0.2.0-beta feed has none, so no Intel image is built from it) |
 
 A flavor the feed has no package for is left out, with a line in the log. The same steps run from a Linux computer with Docker:
-`docker/publish.sh --release-tag v0.2.1` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
+`docker/publish.sh --release-tag v0.2.2` builds everything and pushes nothing; add `--push` (after `docker login ghcr.io`) to publish.
 The images run on the runner without a graphics card, so the card checks (`docker/smoke-test.sh`) stay a manual step on a computer with the card.
 
 ## Tested

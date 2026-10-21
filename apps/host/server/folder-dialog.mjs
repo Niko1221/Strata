@@ -182,13 +182,16 @@ export function chooserUnavailable(picked) {
   return { message: picked.reason, code: 'folder-chooser-unavailable', details: picked.detail };
 }
 
-/** A typed path stands in for the dialog: it must be an absolute directory that exists. */
-export async function typedFolder(value, { isAbsolute }) {
-  const text = typeof value === 'string' ? value.trim() : '';
+/** A typed path stands in for the dialog: it must be an absolute directory that exists. `fileType` (a RegExp on the name) also lets a
+ *  file of that kind through (the model page takes a folder or one .gguf file). Quotes around the path (Windows "Copy as path") go. */
+export async function typedFolder(value, { isAbsolute, fileType = null }) {
+  let text = typeof value === 'string' ? value.trim() : '';
+  if (text.length > 1 && /^(["'])[\s\S]*\1$/.test(text)) text = text.slice(1, -1).trim();
   if (!text || text.includes('\0')) return null;
-  if (!isAbsolute(text)) throw new Error('Enter the full path of the folder.');
+  if (!isAbsolute(text)) throw new Error(fileType ? 'Enter the full path of the folder or the file.' : 'Enter the full path of the folder.');
   let info;
-  try { info = await stat(text); } catch { throw new Error('That folder does not exist.'); }
-  if (!info.isDirectory()) throw new Error('Choose a folder, not a file.');
+  try { info = await stat(text); } catch { throw new Error(fileType ? 'That folder or file does not exist.' : 'That folder does not exist.'); }
+  if (info.isFile() && fileType?.test(text)) return text;
+  if (!info.isDirectory()) throw new Error(fileType ? 'Choose a folder, or a .gguf file.' : 'Choose a folder, not a file.');
   return cleanChosenPath(text);
 }

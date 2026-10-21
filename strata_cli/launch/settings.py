@@ -82,6 +82,7 @@ class LaunchSettings:
     model_path: str | None = None              # "Use model files I already have": a .gguf file or a folder
     data_dir: str | None = None                # where model files are stored (None: the Strata default)
     gpus: list[int] | None = None              # None = the engine's choice (all usable cards)
+    gpu_roles: dict[str, str] | None = None    # {"1": "main", "0": "helper", "2": "off"}: a role for every card; None = the recommendation
     context: int | None = None
     kv: str | None = None                      # None = int8 above 8K, as setup
     vision: str | None = None                  # None = the default (on when the model can read pictures and the engine has the reader), off | on | gpu | cpu
@@ -92,12 +93,19 @@ class LaunchSettings:
     access: str = "local"
     port: int = DEFAULT_PORT
     api_key: str | None = None                 # never shown whole; stored only in the private preset file
+    no_key: bool = False                       # served beyond this computer without a key, on purpose (--no-api-key); a warning, never a refusal
     extra: dict[str, str] = field(default_factory=dict)    # Advanced: --set key=value (flags and STRATA_* variables)
     # filled in by the run, kept in the preset
     tuned_preset: str | None = None            # id of the tuning preset the tuner saved
     tuned_at: str | None = None
     last_used: str | None = None
     created: str | None = None
+
+    @property
+    def is_tuned(self) -> bool:
+        """Tuning was done for this preset: it saved faster settings (tuned_preset), or it measured that the standard settings are already the
+        fastest (only tuned_at is set). Either way the next start must not tune again."""
+        return bool(self.tuned_preset or self.tuned_at)
 
     def to_dict(self, *, with_key: bool = True) -> dict[str, Any]:
         d = {"schema": SCHEMA, **asdict(self)}
@@ -153,6 +161,11 @@ def check_port(port: Any) -> Notice | None:
     return None
 
 
+NO_KEY_NETWORK = "No API key: anyone who can reach this port can use the model and its tools (they can read and change files on this computer)."
+NO_KEY_PUBLIC = ("No API key on a public address: anyone on the internet who finds it can use the model and its tools "
+                 "(they can read and change files on this computer).")
+
+
 def check_access(s: LaunchSettings) -> list[Notice]:
     out: list[Notice] = []
     if s.access not in ACCESS_KINDS:
@@ -164,8 +177,13 @@ def check_access(s: LaunchSettings) -> list[Notice]:
     if port:
         out.append(port)
     if s.access != "local" and not s.api_key:
-        out.append(Notice("warn", f"{ACCESS_WORDS[s.access]} without an API key lets anyone who can reach it use your computer's model.",
-                          "Add an API key (Strata makes one for you in the Access step)."))
+        if s.access == "cloudflare":
+            out.append(Notice("warn", NO_KEY_PUBLIC, "Leave --no-api-key out to get a key."))
+        elif s.no_key:
+            out.append(Notice("warn", NO_KEY_NETWORK, "Leave --no-api-key out to get a key."))
+        else:
+            out.append(Notice("warn", f"{ACCESS_WORDS[s.access]} without an API key lets anyone who can reach it use your computer's model.",
+                              "Add an API key (Strata makes one for you in the Access step)."))
     return out
 
 
@@ -234,6 +252,8 @@ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[
     for key, value in extra.items():
         if key.startswith("--"):
             low = value.lower()
+            if low == "" and key not in bool_flags:
+                continue                          # an empty value for an option that takes one is no change, never a bare flag (#3504)
             if key in bool_flags or low in ("on", "true", "yes", ""):
                 args[key] = None if low in ("off", "false", "no", "none") else True
             elif low in ("off", "false", "no", "none"):
@@ -253,7 +273,7 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
     else:
         if s.model_path:
             parts.append(f'--model-path "{s.model_path}"')
-        elif s.model:
+        if s.model:                                   # own files the table recognised say which model they are, so the line stays exact
             parts.append(f"--model {s.model.lower()}" + (f" --family {s.family}" if s.family and s.family != "qwen" else ""))
         if s.data_dir:
             parts.append(f'--data-dir "{s.data_dir}"')
@@ -272,7 +292,9 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append("--tune-allow-small")
         parts.append(f"--access {s.access}")
         parts.append(f"--port {s.port}")
-        if s.gpus:
+        if s.gpu_roles:
+            parts.append("--gpu-roles " + ",".join(f"{k}={v}" for k, v in sorted(s.gpu_roles.items(), key=lambda kv: int(kv[0]))))
+        elif s.gpus:
             parts.append("--gpu " + ",".join(str(g) for g in s.gpus))
     for k, v in sorted(s.extra.items()):
         parts.append(f"--set {k[2:] if k.startswith('--') else k}={v}" if v else f"--set {k[2:] if k.startswith('--') else k}")

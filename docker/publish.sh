@@ -2,9 +2,9 @@
 # Build the Strata images of one release from its engine packages and, only with --push, push them to the registry.
 # The GitHub Actions workflow (.github/workflows/docker-images.yml) runs this script once per flavor; you can run it by hand too.
 #
-#   docker/publish.sh --release-tag v0.2.1                        # builds every flavor the release has a package for; pushes nothing
-#   docker/publish.sh --release-tag v0.2.1 --flavors cuda13,cuda12 --push
-#   docker/publish.sh --source ~/release-folder --version 0.2.1-test --flavors cuda13 --no-latest
+#   docker/publish.sh --release-tag v0.2.2                        # builds every flavor the release has a package for; pushes nothing
+#   docker/publish.sh --release-tag v0.2.2 --flavors cuda13,cuda12 --push
+#   docker/publish.sh --source ~/release-folder --version 0.2.2-test --flavors cuda13 --no-latest
 #
 # For every flavor:
 #   1. docker/fetch-engines.py downloads the engine package from the release (a GitHub release URL, or --source) and checks it
@@ -15,7 +15,7 @@
 #   4. with --push: docker push of <image>:<version>-<flavor> and, unless --no-latest, <image>:latest-<flavor>. You must be logged in
 #      to the registry already (`docker login ghcr.io`; the workflow logs in with GITHUB_TOKEN).
 #
-#   --release-tag TAG    the release, for example v0.2.1; the image version is the tag without the leading v
+#   --release-tag TAG    the release, for example v0.2.2; the image version is the tag without the leading v
 #   --source DIR|URL     use this folder or URL (with strata-feed.json, its .sig and the archives) instead of the GitHub release
 #   --version V          image version (default: the tag without v)
 #   --flavors LIST       comma separated (default: all that the release has: cuda13 cuda12 rocm-gfx120x rocm-gfx110x rocm-gfx1151 sycl)

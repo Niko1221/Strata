@@ -10,7 +10,7 @@ export function useInstalledVersions(): InstalledVersions {
   const native = useNative();
   const engineVersion = useStore(s => s.engine?.engine.version);
   const appVersion = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
-  return { appVersion: appVersion ?? null, engineVersion: (native?.available ? native.installed?.engine?.version : engineVersion) ?? null };
+  return { appVersion: appVersion ?? null, engineVersion: (native?.available ? native.installed?.engine?.version : engineVersion) ?? null, controlVersion: native?.version ?? null };
 }
 
 /** The one place the app asks the host to check for updates. Called only from a button press. */
