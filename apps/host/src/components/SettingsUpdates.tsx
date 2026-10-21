@@ -8,6 +8,8 @@ import { nativeAction, useNative } from '../lib/native';
 import { NativeProgress } from './NativeModels';
 import { appVersionLabel } from '../lib/app-version';
 import { fetchUpdateCheck, publishUpdateCheck, useInstalledVersions, useLastUpdateCheck } from '../lib/update-check';
+import { nativeJobDiagnostics } from '../lib/native-job-diagnostics';
+import { RecoveredUpdateHistory } from './RecoveredUpdateHistory';
 /** A check from an earlier day shows its date too, because the result is kept between visits. */
 function checkedLabel(at: string) {
     const when = new Date(at), sameDay = when.toDateString() === new Date().toDateString();
@@ -16,6 +18,7 @@ function checkedLabel(at: string) {
 /** Installed versions are real host values. Installation needs a host updater. */
 export function SettingsUpdates() {
     const native = useNative();
+    const diagnostics = nativeJobDiagnostics(native?.jobs ?? []);
     const [confirm, setConfirm] = useState('');
     const appVersion = appVersionLabel(useStore(s => s.setup?.app.version), native?.version);
     const engineVersion = useStore(s => s.engine?.engine.version);
@@ -89,7 +92,7 @@ export function SettingsUpdates() {
         <Btn variant="primary" disabled={component !== 'engine' || !native?.capabilities.rollback || !!active || (native?.instances.length ?? 0) > 0} onClick={() => void operate('rollback')}>{tr("Restore previous engine")}</Btn>
       </div>
     </Dialog>
-    {tr(active ? <NativeProgress job={active}/> : null)}{tr(native?.jobs.filter(j => j.state === 'error' && ['update-strata', 'update-engine', 'rollback'].includes(j.kind)).slice(-1).map(j => <p role="alert" key={j.id} className="small inline-error">{tr(j.error ?? j.summary)}</p>))}
+    {tr(active ? <NativeProgress job={active}/> : null)}{tr(diagnostics.errors.filter(j => ['update-strata', 'update-engine', 'rollback'].includes(j.kind)).slice(-1).map(j => <p role="alert" key={j.id} className="small inline-error">{tr(j.error ?? j.summary)}</p>))}<RecoveredUpdateHistory jobs={diagnostics.recovered}/>
     <Dialog open={!!confirm} compact title={tr(confirm === 'update-strata' ? 'Update Strata?' : 'Update engine?')} onClose={() => setConfirm('')} actions={<><Btn onClick={() => setConfirm('')}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void operate(confirm)}>{tr("Update")}</Btn></>}><p>{tr("The native installer updates the installation. Model files and settings are kept. Unload native models before updating.")}</p>{tr((native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</Dialog>
   </>;
 }
