@@ -17,6 +17,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
 #endif
 
 namespace strata::core {
@@ -286,6 +290,19 @@ std::optional<HostMemoryReading> sample_host_memory() {
     return combine(std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile), status.ullTotalPhys, CgroupScan{}, memory_limit_bytes());
 #elif defined(__linux__)
     return sample_host_memory(MemoryProbePaths{}, memory_limit_bytes());
+#elif defined(__APPLE__)
+    // macOS has no /proc/meminfo.  What the kernel can hand out without swapping further: free, inactive and
+    // speculative pages (the same set Activity Monitor counts as available); hw.memsize is the total.
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    vm_statistics64_data_t vm{};
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vm, &count) != KERN_SUCCESS) return {};
+    const long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) return {};
+    const uint64_t avail = (uint64_t) (vm.free_count + vm.inactive_count + vm.speculative_count) * (uint64_t) page;
+    uint64_t total = 0;
+    size_t len = sizeof total;
+    if (sysctlbyname("hw.memsize", &total, &len, nullptr, 0) != 0) total = 0;
+    return combine(avail, total ? std::optional<uint64_t>(total) : std::nullopt, CgroupScan{}, memory_limit_bytes());
 #else
     return {};
 #endif
