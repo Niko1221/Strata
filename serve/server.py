@@ -3956,6 +3956,7 @@ class Service:
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
+        self.alias_sampling: dict[str, dict] = {}     # the config's `alias_sampling`: request defaults per model alias
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
@@ -4622,12 +4623,22 @@ class Service:
         return self.shared.get("reasoning_effort") or self.config_effort
 
     def with_shared(self, req: dict, api: str) -> dict:
-        """The request with the shared thinking level and max tokens filled in where it has none of its own."""
+        """The request with the shared thinking level and max tokens filled in where it has none of its own.  A request
+        to an alias of `alias_sampling` also gets that alias's settings where neither it nor the shared settings set
+        them (request > shared settings > alias > the config's `sampling` and "reasoning_effort")."""
         s = self.shared
-        effort = self.effort_default()
-        if not s and not effort:
+        model = req.get("model")
+        alias = (self.alias_sampling.get(model) if isinstance(model, str) else None) or {}
+        effort = s.get("reasoning_effort") or alias.get("reasoning_effort") or self.config_effort
+        if not s and not effort and not alias:
             return req
         req = dict(req)
+        for key, value in alias.items():
+            if key in s or key == "reasoning_effort" or req.get(key) is not None:
+                continue
+            if key == "max_tokens" and req.get("max_completion_tokens"):
+                continue
+            req[key] = value
         if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
             req["max_tokens"] = s["max_tokens"]
         if effort:
@@ -8271,6 +8282,24 @@ def clean_shared_defaults(d) -> dict:
     return out
 
 
+def parse_alias_sampling(value, model: str) -> dict:
+    """The config's `alias_sampling`: {"<alias>": {<settings>}}, the settings of POST /settings (clean_shared_defaults)
+    for requests that name that alias as their model.  ValueError names a bad entry."""
+    if not isinstance(value, dict):
+        raise ValueError("alias_sampling must be an object: {\"<alias>\": {<settings>}}")
+    out = {}
+    for name, settings in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("alias_sampling: an alias needs a name")
+        if name.strip() == model:
+            raise ValueError(f"alias_sampling: {name!r} is the model's own name, not an alias")
+        try:
+            out[name.strip()] = clean_shared_defaults(settings)
+        except ValueError as e:
+            raise ValueError(f"alias_sampling {name!r}: {e}") from None
+    return out
+
+
 def split_joined_args(cfg: dict) -> None:
     """#2267: an engine option written as ONE element of the config's "args" - "--ple-io mmap" or "--ple-io=mmap" - reaches
     the engine as a single argument ("unknown argument: --ple-io mmap"; the usual form is two elements, "--ple-io",
@@ -9038,8 +9067,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
+        svc.alias_sampling = parse_alias_sampling(cfg.get("alias_sampling") or {}, svc.model)
     except ValueError as e:
         raise SystemExit(f"[strata] config {e}")
+    if svc.alias_sampling:
+        svc.set_aliases(svc.aliases + [x for x in svc.alias_sampling if x not in svc.aliases])
+        print("[strata] alias request defaults: " + "; ".join(
+            f"{k}: " + ", ".join(f"{a}={b}" for a, b in v.items()) for k, v in svc.alias_sampling.items()), flush=True)
     if svc.aliases:
         print(f"[strata] model aliases: {', '.join(svc.aliases)}", flush=True)
     svc.api_key = preflight_api_key
