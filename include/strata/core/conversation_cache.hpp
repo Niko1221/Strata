@@ -3,6 +3,7 @@
 #pragma once
 
 #include "strata/core/conversation_buffer.hpp"
+#include "strata/core/conversation_memory.hpp"
 
 #include <algorithm>
 #include <array>
@@ -335,8 +336,9 @@ public:
     // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
     // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
     // gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB segments and each segment is its
-    // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
-    // to the kernel at once - the next admission check reads it back from /proc/meminfo.
+    // own allocation, but glibc's mmap threshold is dynamic: once it has risen past 16 MiB, dropping an
+    // entry only moves the bytes onto the allocator's free list - RSS, and with it /proc/meminfo, does
+    // not move until the heap is handed back (see admit_ram's release).
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
     bool evict_oldest() {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
@@ -346,6 +348,42 @@ public:
             erase(i);
             ++evictions_;
             return true;
+        }
+        return false;
+    }
+
+    // What evict_oldest() could give back in all: everything parked that is not a pinned shared prefix.
+    size_t evictable_bytes() const {
+        size_t n = 0;
+        for (const auto& e : entries_) if (!e.pinned()) n += e.bytes();
+        return n;
+    }
+
+    // The physical-RAM gate of the parking path: may a snapshot of `allocation` bytes be built while the host keeps
+    // `floor` bytes free?  `available()` reads the host's free RAM and `release()` hands what the allocator still
+    // holds of freed memory back to the kernel.  Where the first reading refuses, it releases once (make_room may
+    // have dropped a conversation just before, and glibc keeps a freed 16 MiB segment - ConversationBuffer's grain -
+    // in its heap once its mmap threshold has risen) and reads again.  If that is not enough, parked conversations
+    // leave, least recently active first, each followed by a release and a new reading, until the snapshot fits.
+    // Nothing leaves if there is no figure to measure by or if what may leave holds less than is missing, as the
+    // snapshot would be refused anyway.  `evicted` counts the ones that left.
+    template<class Available, class Release>
+    bool admit_ram(Available&& available, Release&& release, uint64_t allocation, uint64_t floor, size_t& evicted) {
+        auto have = available();
+        if (conversation_memory_admit(have, allocation, floor)) return true;
+        if (!have) return false;
+        release();
+        have = available();
+        if (conversation_memory_admit(have, allocation, floor)) return true;
+        if (!have) return false;
+        const uint64_t short_by = *have < floor ? floor - *have + allocation : allocation - (*have - floor);
+        if (short_by > evictable_bytes()) return false;
+        while (evict_oldest()) {
+            ++evicted;
+            release();
+            have = available();
+            if (conversation_memory_admit(have, allocation, floor)) return true;
+            if (!have) return false;
         }
         return false;
     }
