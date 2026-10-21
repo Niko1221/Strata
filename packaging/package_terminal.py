@@ -116,7 +116,7 @@ TOOLS_SUBSET = (
 #: The same list the app's Control component stages (apps/desktop/scripts/stage-control.py uses these names).
 INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
 INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
-                   "strata_tokenizer", "gguf_reader")
+                   "strata_tokenizer", "gguf_reader", "calibrate")
 INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
 
 #: packages the bundle must import after the install (the API server's and the CLI's).
