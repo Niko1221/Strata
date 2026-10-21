@@ -1,0 +1,82 @@
+{
+ "exe": "/home/<user>/strata-lab/build-dual-v022-wlb8/strata",
+ "args": [
+  "--pack",
+  "/home/<user>/strata-lab/Strata-data/packs/iq3_s",
+  "--native",
+  "/home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "--expert-profile",
+  "/home/<user>/strata-lab/src-v022/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/home/<user>/strata-lab/Strata-data/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--mmap-experts",
+  "--mtp-window",
+  "8192",
+  "--no-prefill-borrow",
+  "--prefill",
+  "4096",
+  "--conversation-cache-mib",
+  "24576",
+  "--conversation-cache-slots",
+  "24",
+  "--trim-stage-weights",
+  "--batch-groups",
+  "1",
+  "--batch-mtp",
+  "--vision"
+ ],
+ "cwd": "/home/<user>/strata-lab/src-v022",
+ "tokenizer": "/home/<user>/strata-lab/Strata-data/packs/iq3_s/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq3_s",
+ "log": "/home/<user>/evals/results/strata-std-022-dual.engine.log",
+ "lib_dirs": [
+  "/home/<user>/rocm/install-multiarch/lib",
+  "/home/<user>/rocm/install-multiarch/lib/rocm_sysdeps/lib",
+  "/home/<user>/rocm/install-multiarch/lib/llvm/lib"
+ ],
+ "port": 8080,
+ "backend": "hip",
+ "open_browser": false,
+ "env": {
+  "STRATA_HIPBLASLT_TUNING": "/home/<user>/strata-lab/src-v022/tools/hip/gfx1151-hipblaslt-100401.txt",
+  "STRATA_PF_FUSED": "1",
+  "STRATA_PF_GEMM": "1",
+  "STRATA_PA_FAST": "1",
+  "STRATA_HIP_WMMA": "1",
+  "STRATA_SELECT_WMMA": "1",
+  "STRATA_PREFILL_STREAM_MIN": "64"
+ },
+ "parallel": 4,
+ "gpu": [
+  1,
+  0
+ ],
+ "layer_split": "30",
+ "vision": {
+  "exe": "/home/<user>/strata-lab/build-vision/bin/strata-vision",
+  "mmproj": "/home/<user>/strata-lab/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "/home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "gpu": false,
+  "max_tokens": 1024,
+  "threads": 16
+ },
+ "host": "0.0.0.0",
+ "aliases": [
+  "qwen3.8-flash-next"
+ ],
+ "fit_max_tokens": true
+}
