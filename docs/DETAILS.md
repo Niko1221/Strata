@@ -1263,6 +1263,11 @@ The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
 log), and for every setup how many prompt tokens the cache gave back - in the last request and since the start.
 `/metrics` has the same under `"conversation_cache"`.
+An unsuccessful park can evict entries without logging a full cache summary. The server keeps any remaining count
+reported by the refusal; `parked`, `bytes` or the cumulative `evictions` are `null` when the log does not establish
+their current value, until a later line reports it. The card shows unknown occupancy as a dash and hides its bar,
+rather than showing the old value or an empty cache. A physical-RAM refusal that explicitly reports no parked
+entries has zero cache bytes; a refusal is not counted as a successful park or restore.
 
 Snapshots contain running state, checkpoints, used K/V pages, and draft-layer K/V.
 They add host RAM, not another model or VRAM allocation. The byte budget also counts
