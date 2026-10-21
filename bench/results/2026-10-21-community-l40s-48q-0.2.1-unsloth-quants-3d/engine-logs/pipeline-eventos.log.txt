@@ -1,0 +1,113 @@
+2026-10-20 19:00:11 [noite] esperando o final.sh (PID 17654) terminar
+2026-10-20 20:57:11 [noite] final.sh terminou; parando a producao para a bateria 0.2.1
+GPU agora: Strata (Qwen3.8-Flash) (43398 MiB em uso).
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGINT)...
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGTERM)...
+Strata (Qwen3.8-Flash) fechado em 6.1 s.
+GPU com processo desconhecido: [{'pid': 157159, 'name': '[No data]', 'mib': 4831}]
+2026-10-20 20:57:23 [pipeline-021] inicio (PRAZO=2026-10-21 08:30:00 VOLTAR=1)
+2026-10-20 20:57:23 [pipeline-021] === 021-ud-q2_k_xl-256k
+2026-10-20 20:58:01 [pipeline-021]   021-ud-q2_k_xl-256k: info
+2026-10-20 20:58:01 [pipeline-021]   021-ud-q2_k_xl-256k: bench
+2026-10-20 20:59:03 [pipeline-021]   021-ud-q2_k_xl-256k: velocidade 8k,32k,128k
+2026-10-20 21:00:07 [pipeline-021]   021-ud-q2_k_xl-256k: kl-coletar geral
+2026-10-20 21:00:32 [pipeline-021]   021-ud-q2_k_xl-256k: kl-coletar dominios
+2026-10-20 21:01:59 [pipeline-021]   021-ud-q2_k_xl-256k: agulhas 128k
+2026-10-20 21:03:49 [pipeline-021]   021-ud-q2_k_xl-256k: 3d
+2026-10-20 21:17:03 [pipeline-021]   021-ud-q2_k_xl-256k: 3D 021-ud-q2_k_xl-256k: 24/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [5, 5], 'hierarquia_mod': [4, 5], 'animacao': [0, 1]}
+2026-10-20 21:17:12 [pipeline-021]   021-ud-q2_k_xl-256k concluido
+2026-10-20 21:17:12 [pipeline-021] === provas 021-ud-q2_k_xl-256k: evalplus gsm8k-ifeval math
+2026-10-20 21:17:35 [pipeline-021]   021-ud-q2_k_xl-256k: prova evalplus
+2026-10-20 21:27:16 [pipeline-021]   021-ud-q2_k_xl-256k: prova gsm8k-ifeval
+2026-10-20 21:40:34 [pipeline-021]   021-ud-q2_k_xl-256k: prova math
+2026-10-20 21:55:57 [pipeline-021]   provas de 021-ud-q2_k_xl-256k concluidas
+2026-10-20 21:55:57 [pipeline-021] === 021-ud-q3_k_xl-256k
+2026-10-20 21:56:41 [pipeline-021]   021-ud-q3_k_xl-256k: info
+2026-10-20 21:56:41 [pipeline-021]   021-ud-q3_k_xl-256k: bench
+2026-10-20 21:57:49 [pipeline-021]   021-ud-q3_k_xl-256k: velocidade 8k,32k,128k
+2026-10-20 21:58:54 [pipeline-021]   021-ud-q3_k_xl-256k: kl-coletar geral
+2026-10-20 21:59:20 [pipeline-021]   021-ud-q3_k_xl-256k: kl-coletar dominios
+2026-10-20 22:00:45 [pipeline-021]   021-ud-q3_k_xl-256k: agulhas 128k
+2026-10-20 22:02:35 [pipeline-021]   021-ud-q3_k_xl-256k: 3d
+2026-10-20 22:15:16 [pipeline-021]   021-ud-q3_k_xl-256k: 3D 021-ud-q3_k_xl-256k: 25/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [4, 5], 'hierarquia_mod': [5, 5], 'animacao': [1, 1]}
+2026-10-20 22:15:25 [pipeline-021]   021-ud-q3_k_xl-256k concluido
+2026-10-20 22:15:25 [pipeline-021] === provas 021-ud-q3_k_xl-256k: evalplus gsm8k-ifeval math
+2026-10-20 22:15:54 [pipeline-021]   021-ud-q3_k_xl-256k: prova evalplus
+2026-10-20 22:26:49 [pipeline-021]   021-ud-q3_k_xl-256k: prova gsm8k-ifeval
+2026-10-20 22:42:54 [pipeline-021]   021-ud-q3_k_xl-256k: prova math
+2026-10-20 23:02:39 [pipeline-021]   provas de 021-ud-q3_k_xl-256k concluidas
+2026-10-20 23:02:39 [pipeline-021] === 021-ud-q4_k_xl-256k
+2026-10-20 23:03:12 [pipeline-021]   021-ud-q4_k_xl-256k: info
+2026-10-20 23:03:12 [pipeline-021]   021-ud-q4_k_xl-256k: bench
+2026-10-20 23:04:43 [pipeline-021]   021-ud-q4_k_xl-256k: velocidade 8k,32k,128k
+2026-10-20 23:06:01 [pipeline-021]   021-ud-q4_k_xl-256k: kl-coletar geral
+2026-10-20 23:06:38 [pipeline-021]   021-ud-q4_k_xl-256k: kl-coletar dominios
+2026-10-20 23:08:50 [pipeline-021]   021-ud-q4_k_xl-256k: agulhas 128k
+2026-10-20 23:11:07 [pipeline-021]   021-ud-q4_k_xl-256k: visao-detalhe
+2026-10-20 23:11:35 [pipeline-021]   021-ud-q4_k_xl-256k: 3d
+2026-10-20 23:29:05 [pipeline-021]   021-ud-q4_k_xl-256k: 3D 021-ud-q4_k_xl-256k: 25/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [5, 5], 'hierarquia_mod': [4, 5], 'animacao': [1, 1]}
+2026-10-20 23:29:15 [pipeline-021]   021-ud-q4_k_xl-256k concluido
+2026-10-20 23:29:15 [pipeline-021] === provas 021-ud-q4_k_xl-256k: evalplus gsm8k-ifeval math
+2026-10-20 23:29:43 [pipeline-021]   021-ud-q4_k_xl-256k: prova evalplus
+2026-10-20 23:42:12 [pipeline-021]   021-ud-q4_k_xl-256k: prova gsm8k-ifeval
+2026-10-21 00:01:19 [pipeline-021]   021-ud-q4_k_xl-256k: prova math
+2026-10-21 00:24:02 [pipeline-021]   provas de 021-ud-q4_k_xl-256k concluidas
+2026-10-21 00:24:02 [pipeline-021] === 021-ud-q5_k_xl-256k
+2026-10-21 00:25:10 [pipeline-021]   021-ud-q5_k_xl-256k: info
+2026-10-21 00:25:10 [pipeline-021]   021-ud-q5_k_xl-256k: bench
+2026-10-21 00:27:07 [pipeline-021]   021-ud-q5_k_xl-256k: velocidade 8k,32k,128k
+2026-10-21 00:28:42 [pipeline-021]   021-ud-q5_k_xl-256k: kl-coletar geral
+2026-10-21 00:29:25 [pipeline-021]   021-ud-q5_k_xl-256k: kl-coletar dominios
+2026-10-21 00:31:54 [pipeline-021]   021-ud-q5_k_xl-256k: agulhas 128k
+2026-10-21 00:34:45 [pipeline-021]   021-ud-q5_k_xl-256k: 3d
+2026-10-21 00:49:51 [pipeline-021]   021-ud-q5_k_xl-256k: 3D 021-ud-q5_k_xl-256k: 26/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [5, 5], 'hierarquia_mod': [5, 5], 'animacao': [1, 1]}
+2026-10-21 00:50:02 [pipeline-021]   021-ud-q5_k_xl-256k concluido
+2026-10-21 00:50:02 [pipeline-021] === provas 021-ud-q5_k_xl-256k: evalplus gsm8k-ifeval math
+2026-10-21 00:50:40 [pipeline-021]   021-ud-q5_k_xl-256k: prova evalplus
+2026-10-21 01:04:29 [pipeline-021]   021-ud-q5_k_xl-256k: prova gsm8k-ifeval
+2026-10-21 01:25:52 [pipeline-021]   021-ud-q5_k_xl-256k: prova math
+2026-10-21 01:51:40 [pipeline-021]   provas de 021-ud-q5_k_xl-256k concluidas
+2026-10-21 01:51:40 [pipeline-021] === 021-ud-q6_k_xl-256k
+2026-10-21 01:52:49 [pipeline-021]   021-ud-q6_k_xl-256k: info
+2026-10-21 01:52:49 [pipeline-021]   021-ud-q6_k_xl-256k: bench
+2026-10-21 01:54:57 [pipeline-021]   021-ud-q6_k_xl-256k: velocidade 8k,32k,128k
+2026-10-21 01:56:43 [pipeline-021]   021-ud-q6_k_xl-256k: kl-coletar geral
+2026-10-21 01:57:33 [pipeline-021]   021-ud-q6_k_xl-256k: kl-coletar dominios
+2026-10-21 02:00:24 [pipeline-021]   021-ud-q6_k_xl-256k: agulhas 128k
+2026-10-21 02:03:38 [pipeline-021]   021-ud-q6_k_xl-256k: 3d
+2026-10-21 02:22:44 [pipeline-021]   021-ud-q6_k_xl-256k: 3D 021-ud-q6_k_xl-256k: 26/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [5, 5], 'hierarquia_mod': [5, 5], 'animacao': [1, 1]}
+2026-10-21 02:22:55 [pipeline-021]   021-ud-q6_k_xl-256k concluido
+2026-10-21 02:22:55 [pipeline-021] === provas 021-ud-q6_k_xl-256k: evalplus gsm8k-ifeval math
+2026-10-21 02:23:33 [pipeline-021]   021-ud-q6_k_xl-256k: prova evalplus
+2026-10-21 02:38:20 [pipeline-021]   021-ud-q6_k_xl-256k: prova gsm8k-ifeval
+2026-10-21 03:01:35 [pipeline-021]   021-ud-q6_k_xl-256k: prova math
+2026-10-21 03:29:42 [pipeline-021]   provas de 021-ud-q6_k_xl-256k concluidas
+2026-10-21 03:29:42 [pipeline-021] === 021-q8_0-256k
+2026-10-21 03:30:25 [pipeline-021]   021-q8_0-256k: info
+2026-10-21 03:30:25 [pipeline-021]   021-q8_0-256k: bench
+2026-10-21 03:33:01 [pipeline-021]   021-q8_0-256k: velocidade 8k,32k,128k
+2026-10-21 03:35:06 [pipeline-021]   021-q8_0-256k: kl-coletar geral
+2026-10-21 03:36:05 [pipeline-021]   021-q8_0-256k: kl-coletar dominios
+2026-10-21 03:39:31 [pipeline-021]   021-q8_0-256k: agulhas 128k
+2026-10-21 03:43:20 [pipeline-021]   021-q8_0-256k: visao-detalhe
+2026-10-21 03:44:03 [pipeline-021]   021-q8_0-256k: 3d
+2026-10-21 04:03:37 [pipeline-021]   021-q8_0-256k: 3D 021-q8_0-256k: 25/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [4, 5], 'hierarquia_mod': [5, 5], 'animacao': [1, 1]}
+2026-10-21 04:03:50 [pipeline-021]   021-q8_0-256k concluido
+2026-10-21 04:03:50 [pipeline-021] === provas 021-q8_0-256k: evalplus gsm8k-ifeval math
+2026-10-21 04:04:33 [pipeline-021]   021-q8_0-256k: prova evalplus
+2026-10-21 04:22:09 [pipeline-021]   021-q8_0-256k: prova gsm8k-ifeval
+2026-10-21 04:49:11 [pipeline-021]   021-q8_0-256k: prova math
+2026-10-21 05:20:57 [pipeline-021]   provas de 021-q8_0-256k concluidas
+2026-10-21 05:20:57 [pipeline-021] === ab020-q4-r1
+2026-10-21 05:22:03 [pipeline-021] === ab021-q4-r1
+2026-10-21 05:23:08 [pipeline-021] === ab020-q4-r2
+2026-10-21 05:24:12 [pipeline-021] === ab021-q4-r2
+2026-10-21 05:25:16 [pipeline-021] === ab020-q4-r3
+2026-10-21 05:26:21 [pipeline-021] === ab021-q4-r3
+2026-10-21 05:27:46 [pipeline-021] fim
+2026-10-21 05:27:46 [pipeline-021] fim/interrupcao: subindo a producao (gpu-start strata)
+GPU agora: nada (52 MiB em uso).
+Iniciando o Strata (Qwen3.8-Flash)...
+PRONTO: Strata (Qwen3.8-Flash) em http://127.0.0.1:8080  (51.3 s para subir, 43398 MiB na GPU).
+OK.
+2026-10-21 05:28:37 [noite] pipeline 0.2.1 terminou (rc 0)

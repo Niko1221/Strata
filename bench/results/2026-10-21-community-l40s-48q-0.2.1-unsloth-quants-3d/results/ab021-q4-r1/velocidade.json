@@ -1,0 +1,26 @@
+[
+ {
+  "alvo": "8k",
+  "prompt_tokens": 6918,
+  "saida": 512,
+  "total_s": 9.3,
+  "prompt_tok_s": 1789,
+  "decode_tok_s": 93.9,
+  "hit_rate": 0.936,
+  "pcie_share": 0.009,
+  "reaproveitado": 0,
+  "drafts": "275/465"
+ },
+ {
+  "alvo": "32k",
+  "prompt_tokens": 32802,
+  "saida": 512,
+  "total_s": 16.8,
+  "prompt_tok_s": 2817,
+  "decode_tok_s": 101.0,
+  "hit_rate": 0.955,
+  "pcie_share": 0.0,
+  "reaproveitado": 0,
+  "drafts": "275/482"
+ }
+]

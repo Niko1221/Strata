@@ -1,0 +1,293 @@
+{
+ "tag": "021-ud-q4_k_xl-256k",
+ "passou": 25,
+ "total": 26,
+ "por_categoria": {
+  "medidas": [
+   5,
+   5
+  ],
+  "relacoes": [
+   8,
+   8
+  ],
+  "camera_luz": [
+   2,
+   2
+  ],
+  "material_cena": [
+   5,
+   5
+  ],
+  "hierarquia_mod": [
+   4,
+   5
+  ],
+  "animacao": [
+   1,
+   1
+  ]
+ },
+ "tarefas": [
+  {
+   "tarefa": "cubo_chao",
+   "erro": null,
+   "passou": true,
+   "detalhe": "tam (2.000, 2.000, 2.000) min.z 0.000 centro (0.000, 0.000, 1.000)",
+   "categoria": "medidas",
+   "segundos": 9.0,
+   "tokens": 890,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "esferas_fila",
+   "erro": null,
+   "passou": true,
+   "detalhe": "centros (-2.000, 0.000, 0.500) (0.000, 0.000, 0.500) (2.000, 0.000, 0.500)",
+   "categoria": "medidas",
+   "segundos": 8.2,
+   "tokens": 793,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "pilha_girada",
+   "erro": null,
+   "passou": true,
+   "detalhe": "z/rot 0.00/0.0 1.00/15.0 2.00/30.0",
+   "categoria": "relacoes",
+   "segundos": 14.2,
+   "tokens": 1467,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "anel_cilindros",
+   "erro": null,
+   "passou": true,
+   "detalhe": "forma/raio ok 8/8; passos [45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0]",
+   "categoria": "relacoes",
+   "segundos": 62.0,
+   "tokens": 6328,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "mesa",
+   "erro": null,
+   "passou": true,
+   "detalhe": "tampo (2.000, 1.000, 0.050) topo 0.750; pernas ok 4/4; cantos 4",
+   "categoria": "relacoes",
+   "segundos": 43.5,
+   "tokens": 5024,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "esfera_sobre_cubo",
+   "erro": null,
+   "passou": true,
+   "detalhe": "cubo (-1.000, -1.000, 0.000)..(1.000, 1.000, 2.000) esfera min.z 2.000",
+   "categoria": "relacoes",
+   "segundos": 57.4,
+   "tokens": 6341,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "grade",
+   "erro": null,
+   "passou": true,
+   "detalhe": "12/12 posicoes certas",
+   "categoria": "relacoes",
+   "segundos": 42.6,
+   "tokens": 4817,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "cilindro_deitado",
+   "erro": null,
+   "passou": true,
+   "detalhe": "tam (4.000, 0.500, 0.500) centro (0.000, 0.000, 0.000)",
+   "categoria": "medidas",
+   "segundos": 31.0,
+   "tokens": 3342,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "escada",
+   "erro": null,
+   "passou": true,
+   "detalhe": "degraus certos 10/10",
+   "categoria": "relacoes",
+   "segundos": 57.3,
+   "tokens": 6649,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "sala",
+   "erro": null,
+   "passou": true,
+   "detalhe": "piso (4.000, 5.000, 0.100); paredes X 2 Y 2",
+   "categoria": "relacoes",
+   "segundos": 33.8,
+   "tokens": 3875,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "camera_mira",
+   "erro": null,
+   "passou": true,
+   "detalhe": "camera em (10.000, -10.000, 8.000), desvio 0.00 graus",
+   "categoria": "camera_luz",
+   "segundos": 7.7,
+   "tokens": 748,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "luzes",
+   "erro": null,
+   "passou": true,
+   "detalhe": "sol 3.0 desvio 0.0; area (0.000, 0.000, 4.000) 500.0W (2.0, 2.0)",
+   "categoria": "camera_luz",
+   "segundos": 24.6,
+   "tokens": 2680,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "material_bola",
+   "erro": null,
+   "passou": true,
+   "detalhe": "cor (1.000, 0.000, 0.000) metal 1.00 rug 0.20",
+   "categoria": "material_cena",
+   "segundos": 59.3,
+   "tokens": 6641,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "hierarquia",
+   "erro": null,
+   "passou": true,
+   "detalhe": "pai Pivo; satelite em (-0.000, 2.000, 1.000)",
+   "categoria": "hierarquia_mod",
+   "segundos": 62.7,
+   "tokens": 6422,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "array",
+   "erro": null,
+   "passou": true,
+   "detalhe": "count 5 rel (1.5, 0.0, 0.0) comprimento 7.000",
+   "categoria": "hierarquia_mod",
+   "segundos": 18.3,
+   "tokens": 2129,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "espelho",
+   "erro": "    exec(compile(codigo, \"script_do_modelo.py\", \"exec\"), {\"__name__\": \"__main__\", \"bpy\": bpy})\n    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"script_do_modelo.py\", line 42, in <module>\nAttributeError: 'MirrorModifier' object has no attribute 'use_axis_x'. Did you mean: 'use_axis'?\n",
+   "passou": false,
+   "detalhe": "",
+   "categoria": "hierarquia_mod",
+   "segundos": 31.3,
+   "tokens": 3665,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "boolean_furo",
+   "erro": null,
+   "passou": true,
+   "detalhe": "tam (2.000, 2.000, 2.000); raio no centro acerta: False; ao lado: z=1.000",
+   "categoria": "hierarquia_mod",
+   "segundos": 63.9,
+   "tokens": 6492,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "animacao",
+   "erro": null,
+   "passou": true,
+   "detalhe": "quadros 1-50; 1 (0.000, 0.000, 0.000) 25 (2.423, 0.000, 0.000) 50 (5.000, 0.000, 0.000)",
+   "categoria": "animacao",
+   "segundos": 55.8,
+   "tokens": 6577,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "colecao",
+   "erro": null,
+   "passou": true,
+   "detalhe": "ligada True; objetos ['Armario', 'Cadeira', 'Mesa']",
+   "categoria": "material_cena",
+   "segundos": 58.7,
+   "tokens": 6709,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "escala_aplicada",
+   "erro": null,
+   "passou": true,
+   "detalhe": "escala (1.000, 1.000, 1.000) tam (3.000, 2.000, 1.000) min.z 0.000",
+   "categoria": "medidas",
+   "segundos": 28.7,
+   "tokens": 3265,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "carro",
+   "erro": null,
+   "passou": true,
+   "detalhe": "rodas certas 4/4; tamanhos ['(0.600, 0.200, 0.600)', '(0.600, 0.200, 0.600)', '(0.600, 0.200, 0.600)', '(0.600, 0.200, 0.600)']",
+   "categoria": "hierarquia_mod",
+   "segundos": 19.2,
+   "tokens": 2077,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "cone_x",
+   "erro": null,
+   "passou": true,
+   "detalhe": "x -0.000..2.000 tam (2.000, 1.000, 1.000) ponta (2.000, 0.000, -0.000)",
+   "categoria": "medidas",
+   "segundos": 55.9,
+   "tokens": 6369,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "render",
+   "erro": null,
+   "passou": true,
+   "detalhe": "CYCLES 64 1920x1080 100% PNG",
+   "categoria": "material_cena",
+   "segundos": 38.5,
+   "tokens": 6238,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "cadeiras",
+   "erro": null,
+   "passou": true,
+   "detalhe": "mesa (1.600, 0.900, 0.750); cadeiras y -0.650 e 0.650",
+   "categoria": "relacoes",
+   "segundos": 51.8,
+   "tokens": 5799,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "texto",
+   "erro": null,
+   "passou": true,
+   "detalhe": "'Olá 3D' extrude 0.10000000149011612 align CENTER",
+   "categoria": "material_cena",
+   "segundos": 36.3,
+   "tokens": 6254,
+   "fim": "stop"
+  },
+  {
+   "tarefa": "subdiv",
+   "erro": null,
+   "passou": true,
+   "detalhe": "subsurf [(2, 2)] suave True faces 512",
+   "categoria": "material_cena",
+   "segundos": 61.4,
+   "tokens": 6256,
+   "fim": "stop"
+  }
+ ]
+}

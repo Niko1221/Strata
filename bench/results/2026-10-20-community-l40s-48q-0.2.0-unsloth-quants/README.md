@@ -1,6 +1,6 @@
 # Community benchmark: L40S-48Q (vGPU, 48 GB), Strata 0.2.0-beta, six Unsloth quantizations of Qwen3.8-Flash-Next
 
-**Status: the 0.2.0 results are complete.** Everything below was measured. Tonight (2026-10-20 to 21) we are running the same battery on **Strata 0.2.1**: all six quantizations, interleaved 0.2.0/0.2.1 starts on UD-Q4_K_XL, and a new 26-task 3D suite in which the model writes `bpy` scripts that Blender runs headless and a checker verifies. We will add those results to this PR in about 14 hours.
+**Status: complete.** Everything below was measured. The follow-up, with the same six GGUFs on Strata 0.2.1, interleaved 0.2.0/0.2.1 starts and a 26-task 3D suite in Blender, is in [2026-10-21-community-l40s-48q-0.2.1-unsloth-quants-3d](../2026-10-21-community-l40s-48q-0.2.1-unsloth-quants-3d/).
 
 Measured 2026-10-19 and 2026-10-20 on Linux. These are six Unsloth GGUFs of the same model, UD-Q2_K_XL through Q8_0. They run on the same Strata 0.2.0-beta engine with the same run config. One question drives the report: on one 48 GB card with every expert in RAM, which quantization should you pick?
 
@@ -150,12 +150,11 @@ In an earlier draft we guessed that this setting explained why UD-Q4_K_XL decode
 
 ## Issues found
 
-- [#3269](https://github.com/Niko1221/Strata/issues/3269): the 0.2.0 Linux control package's `tools/iq_pack.py` could not find `gguf-py`. We worked around it with `STRATA_GGUF_PY`. Fixed in 0.2.1.
+- [#3269](https://github.com/Niko1221/Strata/issues/3269): the 0.2.0 Linux control package's `tools/iq_pack.py` could not find `gguf-py`. We worked around it with `STRATA_GGUF_PY`. In 0.2.1 the tool looks in more places, and its message says to run `setup.py` once or set the variable.
 - No engine errors and no failed requests in any run.
 
 ## Limits
 
-- **0.2.1 is still to come.** See Status.
 - **A host problem after the RAM upgrade, now fixed.** The VM's RAM was raised from 251 to 503 GiB after the speed and quality runs. After that, registering a large amount of pinned host memory crashed the vGPU guest driver (a kernel Oops in `rm_ioctl` during `cudaHostRegister`) and then hung the VM. A bare `cudaHostRegister` test reproduced it without Strata.
   - **Cause:** the new RAM was placed on the host's other CPU socket (NUMA node 0), while the GPU sits on CPU 1. The hosting team moved the VM's memory, and the problem is gone.
   - **After the fix:** pinned registrations of 1 to 192 GiB pass, and Q8_0 at 1M context loads and finds 3/3 needles.
@@ -163,7 +162,7 @@ In an earlier draft we guessed that this setting explained why UD-Q4_K_XL decode
 - **One machine, a vGPU, one request at a time.** No concurrency, no thermal or clock capture, and the background load of the host is unknown.
 - **Speed runs are single requests per length,** inside one server session per model. Each table row is one session. The `strata_bench` columns are medians of 3 runs.
 - **The first-token KL covers the prompt path only.** It does not cover the decode or verify path where the route tail skip acts.
-- **No 3D or Blender task suite on 0.2.0.** The geometry and spatial tasks above are the nearest proxy. The 3D suite runs on 0.2.1 only.
+- **No 3D or Blender task suite on 0.2.0.** The geometry and spatial tasks above are the nearest proxy. The 3D suite ran on 0.2.1 only; see the 0.2.1 folder.
 
 ## Files
 
