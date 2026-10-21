@@ -1,0 +1,23 @@
+{
+  "upstream_revision": "9de04cd44e927a9a3df6bbc0e94fc1be8b844ba4",
+  "source_sha256": {
+    "include/strata/artifact/gguf_reader.hpp": "7e9a565d3698955e0c2fc9bacce03e687d2e054cff7e36b76baf91910820df64",
+    "include/strata/artifact/gguf_split.hpp": "2f66d12f231c840fcd0177d9b2552aa98759252e95c6b5740e670cf0afa9e1b1",
+    "include/strata/artifact/dequant.hpp": "e904a075ee9e7dd4f1e5d38c9c7f9ac33d96b7d754078355a94d03c411cb90d5",
+    "include/strata/artifact/model_family.hpp": "aa1de52091a83e55edb58faec12515cb734a33dd2219d17b4004493a560e4cbf",
+    "include/strata/core/geometry.hpp": "3be11960e8538613aab25b6e190571312d06d211d73c46fbd6ef2ba6c6c56923",
+    "bench/ascend_a2_s2/CMakeLists.txt": "269d9aaccd5f1cbf6405e5d22c64ef8700cc2d77191e6a7172d6b12971334700",
+    "bench/ascend_a2_s2/dequant_s2.cpp": "0330c9345ce20fc033d8d4a8e21cdc6ca0ca8635a2c86e3c2524e571d4eaff98",
+    "bench/ascend_a2_s2/reference.cpp": "2478973e4c44d90b6a00a60837ebe06e8eda240d17988b6eb349d610a4a25589",
+    "bench/ascend_a2_s2/fused/CMakeLists.txt": "af1aa5f9db85944d02f19aee530a614dab8f00b4b397f650e269b3acfdaef54f",
+    "bench/ascend_a2_s2/fused/projection.cpp": "bfff2902e4787967626fc41ccf9b8682adaa3435fc01863a0e9be52df94f96a1",
+    "bench/ascend_a2_s2/fused/probe.py": "f347bacbef3a5fed9f047cd73b24b8854794cd3088327debf7450304548839f4"
+  },
+  "reports": [
+    "fused-run-1.json",
+    "fused-cache-run-1.json",
+    "fused-vector-run-1.json",
+    "fused-vector-run-2.json",
+    "fused-vector-run-3.json"
+  ]
+}

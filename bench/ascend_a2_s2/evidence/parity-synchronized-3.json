@@ -1,0 +1,109 @@
+{
+  "kind": "strata-ascend-s2-correctness-prototype",
+  "machine": "aarch64",
+  "torch": "2.7.1+cpu",
+  "torch_npu": "2.7.1.post4",
+  "device": "Ascend910B3",
+  "seed": 12345,
+  "kernel_sha256": "dd7d88325c8fb2382a30a68bea71cc17305b0d9b41eea77371e4adfb6cf3fb1d",
+  "cases": [
+    {
+      "blocks": 0,
+      "elements": 0,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 1,
+      "elements": 64,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 2,
+      "elements": 128,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 3,
+      "elements": 192,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 7,
+      "elements": 448,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 8,
+      "elements": 512,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 31,
+      "elements": 1984,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 32,
+      "elements": 2048,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 33,
+      "elements": 2112,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 256,
+      "elements": 16384,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 257,
+      "elements": 16448,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 4096,
+      "elements": 262144,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    }
+  ],
+  "scope": "synthetic blocks; no engine integration or model validation",
+  "passed": true
+}

@@ -1,0 +1,76 @@
+-- Configuring done
+-- Generating done
+-- Build files have been written to: <POC_ROOT>/bench/ascend_a2_s2/fused/build-release
+[  2%] Performing build step for 'strata_s2_projection_precompile'
+Consolidate compiler generated dependencies of target precompile_obj
+[100%] Building CXX object CMakeFiles/precompile_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[100%] Built target precompile_obj
+[100%] Built target check_src_template
+[  4%] No install step for 'strata_s2_projection_precompile'
+[  7%] Completed 'strata_s2_projection_precompile'
+[ 19%] Built target strata_s2_projection_precompile
+[ 21%] Performing build step for 'strata_s2_projection_preprocess'
+-- Configuring done
+-- Generating done
+-- Build files have been written to: <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_preprocess-prefix/src/strata_s2_projection_preprocess-build
+Consolidate compiler generated dependencies of target aic_obj
+Consolidate compiler generated dependencies of target preprocess_obj
+[ 66%] Building CXX object CMakeFiles/preprocess_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[ 66%] Building CXX object CMakeFiles/aic_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[ 66%] Built target preprocess_obj
+Consolidate compiler generated dependencies of target aiv_obj
+[100%] Building CXX object CMakeFiles/aiv_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[100%] Built target aic_obj
+<CANN_ROOT>/aarch64-linux/ccec_compiler/bin/ld.lld -m aicorelinux -Ttext=0 <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_preprocess-prefix/src/strata_s2_projection_preprocess-build/CMakeFiles/aic_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o -o <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_preprocess-prefix/src/strata_s2_projection_preprocess-build/CMakeFiles/aic_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o[100%] Built target merge_aic_obj_text
+[100%] Built target aiv_obj
+<CANN_ROOT>/aarch64-linux/ccec_compiler/bin/ld.lld -m aicorelinux -Ttext=0 <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_preprocess-prefix/src/strata_s2_projection_preprocess-build/CMakeFiles/aiv_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o -o <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_preprocess-prefix/src/strata_s2_projection_preprocess-build/CMakeFiles/aiv_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o[100%] Built target merge_aiv_obj_text
+[100%] Built target _host_cpp
+[ 23%] No install step for 'strata_s2_projection_preprocess'
+[ 26%] Completed 'strata_s2_projection_preprocess'
+[ 38%] Built target strata_s2_projection_preprocess
+[ 40%] Performing build step for 'strata_s2_projection_host'
+[ 42%] Performing configure step for 'strata_s2_projection_aic_device'
+-- Configuring done
+-- Generating done
+-- Configuring done
+-- Build files have been written to: <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_aic_device-prefix/src/strata_s2_projection_aic_device-build
+-- Generating done
+-- Build files have been written to: <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_host-prefix/src/strata_s2_projection_host-build
+[ 45%] Performing build step for 'strata_s2_projection_aic_device'
+Consolidate compiler generated dependencies of target host_bisheng_obj
+[ 47%] No install step for 'strata_s2_projection_aic_device'
+[100%] Building CXX object CMakeFiles/host_bisheng_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[ 50%] Completed 'strata_s2_projection_aic_device'
+[ 59%] Built target strata_s2_projection_aic_device
+[ 61%] Performing configure step for 'strata_s2_projection_aiv_device'
+-- Configuring done
+-- Generating done
+-- Build files have been written to: <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_aiv_device-prefix/src/strata_s2_projection_aiv_device-build
+[ 64%] Performing build step for 'strata_s2_projection_aiv_device'
+Consolidate compiler generated dependencies of target device_aiv_obj
+[100%] Building CXX object CMakeFiles/device_aiv_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/build-release/auto_gen/strata_s2_projection/auto_gen_projection.cpp.o
+[100%] Built target host_bisheng_obj
+[ 66%] Performing install step for 'strata_s2_projection_host'
+Consolidate compiler generated dependencies of target host_bisheng_obj
+[100%] Building CXX object CMakeFiles/host_bisheng_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[100%] Built target host_bisheng_obj
+Install the project...
+-- Install configuration: "Release"
+-- Installing: <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_host_dir/./objects-Release/host_bisheng_obj<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o
+[ 69%] Completed 'strata_s2_projection_host'
+[ 80%] Built target strata_s2_projection_host
+[100%] Built target device_aiv_obj
+<CANN_ROOT>/aarch64-linux/ccec_compiler/bin/ld.lld  -m aicorelinux -r  -Ttext=0 <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_aiv_device-prefix/src/strata_s2_projection_aiv_device-build/CMakeFiles/device_aiv_obj.dir<POC_ROOT>/bench/ascend_a2_s2/fused/build-release/auto_gen/strata_s2_projection/auto_gen_projection.cpp.o -static -o <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_aiv_device_dir/device_aiv.o
+[100%] Built target merge_aiv_device_obj
+[ 83%] No install step for 'strata_s2_projection_aiv_device'
+[ 85%] Completed 'strata_s2_projection_aiv_device'
+[ 95%] Built target strata_s2_projection_aiv_device
+<CANN_ROOT>/aarch64-linux/ccec_compiler/bin/ld.lld -x -m aicorelinux   -Ttext=0 <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_aiv_device_dir/device_aiv.o -static -o <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_merge_obj_dir/device_aiv.o
+[ 95%] Built target strata_s2_projection_merge_obj
+Consolidate compiler generated dependencies of target strata_s2_projection_host_stub_obj
+[ 97%] Building CXX object CMakeFiles/strata_s2_projection_host_stub_obj.dir/auto_gen/strata_s2_projection/host_stub.cpp.o
+[ 97%] Built target strata_s2_projection_host_stub_obj
+[100%] Linking CXX shared library lib/libstrata_s2_projection.so
+<CANN_ROOT>/bin/ascendc_pack_kernel <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/CMakeFiles/strata_s2_projection_host_stub_obj.dir/auto_gen/strata_s2_projection/host_stub.cpp.o <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_merge_obj_dir/device_aiv.o 1 <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/CMakeFiles/strata_s2_projection_host_stub_obj.dir/auto_gen/strata_s2_projection/host_stub.cpp.o
+recompile: /usr/bin/c++ -fPIC -O3 -DNDEBUG -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -s -shared -Wl,-soname,libstrata_s2_projection.so -o lib/libstrata_s2_projection.so CMakeFiles/strata_s2_projection_host_stub_obj.dir/auto_gen/strata_s2_projection/host_stub.cpp.o <POC_ROOT>/bench/ascend_a2_s2/fused/build-release/strata_s2_projection_host_dir/objects-Release/host_bisheng_obj<POC_ROOT>/bench/ascend_a2_s2/fused/projection.cpp.o    -L<CANN_ROOT>/lib64  -L<CANN_ROOT>/tools/simulator/Ascend910B3/lib  <CANN_ROOT>/lib64/libascendc_runtime.a -lascend_dump -lc_sec -lascendcl
+[100%] Built target strata_s2_projection

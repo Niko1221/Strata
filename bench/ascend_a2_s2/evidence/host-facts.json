@@ -1,0 +1,19 @@
+{
+  "captured_utc": "2026-10-21T09:54:30.912586+00:00",
+  "machine": "aarch64",
+  "cpu": {
+    "Architecture:": "aarch64",
+    "CPU(s):": "32",
+    "Thread(s) per core:": "1",
+    "Core(s) per socket:": "16",
+    "Socket(s):": "2",
+    "NUMA node(s):": "2",
+    "Vendor ID:": "0x48",
+    "CPU max MHz:": "2400.0000"
+  },
+  "limits": {
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes": "214748364800",
+    "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": "2900000",
+    "/sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000"
+  }
+}
