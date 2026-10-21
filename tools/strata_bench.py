@@ -24,6 +24,8 @@ The result goes to bench/results/<date>-community-<gpu>-<model>/ : README.md in 
 docs/COMMUNITY_BENCHMARKS.md, results.json (every request) and an engine log excerpt.  Home folders, user and host names,
 IP addresses and API keys are replaced by placeholders before anything is written; read it once before you share it.
 `--compare <older results folder>` prints the two side by side.  Standard library only.
+This is the quick speed check, not the standard benchmark: `strata bench run` follows docs/BENCHMARK_PROTOCOL.md (fixed prompts, thinking on,
+the model card sampling, twelve sanity checks) and writes results other people can compare with.
 """
 from __future__ import annotations
 
@@ -917,6 +919,16 @@ def write_results(res: dict, parent: Path, red, log_lines: list[str]) -> Path:
 
 
 # --------------------------------------------------------------------------------------------------------- main
+def server_base(host, port) -> str:
+    """The address to talk to for a locally started server. The config's `host` is the interface the server
+    binds - a specific IP, or a wildcard that is not connectable as written - so it cannot be polled as-is.
+    An explicit `--url` bypasses this; there the caller knows the address."""
+    host = host or "127.0.0.1"
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)     # wildcard binds accept loopback
+    authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return f"http://{authority}:{port}"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Measure this Strata install and write a shareable report (see the top of this file).")
     ap.add_argument("--config", help="the model config to run (default: the newest strata-*.json of this folder)")
@@ -964,7 +976,7 @@ def main(argv=None) -> int:
         base = a.url.rstrip("/")
     else:
         port = a.port or int(cfg.get("port", 8080))
-        base = f"http://127.0.0.1:{port}"
+        base = server_base(cfg.get("host"), port)
     red = redactor(key=key)
     started = False
     try:
@@ -1018,6 +1030,7 @@ def main(argv=None) -> int:
         say(f"\nReport: {shown / 'README.md'}\nShare it: open a pull request that adds the folder {shown} (see docs/COMMUNITY_BENCHMARKS.md), "
             f"or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; "
             f"read it once before you share it.")
+        say("For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).")
         return 1 if out["failures"] and not any(out[k] for k in ("chat", "prompts", "agent")) else 0
     finally:
         if started:

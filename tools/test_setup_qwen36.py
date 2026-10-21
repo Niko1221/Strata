@@ -88,25 +88,31 @@ class InstallOwnPath(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.calls = []
         self.families = {"qwen4exp", "qwen35moe"}
+        self.hip_reader = True
         eng = self.root / "engine"
         self.cfg = {}
 
         def engine_step(a, gpu, hip, amd, cuda_tk, vision):
             self.calls.append(("engine", vision))
+            if vision != "none":                                   # the image encoder beside the engine
+                eng.mkdir(parents=True, exist_ok=True)
+                (eng / setup.VEXE).write_text("x")
+                if hip and self.hip_reader:                        # an AMD engine package carries the GPU reader too
+                    (eng / setup.HVEXE).write_text("x")
             return self.root / "llama", eng, {"version": "0.1.44"}, ["/libs"], gpu, vision
 
-        def write_cfg(path, cfg, source=None):
+        def write_cfg(path, cfg, source=None, explicit=None):
             self.cfg = cfg
             self.calls.append(("config", path.name))
 
         patches = [mock.patch.object(setup, "download", lambda url, dst, what=None: self.calls.append(("get", url, dst))),
-                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha: self.calls.append(("sha", s.name))),
+                   mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False: self.calls.append(("sha", s.name))),
                    mock.patch.object(setup, "free_gb", lambda p: 500.0),
                    mock.patch.object(setup, "pip_install", lambda *a, **k: None),
                    mock.patch.object(setup, "engine_step", engine_step),
                    mock.patch.object(setup, "engine_families", lambda e: self.families),
                    mock.patch.object(setup, "run", lambda cmd, **k: self.calls.append(("run", cmd))),
-                   mock.patch.object(setup, "data_folder", lambda d: (self.root / "data", [])),
+                   mock.patch.object(setup, "data_folder", lambda d, *a, **k: (self.root / "data", [])),
                    mock.patch.object(setup, "write_setup_config", write_cfg),
                    mock.patch.object(setup, "write_run_script", lambda tag, p, port, o=True: self.root / f"run-{tag}.sh"),
                    mock.patch.object(setup, "recommend_pool_workers", lambda a: a),
@@ -115,13 +121,13 @@ class InstallOwnPath(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def install(self, ram=64.0, vram=16.0, **kw):
+    def install(self, ram=64.0, vram=16.0, hip=False, **kw):
         gpu = {"index": 0, "count": 1, "vram_gb": vram, "name": "Test GPU"}
-        return run(setup.install_own_path, args(models_dir=str(self.root / "models"), **kw), "qwen36", gpu, False, [],
+        return run(setup.install_own_path, args(models_dir=str(self.root / "models"), **kw), "qwen36", gpu, hip, [],
                    13, [], 8080, ram, None)
 
     def test_installs_the_pinned_file_and_writes_the_config(self):
-        rc, out = self.install(model="UD-Q4_K_XL")
+        rc, out = self.install(model="UD-Q4_K_XL", vision="no")
         self.assertEqual(rc, 0, out)
         get = [c for c in self.calls if c[0] == "get"]
         self.assertEqual(len(get), 1)
@@ -129,7 +135,9 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(get[0][1], setup.hf(REPO) + gguf.name)
         self.assertEqual(get[0][2], gguf)
         self.assertIn(("sha", gguf.name), self.calls)
-        self.assertIn(("engine", "none"), self.calls)            # no image encoder for this family yet
+        self.assertIn(("engine", "none"), self.calls)            # --vision no: no image encoder
+        self.assertNotIn("--vision", self.cfg["args"])
+        self.assertNotIn("vision", self.cfg)
         tok = [c for c in self.calls if c[0] == "run"]
         self.assertTrue(tok and "strata_tokenizer.py" in str(tok[0][1]))
         a = self.cfg["args"]
@@ -176,12 +184,147 @@ class InstallOwnPath(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("not enough free disk space", out)
 
-    def test_bigger_card_bigger_context_and_vision_said_off(self):
-        rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, vision="yes")
+    def test_bigger_card_bigger_context(self):
+        rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, vision="no")
         self.assertEqual(rc, 0, out)
         a = self.cfg["args"]
         self.assertEqual(a[a.index("--max-context") + 1], "131072")
-        self.assertIn("images are not available", out)
+
+    def test_images_by_default_on_a_24gb_plus_nvidia_card_use_the_gpu_encoder(self):
+        rc, out = self.install(model="UD-Q4_K_XL", vram=24.0)               # --yes: the question's default answer (yes)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(("engine", "gpu"), self.calls)
+        mm = self.root / "models" / "qwen36-UD-Q4_K_XL" / "mmproj-F16.gguf"
+        self.assertIn(("get", setup.hf(REPO) + "mmproj-F16.gguf", mm), self.calls)
+        self.assertIn(("sha", "mmproj-F16.gguf"), self.calls)               # pinned: size + SHA-256 (899283584 bytes)
+        self.assertEqual(setup.OWN_PATH_FAMILIES["qwen36"]["sha256"]["mmproj-F16.gguf"][0], 899283584)
+        a = self.cfg["args"]
+        self.assertIn("--vision", a)
+        v = self.cfg["vision"]
+        self.assertTrue(v["gpu"])
+        self.assertEqual(v["mmproj"], str(mm))
+        self.assertTrue(v["model"].endswith("Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"))   # the text model, opened vocab-only
+        self.assertEqual(Path(v["exe"]).name, setup.VEXE)
+        self.assertEqual(v["max_tokens"], 1024)
+        self.assertIn("images: on", out)
+
+    def test_a_12gb_card_is_recommended_the_cpu_encoder_never_forced(self):
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0)               # the default answer is yes, with the CPU encoder
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        rc, out = self.install(model="UD-Q4_K_XL", vram=16.0)               # the 24 GB rule, not the old 16 GB one
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="yes")  # yes: the CPU encoder, said why
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        self.assertEqual(self.cfg["vision"]["max_tokens"], 300)
+        self.assertIn("threads", self.cfg["vision"])
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="gpu")  # gpu asked for: kept, with a note
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.cfg["vision"]["gpu"])
+        self.assertIn("kept as you chose", out)
+
+    def test_amd_reads_pictures_on_the_gpu_with_the_cpu_reader_behind_it(self):
+        for win, suffix in ((False, ""), (True, ".exe")):
+            with mock.patch.object(setup, "WIN", win), mock.patch.object(setup, "VEXE", "strata-vision" + suffix),                     mock.patch.object(setup, "HVEXE", "strata-vision-hip" + suffix):
+                rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="yes")
+                self.assertEqual(rc, 0, out)
+                v = self.cfg["vision"]
+                self.assertTrue(v["gpu"])
+                self.assertEqual(Path(v["exe"]).name, "strata-vision-hip" + suffix)
+                self.assertEqual(Path(v["cpu_exe"]).name, "strata-vision" + suffix)
+                self.assertIn("--vision", self.cfg["args"])
+                rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="cpu")
+                v = self.cfg["vision"]
+                self.assertFalse(v["gpu"])
+                self.assertEqual(Path(v["exe"]).name, "strata-vision" + suffix)
+                self.assertNotIn("cpu_exe", v)
+
+    def test_amd_engine_without_the_gpu_reader_reads_pictures_on_the_cpu(self):
+        self.hip_reader = False
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "VEXE", "strata-vision"):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True, vision="yes")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        self.assertNotIn("cpu_exe", self.cfg["vision"])
+        self.assertIn("--vision", self.cfg["args"])
+
+    def test_amd_pictures_are_on_when_nothing_is_asked(self):
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "VEXE", "strata-vision"),                 mock.patch.object(setup, "HVEXE", "strata-vision-hip"):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, hip=True)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(self.cfg["vision"]["gpu"])
+
+    def test_amd_under_24gb_reads_pictures_on_the_cpu_by_default(self):
+        with mock.patch.object(setup, "WIN", False), mock.patch.object(setup, "VEXE", "strata-vision"),                 mock.patch.object(setup, "HVEXE", "strata-vision-hip"):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=16.0, hip=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("--vision", self.cfg["args"])
+        self.assertFalse(self.cfg["vision"]["gpu"])
+        self.assertEqual(Path(self.cfg["vision"]["exe"]).name, "strata-vision")
+
+    def test_parallel_is_opt_in_and_recommended_where_the_experts_fit(self):
+        fam = setup.OWN_PATH_FAMILIES["qwen36"]
+        # nothing written without --parallel; the recommendation is said
+        rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, vision="no", context=32768)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("parallel", self.cfg)
+        self.assertIn("--parallel 3", out)
+        # a 12 GB card runs the hybrid mode: parallel is offered there too, with its price said (never forced)
+        # (measured: 12 GB at 8K, 4 slots: a request alone -4%; 16 GB at 32K, 2 slots -9 to -11%, 4 slots no gain together)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 8192), 4)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 32768), 0)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 16.0, 32768), 2)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 12.0, 131072), 0)
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 8.0, 32768), 0)
+        # a card that holds every expert for ONE session only is not offered more: 4 slots on a 32 GB R9700 at 128K left
+        # 15 of 256 experts per layer in VRAM and decode ran 81 tok/s against ~180
+        self.assertEqual(setup.own_path_parallel_recommend(fam, "UD-Q4_K_XL", 31.9, 131072), 0)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192)
+        self.assertNotIn("parallel", self.cfg)
+        self.assertIn("--parallel 4", out)
+        self.assertIn("does not hold every expert", out)
+        self.assertIn("a request alone runs about 4-11% slower", out)
+        self.assertIn("WITH the draft layer", out)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192, parallel=6)
+        self.assertEqual(self.cfg["parallel"], 6)
+        self.assertIn("recommended for this card: 4", out)
+        self.assertIn("kept as you chose", out)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=8.0, vision="no", parallel=4)
+        self.assertEqual(self.cfg["parallel"], 4)
+        self.assertIn("recommended for this card: one at a time", out)
+        self.assertIn("kept as you chose", out)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192, parallel=1)
+        self.assertEqual(self.cfg["parallel"], 1)
+        rc, out = self.install(model="UD-Q4_K_XL", vram=32.0, vision="no", parallel=12)
+        self.assertIn("at most 8", out)
+        self.assertEqual(self.cfg["parallel"], 12)             # written as asked; the server and the engine cap it
+        self.assertGreater(setup.own_path_parallel_slot_gb(fam, 32768), 1.4)
+
+    def test_parallel_is_asked_when_attended_and_enter_keeps_one_at_a_time(self):
+        asked = []
+
+        def ask(question, choices, default, yes):
+            if "requests at once" not in question:
+                return default                                   # size, context, images: the recommended answers
+            asked.append((question, default))
+            return answers.pop(0)
+        for answers, want in ((["1"], None), (["3"], 3)):
+            self.cfg = {}
+            with mock.patch.object(setup, "ask", ask):
+                rc, out = self.install(model="UD-Q4_K_XL", vram=12.0, vision="no", context=8192, yes=False)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.cfg.get("parallel"), want)
+            self.assertIn("--parallel 4", out)                  # the offer and its price are said before the question
+            self.assertEqual(out.count("Several requests at once (opt-in)"), 1)
+        self.assertTrue(all(d == "1" for _, d in asked))        # Enter = one at a time
+        # a card with no room for a second session is not asked
+        asked.clear()
+        with mock.patch.object(setup, "ask", ask):
+            rc, out = self.install(model="UD-Q4_K_XL", vram=8.0, vision="no", yes=False)
+        self.assertEqual(asked, [])
+        self.assertNotIn("parallel", self.cfg)
 
     def test_config_read_back(self):
         self.install(model="UD-Q6_K_XL", context=65536)
@@ -189,6 +332,7 @@ class InstallOwnPath(unittest.TestCase):
         p.write_text(json.dumps(self.cfg), encoding="utf-8")
         ch = setup.choices_from_config(p)
         self.assertEqual((ch["family"], ch["model"], ch["context"]), ("qwen36", "UD-Q6_K_XL", 65536))
+        self.assertEqual(ch["vision"], "cpu")                  # 16 GB NVIDIA, the default answer: the CPU encoder under 24 GB
         self.assertTrue(setup.own_path_config(self.cfg))
         self.assertEqual(setup.calibration_targets([p], None, None), [])   # the tuning is Flash-Next's
 

@@ -115,6 +115,15 @@ inline const char* ggml_type_name(uint32_t t) {
         return "Q1_0";
     case 42:
         return "Q2_0";
+    // Agention's llama.cpp fork: the APR trellis expert types (docs/GYRO.md)
+    case 143:
+        return "PTQ1_0";
+    case 144:
+        return "TQ2_T";
+    case 145:
+        return "TQK6";
+    case 146:
+        return "TQK7";
     default:
         return "?";
     }
@@ -224,6 +233,24 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
     case 42:
         elems = 64;
         bytes = 18;
+        return true;
+    // APR trellis types: 128 values = fp16 scale + 32 steps of K bits (K = 8 TQ2_T, 6 TQK6, 7 TQK7);
+    // PTQ1_0 = 26 B of base-3 digits + fp16 scale
+    case 143:
+        elems = 128;
+        bytes = 28;
+        return true;
+    case 144:
+        elems = 128;
+        bytes = 34;
+        return true;
+    case 145:
+        elems = 128;
+        bytes = 26;
+        return true;
+    case 146:
+        elems = 128;
+        bytes = 30;
         return true;
     default:
         return false;
@@ -723,6 +750,21 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
         if (v->type != MetaType::ARRAY || v->count != (uint64_t) g.n_layers || v->items.size() != v->count)
             return p + "attention.compress_ratios must list one entry for each of the " + std::to_string(g.n_layers) +
                    " layers";
+        // A list of zeros only is a converter's placeholder, not a layer split (#2396: orcarouter's
+        // Qwen3.8-Flash-Next-Uncensored GGUFs carry 48 zeros; 0.1.43 never read the key): it is treated as absent
+        // and the compiled pooling block is used.  A list with any non-zero entry is checked in full below.
+        bool given = false;
+        for (int64_t l = 0; l < g.n_layers && !given; ++l) given = v->items[(size_t) l].u != 0;
+        if (!given) {
+            static bool said = false;   // the guard runs several times in one process: one line
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata: %sattention.compress_ratios is all zeros (a converter's placeholder): "
+                                     "using the compiled pooling block of %lld cells (#2396)\n",
+                             p.c_str(), (long long) g.idx_block);
+            }
+            return {};
+        }
         int64_t block = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
             const int64_t r = (int64_t) v->items[(size_t) l].u;

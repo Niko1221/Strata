@@ -3,7 +3,9 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On macOS (Metal backend): IOKit's
+  IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and an Apple
+  Silicon GPU sits on the die, so there is no PCIe link.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -14,6 +16,8 @@ import collections
 import ctypes
 import os
 import platform
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -246,9 +250,108 @@ class _Amd:
         return out
 
 
+def metal_working_set():
+    """The Apple GPU's memory budget in bytes: MTLCreateSystemDefaultDevice's recommendedMaxWorkingSetSize, through
+    the Metal framework and objc_msgSend (no PyObjC) - the same property metal/src/mtl_rt.mm reads for the engine
+    (its "GPU working set" log line).  None off macOS, or when it cannot be read: a selector the device does not
+    answer would raise an Objective-C exception no ctypes call can catch, so the class is asked first."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        metal = ctypes.CDLL("/System/Library/Frameworks/Metal.framework/Metal")
+        objc = ctypes.CDLL("/usr/lib/libobjc.dylib")
+        metal.MTLCreateSystemDefaultDevice.restype = ctypes.c_void_p
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.object_getClass.argtypes = [ctypes.c_void_p]
+        objc.object_getClass.restype = ctypes.c_void_p
+        objc.class_respondsToSelector.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        objc.class_respondsToSelector.restype = ctypes.c_ubyte
+        objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        objc.objc_msgSend.restype = ctypes.c_ulonglong
+        dev = metal.MTLCreateSystemDefaultDevice()
+        if not dev:
+            return None
+        sel = objc.sel_registerName(b"recommendedMaxWorkingSetSize")
+        if not objc.class_respondsToSelector(objc.object_getClass(dev), sel):
+            return None
+        return int(objc.objc_msgSend(ctypes.c_void_p(dev), ctypes.c_void_p(sel))) or None
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+class _Metal:
+    """macOS: an Apple GPU's readings from the IOKit registry (`ioreg -l -w0 -r -c IOAccelerator`, 22 ms), with
+    _Nvml's interface: the load and the memory are the driver's PerformanceStatistics of the index'th accelerator
+    node - Device Utilization % and the in-use system memory in bytes.  The total is the device's Metal working set,
+    the budget one app gets of the unified memory.  No temperature or power reading exists without root
+    (`powermetrics`), and an Apple Silicon GPU sits on the die, so the PCIe cards have nothing to show."""
+    note = ("no GPU temperature or power reading without root (powermetrics), and an Apple Silicon GPU sits on the "
+            "die, so there is no PCIe link to show; the engine's own figures are in its log")
+    cmd = ("ioreg", "-l", "-w0", "-r", "-c", "IOAccelerator")
+
+    def __init__(self, index=0, run=None):
+        self.index = index
+        self._run = run or self._ioreg
+        self.nodes = len(self._blocks())
+        self._name = None
+        b = self._block()
+        if b:
+            m = re.search(r'"model" = "([^"]+)"', b)
+            self._name = m.group(1) if m else None
+
+    @staticmethod
+    def _ioreg():
+        try:
+            return subprocess.run(list(_Metal.cmd), capture_output=True, text=True, timeout=10).stdout or ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def _blocks(self):
+        """The accelerator nodes, in the registry's order: every node that carries a PerformanceStatistics."""
+        try:
+            out = self._run() or ""
+        except OSError:                     # ioreg missing, or a caller's runner that raises
+            return []
+        return [b for b in re.split(r"^\s*\+-o ", out, flags=re.M) if '"PerformanceStatistics"' in b]
+
+    def _block(self):
+        b = self._blocks()
+        return b[self.index] if 0 <= self.index < len(b) else None
+
+    def ok(self):
+        return self.index < self.nodes
+
+    def name(self):
+        return self._name
+
+    def read(self):
+        b = self._block()
+        if b is None:
+            return {}
+
+        def num(key):
+            m = re.search(r'"%s"=([0-9.]+)' % re.escape(key), b)
+            return float(m.group(1)) if m else None
+
+        out = {}
+        u = num("Device Utilization %")
+        if u is None:                      # older chips report only the renderer and the tiler
+            r, t = num("Renderer Utilization %"), num("Tiler Utilization %")
+            u = max(v for v in (r, t) if v is not None) if (r is not None or t is not None) else None
+        out["util"] = int(u) if u is not None else None
+        used = num("In use system memory")
+        out["mem_used"] = int(used) if used is not None else None
+        out["mem_total"] = metal_working_set()
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
-    return _Amd(index) if amd else _Nvml(index)
+    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or IOKit's
+    IOAccelerator registry on macOS (Metal backend).  `amd` comes first: no Mac runs the HIP backend, and the
+    tests' AMD trees are read on a Mac too."""
+    if amd:
+        return _Amd(index)
+    return _Metal(index) if sys.platform == "darwin" else _Nvml(index)
 
 
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
@@ -320,6 +423,47 @@ def free_vram_mib(index=0, amd=False):
 
 
 # ------------------------------------------------------------------------------------------------ CPU / RAM
+def _cpu_topology(root: str = "/sys/devices/system"):
+    """(sockets, NUMA nodes) of this computer: how many CPU packages it has and how many memory nodes (None where it cannot be read).
+    Linux reads /sys, Windows asks GetLogicalProcessorInformationEx / GetNumaHighestNodeNumber, macOS asks sysctl (Apple silicon and every Mac
+    sold so far: one package, no NUMA)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            needed = ctypes.c_ulong(0)
+            kernel32.GetLogicalProcessorInformationEx(3, None, ctypes.byref(needed))          # RelationProcessorPackage
+            buf = ctypes.create_string_buffer(needed.value)
+            sockets = None
+            if needed.value and kernel32.GetLogicalProcessorInformationEx(3, buf, ctypes.byref(needed)):
+                sockets, offset = 0, 0
+                while offset + 8 <= needed.value:
+                    relationship = int.from_bytes(buf.raw[offset:offset + 4], "little")
+                    size = int.from_bytes(buf.raw[offset + 4:offset + 8], "little")
+                    if size <= 0:
+                        break
+                    sockets += 1 if relationship == 3 else 0
+                    offset += size
+            high = ctypes.c_ulong(0)
+            numa = high.value + 1 if kernel32.GetNumaHighestNodeNumber(ctypes.byref(high)) else None
+            return (sockets or None), numa
+        if sys.platform == "darwin":
+            import subprocess
+            out = subprocess.run(["sysctl", "-n", "hw.packages"], capture_output=True, text=True, timeout=5).stdout.strip()
+            return (int(out) if out.isdigit() else 1), None
+        import glob
+        packages = set()
+        for f in glob.glob(os.path.join(root, "cpu", "cpu[0-9]*", "topology", "physical_package_id")):
+            try:
+                packages.add(open(f, encoding="utf-8").read().strip())
+            except OSError:
+                continue
+        nodes = len(glob.glob(os.path.join(root, "node", "node[0-9]*")))
+        return (len(packages) or None), (nodes or None)
+    except Exception:                                        # noqa: BLE001 - a missing figure is shown as missing, never guessed
+        return None, None
+
+
 def _cpu_name():
     if os.name == "nt":
         try:
@@ -413,18 +557,26 @@ class Telemetry:
             cards = windows_amd_cards()
             win_amd = [cards[i] for i in idx if 0 <= i < len(cards)] or cards[:1]
             gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
+        # the macOS reader knows the device's working set (the VRAM budget of the unified memory); None elsewhere
+        vram_total = None
+        if win_amd is None and isinstance(self.gpu, _Metal) and self.gpu.ok():
+            ws = metal_working_set()
+            vram_total = ws >> 20 if ws else None
         self.static = {
             "gpu_name": gpu_name,
             "gpu_vram_total_mib": (sum(c["vram_bytes"] for c in win_amd) >> 20
-                                   if win_amd and all(c["vram_bytes"] for c in win_amd) else None),
+                                   if win_amd and all(c["vram_bytes"] for c in win_amd) else vram_total),
             "gpu_count": len(self.gpus),
             # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
             # dashboard said "not readable (NVML)" or showed empty tiles with no word why
             "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
-                         "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
+                         "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok()
+                         else getattr(self.gpu, "note", None)),
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
+            "sockets": _cpu_topology()[0],
+            "numa_nodes": _cpu_topology()[1],
             "psutil": self.ps is not None,
         }
         self._disk_prev = None
@@ -462,9 +614,9 @@ class Telemetry:
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
-                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
+                s["gpus"] = [{"index": i, "name": reader.name(), "util": r.get("util"), "mem_used": r.get("mem_used"),
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
-                             for i, r in reads]
+                             for (i, r), (_, reader) in zip(reads, self.gpus)]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
             try:
