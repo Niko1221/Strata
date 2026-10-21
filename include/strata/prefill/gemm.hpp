@@ -111,9 +111,10 @@ private:
 /// CUDA 12 build.
 void gemm_set_dense_f32(int mode);
 
-/// HIP on gfx103x (RDNA2), for the current device: rocBLAS's tuned GEMMs there are FP16 in -> FP16 out only (FP16 or
-/// BF16 in -> FP32 out runs ~6x slower), so the prompt path's 16-bit GEMMs run in FP16 (Gemm::set_f16_io,
-/// set_act_f16).  Cached per device (a layer split can mix cards).  STRATA_HIP_PROMPT_F16=0/1 overrides.
+/// HIP prompt GEMM precision for the current device, cached per device (a layer split can mix cards).
+/// STRATA_HIP_PROMPT_F16=1 keeps the historical all-device FP16 mode; =all is a new explicit all-device alias.
+/// =gfx103x selects FP16 only on gfx103x, leaving other architectures on BF16; =0 or unset keeps BF16. On gfx103x
+/// rocBLAS is tuned for FP16-in/FP16-out GEMMs, while the architecture-filtered option leaves other devices on BF16.
 bool prompt_f16();
 
 

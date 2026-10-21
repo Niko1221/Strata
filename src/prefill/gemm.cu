@@ -540,18 +540,25 @@ bool prompt_f16() {
     int dev = 0;
     if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= kMaxDev) { (void) hipGetLastError(); return false; }
     if (const int8_t c = cached[dev].load(std::memory_order_relaxed)) return c == 2;
-    // Opt-in (#835): only STRATA_HIP_PROMPT_F16=1 turns it on.  It changes the prompt path's numbers (an FP16 rounding of
-    // each 16-bit GEMM's output), so no card gets it unasked.  On gfx103x it is ~2x faster, so we say so once.
+    // Opt-in (#835): preserve the historical first-character `1` check for all-device FP16; `all` is a new explicit
+    // alias. `gfx103x` selects FP16 only on RDNA2 devices, leaving other architectures on BF16 for mixed layer splits.
     const char* e = std::getenv("STRATA_HIP_PROMPT_F16");
-    const bool on = e != nullptr && e[0] == '1';
     hipDeviceProp_t p{};
     if (hipGetDeviceProperties(&p, dev) != hipSuccess) { (void) hipGetLastError(); p.gcnArchName[0] = 0; }
-    if (on) std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out "
+    const bool gfx103x = std::strncmp(p.gcnArchName, "gfx103", 6) == 0;
+    // The upstream parser accepted any nonempty value beginning with `1`; retain that undocumented behavior.
+    const bool all = e != nullptr && (e[0] == '1' || std::strcmp(e, "all") == 0);
+    const bool gfx103x_only = e != nullptr && std::strcmp(e, "gfx103x") == 0;
+    const bool on = all || (gfx103x_only && gfx103x);
+    if (on) std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=%s: the prompt's 16-bit GEMMs run FP16 in and out "
                                  "(rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)%s",
-                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName, "\n");
-    else if (e == nullptr && std::strncmp(p.gcnArchName, "gfx103", 6) == 0)
-        std::fprintf(stderr, "strata prefill: HIP device %d %s - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here "
-                             "(FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)%s",
+                         dev, p.gcnArchName[0] ? " " : "", p.gcnArchName, e, "\n");
+    else if (gfx103x_only)
+        std::fprintf(stderr, "strata prefill: HIP device %d%s%s - STRATA_HIP_PROMPT_F16=gfx103x ignored; this device keeps BF16\n",
+                     dev, p.gcnArchName[0] ? " " : "", p.gcnArchName);
+    else if (e == nullptr && gfx103x)
+        std::fprintf(stderr, "strata prefill: HIP device %d %s - tip: STRATA_HIP_PROMPT_F16=gfx103x selects FP16 prompt GEMMs here "
+                             "(rocBLAS is tuned only for FP16 on gfx103x; results differ slightly, see docs/AMD_HIP.md)%s",
                      dev, p.gcnArchName, "\n");
     cached[dev].store(on ? 2 : 1, std::memory_order_relaxed);
     return on;
