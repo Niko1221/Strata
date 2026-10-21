@@ -237,7 +237,9 @@ void NativeDflash::gemv(const gguf::Tensor& t, const mtl::Buffer& x, size_t x_of
                         int y_stride, int ntok, bool concurrent) {
     const int n_in = (int) t.shape[0], n_out = (int) t.shape[1];
     int L = 16, R = 2, S = 4, K = 1;   // R = 2: two rows share each x load (measured 4.4 vs 5.7 ms a draft(3), shared GPU)
-    if (n_in >= 6144) { L = 32; R = 1; S = 8; K = 2; }
+    // fc (12800 in): 32,2,4,2 (32,1,8,2's sums in the same order, 0.07 ms less an inject(3)); ffn_down (7680 in) keeps
+    // the 16,2,4,1 default (0.43 ms less a draft(3) than 32,1,8,2): M4 Max, idle GPU, interleaved, min of 300
+    if (n_in >= 12800) { L = 32; R = 2; S = 4; K = 2; }
     else if (n_out <= 640) { L = 32; R = 1; }
     const std::string fn = "gemv_8_" + std::to_string(L) + "_" + std::to_string(R) + "_" + std::to_string(S) + "_" + std::to_string(K);
     mtl::Dispatch d;
