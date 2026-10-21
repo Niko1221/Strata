@@ -276,19 +276,25 @@ class NoLeakedSampler(unittest.TestCase):
     running (21 after this file), polling NVML and psutil every second, which skewed serve/test_parallel's timings."""
 
     def test_server_close_ends_the_sampler(self):
+        """Counted by thread identity, not by name total: a sampler of a server a previous test closed is still
+        ending for up to a second (close() only sets a flag, the thread leaves _stop.wait(1.0) when it wakes), so
+        a name count taken before and after can lose that straggler between the two counts and hide the thread
+        this server started - the flaky `1 != 2`.  The thread names come from Python 3.10+ naming an unnamed
+        Thread after its target ("Thread-N (_loop)")."""
         import threading
         import time
         tok = ByteTokenizer()
-        before = sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)"))
+        was = {id(t) for t in threading.enumerate() if t.name.endswith("(_loop)")}
         httpd = serve(Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE), port=0)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before + 1)
+        mine = [t for t in threading.enumerate() if t.name.endswith("(_loop)") and id(t) not in was]
+        self.assertEqual(len(mine), 1)                                       # one sampler for one server
         httpd.shutdown()
         httpd.server_close()
         for _ in range(50):
-            if sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")) == before:
+            if not mine[0].is_alive():
                 break
             time.sleep(0.1)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before)
+        self.assertFalse(mine[0].is_alive())                                 # and it ends with the server
 
 
 # ------------------------------------------------------------------------------------------------ over HTTP
