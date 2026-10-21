@@ -423,6 +423,15 @@ hits, the router, the head, ...). The GPU profile times every stage with events,
 use it to compare, not to measure speed. This works with every pack; `--gpu-stages` (a one-token replay of
 per-layer graphs) refuses a native (IQ) pack, which has no such graphs.
 
+**Each decode window on its own (record only):** `STRATA_WINDOW_TRACE=<path>` appends one 216-byte record per decode
+window of the serial serve loop to `<path>`: when the window started, its boundary work (the adaptive tier's wait, the
+`STRATA_RAM_ADAPT` moves, the `--adapt-async` step), the verify window, commit and draft, and the expert reads it made
+(VRAM hits, CPU expert entries, RAM and file reads and bytes, RAM moves, adaptive swaps). The decode timing line above is
+the average of these; the records keep the order, so a cost at one window boundary can be followed into the windows after
+it, and slow windows can be found. `python3 tools/window_trace.py <path>` prints a summary, `--csv` exports every window.
+Unset, nothing is timed or written. Measured on an RTX 3060 (IQ3_XXS, 120 chat requests, about 12,000 windows, 2.5 MB):
+decode and prompt speed within 1% of the same build without it. The `--pipeline-windows` loop is not traced.
+
 **How good the next-layer expert prediction is (measurement only):** `STRATA_LOOKAHEAD_STATS=1` runs the router look-ahead on any expert tier and
 scores it against the routing of the next layer: every 100 windows the engine log has a `strata lookahead stats:` line with the experts per layer
 outside the GPU cache, the recall and precision of the top-k / k+4 / k+10 guesses and of the vote-ranked top 4 / 8 / 12, how much of the PCIe share they
