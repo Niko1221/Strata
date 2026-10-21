@@ -35,6 +35,8 @@ in the original report), and ROCm TheRock 7.14.1 rather than a packaged ROCm.
 - In standard-v1 (three fresh engines, 12/12 sanity checks each) the R9700 alone, one request at a time with the CPU
   share and `--kv-grow`, is fastest in every case but the 4K prompt read (split 1,017, it 965 tok/s), and four
   requests released together finish within 1-3 s of the `--batch 4` engine.
+- Serving with `--batch 4` on the R9700 alone needs a larger `--vram-reserve-mib` than the default 700: in real use the
+  engine stalled once in a batched prompt read with 430 MiB of VRAM free and restarted itself (see below; 2048 here).
 - 0.2.2 reads and decodes at the same speed as 0.2.1 on the split (within 1%).
 
 ## Hardware and software
@@ -159,6 +161,24 @@ cache gave 320 slots for it`). This is the limit #2398 found and raised in the e
 0.2.0-beta tracker reset without a merge, and its raise is now the first commit of the open #2399. 0.2.2 does not have
 it, so on Linux/HIP `--kv-grow` needs `ulimit -n $(ulimit -Hn)` before the server starts (the engine inherits it).
 `scripts/vmm-probe.cpp` is the standalone probe (`hipMemCreate` / reserve / map / set access / memset of N chunks).
+
+### Serving with `--batch 4` on the R9700 alone: raise the VRAM reserve
+
+After the measurements the pair served real agent traffic with the R9700-alone `--batch 4` configuration (prompts of
+10K-80K tokens, the conversation cache on). With the default `--vram-reserve-mib` (700) the engine had 578 MiB of VRAM
+free after the load, and the verify windows captured as requests came in took it to 434 MiB (the engine warns below
+512). After 85 minutes and 45 requests, an 11,572-token prompt read at 338 tok/s instead of the usual ~1,500, and the
+next one, a fresh 12,536-token prompt, stopped at layer 20 of its first chunk: `no progress for 60 s during a request
+(reading the prompt (batched): layer 20 ...)`, with the stall report's `VRAM free when this request began: 430 MiB -
+LOW`, all 15 pool workers asleep and the GPU's waits finishing at once when released. The engine stopped itself (exit
+-6) and the server started it again; the request failed and the parked conversations were lost. The kernel log has no
+amdgpu message. The stall report names the low VRAM; I did not prove that it was the cause.
+
+With `--vram-reserve-mib 2048` the engine has 1,926 MiB free after the load (1,830 after the windows) and 10,525
+experts in VRAM instead of 11,215. It has served only a short time with that setting so far, which is no proof that it
+never stalls. The standard-v1 `--batch 4` run used the default reserve; it is short and did not stall. Log:
+`logs/engine-r9700-batch4-serving-stall.log` (the stalled engine's whole log, then the start of the next engine with
+the larger reserve).
 
 ## The 0.2.2 "Strix Halo with a card of its own" items on this pair
 

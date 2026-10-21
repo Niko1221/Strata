@@ -1,0 +1,225 @@
+== 17:26:58 start; MemAvailable 74 GiB, 0000:67:00.0 VRAM 28959 MiB, 0000:68:00.0 VRAM 287 MiB
+missing paths: none
+missing paths: none
+missing paths: none
+missing paths: none
+missing paths: none
+missing paths: none
+missing paths: none
+== 17:26:59 waiting until Halogen is idle
+== 17:27:16 Halogen stopped
+down; R9700 VRAM 57 MiB
+== 17:27:26 Paiton stopped; MemAvailable 121 GiB, 0000:67:00.0 VRAM 57 MiB, 0000:68:00.0 VRAM 147 MiB
+== 17:27:26 Strata r9700-mmap up
+ready after 20 s
+== 17:27:46 Strata r9700-mmap ready; MemAvailable 101 GiB, 0000:67:00.0 VRAM 32345 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata: gfx12 (RDNA4): the hyper-connection projections are read as Q8_0 (quantized at load, decode faster, answers differ slightly); STRATA_HC_Q8=0 keeps the bf16 read
+      1 strata: gfx12 (RDNA4): 5 exact speed switches on by default (STRATA_GFX12_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE
+      1 strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1201)
+      1 strata serve: the prompt path borrows 2746 CUDA0 cache slots (5.23 GiB)
+      1 strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+      1 strata generate: token graph hit path: 11237 resident experts, decided on the device
+      1 strata generate: opened 2 GPU queues in a fixed order (STRATA_HIP_QUEUE_PRIME=0 turns it off)
+      1 strata generate: expert cache auto: 22.26 GiB free, 700 MiB reserved (+241 MiB for the draft head) -> 8604 slots
+      1 strata generate: expert cache 11237 slots, 21.33 GiB of VRAM; policy is
+      1 strata generate: R4 hit path ON - resident experts are computed on the GPU
+      1 strata generate: PCIe probe: 7.2 GB/s host->device (best of 7.2 7.2 7.2 7.2) -> pcie_frac 0.20 (default 0.55)
+      1 strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+      1 strata generate: GPU 0: AMD Radeon AI PRO R9700 (gfx1201)
+      1 strata generate: CPU workers on logical processors 1-15 (15 workers, one per physical core; host on 0)
+      1 strata generate: --batch 4: the slot sessions take 3.79 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+      1 [strata] 2026-10-21 17:27:27 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash
+warm-up 16K: first token 13.4 s
+strata-0.2.2-r9700-mmap-pf16k  64K run 1:   64537 tokens, first token   34.6 s ( 1865 tok/s), decode  64.2 tok/s over 600 tokens
+strata-0.2.2-r9700-mmap-pf16k  64K run 2:   64537 tokens, first token   32.1 s ( 2012 tok/s), decode  65.8 tok/s over 600 tokens
+BENCH-DONE
+== 17:29:38 short prompts
+short 570    570 prompt tokens,   5.5 s to the answer, prompt 121 tok/s
+short 570    585 prompt tokens,   4.7 s to the answer, prompt 147 tok/s
+short 570    575 prompt tokens,   4.5 s to the answer, prompt 150 tok/s
+short 2K    1770 prompt tokens,   6.2 s to the answer, prompt 317 tok/s
+short 4K    3598 prompt tokens,   6.7 s to the answer, prompt 590 tok/s
+== 17:30:15 Strata r9700-arena up
+ready after 30 s
+== 17:30:46 Strata r9700-arena ready; MemAvailable 55 GiB, 0000:67:00.0 VRAM 32376 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata: gfx12 (RDNA4): the hyper-connection projections are read as Q8_0 (quantized at load, decode faster, answers differ slightly); STRATA_HC_Q8=0 keeps the bf16 read
+      1 strata: gfx12 (RDNA4): 5 exact speed switches on by default (STRATA_GFX12_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE
+      1 strata: expert arena: MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages NOT requested: only 0 GiB of free 2 MiB blocks for a 46 GiB arena, compaction would stall the load (STRATA
+      1 strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1201)
+      1 strata serve: the prompt path borrows 2748 CUDA0 cache slots (5.23 GiB)
+      1 strata serve: prompt chunk auto: 16384 tokens, a 96-slot ring
+      1 strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+      1 strata generate: token graph hit path: 11215 resident experts, decided on the device
+      1 strata generate: opened 2 GPU queues in a fixed order (STRATA_HIP_QUEUE_PRIME=0 turns it off)
+      1 strata generate: gfx12: --prefill auto may take chunks up to 16384 (STRATA_GFX12_CHUNK=0 keeps 8192)
+      1 strata generate: expert cache auto: 22.21 GiB free, 700 MiB reserved (+241 MiB for the draft head) -> 8586 slots
+      1 strata generate: expert cache 11215 slots, 21.29 GiB of VRAM; policy is
+      1 strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages NOT requested: only 0 GiB of free 2 MiB blocks for a 46 GiB arena, 
+      1 strata generate: expert arena read through the file cache (buffered (not Windows))
+      1 strata generate: R4 hit path ON - resident experts are computed on the GPU
+      1 strata generate: PCIe probe: 7.2 GB/s host->device (best of 7.2 7.2 7.2 7.2) -> pcie_frac 0.20 (default 0.55)
+      1 strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+      1 strata generate: GPU 0: AMD Radeon AI PRO R9700 (gfx1201)
+      1 strata generate: CPU workers on logical processors 1-15 (15 workers, one per physical core; host on 0)
+      1 strata generate: --batch 4: the slot sessions take 3.79 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+      1 [strata] 2026-10-21 17:30:16 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash
+warm-up 16K: first token 8.8 s
+strata-0.2.2-r9700-arena  64K run 1:   64537 tokens, first token   36.7 s ( 1757 tok/s), decode  78.4 tok/s over 600 tokens
+strata-0.2.2-r9700-arena  64K run 2:   64537 tokens, first token   29.8 s ( 2163 tok/s), decode  77.1 tok/s over 600 tokens
+strata-0.2.2-r9700-arena 128K run 1:  128440 tokens, first token   62.3 s ( 2061 tok/s), decode  66.9 tok/s over 600 tokens
+strata-0.2.2-r9700-arena 128K run 2:  128440 tokens, first token   60.5 s ( 2121 tok/s), decode  69.0 tok/s over 600 tokens
+strata-0.2.2-r9700-arena 200K run 1:  210963 tokens, first token  106.9 s ( 1974 tok/s), decode  69.9 tok/s over 600 tokens
+strata-0.2.2-r9700-arena 200K run 2:  210963 tokens, first token  105.5 s ( 2000 tok/s), decode  74.7 tok/s over 600 tokens
+BENCH-DONE
+== 17:38:59 speed-check 1 2 4
+1 at once: text right 1/1; per stream 86.8-86.8 tok/s (sum 86.8); first token after 1.1-1.1 s; 500 tokens in 6.9 s
+2 at once: text right 2/2; per stream 55.0-56.6 tok/s (sum 111.6); first token after 0.4-0.7 s; 1000 tokens in 9.5 s
+4 at once: text right 4/4; per stream 32.8-35.5 tok/s (sum 135.9); first token after 0.2-1.5 s; 2000 tokens in 15.6 s
+== 17:39:31 short prompts
+short 570    570 prompt tokens,   5.0 s to the answer, prompt 141 tok/s
+short 570    585 prompt tokens,   4.6 s to the answer, prompt 160 tok/s
+short 570    575 prompt tokens,   4.4 s to the answer, prompt 160 tok/s
+short 2K    1770 prompt tokens,   6.2 s to the answer, prompt 325 tok/s
+short 4K    3598 prompt tokens,   6.6 s to the answer, prompt 611 tok/s
+== 17:39:58 after the arena arm; MemAvailable 37 GiB, 0000:67:00.0 VRAM 32424 MiB, 0000:68:00.0 VRAM 147 MiB
+== 17:40:08 Strata r9700-pf32k up
+ready after 25 s
+== 17:40:33 Strata r9700-pf32k ready; MemAvailable 54 GiB, 0000:67:00.0 VRAM 32305 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata serve: the prompt path borrows 5167 CUDA0 cache slots (9.80 GiB)
+      1 strata generate: expert cache auto: 22.21 GiB free, 700 MiB reserved (+241 MiB for the draft head) -> 8586 slots
+      1 strata generate: expert cache 11215 slots, 21.29 GiB of VRAM; policy is
+      1 strata generate: expert arena read through the file cache (buffered (not Windows))
+      1 strata generate: --batch 4: the slot sessions take 3.79 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+warm-up 16K: first token 9.8 s
+strata-0.2.2-r9700-arena-pf32k  64K run 1:   64537 tokens, first token   26.9 s ( 2398 tok/s), decode  73.4 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k  64K run 2:   64537 tokens, first token   24.2 s ( 2662 tok/s), decode  74.3 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k 128K run 1:  128440 tokens, first token   50.3 s ( 2553 tok/s), decode  70.0 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k 128K run 2:  128440 tokens, first token   48.6 s ( 2645 tok/s), decode  72.5 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k 200K run 1:  210963 tokens, first token   87.0 s ( 2426 tok/s), decode  70.7 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k 200K run 2:  210963 tokens, first token   87.0 s ( 2425 tok/s), decode  75.5 tok/s over 600 tokens
+BENCH-DONE
+== 17:47:30 short prompts
+short 570    573 prompt tokens,   4.5 s to the answer, prompt 150 tok/s
+short 570    588 prompt tokens,   3.8 s to the answer, prompt 183 tok/s
+short 570    578 prompt tokens,   3.7 s to the answer, prompt 187 tok/s
+short 2K    1773 prompt tokens,   6.0 s to the answer, prompt 324 tok/s
+short 4K    3601 prompt tokens,   6.4 s to the answer, prompt 610 tok/s
+== 17:48:02 Strata r9700-cpushare up
+ready after 20 s
+== 17:48:23 Strata r9700-cpushare ready; MemAvailable 55 GiB, 0000:67:00.0 VRAM 32305 MiB, 0000:68:00.0 VRAM 147 MiB
+== 17:48:23 short prompts
+short 570    572 prompt tokens,   3.8 s to the answer, prompt 181 tok/s
+short 570    587 prompt tokens,   3.4 s to the answer, prompt 214 tok/s
+short 570    577 prompt tokens,   3.3 s to the answer, prompt 219 tok/s
+short 2K    1772 prompt tokens,   5.2 s to the answer, prompt 382 tok/s
+short 4K    3600 prompt tokens,   6.5 s to the answer, prompt 606 tok/s
+warm-up 16K: first token 9.7 s
+strata-0.2.2-r9700-arena-cpushare  64K run 1:   64537 tokens, first token   36.2 s ( 1781 tok/s), decode  75.0 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-cpushare  64K run 2:   64537 tokens, first token   34.6 s ( 1867 tok/s), decode  74.5 tok/s over 600 tokens
+BENCH-DONE
+== 17:50:43 Strata r9700-async up
+ready after 20 s
+== 17:51:04 Strata r9700-async ready; MemAvailable 55 GiB, 0000:67:00.0 VRAM 32305 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata serve: adaptive tier asynchronous (--adapt-async 1): up to 96 swaps per round, a round every 4 windows (arena: copy-in only)
+      1 strata serve: adaptive overlap: off: not with --adapt-async
+== 17:51:04 speed-check 1 2 4
+1 at once: text right 1/1; per stream 81.0-81.0 tok/s (sum 81.0); first token after 0.4-0.4 s; 500 tokens in 6.6 s
+2 at once: text right 2/2; per stream 54.2-57.0 tok/s (sum 111.3); first token after 0.1-0.6 s; 1000 tokens in 9.4 s
+4 at once: text right 4/4; per stream 33.4-35.9 tok/s (sum 138.0); first token after 0.2-1.4 s; 2000 tokens in 15.3 s
+warm-up 16K: first token 8.8 s
+strata-0.2.2-r9700-arena-async  64K run 1:   64537 tokens, first token   32.6 s ( 1978 tok/s), decode  71.3 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-async  64K run 2:   64537 tokens, first token   29.9 s ( 2158 tok/s), decode  75.4 tok/s over 600 tokens
+BENCH-DONE
+== 17:53:25 Strata r9700-p1 up
+ready after 15 s
+== 17:53:40 Strata r9700-p1 ready; MemAvailable 72 GiB, 0000:67:00.0 VRAM 32180 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 23.10 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 8954 slots
+      1 strata generate: expert cache 11702 slots, 22.20 GiB of VRAM; policy is
+== 17:53:40 speed-check 1
+1 at once: text right 1/1; per stream 100.3-100.3 tok/s (sum 100.3); first token after 0.4-0.4 s; 500 tokens in 5.4 s
+== 17:53:46 short prompts
+short 570    571 prompt tokens,   3.8 s to the answer, prompt 183 tok/s
+short 570    586 prompt tokens,   3.4 s to the answer, prompt 212 tok/s
+short 570    576 prompt tokens,   3.3 s to the answer, prompt 213 tok/s
+short 2K    1771 prompt tokens,   5.1 s to the answer, prompt 398 tok/s
+short 4K    3599 prompt tokens,   6.3 s to the answer, prompt 633 tok/s
+warm-up 16K: first token 8.4 s
+strata-0.2.2-r9700-arena-p1  64K run 1:   64537 tokens, first token   29.5 s ( 2187 tok/s), decode  79.8 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-p1  64K run 2:   64537 tokens, first token   29.8 s ( 2164 tok/s), decode  80.9 tok/s over 600 tokens
+BENCH-DONE
+== 17:55:50 Strata r9700-kvgrow up
+server exited
+  strata aux cpus: threads that are neither pool workers nor the host go to CPUs 16 (off at start; a request's aux_cpus=1 turns it on)
+  strata generate: expert cache auto: 26.20 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10203 slots
+  strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1201)
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 25.30 GiB of VRAM failed: out of memory; trying a smaller expert cache: 9999 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 18.97 GiB of VRAM failed: out of memory; trying a smaller expert cache: 7503 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 14.23 GiB of VRAM failed: out of memory; trying a smaller expert cache: 5613 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 10.67 GiB of VRAM failed: out of memory; trying a smaller expert cache: 4194 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 8.00 GiB of VRAM failed: out of memory; trying a smaller expert cache: 3133 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 6.00 GiB of VRAM failed: out of memory; trying a smaller expert cache: 2340 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 4.50 GiB of VRAM failed: out of memory; trying a smaller expert cache: 1755 slots
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+  strata generate: ExpertCache: mapping 3.37 GiB of VRAM failed: out of memory; trying a smaller expert cache: 1309 slots
+  strata generate: ExpertCache: mapping 2.53 GiB of VRAM failed: out of memory
+strata generate: GPU 0: AMD Radeon AI PRO R9700 (gfx1201)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 2954 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 46.84 GiB at 17.29 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 48 (automatic), participating threads: 16
+strata generate: CPU pool: 15 workers by default (16 physical cores, 32 logical processors; bounded by every physical core but the host's)
+strata generate: 15 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 1-15 (15 workers, one per physical core; host on 0)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 16 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache auto: 26.20 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10203 slots
+strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1201)
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 25.30 GiB of VRAM failed: out of memory; trying a smaller expert cache: 9999 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 18.97 GiB of VRAM failed: out of memory; trying a smaller expert cache: 7503 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 14.23 GiB of VRAM failed: out of memory; trying a smaller expert cache: 5613 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 10.67 GiB of VRAM failed: out of memory; trying a smaller expert cache: 4194 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 8.00 GiB of VRAM failed: out of memory; trying a smaller expert cache: 3133 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 6.00 GiB of VRAM failed: out of memory; trying a smaller expert cache: 2340 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 4.50 GiB of VRAM failed: out of memory; trying a smaller expert cache: 1755 slots
+strata: HIP virtual memory: hipMemCreate failed: out of memory
+strata generate: ExpertCache: mapping 3.37 GiB of VRAM failed: out of memory; trying a smaller expert cache: 1309 slots
+strata generate: ExpertCache: mapping 2.53 GiB of VRAM failed: out of memory
+== 17:56:13 Strata dual-cmp up
+ready after 25 s
+== 17:56:38 Strata dual-cmp ready; MemAvailable 65 GiB, 0000:67:00.0 VRAM 27272 MiB, 0000:68:00.0 VRAM 186 MiB
+== 17:56:38 speed-check 1 2 4
+1 at once: text right 1/1; per stream 72.4-72.4 tok/s (sum 72.4); first token after 0.5-0.5 s; 500 tokens in 7.4 s
+2 at once: text right 2/2; per stream 32.3-33.3 tok/s (sum 65.5); first token after 0.1-0.7 s; 1000 tokens in 15.7 s
+4 at once: text right 4/4; per stream 20.1-21.1 tok/s (sum 82.1); first token after 0.2-1.7 s; 2000 tokens in 25.3 s
+== 17:57:27 short prompts
+short 570    570 prompt tokens,   2.3 s to the answer, prompt 462 tok/s
+short 570    585 prompt tokens,   2.0 s to the answer, prompt 540 tok/s
+short 570    575 prompt tokens,   2.1 s to the answer, prompt 541 tok/s
+short 2K    1770 prompt tokens,   3.3 s to the answer, prompt 822 tok/s
+short 4K    3598 prompt tokens,   4.6 s to the answer, prompt 964 tok/s
+== 17:57:41 all done; MemAvailable 62 GiB, 0000:67:00.0 VRAM 27348 MiB, 0000:68:00.0 VRAM 188 MiB
+== 17:57:41 restore: Strata down, Paiton up, Halogen up
+8060S GTT 17 MiB, MemAvailable 111 GiB, 2849 free 2 MiB blocks
+READY after 63 s; 8060S GTT 35098 MiB, R9700 VRAM 28450 MiB
+halogen health: {'api': '0.18.12', 'engine': '0.18.12', 'match': True}
+paiton /v1/models 200
+paiton-qwen38 Up 2 minutes
+ec-halogen-svc Up About a minute
+8080 listeners: 0, ttm page_pool_size 262144
+RESTORE-DONE
+R9700-022-DONE

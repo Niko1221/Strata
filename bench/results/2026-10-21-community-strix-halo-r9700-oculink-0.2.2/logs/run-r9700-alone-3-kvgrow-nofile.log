@@ -1,0 +1,62 @@
+== 18:12:02 start; MemAvailable 121 GiB, 0000:67:00.0 VRAM 57 MiB, 0000:68:00.0 VRAM 147 MiB
+== 18:12:02 VMM probe 12000 x 2 MiB, ulimit -n 1024
+hipMemCreate #1016 failed: out of memory
+hipMemCreate: 1016 of 12000 chunks of 2 MiB
+hipMemset 2032 MiB: out of memory, sync no error
+== 18:12:02 VMM probe 12000 x 2 MiB, ulimit -n 524288
+hipMemCreate: 12000 of 12000 chunks of 2 MiB
+hipMemset 24000 MiB: no error, sync no error
+== 18:12:03 Strata r9700-kvgrow-nf up (ulimit -n 524288)
+ready after 30 s
+== 18:12:34 Strata r9700-kvgrow-nf ready; MemAvailable 71 GiB, 0000:67:00.0 VRAM 32181 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 26.20 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10203 slots
+      1 strata generate: elastic K/V: 16384 of 262144 cells in VRAM (0.25 of 3.35 GiB); the expert cache (13323 slots) gives the K/V room below slot 8305 as the context grows
+      1 [strata] 2026-10-21 18:12:04 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash
+== 18:12:34 speed-check 1
+1 at once: text right 1/1; per stream 103.3-103.3 tok/s (sum 103.3); first token after 0.4-0.4 s; 500 tokens in 5.2 s
+== 18:12:39 short prompts x2
+short 570    580 prompt tokens,   3.8 s to the answer, prompt 177 tok/s
+short 570    595 prompt tokens,   3.5 s to the answer, prompt 202 tok/s
+short 570    585 prompt tokens,   3.0 s to the answer, prompt 243 tok/s
+short 2K    1780 prompt tokens,   5.0 s to the answer, prompt 405 tok/s
+short 4K    3608 prompt tokens,   4.7 s to the answer, prompt 864 tok/s
+short 570    581 prompt tokens,   3.8 s to the answer, prompt 184 tok/s
+short 570    596 prompt tokens,   2.8 s to the answer, prompt 250 tok/s
+short 570    586 prompt tokens,   3.3 s to the answer, prompt 211 tok/s
+short 2K    1781 prompt tokens,   4.4 s to the answer, prompt 464 tok/s
+short 4K    3609 prompt tokens,   5.5 s to the answer, prompt 722 tok/s
+warm-up 16K: first token 8.7 s
+strata-0.2.2-r9700-arena-pf32k-kvgrow  64K run 1:   64537 tokens, first token   25.0 s ( 2585 tok/s), decode  76.9 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k-kvgrow  64K run 2:   64537 tokens, first token   24.8 s ( 2603 tok/s), decode  85.7 tok/s over 600 tokens
+BENCH-DONE
+== 18:14:45 after kvgrow-nf:
+      1 strata: K/V grown to 65536 cells (0.86 GiB); the expert cache gave 320 slots for it, 87 hotter experts moved to colder ones' slots (13003 of 13323 slots hold experts)
+      1 strata serve: PCIe share: the CPU pool takes 30 us per missed expert (67.4 GB/s of expert bytes), the link 7.2 GB/s -> pcie_frac 0.10 (was 0.20; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)
+      1 strata generate: expert cache auto: 26.20 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10203 slots
+      1 strata generate: elastic K/V: 16384 of 262144 cells in VRAM (0.25 of 3.35 GiB); the expert cache (13323 slots) gives the K/V room below slot 8305 as the context grows
+      1 [strata] 2026-10-21 18:12:04 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash
+== 18:14:54 Strata r9700-kvgrow-cs up (ulimit -n 524288)
+ready after 25 s
+== 18:15:19 Strata r9700-kvgrow-cs ready; MemAvailable 71 GiB, 0000:67:00.0 VRAM 32182 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 26.20 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10203 slots
+      1 strata generate: elastic K/V: 16384 of 262144 cells in VRAM (0.25 of 3.35 GiB); the expert cache (13323 slots) gives the K/V room below slot 8305 as the context grows
+      1 [strata] 2026-10-21 18:14:55 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash
+== 18:15:19 short prompts x2
+short 570    581 prompt tokens,   2.1 s to the answer, prompt 368 tok/s
+short 570    596 prompt tokens,   1.9 s to the answer, prompt 421 tok/s
+short 570    586 prompt tokens,   1.6 s to the answer, prompt 543 tok/s
+short 2K    1781 prompt tokens,   3.5 s to the answer, prompt 606 tok/s
+short 4K    3609 prompt tokens,   5.1 s to the answer, prompt 788 tok/s
+short 570    580 prompt tokens,   2.0 s to the answer, prompt 424 tok/s
+short 570    595 prompt tokens,   1.7 s to the answer, prompt 462 tok/s
+short 570    585 prompt tokens,   1.5 s to the answer, prompt 567 tok/s
+short 2K    1780 prompt tokens,   3.3 s to the answer, prompt 643 tok/s
+short 4K    3608 prompt tokens,   5.6 s to the answer, prompt 712 tok/s
+== 18:15:48 after kvgrow-cs:
+      1 strata serve: PCIe share: the CPU pool takes 33 us per missed expert (61.3 GB/s of expert bytes), the link 7.2 GB/s -> pcie_frac 0.10 (was 0.20; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAULT=old keeps the start-up rule)
+      1 strata generate: expert cache auto: 26.20 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10203 slots
+      1 strata generate: elastic K/V: 16384 of 262144 cells in VRAM (0.25 of 3.35 GiB); the expert cache (13323 slots) gives the K/V room below slot 8305 as the context grows
+      1 [strata] 2026-10-21 18:14:55 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash
+== 18:15:56 all done; MemAvailable 121 GiB, 0000:67:00.0 VRAM 57 MiB, 0000:68:00.0 VRAM 147 MiB
+== 18:15:56 end: Strata down (Halogen and Paiton stay stopped)
+R9700-022C-DONE

@@ -1,0 +1,145 @@
+== 18:02:24 start; MemAvailable 76 GiB, 0000:67:00.0 VRAM 28450 MiB, 0000:68:00.0 VRAM 305 MiB
+down; R9700 VRAM 57 MiB
+== 18:02:58 Halogen and Paiton stopped; MemAvailable 121 GiB, 0000:67:00.0 VRAM 57 MiB, 0000:68:00.0 VRAM 147 MiB
+== 18:02:58 VMM probe: 64 chunks of 2 MiB
+device 0: AMD Radeon AI PRO R9700 gfx1201
+VirtualMemoryManagementSupported 1, free 31.79 of 31.86 GiB
+granularity minimum 4096 (no error), recommended 2097152
+hipMemCreate: 64 of 64 chunks of 2 MiB
+hipMemAddressReserve 128 MiB: no error
+hipMemSetAccess: no error
+hipMemset 128 MiB: no error, sync no error
+free after 31.65 GiB
+== 18:02:58 VMM probe: 12000 chunks of 2 MiB (23.4 GiB)
+device 0: AMD Radeon AI PRO R9700 gfx1201
+VirtualMemoryManagementSupported 1, free 31.79 of 31.86 GiB
+granularity minimum 4096 (no error), recommended 2097152
+hipMemCreate #1016 failed: out of memory
+hipMemCreate: 1016 of 12000 chunks of 2 MiB
+hipMemAddressReserve 2032 MiB: no error
+hipMemSetAccess: no error
+hipMemset 2032 MiB: out of memory, sync no error
+free after 31.65 GiB
+== 18:02:58 VMM probe: 64 chunks of 2 MiB after page-locking 46 GiB of host memory
+hipHostRegister PORTABLE 46 GiB: no error
+device 0: AMD Radeon AI PRO R9700 gfx1201
+VirtualMemoryManagementSupported 1, free 31.79 of 31.86 GiB
+granularity minimum 4096 (no error), recommended 2097152
+hipMemCreate: 64 of 64 chunks of 2 MiB
+hipMemAddressReserve 128 MiB: no error
+hipMemSetAccess: no error
+hipMemset 128 MiB: no error, sync no error
+free after 31.65 GiB
+== 18:03:06 VMM probe: 64 chunks, the 8060S visible too (no ROCR_VISIBLE_DEVICES; HIP device 0 is the R9700)
+device 0: AMD Radeon AI PRO R9700 gfx1201
+VirtualMemoryManagementSupported 1, free 31.79 of 31.86 GiB
+granularity minimum 4096 (no error), recommended 2097152
+hipMemCreate: 64 of 64 chunks of 2 MiB
+== 18:03:07 Strata r9700-p1-32k up
+ready after 30 s
+== 18:03:38 Strata r9700-p1-32k ready; MemAvailable 71 GiB, 0000:67:00.0 VRAM 32251 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 23.09 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 8950 slots
+== 18:03:38 short prompts x2
+short 570    575 prompt tokens,   3.6 s to the answer, prompt 189 tok/s
+short 570    590 prompt tokens,   3.2 s to the answer, prompt 224 tok/s
+short 570    580 prompt tokens,   3.1 s to the answer, prompt 228 tok/s
+short 2K    1775 prompt tokens,   5.1 s to the answer, prompt 400 tok/s
+short 4K    3603 prompt tokens,   6.3 s to the answer, prompt 634 tok/s
+short 570    575 prompt tokens,   0.7 s to the answer, prompt 34 tok/s
+short 570    590 prompt tokens,   0.7 s to the answer, prompt 38 tok/s
+short 570    580 prompt tokens,   0.6 s to the answer, prompt 38 tok/s
+short 2K    1775 prompt tokens,   0.7 s to the answer, prompt 37 tok/s
+short 4K    3603 prompt tokens,   0.7 s to the answer, prompt 37 tok/s
+== 18:04:02 speed-check 1
+1 at once: text right 1/1; per stream 108.5-108.5 tok/s (sum 108.5); first token after 0.3-0.3 s; 500 tokens in 4.9 s
+== 18:04:07 after p1-32k, the engine on the share:
+      1 strata serve: PCIe share: the CPU pool takes 35 us per missed expert (59.0 GB/s of expert bytes), the link 7.2 GB/s -> pcie_frac 0.10 (was 0.20; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAUL
+== 18:04:16 Strata r9700-p1cs up
+ready after 30 s
+== 18:04:46 Strata r9700-p1cs ready; MemAvailable 72 GiB, 0000:67:00.0 VRAM 32262 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 23.10 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 8954 slots
+== 18:04:46 short prompts x2
+short 570    579 prompt tokens,   2.0 s to the answer, prompt 386 tok/s
+short 570    594 prompt tokens,   2.0 s to the answer, prompt 460 tok/s
+short 570    584 prompt tokens,   1.8 s to the answer, prompt 478 tok/s
+short 2K    1779 prompt tokens,   3.9 s to the answer, prompt 549 tok/s
+short 4K    3607 prompt tokens,   6.4 s to the answer, prompt 626 tok/s
+short 570    578 prompt tokens,   2.2 s to the answer, prompt 368 tok/s
+short 570    593 prompt tokens,   1.7 s to the answer, prompt 510 tok/s
+short 570    583 prompt tokens,   2.0 s to the answer, prompt 396 tok/s
+short 2K    1778 prompt tokens,   3.1 s to the answer, prompt 688 tok/s
+short 4K    3606 prompt tokens,   5.2 s to the answer, prompt 786 tok/s
+== 18:05:17 speed-check 1
+1 at once: text right 1/1; per stream 107.4-107.4 tok/s (sum 107.4); first token after 0.3-0.3 s; 500 tokens in 5.0 s
+warm-up 16K: first token 9.5 s
+strata-0.2.2-r9700-arena-pf32k-p1cs  64K run 1:   64537 tokens, first token   25.5 s ( 2530 tok/s), decode  76.3 tok/s over 600 tokens
+strata-0.2.2-r9700-arena-pf32k-p1cs  64K run 2:   64537 tokens, first token   25.7 s ( 2508 tok/s), decode  83.3 tok/s over 600 tokens
+BENCH-DONE
+== 18:06:50 after p1cs, the engine on the share:
+      1 strata serve: PCIe share: the CPU pool takes 34 us per missed expert (59.3 GB/s of expert bytes), the link 7.2 GB/s -> pcie_frac 0.10 (was 0.20; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAUL
+== 18:06:59 Strata r9700-p1cs3k up
+ready after 30 s
+== 18:07:29 Strata r9700-p1cs3k ready; MemAvailable 72 GiB, 0000:67:00.0 VRAM 32264 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 23.10 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 8954 slots
+== 18:07:29 short prompts x2
+short 570    579 prompt tokens,   2.1 s to the answer, prompt 383 tok/s
+short 570    594 prompt tokens,   1.9 s to the answer, prompt 461 tok/s
+short 570    584 prompt tokens,   1.8 s to the answer, prompt 479 tok/s
+short 2K    1779 prompt tokens,   3.8 s to the answer, prompt 547 tok/s
+short 4K    3607 prompt tokens,   5.3 s to the answer, prompt 764 tok/s
+short 570    579 prompt tokens,   2.1 s to the answer, prompt 371 tok/s
+short 570    594 prompt tokens,   1.7 s to the answer, prompt 512 tok/s
+short 570    584 prompt tokens,   2.0 s to the answer, prompt 398 tok/s
+short 2K    1779 prompt tokens,   3.2 s to the answer, prompt 683 tok/s
+short 4K    3607 prompt tokens,   5.1 s to the answer, prompt 787 tok/s
+== 18:07:58 after p1cs3k, the engine on the share:
+      1 strata serve: PCIe share: the CPU pool takes 34 us per missed expert (60.1 GB/s of expert bytes), the link 7.2 GB/s -> pcie_frac 0.10 (was 0.20; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAUL
+== 18:08:07 Strata r9700-p1-32k-b up
+ready after 30 s
+== 18:08:38 Strata r9700-p1-32k-b ready; MemAvailable 72 GiB, 0000:67:00.0 VRAM 32264 MiB, 0000:68:00.0 VRAM 147 MiB
+      1 strata generate: expert cache auto: 23.10 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 8954 slots
+== 18:08:38 short prompts x2
+short 570    583 prompt tokens,   3.6 s to the answer, prompt 193 tok/s
+short 570    598 prompt tokens,   3.2 s to the answer, prompt 225 tok/s
+short 570    588 prompt tokens,   3.1 s to the answer, prompt 230 tok/s
+short 2K    1783 prompt tokens,   5.1 s to the answer, prompt 402 tok/s
+short 4K    3611 prompt tokens,   6.2 s to the answer, prompt 634 tok/s
+short 570    581 prompt tokens,   4.1 s to the answer, prompt 168 tok/s
+short 570    596 prompt tokens,   3.0 s to the answer, prompt 231 tok/s
+short 570    586 prompt tokens,   3.5 s to the answer, prompt 197 tok/s
+short 2K    1781 prompt tokens,   4.9 s to the answer, prompt 412 tok/s
+short 4K    3609 prompt tokens,   5.0 s to the answer, prompt 798 tok/s
+== 18:09:19 speed-check 1
+1 at once: text right 1/1; per stream 107.5-107.5 tok/s (sum 107.5); first token after 0.3-0.3 s; 500 tokens in 5.0 s
+== 18:09:24 after p1-32k-b, the engine on the share:
+      1 strata serve: PCIe share: the CPU pool takes 34 us per missed expert (59.6 GB/s of expert bytes), the link 7.2 GB/s -> pcie_frac 0.10 (was 0.20; --pcie-frac N fixes it, STRATA_PCIE_FRAC_DEFAUL
+== 18:09:33 Strata r9700-p4-32k-b up
+ready after 30 s
+== 18:10:04 Strata r9700-p4-32k-b ready; MemAvailable 55 GiB, 0000:67:00.0 VRAM 32389 MiB, 0000:68:00.0 VRAM 147 MiB
+== 18:10:04 short prompts x2
+short 570    582 prompt tokens,   3.8 s to the answer, prompt 181 tok/s
+short 570    597 prompt tokens,   3.9 s to the answer, prompt 179 tok/s
+short 570    587 prompt tokens,   3.3 s to the answer, prompt 216 tok/s
+short 2K    1782 prompt tokens,   6.1 s to the answer, prompt 324 tok/s
+short 4K    3610 prompt tokens,   6.5 s to the answer, prompt 608 tok/s
+short 570    583 prompt tokens,   3.6 s to the answer, prompt 187 tok/s
+short 570    598 prompt tokens,   3.7 s to the answer, prompt 185 tok/s
+short 570    588 prompt tokens,   3.6 s to the answer, prompt 187 tok/s
+short 2K    1783 prompt tokens,   6.0 s to the answer, prompt 329 tok/s
+short 4K    3611 prompt tokens,   6.4 s to the answer, prompt 619 tok/s
+== 18:10:51 speed-check 1 2 4
+1 at once: text right 1/1; per stream 82.4-82.4 tok/s (sum 82.4); first token after 0.4-0.4 s; 500 tokens in 6.5 s
+2 at once: text right 2/2; per stream 54.5-57.3 tok/s (sum 111.8); first token after 0.1-0.6 s; 1000 tokens in 9.3 s
+4 at once: text right 4/4; per stream 33.8-36.6 tok/s (sum 140.1); first token after 0.1-1.3 s; 2000 tokens in 15.0 s
+== 18:11:31 Strata r9700-kvgrow-mmap up
+server exited
+  strata generate: CPU workers on logical processors 1-15 (15 workers, one per physical core; host on 0)
+  strata aux cpus: threads that are neither pool workers nor the host go to CPUs 16 (off at start; a request's aux_cpus=1 turns it on)
+  strata generate: expert cache auto: 26.24 GiB free, 700 MiB reserved (+218 MiB for the draft head) -> 10221 slots
+  strata: STRATA_HIP_WMMA: the prompt attention on matrix cores on (gfx1201)
+  strata: HIP virtual memory: hipMemCreate failed: out of memory
+      1 [strata] 2026-10-21 18:11:32 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-d
+      1 strata: HIP virtual memory: hipMemCreate failed: out of memory
+== 18:11:48 all done; MemAvailable 121 GiB, 0000:67:00.0 VRAM 57 MiB, 0000:68:00.0 VRAM 147 MiB
+== 18:11:48 end: Strata down (Halogen and Paiton stay stopped)
+R9700-022B-DONE
