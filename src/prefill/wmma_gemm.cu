@@ -38,10 +38,36 @@
 
 using v8fp32 = float __attribute__((ext_vector_type(8)));
 
-// Does the CURRENT device run the gfx11 WMMA kernels of this file?  Exactly the targets whose intrinsics are selected
-// below (gfx1100 / 1101 / 1102 / 1103 / 1150 / 1151): a gfx11 part outside the list (gfx1152) has no device code
-// here, so it takes the hipBLASLt / hipBLAS paths instead of running a kernel that is not there.  Cached per device
-// (hipGetDeviceProperties is not cheap, and a mixed-GPU box has more than one answer).
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#define STRATA_WMMA_DEV_GFX11 1
+#elif defined(__gfx1200__) || defined(__gfx1201__)
+#define STRATA_WMMA_DEV_GFX12 1
+#endif
+#if defined(STRATA_WMMA_DEV_GFX11) || defined(STRATA_WMMA_DEV_GFX12)
+#define STRATA_WMMA_DEV 1
+#endif
+#if defined(STRATA_WMMA_DEV_GFX12)
+#define WMMA_ROW(i, hi) (8 * (hi) + (i))
+#define WMMA_K_OFF(hi) (8 * (hi))
+#else
+#define WMMA_ROW(i, hi) (2 * (i) + (hi))
+#define WMMA_K_OFF(hi) 0
+#endif
+
+__device__ __forceinline__ void wmma_sync_lds() {
+#if defined(STRATA_WMMA_DEV_GFX11)
+    __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#elif defined(STRATA_WMMA_DEV_GFX12)
+    __asm__ volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#else
+    __syncthreads();
+#endif
+}
+
+// Does the CURRENT device run the gfx11 / gfx12 WMMA kernels of this file?  Exactly the targets whose intrinsics are
+// selected below (gfx1100 / 1101 / 1102 / 1103 / 1150 / 1151 / 1200 / 1201): a part outside the list has no device
+// code here, so it takes the hipBLASLt / hipBLAS paths instead of running a kernel that is not there.  Cached per
+// device (hipGetDeviceProperties is not cheap, and a mixed-GPU box has more than one answer).
 static bool strata_wmma_gfx11_device() {
     static std::atomic<int> cache[64];   // 0 unknown, 1 yes, 2 no
     int dev = 0;
@@ -49,7 +75,9 @@ static bool strata_wmma_gfx11_device() {
     int c = cache[dev].load(std::memory_order_acquire);
     if (c == 0) {
         hipDeviceProp_t prop{};
-        const bool ok = hipGetDeviceProperties(&prop, dev) == hipSuccess && strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName);
+        const bool ok = hipGetDeviceProperties(&prop, dev) == hipSuccess &&
+                        (strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ||
+                         strata::kernels::gfx_arch_is_gfx12_wmma(prop.gcnArchName));
         c = ok ? 1 : 2;
         cache[dev].store(c, std::memory_order_release);
     }
@@ -64,23 +92,37 @@ struct WmmaTraits;
 
 template <>
 struct WmmaTraits<_Float16> {
-    using vec_t = _Float16 __attribute__((ext_vector_type(16)));
+#if defined(STRATA_WMMA_DEV_GFX12)
+    static constexpr int kFragElems = 8;
+#else
+    static constexpr int kFragElems = 16;
+#endif
+    using vec_t = _Float16 __attribute__((ext_vector_type(kFragElems)));
     __device__ static inline v8fp32 mma(vec_t a, vec_t b, v8fp32 c) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(STRATA_WMMA_DEV_GFX11)
         return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#elif defined(STRATA_WMMA_DEV_GFX12)
+        return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
 #else
         (void) a; (void) b; (void) c;
-        __builtin_trap();   // a device pass without the gfx11 intrinsic: the runtime gate never launches it, and a stray launch must not return zeros
+        __builtin_trap();   // a device pass without the WMMA intrinsic: the runtime gate never launches it, and a stray launch must not return zeros
 #endif
     }
 };
 
 template <>
 struct WmmaTraits<__bf16> {
-    using vec_t = __bf16 __attribute__((ext_vector_type(16)));
+#if defined(STRATA_WMMA_DEV_GFX12)
+    static constexpr int kFragElems = 8;
+#else
+    static constexpr int kFragElems = 16;
+#endif
+    using vec_t = __bf16 __attribute__((ext_vector_type(kFragElems)));
     __device__ static inline v8fp32 mma(vec_t a, vec_t b, v8fp32 c) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(STRATA_WMMA_DEV_GFX11)
         return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
+#elif defined(STRATA_WMMA_DEV_GFX12)
+        return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
 #else
         (void) a; (void) b; (void) c;
         __builtin_trap();   // see above
@@ -100,6 +142,7 @@ __global__ void gemm_wmma_16x16_1w(
     int64_t T, int64_t N, int64_t K, int64_t ldy, float beta) {
 
     using vec_t = typename WmmaTraits<ElemT>::vec_t;
+    constexpr int kFragElems = WmmaTraits<ElemT>::kFragElems;
     const int m_tile = blockIdx.y * 16;
     const int n_tile = blockIdx.x * 16;
     if (m_tile >= T || n_tile >= N) return;
@@ -112,22 +155,23 @@ __global__ void gemm_wmma_16x16_1w(
 
     const int m_row = m_tile + lane_lo;
     const int n_row = n_tile + lane_lo;
+    const int k_off = WMMA_K_OFF(lane_hi);
 
     for (int k_tile = 0; k_tile < K; k_tile += 16) {
         vec_t a_frag, b_frag;
 
         if (m_row < T) {
-            __builtin_memcpy(&a_frag, X + (int64_t)m_row * K + k_tile, sizeof(a_frag));
+            __builtin_memcpy(&a_frag, X + (int64_t)m_row * K + k_tile + k_off, sizeof(a_frag));
         } else {
             #pragma unroll
-            for (int i = 0; i < 16; ++i) a_frag[i] = 0;
+            for (int i = 0; i < kFragElems; ++i) a_frag[i] = 0;
         }
 
         if (n_row < N) {
-            __builtin_memcpy(&b_frag, W + (int64_t)n_row * K + k_tile, sizeof(b_frag));
+            __builtin_memcpy(&b_frag, W + (int64_t)n_row * K + k_tile + k_off, sizeof(b_frag));
         } else {
             #pragma unroll
-            for (int i = 0; i < 16; ++i) b_frag[i] = 0;
+            for (int i = 0; i < kFragElems; ++i) b_frag[i] = 0;
         }
 
         c_acc = WmmaTraits<ElemT>::mma(a_frag, b_frag, c_acc);
@@ -137,7 +181,7 @@ __global__ void gemm_wmma_16x16_1w(
     if (out_n < N) {
         #pragma unroll
         for (int i = 0; i < 8; ++i) {
-            const int out_m = m_tile + 2 * i + lane_hi;
+            const int out_m = m_tile + WMMA_ROW(i, lane_hi);
             if (out_m < T) {
                 float* dst = Y + (int64_t)out_m * ldy + out_n;
                 if (beta == 0.0f) {
@@ -162,6 +206,7 @@ __global__ void gemm_wmma_64x64_4w(
     int64_t T, int64_t N, int64_t K, int64_t ldy, float beta) {
 
     using vec_t = typename WmmaTraits<ElemT>::vec_t;
+    constexpr int kFragElems = WmmaTraits<ElemT>::kFragElems;
     const int m_tile = blockIdx.y * 64;
     const int n_tile = blockIdx.x * 64;
     if (m_tile >= T || n_tile >= N) return;
@@ -199,9 +244,10 @@ __global__ void gemm_wmma_64x64_4w(
 
     // Pre-fill buffer 0
     load_w_into_lds(0, 0);
-    __syncthreads();
+    wmma_sync_lds();
 
     const int m_row = m_tile + wave_id * 16 + lane_lo;
+    const int k_off = WMMA_K_OFF(lane_hi);
     int cur_buf = 0;
 
     for (int k_tile = 0; k_tile < K; k_tile += 16) {
@@ -216,25 +262,25 @@ __global__ void gemm_wmma_64x64_4w(
         // Load A fragment from X for current wave's 16 M-rows
         vec_t a_frag;
         if (m_row < T) {
-            __builtin_memcpy(&a_frag, X + (int64_t)m_row * K + k_tile, sizeof(a_frag));
+            __builtin_memcpy(&a_frag, X + (int64_t)m_row * K + k_tile + k_off, sizeof(a_frag));
         } else {
             #pragma unroll
-            for (int i = 0; i < 16; ++i) a_frag[i] = 0;
+            for (int i = 0; i < kFragElems; ++i) a_frag[i] = 0;
         }
 
         // Read B fragments from LDS and compute WMMA
         vec_t b_frag0, b_frag1, b_frag2, b_frag3;
-        __builtin_memcpy(&b_frag0, &b_lds[cur_buf][0 + lane_lo][0], sizeof(vec_t));
-        __builtin_memcpy(&b_frag1, &b_lds[cur_buf][16 + lane_lo][0], sizeof(vec_t));
-        __builtin_memcpy(&b_frag2, &b_lds[cur_buf][32 + lane_lo][0], sizeof(vec_t));
-        __builtin_memcpy(&b_frag3, &b_lds[cur_buf][48 + lane_lo][0], sizeof(vec_t));
+        __builtin_memcpy(&b_frag0, &b_lds[cur_buf][0 + lane_lo][k_off], sizeof(vec_t));
+        __builtin_memcpy(&b_frag1, &b_lds[cur_buf][16 + lane_lo][k_off], sizeof(vec_t));
+        __builtin_memcpy(&b_frag2, &b_lds[cur_buf][32 + lane_lo][k_off], sizeof(vec_t));
+        __builtin_memcpy(&b_frag3, &b_lds[cur_buf][48 + lane_lo][k_off], sizeof(vec_t));
 
         c_acc0 = WmmaTraits<ElemT>::mma(a_frag, b_frag0, c_acc0);
         c_acc1 = WmmaTraits<ElemT>::mma(a_frag, b_frag1, c_acc1);
         c_acc2 = WmmaTraits<ElemT>::mma(a_frag, b_frag2, c_acc2);
         c_acc3 = WmmaTraits<ElemT>::mma(a_frag, b_frag3, c_acc3);
 
-        __syncthreads();
+        wmma_sync_lds();
         cur_buf = next_buf;
     }
 
@@ -245,7 +291,7 @@ __global__ void gemm_wmma_64x64_4w(
         if (out_n < N) {
             #pragma unroll
             for (int i = 0; i < 8; ++i) {
-                const int out_m = m_tile_wave + 2 * i + lane_hi;
+                const int out_m = m_tile_wave + WMMA_ROW(i, lane_hi);
                 if (out_m < T) {
                     float* dst = Y + (int64_t)out_m * ldy + out_n;
                     if (beta == 0.0f) {
@@ -312,19 +358,60 @@ bool strata_wmma_gemm_bf16(const uint16_t* X, const uint16_t* W, float* Y,
 // group).  FP32 accumulation, K in another order than hipBLASLt: rounding-level, quality-gated.
 // ===========================================================================
 namespace pfg {
-typedef _Float16 h16 __attribute__((ext_vector_type(16)));
+#if defined(STRATA_WMMA_DEV_GFX12)
+typedef _Float16 hfrag __attribute__((ext_vector_type(8)));
+typedef __bf16 hbfrag __attribute__((ext_vector_type(8)));
+#else
+typedef _Float16 hfrag __attribute__((ext_vector_type(16)));
+typedef __bf16 hbfrag __attribute__((ext_vector_type(16)));
+#endif
 typedef float f8 __attribute__((ext_vector_type(8)));
 constexpr int BM = 128, BK = 32, LDK = BK + 8, GM = 8;
-__device__ __forceinline__ h16 frag(const _Float16* p) {
+__device__ __forceinline__ void pfg_sync_lds() {
+#if defined(STRATA_WMMA_DEV_GFX11)
+    __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#elif defined(STRATA_WMMA_DEV_GFX12)
+    __asm__ volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#else
+    __syncthreads();
+#endif
+}
+__device__ __forceinline__ hfrag frag(const _Float16* p, int hi) {
+#if defined(STRATA_WMMA_DEV_GFX12)
+    const uint4 a = *reinterpret_cast<const uint4*>(p + 8 * hi);
+    return __builtin_bit_cast(hfrag, a);
+#else
+    (void) hi;
     const uint4 a = *reinterpret_cast<const uint4*>(p), b = *reinterpret_cast<const uint4*>(p + 8);
     const uint32_t w[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
-    return __builtin_bit_cast(h16, w);
+    return __builtin_bit_cast(hfrag, w);
+#endif
+}
+__device__ __forceinline__ f8 wmma_f16(hfrag a, hfrag b, f8 c) {
+#if defined(STRATA_WMMA_DEV_GFX11)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
+#elif defined(STRATA_WMMA_DEV_GFX12)
+    return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
+#else
+    (void) a; (void) b; (void) c;
+    __builtin_trap();
+#endif
+}
+__device__ __forceinline__ f8 wmma_bf16(hbfrag a, hbfrag b, f8 c) {
+#if defined(STRATA_WMMA_DEV_GFX11)
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
+#elif defined(STRATA_WMMA_DEV_GFX12)
+    return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
+#else
+    (void) a; (void) b; (void) c;
+    __builtin_trap();
+#endif
 }
 template <int BN, int WN>
 __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, const _Float16* __restrict__ W,
                                               float* __restrict__ Y, int M, int N, int K, int ldy, int accumulate,
                                               int ldx, int ldw) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(STRATA_WMMA_DEV)
     constexpr int TN = WN / 16, NB = BN / 64;
     __shared__ __align__(16) _Float16 sA[2][BM][LDK];
     __shared__ __align__(16) _Float16 sB[2][BN][LDK];
@@ -348,7 +435,7 @@ __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, co
     *reinterpret_cast<uint4*>(&sA[0][sr][8 * sq]) = ra0; *reinterpret_cast<uint4*>(&sA[0][sr + 64][8 * sq]) = ra1;
     *reinterpret_cast<uint4*>(&sB[0][sr][8 * sq]) = rb0; *reinterpret_cast<uint4*>(&sB[0][sr + 64][8 * sq]) = rb1;
     if constexpr (NB > 2) { *reinterpret_cast<uint4*>(&sB[0][sr + 128][8 * sq]) = rb2; *reinterpret_cast<uint4*>(&sB[0][sr + 192][8 * sq]) = rb3; }
-    __syncthreads();
+    pfg_sync_lds();
     for (int k0 = 0; k0 < K; k0 += BK) {
         const bool more = k0 + BK < K;
         if (more) {
@@ -357,22 +444,22 @@ __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, co
         }
 #pragma unroll
         for (int ks = 0; ks < BK; ks += 16) {
-            h16 a[4], bb[TN];
+            hfrag a[4], bb[TN];
 #pragma unroll
-            for (int i = 0; i < 4; ++i) a[i] = frag(&sA[buf][64 * wm + 16 * i + l16][ks]);
+            for (int i = 0; i < 4; ++i) a[i] = frag(&sA[buf][64 * wm + 16 * i + l16][ks], hi);
 #pragma unroll
-            for (int j = 0; j < TN; ++j) bb[j] = frag(&sB[buf][WN * wn + 16 * j + l16][ks]);
+            for (int j = 0; j < TN; ++j) bb[j] = frag(&sB[buf][WN * wn + 16 * j + l16][ks], hi);
 #pragma unroll
             for (int i = 0; i < 4; ++i)
 #pragma unroll
-                for (int j = 0; j < TN; ++j) acc[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a[i], bb[j], acc[i][j]);
+                for (int j = 0; j < TN; ++j) acc[i][j] = wmma_f16(a[i], bb[j], acc[i][j]);
         }
         if (more) {
             const int nb = buf ^ 1;
             *reinterpret_cast<uint4*>(&sA[nb][sr][8 * sq]) = ra0; *reinterpret_cast<uint4*>(&sA[nb][sr + 64][8 * sq]) = ra1;
             *reinterpret_cast<uint4*>(&sB[nb][sr][8 * sq]) = rb0; *reinterpret_cast<uint4*>(&sB[nb][sr + 64][8 * sq]) = rb1;
             if constexpr (NB > 2) { *reinterpret_cast<uint4*>(&sB[nb][sr + 128][8 * sq]) = rb2; *reinterpret_cast<uint4*>(&sB[nb][sr + 192][8 * sq]) = rb3; }
-            __syncthreads();
+            pfg_sync_lds();
             buf = nb;
         }
     }
@@ -384,7 +471,7 @@ __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, co
             if (n >= N) continue;
 #pragma unroll
             for (int e = 0; e < 8; ++e) {
-                const int m = m0 + 64 * wm + 16 * i + 2 * e + hi;
+                const int m = m0 + 64 * wm + 16 * i + WMMA_ROW(e, hi);
                 if (m < M) {
                     float* y = Y + (size_t) m * ldy + n;
                     *y = accumulate ? *y + acc[i][j][e] : acc[i][j][e];
@@ -401,7 +488,7 @@ __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, co
 __global__ void __launch_bounds__(256) kernel_bk64(const _Float16* __restrict__ X, const _Float16* __restrict__ W,
                                                    float* __restrict__ Y, int M, int N, int K, int ldy, int accumulate,
                                                    int ldx, int ldw) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(STRATA_WMMA_DEV)
     constexpr int BN = 256, WN = 64, BK64 = 64, LDK64 = BK64 + 8;
     __shared__ __align__(16) _Float16 sA[BM][LDK64];
     __shared__ __align__(16) _Float16 sB[BN][LDK64];
@@ -438,29 +525,29 @@ __global__ void __launch_bounds__(256) kernel_bk64(const _Float16* __restrict__ 
         for (int j = 0; j < 4; ++j) acc[i][j] = f8{0, 0, 0, 0, 0, 0, 0, 0};
     load(0);
     store();
-    __syncthreads();
+    pfg_sync_lds();
     const int ar = 64 * wm + l16, br = WN * wn + l16;
     for (int k0 = 0; k0 < K; k0 += BK64) {
         const bool more = k0 + BK64 < K;
         if (more) load(k0 + BK64);
 #pragma unroll
         for (int ks = 0; ks < BK64; ks += 16) {
-            const h16 a0 = frag(&sA[ar][ks]), a1 = frag(&sA[ar + 16][ks]), a2 = frag(&sA[ar + 32][ks]),
-                      a3 = frag(&sA[ar + 48][ks]);
-            const h16 b0 = frag(&sB[br][ks]), b1 = frag(&sB[br + 16][ks]), b2 = frag(&sB[br + 32][ks]),
-                      b3 = frag(&sB[br + 48][ks]);
+            const hfrag a0 = frag(&sA[ar][ks], hi), a1 = frag(&sA[ar + 16][ks], hi), a2 = frag(&sA[ar + 32][ks], hi),
+                        a3 = frag(&sA[ar + 48][ks], hi);
+            const hfrag b0 = frag(&sB[br][ks], hi), b1 = frag(&sB[br + 16][ks], hi), b2 = frag(&sB[br + 32][ks], hi),
+                        b3 = frag(&sB[br + 48][ks], hi);
 #define PFG_ROW(i, a)                                                                                                 \
-    acc[i][0] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b0, acc[i][0]);                                         \
-    acc[i][1] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b1, acc[i][1]);                                         \
-    acc[i][2] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b2, acc[i][2]);                                         \
-    acc[i][3] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b3, acc[i][3]);
+    acc[i][0] = wmma_f16(a, b0, acc[i][0]);                                                                           \
+    acc[i][1] = wmma_f16(a, b1, acc[i][1]);                                                                           \
+    acc[i][2] = wmma_f16(a, b2, acc[i][2]);                                                                           \
+    acc[i][3] = wmma_f16(a, b3, acc[i][3]);
             PFG_ROW(0, a0) PFG_ROW(1, a1) PFG_ROW(2, a2) PFG_ROW(3, a3)
 #undef PFG_ROW
         }
         if (more) {
-            __syncthreads();   // every wave is done reading the tile
+            pfg_sync_lds();   // every wave is done reading the tile
             store();
-            __syncthreads();
+            pfg_sync_lds();
         }
     }
 #pragma unroll
@@ -471,7 +558,7 @@ __global__ void __launch_bounds__(256) kernel_bk64(const _Float16* __restrict__ 
             if (n >= N) continue;
 #pragma unroll
             for (int e = 0; e < 8; ++e) {
-                const int m = m0 + 64 * wm + 16 * i + 2 * e + hi;
+                const int m = m0 + 64 * wm + 16 * i + WMMA_ROW(e, hi);
                 if (m < M) {
                     float* y = Y + (size_t) m * ldy + n;
                     *y = accumulate ? *y + acc[i][j][e] : acc[i][j][e];
@@ -486,17 +573,22 @@ __global__ void __launch_bounds__(256) kernel_bk64(const _Float16* __restrict__ 
 // so xn16 is read once.  128 x 128 blocks, the BK 64 single-buffer scheme of kernel_bk64.  s23/hcdown_probe.hip,
 // 16K tokens: 3.60 / 3.77 ms (hipBLASLt in the engine: down 6.78 + inject 1.81).  FP32 accumulation in another k
 // order than hipBLASLt: rounding-level.
-typedef __bf16 hb16 __attribute__((ext_vector_type(16)));
-__device__ __forceinline__ hb16 bfrag(const uint16_t* p) {
+__device__ __forceinline__ hbfrag bfrag(const uint16_t* p, int hi) {
+#if defined(STRATA_WMMA_DEV_GFX12)
+    const uint4 a = *reinterpret_cast<const uint4*>(p + 8 * hi);
+    return __builtin_bit_cast(hbfrag, a);
+#else
+    (void) hi;
     const uint4 a = *reinterpret_cast<const uint4*>(p), b = *reinterpret_cast<const uint4*>(p + 8);
     const uint32_t w[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
-    return __builtin_bit_cast(hb16, w);
+    return __builtin_bit_cast(hbfrag, w);
+#endif
 }
 __global__ void __launch_bounds__(256) kernel_hcdown(const uint16_t* __restrict__ X, int ldx,
                                                      const uint16_t* __restrict__ Wd, const uint16_t* __restrict__ Wi,
                                                      int nd, int ni, float* __restrict__ lo, float* __restrict__ inj,
                                                      int M, int K) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(STRATA_WMMA_DEV)
     constexpr int BN = 128, WN = 32, TN = 2, BK64 = 64, LDK64 = BK64 + 8;
     __shared__ __align__(16) uint16_t sA[BM][LDK64];
     __shared__ __align__(16) uint16_t sB[BN][LDK64];
@@ -533,29 +625,29 @@ __global__ void __launch_bounds__(256) kernel_hcdown(const uint16_t* __restrict_
         for (int j = 0; j < TN; ++j) acc[i][j] = f8{0, 0, 0, 0, 0, 0, 0, 0};
     load(0);
     store();
-    __syncthreads();
+    pfg_sync_lds();
     const int ar = 64 * wm + l16, br = WN * wn + l16;
     for (int k0 = 0; k0 < K; k0 += BK64) {
         const bool more = k0 + BK64 < K;
         if (more) load(k0 + BK64);
 #pragma unroll
         for (int ks = 0; ks < BK64; ks += 16) {
-            const hb16 a0 = bfrag(&sA[ar][ks]), a1 = bfrag(&sA[ar + 16][ks]), a2 = bfrag(&sA[ar + 32][ks]),
-                       a3 = bfrag(&sA[ar + 48][ks]);
-            const hb16 b0 = bfrag(&sB[br][ks]), b1 = bfrag(&sB[br + 16][ks]);
-            acc[0][0] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a0, b0, acc[0][0]);
-            acc[1][0] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a1, b0, acc[1][0]);
-            acc[2][0] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a2, b0, acc[2][0]);
-            acc[3][0] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a3, b0, acc[3][0]);
-            acc[0][1] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a0, b1, acc[0][1]);
-            acc[1][1] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a1, b1, acc[1][1]);
-            acc[2][1] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a2, b1, acc[2][1]);
-            acc[3][1] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a3, b1, acc[3][1]);
+            const hbfrag a0 = bfrag(&sA[ar][ks], hi), a1 = bfrag(&sA[ar + 16][ks], hi),
+                         a2 = bfrag(&sA[ar + 32][ks], hi), a3 = bfrag(&sA[ar + 48][ks], hi);
+            const hbfrag b0 = bfrag(&sB[br][ks], hi), b1 = bfrag(&sB[br + 16][ks], hi);
+            acc[0][0] = wmma_bf16(a0, b0, acc[0][0]);
+            acc[1][0] = wmma_bf16(a1, b0, acc[1][0]);
+            acc[2][0] = wmma_bf16(a2, b0, acc[2][0]);
+            acc[3][0] = wmma_bf16(a3, b0, acc[3][0]);
+            acc[0][1] = wmma_bf16(a0, b1, acc[0][1]);
+            acc[1][1] = wmma_bf16(a1, b1, acc[1][1]);
+            acc[2][1] = wmma_bf16(a2, b1, acc[2][1]);
+            acc[3][1] = wmma_bf16(a3, b1, acc[3][1]);
         }
         if (more) {
-            __syncthreads();
+            pfg_sync_lds();
             store();
-            __syncthreads();
+            pfg_sync_lds();
         }
     }
 #pragma unroll
@@ -566,7 +658,7 @@ __global__ void __launch_bounds__(256) kernel_hcdown(const uint16_t* __restrict_
             if (n >= N) continue;
 #pragma unroll
             for (int e = 0; e < 8; ++e) {
-                const int m = m0 + 64 * wm + 16 * i + 2 * e + hi;
+                const int m = m0 + 64 * wm + 16 * i + WMMA_ROW(e, hi);
                 if (m < M) {
                     if (n < nd) lo[(size_t) m * nd + n] = acc[i][j][e];
                     else inj[(size_t) m * ni + (n - nd)] = acc[i][j][e];
@@ -582,14 +674,10 @@ __global__ void __launch_bounds__(256) kernel_hcdown(const uint16_t* __restrict_
 // 5.2 M outputs differ at T 16384).  96 x 160 blocks (two per token tile), 6 waves of 32 x 80.
 typedef uint32_t hx_u4 __attribute__((ext_vector_type(4)));
 constexpr int HX_N = 320, HX_BN = 160, HX_BM = 96, HX_BK = 64, HX_LDK = HX_BK + 8, HX_NT = 192, HX_K = 10240;
-__device__ __forceinline__ hb16 hx_frag(const uint16_t* p) {
-    const hx_u4 a = *reinterpret_cast<const hx_u4*>(p), b = *reinterpret_cast<const hx_u4*>(p + 8);
-    const uint32_t w[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
-    return __builtin_bit_cast(hb16, w);
-}
+__device__ __forceinline__ hbfrag hx_frag(const uint16_t* p, int hi) { return bfrag(p, hi); }
 __global__ void __launch_bounds__(HX_NT) kernel_hcd_exact(const uint16_t* __restrict__ X, int ldx,
                                                           const uint16_t* __restrict__ W, float* __restrict__ Y, int M) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(STRATA_WMMA_DEV)
     constexpr int K = HX_K, BN = HX_BN, BMT = HX_BM, BK = HX_BK, NT = HX_NT;
     __shared__ __align__(16) uint16_t sA[BMT][HX_LDK];
     __shared__ __align__(16) uint16_t sB[BN][HX_LDK];
@@ -612,24 +700,25 @@ __global__ void __launch_bounds__(HX_NT) kernel_hcd_exact(const uint16_t* __rest
         for (int j = 0; j < 5; ++j) acc[i][j] = f8{0, 0, 0, 0, 0, 0, 0, 0};
     HX_LOAD(rot * BK);
     HX_STORE();
-    __syncthreads();
+    pfg_sync_lds();
     const int ar = 32 * wm + l16, br = 80 * wn + l16;
     for (int s = 0; s < nslab; ++s) {
         const bool more = s + 1 < nslab;
         if (more) HX_LOAD(((s + 1 + rot) % nslab) * BK);
 #pragma unroll
         for (int ks = 0; ks < BK; ks += 16) {
-            const hb16 a0 = hx_frag(&sA[ar][ks]), a1 = hx_frag(&sA[ar + 16][ks]);
-            const hb16 b0 = hx_frag(&sB[br][ks]), b1 = hx_frag(&sB[br + 16][ks]), b2 = hx_frag(&sB[br + 32][ks]),
-                       b3 = hx_frag(&sB[br + 48][ks]), b4 = hx_frag(&sB[br + 64][ks]);
-#define HX_W2(j, bj) acc[0][j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a0, bj, acc[0][j]); acc[1][j] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a1, bj, acc[1][j]);
+            const hbfrag a0 = hx_frag(&sA[ar][ks], hi), a1 = hx_frag(&sA[ar + 16][ks], hi);
+            const hbfrag b0 = hx_frag(&sB[br][ks], hi), b1 = hx_frag(&sB[br + 16][ks], hi),
+                         b2 = hx_frag(&sB[br + 32][ks], hi), b3 = hx_frag(&sB[br + 48][ks], hi),
+                         b4 = hx_frag(&sB[br + 64][ks], hi);
+#define HX_W2(j, bj) acc[0][j] = wmma_bf16(a0, bj, acc[0][j]); acc[1][j] = wmma_bf16(a1, bj, acc[1][j]);
             HX_W2(0, b0) HX_W2(1, b1) HX_W2(2, b2) HX_W2(3, b3) HX_W2(4, b4)
 #undef HX_W2
         }
         if (more) {
-            __syncthreads();
+            pfg_sync_lds();
             HX_STORE();
-            __syncthreads();
+            pfg_sync_lds();
         }
     }
 #undef HX_LDA
@@ -645,7 +734,7 @@ __global__ void __launch_bounds__(HX_NT) kernel_hcd_exact(const uint16_t* __rest
             const int n = nbase + 80 * wn + 16 * j + l16;
 #pragma unroll
             for (int e = 0; e < 8; ++e) {
-                const int m = m0 + 32 * wm + 16 * i + 2 * e + hi;
+                const int m = m0 + 32 * wm + 16 * i + WMMA_ROW(e, hi);
                 if (m < M) Y[(size_t) m * HX_N + n] = acc[i][j][e];
             }
         }

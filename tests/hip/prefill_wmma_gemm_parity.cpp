@@ -4,6 +4,7 @@
 #include <hip/hip_fp16.h>
 
 #include "wmma_gemm.h"
+#include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 
 #include <algorithm>
@@ -69,7 +70,7 @@ struct DeviceBuffer {
 };
 
 uint16_t encode(float value, bool bf16) {
-    if (bf16) return hip_bfloat16(value).data;
+    if (bf16) return strata::kernels::bf16_from_f32(value);
     const __half half = __float2half_rn(value);
     return static_cast<__half_raw>(half).x;
 }
@@ -272,7 +273,8 @@ int main() {
                 device, properties.name, properties.gcnArchName, properties.warpSize);
     // No matrix cores (RDNA2 and older, gfx906): the kernel declines every shape, so the suite has nothing to compare
     // and reports that as a skip (exit 77, SKIP_RETURN_CODE in CMake), as hip_prompt_attn_wmma does, not a failure.
-    if (!strata::kernels::gfx_arch_is_gfx11_wmma(properties.gcnArchName)) {
+    if (!strata::kernels::gfx_arch_is_gfx11_wmma(properties.gcnArchName) &&
+        !strata::kernels::gfx_arch_is_gfx12_wmma(properties.gcnArchName)) {
         std::printf("WMMA GEMM parity SKIPPED: %s has no WMMA matrix cores (the kernel declines every shape here)\n",
                     properties.gcnArchName);
         return 77;
@@ -412,6 +414,175 @@ int main() {
                                 decl.reason, dtype_str, decl.T, decl.N, decl.K, decl.ldy, decl.beta);
                 }
             }
+        }
+    }
+
+    // Also verify strata_pf_gemm_f16_ld (both BK=32 double-buffered kernel and BK=64 single-buffer kernel_bk64)
+    // and strata_pf_hcdown_bf16 (kernel_hcdown) with exact binary fractions.
+    {
+        std::printf("Testing strata_pf_gemm_f16_ld and strata_pf_hcdown_bf16...\n");
+        constexpr int64_t kPfMaxT = 135, kPfMaxN = 1030, kPfMaxK = 64, kPfMaxLdx = kPfMaxK + 16;
+        DeviceBuffer pf_dx((size_t) kPfMaxT * kPfMaxLdx * sizeof(uint16_t));
+        DeviceBuffer pf_dw((size_t) kPfMaxN * kPfMaxLdx * sizeof(uint16_t));
+        DeviceBuffer pf_dwi((size_t) 16 * kPfMaxK * sizeof(uint16_t));
+        DeviceBuffer pf_dy((size_t) kPfMaxT * (kPfMaxN + 16) * sizeof(float));
+        DeviceBuffer pf_dlo((size_t) kPfMaxT * 320 * sizeof(float));
+        DeviceBuffer pf_dinj((size_t) kPfMaxT * 4 * sizeof(float));
+
+        struct PfCase {
+            int64_t T, N, K, ldx, ldw, ldy;
+            float beta;
+        };
+        const std::vector<PfCase> pf_cases = {
+            {64, 512, 32, 32, 32, 512, 0.0f},     // kernel<128, 32> (BK=32)
+            {129, 512, 64, 72, 72, 515, 1.0f},    // kernel<128, 32> (BK=32, non-multiple T, strided X/W/Y, beta=1)
+            {64, 1024, 32, 32, 32, 1024, 0.0f},   // kernel<256, 64> (BK=32)
+            {64, 1024, 64, 64, 64, 1024, 0.0f},   // kernel_bk64 (BN=256, K%64==0)
+            {131, 1024, 64, 72, 80, 1028, 1.0f},  // kernel_bk64 (non-multiple T, strided X/W/Y, beta=1)
+        };
+        for (const auto& c : pf_cases) {
+            std::mt19937 rng(case_seed = case_seed * 1664525u + 1013904223u);
+            std::uniform_int_distribution<int> dist(-8, 8);
+            std::vector<uint16_t> x((size_t) c.T * c.ldx, 0), w((size_t) c.N * c.ldw, 0);
+            for (int64_t t = 0; t < c.T; ++t)
+                for (int64_t k = 0; k < c.K; ++k) x[(size_t) t * c.ldx + k] = encode(dist(rng) * 0.0625f, false);
+            for (int64_t n = 0; n < c.N; ++n)
+                for (int64_t k = 0; k < c.K; ++k) w[(size_t) n * c.ldw + k] = encode(dist(rng) * 0.0625f, false);
+            std::vector<float> init_y((size_t) c.T * c.ldy, kSentinel);
+            for (int64_t t = 0; t < c.T; ++t)
+                for (int64_t n = 0; n < c.N; ++n)
+                    init_y[(size_t) t * c.ldy + n] = (c.beta == 0.0f) ? -888.25f : ((t * 5 + n * 3) % 17 - 8) * 0.0625f;
+            HIP_CHECK(hipMemcpyAsync(pf_dx.p, x.data(), x.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            HIP_CHECK(hipMemcpyAsync(pf_dw.p, w.data(), w.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            HIP_CHECK(hipMemcpyAsync(pf_dy.p, init_y.data(), init_y.size() * sizeof(float), hipMemcpyHostToDevice, stream));
+            const bool ok = strata_pf_gemm_f16_ld(static_cast<const uint16_t*>(pf_dx.p), c.ldx,
+                                                  static_cast<const uint16_t*>(pf_dw.p), c.ldw,
+                                                  static_cast<float*>(pf_dy.p), c.T, c.N, c.K, c.ldy, c.beta, stream);
+            if (!ok) {
+                failure_count++;
+                std::fprintf(stderr, "FAIL: strata_pf_gemm_f16_ld declined T=%ld N=%ld K=%ld\n", c.T, c.N, c.K);
+                continue;
+            }
+            std::vector<float> got_y(init_y.size());
+            HIP_CHECK(hipMemcpyAsync(got_y.data(), pf_dy.p, got_y.size() * sizeof(float), hipMemcpyDeviceToHost, stream));
+            HIP_CHECK(hipStreamSynchronize(stream));
+            double pf_max_abs = 0.0;
+            for (int64_t t = 0; t < c.T; ++t) {
+                for (int64_t n = 0; n < c.N; ++n) {
+                    double sum = (c.beta == 0.0f) ? 0.0 : (double) init_y[(size_t) t * c.ldy + n];
+                    for (int64_t k = 0; k < c.K; ++k) {
+                        sum += (double) decode(x[(size_t) t * c.ldx + k], false) *
+                               (double) decode(w[(size_t) n * c.ldw + k], false);
+                    }
+                    const double delta = std::abs((double) got_y[(size_t) t * c.ldy + n] - sum);
+                    pf_max_abs = std::isfinite(delta) ? std::max(pf_max_abs, delta) : delta;
+                    if (!std::isfinite(delta) || delta > 0.0) {
+                        failure_count++;
+                        std::fprintf(stderr, "FAIL: strata_pf_gemm_f16_ld mismatch T=%ld N=%ld K=%ld at (%ld,%ld) delta=%g\n",
+                                     c.T, c.N, c.K, t, n, delta);
+                    }
+                }
+            }
+            passed_count++;
+            global_max_abs = std::isfinite(pf_max_abs) ? std::max(global_max_abs, pf_max_abs) : pf_max_abs;
+            std::printf("  strata_pf_gemm_f16_ld T=%3ld N=%4ld K=%2ld beta=%.1f max_abs=%.9g %s\n",
+                        c.T, c.N, c.K, c.beta, pf_max_abs, (failure_count == 0) ? "PASS" : "FAIL");
+        }
+
+        for (int64_t T : {int64_t{64}, int64_t{131}}) {
+            constexpr int64_t nd = 320, ni = 4, K = 64, ldx = 72;
+            std::mt19937 rng(case_seed = case_seed * 1664525u + 1013904223u);
+            std::uniform_int_distribution<int> dist(-8, 8);
+            std::vector<uint16_t> x((size_t) T * ldx, 0), wd((size_t) nd * K, 0), wi((size_t) ni * K, 0);
+            for (int64_t t = 0; t < T; ++t)
+                for (int64_t k = 0; k < K; ++k) x[(size_t) t * ldx + k] = encode(dist(rng) * 0.0625f, true);
+            for (size_t i = 0; i < wd.size(); ++i) wd[i] = encode(dist(rng) * 0.0625f, true);
+            for (size_t i = 0; i < wi.size(); ++i) wi[i] = encode(dist(rng) * 0.0625f, true);
+            HIP_CHECK(hipMemcpyAsync(pf_dx.p, x.data(), x.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            HIP_CHECK(hipMemcpyAsync(pf_dw.p, wd.data(), wd.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            HIP_CHECK(hipMemcpyAsync(pf_dwi.p, wi.data(), wi.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            const bool ok = strata_pf_hcdown_bf16(static_cast<const uint16_t*>(pf_dx.p), ldx,
+                                                  static_cast<const uint16_t*>(pf_dw.p),
+                                                  static_cast<const uint16_t*>(pf_dwi.p),
+                                                  nd, ni, static_cast<float*>(pf_dlo.p),
+                                                  static_cast<float*>(pf_dinj.p), T, K, stream);
+            if (!ok) {
+                failure_count++;
+                std::fprintf(stderr, "FAIL: strata_pf_hcdown_bf16 declined T=%ld\n", T);
+                continue;
+            }
+            std::vector<float> got_lo((size_t) T * nd), got_inj((size_t) T * ni);
+            HIP_CHECK(hipMemcpyAsync(got_lo.data(), pf_dlo.p, got_lo.size() * sizeof(float), hipMemcpyDeviceToHost, stream));
+            HIP_CHECK(hipMemcpyAsync(got_inj.data(), pf_dinj.p, got_inj.size() * sizeof(float), hipMemcpyDeviceToHost, stream));
+            HIP_CHECK(hipStreamSynchronize(stream));
+            double hcd_max_abs = 0.0;
+            for (int64_t t = 0; t < T; ++t) {
+                for (int64_t n = 0; n < nd + ni; ++n) {
+                    const uint16_t* wrow = (n < nd) ? (wd.data() + n * K) : (wi.data() + (n - nd) * K);
+                    double sum = 0.0;
+                    for (int64_t k = 0; k < K; ++k) {
+                        sum += (double) decode(x[(size_t) t * ldx + k], true) * (double) decode(wrow[k], true);
+                    }
+                    const float got = (n < nd) ? got_lo[(size_t) t * nd + n] : got_inj[(size_t) t * ni + (n - nd)];
+                    const double delta = std::abs((double) got - sum);
+                    hcd_max_abs = std::isfinite(delta) ? std::max(hcd_max_abs, delta) : delta;
+                    if (!std::isfinite(delta) || delta > 0.0) {
+                        failure_count++;
+                        std::fprintf(stderr, "FAIL: strata_pf_hcdown_bf16 mismatch T=%ld at (%ld,%ld) delta=%g\n",
+                                     T, t, n, delta);
+                    }
+                }
+            }
+            passed_count++;
+            global_max_abs = std::isfinite(hcd_max_abs) ? std::max(global_max_abs, hcd_max_abs) : hcd_max_abs;
+            std::printf("  strata_pf_hcdown_bf16 T=%3ld nd=%ld ni=%ld K=%ld max_abs=%.9g %s\n",
+                        T, nd, ni, K, hcd_max_abs, (failure_count == 0) ? "PASS" : "FAIL");
+        }
+        for (int64_t T : {int64_t{64}, int64_t{195}}) {
+            constexpr int64_t N = 320, K = 10240, ldx = K + 64;
+            DeviceBuffer hx_dx((size_t) T * ldx * sizeof(uint16_t));
+            DeviceBuffer hx_dw((size_t) N * K * sizeof(uint16_t));
+            DeviceBuffer hx_dy((size_t) T * N * sizeof(float));
+            std::mt19937 rng(case_seed = case_seed * 1664525u + 1013904223u);
+            std::uniform_int_distribution<int> dist(-1, 1);
+            std::vector<uint16_t> x((size_t) T * ldx, 0), w((size_t) N * K, 0);
+            for (int64_t t = 0; t < T; ++t)
+                for (int64_t k = 0; k < K; ++k) x[(size_t) t * ldx + k] = encode(dist(rng) * 0.0625f, true);
+            for (size_t i = 0; i < w.size(); ++i) w[i] = encode(dist(rng) * 0.0625f, true);
+            HIP_CHECK(hipMemcpyAsync(hx_dx.p, x.data(), x.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            HIP_CHECK(hipMemcpyAsync(hx_dw.p, w.data(), w.size() * sizeof(uint16_t), hipMemcpyHostToDevice, stream));
+            const bool ok = strata_pf_hcdown_exact_bf16(static_cast<const uint16_t*>(hx_dx.p), ldx,
+                                                        static_cast<const uint16_t*>(hx_dw.p),
+                                                        static_cast<float*>(hx_dy.p), T, N, K, stream);
+            if (!ok) {
+                failure_count++;
+                std::fprintf(stderr, "FAIL: strata_pf_hcdown_exact_bf16 declined T=%ld\n", T);
+                continue;
+            }
+            std::vector<float> got_y((size_t) T * N);
+            HIP_CHECK(hipMemcpyAsync(got_y.data(), hx_dy.p, got_y.size() * sizeof(float), hipMemcpyDeviceToHost, stream));
+            HIP_CHECK(hipStreamSynchronize(stream));
+            double hx_max_abs = 0.0;
+            for (int64_t t = 0; t < T; ++t) {
+                for (int64_t n = 0; n < N; ++n) {
+                    const uint16_t* wrow = w.data() + n * K;
+                    double sum = 0.0;
+                    for (int64_t k = 0; k < K; ++k) {
+                        sum += (double) decode(x[(size_t) t * ldx + k], true) * (double) decode(wrow[k], true);
+                    }
+                    const double delta = std::abs((double) got_y[(size_t) t * N + n] - sum);
+                    hx_max_abs = std::isfinite(delta) ? std::max(hx_max_abs, delta) : delta;
+                    if (!std::isfinite(delta) || delta > 0.0) {
+                        failure_count++;
+                        std::fprintf(stderr, "FAIL: strata_pf_hcdown_exact_bf16 mismatch T=%ld at (%ld,%ld) delta=%g\n",
+                                     T, t, n, delta);
+                    }
+                }
+            }
+            passed_count++;
+            global_max_abs = std::isfinite(hx_max_abs) ? std::max(global_max_abs, hx_max_abs) : hx_max_abs;
+            std::printf("  strata_pf_hcdown_exact_bf16 T=%3ld N=%ld K=%ld max_abs=%.9g %s\n",
+                        T, N, K, hx_max_abs, (failure_count == 0) ? "PASS" : "FAIL");
         }
     }
 
