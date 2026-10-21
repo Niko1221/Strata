@@ -149,3 +149,5 @@ namespace strata::kernels { bool native_q8_0_sm60_pack(void const* p0, int p1, i
 namespace strata::kernels { void native_q8_0_sm60_release(void const* p0) { } }
 // only reached with pf_wmma (off on Metal)
 namespace strata::prefill { void swiglu_split_f16(float const* p0, unsigned short* p1, long long p2, int p3, bool p4, void* p5) { } }
+// STRATA_PLE_COMPACT (opt-in, CUDA / HIP prompt path): prefill.cpp references it; the Metal prompt runs through its window and never reaches it.
+namespace strata::kernels { void ple_iq4nl_dequant(const uint8_t* p0, int64_t p1, float* p2, void* p3) { strata::metal_engine::missing("strata::kernels::ple_iq4nl_dequant"); } }
