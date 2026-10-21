@@ -15173,6 +15173,14 @@ int main(int argc, char** argv) {
                 bool hash_ok = true;
                 std::array<uint8_t, 65536> hash_buffer;
                 auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+#if defined(STRATA_GPU_METAL)
+                    // 2026-10-21: the stream window gives back the CUDA-shaped weight/session copies of >= 32 MB
+                    // to the expert arena at startup; nothing on Metal writes them, so the fingerprint would read
+                    // dead memory - and the runtime's abort tripwire stopped a serving engine on its first cached
+                    // request (STRATA_STATE_HASH + the startup purge together).  Skipping keeps the hash stable for
+                    // the OFF/ON arms, which run in the same server.
+                    if (bytes && strata::gpu::is_purged(p)) return h;
+#endif
                     for (size_t offset = 0; hash_ok && offset < bytes;) {
                         const size_t n = std::min(hash_buffer.size(), bytes - offset);
                         // VRAM or a streamed host copy, with fixed diagnostic workspace.

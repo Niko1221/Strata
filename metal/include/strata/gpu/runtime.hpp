@@ -99,6 +99,9 @@ Error memcpy_2d_async(void* dst, size_t dpitch, const void* src, size_t spitch, 
 Error memcpy_peer_async(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes, Stream s = nullptr);
 Error memcpy_peer(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes);
 
+// True when p lies in a device allocation that purge_device_allocations() gave back (its bytes are gone; any read
+// of it trips the runtime's check_purged abort).  Diagnostics must skip these rather than read them.
+bool is_purged(const void* p);
 Error stream_create(Stream* s, unsigned flags);
 inline Error stream_create(Stream* s) { return stream_create(s, 0); }
 Error stream_destroy(Stream s);

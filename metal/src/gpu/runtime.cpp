@@ -198,8 +198,11 @@ Error encode_copy(StreamImpl* s, void* dst, const void* src, size_t n) {
     size_t od = 0, os = 0;
     const Alloc* ad = find(dst, &od);
     const Alloc* as = find(src, &os);
-    check_purged(ad, "copy");
-    check_purged(as, "copy");
+    check_purged(as, "copy");   // reading given-back memory yields garbage: still fatal
+    // 2026-10-21: writing to it is the shared host code's lazy upload of a weight copy the Metal window never
+    // reads; the startup purge gave the buffer back, so the upload's bytes have nowhere to go. Drop the write
+    // (aborting killed a serving engine mid-request: the state fingerprint read one such buffer).
+    if (ad && ad->purged) return kSuccess;
     if (ad && as) {   // buffer to buffer: a blit, in stream order
         end_encoder(s);
         MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
@@ -222,7 +225,7 @@ Error encode_fill(StreamImpl* s, void* p, int value, size_t n) {
     size_t off = 0;
     const Alloc* a = find(p, &off);
     if (!a) return fail(kErrorInvalidValue);
-    check_purged(a, "fill");
+    if (a->purged) return kSuccess;   // fill of a given-back weight copy: dropped (see encode_copy)
     end_encoder(s);
     MTL::BlitCommandEncoder* b = open_cb(s)->blitCommandEncoder();
     b->fillBuffer(a->buf, NS::Range::Make(off, n), (uint8_t) value);
@@ -318,6 +321,13 @@ void* host_view(const void* p) {
     size_t off = 0;
     const Alloc* a = find(p, &off);
     return a ? a->cpu + off : nullptr;
+}
+
+// runtime.hpp: does p lie in a buffer purge_device_allocations() gave back?
+bool is_purged(const void* p) {
+    size_t off = 0;
+    const Alloc* a = find(p, &off);
+    return a && a->purged;
 }
 
 // The Metal decode window reads the model itself; the device copies of the weights the shared host code uploads for
