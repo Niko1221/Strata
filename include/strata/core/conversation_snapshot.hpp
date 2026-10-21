@@ -70,6 +70,13 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, 
                                       const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
                                   const ModelGeometry& g, std::string& error);
+/// STRATA_CKPT_ASYNC=1 (CUDA, opt-in): conversation_checkpoint_save copies the GDN state into a device staging buffer
+/// and moves it into the checkpoint's host vector on a background thread (the PCIe copy overlaps what follows: the
+/// rest of the prompt, the reply).  This waits for that copy; every reader of a checkpoint's bytes calls it first
+/// (restore, snapshot save / restore, the parked copies, the session file, the serve loop at each request).  No-op
+/// when nothing is in flight.
+/// `only` (non-null): wait only when the copy in flight is into that checkpoint's GDN bytes.
+void conversation_checkpoint_join(const void* only = nullptr);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
 // conversation_checkpoint_save(from) + conversation_checkpoint_restore(to) of `ids` without a host image, for two

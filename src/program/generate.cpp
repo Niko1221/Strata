@@ -1736,6 +1736,7 @@ public:
     bool on() const { return on_; }
     void give(ConvCheckpoint&& c) {
         if (!on_ || c.gdn.empty()) return;
+        strata::core::conversation_checkpoint_join(c.gdn.data());
         clear_marks(c);
         std::lock_guard<std::mutex> lk(mu_);
         if (free_.size() < cap_) free_.push_back(std::move(c));
@@ -1759,7 +1760,7 @@ public:
     }
 private:
     static void clear_marks(ConvCheckpoint& c) {
-        c.ids.clear(); c.imgs.clear(); c.used = 0; c.pinned = false;
+        c.ids.clear(); c.imgs.clear(); c.used = 0; c.pinned = false; c.dev_tag = 0;
         for (ConvCheckpoint& part : c.stage_parts) clear_marks(part);
     }
     bool on_;
@@ -9570,6 +9571,7 @@ int main(int argc, char** argv) {
             if (parts != nullptr) {
                 if (parts->size() != stages.size() + 1) return false;
                 c.gdn = std::move((*parts)[0].gdn);
+                c.dev_tag = (*parts)[0].dev_tag;
                 c.ple = std::move((*parts)[0].ple);
                 c.tails = std::move((*parts)[0].tails);
                 c.dead = std::move((*parts)[0].dead);
@@ -10847,7 +10849,8 @@ int main(int argc, char** argv) {
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
             if (!trace) return;
-            std::fprintf(stderr, "strata trace: %s %lld %lld\n", what, a, b);
+            std::fprintf(stderr, "strata trace: %s %lld %lld @%.1f\n", what, a, b,
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count());
             std::fflush(stderr);
         };
         {
@@ -12354,6 +12357,8 @@ int main(int argc, char** argv) {
             }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
+            tr("r0");
+            strata::core::conversation_checkpoint_join(nullptr);   // STRATA_CKPT_ASYNC: the last save's copy has landed
             const int64_t streamed0 = sp.chain_experts_streamed();   // the DONE line's experts_streamed= is the difference
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
             // exactly the start of this prompt - at most n - 1 of them, the last token is always the first window
