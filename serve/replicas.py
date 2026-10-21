@@ -12,6 +12,11 @@ Opt-in, in the run config:
 
 or `serve/server.py --replicas 2`.  Nothing changes without it.
 
+Port mode.  When every entry has a "port" ({"gpus": [1], "port": 8081}), each replica is a separate, ordinary server
+on its own port instead (`run_port_mode`): this process only starts them one after another, pins their cores, ends
+them when it stops (and they end with it), and deletes "replica_shared_arena" (one copy of the experts for all of
+them, `--shared-expert-arena`).  Some entries with a port and some without refuse the start.
+
 Routing.  Each request goes to the replica with the lowest cost, cost = prompt tokens the replica would have to read
 again (it holds the start of a conversation in its cache) + LOAD_TOKENS for every request already running there.  A
 conversation's next turn therefore goes back to its replica, until that replica is so much busier than another that
