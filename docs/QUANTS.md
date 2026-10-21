@@ -159,7 +159,8 @@ story 39.5 -> 53.3 tok/s, code 60.1 -> 80.4, after a 6K document 49.0 -> 68.8, 5
 routes at rank 7 or lower is skipped) costs these files more than the 2-3-bit packs: UD-Q4_K_XL's yardstick KL against
 Q8_0 goes from 0.056 to 0.086 with every expert in RAM (R9700, the auto cache) and from 0.053 to 0.115 in the RAM
 budget mode (A4000, 1,500 GPU slots), for +4-10% decode in RAM and +26-67% in the budget mode (5 pairs each).
-`STRATA_ROUTE_TAIL_SKIP=0` in a config's `"env"` turns it off.
+`STRATA_ROUTE_TAIL_SKIP=0` in a config's `"env"` turns it off. These runs had no helper GPU; with one attached only file-tier misses are
+skipped - an expert the helper holds, or one already in the host copy, is still computed.
 
 **The hyper-connections on NVIDIA:** the pack's `--compat-bf16` copy of the Q8_0 HC projections rounds them to BF16
 (and doubles their bytes). `STRATA_HC_Q8=1` reads the file's own Q8_0 instead (on AMD gfx12 it is the default): on the
