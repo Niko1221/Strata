@@ -557,7 +557,6 @@ void require_fit(const Pipeline& p, uint32_t threads, const char* where) {
 }
 
 Buffer Context::alloc(size_t bytes) {
-#if defined(STRATA_DS4_RUNTIME)
     // Metal returns the new buffer with one more reference parked in the calling thread's autorelease pool.  The engine's host
     // threads have no pool (only Context::run opens one), so that reference was never given back: every buffer made here lived for
     // the rest of the process, free() or not (a 16 KB job array per expert matvec, ~90K a request: +1.3 GB and a slower queue every
@@ -576,20 +575,6 @@ Buffer Context::alloc(size_t bytes) {
     allocated_ += bytes;
     r.bytes = bytes;
     return r;
-#else
-    id<MTLBuffer> b = [impl_->dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-    if (!b) {
-        std::fprintf(stderr, "mtl: alloc %zu failed\n", bytes);
-        std::exit(4);
-    }
-    std::memset([b contents], 0, bytes);
-    allocated_ += bytes;
-    Buffer r;
-    r.handle = (__bridge_retained void*)b;
-    r.ptr = [b contents];
-    r.bytes = bytes;
-    return r;
-#endif
 }
 
 Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
@@ -606,13 +591,15 @@ Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
     r.stride = maxlen - span;
     for (size_t base = 0; base < bytes; base += r.stride) {
         const size_t len = std::min(maxlen, (bytes - base + pg - 1) / pg * pg);
-        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:(uint8_t*) p + base length:len
-                                                        options:MTLResourceStorageModeShared deallocator:nil];
-        if (!b) {
-            std::fprintf(stderr, "mtl: wrap chunk %zu+%zu failed\n", base, len);
-            std::exit(4);
+        @autoreleasepool {   // as in alloc()
+            id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:(uint8_t*) p + base length:len
+                                                            options:MTLResourceStorageModeShared deallocator:nil];
+            if (!b) {
+                std::fprintf(stderr, "mtl: wrap chunk %zu+%zu failed\n", base, len);
+                std::exit(4);
+            }
+            r.chunks->push_back((__bridge_retained void*)b);
         }
-        r.chunks->push_back((__bridge_retained void*)b);
         if (base + len >= bytes) break;
     }
     allocated_ += bytes;
@@ -650,7 +637,6 @@ Buffer Context::wrap(void* p, size_t bytes) {
     if (std::getenv("DS4_WRAP_LOG"))   // debugging: a wrap that is not inside one runtime allocation gets a second GPU mapping of the pages
         std::fprintf(stderr, "mtl: wrap FALLBACK p=%p bytes=%zu alloc_remaining=%zu\n", p, bytes, ds4_gpu_alloc_remaining ? ds4_gpu_alloc_remaining(p) : (size_t) 0);
 #endif
-#if defined(STRATA_DS4_RUNTIME)
     Buffer r;
     @autoreleasepool {   // (see alloc: the engine's host threads have no pool of their own)
         id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
@@ -664,19 +650,6 @@ Buffer Context::wrap(void* p, size_t bytes) {
     r.ptr = p;
     r.bytes = bytes;
     return r;
-#else
-    id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
-    if (!b) {
-        std::fprintf(stderr, "mtl: wrap %zu failed\n", bytes);
-        std::exit(4);
-    }
-    allocated_ += bytes;
-    Buffer r;
-    r.handle = (__bridge_retained void*)b;
-    r.ptr = p;
-    r.bytes = bytes;
-    return r;
-#endif
 }
 
 void Context::free(Buffer& b) {
