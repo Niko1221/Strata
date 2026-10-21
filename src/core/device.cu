@@ -306,11 +306,11 @@ DeviceInfo device_info(int ordinal) {
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
-    // #236: the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
-    // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
+    // #236: the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON: Maxwell sm_50, Pascal sm_60, Volta sm_70) runs on
+    // the cards it was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
 #if defined(STRATA_EXPERIMENTAL_SM60)
-    constexpr int kMinCc = 60;
-    const char* const kNeed = "6.0 or newer (this is the experimental Pascal / Volta build)";
+    constexpr int kMinCc = 50;
+    const char* const kNeed = "5.0 or newer (this is the experimental Maxwell / Pascal / Volta build)";
 #else
     constexpr int kMinCc = 75;
     const char* const kNeed = "7.5 or newer (RTX 20 / 30 / 40 / 50 series)";

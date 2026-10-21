@@ -178,7 +178,7 @@ elseif(STRATA_ENABLE_CUDA)
   # `enable_language(CUDA)` gives the .cu compile rules but NOT the imported targets, so `CUDA::cudart` has to
   # be brought in explicitly for the host-side tests that call cudaMalloc themselves.
   find_package(CUDAToolkit REQUIRED)
-  option(STRATA_EXPERIMENTAL_SM60 "community build for GPUs below compute capability 7.5: Pascal sm_60, Volta sm_70 (#236)" OFF)
+  option(STRATA_EXPERIMENTAL_SM60 "community build for GPUs below compute capability 7.5: Maxwell sm_50, Pascal sm_60, Volta sm_70 (#236)" OFF)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES 120 CACHE STRING "CUDA architectures" FORCE)
   endif()
@@ -190,7 +190,8 @@ elseif(STRATA_ENABLE_CUDA)
     if(_base STREQUAL "native" OR _base STREQUAL "all" OR _base STREQUAL "all-major")
       continue()
     endif()
-    # STRATA_EXPERIMENTAL_SM60: a Pascal (sm_60, GP100-class) or Volta (sm_70, V100 / Titan V, #236) build.
+    # STRATA_EXPERIMENTAL_SM60: a Maxwell (sm_50, GM200 / TITAN X), Pascal (sm_60, GP100-class) or Volta
+    # (sm_70, V100 / Titan V, #236) build.
     # These sit below every architecture the kernels were written for, so two intrinsics are replaced below
     # their arch - `__dp4a` (6.1+) and `__nanosleep` (7.0+) - in include/strata/kernels/dp4a.hpp, which is
     # bit-exact for the first and merely a shorter pause for the second (sm_70 has both).  Community-tested,
@@ -199,12 +200,12 @@ elseif(STRATA_ENABLE_CUDA)
     if(_base LESS 75 AND NOT STRATA_EXPERIMENTAL_SM60)
       message(FATAL_ERROR
         "Strata needs an NVIDIA GPU of compute capability 7.5 or newer (RTX 20 / 30 / 40 / 50 series), but "
-        "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Pascal sm_60 or Volta sm_70 build is "
-        "-DSTRATA_EXPERIMENTAL_SM60=ON; upstream does not support it.)")
+        "CMAKE_CUDA_ARCHITECTURES is '${CMAKE_CUDA_ARCHITECTURES}'.  (A Maxwell sm_50, Pascal sm_60 or Volta sm_70 "
+        "build is -DSTRATA_EXPERIMENTAL_SM60=ON; upstream does not support it.)")
     endif()
-    if(_base LESS 60)
+    if(_base LESS 50)
       message(FATAL_ERROR "CMAKE_CUDA_ARCHITECTURES '${CMAKE_CUDA_ARCHITECTURES}': even the experimental build "
-                          "needs compute capability 6.0 (sm_60) or newer")
+                          "needs compute capability 5.0 (sm_50) or newer")
     endif()
     # #220 / #224: RTX 50 engines built with CUDA 12.8 crashed in the prompt path on Linux (13.0 and newer did not)
     if(_base GREATER_EQUAL 120 AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)

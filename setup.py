@@ -228,10 +228,11 @@ PREBUILT_ASSET = "strata-windows-x64.zip" if WIN else "strata-linux-x64.zip"
 # the CUDA libraries the ready-made engine loads (the same CUDA 13.0 it is built with), from NVIDIA's pip packages
 CUDA_WHEELS = ["nvidia-cublas==13.0.2.14", "nvidia-cuda-runtime==13.0.96"]
 MIN_DRIVER = 580                       # CUDA 13.0
-# Older NVIDIA GPUs (experimental): CUDA 13 dropped Pascal (sm_60/61) and Volta (sm_70), so a model whose GPUs include
-# one runs a second engine, built with CUDA 12.9 (-DSTRATA_EXPERIMENTAL_SM60=ON) and kept in its own folder: the
-# ready-made one is CUDA12_ASSET (Windows; on Linux it is compiled here with a CUDA 12.x toolkit).  One engine runs per
-# model, so the choice is per model config, by its oldest GPU; --cuda 12|13 overrides it (docs/OLDER_GPUS.md).
+# Older NVIDIA GPUs (experimental): CUDA 13 dropped Maxwell (sm_50/52), Pascal (sm_60/61) and Volta (sm_70), so a
+# model whose GPUs include one runs a second engine, built with CUDA 12.9 (-DSTRATA_EXPERIMENTAL_SM60=ON) and kept in
+# its own folder: the ready-made one is CUDA12_ASSET (Windows; on Linux it is compiled here with a CUDA 12.x toolkit).
+# One engine runs per model, so the choice is per model config, by its oldest GPU; --cuda 12|13 overrides it
+# (docs/OLDER_GPUS.md).
 CUDA13_MIN_ARCH = 75                   # the oldest compute capability CUDA 13 compiles for (sm_75, RTX 20)
 CUDA12_ASSET = "strata-windows-x64-cuda12.zip" if WIN else "strata-linux-x64-cuda12.zip"
 CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9.79"]
@@ -1401,22 +1402,25 @@ def cc(g) -> str:
     return f"{g['arch'][:-1]}.{g['arch'][-1]}"
 
 
-OLD_GPUS = None       # why Pascal / Volta cards are admitted in this run (old_gpus_opt_in), None: they are not
+OLD_GPUS = None       # why Maxwell / Pascal / Volta cards are admitted in this run (old_gpus_opt_in), None: they are not
 
 
 def experimental_sm60() -> bool:
-    """#295: STRATA_EXPERIMENTAL_SM60=1 admits Pascal (6.x) and Volta (7.0) cards, run by the experimental CUDA 12
-    engine (-DSTRATA_EXPERIMENTAL_SM60=ON).  So does naming such a card (--gpu N / --gpus), --cuda 12, or a PC that
-    has no newer card (old_gpus_opt_in)."""
+    """#295: STRATA_EXPERIMENTAL_SM60=1 admits Maxwell (5.x), Pascal (6.x) and Volta (7.0) cards, run by the
+    experimental CUDA 12 engine (-DSTRATA_EXPERIMENTAL_SM60=ON).  So does naming such a card (--gpu N / --gpus),
+    --cuda 12, or a PC that has no newer card (old_gpus_opt_in)."""
     return os.environ.get("STRATA_EXPERIMENTAL_SM60", "").strip() == "1" or OLD_GPUS is not None
 
 
 def sm60_card(arch) -> bool:
-    return 60 <= int(arch) <= 70
+    """The cards the experimental CUDA 12 engine admits: Maxwell (sm_50/52: TITAN X, GTX 9xx), Pascal (6.x), Volta
+    (7.0).  Kepler (sm_35/37) and older stay refused: no engine code exists for them."""
+    return 50 <= int(arch) <= 70
 
 
 def old_gpus_opt_in(found, named=(), cuda=None, other=False):
-    """Why this run may use Pascal / Volta cards (the experimental CUDA 12 engine), or None.  The cards are an opt-in:
+    """Why this run may use Maxwell / Pascal / Volta cards (the experimental CUDA 12 engine), or None.  They are an
+    opt-in:
     the user named one (`named`: --gpu / --gpus), asked for --cuda 12, set STRATA_EXPERIMENTAL_SM60=1, or the PC has
     no card the ready-made engine runs on and no supported AMD card (`other`; it used to stop there).  A PC with a
     newer card keeps recommending it."""
@@ -1447,7 +1451,8 @@ def named_gpus(gpu, gpus) -> list:
 
 def cuda_choice(archs, cuda=None):
     """The CUDA toolkit of one model's engine: (12 or 13, why).  13 (the ready-made engine) unless a card is older
-    than CUDA 13 supports (Pascal / Volta: CUDA 13 cannot compile for them) - one engine runs per model, so its oldest
+    than CUDA 13 supports (Maxwell / Pascal / Volta: CUDA 13 cannot compile for them) - one engine runs per model, so
+    its oldest
     card decides.  `cuda` (--cuda 12|13) overrides it; setup recommends, it does not refuse (the caller warns)."""
     archs = sorted({int(x) for x in archs})
     old = [a for a in archs if a < CUDA13_MIN_ARCH]
@@ -1458,8 +1463,8 @@ def cuda_choice(archs, cuda=None):
         return 12, "--cuda 12 (as you chose" + ("; RTX 50 (sm_120) engines built with CUDA 12.8 crashed on long "
                                                   "prompts, #220" if archs and archs[-1] >= 120 else "") + ")"
     if old:
-        return 12, (f"sm_{old[0]} is older than CUDA 13 supports (it dropped Pascal and Volta): this model runs the "
-                    "experimental CUDA 12 engine")
+        return 12, (f"sm_{old[0]} is older than CUDA 13 supports (it dropped Maxwell, Pascal and Volta): this model "
+                    "runs the experimental CUDA 12 engine")
     return 13, None
 
 
@@ -1564,7 +1569,8 @@ def check_gpus(sel, found, what="", yes=False, named=False) -> None:
         ones = " or ".join(f"--gpu {x['index']}" for x in single)
         both = "--gpus " + ",".join(str(x["index"]) for x in can) if can else ""
         hint = ((f"use these together: {both}" + (f" (or one card: {ones})" if not together else "")) if can else
-                f"use one card: {ones}" if single else "Strata needs an NVIDIA RTX 20 series or newer card")
+                f"use one card: {ones}" if single else
+                "Strata needs an NVIDIA RTX 20 series or newer card, or an older one chosen with --gpu N (experimental)")
         fail(f"GPU {i}{'' if g is None else ' (' + g['name'] + ')'} {what}cannot be used: {p}", hint)
 
 
@@ -1625,7 +1631,8 @@ def choose_gpus(a, found) -> list:
     single = sorted([g for g in found if gpu_problem(g) is None], key=lambda x: (-round(x["vram_gb"]), x["index"]))
     if not single:
         gpu_table(found)
-        fail("none of your GPUs can run Strata", "it needs an NVIDIA RTX 20 series or newer (compute capability 7.5+)")
+        fail("none of your GPUs can run Strata", "it needs an NVIDIA RTX 20 series or newer (compute capability 7.5+), "
+             "or an older one chosen with --gpu N (experimental: Maxwell, Pascal, Volta)")
     can = together_ok(found)
     if not can:
         return [single[0]["index"]]
@@ -4785,7 +4792,8 @@ def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     acquisition.require("the compiler and CUDA toolkit")
     archs = [int(x) for x in gpu.get("archs", [gpu["arch"]])]
-    # #295: Pascal / Volta need a CUDA 12.x toolkit - CUDA 13 cannot build sm_60/sm_70; gpu["toolkit"] = 12: the
+    # #295: Maxwell / Pascal / Volta need a CUDA 12.x toolkit - CUDA 13 cannot build sm_50..sm_70; gpu["toolkit"]
+    # = 12: the
     # experimental CUDA 12 engine for any cards (--cuda 12, docs/OLDER_GPUS.md)
     old = int(gpu.get("toolkit") or (12 if min(archs) < CUDA13_MIN_ARCH else 13)) == 12
     need12 = (12, 8) if max(archs) >= 120 else (12, 0)     # sm_120 needs CUDA 12.8 or newer
@@ -4794,7 +4802,7 @@ def install_build_tools(gpu, yes):
              "(#220, #224); the RTX 50 card alone (--gpu N) runs the ready-made CUDA 13 engine")
     nvcc, cuda_v = find_nvcc(below=(13, 0)) if old else find_nvcc()
     if old and (nvcc is None or cuda_v < need12):
-        fail("the experimental CUDA 12 engine (Pascal / Volta, or --cuda 12) is compiled here with the NVIDIA CUDA "
+        fail("the experimental CUDA 12 engine (Maxwell / Pascal / Volta, or --cuda 12) is compiled here with the NVIDIA CUDA "
              f"Toolkit {need12[0]}.{need12[1]} or a newer 12.x (CUDA 13 cannot compile for these cards)" +
              (f"; found CUDA {cuda_v[0]}.{cuda_v[1]}" if nvcc else ""),
              "install CUDA 12.9 (it can sit next to a newer one) from https://developer.nvidia.com/cuda-toolkit-archive "
@@ -4949,7 +4957,7 @@ def toolkit_root_defs(nvcc) -> list:
 
 
 def engine_defs(archs, toolkit=13) -> list:
-    """Extra CMake definitions for the engine: the experimental Pascal/Volta build (#295) for cards below sm_75, and
+    """Extra CMake definitions for the engine: the experimental Maxwell/Pascal/Volta build (#295) for sm_50..sm_70, and
     for every CUDA 12 engine (the same build as the ready-made CUDA 12 one: it admits the older cards)."""
     return ["-DSTRATA_EXPERIMENTAL_SM60=ON"] if min(int(x) for x in archs) < 75 or int(toolkit) == 12 else []
 
@@ -6165,7 +6173,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
                 ok(f"GPU: {g['name']} ({g['vram_gb']:.0f} GB, AMD)")
     else:
         found = gpus()
-        global OLD_GPUS                                # Pascal / Volta: named on this start, or this model's CUDA 12 engine
+        global OLD_GPUS                                # Maxwell / Pascal / Volta: named on this start, or this model's CUDA 12 engine
         OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, gpu if isinstance(gpu, list) else [gpu] if gpu is not None else
                                                cfg.get("gpu") if isinstance(cfg.get("gpu"), list) else [cfg.get("gpu")],
                                                12 if config_toolkit(cfg) == 12 else None)
@@ -6554,8 +6562,8 @@ def refresh_shared_draft_vocab(cfg: dict, done: set) -> None:
 def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     """The installed engine must have code for every card the model starts on: a card added later (--gpus with an
     older or newer generation, #128) or a new GPU in the PC otherwise stops the start with 'no kernel image'.  Such a
-    card gets the engine compiled for all of them, before the start.  A Pascal / Volta card added to a model on the
-    CUDA 13 engine moves the model to the experimental CUDA 12 engine (CUDA 13 has no code for it)."""
+    card gets the engine compiled for all of them, before the start.  A Maxwell / Pascal / Volta card added to a model
+    on the CUDA 13 engine moves the model to the experimental CUDA 12 engine (CUDA 13 has no code for it)."""
     tk = config_toolkit(cfg)
     if tk == 13 and any(int(g["arch"]) < CUDA13_MIN_ARCH for g in cards):
         return use_cuda12(cards, cfg_path, cfg, yes)
@@ -6598,14 +6606,14 @@ def engine_lib_dirs(eng: Path, toolkit=13) -> list:
 
 
 def use_cuda12(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
-    """A model on the CUDA 13 engine now has a Pascal / Volta card (a --gpus at start): the model's config moves to
-    the experimental CUDA 12 engine (one engine per model; its other models keep theirs)."""
+    """A model on the CUDA 13 engine now has a Maxwell / Pascal / Volta card (a --gpus at start): the model's config
+    moves to the experimental CUDA 12 engine (one engine per model; its other models keep theirs)."""
     acquisition.require("the experimental CUDA 12 engine")
     old = min(int(g["arch"]) for g in cards)
     acquisition.require("the experimental CUDA 12 engine for sm_%d" % old,
                         ("START-HERE.bat --setup --cuda 12" if WIN else "./setup.sh --setup --cuda 12"))
     say()
-    warn(f"sm_{old} is older than CUDA 13 supports (it dropped Pascal and Volta): this model moves to the experimental "
+    warn(f"sm_{old} is older than CUDA 13 supports (it dropped Maxwell, Pascal and Volta): this model moves to the experimental "
          "CUDA 12 engine (docs/OLDER_GPUS.md; START-HERE.bat --setup --cuda 13 and newer cards only moves it back)")
     main = gpu_info(cards[0]["index"]) or cards[0]
     vision = "gpu" if cfg.get("vision") else "none"
@@ -7418,8 +7426,8 @@ def main() -> int:
                          "folder, a URL, ms:owner/repo (ModelScope) or hf:owner/repo, and optionally a variant name")
     ap.add_argument("--cuda", choices=["12", "13", "auto"], default=os.environ.get("STRATA_CUDA") or None,
                     help="NVIDIA: the CUDA toolkit of this model's engine. auto (default): CUDA 13, the ready-made "
-                         "engine; CUDA 12 (experimental) when a chosen card is older than CUDA 13 supports (Pascal, "
-                         "Volta). 12 also runs with an older driver (Windows 528+, Linux 525+). docs/OLDER_GPUS.md")
+                         "engine; CUDA 12 (experimental) when a chosen card is older than CUDA 13 supports (Maxwell, "
+                         "Pascal, Volta). 12 also runs with an older driver (Windows 528+, Linux 525+). docs/OLDER_GPUS.md")
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
@@ -7586,11 +7594,11 @@ def main() -> int:
     found = gpus()
     amd = amd_gpus()
     amd_ok = [g for g in amd if amd_problem(g) is None]
-    # older NVIDIA GPUs (Pascal / Volta): the experimental CUDA 12 engine, when chosen (docs/OLDER_GPUS.md)
+    # older NVIDIA GPUs (Maxwell / Pascal / Volta): the experimental CUDA 12 engine, when chosen (docs/OLDER_GPUS.md)
     OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, named_gpus(a.gpu, a.gpus), a.cuda,
                                            other=bool(amd_ok) or a.backend == "hip")
     if OLD_GPUS and a.backend != "hip":
-        warn(f"older NVIDIA GPUs (Pascal / Volta) can be used ({OLD_GPUS}): experimental, through a second engine "
+        warn(f"older NVIDIA GPUs (Maxwell / Pascal / Volta) can be used ({OLD_GPUS}): experimental, through a second engine "
              "built with CUDA 12 (docs/OLDER_GPUS.md)")
     nv_ok = any(gpu_problem(g) is None for g in found)
     hip = a.backend == "hip" or (a.backend is None and not nv_ok and bool(amd_ok))

@@ -34,7 +34,7 @@ class Choice(unittest.TestCase):
     def test_by_the_oldest_card(self):
         self.assertEqual(setup.cuda_choice(["120"]), (13, None))
         self.assertEqual(setup.cuda_choice([75, 86, 89]), (13, None))
-        for archs in ([70], [61], [60], [70, 86]):
+        for archs in ([50, 52], [70], [61], [60], [70, 86]):
             tk, why = setup.cuda_choice(archs)
             self.assertEqual(tk, 12, archs)
             self.assertIn(f"sm_{min(archs)} is older than CUDA 13 supports", why)
@@ -79,7 +79,8 @@ class OptIn(unittest.TestCase):
         self.assertEqual(setup.old_gpus_opt_in([rtx, v100], cuda="12"), "--cuda 12")
         self.assertIn("only kind", setup.old_gpus_opt_in([V100]))
         self.assertIsNone(setup.old_gpus_opt_in([V100], other=True))            # an AMD card it can use instead
-        self.assertIsNone(setup.old_gpus_opt_in([card(0, "GTX 980", 4.0, "52")]))
+        self.assertIn("only kind", setup.old_gpus_opt_in([card(0, "TITAN X", 12.0, "52")]))    # Maxwell (#236)
+        self.assertIsNone(setup.old_gpus_opt_in([card(0, "GTX 780", 6.0, "35")]))             # Kepler: no engine code
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "1"}):
             self.assertEqual(setup.old_gpus_opt_in([rtx, v100]), "STRATA_EXPERIMENTAL_SM60=1")
 
@@ -94,7 +95,8 @@ class OptIn(unittest.TestCase):
             self.assertIsNotNone(setup.gpu_problem(V100))
         with mock.patch.object(setup, "OLD_GPUS", "you chose GPU 0"):
             self.assertIsNone(setup.gpu_problem(V100))
-            self.assertIsNotNone(setup.gpu_problem(card(0, "GTX 980", 4.0, "52")))
+            self.assertIsNone(setup.gpu_problem(card(0, "TITAN X", 12.0, "52")))
+            self.assertIsNotNone(setup.gpu_problem(card(0, "GTX 780", 6.0, "35")))
 
 
 class Libraries(unittest.TestCase):

@@ -213,25 +213,24 @@ class VsRange(unittest.TestCase):
                 self.assertIsNone(setup.find_vcvars())
 
 class ExperimentalSm60(unittest.TestCase):
-    """#295: Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with -DSTRATA_EXPERIMENTAL_SM60=ON
-    and a CUDA 12.x toolkit; nothing changes without the variable."""
+    """#295: Maxwell (5.x), Pascal (6.x) and Volta (7.0) only with STRATA_EXPERIMENTAL_SM60=1, built with
+    -DSTRATA_EXPERIMENTAL_SM60=ON and a CUDA 12.x toolkit; nothing changes without the variable."""
 
     def card(self, arch):
         return {"arch": arch, "vram_gb": 11.0, "index": 0, "name": "card"}
 
     def test_the_gate(self):
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": ""}):
-            for arch in ("60", "61", "70"):
+            for arch in ("50", "52", "60", "61", "70"):
                 p = setup.gpu_problem(self.card(arch))
-                self.assertIn("not supported", p)
+                self.assertIn("not supported", p, arch)
                 self.assertIn("choose it with --gpu 0", p)              # the CUDA 12 engine (docs/OLDER_GPUS.md)
-            self.assertNotIn("--gpu", setup.gpu_problem(self.card("52")))
+            self.assertNotIn("--gpu", setup.gpu_problem(self.card("37")))   # Kepler: no engine code at all
             self.assertIsNone(setup.gpu_problem(self.card("75")))
         with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "1"}):
-            for arch in ("60", "61", "70", "75", "120"):
+            for arch in ("50", "52", "60", "61", "70", "75", "120"):
                 self.assertIsNone(setup.gpu_problem(self.card(arch)), arch)
-            for arch in ("52", "72"):
-                self.assertIsNotNone(setup.gpu_problem(self.card(arch)), arch)
+            self.assertIsNotNone(setup.gpu_problem(self.card("37")))
 
     def test_the_build_flag(self):
         self.assertEqual(setup.engine_defs([61]), ["-DSTRATA_EXPERIMENTAL_SM60=ON"])
