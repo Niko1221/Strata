@@ -672,6 +672,18 @@ const DevInfo& dev_info() {
 }  // namespace
 
 bool built() { return true; }
+#if defined(STRATA_HYBRID)
+// 1000 plus the cc means this call ran the HIP compile of this file. The CUDA
+// compile returns the cc alone. dev_info() on the HIP compile queries
+// expert_w11_kernel, the gfx11 WMMA expert kernel.
+int hybrid_marker() {
+#if defined(__HIPCC__)
+    return 1000 + dev_info().cc;
+#else
+    return dev_info().cc;
+#endif
+}
+#endif
 bool available() { return dev_info().cc >= 75; }
 // 0.1.36: on by default for the Q2_0 pack (+13-23% prompts on an RTX 5070; teacher-forced against the FP16 path as
 // close as MMQ at 8K and closer at 32K: phaseA-tests s18-tf); STRATA_PF_FUSED=0 keeps MMQ.  The native packs' kernels

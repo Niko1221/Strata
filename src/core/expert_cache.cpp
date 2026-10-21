@@ -22,7 +22,24 @@
 #include <utility>
 #include <cstring>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+#endif
+
 namespace strata::core {
+namespace {
+#if defined(STRATA_USE_HIP)
+bool hip_pageable_staging() { return true; }
+#elif defined(STRATA_HYBRID)
+// A CUDA expert cache DMAs the mapping. A HIP cache copies through one pinned
+// buffer so the driver does not register a fresh piece of the file each fill.
+bool hip_pageable_staging() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    return strata_hybrid_is_hip_device(dev) != 0;
+}
+#endif
+}  // namespace
 
 // See the header.  NVIDIA's DGX Spark Porting Guide (section 5.5, "Memory reporting on UMA systems") recommends the same:
 // not to rely on cudaMemGetInfo alone but to count the memory the OS can reclaim.  Swap is not counted here (unlike
@@ -446,7 +463,7 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
 #endif
 }
 
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
 bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
     if (bytes <= blocking_staging_bytes_) return true;
     void* next = nullptr;
@@ -540,8 +557,8 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
     n_layers_ = n_layers;
     n_expert_ = n_expert;
     blob_ = blob_bytes;
-#if defined(STRATA_USE_HIP)
-    if (!ensure_blocking_staging((std::size_t) blob_, err)) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
+    if (hip_pageable_staging() && !ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
         return false;
     }
@@ -578,8 +595,8 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     blob_ = mx;
     off_ = std::move(off);
     guard_ = guard_req_;
-#if defined(STRATA_USE_HIP)
-    if (!ensure_blocking_staging((std::size_t) blob_, err)) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
+    if (hip_pageable_staging() && !ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
         return false;
     }
@@ -596,7 +613,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 }
 
 void ExpertCache::close() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
@@ -705,18 +722,20 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
         err = "ExpertCache::fill_slot_blocking: the host blob is null";
         return false;
     }
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
     // Bound HIP's pageable-source staging to one expert instead of repeatedly
     // registering regions of the mmap. The blocking copy completes before reuse.
-    if (!blocking_staging_ || n > blocking_staging_bytes_) {
-        err = "ExpertCache::fill_slot_blocking: HIP staging buffer is too small";
-        return false;
+    // A CUDA cache in a hybrid process leaves the buffer null and copies directly.
+    if (blocking_staging_ != nullptr) {
+        if (n > blocking_staging_bytes_) {
+            err = "ExpertCache::fill_slot_blocking: HIP staging buffer is too small";
+            return false;
+        }
+        std::memcpy(blocking_staging_, host_blob, n);
+        host_blob = blocking_staging_;
     }
-    std::memcpy(blocking_staging_, host_blob, n);
-    const cudaError_t e = cudaMemcpy(dst, blocking_staging_, n, cudaMemcpyHostToDevice);
-#else
-    const cudaError_t e = cudaMemcpy(dst, host_blob, n, cudaMemcpyHostToDevice);
 #endif
+    const cudaError_t e = cudaMemcpy(dst, host_blob, n, cudaMemcpyHostToDevice);
     if (e != cudaSuccess) {
         err = std::string("ExpertCache::fill_slot_blocking: ") + cudaGetErrorString(e);
         return false;

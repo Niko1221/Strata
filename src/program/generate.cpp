@@ -144,6 +144,13 @@ namespace strata::metal_engine { void set_model_shard(const char* shard1); }   /
 #include <set>
 #include <vector>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_device_count();
+extern "C" int strata_hybrid_hip_overflow();
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+extern "C" const char* strata_hybrid_arch(int ordinal);
+#endif
+
 namespace {
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
 // pinning a large arena into two CUDA contexts leaves WDDM refusing every later allocation (the 5080 + 3090 rig);
@@ -1923,6 +1930,22 @@ static bool pcie_auto_split_ok() {
     return on;
 }
 
+#if defined(STRATA_HYBRID)
+// The CUDA host's device properties leave gcnArchName empty on a HIP ordinal,
+// so the gfx12 checks read the name the HIP runtime reported.
+static bool hybrid_hip_device() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess) return false;
+    return strata_hybrid_is_hip_device(dev) != 0;
+}
+static const char* hybrid_gcn_arch() {
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || !strata_hybrid_is_hip_device(dev)) return "";
+    const char* arch = strata_hybrid_arch(dev);
+    return arch != nullptr ? arch : "";
+}
+#endif
+
 // 0.1.43: the HIP defaults of the decode speed push (route tail skip, measured PCIe share) were measured on gfx1201 (Radeon AI PRO
 // R9700) and apply on gfx1200 / gfx1201 only; every other AMD part (gfx11, gfx906, ...) keeps its earlier behaviour.  CUDA: always true.
 [[maybe_unused]] static bool decode_defaults_arch_ok() {
@@ -1931,6 +1954,9 @@ static bool pcie_auto_split_ok() {
     cudaDeviceProp p{};
     return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
            strata::kernels::gfx_arch_is_gfx12_wmma(p.gcnArchName);
+#elif defined(STRATA_HYBRID)
+    // An NVIDIA primary keeps the CUDA default. A HIP primary matches pure HIP.
+    return !hybrid_hip_device() || strata::kernels::gfx_arch_is_gfx12_wmma(hybrid_gcn_arch());
 #else
     return true;
 #endif
@@ -1941,6 +1967,8 @@ static bool pcie_auto_split_ok() {
 [[maybe_unused]] static bool mtp_first_default_on() {
 #if defined(STRATA_USE_HIP)
     return decode_defaults_arch_ok();
+#elif defined(STRATA_HYBRID)
+    return hybrid_hip_device() && decode_defaults_arch_ok();
 #else
     return false;
 #endif
@@ -1953,6 +1981,10 @@ static bool pcie_auto_split_ok() {
 // gfx1201 (where it is the default, decode_defaults_arch_ok), so the other parts keep the fixed share unless asked.
 [[maybe_unused]] static bool pcie_auto_fork_arch_ok() {
 #if defined(STRATA_USE_HIP)
+    const char* pfd = std::getenv("STRATA_PCIE_FRAC_DEFAULT");
+    return pfd != nullptr && std::strcmp(pfd, "auto") == 0;
+#elif defined(STRATA_HYBRID)
+    if (!hybrid_hip_device()) return false;
     const char* pfd = std::getenv("STRATA_PCIE_FRAC_DEFAULT");
     return pfd != nullptr && std::strcmp(pfd, "auto") == 0;
 #else
@@ -2294,6 +2326,13 @@ int main(int argc, char** argv) {
             std::printf("strata %s\n", STRATA_VERSION);
             return 0;
         }
+#if defined(STRATA_HYBRID)
+        // Runs the fused-expert host on device 0 and on the HIP ordinal, then exits.
+        if (std::strcmp(argv[i], "--hip-probe") == 0) {
+            extern int strata_hip_probe();
+            return strata_hip_probe();
+        }
+#endif
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
 #if defined(STRATA_HAVE_QWEN35)
@@ -2773,6 +2812,40 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+#if defined(STRATA_HYBRID)
+    // Device 0 is the card this block sees, as on a pure HIP build. A hybrid
+    // property read does not carry gcnArchName.
+    if (strata_hybrid_is_hip_device(0)) {
+        cudaDeviceProp ad{};
+        if (cudaGetDeviceProperties(&ad, 0) == cudaSuccess) {
+            const char* arch = strata_hybrid_arch(0);
+            if (arch == nullptr) arch = "";
+            bool all_igpu = ad.integrated != 0;
+            const int ndev = strata_hybrid_device_count();
+            if (all_igpu && ndev > 1) {
+                for (int d = 1; d < ndev && d < 64; ++d) {
+                    const char* oa = strata_hybrid_is_hip_device(d) ? strata_hybrid_arch(d) : "";
+                    if (oa == nullptr) oa = "";
+                    cudaDeviceProp od{};
+                    if (!strata_hybrid_is_hip_device(d) || cudaGetDeviceProperties(&od, d) != cudaSuccess ||
+                        od.integrated == 0 || std::strncmp(oa, arch, 7) != 0) {
+                        all_igpu = false;
+                        (void) cudaGetLastError();
+                        break;
+                    }
+                }
+            }
+            strata::core::apply_arch_defaults(arch, all_igpu);
+#if defined(_WIN32)
+            const bool win_host = true;
+#else
+            const bool win_host = false;
+#endif
+            if (strata::core::igpu_uma_arena_default(arch, all_igpu, win_host))
+                strata::core::arena_uma_no_register_flag().store(true);
+        } else (void) cudaGetLastError();
+    }
+#endif
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
     {   // CUDA sm_86 / sm_60: the switches that are exact AND faster there are on by default (strata/core/nv_defaults.hpp), when every
         // visible card has that one compute capability; before any engine code reads its switches, the user's own settings are kept
@@ -2808,6 +2881,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to 16384 (STRATA_GFX12_CHUNK=0 keeps 8192)\n");
         }
         (void) cudaGetLastError();
+    }
+#endif
+#if defined(STRATA_HYBRID) && !defined(_WIN32)
+    if (o.prefill_auto_bare && o.prefill_auto_cap == 0 && strata_hybrid_is_hip_device(0)) {
+        const char* c0 = std::getenv("STRATA_GFX12_CHUNK");
+        const char* d0 = std::getenv("STRATA_GFX12_DEFAULTS");
+        const char* arch = strata_hybrid_arch(0);
+        if (!(c0 != nullptr && c0[0] == '0') && !(d0 != nullptr && d0[0] == '0') &&
+            strata::kernels::gfx_arch_is_gfx12(arch)) {
+            o.prefill_auto_max = 16384;
+            o.prefill_chunk = 16384;
+            o.prefill_gfx12_16k = true;
+            std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to 16384 (STRATA_GFX12_CHUNK=0 keeps 8192)\n");
+        }
     }
 #endif
 #if defined(STRATA_HIP_GFX906)
@@ -2892,6 +2979,21 @@ int main(int argc, char** argv) {
         return n > 0 ? n : 0;
     }();
     strata::core::set_primary_device(primary_device);
+    const auto visible_devices = [] {
+#if defined(STRATA_HYBRID)
+        if (const int extra = strata_hybrid_hip_overflow(); extra > 8) return -extra;
+        const int n = strata_hybrid_device_count();
+        if (n < 0) return n;
+        return n > 0 ? n : 0;
+#else
+        int n = 0;
+        if (cudaGetDeviceCount(&n) != cudaSuccess || n < 0) {
+            cudaGetLastError();
+            return 0;
+        }
+        return n;
+#endif
+    };
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -2905,9 +3007,12 @@ int main(int argc, char** argv) {
     std::vector<int> split_devs;
     bool split_auto = false, split_same = false;
     if (!o.layer_split.empty()) {
-        int n_dev = 1;
-        if (cudaGetDeviceCount(&n_dev) != cudaSuccess || n_dev < 1) n_dev = 1;
-        cudaGetLastError();
+        int n_dev = visible_devices();
+        if (n_dev < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_dev);
+            return 2;
+        }
+        if (n_dev < 1) n_dev = 1;
         auto ints = [](const std::string& str, auto& out) -> bool {
             using V = typename std::decay_t<decltype(out)>::value_type;
             size_t a = 0;
@@ -2982,6 +3087,21 @@ int main(int argc, char** argv) {
     // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
     // split, the visible GPUs no stage runs on, in order
     int remote_dev[3] = {1, 2, 3};
+#if defined(STRATA_HYBRID)
+    {
+        // Every visible device except the primary, CUDA and HIP. A HIP-only
+        // list drops a spare NVIDIA GPU, including on a CUDA-only machine.
+        const int n_vis = visible_devices();
+        if (n_vis < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_vis);
+            return 2;
+        }
+        int k = 0;
+        for (int d = 0; d < n_vis && k < 3; ++d)
+            if (d != primary_device) remote_dev[k++] = d;
+        for (; k < 3; ++k) remote_dev[k] = -1;
+    }
+#else
     if (primary_device != 0) {
         // STRATA_PRIMARY_DEVICE: the helpers are the visible devices except the primary, in order
         int n_vis = 1;
@@ -2992,6 +3112,7 @@ int main(int argc, char** argv) {
             if (d != primary_device) remote_dev[k++] = d;
         for (; k < 3; ++k) remote_dev[k] = -1;
     }
+#endif
     if (multi_gpu) {
         if (o.expert_profile.empty()) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
@@ -3051,14 +3172,18 @@ int main(int argc, char** argv) {
                              why.c_str());
             }
         }
-        int n_vis = 1;
-        if (cudaGetDeviceCount(&n_vis) != cudaSuccess || n_vis < 1) n_vis = 1;
-        cudaGetLastError();
+        int n_vis = visible_devices();
+        if (n_vis < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_vis);
+            return 2;
+        }
+        if (n_vis < 1) n_vis = 1;
         int next_free = 1;
         for (int r = 0; r < 3; ++r) {
             if (o.expert_cache_remote[(size_t) r] <= 0) continue;
             while (next_free < n_vis &&
-                   std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end()) ++next_free;
+                   std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end())
+                ++next_free;
             if (next_free >= n_vis) {
                 std::fprintf(stderr, "strata generate: --expert-cache-remote with a layer split needs a GPU that runs no "
                                      "stage (%d visible, %zu used by the split)\n", n_vis, split_devs.size() + 1);
@@ -3071,7 +3196,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split across %zu GPUs: CUDA0, then CUDA%s (split %s)\n",
                      split_devs.size() + 1, devs.c_str(), o.layer_split.c_str());
     }
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
     {
         // every GPU this run uses must be an architecture the binary has code for (a gfx1100 build on a gfx1201
         // card would otherwise fail later with "invalid device function")
@@ -3431,8 +3556,12 @@ int main(int argc, char** argv) {
     // arena all follow it).  Every other device switch in the engine saves and restores the current
     // device, so this single call is where the primary is picked.
     if (primary_device != 0) {
-        int n_vis = 0;
-        if (cudaGetDeviceCount(&n_vis) != cudaSuccess || primary_device >= n_vis) {
+        int n_vis = visible_devices();
+        if (n_vis < 0) {
+            std::fprintf(stderr, "strata hybrid: %d HIP devices; this build supports 8\n", -n_vis);
+            return 2;
+        }
+        if (primary_device >= n_vis) {
             cudaGetLastError();
             std::fprintf(stderr, "strata generate: STRATA_PRIMARY_DEVICE=%d: no such visible device (%d visible)\n",
                          primary_device, n_vis);
@@ -3476,7 +3605,10 @@ int main(int argc, char** argv) {
         std::string bursts;
         const char* pfd = std::getenv("STRATA_PCIE_FRAC_DEFAULT");
         const bool pf_old = pfd != nullptr && std::strcmp(pfd, "old") == 0;
-#if !defined(STRATA_USE_HIP) && defined(_WIN32)
+#if defined(STRATA_HYBRID)
+        // A HIP primary matches pure HIP: the canonical pack is not probed and does not refine.
+        const bool pf_old_canon = pf_old || hybrid_hip_device();
+#elif !defined(STRATA_USE_HIP) && defined(_WIN32)
         // Windows: opt-in (STRATA_PCIE_AUTO_CANON=1); an RTX 5070 decoded a short Q2_0 answer 3% slower with it, code 2.5% faster
         const char* pac = std::getenv("STRATA_PCIE_AUTO_CANON");
         const bool pf_old_canon = pf_old || !(pac != nullptr && pac[0] == '1');
@@ -3492,11 +3624,17 @@ int main(int argc, char** argv) {
             o.pcie_frac = base;
         } else if (!native_pack) {
             o.pcie_frac = base;
+#if !defined(STRATA_USE_HIP)
+            // Pure HIP leaves this off. A hybrid HIP primary does too, and must not say the share will refine.
+#if defined(STRATA_HYBRID)
+            if (!hybrid_hip_device())
+#endif
+            {
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s); the canonical pack "
                                  "starts at pcie_frac %.2f and refines it from the CPU pool's speed\n", bw, bursts.c_str(), base);
-#if !defined(STRATA_USE_HIP)
             o.pcie_frac_auto = o.layer_split.empty();
             o.pcie_probe_gbps = bw;
+            }
 #endif
         } else if (bw > 0.0) {
             o.pcie_frac = pcie_frac_for_gbps(bw, base);
@@ -4175,6 +4313,8 @@ int main(int argc, char** argv) {
         bool on = o.serve && multi_gpu && !split_same && split_devs.size() + 1 >= min_st && !(ae != nullptr && std::atoi(ae) == 0);
 #if defined(STRATA_USE_HIP)
         on = on && decode_defaults_arch_ok();
+#elif defined(STRATA_HYBRID)
+        on = hybrid_hip_device() && on && decode_defaults_arch_ok();
 #else
         on = false;
 #endif
@@ -5546,6 +5686,13 @@ int main(int argc, char** argv) {
         }
 #endif
 #else
+#if defined(STRATA_HYBRID)
+        if (named && strata_hybrid_is_hip_device(dev)) {
+            const char* arch = strata_hybrid_arch(dev);
+            std::fprintf(stderr, "strata generate: GPU %d: %s (%s)\n", dev, name, arch && arch[0] ? arch : "?");
+        } else
+#endif
+        {
         std::fprintf(stderr, "strata generate: GPU %d: %s, compute capability %d.%d%s\n", dev, name,
                      strata::cc_major_of(p.major), strata::cc_minor_of(p.minor),
                      strata::emulated_cc() ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)" : "");
@@ -5561,12 +5708,18 @@ int main(int argc, char** argv) {
                              CUDART_VERSION / 1000, CUDART_VERSION % 1000 / 10, rt / 1000, rt % 1000 / 10);
         }
 #endif
+        }
 #endif
+#if defined(STRATA_HYBRID)
+        if (!(named && strata_hybrid_is_hip_device(dev)))
+#endif
+        {
         const std::string e = strata::core::device_code_error();
         if (!e.empty()) {
             std::fprintf(stderr, "strata generate: this engine has no code for %s (sm_%d%d): %s - rebuild it for this "
                                  "card (setup does: START-HERE.bat --setup)\n", name, p.major, p.minor, e.c_str());
             return 1;
+        }
         }
     }
     strata::core::ArenaExpertSource arena_src;
@@ -6103,6 +6256,8 @@ int main(int argc, char** argv) {
                         : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
 #if defined(STRATA_USE_HIP)
         if (why == nullptr) why = "it is NVIDIA-only for now";
+#elif defined(STRATA_HYBRID)
+        if (why == nullptr && hybrid_hip_device()) why = "it is NVIDIA-only for now";
 #endif
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
@@ -9763,6 +9918,8 @@ int main(int argc, char** argv) {
             // 2x R9700 (5 pairs, skip on vs off): Q2_0 story -6.2% at 70% cached, -1.8% at 60%; IQ3_S +6..15% at 44-52%, about 0 at 60%.
 #if defined(STRATA_USE_HIP)
             const double max_cached_default = n_stages > 1 ? 0.60 : 0.90;
+#elif defined(STRATA_HYBRID)
+            const double max_cached_default = hybrid_hip_device() && n_stages > 1 ? 0.60 : 0.90;
 #else
             const double max_cached_default = 0.90;
 #endif
