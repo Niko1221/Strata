@@ -1,6 +1,6 @@
 // src/kernels/b6_mmvq_bench.cpp - B6: what a verify row costs in the dense projections, per kernel, per card.
 //
-//     build/b6_mmvq_bench [reps] [device, -1 = all] [B rows mode: 1 = 2 rows, or 2 / 4 / 8]
+//     build/b6_mmvq_bench [reps] [device, -1 = all] [B rows mode: -1 = auto table, 0 = off, 1 / 2 / 4 / 8 = forced]
 //
 // The decode's dense projections at the model's own shapes and formats (qwen3.8-flash-next GSQ-RCO IQ3_XXS:
 // GDN qkv / gate / out, QSA q / out, shared expert, the head; the BF16 router), called with ncols = 1..5 and 8 as a
@@ -9,7 +9,7 @@
 // over enough copies to exceed the L2, as the decode reads each layer's weights cold.  Synthetic bytes with sane
 // block scales (as mmvq_multi_parity): the time does not depend on the values.
 //
-// Two layouts side by side: the default exact layout (A) and STRATA_B6_MMVQ_ROWS (B, native_mmvq_set_b6_rows).  For
+// Two layouts side by side: the default exact layout (A) and STRATA_B6_MMVQ_ROWS (B; mode -1 = auto gfx12 table). For
 // every case and ncols: B's output against A's, bit for bit (memcmp), and both against ncols single-column calls.
 // Exit code 1 if any comparison differs.  GPU time only: immune to the host and to any generated text.
 #include "strata/kernels/bf16_gemv.hpp"
@@ -55,6 +55,8 @@ const Case CASES[] = {
     {"shexp down IQ4_NL", 20, 640, 2560, 32, 18, {0, -1}},
     {"router BF16", 30, 2560, 512, 1, 2, {-1, -1}},
     {"head Q5_K", 13, 2560, 248320, 256, 176, {0, 2}},
+    {"head Q6_K", 14, 2560, 248320, 256, 210, {208, -1}},
+    {"MTP head Q6_K", 14, 2560, 106299, 256, 210, {208, -1}},
 };
 const int WIDTHS[] = {1, 2, 3, 4, 5, 8};
 
@@ -122,7 +124,7 @@ int main(int argc, char** argv) {
     int n_dev = 0;
     if (!ck(cudaGetDeviceCount(&n_dev), "device count")) return 1;
     const int only = argc > 2 ? std::atoi(argv[2]) : -1;
-    const int bmode = argc > 3 ? std::atoi(argv[3]) : 1;
+    const int bmode = argc > 3 ? std::atoi(argv[3]) : -1;
     long long bad = 0;
     for (int dev = 0; dev < n_dev; ++dev) {
         if (only >= 0 && dev != only) continue;
