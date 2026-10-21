@@ -99,13 +99,51 @@ These six checks show successful needle retrieval for these six cases. They are 
 and say nothing general about model quality. Results: [long-context/needles.json](long-context/needles.json), log:
 [long-context/needles.txt](long-context/needles.txt).
 
-## GPU inventory note
+## GPU inventory note (root cause found 2026-10-21)
 
 The follow-up inventory taken alongside the recall test (`nvidia-smi -L`, 2026-10-21) saw two cards:
 
 - GPU 0: NVIDIA GeForce RTX 3090
 - GPU 1: NVIDIA GeForce RTX 3090
 
-Both GPUs were visible during the follow-up test. The generated results.json above reports one GPU. That metadata
-discrepancy is unresolved and left as recorded: the follow-up inventory alone does not retroactively prove how the
-original benchmark recorded or used the devices, and results.json has not been edited.
+Both GPUs were visible, and the serving configuration selects both (`"gpu": [0, 1]` in the run config; the server
+passes `CUDA_VISIBLE_DEVICES="0,1"` to the engine, and `/v1/status` and `/metrics` on the running server report
+`gpu_count: 2` with both card names — verified live 2026-10-21). The generated results.json above reports one GPU.
+
+The cause is in the benchmark runner, not in the server. The original run used `strata bench run --url`: with `--url`
+the runner carries no run config, so the per-config GPU filter is skipped, and the server's combined served-name
+string ("…3090 + …3090") matches no single card, so `bench_facts.py:262-266` falls back to the first card only
+(identical code in 0.1.46.2 and 0.1.46.3). Running with `--profile <config>` instead keeps both indices: the
+follow-up run below records both cards. results.json here is left exactly as generated, and the follow-up inventory
+alone does not retroactively prove how this run's engine scheduled the two devices.
+
+## Follow-up run (2026-10-21)
+
+The same machine, same model, same custom track and tuning, run with the fixed command above. Full report:
+[../2026-10-21-standard-rtx-3090-strata-2.1-124948/README.md](../2026-10-21-standard-rtx-3090-strata-2.1-124948/README.md),
+run `20261021T120047Z-66e200f7`, **status: complete** (the protocol is still draft; `conformance` is null). The
+original run above keeps its nonconforming status; the follow-up is a separate run, not an edit of it.
+
+- Software commit: now populated and verified. `software.strata_commit`, `software.runner_commit` and
+  `protocol.git_commit` all say `90767252f420e25223c739d604145ad15911d48b` — tag `v0.2.1`, the release the server
+  runs. The run used `STRATA_NO_HANDOVER=1 strata bench run`, whose install tree carries a `COMMIT` file with that
+  hash (the file's mtime is 2026-10-20 22:24, after the original 21:13 run — which is why the original report has
+  null commits). The runner read it; it was not typed in.
+- Model revision: `0142554c963a8653912c0c8283f05f13f63653f3`, established from the local Hugging Face cache
+  (the LM Studio trees file named with that revision lists the five Q6_K shards, sizes matching the loaded files).
+  `source_revision`, `tokenizer_revision` and `model_card_revision` are not recoverable from this machine and are
+  recorded as missing; no value was guessed.
+- Hardware: `hardware.gpus` records both RTX 3090 cards (device_index 0 and 1).
+- Quality: sanity **12 of 12**; 0 failed, 0 skipped. Truncated (output cap reached, cap includes reasoning): the
+  warm-up request and 6 of the 9 performance requests (all repetitions of the long prompts reached their cap);
+  3 completed within cap; no sanity request was truncated.
+- Speed (median, 3 repetitions): short 22.8 prompt / 80.9 decode tok/s, prompt-4k 517.1 / 79.2,
+  prompt-16k 1352.7 / 85.9; TTFT 3.40 / 7.95 / 12.17 s. Strata agent sessions shared the server during the window
+  (declared with `--background`), so these numbers carry the same warm-cache caveat as the original.
+- Engine instance: the running instance restarted 2026-10-21T11:34:32Z and had served no standard-v1 payload, so
+  the protocol's "restart the engine between runs" cache rule is met.
+- Terminal: the installed Terminal is update 0.2.1.4 (Control 0.1.46.3, self-update via `strata update`);
+  `strata --version` prints the base label "strata 0.2.1 (build 0.1.46.3)". The commit-bearing run path above is
+  the 0.2.1 launcher tree (build 0.1.46.2) with its `COMMIT` file. The engine binary is unchanged: 0.1.46.
+- The 6/6 long-context recall result above was not rerun and stays as supplementary evidence; it does not prove
+  general model correctness, and a custom-track Swift derivative run cannot be a standard-profile conforming result.
