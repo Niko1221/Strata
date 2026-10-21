@@ -279,16 +279,24 @@ class NoLeakedSampler(unittest.TestCase):
         import threading
         import time
         tok = ByteTokenizer()
-        before = sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)"))
+
+        def samplers() -> set:
+            # By identity, not by count: another test's sampler can finish (or start) between the two
+            # readings, which made the old `count == before + 1` assertion fail as "1 != 2" with nothing
+            # wrong - seen in CI on this file, twice in a row, and never reproduced standalone.
+            return {t.ident for t in threading.enumerate() if t.name.endswith("(_loop)")}
+
+        before = samplers()
         httpd = serve(Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE), port=0)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before + 1)
+        mine = samplers() - before
+        self.assertEqual(len(mine), 1, "the server did not start its hardware sampler")
         httpd.shutdown()
         httpd.server_close()
         for _ in range(50):
-            if sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")) == before:
+            if not (mine & samplers()):
                 break
             time.sleep(0.1)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before)
+        self.assertFalse(mine & samplers(), "a stopped server left its hardware sampler running")
 
 
 # ------------------------------------------------------------------------------------------------ over HTTP
