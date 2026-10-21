@@ -65,6 +65,24 @@ class UnclosedCall(unittest.TestCase):
         text = "<tool_call>\n" + READ + "\n<tool_call> is a format marker."
         self.check(text, [], text)
 
+    def test_omitted_wrapper_recovers_only_on_a_natural_stop(self):
+        for closed in (True, False):
+            text = "<tool_call>\n" + READ + ("\n</tool_call>" if closed else "")
+            for reason in (None, "stop", "length", "cancel", "disconnect"):
+                for step in (1, 7, 4096):
+                    with self.subTest(closed=closed, reason=reason, step=step):
+                        p = OutputParser(thinking=False, tools=TOOLS, stream_tools=True)
+                        events = []
+                        for offset in range(0, len(text), step):
+                            events += p.feed(text[offset:offset + step])
+                        events += p.finish(reason)
+                        calls = [e for e in events if e.kind == "tool_call"]
+                        complete = closed or reason in (None, "stop")
+                        self.assertEqual(len(calls), int(complete))
+                        if not complete:
+                            with self.assertRaises(ValueError):
+                                json.loads("".join(e.text for e in events if e.kind == "tool_args"))
+
     def test_a_value_that_holds_the_tags_still_ends_at_the_calls_own_closer(self):
         value = "a </function> and a <tool_call> in a string"
         call = ("<tool_call>\n<function=write>\n<parameter=path>\nc.py\n</parameter>\n<parameter=content>\n" + value +

@@ -1345,9 +1345,16 @@ class UnfinishedToolCall(unittest.TestCase):
     def test_a_call_cut_at_the_token_limit(self):
         """The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call
         out in both APIs."""
-        a = self.answers(self.CUT + "rest of the file, never reached" * 40, max_tokens=len(self.CUT))
-        self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
-        self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+        cases = ((self.CUT + "rest of the file, never reached" * 40, len(self.CUT)),
+                 (self.WHOLE, len(self.WHOLE) - len("</tool_call>")))
+        for script, limit in cases:
+            with self.subTest(limit=limit):
+                a = self.answers(script, max_tokens=limit)
+                self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
+                self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+                for api in ("openai", "anthropic"):
+                    with self.assertRaises(ValueError):
+                        json.loads(a[api, True][1])
 
     def test_collect_keeps_calls_whose_arguments_parse(self):
         from serve.server import openai_collect

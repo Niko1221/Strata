@@ -1517,7 +1517,7 @@ class OutputParser:
             return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            if self.ss == "function_done" and not self.buf[self.sp:].strip():
+            if self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
                 # A natural end immediately after </function> retains native streaming recovery.
                 out += self._close_scan()
                 out.append(Event("tool_call", call=self.scall))
