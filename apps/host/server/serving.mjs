@@ -70,7 +70,7 @@ export function patch(body) {
   const s = getStore();
   const serving = { ...(s.serving ?? {}) };
   if (typeof body.otherDevices === 'boolean' && body.otherDevices !== !isLocal()) throw new Error('Change the host listen address and restart to update network access.');
-  if (body.apiKey === null && (!isLocal() || sharing.active || tunnelActive())) throw new Error('Stop local sharing and Cloudflare before removing the API key.');
+  // The key is optional (owner decision, 0.2.2): removing it while sharing or the tunnel runs is allowed; the app warns in plain words (local-share.mjs, cloudflare.mjs).
   if (body.apiKey === null) serving.apiKey = null;
   else if (typeof body.apiKey === 'string' && body.apiKey.trim()) serving.apiKey = body.apiKey.trim();
   else if (body.generateKey) serving.apiKey = `sk-strata-${randomBytes(12).toString('hex')}`;
@@ -149,7 +149,8 @@ export function cancel(id) {
 export function rateSample() {
   const done = requests.filter((r) => r.state === 'done' && r.tokensOut > 0);
   if (!done.length) return 0;
-  const tps = done.map((r) => r.tokensOut / Math.max(0.001, r.durationMs / 1000));
+  const tps = done.filter((r) => r.tps > 0).map((r) => r.tps);     // answer speeds (decode time), not tokens over the whole request
+  if (!tps.length) return 0;
   return round(tps.reduce((a, b) => a + b, 0) / tps.length, 1);
 }
 

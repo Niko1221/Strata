@@ -27,6 +27,14 @@ test('a check made for other versions is ignored, so an old "Update available" d
   assert.equal(readUpdateCache({ appVersion: '0.2.1', engineVersion: '0.1.45' }), null);
 });
 
+test('a new Control version, or a version that is not known yet, hides the old result', () => {
+  saveUpdateCache(result(), { appVersion: '0.2.0', engineVersion: '0.1.45', controlVersion: '0.1.45' });
+  assert.equal(readUpdateCache({ appVersion: '0.2.0', engineVersion: '0.1.45', controlVersion: '0.1.45' }).engine.status, 'available');
+  assert.equal(readUpdateCache({ appVersion: '0.2.0', engineVersion: '0.1.45', controlVersion: '0.1.46' }), null, 'Control changed');
+  assert.equal(readUpdateCache({ appVersion: null, engineVersion: '0.1.45', controlVersion: '0.1.45' }), null, 'app version still loading');
+  assert.equal(readUpdateCache({ appVersion: '0.2.0', engineVersion: '0.1.45' }), null, 'Control version not known');
+});
+
 test('unreadable or blocked storage is harmless', () => {
   store.set('strata.update-check.v1', '{not json');
   assert.equal(readUpdateCache({}), null);

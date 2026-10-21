@@ -5,7 +5,7 @@ might run on a similar machine. This guide suggests a report format and a pull
 request workflow; a single model, GPU, or context length is enough to contribute.
 There are two ways to measure. For results other people can compare with, run the **standard benchmark**: `strata bench run`
 follows the draft protocol in [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md) (fixed prompts, thinking on, the model card's
-sampling, twelve sanity checks, about 20 to 30 minutes after the model has loaded) and writes `results.json` with
+sampling, twelve sanity checks, about 2 to 4 minutes after the model has loaded on a fast card, more on a slow one) and writes `results.json` with
 the hardware, versions and every request. For a quick look at your own machine, [`BENCH.bat` / `./bench.sh`](#run-the-benchmark)
 takes 3 to 10 minutes and writes a report in the format below.
 

@@ -281,17 +281,23 @@ def write_archive(root: Path, name: str, out_dir: Path, kind: str) -> Path:
     return path
 
 
-def source_commit() -> str:
-    """The commit the sources are from. STRATA_BUILD_COMMIT wins (a Docker build copies the files without .git and without git);
-    otherwise `git rev-parse HEAD`, when git exists and ROOT is a checkout. Empty when neither answers: the archive just has no COMMIT."""
-    given = os.environ.get("STRATA_BUILD_COMMIT", "").strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", given):
-        return given
+def build_commit(explicit: str | None = None) -> str | None:
+    """The full commit this archive is built from: --commit, the STRATA_COMMIT variable, STRATA_BUILD_COMMIT (a Docker build
+    copies the files without .git and without git), or `git rev-parse HEAD` of the source tree. None when none of them gives
+    40 hex digits (a tree copy without .git)."""
+    for candidate in (explicit, os.environ.get("STRATA_COMMIT"), os.environ.get("STRATA_BUILD_COMMIT")):
+        if candidate and re.fullmatch(r"[0-9a-fA-F]{40}", candidate.strip()):
+            return candidate.strip().lower()
     try:
-        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip().lower()
     except OSError:                     # no git installed
-        return ""
-    return out.strip().lower()
+        return None
+    return out if re.fullmatch(r"[0-9a-f]{40}", out) else None
+
+
+def source_commit() -> str:
+    """`build_commit()` without an explicit value, as a string (empty when unknown)."""
+    return build_commit() or ""
 
 
 def main() -> int:
@@ -302,6 +308,9 @@ def main() -> int:
     ap.add_argument("--version", default=None, help="version label (default: read from the source)")
     ap.add_argument("--skip-deps", action="store_true",
                     help="skip the locked install (layout checks only; the result is NOT distributable)")
+    ap.add_argument("--commit", default=None, metavar="SHA",
+                    help="the full commit the sources come from, for a tree copy that has no .git (or set STRATA_COMMIT); "
+                         "`strata bench run` records it, and a standard benchmark without it is nonconforming")
     ap.add_argument("--keep-staging", action="store_true")
     ap.add_argument("--no-installer", action="store_true",
                     help="leave out setup.py, tools/strata_mcp.py and data/ (the read-only terminal of earlier releases; "
@@ -315,6 +324,13 @@ def main() -> int:
     if not args.skip_deps and target != host_target():
         raise SystemExit(f"{target} must be built on {target} (this is {host_target()}): the locked install runs the "
                          "bundled interpreter. Use --skip-deps for a layout check.")
+    commit = build_commit(args.commit)
+    if commit is None:
+        message = ("the commit of these sources is unknown (no .git here, no --commit, no STRATA_COMMIT): the archive would carry "
+                   "no COMMIT file, and every `strata bench run` on it would be nonconforming")
+        if not args.skip_deps:
+            raise SystemExit(message)
+        print("warning: " + message)
     pin = PYTHON_PINS[target]
     version = args.version or _source_version()
     out_dir = Path(args.out).resolve()
@@ -358,9 +374,8 @@ def main() -> int:
         installer = None if args.no_installer else add_installer(root)
         (root / "VERSION").write_text(version + "\n", encoding="utf-8")
         # the commit the archive was built from: `strata bench run` records it (an archive has no .git to ask)
-        built = source_commit()
-        if re.fullmatch(r"[0-9a-f]{40}", built):
-            (root / "COMMIT").write_text(built + "\n", encoding="utf-8")
+        if commit:
+            (root / "COMMIT").write_text(commit + "\n", encoding="utf-8")
 
         bin_dir = root / "bin"
         bin_dir.mkdir(exist_ok=True)

@@ -35,6 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
+from strata_control import vram_fit  # noqa: E402
 
 SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
 SYCL_IMAGE = "strata-sycl-dev"
@@ -86,6 +87,12 @@ def intel_gpus():
         found.append({"index": len(found), "name": f"Intel {name}", "vram_gb": vram, "arch": driver, "driver": driver,
                       "devid": devid})
     return found
+
+
+def real_mem_have(mem_have, real_ram: float, fake_ram: float):
+    """setup.mem_have for the Intel path: the RAM it is given is the 1024 GB stand-in of setup's RAM rule, so a model that counts VRAM + RAM
+    (Gyro) would never warn; it gets the real RAM."""
+    return lambda model, ram, vram=0.0: mem_have(model, real_ram if ram >= fake_ram else ram, vram)
 
 
 def sycl_engine():
@@ -248,13 +255,28 @@ def recommended_prefill(vram_gb: float, ctx: int, driver: str = "xe", devid: str
     return 4096, ""
 
 
+def _model_title(model: str, args: list) -> str:
+    """The plain name for the fit line: Gyro-M / Gyro-S from the catalog name or the GGUF's file name, else the catalog name."""
+    low = (model + " " + (flag(args, "--native") or "")).lower()
+    for key, title in (("gyro-m", "Gyro-M"), ("gyro-s", "Gyro-S")):
+        if key in low:
+            return title
+    return model if model and "/" not in model and chr(92) not in model else ""
+
+
 def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, driver: str = "xe",
-            devid: str = "") -> dict:
+            devid: str = "", fit_notes: list | None = None, model: str = "", ctx_asked: bool = False,
+            auto_reserve: bool = False, fit: bool = True) -> dict:
     """setup's config (written for its HIP path) -> the SYCL port's: the container's paths, experts streamed from the
     GGUF into VRAM (--stream-experts: the engine reads them from the GGUF and keeps what does not fit in a pinned RAM
     mirror; the VRAM reserve is the smallest that leaves the KV and the prompt buffers room - docs/INTEL.md), KV
     streaming from 64K up when the RAM holds the KV (the B70 at 256K decodes at 40+ tok/s with it, 4-9 without).
     A reserve the user asked for (--vram-reserve-mib) is kept.
+
+    0.2.2: a model that does not fit the card at the default context (Gyro-M on the 8 GB A750 is ~750 MiB short of one cache
+    slot) gets a context down the ladder 32K -> 16K -> 8K, a smaller prompt chunk and a lower reserve until it does
+    (strata_control/vram_fit.py); one plain line per change goes to `fit_notes`.  A config that fits comes back as it was.
+    `ctx_asked` / a reserve without `auto_reserve`: the user chose it, it is kept.  `fit=False`: a layer split.
 
     An Alchemist card (the A-series, i915 or xe) has no FP64 hardware, so its config carries the driver's FP64
     emulation (a kernel on the sampled path declares double). On i915 (the A750) the experts load into a RAM arena
@@ -284,18 +306,39 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
             args[args.index(f) + 1] = sycl_path(path) + (f":{scale}" if scale else "")
     ctx = int(flag(args, "--max-context") or 32768)
     kv = flag(args, "--kv") or "int8"
-    kv_ram = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9
-    if kv != "k8v4" and ctx >= 65536 and ram >= kv_ram + 6:
-        args += ["--kv-resident", "32768"]
     asked_reserve = flag(args, "--vram-reserve-mib")    # setup writes it only when the user gave it
     drop(args, "--vram-reserve-mib", True)
     reserve = asked_reserve or (str(SMALL_RESERVE_MIB) if small_card(vram_gb, driver) else
                                 "1024" if ctx <= 32768 else "2048")
+    new_prefill = None
+    if fit and vram_gb:
+        pf = flag(args, "--prefill")
+        fr = vram_fit.plan(model or (flag(args, "--native") or ""), vram_gb, ctx, kv, int(reserve), pf or "auto", "intel",
+                           title=_model_title(model, args), ctx_fixed=ctx_asked,
+                           reserve_fixed=bool(asked_reserve) and not auto_reserve,
+                           prefill_fixed=pf not in (None, "auto"))
+        if fr.changed:
+            if fr.ctx != ctx:
+                if "--max-context" in args:
+                    args[args.index("--max-context") + 1] = str(fr.ctx)
+                else:
+                    args += ["--max-context", str(fr.ctx)]
+                ctx = fr.ctx
+            reserve = str(fr.reserve_mib)
+            new_prefill = fr.prefill
+            if fit_notes is not None:
+                fit_notes.append(fr.line)
+    kv_ram = ctx * (13 * (576 if kv == "q4_0" else 1056)) / 1e9
+    if kv != "k8v4" and ctx >= 65536 and ram >= kv_ram + 6:
+        args += ["--kv-resident", "32768"]
     alchemist = driver == "i915" or devid in ALCHEMIST_IDS
     if driver == "i915":
         # Arc A-series on i915 (the A750): the experts load into an ordinary RAM arena and the CPU computes the ones
         # the card does not hold; the n-gram table is kept in RAM (setup's rotational-disk rule) and no mirror is built.
-        if "--ple-io" not in args:
+        # Gyro: its n-gram table is half of the 58-92 GB file and stays on the SSD (read row by row); the RAM holds the
+        # experts' arena (24 GB for Gyro-S) and the CPU's work, so a table in RAM would not fit beside them on a 64 GB PC
+        gyro = "gyro" in (flag(args, "--native") or "").lower()
+        if "--ple-io" not in args and not gyro:
             args += ["--ple-io", "ram"]
         args += ["--vram-reserve-mib", reserve]
     else:
@@ -308,6 +351,11 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         if flag(args, "--prefill") in (None, "auto", "2048", "4096", "8192"):
             drop(args, "--prefill", True)
             args += ["--prefill", str(recommended_prefill(vram_gb, ctx, driver, devid)[0])]
+    if new_prefill:                                     # the fit rule's smaller prompt chunk (the card cannot spare 2048-token buffers)
+        if "--prefill" in args:
+            args[args.index("--prefill") + 1] = new_prefill
+        else:
+            args += ["--prefill", new_prefill]
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "gpus")}   # "vision" stays: the CPU reader runs on the host
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
@@ -343,7 +391,10 @@ def install(argv) -> None:
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
 
     real_ram = S.ram_gb()
-    keep = {}                                           # hand-set keys setup does not write: kept across a rerun
+    # what the person chose on the command line is kept by the fit rule (vram_fit); the small-card reserve added below is not theirs
+    asked_ctx = any(a == "--context" or a.startswith("--context=") or a == "--max-context" for a in argv)
+    asked_reserve = any(a == "--vram-reserve-mib" or a.startswith("--vram-reserve-mib=") for a in argv)
+    keep = {}                                          # hand-set keys setup does not write: kept across a rerun
     for p in ROOT.glob("strata-*.json"):
         try:
             c = json.loads(p.read_text(encoding="utf-8-sig"))
@@ -370,6 +421,7 @@ def install(argv) -> None:
         where = ("the experts the card does not hold are computed on the CPU" if alch
                  else "the experts are streamed into VRAM")
         msg = msg.replace(f"RAM: {fake_ram:.0f} GB", f"RAM: {real_ram:.0f} GB ({where})")
+        msg = msg.replace(f"({fake_ram:.0f} GB RAM +", f"({real_ram:.0f} GB RAM +").replace(f"you have {fake_ram:.0f} GB RAM", f"you have {real_ram:.0f} GB RAM")
         if re.match(r"\s+\S+\s+needs ~\d+ GB RAM:", msg):   # --check's CUDA verdicts: replaced by the Intel one
             m = msg.split()[0]
             d = S.MODELS.get(m, {})
@@ -399,6 +451,10 @@ def install(argv) -> None:
     S.build_engine_hip = build_engine_hip
     S.hipblaslt_table = lambda *a, **k: None
     S.ram_gb = lambda: fake_ram                         # the experts are in VRAM: setup's RAM rule does not apply
+    # Gyro (mem_total) counts VRAM + RAM together and is the one family whose experts are NOT streamed from the file into VRAM: on
+    # an Arc they sit in the RAM arena and the CPU computes what the card does not hold.  Its memory warning ("needs 27.6 GB of VRAM +
+    # RAM together, you have ...", never a refusal) therefore reads the real RAM, not the 1024 GB above.
+    S.mem_have = real_mem_have(S.mem_have, real_ram, fake_ram)
 
     bench_tips = S.bench_tips
 
@@ -419,8 +475,12 @@ def install(argv) -> None:
         split = isinstance(gsel, list)
         idx = gsel if isinstance(gsel, int) and 0 <= gsel < len(intel) else 0
         sel = intel[idx]
+        fit_notes = []
         cfg = to_sycl(cfg, exe, real_ram, keep.get(Path(cfg_path).name, {}), sel["vram_gb"], sel["driver"],
-                      sel.get("devid", ""))
+                      sel.get("devid", ""), fit_notes=fit_notes, model=model, ctx_asked=asked_ctx,
+                      auto_reserve=not asked_reserve, fit=not split)
+        for line in fit_notes:                              # one plain line: what was chosen and why (never a refusal)
+            S.say("  " + line)
         if len(intel) > 1:                                  # pin the SYCL device(s)
             # the Level Zero order followed the sysfs card order on the tested machines; a machine where it does not
             # needs an explicit ONEAPI_DEVICE_SELECTOR (kept if the user set one)

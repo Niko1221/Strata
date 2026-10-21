@@ -34,6 +34,8 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 | IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
 | UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 91 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
+| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the file's other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that (measured on 32 GB) |
+| Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 71 GB | 96 GB; streams below that (not measured on a Mac) |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
 - **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
@@ -169,6 +171,52 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 `--spec 2` is the best default on mixed text. An explicit `--spec N` in the config's `args` is kept.
 
+### Gyro-S and Gyro-M (agentionai's trellis experts)
+
+From 0.2.2 the Mac engine runs [Gyro](GYRO.md): the routed experts are trellis-coded blocks (ggml types TQ2_T, TQK6, TQK7) in a
+Hadamard-rotated basis, read from the published file unchanged. The kernels are ours (`metal/kernels/quant.metal`, `moe.metal`,
+`moe_mm.metal`); the codebook and the decoder are the CPU engine's, the rotation is applied to the gate/up and down inputs as on CUDA.
+Setup offers Gyro-S and Gyro-M next to the other sizes (`./setup.sh --family gyro --model Gyro-S`), never as the default, and says
+what the choice risks on your Mac's memory. The 28.8 GB n-gram table is inside the file and is read from the SSD like every other
+pack's, so Gyro-S needs 58.5 GB of disk and about 38 GB of memory to stay resident (29.7 GB of weights).
+
+**Measured on the M4 Mac mini, 32 GB** (the experts stream from the SSD; no experts' copy, because the copy would need 26 GB more
+disk than this Mac had; one token per step, no draft layer; the arena was 11-12 GB of the 25.8 GB of experts):
+
+| | Gyro-S |
+|---|---|
+| Decode, story, 120 tokens (5 interleaved pairs, medians) | **9.14 tok/s** (9.07-9.15) |
+| Decode, with the dense-weight tiles turned off (`STRATA_METAL_GYRO_TILES=0`) | 8.70 tok/s (8.69-8.73); same tokens in all 10 runs |
+| Prompt, 4,065 tokens (3 runs) | **109 tok/s** (108-110) |
+| Memory the engine held | 18.6 GB of the 32 GB |
+
+Where the time goes: a decode window of two tokens takes 111 ms. The routed experts are about 40 ms of it, the dense weights
+(Gyro keeps its attention, state-space and shared-expert matrices in Q5_K and Q6_K: 3.6 GB read a token)
+about 66 ms before the tile change (a run with those kernels skipped). The kernel for one expert layer (ten experts, one token) takes
+278 us on the M4, 37.5 GB/s; IQ3_XXS takes 333 us and Q2_0 166 us. The trellis decode is limited by latency and ALU, not by memory:
+32-bit funnel shifts for the stream bits, fetching the next unit while decoding the current one, one lane a row with the unit index
+folded away and the codebook in constant memory were all tried and none beat the plain kernel, so it is the plain kernel with the
+tile that measured fastest. The prompt kernels (fp16 matrix units) are on par with IQ3_XXS: 68 ms against 62 ms a layer for
+1,024 tokens.
+
+**Checked against the CPU engine's decoder, on the real file:** the decoder equals the format's definition written out bit by bit
+(614,400 sampled blocks a layer, none differ); the Hadamard rotation equals the CPU's bit for bit (f32 and f16); the expert
+kernels reproduce a double-precision reference to 1e-7 relative on real experts of layers 0 and 47 of Gyro-S and of layers 0, 23
+and 47 of Gyro-M (the 92 GB file was read by range requests, 16 experts a layer: it does not fit this Mac's disk). Run it with
+`metal/tests/gyro_parity.sh`.
+
+**Against the CUDA engine, same file** (the pinned Gyro-S; `tools/quant_quality.py`, teacher-forced over the 5 text segments of
+`data/quant_quality/v1`, 4,995 positions; CUDA = an RTX 3060 with the engine of this release, run twice: experts on the GPU, experts on the CPU):
+
+| Reference -> run | top-1 agreement | mean KL | KL p99 | perplexity of the text |
+|---|---|---|---|---|
+| CUDA GPU experts -> CUDA CPU experts (the noise floor: two numerics of one engine) | 95.80 % | 0.0186 | 0.195 | 4.462 / 4.477 |
+| CUDA GPU experts -> Mac | 95.46 % | 0.0207 | 0.241 | 4.486 / 4.477 |
+| CUDA CPU experts -> Mac | 95.38 % | 0.0187 | 0.272 | 4.486 / 4.462 |
+
+The Mac is as far from either CUDA run as the two CUDA runs are from each other (the CUDA GPU path quantizes the activations to q8_1 and
+reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplies fp16 codebook values with the float activations).
+
 ### Quality
 
 - **The Q8_0 hyper-connection read is the default on Mac.** It keeps a Q8_0 copy of the hyper-connection matrices instead of BF16. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read.
@@ -208,7 +256,7 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
-- **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
+- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **The ready-made Mac engine is in the app and in the Terminal's engine component, not in the release zips.** The zips
   (for `START-HERE.bat` and `setup.sh`) have no Mac engine: `./setup.sh` builds it.
 

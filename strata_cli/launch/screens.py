@@ -529,13 +529,21 @@ class ModelScreen(Base):
 # ------------------------------------------------------------------------------------------------ 2 cards (only with 2+ cards)
 
 class CardsScreen(Base):
+    """Main / Helper / Off for every card (strata_control/gpu_roles.py). The recommendation is already selected; M H O set the role of the
+    card under the cursor, R goes back to the recommendation, D shows what the roles mean."""
+
     step_id = "cards"
-    help_text = ("Strata tries the model on your largest graphics card plus the computer's memory first. A second card is offered as a layer "
-                 "split: it adds room and reads prompts faster. The recommended choice is already selected; pick another if you prefer.")
-    hints = "↑↓ choose   Enter next   Esc back   ? help"
+    help_text = ("Main does the last steps of every answer; Helper holds part of the model; Off leaves the card alone. "
+                 "Keys: M Main, H Helper, O Off, R back to recommended, D details.")
+    hints = "↑↓ choose card   M Main   H Helper   O Off   R recommended   D details   Enter next   Esc back   ? help"
+    BINDINGS = Base.BINDINGS + [Binding("m", "role('main')", show=False), Binding("h", "role('helper')", show=False),
+                                Binding("o", "role('off')", show=False), Binding("r", "recommended", show=False),
+                                Binding("d", "details", show=False), Binding("right", "cycle(1)", show=False),
+                                Binding("left", "cycle(-1)", show=False)]
 
     def body(self) -> ComposeResult:
         yield Static(Text("Which graphics cards should it use?", style=f"bold {ACCENT}"), markup=False)
+        yield Static("", id="reco", markup=False)
         yield Menu([("", 0)], id="menu")
         yield Static("", id="cardnotes", markup=False)
 
@@ -544,50 +552,146 @@ class CardsScreen(Base):
         r = next((x for x in self.ctx.rows if (x.family, x.model) == (s.family, s.model)), None)
         return float(r.memory_gb) if r is not None and r.memory_gb else 44.0
 
-    def choices(self) -> dict:
-        from strata_control import gpu_fit
-        return gpu_fit.options(self.model_memory(), self.ctx.computer.ram_gb, self.ctx.computer.gpus, self.ctx.computer.engine_vendor)
+    def installed(self) -> list[int] | None:
+        """The cards the installed model was set to by a person's choice (kept unless this launch names others)."""
+        from strata_cli.launch.runner import installed_cards
+        try:
+            return installed_cards(self.ctx.base_config())
+        except Exception:                                    # noqa: BLE001
+            return None
+
+    def cards(self) -> list[dict]:
+        from strata_control import gpu_roles
+        c = self.ctx.computer
+        return gpu_roles.rows(c.gpus, c.engine_vendor)
+
+    def start_roles(self) -> dict[int, str]:
+        """The roles the screen opens with: this launch's own, else the installed model's own choice, else the recommendation."""
+        from strata_control import gpu_roles
+        s, cards = self.ctx.settings, self.cards()
+        if s.gpu_roles:
+            return gpu_roles.normalize({int(k): v for k, v in s.gpu_roles.items()}, cards)
+        if s.gpus:
+            return gpu_roles.from_legacy(list(s.gpus), cards, "as_given")
+        return self.baseline()
+
+    def baseline(self) -> dict[int, str]:
+        """What "no choice made here" means: the installed model's own cards, else the recommendation."""
+        from strata_control import gpu_roles
+        inst = self.installed()
+        cards = self.cards()
+        if inst:
+            return gpu_roles.from_legacy(inst, cards, "as_given")
+        return dict(gpu_roles.recommend(cards, self.ctx.computer.engine_vendor)["roles"])
 
     def on_mount(self) -> None:
-        self.res = self.choices()
-        items = []
-        sel = 0
-        cur = self.ctx.settings.gpus
-        for i, o in enumerate(self.res["options"]):
-            label = o["label"] + ("   (recommended)" if o["recommended"] else "")
-            items.append(Item([label, Cell(o["words"], WARN if o["verdict"] in ("spills", "tight") else "")], key=o["cards"]))
-            if cur is None and o["recommended"] or (cur is not None and o["cards"] == list(cur)):
-                sel = i
-        wide = max((len(str(i.cells[0])) for i in items), default=40)
-        self.query_one(Menu).columns = [("", max(40, min(wide + 3, 70))), ("", 0)]
-        self.query_one(Menu).set_items(items, sel)
+        from strata_control import gpu_roles
+        self.detail = False
+        self.note = ""
+        self.cardlist = self.cards()
+        self.roles = self.start_roles()
+        self.rec = gpu_roles.recommend(self.cardlist, self.ctx.computer.engine_vendor)
+        wide = max((len(gpu_roles.short_name(c)) for c in self.cardlist), default=20)
+        self.query_one(Menu).columns = [("", 8), ("", min(wide + 2, 34)), ("", 10), ("", 32), ("", 0)]
+        self.fill(0)
         self.paint()
 
-    def refresh_body(self) -> None:
-        lines = Text()
+    def role_cell(self, role: str) -> str:
+        words = [("main", "Main"), ("helper", "Helper"), ("off", "Off")]
+        return "".join(f"[ {w} ] " if r == role else f"  {w}   " for r, w in words)
+
+    def fill(self, index: int = 0) -> None:
+        from strata_control import gpu_roles
+        items = []
+        for c in self.cardlist:
+            i = int(c.get("index", 0))
+            role = self.roles.get(i, "off")
+            rec = self.rec["roles"].get(i)
+            tag = "recommended" if rec == role else f"recommended: {rec}"
+            mem = "built-in" if gpu_roles._shares(c) else f"{float(c.get('vram_gb') or 0):.0f} GB"
+            items.append(Item([gpu_roles.gpu_label(c), gpu_roles.short_name(c), mem, self.role_cell(role), Cell(tag, "" if rec == role else MUTE)], key=i))
+        self.query_one(Menu).set_items(items, index)
+
+    def current_card(self) -> int | None:
         cur = self.menu().current if self.menu() else None
-        opt = next((o for o in self.res["options"] if cur is not None and o["cards"] == cur.key), None)
-        for n in (opt or {}).get("notes", []):
-            lines.append(f"  {n}\n", style=MUTE)
-        for g in self.res["ignored"]:
-            lines.append(f"  Not used: {g.get('name')} ({g['why_ignored']}).\n", style=MUTE)
+        return None if cur is None else int(cur.key)
+
+    def action_role(self, role: str) -> None:
+        from strata_control import gpu_roles
+        i = self.current_card()
+        if i is None:
+            return
+        self.roles, code = gpu_roles.set_role(self.roles, self.cardlist, i, role)
+        self.note = gpu_roles.note_text(code, self.cardlist)
+        self.fill(self.menu().index)
+        self.paint()
+
+    def action_cycle(self, step: int) -> None:
+        order = ["main", "helper", "off"]
+        i = self.current_card()
+        if i is None:
+            return
+        self.action_role(order[(order.index(self.roles.get(i, "off")) + step) % 3])
+
+    def action_recommended(self) -> None:
+        self.roles = dict(self.rec["roles"])
+        self.note = ""
+        self.fill(self.menu().index)
+        self.paint()
+
+    def action_details(self) -> None:
+        self.detail = not self.detail
+        self.paint()
+
+    def is_cpu_engine(self) -> bool:
+        try:
+            return (self.ctx.catalog.installed_backend() or "") in ("cpu", "metal")
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def refresh_body(self) -> None:
+        if not hasattr(self, "roles"):
+            return
+        from strata_control import gpu_fit, gpu_roles
+        c = self.ctx.computer
+        try:
+            self.query_one("#reco", Static).update(Text(gpu_roles.sentence(self.cardlist, c.engine_vendor), style=MUTE))
+        except Exception:                                    # noqa: BLE001
+            return
+        lines = Text()
+        if self.note:
+            lines.append(f"  {self.note}\n", style=MUTE)
+        spill = gpu_roles.spill_for(self.roles, self.cardlist, self.model_memory(), c.ram_gb)
+        for w in gpu_roles.warnings(self.roles, self.cardlist, spill_gb=spill, engine_runs_cpu_only=self.is_cpu_engine()):
+            fix = ""
+            if w["fix"]:
+                n = gpu_roles.gpu_label(next(x for x in self.cardlist if int(x.get("index", 0)) == w["fix"]["card"]))
+                fix = f"   (select {n} and press {w['fix']['role'][0].upper()})"
+            lines.append(f"  ! {w['text']}{fix}\n", style=WARN)
+        if self.detail:
+            for word, text in (("Main", "does the last steps of every answer and keeps the conversation. Only one."),
+                               ("Helper", "holds a share of the model, so more of it fits on graphics cards."),
+                               ("Off", "Strata does not touch the card.")):
+                lines.append(f"  {word}: {text}\n", style=MUTE)
+        for g in gpu_fit.for_vendor(c.gpus, c.engine_vendor)[1]:
+            lines.append(f"  Not used: {g.get('name')} (another make of card than this engine drives).\n", style=MUTE)
         try:
             self.query_one("#cardnotes", Static).update(lines)
         except Exception:                                    # noqa: BLE001
             pass
 
-    def on_cursor(self) -> None:
-        self.refresh_body()
-
     def explain(self) -> Text:
-        return Text("One card plus your RAM is the normal way and keeps things simple. Two cards share the layers: more room for the model and "
-                    "prompts read about 20% faster, but a small second card can slow it down. Strata recommends one of them; the choice is yours.",
-                    style=MUTE)
+        return Text("Strata recommends the roles shown. A Helper holds part of the model; Off leaves a card alone (for a game or the screen). "
+                    "Any card is one key away; the choice is yours.", style=MUTE)
 
     def commit(self) -> None:
-        cur = self.menu().current
-        rec = next((o["cards"] for o in self.res["options"] if o["recommended"]), None)
-        self.ctx.settings.gpus = None if cur.key == rec else list(cur.key)         # the recommended choice stays "let Strata choose" (the same rule in setup)
+        if not hasattr(self, "roles"):
+            return
+        s = self.ctx.settings
+        if self.roles == self.baseline():
+            s.gpu_roles, s.gpus = None, None                 # the recommendation (or the installed choice) stays "not set": a card added later is re-recommended
+        else:
+            s.gpu_roles, s.gpus = {str(i): r for i, r in sorted(self.roles.items())}, None
 
 
 # ------------------------------------------------------------------------------------------------ 3 folder

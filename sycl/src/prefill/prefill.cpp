@@ -24,6 +24,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -715,6 +716,9 @@ struct Prefill::Impl {
     uint16_t *xn16 = nullptr, *lo16 = nullptr;
     float* mixed = nullptr;
     uint16_t *mixed_bf = nullptr, *mixed_h = nullptr;
+    // APR (prism.hadamard): per layer, this device's copies of the gate/up (n_embd) and down (n_ff) sign vectors
+    // (nullptr: identity signs or not folded), resolved once in init so a prompt chunk reads a pointer
+    std::vector<const float*> had_sx, had_sh;
     bool f16_io = false;   // HIP, STRATA_HIP_PROMPT_F16=1: this stage's 16-bit GEMMs run FP16 in and out (set in init)
     uint16_t *xn16_lo = nullptr, *lo16_lo = nullptr, *mixed_bf_lo = nullptr;   // bf16x2(): the BF16 GEMMs' low parts
     float* bo = nullptr;
@@ -1186,6 +1190,17 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
     m.T = chunk; m.cs = strata::q_of(stream); m.stats = &stats_;
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
+    }
+    {   // APR: the sign vectors on this device, once (hadamard_device_signs takes a mutex and allocates its copy)
+        const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+        m.had_sx.assign(lay.native ? lay.fmt.size() : 0, nullptr);
+        m.had_sh.assign(m.had_sx.size(), nullptr);
+        for (size_t l = 0; l < m.had_sx.size(); ++l) {
+            if (lay.fmt[l].had_gu)
+                m.had_sx[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].gu_signs, (int) lay.fmt[l].n_embd);
+            if (lay.fmt[l].had_d)
+                m.had_sh[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].d_signs, (int) lay.fmt[l].n_ff);
+        }
     }
     m.device = dpct::get_current_device_id();
     if (static bool said_i8 = false; !said_i8 && i8_mode(m.cs) != 0) {
@@ -3471,6 +3486,17 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     // (moe_fused_iq.hpp) where they cover its two formats, else MMQ (or the FP16 path: IQ1_M).
                     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
+                    // APR (prism.hadamard): folded gate/up take H (s * x) on the gathered fp16 rows, folded down H (s * h) on
+                    // the fp16 SwiGLU output, both rotated in fp16 storage with fp32 arithmetic (as the CUDA FP16 path does).
+                    // The fused int8 products and the MMQ path do not rotate; they take only formats of unfolded layers.
+                    const bool had_gu = lay.native && lay.fmt[(size_t) l].had_gu;
+                    const bool had_d = lay.native && lay.fmt[(size_t) l].had_d;
+                    const int had_block = lay.native ? lay.fmt[(size_t) l].had_block : 0;
+                    const float* had_sx = had_gu ? m.had_sx[(size_t) l] : nullptr;
+                    const float* had_sh = had_d ? m.had_sh[(size_t) l] : nullptr;
+                    auto had_h = [&](int64_t row0, int64_t nrows) {
+                        if (had_d) strata::kernels::hadamard_rows_f16(m.Hh + row0 * 640, nrows, 640, had_block, had_sh, m.cs);
+                    };
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
                     // --peer-device: MMQ only, whether or not the peer took the prompt path (set_peer can decline), as
@@ -3715,6 +3741,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             }
                         } else {
                             gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
+                            // APR: Xs is this layer's private gathered copy (rotated in fp16 storage, fp32 arithmetic)
+                            if (had_gu) strata::kernels::hadamard_rows_f16(m.Xs, T * K, N, had_block, had_sx, m.cs);
                         }
                         // multi-GPU: the peer's share, enqueued before the primary's own experts so both cards work at once
                         peer_now = use_mmq && !order_peer.empty();
@@ -4193,13 +4221,14 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         auto xmx2_fmt = [&]() {
                             if (!lay.native) return false;
                             const int gt = lay.fmt[(size_t) l].gu_type, dt = lay.fmt[(size_t) l].d_type;
+                            if ((gt == 144 || gt == 145) && (dt == 144 || dt == 146)) return true;   // Gyro's trellis experts (rotated above)
                             return (gt == 18 || gt == 21 || gt == 22 || gt == 23) && (dt == 20 || dt == 42);
                         };
                         const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
                         // 151-b70: the fused int8 DPAS products (IQ3_S gate/up, IQ4_NL down, the 640 x 2560 expert), the same
                         // held group of staged experts as above
                         const int i8m = i8_mode(m.cs);
-                        const bool i8on = !xmx2_only && i8m != 0 && !use_mmq && lay.native &&
+                        const bool i8on = !xmx2_only && i8m != 0 && !use_mmq && lay.native && !had_gu && !had_d &&
                                           (lay.fmt[(size_t) l].gu_type == 21 || lay.fmt[(size_t) l].gu_type == 18 || lay.fmt[(size_t) l].gu_type == 22) &&
                                           (lay.fmt[(size_t) l].d_type == 20 || lay.fmt[(size_t) l].d_type == 42) &&
                                           lay.fmt[(size_t) l].n_ff == 640 && lay.fmt[(size_t) l].n_embd == 2560 &&
@@ -4293,6 +4322,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                         pt.mark(kPfGemmGU, cs);
                                         m.gemm.f16(m.Xs + o * N, m.dq_gu[qd], m.GU + o * 1280, xg_c[i], 1280, N);
                                         swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                        had_h(o, xg_c[i]);
                                         pt.mark(kPfGemmD, cs);
                                         m.gemm.f16(m.Hh + o * 640, m.dq_d[qd], m.Dm + o * N, xg_c[i], N, 640);
                                         o += xg_c[i];
@@ -4322,6 +4352,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 strata::kernels::iq_xmx_grouped(f.gu_type, xg_g, xg_u, xg_c, xg_n, m.Xs + xg_r0 * N,
                                                                 m.GU + xg_r0 * 1280, 1280, (int) N, m.cs);
                                 swiglu_interleaved(m.GU + xg_r0 * 1280, m.Hh + xg_r0 * 640, nr, m.cs);
+                                had_h(xg_r0, nr);
                                 pt.mark(kPfGemmD, cs);
                                 strata::kernels::iq_xmx_grouped(f.d_type, xg_d, nullptr, xg_c, xg_n, m.Hh + xg_r0 * 640,
                                                                 m.Dm + xg_r0 * N, (int) N, 640, m.cs);
@@ -4336,6 +4367,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     pt.mark(kPfGemmGU, cs);
                                     m.gemm.f16(m.Xs + o * N, m.dq_gu[q], m.GU + o * 1280, xg_c[i], 1280, N);
                                     swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                    had_h(o, xg_c[i]);
                                     pt.mark(kPfGemmD, cs);
                                     m.gemm.f16(m.Hh + o * 640, m.dq_d[q], m.Dm + o * N, xg_c[i], N, 640);
                                     o += xg_c[i];
@@ -4473,6 +4505,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     }
                                 }
                                 swiglu_interleaved(m.GU + r0 * 1280, m.Hh + r0 * 640, nr, m.cs);
+                                had_h(r0, nr);
                                 pt.mark(kPfGemmD, cs);
                                 strata::prefill::xmx::grouped_f16(m.Hh + r0 * 640, wd, gc, ng, m.Dm + r0 * N, (int) N, 640,
                                                                   m.cs);
@@ -4482,6 +4515,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             pt.mark(kPfGemmGU, cs);
                             m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
                             swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                            had_h(o0, ne);
                             pt.mark(kPfGemmD, cs);
                             m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                             return true;

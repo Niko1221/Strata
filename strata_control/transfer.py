@@ -15,6 +15,7 @@ import hashlib
 import http.client
 import ipaddress
 import os
+import re
 import threading
 import email.utils
 import datetime as _dt
@@ -228,8 +229,11 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
                 headers["Range"] = f"bytes={have}-"
             request = urllib.request.Request(location, headers=headers)
             with _opener.open(request, timeout=timeout) as response:
-                if have and response.status != 206:
-                    have = done = 0                          # the server ignored the range: start over, never append to a prefix
+                if have and not _resumes_at(response, have, size):
+                    if response.status == 206:               # another range: its bytes are not the file's, ask again from the start
+                        partial.unlink(missing_ok=True)
+                        return _transfer(location, partial, 0, size, progress, cancel, timeout)
+                    have = done = 0                          # the server ignored the range and sent the whole file: start over, never append to a prefix
                 _copy(response, partial, "wb" if not have else "ab", done, size, progress, cancel)
         else:
             path = _local_path(location)
@@ -250,6 +254,17 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
         raise TransferError(f"the download of {location} was interrupted after {got} of {size} bytes "
                             f"({type(exc).__name__}: {reason}); the partial file is kept and the next try resumes it",
                             resumable=True) from None
+
+
+_CONTENT_RANGE = re.compile(r"\s*bytes (\d+)-(\d+)/(\d+|\*)\s*$")
+
+
+def _resumes_at(response, have: int, size: int) -> bool:
+    """Whether a resumed answer is a 206 whose Content-Range starts at byte `have` of a file of `size` bytes."""
+    if response.status != 206:
+        return False
+    m = _CONTENT_RANGE.match(response.headers.get("Content-Range") or "")
+    return bool(m) and int(m.group(1)) == have and (m.group(3) == "*" or int(m.group(3)) == size)
 
 
 def _copy(source, partial: Path, mode: str, done: int, size: int, progress, cancel) -> None:

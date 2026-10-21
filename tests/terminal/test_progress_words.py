@@ -63,6 +63,15 @@ class StepWords(unittest.TestCase):
         self.assertEqual(phase, "verify")
         self.assertEqual(p["download"]["percent"], 20)
 
+    def test_a_damaged_file_is_repaired_in_plain_words_and_the_second_check_is_checking(self):
+        damaged = "  Some parts of Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf were damaged; downloading only those parts again."
+        lines = HEAD + STEP5 + [MODEL_PROGRESS, CHECK, damaged, "  Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf:  12.00 / 58.49 GB (20%)   "]
+        _p, label, phase = prog(lines)
+        self.assertEqual(phase, "repair")
+        self.assertEqual(label, "Some parts of a model file were damaged; downloading only those parts again")
+        done = lines + ["  2 of 1186 parts were different and have been written again; checking the whole file again ..."]
+        self.assertEqual(prog(done)[2], "download")
+
     def test_the_picture_reader(self):
         lines = HEAD + STEP5 + ["  [ok] model files present", "  vision encoder:   0.30 / 0.91 GB (33%)   "]
         self.assertEqual(prog(lines)[1:], ("Downloading the picture reader", "pictures"))
