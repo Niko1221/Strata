@@ -5612,6 +5612,110 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
         st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         return st;
     }
+#elif defined(__linux__)
+    // Linux: the Windows branch above with O_DIRECT for FILE_FLAG_NO_BUFFERING - the same 16-expert reads into a
+    // sector-aligned buffer, the same per-expert copies.  The buffered `fread` below goes through the page cache:
+    // on a 3-drive NVMe RAID0 that reads 14 GiB/s with O_DIRECT, it holds at ~6 GiB/s whatever the reader count
+    // (the kernel's copy out of the cache, not the drive), and on a box whose RAM cannot keep the GGUF cached
+    // next to the arena the cache does not pay for a warm restart either.  A filesystem that refuses O_DIRECT
+    // (open fails, for example EINVAL on some FUSE or network mounts) falls through to the buffered readers.
+    bool direct_ok = unbuffered;
+    if (direct_ok) {
+        const std::string first = expert_gguf_file(gguf, lay, 0, 0);
+        const int probe = ::open(first.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+        if (probe < 0) {
+            std::fprintf(stderr, "strata generate: O_DIRECT refused on %s (%s): reading the experts through the file cache\n",
+                         first.c_str(), std::strerror(errno));
+            direct_ok = false;
+        } else {
+            ::close(probe);
+        }
+    }
+    if (direct_ok) {
+        uint64_t max_chunk = 0;
+        for (int64_t l = 0; l < lay.n_layers; ++l) {
+            const auto& fm = lay.fmt[(size_t) l];
+            max_chunk = std::max<uint64_t>(max_chunk, std::max<uint64_t>(fm.up_off, lay.bytes[(size_t) l] - fm.down_off) * 16);
+        }
+        std::mutex err_mu;
+        std::string err;
+        auto worker = [&]() {
+            constexpr uint64_t kSector = 4096;   // O_DIRECT: offset, length and buffer aligned to the logical block
+            const uint64_t cap = (max_chunk + 2 * kSector + kSector - 1) / kSector * kSector;
+            void* mem = nullptr;
+            uint8_t* buf = posix_memalign(&mem, kSector, (size_t) cap) == 0 ? (uint8_t*) mem : nullptr;
+            int fd = -1;
+            std::string open_name;
+            auto fail = [&](const std::string& what) {
+                std::lock_guard<std::mutex> g(err_mu);
+                if (err.empty()) err = what;
+                bad = true;
+            };
+            if (buf == nullptr) fail("cannot allocate a read buffer");
+            for (;;) {
+                const int64_t l = next.fetch_add(1);
+                if (l >= lay.n_layers || bad) break;
+                wait_ready(l);
+                const auto& fm = lay.fmt[(size_t) l];
+                const uint64_t blob = lay.bytes[(size_t) l];
+                const uint64_t per[3] = {fm.up_off, fm.up_off, blob - fm.down_off};
+                const uint64_t at[3] = {0, fm.up_off, fm.down_off};
+                for (int r = 0; r < 3 && !bad; ++r) {
+                    const std::string name = expert_gguf_file(gguf, lay, l, r);
+                    if (name != open_name) {
+                        if (fd >= 0) ::close(fd);
+                        fd = ::open(name.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+                        if (fd < 0) {
+                            fail("cannot open " + name + " (" + std::strerror(errno) + ")");
+                            break;
+                        }
+                        open_name = name;
+                    }
+                    const uint64_t src = lay.gguf_off[(size_t) (3 * l + r)];
+                    const uint64_t total = per[r] * (uint64_t) lay.n_expert;
+                    const uint64_t chunk = per[r] * 16;           // 16 experts per read
+                    for (uint64_t done = 0; done < total && !bad; done += chunk) {
+                        const uint64_t n = std::min<uint64_t>(chunk, total - done);
+                        const uint64_t a0 = (src + done) / kSector * kSector;
+                        const uint64_t a1 = (src + done + n + kSector - 1) / kSector * kSector;
+                        const uint64_t need = src + done - a0 + n;   // the aligned read may stop short at EOF past it
+                        uint64_t got = 0;
+                        while (got < need) {
+                            const ssize_t k = ::pread(fd, buf + got, (size_t) (a1 - a0 - got), (off_t) (a0 + got));
+                            if (k < 0 && errno == EINTR) continue;
+                            if (k <= 0) break;
+                            got += (uint64_t) k;
+                        }
+                        if (got < need) {
+                            fail("short unbuffered read of layer " + std::to_string(l) + " in " + name + " (" +
+                                 std::to_string(got) + " of " + std::to_string(need) + " B)");
+                            break;
+                        }
+                        const uint8_t* q = buf + (src + done - a0);
+                        for (uint64_t k = 0; k < n / per[r]; ++k) {
+                            const uint64_t e = done / per[r] + k;
+                            std::memcpy(dst + dst_blob(l, (int64_t) e) + at[r], q + k * per[r], (size_t) per[r]);
+                        }
+                    }
+                }
+            }
+            if (fd >= 0) ::close(fd);
+            std::free(buf);
+        };
+        std::vector<std::thread> pool;
+        for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+        worker();
+        for (auto& t : pool) t.join();
+        if (bad) {
+            st.seconds = -1.0;
+            st.ok = false;
+            st.error = err.empty() ? "unreadable shard while reading the experts from the GGUF" : err;
+            return st;
+        }
+        st.bytes = lay.total;
+        st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        return st;
+    }
 #else
     (void) unbuffered;
 #endif
