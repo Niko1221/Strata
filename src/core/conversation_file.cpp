@@ -689,6 +689,7 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
 }
 
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
+    conversation_park_join();
     for (int64_t g : s.geometry) o.i64(g);
     o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
     put_checkpoint(o, s.live);

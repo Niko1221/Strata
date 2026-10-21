@@ -433,8 +433,11 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& ss, const ModelGeometry& g,
                                 const QsaState* draft, std::string& error,
-                                ConversationKvReuse reuse, size_t* reused_bytes) {
+                                ConversationKvReuse reuse, size_t* reused_bytes,
+                                std::vector<ConversationCheckpoint>* storage,
+                                std::vector<ConversationCheckpoint>* moved) {
     conversation_checkpoint_join(nullptr);
+    conversation_park_join();
     static const bool ptr = std::getenv("STRATA_PARK_TRACE") != nullptr;
     auto now = [] { return std::chrono::steady_clock::now(); };
     auto ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
@@ -446,9 +449,19 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     SavedConversation captured;
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
+    if (storage != nullptr && !storage->empty()) {   // the running state into a dropped checkpoint's vectors
+        captured.live = std::move(storage->back());
+        storage->pop_back();
+        captured.live.stage_parts.clear();
+    }
     captured.live.ids = view.ids; captured.live.imgs = view.images;
     const auto p1 = now();
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
+    if (moved != nullptr)
+        for (auto& c : *moved) {
+            conversation_checkpoint_join(c.gdn.data());
+            captured.checkpoints.push_back(std::move(c));
+        }
     const auto p2 = now();
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
     captured.kv = std::move(reuse.kv);
@@ -457,6 +470,12 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const auto p3 = now();
     const int64_t upto = (int64_t) view.ids.size();
+    // STRATA_PARK_ASYNC: the K/V bytes these saves copy (the stage they need; an over-estimate by the kept prefix)
+    size_t kv_need = 0;
+    for (size_t j = 0; j < layers; ++j) kv_need += conversation_kv_bytes(owned(ss, j), g, upto, true);
+    if (draft) kv_need += conversation_kv_bytes(*draft, g, upto, false);
+    const bool staged = conversation_park_async_begin(kv_need);
+    struct Abandon { bool on; ~Abandon() { if (on) conversation_park_async_abandon(); } } abandon{staged};
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_save(captured.kv[j], owned(ss, j), g, upto, true, error,
                                   unchanged, reused_bytes)) return false;
@@ -470,6 +489,9 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     // reached. Refresh that page even when the main prefix continued unchanged.
     if (draft && !conversation_kv_save(captured.kv.back(), *draft, g, upto, false, error,
                                        std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
+    abandon.on = false;
+    if (staged && !conversation_park_async_launch(error)) return false;
+    if (staged) captured.pending = std::shared_ptr<void>(new char, [](void* p) { conversation_park_join(); delete (char*) p; });
     image = std::move(captured);
     return true;
 }
@@ -548,6 +570,7 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
+    conversation_park_join();
     if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
     if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();
@@ -584,6 +607,7 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
+    conversation_park_join();
     return conversation_snapshot_restore(image, ss, g, &draft, error);
 }
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
@@ -591,6 +615,7 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
                                                           const QsaState& draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
+    conversation_park_join();
     return conversation_snapshot_restore_prefix(image, upto, ss, g, &draft, error);
 }
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
@@ -598,6 +623,7 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
                                                           const QsaState* draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
+    conversation_park_join();
     // a layer split's image (stage images) is restored stage by stage, never in part
     if (!image.stage_images.empty()) {
         fail(error, "a layer split's image restored as a single session");

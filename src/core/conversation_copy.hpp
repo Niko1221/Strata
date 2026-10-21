@@ -92,11 +92,51 @@ inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoi
     return o;
 }
 
-inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs) {
+/// copy_beating into `out`'s storage (its capacity kept: a vector whose pages are in takes the copy without faults)
+template<class V>
+inline void assign_beating(V& out, const V& src) {
+    out.clear();
+    out.reserve(src.size());
+    const size_t step = std::max<size_t>(1, ((size_t) 1 << 20) / sizeof(typename V::value_type));
+    for (size_t at = 0; at < src.size(); at += step) {
+        out.insert(out.end(), src.begin() + (std::ptrdiff_t) at,
+                   src.begin() + (std::ptrdiff_t) std::min(src.size(), at + step));
+        if (const long us = test_slow_copy_us(); us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+        core::progress_beat();
+    }
+}
+
+/// copy_checkpoint_beating into `o`, a dropped checkpoint's storage (STRATA_CKPT_POOL): the same bytes
+inline void copy_checkpoint_into(ConversationCheckpoint& o, const ConversationCheckpoint& c) {
+    assign_beating(o.ids, c.ids);
+    assign_beating(o.imgs, c.imgs);
+    assign_beating(o.gdn, c.gdn);
+    o.dev_tag = c.dev_tag;
+    assign_beating(o.ple, c.ple);
+    assign_beating(o.tails, c.tails);
+    assign_beating(o.dead, c.dead);
+    assign_beating(o.block_pos, c.block_pos);
+    o.used = c.used;
+    o.pinned = c.pinned;
+    o.stage_parts.clear();
+    for (const auto& part : c.stage_parts) o.stage_parts.push_back(copy_checkpoint_beating(part));
+}
+
+/// `storage` (optional): dropped checkpoints whose vectors the copies go into, taken from its back while it lasts
+inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs,
+                                                                    std::vector<ConversationCheckpoint>* storage = nullptr) {
     for (const auto& c : cs) core::conversation_checkpoint_join(c.gdn.data());
     std::vector<ConversationCheckpoint> out;
     out.reserve(cs.size());
-    for (const auto& c : cs) out.push_back(copy_checkpoint_beating(c));
+    for (const auto& c : cs) {
+        if (storage != nullptr && !storage->empty()) {
+            out.push_back(std::move(storage->back()));
+            storage->pop_back();
+            copy_checkpoint_into(out.back(), c);
+        } else {
+            out.push_back(copy_checkpoint_beating(c));
+        }
+    }
     return out;
 }
 
