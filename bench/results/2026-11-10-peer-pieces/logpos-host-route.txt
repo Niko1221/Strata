@@ -1,0 +1,2 @@
+2026-11-10-peer-pieces/logpos/off.logpos: 30 rows vs 30, 30 identical lines, bit for bit yes
+2026-11-10-peer-pieces/logpos/on.logpos: 30 rows vs 30, 30 identical lines, bit for bit yes
