@@ -171,8 +171,10 @@ struct SavedConversation {
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
     // STRATA_PARK_ASYNC: set while a background copy fills this image's K/V; its deleter waits for that copy, and as
-    // the last member it runs before any buffer is freed (whichever copy of the image goes last)
+    // one of the last members it runs before any buffer is freed (whichever copy of the image goes last)
     std::shared_ptr<void> pending;
+    // STRATA_CKPT_ASYNC: the same for the background copy that fills `live.gdn` (the park's running state)
+    std::shared_ptr<void> live_pending;
 
     /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
     bool pinned() const {

@@ -2,6 +2,7 @@
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/platform/aux_cpus.hpp"
 
 #include <cuda_runtime.h>
 
@@ -11,6 +12,10 @@
 #include <cstdlib>
 #include <thread>
 #include <vector>
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace strata::core { void conversation_checkpoint_join(const void* only); }
 namespace strata::core::conversation_detail {
@@ -34,6 +39,20 @@ inline cudaError_t private_stream(cudaStream_t& s) {
     }
     s = streams[(size_t) dev];
     return cudaSuccess;
+}
+
+/// First thing a background copy thread does (STRATA_CKPT_ASYNC, STRATA_PARK_ASYNC): a thread the host creates
+/// inherits the host's one CPU (strata/platform/aux_cpus.hpp), where its memcpys would take turns with the decode.
+/// Wide first: the mask the aux placement keeps as this thread's own is the one restore() puts back (a request with
+/// aux_cpus=0), and the host's one CPU must not be it.  No output depends on where a thread runs.
+inline void background_thread_placement() {
+#if defined(__linux__)
+    cpu_set_t all;
+    CPU_ZERO(&all);
+    for (int c = 0; c < CPU_SETSIZE; ++c) CPU_SET(c, &all);
+    (void) sched_setaffinity(0, sizeof all, &all);   // the kernel keeps the CPUs the process may use
+    strata::aux_cpus::pin_current_thread();          // (a no-op while the feature is off)
+#endif
 }
 
 /// `queued`: the copy is only queued on the private stream, and the caller synchronizes the device (or orders a

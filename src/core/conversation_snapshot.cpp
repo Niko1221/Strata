@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -146,6 +147,14 @@ bool on_device(const void* p) {
     return at.type == cudaMemoryTypeDevice;
 #endif
 }
+// STRATA_PARK_TRACE: where conversation_kv_save's time goes since the park's begin (ms): the pointer-attribute
+// queries, the host buffer resizes and the copies (into the stage, or the synchronous ones).  Read by the park trace.
+struct KvSaveTrace { double attrs = 0, resize = 0, copy = 0; };
+KvSaveTrace& kv_save_trace() { static KvSaveTrace t; return t; }
+bool park_trace_on() {
+    static const bool on = std::getenv("STRATA_PARK_TRACE") != nullptr;
+    return on;
+}
 
 bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (!n) return true;
@@ -210,11 +219,17 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         // STRATA_PARK_ASYNC: device bytes go to the VRAM stage now and into the buffer on the background thread
         ParkAsync& a = park_async();
+        const bool trace = park_trace_on();
+        auto tick = [trace] { return trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}; };
+        const auto t0 = tick();
+        // (kv_mode 0: the pools are device memory by construction, so no pointer-attribute query)
         const bool staged = a.active && src[i] != nullptr && sizes[i] > keep && a.used + (sizes[i] - keep) <= a.cap &&
-                            on_device(src[i]);
+                            (st.kv_mode == 0 || on_device(src[i]));
+        const auto t1 = tick();
         if (staged) dst[i]->resize_for_overwrite(sizes[i]);
         else dst[i]->resize(sizes[i]);
-        if (!dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
+        const auto t2 = tick();
+        const bool copied = dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
                 const uint8_t* s = src[i] ? static_cast<const uint8_t*>(src[i]) + at : nullptr;
                 if (!staged) return transfer(p, s, n, error);
                 const cudaError_t e = conversation_detail::copy_nonblocking(a.stage + a.used, s, n, true);
@@ -222,7 +237,14 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
                 a.items.push_back({p, n, a.used});
                 a.used += n;
                 return true;
-            })) return false;
+            });
+        if (trace) {
+            auto ms = [](std::chrono::steady_clock::time_point x, std::chrono::steady_clock::time_point y) {
+                return std::chrono::duration<double, std::milli>(y - x).count(); };
+            KvSaveTrace& t = kv_save_trace();
+            t.attrs += ms(t0, t1); t.resize += ms(t1, t2); t.copy += ms(t2, tick());
+        }
+        if (!copied) return false;
         if (reused_bytes) *reused_bytes += keep;
     }
     return true;
@@ -415,7 +437,13 @@ void conversation_park_join() {
     }
 }
 
+void conversation_kv_save_trace(double& attrs_ms, double& resize_ms, double& copy_ms) {
+    const KvSaveTrace& t = kv_save_trace();
+    attrs_ms = t.attrs; resize_ms = t.resize; copy_ms = t.copy;
+}
+
 bool conversation_park_async_begin(size_t need) {
+    if (park_trace_on()) kv_save_trace() = {};   // (the sums cover this park's saves)
     conversation_park_join();   // (the stage is reused)
     ParkAsync& a = park_async();
     a.active = false;
@@ -447,14 +475,17 @@ bool conversation_park_async_begin(size_t need) {
         return false;
     }
     if (a.stage == nullptr) {
+        // rounded up to 64 MiB: the next parks of a growing conversation reuse it instead of re-allocating (a cudaFree
+        // synchronizes the device, and the checkpoint DMA is in flight at this point)
+        const size_t want = (need + ((size_t) 64 << 20) - 1) & ~(((size_t) 64 << 20) - 1);
         size_t fr = 0, tot = 0;
-        if (cudaMemGetInfo(&fr, &tot) != cudaSuccess || fr < need + ((size_t) 3 << 29) ||
-            cudaMalloc((void**) &a.stage, need) != cudaSuccess) {
+        if (cudaMemGetInfo(&fr, &tot) != cudaSuccess || fr < want + ((size_t) 3 << 29) ||
+            cudaMalloc((void**) &a.stage, want) != cudaSuccess) {
             a.stage = nullptr;
             (void) cudaGetLastError();
             return false;
         }
-        a.cap = need;
+        a.cap = want;
     }
     a.active = true;
     return true;
@@ -492,6 +523,7 @@ bool conversation_park_async_launch(std::string& error) {
     std::lock_guard<std::mutex> lk(a.mu);
     // two pinned pieces in turn: the next piece's DMA runs while this one is copied into its segment
     a.pending = std::async(std::launch::async, [items = std::move(items), stage, host, st, dev] {
+        conversation_detail::background_thread_placement();
         (void) cudaSetDevice(dev);
         cudaEvent_t done[2] = {nullptr, nullptr};
         cudaError_t e = cudaEventCreateWithFlags(&done[0], cudaEventDisableTiming | cudaEventBlockingSync);

@@ -210,6 +210,17 @@ bool ckpt_pool_env() {
     }();
     return on;
 }
+// STRATA_CKPT_POOL=N (N >= 2, read once): how many ready checkpoints the pool keeps (1 or any other value: 2, as
+// before).  Each is a running-state image with its pages in (~118 MB on Qwen3.8-Flash-Next), allocated on a
+// background thread.
+size_t ckpt_pool_cap_env() {
+    static const size_t n = [] {
+        const char* v = std::getenv("STRATA_CKPT_POOL");
+        const long k = v ? std::atol(v) : 0;
+        return k >= 2 ? (size_t) std::min(16L, k) : (size_t) 2;
+    }();
+    return n;
+}
 // STRATA_CKPT_THREADS=1 (read once; off by default): a layer split's checkpoint saves every stage's part at once, the
 // first on the calling thread and each later stage's on a thread of its own device (kept for the process: the copies'
 // private streams are per thread), instead of one stage after the other.  Each part is the same copy of the same state
@@ -1733,11 +1744,14 @@ bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss,
 
 /// STRATA_CKPT_POOL: the storage of dropped checkpoints, for the next save or slot copy to reuse.  `give` keeps a
 /// checkpoint's vectors (its tokens, pictures and marks cleared), `take` hands one back (an empty checkpoint when none
-/// is kept).  At most `cap` are kept (a batch admission drops and takes about two), the rest are freed as before.
+/// is kept).  At most `cap` are kept (a batch admission drops and takes about two; STRATA_CKPT_POOL=N), the rest are
+/// freed as before.
 class CheckpointPool {
 public:
     explicit CheckpointPool(bool on, size_t cap = 2) : on_(on), cap_(cap) {}
     bool on() const { return on_; }
+    size_t cap() const { return cap_; }
+    size_t held() { std::lock_guard<std::mutex> lk(mu_); return free_.size(); }
     void give(ConvCheckpoint&& c) {
         if (!on_ || c.gdn.empty()) return;
         strata::core::conversation_checkpoint_join(c.gdn.data());
@@ -1810,7 +1824,6 @@ public:
         done_.wait(lk, [&] { return pending_ == 0; });
         job_ = nullptr;
     }
-private:
     static void spread_current_thread() {
 #if defined(__linux__)
         // wide first: the mask the aux placement keeps as this thread's own is the one restore() puts back (a request
@@ -1822,6 +1835,7 @@ private:
         strata::aux_cpus::pin_current_thread();          // (a no-op while the feature is off)
 #endif
     }
+private:
     void loop(size_t k) {
         strata::platform::name_this_thread("strata-ckpt", (int) k);
         spread_current_thread();
@@ -9241,7 +9255,7 @@ int main(int argc, char** argv) {
         std::vector<ConvCheckpoint> checks;
         // STRATA_CKPT_POOL: the dropped checkpoints' storage, reused.  STRATA_SLOT_CKPT_MOVE turns it on too: a moved
         // checkpoint frees nothing at the next prune, so every save would fault in fresh pages (17 -> 40-60 ms)
-        CheckpointPool ckpt_pool(ckpt_pool_env() || slot_ckpt_move_env());
+        CheckpointPool ckpt_pool(ckpt_pool_env() || slot_ckpt_move_env(), ckpt_pool_cap_env());
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
         // --prefill-pipe: the plan of the prompt segment being read (read_part sets it around its runs), for the
@@ -9333,6 +9347,30 @@ int main(int argc, char** argv) {
         // into the parked image instead of being copied); a background allocation then refills STRATA_CKPT_POOL
         std::function<bool(const ConvCheckpoint&)> park_drops;
         std::future<void> pool_refill;
+        // STRATA_CKPT_POOL: the pool holds cap() checkpoints whose vectors already have the session's sizes (the ones
+        // conversation_checkpoint_save resizes to, so a pooled one is never resized) with their pages in: a fresh
+        // 118 MB vector costs ~40 ms of page faults at a save.  Topped up on a background thread, off the host's core,
+        // whenever a take leaves it short; one top-up at a time.  Allocation only: a save overwrites every byte.  Not
+        // with a layer split (its checkpoints carry stage parts; saved as before).
+        const ConvStateSizes pool_z = conv_state_sizes(g, ss);
+        auto pool_topup = [&] {
+            if (!ckpt_pool.on() || !stages.empty() || pool_z.gdn == 0) return;
+            if (pool_refill.valid() && pool_refill.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+            const size_t have = ckpt_pool.held();
+            if (have >= ckpt_pool.cap()) return;
+            pool_refill = std::async(std::launch::async, [&ckpt_pool, want = ckpt_pool.cap() - have, z = pool_z,
+                                                          layers = (size_t) std::max<int64_t>(ss.qsa_alloc, 0),
+                                                          ple = ss.ple_hist != nullptr] {
+                StageThreads::spread_current_thread();   // (a thread the host starts inherits its one CPU: aux_cpus.hpp)
+                for (size_t k = 0; k < want; ++k) {
+                    ConvCheckpoint c;
+                    c.gdn.resize(z.gdn); c.ple.resize(ple ? z.ple : 0); c.tails.resize(layers * z.tail);
+                    c.dead.resize(layers * z.dead); c.block_pos.resize(layers * z.block_pos);
+                    ckpt_pool.give(std::move(c));
+                }
+            });
+        };
+        pool_topup();   // the first request's checkpoints find the pool full
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
             // #2049: parking copies the outgoing conversation's running checkpoints and K/V into host memory, which
@@ -9484,20 +9522,12 @@ int main(int argc, char** argv) {
                     }
                     checks.erase(checks.begin() + (std::ptrdiff_t) w, checks.end());
                 }
-                const size_t moved_gdn = moved.empty() ? 0 : moved.front().gdn.size();
                 const bool saved = strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
                         std::move(reuse), &reused_bytes, storage.empty() ? nullptr : &storage,
                         moved.empty() ? nullptr : &moved);
                 for (ConvCheckpoint& c : storage) ckpt_pool.give(std::move(c));
                 if (!saved) return false;
-                // the next checkpoint save would fault in fresh pages for what moved out: one is allocated now
-                if (moved_gdn > 0 && ckpt_pool.on() &&
-                    (!pool_refill.valid() || pool_refill.wait_for(std::chrono::seconds(0)) == std::future_status::ready))
-                    pool_refill = std::async(std::launch::async, [&ckpt_pool, moved_gdn] {
-                        ConvCheckpoint c;
-                        c.gdn.resize(moved_gdn);
-                        ckpt_pool.give(std::move(c));
-                    });
+                pool_topup();   // what the park took (and what moved out) is allocated again, in the background
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
@@ -9605,6 +9635,7 @@ int main(int argc, char** argv) {
                     return true;
                 }
             ConvCheckpoint c = parts == nullptr ? ckpt_pool.take() : ConvCheckpoint{};   // (STRATA_CKPT_POOL)
+            if (parts == nullptr) pool_topup();   // the next save finds one ready
             c.ids.assign(cur.begin(), cur.begin() + L);
             c.imgs = imgs_below(req_imgs, L);
             if (parts != nullptr) {
