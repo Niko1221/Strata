@@ -62,6 +62,14 @@ struct ConversationKv {
     int format = 0;
     int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
     ConversationBuffer k, v, k_scale, v_scale, pooled;
+    // STRATA_PARK_VRAM_MIB: the tag this layer's parts were recorded under in the park's VRAM slot (0: none).  Set by
+    // conversation_kv_save; a restore that finds the slot copies from it instead of from the buffers above.
+    uint64_t dev_tag = 0;
+    // STRATA_PARK_VRAM_MIB: set while a background copy fills the buffers above from the slot; its deleter waits for
+    // that copy and releases the slot.  This layer's own token (not shared): the layers outlive their image when they
+    // are retained for the next park (ConversationCache::retain), and go in any order.  Last member: it goes before
+    // any buffer.
+    std::shared_ptr<void> pending;
     size_t bytes() const {
         return k.bytes() + v.bytes() + k_scale.bytes() + v_scale.bytes() + pooled.bytes();
     }

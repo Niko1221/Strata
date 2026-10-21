@@ -7869,12 +7869,18 @@ int main(int argc, char** argv) {
             return false;
         }
         int64_t fresh = 0;
-        const bool ok = strata::core::qsa_kv_elastic_grow(target, [&]() -> strata::core::VmmChunk {
+        auto grow_take = [&]() -> strata::core::VmmChunk {
             if (kvg.spare.empty()) { ++fresh; return 0; }   // the cache is at its floor: new memory
             const strata::core::VmmChunk h = kvg.spare.back();
             kvg.spare.pop_back();
             return h;
-        });
+        };
+        bool ok = strata::core::qsa_kv_elastic_grow(target, grow_take);
+        // STRATA_PARK_VRAM_MIB: the parked conversations' VRAM copies of their K/V give way to the K/V itself
+        if (!ok && strata::core::conversation_park_vram_release_all() > 0) {
+            (void) cudaGetLastError();
+            ok = strata::core::qsa_kv_elastic_grow(target, grow_take);
+        }
         kvg.fresh += fresh;
         kvg.cells = strata::core::qsa_kv_elastic_cells();
         ++kvg.grows;
@@ -12762,7 +12768,10 @@ int main(int argc, char** argv) {
                 }
             }
             // the elastic K/V: a parked conversation is restored whole, and it may be longer than this prompt
-            if (incoming && !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce)) {
+            // (STRATA_PARK_VRAM_MIB: the parked K/V copies in VRAM go first, then one more try)
+            if (incoming && !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce) &&
+                (strata::core::conversation_park_vram_release_all() == 0 ||
+                 !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce))) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
             }

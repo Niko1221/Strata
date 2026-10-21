@@ -552,6 +552,9 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.kv = std::move(reuse.kv);
     const size_t layers = owned_qsa(ss);
     captured.kv.resize(layers + (draft ? 1 : 0));
+    // STRATA_PARK_VRAM_MIB: the retained layers' tokens go now (joined above, so no wait): held past the launch below,
+    // their replacement would join the copy just launched
+    for (auto& k : captured.kv) k.pending.reset();
     bool live_staged = false;
     const bool live_saved = checkpoint_save(captured.live, ss, g, error, live_staged);
     // STRATA_CKPT_ASYNC: the running state lands in live.gdn after the save returns; the image waits for that copy
@@ -596,7 +599,22 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                        std::max<int64_t>(0, unchanged - 1), reused_bytes)) return false;
     abandon.on = false;
     if (staged && !conversation_park_async_launch(error)) return false;
-    if (staged) captured.pending = std::shared_ptr<void>(new char, [](void* p) { conversation_park_join(); delete (char*) p; });
+    if (staged) {
+        // STRATA_PARK_VRAM_MIB: the image's slot goes with the image, after the copy that reads it; each K/V layer
+        // carries a token of its own too (the layers outlive the image when they are retained for the next park, and
+        // the copy fills their buffers).  Without a slot: the image's join as before, no layer tokens.
+        const uint64_t slot = conversation_park_slot_tag();
+        auto token = [slot] {
+            return std::shared_ptr<void>(new char, [slot](void* p) {
+                conversation_park_join();
+                conversation_park_slot_release(slot);
+                delete (char*) p;
+            });
+        };
+        captured.pending = token();
+        if (slot != 0)
+            for (auto& k : captured.kv) k.pending = token();
+    }
     image = std::move(captured);
     return true;
 }
@@ -675,7 +693,7 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
-    conversation_park_join();
+    conversation_park_join_for(image);   // (STRATA_PARK_VRAM_MIB: no wait when the K/V comes from its slot)
     if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
     if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();
@@ -712,7 +730,7 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
                                                    const ModelGeometry& g, const QsaState& draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
-    conversation_park_join();
+    conversation_park_join_for(image);   // (STRATA_PARK_VRAM_MIB: no wait when the K/V comes from its slot)
     return conversation_snapshot_restore(image, ss, g, &draft, error);
 }
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
@@ -720,7 +738,7 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
                                                           const QsaState& draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
-    conversation_park_join();
+    conversation_park_join_for(image);   // (STRATA_PARK_VRAM_MIB: no wait when the K/V comes from its slot)
     return conversation_snapshot_restore_prefix(image, upto, ss, g, &draft, error);
 }
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
@@ -728,7 +746,7 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
                                                           const QsaState* draft, std::string& error) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
-    conversation_park_join();
+    conversation_park_join_for(image);   // (STRATA_PARK_VRAM_MIB: no wait when the K/V comes from its slot)
     // a layer split's image (stage images) is restored stage by stage, never in part
     if (!image.stage_images.empty()) {
         fail(error, "a layer split's image restored as a single session");

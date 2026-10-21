@@ -90,6 +90,21 @@ bool conversation_park_async_begin(size_t need);
 bool conversation_park_async_launch(std::string& error);
 /// Abandons a begun park that was not launched (the error paths): nothing was queued to the background.
 void conversation_park_async_abandon();
+/// STRATA_PARK_VRAM_MIB=N (with STRATA_PARK_ASYNC): a park also keeps the whole K/V of its image in VRAM, in a slot
+/// of its own taken at begin while the slots' total stays within N MiB (and 1.5 GB of VRAM stays free), so a restore
+/// of that image copies device to device from the slot (conversation_kv_restore / _prefix) instead of host to
+/// device, and does not wait for the background copy.  The slot lives as long as the image and its K/V layers
+/// (SavedConversation::pending, ConversationKv::pending).  Default 0: off.
+/// The tag of the begun park's slot (0: none); kept until the next begin, for the tokens.
+uint64_t conversation_park_slot_tag();
+/// Frees the slot under `tag` (no-op for 0 or a slot already gone); the caller joined the copy that reads it.
+void conversation_park_slot_release(uint64_t tag);
+/// VRAM pressure: joins the background copy, then frees every slot and the stage.  Returns the bytes freed (0, and
+/// nothing is touched, while STRATA_PARK_VRAM_MIB is unset).
+size_t conversation_park_vram_release_all();
+/// conversation_park_join, unless every K/V layer of `image` has its slot (the restore then reads no host buffer
+/// the background copy could still be filling; a layer that falls back to the host joins for itself).
+void conversation_park_join_for(const SavedConversation& image);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
 // conversation_checkpoint_save(from) + conversation_checkpoint_restore(to) of `ids` without a host image, for two
