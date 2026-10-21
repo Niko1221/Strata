@@ -37,6 +37,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hip_map_host(void* host, size_t bytes, void** devs, int cap);
+extern "C" int strata_hip_unmap_host(void* host);
+#endif
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -1291,6 +1296,17 @@ void FileExpertSource::close() {
     ram_stop();
     io_stop();
     inputs_.clear();
+#if defined(STRATA_HYBRID)
+    // Drop every helper's view before CUDA unregisters the same pages.
+    {
+        bool mapped = false;
+        for (const uint8_t* p : complement_apu_) mapped = mapped || p != nullptr;
+        if (mapped) {
+            if (complement_host_ != nullptr) strata_hip_unmap_host((void*) complement_host_);
+            for (const uint8_t*& slot : complement_apu_) slot = nullptr;
+        }
+    }
+#endif
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
         else {
@@ -1316,6 +1332,9 @@ void FileExpertSource::close() {
     complement_arena_ = nullptr;
     complement_host_ = nullptr;
     complement_device_ = nullptr;
+#if defined(STRATA_HYBRID)
+    for (const uint8_t*& slot : complement_apu_) slot = nullptr;
+#endif
     complement_bytes_ = 0;
     complement_offsets_.clear();
     complement_pinned_ = false;
@@ -3869,6 +3888,28 @@ bool FileExpertSource::pin_cache_complement(
         std::fprintf(stderr, "FileExpertSource: %zu verified additional-GPU experts remain on the mmap fallback\n",
                      additional_gpu_pairs.size());
     }
+#if defined(STRATA_HYBRID)
+    if (complement_pinned_ && complement_pin_limit_ > 0 && complement_host_ != nullptr) {
+        void* devs[kHybridHip] = {};
+        const int rc = strata_hip_map_host((void*) complement_host_, (size_t) complement_pin_limit_, devs, kHybridHip);
+        int mapped = 0;
+        if (rc == 0) {
+            for (int i = 0; i < kHybridHip; ++i) {
+                complement_apu_[i] = (const uint8_t*) devs[i];
+                if (devs[i] != nullptr) ++mapped;
+            }
+        }
+        if (mapped > 0) {
+            std::fprintf(stderr, "FileExpertSource: the HIP helper reads the pinned experts in place (%.2f GiB)\n",
+                         (double) complement_pin_limit_ / 1073741824.0);
+        } else {
+            for (const uint8_t*& slot : complement_apu_) slot = nullptr;
+            std::fprintf(stderr,
+                         "FileExpertSource: the pinned experts stay on the CPU (the HIP helper could not map them, %d)\n",
+                         rc);
+        }
+    }
+#endif
     std::fflush(stderr);
     return true;
 }
@@ -4333,6 +4374,19 @@ const uint8_t* FileExpertSource::device_alias(int64_t layer, int64_t expert) con
     return complement_device_ + (size_t) complement_offsets_[index];
 }
 
+#if defined(STRATA_HYBRID)
+const uint8_t* FileExpertSource::apu_blob(int hip_index, int64_t layer, int64_t expert) const {
+    if (hip_index < 0 || hip_index >= kHybridHip) return nullptr;
+    const uint8_t* base = complement_apu_[hip_index];
+    if (base == nullptr || !pinned(layer, expert)) return nullptr;
+    const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+    // An exchange lives outside the mapped pin. The CPU keeps that row.
+    if (exchange_storage_.active()) return nullptr;
+    if (!soft_in_.empty() && soft_in_[index] != SIZE_MAX) return nullptr;
+    return base + (size_t) complement_offsets_[index];
+}
+#endif
+
 bool FileExpertSource::pcie_layer(int64_t layer) const {
     if (complement_ready_ && complement_pinned_ && complement_device_ != nullptr)
         return layer >= 0 && layer < n_layers_;
@@ -4394,10 +4448,13 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
                 ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] >= 0
                 : d.is_hit[(size_t) i] != 0) ? 0 : -1;
         static thread_local std::string remote_error;
-        for (int r = 0; r < d.remote_count; ++r)
+        for (int r = 0; r < d.remote_count; ++r) {
             if (!d.remote[r]->begin(d.layers, x_f, ids, 1, k, kind, d.host_res, remote_error)) {
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
+            for (int64_t i = 0; i < k; ++i)
+                if (d.remote[r]->owns(i)) kind[i] = 2;
+        }
     }
 
     for (int64_t i = 0; i < k; ++i) {
@@ -4549,7 +4606,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // helper experts per layer-window moved to PCIe, 59 ms per window against 34 ms)
         auto helper_holds = [&](int32_t e) {
             for (int r = 0; r < d.remote_count; ++r)
+#if defined(STRATA_HYBRID)
+                if (d.remote[r]->claims(d.layers, e)) return true;
+#else
                 if (d.remote[r]->holds(d.layers, e)) return true;
+#endif
             return false;
         };
         for (int64_t i = 0; i < n; ++i) {

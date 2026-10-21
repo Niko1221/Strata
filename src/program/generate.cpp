@@ -8241,6 +8241,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());
             return 1;
         }
+#if defined(STRATA_HYBRID)
+        if (resident_ok && src.apu_ready()) {
+            bool any = false;
+            for (int r = 0; r < 3; ++r) {
+                if (o.expert_cache_remote[(size_t) r] <= 0) continue;
+                if (!strata_hybrid_is_hip_device(remote_dev[r])) continue;
+                remote_experts[(size_t) r].use_pinned(&src);
+                any = true;
+            }
+            if (any)
+                std::fprintf(stderr,
+                             "strata generate: pinned experts are computed on the HIP helper before the CPU\n");
+        }
+#endif
         // #577: the unbuffered choice above was made before the RAM copy existed, from the budget asked for; now the
         // copy is built, decide again from the RAM it really holds and the expert bytes outside it (on a 96 GB PC
         // the file cache keeps those, and every refill after a prompt read the drive instead).  Windows and Linux: the
@@ -12412,6 +12426,9 @@ int main(int argc, char** argv) {
             // ms_begin/ms_wait are cumulative since boot; the log line used to print them next to per-request deltas,
             // so the host time read as if it belonged to this request.  Take deltas here like every other column.
             std::array<double, 3> begin_before{}, wait_before{};
+#if defined(STRATA_HYBRID)
+            std::array<int64_t, 3> pinned_before{};
+#endif
             for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
             {
                 remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
@@ -12420,6 +12437,9 @@ int main(int argc, char** argv) {
                 full_before[(size_t) r] = remote_experts[(size_t) r].full_row_bytes();
                 begin_before[(size_t) r] = remote_experts[(size_t) r].ms_begin();
                 wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
+#if defined(STRATA_HYBRID)
+                pinned_before[(size_t) r] = remote_experts[(size_t) r].pinned_rows();
+#endif
             }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
@@ -15573,6 +15593,14 @@ int main(int argc, char** argv) {
                              (double) (remote_experts[(size_t) r].full_row_bytes() - full_before[(size_t) r]) / 1048576.0,
                              remote_experts[(size_t) r].ms_begin() - begin_before[(size_t) r],
                              remote_experts[(size_t) r].ms_wait() - wait_before[(size_t) r]);
+#if defined(STRATA_HYBRID)
+            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+                const int64_t pin_rows = remote_experts[(size_t) r].pinned_rows() - pinned_before[(size_t) r];
+                if (pin_rows > 0)
+                    std::fprintf(stderr, "strata serve: CUDA%d pinned RAM: %lld rows computed on the helper\n",
+                                 remote_dev[r], (long long) pin_rows);
+            }
+#endif
             if (prefill_helper_src) {
                 const uint64_t blobs = prefill_helper_src->helper_blobs(), bytes = prefill_helper_src->helper_bytes();
                 std::fprintf(stderr, "strata serve: prefill helper source: %lld blobs / %.1f MiB taken from a helper's "

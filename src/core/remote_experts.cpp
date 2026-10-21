@@ -72,6 +72,15 @@ bool check(cudaError_t result, const char* what, std::string& err, int device) {
 
 RemoteExperts::~RemoteExperts() { close(); }
 
+#if defined(STRATA_HYBRID)
+bool RemoteExperts::claims(int64_t layer, int32_t expert) const {
+    if (holds(layer, expert)) return true;
+    if (pinned_src_ == nullptr) return false;
+    const int hip = strata_hybrid_hip_index(device_);
+    return hip >= 0 && pinned_src_->apu_blob(hip, layer, expert) != nullptr;
+}
+#endif
+
 bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     int count = 0;
 #if defined(STRATA_HYBRID)
@@ -110,6 +119,10 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
 }
 
 void RemoteExperts::close() {
+#if defined(STRATA_HYBRID)
+    pinned_src_ = nullptr;
+    pinned_rows_ = 0;
+#endif
     if (device_ < 0) return;
     DeviceScope scope(device_);
     if (scope.ok) {
@@ -296,14 +309,31 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     }
     std::fill(owned_.begin(), owned_.begin() + n, 0);
     group_id_.clear(); ptr_.clear(); start_.clear(); dst_.clear(); tok_.clear(); original_row_.clear();
+#if defined(STRATA_HYBRID)
+    // A layer this cache missed can still hold pinned experts. The dispatch marks
+    // a claimed row kind 2 so the next helper does not take it.
+    if (!layers_present_[(size_t) layer] && pinned_src_ == nullptr) return true;
+#else
     if (!layers_present_[(size_t) layer]) return true;
+#endif
     std::fill(group_of_.begin(), group_of_.begin() + n, -1);
     for (int64_t i = 0; i < n; ++i) {
         const int32_t e = ids[i];
         if ((kind && kind[i] != -1) || e < 0 || e >= n_expert_ ||
             (primary_res && primary_res[(size_t) layer * (size_t) n_expert_ + (size_t) e] >= 0)) continue;
         const int32_t slot = cache_.slot_of(layer, e);
+#if defined(STRATA_HYBRID)
+        const uint8_t* weight = slot >= 0 ? cache_.device_slot(slot) : nullptr;
+        bool from_pin = false;
+        if (weight == nullptr && pinned_src_ != nullptr) {
+            const int hip = strata_hybrid_hip_index(device_);
+            if (hip >= 0) weight = pinned_src_->apu_blob(hip, layer, e);
+            from_pin = weight != nullptr;
+        }
+        if (weight == nullptr) continue;
+#else
         if (slot < 0) continue;
+#endif
         owned_[(size_t) i] = 1;
         int32_t group = -1;
         for (size_t g = 0; g < group_id_.size(); ++g)
@@ -311,9 +341,16 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
         if (group < 0) {
             group = (int32_t) group_id_.size();
             group_id_.push_back(e);
+#if defined(STRATA_HYBRID)
+            ptr_.push_back((unsigned long long) weight);
+#else
             ptr_.push_back((unsigned long long) cache_.device_slot(slot));
+#endif
         }
         group_of_[(size_t) i] = group;
+#if defined(STRATA_HYBRID)
+        if (from_pin) ++pinned_rows_;
+#endif
         ++computed_;
     }
     if (group_id_.empty()) return true;

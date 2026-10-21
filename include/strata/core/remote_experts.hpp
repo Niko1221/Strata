@@ -12,6 +12,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+extern "C" int strata_hybrid_hip_index(int ordinal);
+#endif
+
 namespace strata::core {
 class RemoteExpertOpt;
 
@@ -39,8 +44,13 @@ public:
                int64_t k, const int32_t* kind, const int32_t* primary_res,
                std::string& err);
     bool owns(int64_t index) const { return owned_[(size_t) index] != 0; }
-    /// This helper's cache holds (layer, expert): begin() will take its rows unless the plan gave them away.
+    /// This helper's cache holds (layer, expert).
     bool holds(int64_t layer, int32_t expert) const { return cache_.slot_of(layer, expert) >= 0; }
+#if defined(STRATA_HYBRID)
+    /// Cache membership, or a pinned row this HIP device can read. Decode uses this
+    /// so the CPU and PCIe path leave the row. holds() stays the cache.
+    bool claims(int64_t layer, int32_t expert) const;
+#endif
     bool optimized_decode() const { return remote_opt_ != nullptr; }
     bool finish(float* out, std::string& err);
     int64_t resident() const { return cache_.resident(); }
@@ -52,6 +62,11 @@ public:
     /// host time spent in begin() (staging + launches) and in finish() (waiting for this GPU), cumulative
     double ms_begin() const { return ms_begin_; }
     double ms_wait() const { return ms_wait_; }
+#if defined(STRATA_HYBRID)
+    /// After the RAM pin exists: rows this helper's cache does not hold are read from that pin.
+    void use_pinned(const FileExpertSource* src) { pinned_src_ = src; }
+    int64_t pinned_rows() const { return pinned_rows_; }
+#endif
 
     /// STRATA_PREFILL_HELPER_SOURCE (opt-in): copy up to `n` cached blobs into the host buffers `dst[i]`
     /// on this helper's own stream and wait.  `hit[i]` is set where this helper held (layer, expert); the
@@ -98,6 +113,10 @@ private:
     int32_t* d_count_ = nullptr;
     unsigned long long* d_ptr_ = nullptr;
     std::vector<uint8_t> owned_;
+#if defined(STRATA_HYBRID)
+    const FileExpertSource* pinned_src_ = nullptr;
+    int64_t pinned_rows_ = 0;
+#endif
     std::vector<uint8_t> layers_present_;
     std::vector<int32_t> group_of_, group_id_;
     std::vector<int32_t> start_, dst_, tok_, original_row_;

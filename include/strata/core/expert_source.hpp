@@ -751,6 +751,16 @@ public:
     uint64_t resident_bytes() const { return complement_bytes_; }
     bool complement_pinned() const { return complement_pinned_; }
     bool complement_ready() const { return complement_ready_; }
+#if defined(STRATA_HYBRID)
+    static constexpr int kHybridHip = 8;
+    /// Device pointer for HIP device `hip_index`, or null when that device cannot see the row.
+    const uint8_t* apu_blob(int hip_index, int64_t layer, int64_t expert) const;
+    bool apu_ready() const {
+        for (const uint8_t* p : complement_apu_)
+            if (p != nullptr) return true;
+        return false;
+    }
+#endif
     uint64_t locked_bytes() const { return complement_locked_; }
     /// Lend-region slots whose experts the compact copy holds (the last ones of the cache).
     int64_t resident_lent_slots() const { return complement_lent_slots_; }
@@ -1175,6 +1185,10 @@ private:
     void* complement_arena_ = nullptr;
     const uint8_t* complement_host_ = nullptr;
     const uint8_t* complement_device_ = nullptr;
+#if defined(STRATA_HYBRID)
+    /// One hipHostGetDevicePointer per HIP device. A null slot keeps those rows off that device.
+    const uint8_t* complement_apu_[kHybridHip] = {};
+#endif
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
     detail::ExchangeStorage exchange_storage_; // authoritative when active; original arenas still own memory
