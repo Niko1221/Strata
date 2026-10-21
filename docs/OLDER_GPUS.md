@@ -256,9 +256,10 @@ here (`src/kernels/cuda/fused_gr.cu:912`), so on Maxwell it is the "split" varia
 message does not know that and says "the down projection's activations staged ahead by cp.async" on a card that has
 none (`src/kernels/cuda/fused_gr.cu:2578`). No tensor cores: the dense projections' FP16-operand GEMMs have no
 tensor-core path here (the change below). And 48 KB of shared memory per block (96 KB per SM): the GDN
-hyper-connection's staged down projection takes 40 KB of it per block, so an sm_50 SM holds two of them where the
-registers (83 per thread) would allow three - the shared memory is what caps that family, the third largest of the
-decode's compute.
+hyper-connection's staged down projection (`gr_down_staged_kernel`, `src/kernels/cuda/fused_gr.cu:963`, with
+`gr_up_multi_kernel` at `:367` above it) takes 40 KB of it per block, so an sm_50 SM holds two of them where the
+registers (83 per thread) would allow three - the shared memory is what caps that family, 1.01 s of the decode's
+compute and the third largest.
 
 **Two changes that measured faster.** The dense projections' GEMMs on this card go through cuBLAS's FP16-operand
 kernels (`maxwell_sgemm_fp16_32x128_tn`, 1.93 s of the prompt's compute). As on the P40, the FP32 copies
