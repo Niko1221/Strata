@@ -1,0 +1,244 @@
+2026-10-19 17:59:24 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=1)
+2026-10-19 17:59:24 [pipeline]   pack ud-q2_k_xl
+2026-10-19 17:59:25 [pipeline] AVISO: sem pack de ud-q2_k_xl (ver logs/pack-ud-q2_k_xl.log); pulando
+2026-10-19 17:59:25 [pipeline]   pack ud-q3_k_xl
+2026-10-19 17:59:26 [pipeline] AVISO: sem pack de ud-q3_k_xl (ver logs/pack-ud-q3_k_xl.log); pulando
+2026-10-19 17:59:26 [pipeline]   pack ud-q4_k_xl
+2026-10-19 17:59:26 [pipeline] AVISO: sem pack de ud-q4_k_xl (ver logs/pack-ud-q4_k_xl.log); pulando
+2026-10-19 17:59:26 [pipeline]   esperando o download do UD-Q5_K_XL
+2026-10-19 18:01:10 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=1)
+2026-10-19 18:01:10 [pipeline] === 020-ud-q2_k_xl-256k
+2026-10-19 18:01:49 [pipeline]   020-ud-q2_k_xl-256k: info
+2026-10-19 18:01:49 [pipeline]   020-ud-q2_k_xl-256k: bench
+2026-10-19 18:02:53 [pipeline]   020-ud-q2_k_xl-256k: velocidade 8k,32k,128k
+2026-10-19 18:03:59 [pipeline]   020-ud-q2_k_xl-256k: kl-coletar geral
+2026-10-19 18:04:24 [pipeline]   020-ud-q2_k_xl-256k: kl-coletar dominios
+2026-10-19 18:05:54 [pipeline]   020-ud-q2_k_xl-256k: agulhas 128k
+2026-10-19 18:07:44 [pipeline]   020-ud-q2_k_xl-256k: 3d
+2026-10-19 18:07:54 [pipeline]   020-ud-q2_k_xl-256k concluido
+2026-10-19 18:07:54 [pipeline]   pack ud-q3_k_xl
+2026-10-19 18:08:13 [pipeline] === 020-ud-q3_k_xl-256k
+2026-10-19 18:08:56 [pipeline]   020-ud-q3_k_xl-256k: info
+2026-10-19 18:08:56 [pipeline]   020-ud-q3_k_xl-256k: bench
+2026-10-19 18:10:05 [pipeline]   020-ud-q3_k_xl-256k: velocidade 8k,32k,128k
+2026-10-19 18:11:11 [pipeline]   020-ud-q3_k_xl-256k: kl-coletar geral
+2026-10-19 18:11:37 [pipeline]   020-ud-q3_k_xl-256k: kl-coletar dominios
+2026-10-19 18:13:03 [pipeline]   020-ud-q3_k_xl-256k: agulhas 128k
+2026-10-19 18:14:54 [pipeline]   020-ud-q3_k_xl-256k: 3d
+2026-10-19 18:15:04 [pipeline]   020-ud-q3_k_xl-256k concluido
+2026-10-19 18:15:04 [pipeline]   pack ud-q4_k_xl
+2026-10-19 18:15:23 [pipeline] === 020-ud-q4_k_xl-256k
+2026-10-19 18:17:21 [pipeline]   020-ud-q4_k_xl-256k: info
+2026-10-19 18:17:21 [pipeline]   020-ud-q4_k_xl-256k: bench
+2026-10-19 18:18:51 [pipeline]   020-ud-q4_k_xl-256k: velocidade 8k,32k,128k
+2026-10-19 18:20:10 [pipeline]   020-ud-q4_k_xl-256k: kl-coletar geral
+2026-10-19 18:20:48 [pipeline]   020-ud-q4_k_xl-256k: kl-coletar dominios
+2026-10-19 18:23:03 [pipeline]   020-ud-q4_k_xl-256k: agulhas 128k
+2026-10-19 18:25:21 [pipeline]   020-ud-q4_k_xl-256k: visao-detalhe
+2026-10-19 18:25:50 [pipeline]   020-ud-q4_k_xl-256k: 3d
+2026-10-19 18:26:00 [pipeline]   020-ud-q4_k_xl-256k concluido
+2026-10-19 18:26:00 [pipeline]   pack ud-q5_k_xl
+2026-10-19 18:26:17 [pipeline] === 020-ud-q5_k_xl-256k
+2026-10-19 18:28:56 [pipeline]   020-ud-q5_k_xl-256k: info
+2026-10-19 18:28:56 [pipeline]   020-ud-q5_k_xl-256k: bench
+2026-10-19 18:30:52 [pipeline]   020-ud-q5_k_xl-256k: velocidade 8k,32k,128k
+2026-10-19 18:32:28 [pipeline]   020-ud-q5_k_xl-256k: kl-coletar geral
+2026-10-19 18:33:13 [pipeline]   020-ud-q5_k_xl-256k: kl-coletar dominios
+2026-10-19 18:35:45 [pipeline]   020-ud-q5_k_xl-256k: agulhas 128k
+2026-10-19 18:38:37 [pipeline]   020-ud-q5_k_xl-256k: 3d
+2026-10-19 18:38:48 [pipeline]   020-ud-q5_k_xl-256k concluido
+2026-10-19 18:38:48 [pipeline]   pack ud-q6_k_xl
+2026-10-19 18:39:06 [pipeline] === 020-ud-q6_k_xl-256k
+2026-10-19 18:50:59 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=1)
+2026-10-19 18:50:59 [pipeline] pulando 020-ud-q2_k_xl-256k (ja feito)
+2026-10-19 18:50:59 [pipeline] === provas 020-ud-q2_k_xl-256k
+2026-10-19 18:51:22 [pipeline]   020-ud-q2_k_xl-256k: evalplus (HumanEval+, 164)
+2026-10-19 19:01:07 [pipeline]   020-ud-q2_k_xl-256k: lm-eval gsm8k,ifeval (100 cada)
+2026-10-19 19:13:43 [pipeline]   020-ud-q2_k_xl-256k: lm-eval espacial (geometric_shapes, navigate, MATH geometry; 100 cada, ate 4096 tokens)
+2026-10-19 19:45:38 [pipeline]   provas de 020-ud-q2_k_xl-256k concluidas
+2026-10-19 19:45:38 [pipeline] pulando 020-ud-q3_k_xl-256k (ja feito)
+2026-10-19 19:45:38 [pipeline] === provas 020-ud-q3_k_xl-256k
+2026-10-19 19:46:08 [troca] pipeline novo: BBH inteiro (250+250), MATH geometry 100
+2026-10-19 19:46:28 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=1)
+2026-10-19 19:46:28 [pipeline] pulando 020-ud-q2_k_xl-256k (ja feito)
+2026-10-19 19:46:28 [pipeline] === provas 020-ud-q2_k_xl-256k: bbh
+2026-10-19 19:46:51 [pipeline]   020-ud-q2_k_xl-256k: prova bbh
+2026-10-19 20:31:16 [pipeline]   provas de 020-ud-q2_k_xl-256k concluidas
+2026-10-19 20:31:16 [pipeline] pulando 020-ud-q3_k_xl-256k (ja feito)
+2026-10-19 20:31:16 [pipeline] === provas 020-ud-q3_k_xl-256k: evalplus gsm8k-ifeval math bbh
+2026-10-19 20:31:55 [pipeline]   020-ud-q3_k_xl-256k: prova evalplus
+2026-10-19 20:42:46 [pipeline]   020-ud-q3_k_xl-256k: prova gsm8k-ifeval
+2026-10-19 20:58:27 [pipeline]   020-ud-q3_k_xl-256k: prova math
+2026-10-19 21:18:32 [pipeline]   020-ud-q3_k_xl-256k: prova bbh
+2026-10-19 22:02:08 [pipeline]   provas de 020-ud-q3_k_xl-256k concluidas
+2026-10-19 22:02:08 [pipeline] pulando 020-ud-q4_k_xl-256k (ja feito)
+2026-10-19 22:02:08 [pipeline] === provas 020-ud-q4_k_xl-256k: evalplus gsm8k-ifeval math bbh
+2026-10-19 22:04:11 [pipeline]   020-ud-q4_k_xl-256k: prova evalplus
+2026-10-19 22:16:58 [pipeline]   020-ud-q4_k_xl-256k: prova gsm8k-ifeval
+2026-10-19 22:35:55 [pipeline]   020-ud-q4_k_xl-256k: prova math
+2026-10-19 22:59:54 [pipeline]   020-ud-q4_k_xl-256k: prova bbh
+2026-10-19 23:47:19 [pipeline]   provas de 020-ud-q4_k_xl-256k concluidas
+2026-10-19 23:47:19 [pipeline] pulando 020-ud-q5_k_xl-256k (ja feito)
+2026-10-19 23:47:19 [pipeline] === provas 020-ud-q5_k_xl-256k: evalplus gsm8k-ifeval math bbh
+2026-10-19 23:49:43 [pipeline]   020-ud-q5_k_xl-256k: prova evalplus
+2026-10-20 00:04:04 [pipeline]   020-ud-q5_k_xl-256k: prova gsm8k-ifeval
+2026-10-20 00:26:41 [pipeline]   020-ud-q5_k_xl-256k: prova math
+2026-10-20 00:52:39 [pipeline]   020-ud-q5_k_xl-256k: prova bbh
+2026-10-20 01:47:29 [pipeline]   provas de 020-ud-q5_k_xl-256k concluidas
+2026-10-20 01:47:29 [pipeline] === 020-ud-q6_k_xl-256k
+2026-10-20 01:49:57 [pipeline]   020-ud-q6_k_xl-256k: info
+2026-10-20 01:49:57 [pipeline]   020-ud-q6_k_xl-256k: bench
+2026-10-20 01:52:09 [pipeline]   020-ud-q6_k_xl-256k: velocidade 8k,32k,128k
+2026-10-20 01:53:56 [pipeline]   020-ud-q6_k_xl-256k: kl-coletar geral
+2026-10-20 01:54:46 [pipeline]   020-ud-q6_k_xl-256k: kl-coletar dominios
+2026-10-20 01:57:39 [pipeline]   020-ud-q6_k_xl-256k: agulhas 128k
+2026-10-20 02:00:53 [pipeline]   020-ud-q6_k_xl-256k: 3d
+2026-10-20 02:01:07 [pipeline]   020-ud-q6_k_xl-256k concluido
+2026-10-20 02:01:07 [pipeline] === provas 020-ud-q6_k_xl-256k: evalplus gsm8k-ifeval math bbh
+2026-10-20 02:01:50 [pipeline]   020-ud-q6_k_xl-256k: prova evalplus
+2026-10-20 02:16:59 [pipeline]   020-ud-q6_k_xl-256k: prova gsm8k-ifeval
+2026-10-20 02:40:41 [pipeline]   020-ud-q6_k_xl-256k: prova math
+2026-10-20 03:08:20 [pipeline]   020-ud-q6_k_xl-256k: prova bbh
+2026-10-20 04:06:50 [pipeline]   provas de 020-ud-q6_k_xl-256k concluidas
+2026-10-20 04:06:50 [pipeline]   pack q8_0
+2026-10-20 04:07:07 [pipeline] === 020-q8_0-256k
+2026-10-20 04:10:26 [pipeline]   020-q8_0-256k: info
+2026-10-20 04:10:26 [pipeline]   020-q8_0-256k: bench
+2026-10-20 04:13:05 [pipeline]   020-q8_0-256k: velocidade 8k,32k,128k
+2026-10-20 04:15:11 [pipeline]   020-q8_0-256k: kl-coletar geral
+2026-10-20 04:16:12 [pipeline]   020-q8_0-256k: kl-coletar dominios
+2026-10-20 04:19:42 [pipeline]   020-q8_0-256k: agulhas 128k
+2026-10-20 04:23:31 [pipeline]   020-q8_0-256k: visao-detalhe
+2026-10-20 04:24:15 [pipeline]   020-q8_0-256k: 3d
+2026-10-20 04:24:29 [pipeline]   020-q8_0-256k concluido
+2026-10-20 04:24:29 [pipeline] === provas 020-q8_0-256k: evalplus gsm8k-ifeval math bbh
+2026-10-20 04:25:52 [pipeline]   020-q8_0-256k: prova evalplus
+2026-10-20 04:44:12 [pipeline]   020-q8_0-256k: prova gsm8k-ifeval
+2026-10-20 05:12:20 [pipeline]   020-q8_0-256k: prova math
+2026-10-20 05:43:56 [pipeline]   020-q8_0-256k: prova bbh
+2026-10-20 06:53:52 [pipeline]   provas de 020-q8_0-256k concluidas
+2026-10-20 06:53:52 [pipeline] pulando ref0145-q8_0-256k (ja feito)
+2026-10-20 06:53:52 [pipeline] pulando as provas de ref0145-q8_0-256k (ja feitas)
+2026-10-20 06:53:52 [pipeline] === 020-q8_0-1m
+2026-10-20 07:07:36 [pipeline]   020-q8_0-1m: info
+2026-10-20 07:07:37 [pipeline]   020-q8_0-1m: velocidade 8k
+2026-10-20 07:08:08 [pipeline]   020-q8_0-1m concluido
+2026-10-20 07:08:09 [pipeline] AVISO: medir kl-comparar ref0145-q8_0-256k 020-q8_0-256k 020-ud-q2_k_xl-256k 020-ud-q3_k_xl-256k 020-ud-q4_k_xl-256k 020-ud-q5_k_xl-256k 020-ud-q6_k_xl-256k  falhou em _kl (rc 1)
+2026-10-20 07:08:09 [pipeline] AVISO: medir kl-comparar q8_0-fp16-256k-0142 ref0145-q8_0-256k 020-q8_0-256k falhou em _kl (rc 1)
+2026-10-20 07:08:09 [pipeline] fim
+2026-10-20 07:08:09 [pipeline] fim/interrupcao: subindo a producao (gpu-start strata)
+GPU agora: nada (53 MiB em uso).
+Iniciando o Strata (Qwen3.8-Flash)...
+PRONTO: Strata (Qwen3.8-Flash) em http://127.0.0.1:8080  (187.2 s para subir, 43398 MiB na GPU).
+OK.
+2026-10-20 13:21:00 [final] inicio: parando a producao para a referencia 0.1.45
+GPU agora: Strata (Qwen3.8-Flash) (43398 MiB em uso).
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGINT)...
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGTERM)...
+Strata (Qwen3.8-Flash) fechado em 6.2 s.
+GPU com processo desconhecido: [{'pid': 223011, 'name': '[No data]', 'mib': 4831}]
+2026-10-20 13:21:07 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=0)
+2026-10-20 13:21:07 [pipeline] ERRO: a GPU nao esta livre; pare o Maya/Strata antes
+2026-10-20 13:21:07 [final] pipeline (referencia) terminou com rc 1
+2026-10-20 13:21:07 [final] === 020-ud-q4_k_xl-256k-tailskip7 (STRATA_ROUTE_TAIL_SKIP no padrao do motor)
+2026-10-20 13:21:07 [final] ERRO: 020-ud-q4_k_xl-256k-tailskip7 nao subiu
+2026-10-20 13:21:23 [final] AVISO: medir kl-comparar ref0145-q8_0-256k 020-q8_0-256k falhou em _kl (rc 1)
+2026-10-20 13:21:23 [final] fim
+2026-10-20 13:21:23 [final] subindo a producao (gpu-start strata)
+GPU agora: nada (53 MiB em uso).
+Iniciando o Strata (Qwen3.8-Flash)...
+PRONTO: Strata (Qwen3.8-Flash) em http://127.0.0.1:8080  (111.8 s para subir, 43398 MiB na GPU).
+OK.
+2026-10-20 13:23:16 [final] inicio: parando a producao para a referencia 0.1.45
+GPU agora: Strata (Qwen3.8-Flash) (43398 MiB em uso).
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGINT)...
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGTERM)...
+Strata (Qwen3.8-Flash) fechado em 6.2 s.
+GPU com processo desconhecido: [{'pid': 272467, 'name': '[No data]', 'mib': 4831}]
+2026-10-20 13:23:25 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=0)
+2026-10-20 13:23:25 [pipeline] pulando 020-ud-q2_k_xl-256k (ja feito)
+2026-10-20 13:23:25 [pipeline] pulando as provas de 020-ud-q2_k_xl-256k (ja feitas)
+2026-10-20 13:23:25 [pipeline] pulando 020-ud-q3_k_xl-256k (ja feito)
+2026-10-20 13:23:25 [pipeline] pulando as provas de 020-ud-q3_k_xl-256k (ja feitas)
+2026-10-20 13:23:25 [pipeline] pulando 020-ud-q4_k_xl-256k (ja feito)
+2026-10-20 13:23:25 [pipeline] pulando as provas de 020-ud-q4_k_xl-256k (ja feitas)
+2026-10-20 13:23:25 [pipeline] pulando 020-ud-q5_k_xl-256k (ja feito)
+2026-10-20 13:23:25 [pipeline] pulando as provas de 020-ud-q5_k_xl-256k (ja feitas)
+2026-10-20 13:23:25 [pipeline] pulando 020-ud-q6_k_xl-256k (ja feito)
+2026-10-20 13:23:25 [pipeline] pulando as provas de 020-ud-q6_k_xl-256k (ja feitas)
+2026-10-20 13:23:25 [pipeline] pulando 020-q8_0-256k (ja feito)
+2026-10-20 13:23:25 [pipeline] pulando as provas de 020-q8_0-256k (ja feitas)
+2026-10-20 13:23:25 [pipeline] === ref0145-q8_0-256k
+2026-10-20 13:24:43 [pipeline]   ref0145-q8_0-256k: info
+2026-10-20 13:24:44 [pipeline]   ref0145-q8_0-256k: bench
+2026-10-20 13:27:19 [pipeline]   ref0145-q8_0-256k: velocidade 8k,32k,128k
+2026-10-20 13:29:25 [pipeline]   ref0145-q8_0-256k: kl-coletar geral
+2026-10-20 13:30:27 [pipeline]   ref0145-q8_0-256k: kl-coletar dominios
+2026-10-20 13:33:58 [pipeline]   ref0145-q8_0-256k: visao-detalhe
+2026-10-20 13:34:52 [pipeline]   ref0145-q8_0-256k concluido
+2026-10-20 13:34:52 [pipeline] === provas ref0145-q8_0-256k: evalplus gsm8k-ifeval math bbh
+2026-10-20 13:36:15 [pipeline]   ref0145-q8_0-256k: prova evalplus
+2026-10-20 13:54:30 [pipeline]   ref0145-q8_0-256k: prova gsm8k-ifeval
+2026-10-20 13:54:58 [pipeline] sinal recebido
+2026-10-20 13:55:09 [pipeline] fim/interrupcao: a producao NAO foi iniciada (VOLTAR=0)
+2026-10-20 13:55:09 [final] sinal recebido
+2026-10-20 13:55:09 [final] subindo a producao (gpu-start strata)
+GPU agora: nada (1 MiB em uso).
+Iniciando o Strata (Qwen3.8-Flash)...
+2026-10-20 14:22:09 [final] inicio: parando a producao para a referencia 0.1.45
+GPU agora: nada (52 MiB em uso).
+Strata (Qwen3.8-Flash) não está rodando. Nada a fazer.
+OK.
+2026-10-20 14:22:09 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=0)
+2026-10-20 14:22:09 [pipeline] pulando 020-ud-q2_k_xl-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] pulando as provas de 020-ud-q2_k_xl-256k (ja feitas)
+2026-10-20 14:22:09 [pipeline] pulando 020-ud-q3_k_xl-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] pulando as provas de 020-ud-q3_k_xl-256k (ja feitas)
+2026-10-20 14:22:09 [pipeline] pulando 020-ud-q4_k_xl-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] pulando as provas de 020-ud-q4_k_xl-256k (ja feitas)
+2026-10-20 14:22:09 [pipeline] pulando 020-ud-q5_k_xl-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] pulando as provas de 020-ud-q5_k_xl-256k (ja feitas)
+2026-10-20 14:22:09 [pipeline] pulando 020-ud-q6_k_xl-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] pulando as provas de 020-ud-q6_k_xl-256k (ja feitas)
+2026-10-20 14:22:09 [pipeline] pulando 020-q8_0-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] pulando as provas de 020-q8_0-256k (ja feitas)
+2026-10-20 14:22:09 [pipeline] pulando ref0145-q8_0-256k (ja feito)
+2026-10-20 14:22:09 [pipeline] === provas ref0145-q8_0-256k: gsm8k-ifeval math bbh
+2026-10-20 14:28:50 [manual] final.sh/pipeline parados (KILL): o motor da ref travou no driver NVIDIA ao travar a RAM; btop/nvtop/nvidia-smi presos
+2026-10-20 18:22:40 [final] inicio: parando a producao para a referencia 0.1.45
+GPU agora: Strata (Qwen3.8-Flash) (43535 MiB em uso).
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGINT)...
+Pedindo ao Strata (Qwen3.8-Flash) para fechar (SIGTERM)...
+Strata (Qwen3.8-Flash) fechado em 6.1 s.
+GPU com processo desconhecido: [{'pid': 4542, 'name': '[No data]', 'mib': 5021}]
+2026-10-20 18:22:52 [pipeline] inicio (BATERIA3D=0 LONGO=q8_0 VOLTAR=0)
+2026-10-20 18:22:53 [pipeline] pulando 020-ud-q2_k_xl-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] pulando as provas de 020-ud-q2_k_xl-256k (ja feitas)
+2026-10-20 18:22:53 [pipeline] pulando 020-ud-q3_k_xl-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] pulando as provas de 020-ud-q3_k_xl-256k (ja feitas)
+2026-10-20 18:22:53 [pipeline] pulando 020-ud-q4_k_xl-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] pulando as provas de 020-ud-q4_k_xl-256k (ja feitas)
+2026-10-20 18:22:53 [pipeline] pulando 020-ud-q5_k_xl-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] pulando as provas de 020-ud-q5_k_xl-256k (ja feitas)
+2026-10-20 18:22:53 [pipeline] pulando 020-ud-q6_k_xl-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] pulando as provas de 020-ud-q6_k_xl-256k (ja feitas)
+2026-10-20 18:22:53 [pipeline] pulando 020-q8_0-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] pulando as provas de 020-q8_0-256k (ja feitas)
+2026-10-20 18:22:53 [pipeline] pulando ref0145-q8_0-256k (ja feito)
+2026-10-20 18:22:53 [pipeline] === provas ref0145-q8_0-256k: gsm8k-ifeval math bbh
+2026-10-20 18:23:36 [pipeline]   ref0145-q8_0-256k: prova gsm8k-ifeval
+2026-10-20 18:51:51 [pipeline]   ref0145-q8_0-256k: prova math
+2026-10-20 19:23:48 [pipeline]   ref0145-q8_0-256k: prova bbh
+2026-10-20 20:32:19 [pipeline]   provas de ref0145-q8_0-256k concluidas
+2026-10-20 20:32:19 [pipeline] pulando 020-q8_0-1m (ja feito)
+2026-10-20 20:32:27 [pipeline] fim
+2026-10-20 20:32:27 [pipeline] fim/interrupcao: a producao NAO foi iniciada (VOLTAR=0)
+2026-10-20 20:32:27 [final] pipeline (referencia) terminou com rc 0
+2026-10-20 20:32:27 [final] === 020-ud-q4_k_xl-256k-tailskip7 (STRATA_ROUTE_TAIL_SKIP no padrao do motor)
+2026-10-20 20:55:04 [final]   020-ud-q4_k_xl-256k-tailskip7 concluido
+2026-10-20 20:55:23 [final] fim
+2026-10-20 20:55:23 [final] subindo a producao (gpu-start strata)
+GPU agora: nada (52 MiB em uso).
+Iniciando o Strata (Qwen3.8-Flash)...
+PRONTO: Strata (Qwen3.8-Flash) em http://127.0.0.1:8080  (51.3 s para subir, 43398 MiB na GPU).
+OK.

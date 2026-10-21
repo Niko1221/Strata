@@ -1,0 +1,170 @@
+[
+ {
+  "tipo": "texto9px",
+  "certo": "SD4EMZHC",
+  "resposta": "SQABHZHC",
+  "acertou": false,
+  "s": 3.3
+ },
+ {
+  "tipo": "texto9px",
+  "certo": "JSJRWC3M",
+  "resposta": "J5JRWG3M",
+  "acertou": false,
+  "s": 1.2
+ },
+ {
+  "tipo": "texto12px",
+  "certo": "8Y5VHYBV",
+  "resposta": "8YSVHYBV",
+  "acertou": false,
+  "s": 1.2
+ },
+ {
+  "tipo": "texto12px",
+  "certo": "E2AM6MK8",
+  "resposta": "E2AM6MK8",
+  "acertou": true,
+  "s": 1.2
+ },
+ {
+  "tipo": "texto16px",
+  "certo": "W5AA42RB",
+  "resposta": "W5AA42RB",
+  "acertou": true,
+  "s": 1.2
+ },
+ {
+  "tipo": "texto16px",
+  "certo": "NUUX6H4D",
+  "resposta": "NUUX6H4D",
+  "acertou": true,
+  "s": 1.2
+ },
+ {
+  "tipo": "texto24px",
+  "certo": "8ZCL7L3T",
+  "resposta": "8ZCL7L3T",
+  "acertou": true,
+  "s": 1.1
+ },
+ {
+  "tipo": "texto24px",
+  "certo": "H2FRANJK",
+  "resposta": "H2FRANJK",
+  "acertou": true,
+  "s": 1.2
+ },
+ {
+  "tipo": "contar",
+  "certo": "20",
+  "resposta": "20",
+  "acertou": true,
+  "s": 1.2
+ },
+ {
+  "tipo": "contar",
+  "certo": "19",
+  "resposta": "20",
+  "acertou": false,
+  "s": 1.2
+ },
+ {
+  "tipo": "contar",
+  "certo": "17",
+  "resposta": "16",
+  "acertou": false,
+  "s": 1.3
+ },
+ {
+  "tipo": "contar",
+  "certo": "13",
+  "resposta": "12",
+  "acertou": false,
+  "s": 1.3
+ },
+ {
+  "tipo": "contar",
+  "certo": "9",
+  "resposta": "9",
+  "acertou": true,
+  "s": 1.3
+ },
+ {
+  "tipo": "contar",
+  "certo": "21",
+  "resposta": "20",
+  "acertou": false,
+  "s": 1.2
+ },
+ {
+  "tipo": "tabela",
+  "certo": "456",
+  "resposta": "456",
+  "acertou": true,
+  "s": 1.0
+ },
+ {
+  "tipo": "tabela",
+  "certo": "834",
+  "resposta": "834",
+  "acertou": true,
+  "s": 1.0
+ },
+ {
+  "tipo": "tabela",
+  "certo": "938",
+  "resposta": "938",
+  "acertou": true,
+  "s": 1.0
+ },
+ {
+  "tipo": "tabela",
+  "certo": "501",
+  "resposta": "501",
+  "acertou": true,
+  "s": 1.0
+ },
+ {
+  "tipo": "tabela",
+  "certo": "241",
+  "resposta": "241",
+  "acertou": true,
+  "s": 1.0
+ },
+ {
+  "tipo": "tabela",
+  "certo": "884",
+  "resposta": "884",
+  "acertou": true,
+  "s": 1.0
+ },
+ {
+  "tipo": "cor-posicao",
+  "certo": "black",
+  "resposta": "Black",
+  "acertou": true,
+  "s": 0.8
+ },
+ {
+  "tipo": "cor-posicao",
+  "certo": "green",
+  "resposta": "Green",
+  "acertou": true,
+  "s": 0.8
+ },
+ {
+  "tipo": "cor-posicao",
+  "certo": "orange",
+  "resposta": "Orange",
+  "acertou": true,
+  "s": 0.8
+ },
+ {
+  "tipo": "cor-posicao",
+  "certo": "black",
+  "resposta": "Black",
+  "acertou": true,
+  "s": 0.8
+ }
+]

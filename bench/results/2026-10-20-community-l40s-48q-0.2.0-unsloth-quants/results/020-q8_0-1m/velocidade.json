@@ -1,0 +1,14 @@
+[
+ {
+  "alvo": "8k",
+  "prompt_tokens": 6918,
+  "saida": 512,
+  "total_s": 16.5,
+  "prompt_tok_s": 883,
+  "decode_tok_s": 59.1,
+  "hit_rate": 0.823,
+  "pcie_share": 0.027,
+  "reaproveitado": 0,
+  "drafts": "267/483"
+ }
+]

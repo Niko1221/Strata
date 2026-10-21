@@ -1,0 +1,356 @@
+{
+  "results": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "name": "bbh_cot_zeroshot_geometric_shapes",
+      "alias": "bbh_cot_zeroshot_geometric_shapes",
+      "sample_len": 100,
+      "exact_match,flexible-extract": 0.79,
+      "exact_match_stderr,flexible-extract": 0.04093601807403326,
+      "exact_match,strict-match": 0.0,
+      "exact_match_stderr,strict-match": 0.0
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "name": "bbh_cot_zeroshot_navigate",
+      "alias": "bbh_cot_zeroshot_navigate",
+      "sample_len": 100,
+      "exact_match,flexible-extract": 0.99,
+      "exact_match_stderr,flexible-extract": 0.009999999999999998,
+      "exact_match,strict-match": 0.0,
+      "exact_match_stderr,strict-match": 0.0
+    },
+    "minerva_math_geometry": {
+      "name": "minerva_math_geometry",
+      "alias": "minerva_math_geometry",
+      "sample_len": 100,
+      "exact_match,none": 0.0,
+      "exact_match_stderr,none": 0.0,
+      "math_verify,none": 0.95,
+      "math_verify_stderr,none": 0.021904291355759057
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "task": "bbh_cot_zeroshot_geometric_shapes",
+      "dataset_path": "SaylorTwift/bbh",
+      "dataset_name": "geometric_shapes",
+      "test_split": "test",
+      "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+      "doc_to_target": "{{target}}",
+      "unsafe_code": false,
+      "description": "Name geometric shapes from their SVG paths.\n\n",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+        "doc_to_choice": null,
+        "doc_to_target": "{{target}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "regexes_to_ignore": [
+            "\\.$",
+            ",",
+            "\\\\",
+            "\n",
+            "\""
+          ]
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>",
+          "Q:",
+          "<|im_end|>"
+        ],
+        "do_sample": false,
+        "temperature": 0.0,
+        "max_gen_toks": 4096
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "flexible-extract",
+          "filter": [
+            {
+              "function": "<class 'lm_eval.tasks.bbh.cot_zeroshot.utils.MultiChoiceRegexFilter'>",
+              "group_select": -1,
+              "ignore_case": true,
+              "ignore_punctuation": true,
+              "regex_pattern": "(\\([A-Z]\\))"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        },
+        {
+          "name": "strict-match",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "((?<=The answer is )(.*)(?=.)|(?<=the answer is )(.*)(?=.)|(?<=The answer: )(.*)(?=.)|(?<=The final answer: )(.*)(?=.))"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.0,
+        "model": "t",
+        "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "<data>/testes-q6-q8/venv-eval/lib/python3.10/site-packages/lm_eval/tasks/bbh/cot_zeroshot/geometric_shapes.yaml"
+      }
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "task": "bbh_cot_zeroshot_navigate",
+      "dataset_path": "SaylorTwift/bbh",
+      "dataset_name": "navigate",
+      "test_split": "test",
+      "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+      "doc_to_target": "{{target}}",
+      "unsafe_code": false,
+      "description": "Given a series of navigation instructions, determine whether one would end up back at the starting point.\n\n",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+        "doc_to_choice": null,
+        "doc_to_target": "{{target}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "regexes_to_ignore": [
+            "\\.$",
+            ",",
+            "\\\\",
+            "\n",
+            "\""
+          ]
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>",
+          "Q:",
+          "<|im_end|>"
+        ],
+        "do_sample": false,
+        "temperature": 0.0,
+        "max_gen_toks": 4096
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "flexible-extract",
+          "filter": [
+            {
+              "function": "regex",
+              "group_select": -1,
+              "regex_pattern": "\\b(Yes|No|yes|no)\\b"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        },
+        {
+          "name": "strict-match",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "((?<=The answer is )(.*)(?=.)|(?<=the answer is )(.*)(?=.)|(?<=The answer: )(.*)(?=.)|(?<=The final answer: )(.*)(?=.))"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.0,
+        "model": "t",
+        "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "<data>/testes-q6-q8/venv-eval/lib/python3.10/site-packages/lm_eval/tasks/bbh/cot_zeroshot/navigate.yaml"
+      }
+    },
+    "minerva_math_geometry": {
+      "task": "minerva_math_geometry",
+      "dataset_path": "EleutherAI/hendrycks_math",
+      "dataset_name": "geometry",
+      "training_split": "train",
+      "test_split": "test",
+      "process_docs": "def process_docs(dataset: datasets.Dataset) -> datasets.Dataset:\n    def _process_doc(doc: dict) -> dict:\n        out_doc = {\n            \"problem\": doc[\"problem\"],\n            \"solution\": doc[\"solution\"],\n            \"answer\": normalize_final_answer(\n                remove_boxed(last_boxed_only_string(doc[\"solution\"]))\n            ),\n        }\n        if getattr(doc, \"few_shot\", None) is not None:\n            out_doc[\"few_shot\"] = True\n        return out_doc\n\n    return dataset.map(_process_doc)\n",
+      "doc_to_text": "def doc_to_text(doc: dict) -> str:\n    return \"Problem:\" + \"\\n\" + doc[\"problem\"] + \"\\n\\n\" + \"Solution:\"\n",
+      "doc_to_target": "{{answer if few_shot is undefined else solution}}",
+      "unsafe_code": false,
+      "process_results": "def process_results(doc: dict, results: list[str]) -> dict[str, int]:\n    candidates = results[0]\n\n    unnormalized_answer = get_unnormalized_answer(candidates)\n    answer = normalize_final_answer(unnormalized_answer)\n\n    if is_equiv(answer, doc[\"answer\"]):\n        retval = 1\n    else:\n        retval = 0\n\n    # math_verify\n    _mvres = verify(\n        gold=parse(doc[\"solution\"]),\n        target=parse(candidates),\n    )\n    mathval = 1 if _mvres else 0\n\n    res = {\n        \"exact_match\": retval,\n        \"math_verify\": mathval,\n    }\n    return res\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "first_n",
+        "split": null,
+        "process_docs": "<function process_docs at 0x7441d38eb250>",
+        "fewshot_indices": null,
+        "samples": "<function list_fewshot_samples at 0x7441d38eb2e0>",
+        "doc_to_text": "<function doc_to_text at 0x7441d38eb1c0>",
+        "doc_to_choice": null,
+        "doc_to_target": "{{answer if few_shot is undefined else solution}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 4,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "math_verify",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "Problem:"
+        ],
+        "do_sample": false,
+        "temperature": 0.0,
+        "max_gen_toks": 4096
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.1,
+        "model": "t",
+        "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "<data>/testes-q6-q8/venv-eval/lib/python3.10/site-packages/lm_eval/tasks/minerva_math/minerva_math_geometry.yaml"
+      }
+    }
+  },
+  "versions": {
+    "bbh_cot_zeroshot_geometric_shapes": 3.0,
+    "bbh_cot_zeroshot_navigate": 3.0,
+    "minerva_math_geometry": 3.1
+  },
+  "n-shot": {
+    "bbh_cot_zeroshot_geometric_shapes": 0,
+    "bbh_cot_zeroshot_navigate": 0,
+    "minerva_math_geometry": 4
+  },
+  "higher_is_better": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "exact_match": true
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "exact_match": true
+    },
+    "minerva_math_geometry": {
+      "exact_match": true,
+      "math_verify": true
+    }
+  },
+  "n-samples": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "original": 250,
+      "effective": 100
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "original": 250,
+      "effective": 100
+    },
+    "minerva_math_geometry": {
+      "original": 479,
+      "effective": 100
+    }
+  },
+  "config": {
+    "model": "local-chat-completions",
+    "model_args": {
+      "model": "t",
+      "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false
+    },
+    "batch_size": 1,
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": 100.0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "max_gen_toks": 4096
+    },
+    "random_seed": 1234,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": null,
+  "date": 1792448030.6847787,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "5.19.0",
+  "lm_eval_version": "0.4.13",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "bbh_cot_zeroshot_geometric_shapes": "c3016e40420b7b00f8f35f4a590b42be9da656017089feee80b04e6a8252a9fa",
+    "bbh_cot_zeroshot_navigate": "8535ee37d611a8e865ff7d6599489a1a0169d15e012035adb4885ca848c1ac94",
+    "minerva_math_geometry": "5ad74722bfaa2b66279d887be33f6316be5641bee280099b0f5be3c55c123d09"
+  },
+  "model_source": "local-chat-completions",
+  "model_name": "t",
+  "model_name_sanitized": "t",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": true,
+  "chat_template": "",
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "1904.7958965720609"
+}

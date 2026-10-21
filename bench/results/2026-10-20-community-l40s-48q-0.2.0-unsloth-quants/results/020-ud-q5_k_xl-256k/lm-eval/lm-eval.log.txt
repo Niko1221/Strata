@@ -1,0 +1,32 @@
+2026-10-20:00:13:23 WARNING  [config.evaluate_config:337] --limit SHOULD ONLY BE USED FOR TESTING. REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
+2026-10-20:00:13:23 INFO     [config.evaluate_config:357] Using default fewshot_as_multiturn=True.
+2026-10-20:00:13:30 INFO     [_cli.run:392] Selected Tasks: ['ifeval']
+2026-10-20:00:13:30 INFO     [evaluator:214] Setting random seed to 1234 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-10-20:00:13:30 INFO     [evaluator:239] Initializing local-chat-completions model, with arguments: {'model': 't', 'base_url': 'http://127.0.0.1:8090/v1/chat/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False}
+2026-10-20:00:13:30 INFO     [models.api_models:176] Using max length 2048 - 1
+2026-10-20:00:13:30 INFO     [models.api_models:179] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-10-20:00:13:30 INFO     [models.api_models:197] Using tokenizer None
+2026-10-20:00:13:32 INFO     [evaluator_utils:472] Selected tasks:
+2026-10-20:00:13:32 INFO     [evaluator_utils:506] Task: ifeval (ifeval/ifeval.yaml)
+2026-10-20:00:13:32 INFO     [evaluator:314] ifeval: Using gen_kwargs: {'until': [], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 1280}
+2026-10-20:00:13:32 INFO     [api.task:312] Building contexts for ifeval on rank 0...
+
+  0%|          | 0/100 [00:00<?, ?it/s]
+100%|██████████| 100/100 [00:00<00:00, 39027.67it/s]
+2026-10-20:00:13:32 INFO     [evaluator:589] Running generate_until requests
+2026-10-20:00:13:32 INFO     [models.api_models:752] Tokenized requests are disabled. Context + generation length is not checked.
+
+
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+2026-10-20:00:26:41 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-10-20:00:26:41 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to <data>/testes-020/resultados/020-ud-q5_k_xl-256k/lm-eval/t/*.jsonl
+local-chat-completions ({'model': 't', 'base_url': 'http://127.0.0.1:8090/v1/chat/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False}), gen_kwargs: ({}), limit: 100.0, num_fewshot: None, batch_size: 1
+|Tasks |Version|Filter|n-shot|        Metric         |   |Value |   |Stderr|
+|------|------:|------|-----:|-----------------------|---|-----:|---|------|
+|ifeval|      4|none  |     0|inst_level_loose_acc   |↑  |0.8957|±  |   N/A|
+|      |       |none  |     0|inst_level_strict_acc  |↑  |0.8773|±  |   N/A|
+|      |       |none  |     0|prompt_level_loose_acc |↑  |0.8400|±  |0.0368|
+|      |       |none  |     0|prompt_level_strict_acc|↑  |0.8200|±  |0.0386|
+

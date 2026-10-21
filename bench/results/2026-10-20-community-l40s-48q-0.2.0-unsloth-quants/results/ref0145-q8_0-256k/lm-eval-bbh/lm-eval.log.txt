@@ -1,0 +1,41 @@
+2026-10-20:19:23:49 WARNING  [config.evaluate_config:337] --limit SHOULD ONLY BE USED FOR TESTING. REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
+2026-10-20:19:23:49 INFO     [config.evaluate_config:357] Using default fewshot_as_multiturn=True.
+2026-10-20:19:23:55 INFO     [_cli.run:392] Selected Tasks: ['bbh_cot_zeroshot_geometric_shapes', 'bbh_cot_zeroshot_navigate']
+2026-10-20:19:23:55 INFO     [evaluator:214] Setting random seed to 1234 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-10-20:19:23:55 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 4096} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-10-20:19:23:55 INFO     [evaluator:239] Initializing local-chat-completions model, with arguments: {'model': 't', 'base_url': 'http://127.0.0.1:8090/v1/chat/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False}
+2026-10-20:19:23:55 INFO     [models.api_models:176] Using max length 2048 - 1
+2026-10-20:19:23:55 INFO     [models.api_models:179] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-10-20:19:23:55 INFO     [models.api_models:197] Using tokenizer None
+2026-10-20:19:23:58 INFO     [evaluator_utils:472] Selected tasks:
+2026-10-20:19:23:58 INFO     [evaluator_utils:506] Task: bbh_cot_zeroshot_geometric_shapes (bbh/cot_zeroshot/geometric_shapes.yaml)
+2026-10-20:19:23:58 INFO     [evaluator_utils:506] Task: bbh_cot_zeroshot_navigate (bbh/cot_zeroshot/navigate.yaml)
+2026-10-20:19:23:58 INFO     [evaluator:314] bbh_cot_zeroshot_geometric_shapes: Using gen_kwargs: {'until': ['</s>', 'Q:', '<|im_end|>'], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 4096}
+2026-10-20:19:23:58 INFO     [evaluator:314] bbh_cot_zeroshot_navigate: Using gen_kwargs: {'until': ['</s>', 'Q:', '<|im_end|>'], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 4096}
+2026-10-20:19:23:58 INFO     [api.task:312] Building contexts for bbh_cot_zeroshot_geometric_shapes on rank 0...
+
+  0%|          | 0/250 [00:00<?, ?it/s]
+ 52%|█████▏    | 129/250 [00:00<00:00, 1287.74it/s]
+100%|██████████| 250/250 [00:00<00:00, 1256.39it/s]
+2026-10-20:19:23:59 INFO     [api.task:312] Building contexts for bbh_cot_zeroshot_navigate on rank 0...
+
+  0%|          | 0/250 [00:00<?, ?it/s]
+ 51%|█████     | 128/250 [00:00<00:00, 1278.29it/s]
+100%|██████████| 250/250 [00:00<00:00, 1288.94it/s]
+2026-10-20:19:23:59 INFO     [evaluator:589] Running generate_until requests
+2026-10-20:19:23:59 INFO     [models.api_models:752] Tokenized requests are disabled. Context + generation length is not checked.
+
+
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+2026-10-20:20:32:07 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-10-20:20:32:07 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to <data>/testes-020/resultados/ref0145-q8_0-256k/lm-eval-bbh/t/*.jsonl
+local-chat-completions ({'model': 't', 'base_url': 'http://127.0.0.1:8090/v1/chat/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False}), gen_kwargs: ({'max_gen_toks': 4096}), limit: 250.0, num_fewshot: None, batch_size: 1
+|              Tasks              |Version|     Filter     |n-shot|  Metric   |   |Value|   |Stderr|
+|---------------------------------|------:|----------------|-----:|-----------|---|----:|---|-----:|
+|bbh_cot_zeroshot_geometric_shapes|      3|flexible-extract|     0|exact_match|↑  |0.800|±  |0.0253|
+|                                 |       |strict-match    |     0|exact_match|↑  |0.000|±  |0.0000|
+|bbh_cot_zeroshot_navigate        |      3|flexible-extract|     0|exact_match|↑  |0.992|±  |0.0056|
+|                                 |       |strict-match    |     0|exact_match|↑  |0.000|±  |0.0000|
+
