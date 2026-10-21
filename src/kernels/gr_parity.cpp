@@ -429,12 +429,61 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
             std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
             for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; }
             for (int rep = 0; rep < 3 && !qbad; ++rep) {
-                check(cudaMemsetAsync(d_q, 0x5a, qbytes, stream), "qfuse poison");
+                check(cudaMemsetAsync(d_q, 0xff, qbytes, stream), "qfuse poison");
                 bool wrote = false;
                 cudaGraph_t qg = nullptr;
                 cudaGraphExec_t qx = nullptr;
                 if (rep == 0) {
+                    const char* prev_gr_ts0 = std::getenv("STRATA_GR_TSUM");
+                    const std::string saved_gr_ts0 = prev_gr_ts0 ? prev_gr_ts0 : "";
+                    const char* prev_ts0 = std::getenv("STRATA_TSUM");
+                    const std::string saved_ts0 = prev_ts0 ? prev_ts0 : "";
+#if defined(_WIN32)
+                    _putenv_s("STRATA_GR_TSUM", "0");
+                    _putenv_s("STRATA_TSUM", "0");
+#else
+                    setenv("STRATA_GR_TSUM", "0", 1);
+                    setenv("STRATA_TSUM", "0", 1);
+#endif
+                    check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "qfuse ts0 R");
                     wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                    check(cudaStreamSynchronize(stream), "qfuse ts0 sync");
+                    const Snapshot s_ts0 = snapshot();
+                    std::vector<uint8_t> q_ts0((size_t) tt * (N / 32) * 36);
+                    check(cudaMemcpy(q_ts0.data(), d_q, q_ts0.size(), cudaMemcpyDeviceToHost), "qfuse ts0 read");
+#if defined(_WIN32)
+                    _putenv_s("STRATA_GR_TSUM", "1");
+                    _putenv_s("STRATA_TSUM", "1");
+#else
+                    setenv("STRATA_GR_TSUM", "1", 1);
+                    setenv("STRATA_TSUM", "1", 1);
+#endif
+                    check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "qfuse ts1 R");
+                    check(cudaMemsetAsync(d_q, 0xff, qbytes, stream), "qfuse ts1 poison");
+                    wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream) && wrote;
+                    check(cudaStreamSynchronize(stream), "qfuse ts1 sync");
+                    const Snapshot s_ts1 = snapshot();
+#if defined(_WIN32)
+                    _putenv_s("STRATA_GR_TSUM", prev_gr_ts0 ? saved_gr_ts0.c_str() : "");
+                    _putenv_s("STRATA_TSUM", prev_ts0 ? saved_ts0.c_str() : "");
+#else
+                    if (prev_gr_ts0) setenv("STRATA_GR_TSUM", saved_gr_ts0.c_str(), 1);
+                    else unsetenv("STRATA_GR_TSUM");
+                    if (prev_ts0) setenv("STRATA_TSUM", saved_ts0.c_str(), 1);
+                    else unsetenv("STRATA_TSUM");
+#endif
+                    if (!v3 && (std::memcmp(s_ts0.r_out.data(), s_ts1.r_out.data(), (size_t) tt * D * 4) != 0 ||
+                                std::memcmp(s_ts0.rs.data(), s_ts1.rs.data(), (size_t) tt * HC * 4) != 0 ||
+                                std::memcmp(s_ts0.inject.data(), s_ts1.inject.data(), (size_t) tt * HC * 4) != 0 ||
+                                std::memcmp(s_ts0.mixed.data(), s_ts1.mixed.data(), (size_t) tt * N * 4) != 0)) {
+                        std::printf("  QFUSE: T=%d: STRATA_GR_TSUM/STRATA_TSUM=0 vs 1 outputs differ\n", tt);
+                        ++qbad;
+                    }
+                    check(cudaMemcpy(hq.data(), d_q, q_ts0.size(), cudaMemcpyDeviceToHost), "qfuse ts1 read");
+                    if (!v3 && std::memcmp(q_ts0.data(), hq.data(), q_ts0.size()) != 0) {
+                        std::printf("  QFUSE: T=%d: STRATA_GR_TSUM/STRATA_TSUM=0 vs 1 q8_1 bytes differ\n", tt);
+                        ++qbad;
+                    }
                 } else {   // a captured read, replayed (twice: rep 1 and 2 use fresh captures, each replayed twice)
                     check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "qfuse begin");
                     wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
@@ -458,6 +507,74 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         }
         std::printf("  fused GR read + q8_1 (STRATA_QFUSE), T 1..8, direct and graph replays: %s\n", qbad ? "FAIL" : "pass");
         bad += qbad;
+
+        // D1: STRATA_HC_Q8=1 (q8_down, q8_up, and q8_inject with w_inject == nullptr) + STRATA_GR_TSUM/STRATA_TSUM=0 vs 1 bitwise parity
+        uint8_t *d_qd = nullptr, *d_qu = nullptr, *d_qi = nullptr;
+        check(cudaMalloc(&d_qd, (size_t) (LR * D / 32) * 34), "q8_down alloc");
+        check(cudaMalloc(&d_qu, (size_t) (D * LR / 32) * 34), "q8_up alloc");
+        check(cudaMalloc(&d_qi, (size_t) (HC * D / 32) * 34), "q8_inject alloc");
+        fused_gr_quantize_q8_0(d_down, d_qd, LR * D / 32, stream);
+        fused_gr_quantize_q8_0(d_up, d_qu, D * LR / 32, stream);
+        fused_gr_quantize_q8_0(d_inject, d_qi, HC * D / 32, stream);
+        int q8_bad = 0;
+        const char* prev_gr_ts = std::getenv("STRATA_GR_TSUM");
+        const std::string saved_gr_ts = prev_gr_ts ? prev_gr_ts : "";
+        const char* prev_ts = std::getenv("STRATA_TSUM");
+        const std::string saved_ts = prev_ts ? prev_ts : "";
+        auto set_ts = [](const char* gr_val, const char* ts_val) {
+#if defined(_WIN32)
+            _putenv_s("STRATA_GR_TSUM", gr_val ? gr_val : "");
+            _putenv_s("STRATA_TSUM", ts_val ? ts_val : "");
+#else
+            if (gr_val) setenv("STRATA_GR_TSUM", gr_val, 1);
+            else unsetenv("STRATA_GR_TSUM");
+            if (ts_val) setenv("STRATA_TSUM", ts_val, 1);
+            else unsetenv("STRATA_TSUM");
+#endif
+        };
+        for (int tt = 1; tt <= T && !q8_bad; ++tt) {
+            for (int qinj = 0; qinj < 2 && !q8_bad; ++qinj) {
+                Snapshot snap_ts[2];
+                std::vector<uint8_t> qimg_ts[2];
+                for (int ts = 0; ts < 2; ++ts) {
+                    const char* mode_str = ts ? "1" : "0";
+                    set_ts(mode_str, mode_str);
+                    check(cudaMemcpyAsync(d_r, r.data(), r.size() * sizeof(float), cudaMemcpyHostToDevice, stream), "q8 R");
+                    check(cudaMemsetAsync(d_inj_out, 0xff, (size_t) T * HC * sizeof(float), stream), "q8 inj poison");
+                    check(cudaMemsetAsync(d_q, 0xff, qbytes, stream), "q8 qimg poison");
+                    std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
+                    for (int t = 0; t < tt; ++t) {
+                        qa[t].q8_down = d_qd;
+                        qa[t].q8_up = d_qu;
+                        qa[t].w_inject = qinj ? nullptr : d_inject;
+                        qa[t].q8_inject = qinj ? d_qi : nullptr;
+                        qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36;
+                        qa[t].q8_cnt = d_cnt;
+                    }
+                    const bool wrote = fused_gr_read_multi(qa.data(), tt, d_xn, stream);
+                    strata::kernels::native_quantize_q8_1(d_mixed, d_ref, N, tt, stream);
+                    check(cudaStreamSynchronize(stream), "q8 sync");
+                    snap_ts[ts] = snapshot();
+                    qimg_ts[ts].resize((size_t) tt * (N / 32) * 36);
+                    check(cudaMemcpy(qimg_ts[ts].data(), d_q, qimg_ts[ts].size(), cudaMemcpyDeviceToHost), "q8 qimg read");
+                    check(cudaMemcpy(hr.data(), d_ref, qimg_ts[ts].size(), cudaMemcpyDeviceToHost), "q8 qref read");
+                    if (!wrote || std::memcmp(qimg_ts[ts].data(), hr.data(), qimg_ts[ts].size()) != 0) ++q8_bad;
+                    for (int i = 0; i < tt * HC; ++i)
+                        if (!std::isfinite(snap_ts[ts].inject[i])) ++q8_bad;
+                }
+                if (std::memcmp(snap_ts[0].r_out.data(), snap_ts[1].r_out.data(), (size_t) tt * D * 4) != 0 ||
+                    std::memcmp(snap_ts[0].rs.data(), snap_ts[1].rs.data(), (size_t) tt * HC * 4) != 0 ||
+                    std::memcmp(snap_ts[0].inject.data(), snap_ts[1].inject.data(), (size_t) tt * HC * 4) != 0 ||
+                    std::memcmp(snap_ts[0].mixed.data(), snap_ts[1].mixed.data(), (size_t) tt * N * 4) != 0 ||
+                    std::memcmp(qimg_ts[0].data(), qimg_ts[1].data(), qimg_ts[0].size()) != 0) {
+                    ++q8_bad;
+                }
+            }
+        }
+        set_ts(prev_gr_ts ? saved_gr_ts.c_str() : nullptr, prev_ts ? saved_ts.c_str() : nullptr);
+        cudaFree(d_qd); cudaFree(d_qu); cudaFree(d_qi);
+        std::printf("  fused GR Q8_0 multi (STRATA_HC_Q8 + q8_inject + STRATA_GR_TSUM/STRATA_TSUM), T 1..8: %s\n", q8_bad ? "FAIL" : "pass");
+        bad += q8_bad;
         cudaFree(d_q); cudaFree(d_ref); cudaFree(d_cnt);
     }
     std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n",
