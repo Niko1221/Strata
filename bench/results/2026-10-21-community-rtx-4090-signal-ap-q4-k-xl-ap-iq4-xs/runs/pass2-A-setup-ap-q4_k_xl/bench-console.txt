@@ -1,0 +1,62 @@
+Starting setup-ap-q4_k_xl.json on port 18232 (loading takes 1-3 minutes; the PC may be slow meanwhile) ...
+  still loading (0 s) ...
+  still loading (30 s) ...
+  still loading (60 s) ...
+  still loading (90 s) ...
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 52.1 tok/s, first token 0.559 s, 100 tokens
+  run 1 q2: decode 56.4 tok/s, first token 0.539 s, 100 tokens
+  run 1 q3: decode 46.4 tok/s, first token 0.522 s, 100 tokens
+  run 2 q1: decode 77.8 tok/s, first token 0.485 s, 100 tokens
+  run 2 q2: decode 74.0 tok/s, first token 0.396 s, 100 tokens
+  run 2 q3: decode 66.9 tok/s, first token 0.433 s, 100 tokens
+  run 3 q1: decode 72.4 tok/s, first token 0.484 s, 100 tokens
+  run 3 q2: decode 71.5 tok/s, first token 0.361 s, 100 tokens
+  run 3 q3: decode 74.9 tok/s, first token 0.423 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 984.2 tok/s (0 reused), first token 4.107 s
+  run 2: 4019 tokens, prompt 1635.8 tok/s (0 reused), first token 2.479 s
+  run 3: 4019 tokens, prompt 1680.9 tok/s (0 reused), first token 2.409 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 2714.9 tok/s (0 reused), first token 5.945 s
+  run 2: 16058 tokens, prompt 3080.0 tok/s (0 reused), first token 5.239 s
+  run 3: 16058 tokens, prompt 3128.6 tok/s (0 reused), first token 5.161 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 1.944 s
+  run 1 turn 1: prompt 4106, reused 641, read 3465, first token 4.213 s
+  run 1 turn 2: prompt 5639, reused 4099, read 1540, first token 3.837 s
+  run 1 turn 3: prompt 9072, reused 5702, read 3370, first token 3.899 s
+  run 1 turn 4: prompt 11832, reused 9124, read 2708, first token 5.116 s
+  run 1 turn 5: prompt 14691, reused 11872, read 2819, first token 3.58 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 1.468 s
+  run 2 turn 1: prompt 4090, reused 626, read 3464, first token 2.478 s
+  run 2 turn 2: prompt 5623, reused 4154, read 1469, first token 2.369 s
+  run 2 turn 3: prompt 9056, reused 5687, read 3369, first token 2.496 s
+  run 2 turn 4: prompt 11819, reused 9111, read 2708, first token 2.449 s
+  run 2 turn 5: prompt 14670, reused 11851, read 2819, first token 2.549 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 1.418 s
+  run 3 turn 1: prompt 4097, reused 635, read 3462, first token 2.486 s
+  run 3 turn 2: prompt 5630, reused 4161, read 1469, first token 2.356 s
+  run 3 turn 3: prompt 9063, reused 5693, read 3370, first token 2.495 s
+  run 3 turn 4: prompt 11835, reused 9056, read 2779, first token 2.472 s
+  run 3 turn 5: prompt 14718, reused 11899, read 2819, first token 2.557 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     71.50   (46.40 - 77.80, n=9)
+  chat first token (s)                   0.48   (0.36 - 0.56, n=9)
+  4K prompt tok/s                     1635.80   (984.20 - 1680.90, n=3)
+  4K first token (s)                     2.48   (2.41 - 4.11, n=3)
+  16K prompt tok/s                    3080.00   (2714.90 - 3128.60, n=3)
+  16K first token (s)                    5.24   (5.16 - 5.95, n=3)
+  agent cache hit %                     69.35   (69.34 - 69.44, n=3)
+  agent re-read tokens/session          72.00   (2.00 - 75.00, n=3)
+  agent turn first token (s)             2.50   (2.36 - 5.12, n=15)
+  agent decode tok/s                    89.40   (69.60 - 107.30, n=15)
+
+Report: <BENCH>/pass2-A-setup-ap-q4_k_xl/2026-10-21-community-rtx-4090-signal-3-8-flash-next-ap-q4-k-xl/README.md
+Share it: open a pull request that adds the folder <BENCH>/pass2-A-setup-ap-q4_k_xl/2026-10-21-community-rtx-4090-signal-3-8-flash-next-ap-q4-k-xl (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).
+exit=0

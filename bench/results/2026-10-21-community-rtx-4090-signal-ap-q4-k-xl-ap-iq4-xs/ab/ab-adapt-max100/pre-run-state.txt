@@ -1,0 +1,11 @@
+label: ab-adapt-max100  max-new: 100  rounds: 4
+start: 2026-10-21T19:07:46-07:00
+config: <BENCH>/configs/docs-handbuilt.json
+arms: default: adapt:xargs=--adapt-every;1;--adapt-swaps;80;--adapt-decay;0.97
+git HEAD: 04443aeb79b5563f7b617338e3aab4555c042d9a  engine: {"source":"local","version":"0.1.46.3","archs":[89],"vision":"gpu","cuda_dirs":["/opt/cuda/bin","/opt/cuda/lib64"],"src":"c87773ed5df25479","vision_src":"41b0903f5d532e38"}
+memory.used [MiB], clocks.current.sm [MHz], power.draw [W], temperature.gpu, utilization.gpu [%]
+178 MiB, 210 MHz, 23.57 W, 46, 0 %
+loadavg: 4.78 6.03 4.44 1/1640 17009
+               total        used        free      shared  buff/cache   available
+Mem:           95712        9891       71421          30       18721       85821
+end: 2026-10-21T19:21:49-07:00

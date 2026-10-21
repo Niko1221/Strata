@@ -1,0 +1,23 @@
+label: pass2-A-setup-ap-q4_k_xl
+start: 2026-10-21T19:03:43-07:00
+config: <BENCH>/configs/setup-ap-q4_k_xl.json
+git HEAD: 04443aeb79b5563f7b617338e3aab4555c042d9a  engine: {"source":"local","version":"0.1.46.3","archs":[89],"vision":"gpu","cuda_dirs":["/opt/cuda/bin","/opt/cuda/lib64"],"src":"c87773ed5df25479","vision_src":"41b0903f5d532e38"}
+--- gpu
+name, driver_version, memory.used [MiB], memory.total [MiB], clocks.current.sm [MHz], clocks.max.sm [MHz], power.draw [W], power.limit [W], temperature.gpu, utilization.gpu [%]
+NVIDIA GeForce RTX 4090, 615.78.08, 178 MiB, 24564 MiB, 2535 MHz, 3120 MHz, 72.15 W, 600.00 W, 49, 0 %
+--- llama-swap /running: {"running":[]}
+--- memory
+               total        used        free      shared  buff/cache   available
+Mem:           95712        9463       63889          28       26703       86249
+--- loadavg: 5.31 5.69 3.82 1/1630 15078   governor: powersave
+--- top cpu
+    PID %CPU   RSS COMMAND
+    224 11.3     0 kcompactd0
+    241  8.5     0 kswapd0
+   4674  3.2 133172 steamwebhelper
+   3735  3.1 43908 steamwebhelper
+    918  2.5  5648 rngd
+--- config args
+<STRATA_ROOT>/engine/strata
+--pack <MODEL_DATA>/ap-q4kxl/packs/signal-ap-q4_k_xl --native <MODEL_DATA>/ap-q4kxl-gguf/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf --ple-gguf <MODEL_DATA>/ap-q4kxl-gguf/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf --embd-gguf <MODEL_DATA>/ap-q4kxl/packs/signal-ap-q4_k_xl/token-embd-bf16.gguf --expert-profile <STRATA_ROOT>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <MODEL_DATA>/ap-q4kxl/mtp/rt --max-context 131072 --kv int8 --ple-io ram --kv-resident 32768 --vision --vram-reserve-mib 700
+{'cwd': '<STRATA_ROOT>', 'tokenizer': '<MODEL_DATA>/ap-q4kxl/packs/signal-ap-q4_k_xl/tokenizer', 'model_name': 'signal-3.8-flash-next-ap-q4_k_xl', 'log': '<BENCH>/configs/setup-ap-q4_k_xl.engine.log', 'lib_dirs': ['/opt/cuda/bin', '/opt/cuda/lib64'], 'port': 18232, 'gpu': 0, 'gpus_asked': True, 'open_browser': False, 'vision': {'exe': '<STRATA_ROOT>/engine/strata-vision', 'mmproj': '<DATA>/models/agentionai-signal/mmproj-F16.gguf', 'model': '<MODEL_DATA>/ap-q4kxl-gguf/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf', 'gpu': True, 'max_tokens': 1024}, 'args_written': ['--pack', '<MODEL_DATA>/ap-q4kxl/packs/signal-ap-q4_k_xl', '--native', '<MODEL_DATA>/ap-q4kxl-gguf/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf', '--ple-gguf', '<MODEL_DATA>/ap-q4kxl-gguf/Signal-3.8-Flash-Next-AP-Q4_K_XL.gguf', '--embd-gguf', '<MODEL_DATA>/ap-q4kxl/packs/signal-ap-q4_k_xl/token-embd-bf16.gguf', '--expert-profile', '<STRATA_ROOT>/data/expert-profile.bin', '--expert-cache', 'auto', '--prefill', 'auto', '--spec', '4', '--spec-min-p', '0.5', '--mtp', '<MODEL_DATA>/ap-q4kxl/mtp/rt', '--max-context', '131072', '--kv', 'int8', '--ple-io', 'ram', '--kv-resident', '32768', '--vision', '--vram-reserve-mib', '700']}
