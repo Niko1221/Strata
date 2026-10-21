@@ -1,13 +1,11 @@
-"""serve/test_tool_call_unclosed.py - a tool call whose `</tool_call>` the model left out ends at its own `</function>`.
+"""A missing wrapper closer ends before a following call, but prose alone does not confirm a call.
 
-Without its closer, the call used to run on to the next `</tool_call>` in the output: a second call right after it was
-merged into the first (the first one's name with the second one's arguments), and a call followed by text kept
-waiting for a closer that never came, so its arguments were lost.  Now what follows the call's own `</function>`
-decides: `</tool_call>` closes it as before; another `<tool_call>` or text ends it there.  A `<function=` or
-`<parameter=` right after it stays recover's batch (opt-in, unchanged).
+A call's own </function> separates it from the next wrapper without merging their arguments.
+Parameter values may still contain call-format tags; recovery batches stay opt-in.
 
     python -m unittest serve.test_tool_call_unclosed -v
 """
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -29,6 +27,15 @@ def run(text, stream_tools, recover, step):
         evs += p.feed(text[i:i + step])
     evs += p.finish("stop")
     calls = [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"]
+    if stream_tools and not calls:
+        arguments = "".join(e.text for e in evs if e.kind == "tool_args")
+        if arguments:
+            try:
+                json.loads(arguments)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("an unconfirmed call has complete streamed arguments")
     return calls, "".join(e.text for e in evs if e.kind == "content")
 
 
@@ -36,7 +43,7 @@ class UnclosedCall(unittest.TestCase):
     def check(self, text, want_calls, want_content=""):
         for stream_tools in (False, True):
             for recover in (False, True):
-                for step in (1, 3, 7):
+                for step in (1, 3, 7, 4096):
                     with self.subTest(stream_tools=stream_tools, recover=recover, step=step):
                         calls, content = run(text, stream_tools, recover, step)
                         self.assertEqual(calls, want_calls)
@@ -50,8 +57,13 @@ class UnclosedCall(unittest.TestCase):
         self.check("<tool_call>\n" + READ + "\n<tool_call>\n" + WRITE + "\n</tool_call>",
                    [("read", {"path": "a.py"}), ("write", {"path": "b.py", "content": "x = 1"})])
 
-    def test_text_after_an_unclosed_call_ends_it(self):
-        self.check("<tool_call>\n" + READ + "\nDone.", [("read", {"path": "a.py"})], "Done.")
+    def test_quoted_incomplete_wrapper_stays_literal(self):
+        text = "Format: <tool_call>\n" + READ + "\nand then I explain it."
+        self.check(text, [], text)
+
+    def test_following_literal_marker_does_not_complete_an_unclosed_call(self):
+        text = "<tool_call>\n" + READ + "\n<tool_call> is a format marker."
+        self.check(text, [], text)
 
     def test_a_value_that_holds_the_tags_still_ends_at_the_calls_own_closer(self):
         value = "a </function> and a <tool_call> in a string"

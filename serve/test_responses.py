@@ -517,6 +517,22 @@ class ToolRoundTrip(Server):
         self.assertIn("<tool_response>\nbefore\n</tool_response>", second_prompt)
         self.assertEqual(r["output"][-1]["content"][0]["text"], "The file says before.")
 
+    def test_quoted_incomplete_wrapper_is_not_a_completed_call(self):
+        text = "Format: " + CALL[CALL.index("<tool_call>"):].removesuffix("</tool_call>") + "and then I explain it."
+        self.engine.scripts = [self.tok.encode("</think>\n\n" + text + "<|im_end|>", parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        for stream in (False, True):
+            code, result = self.post({"model": "m", "input": "explain the format", "tools": TOOLS, "stream": stream})
+            self.assertEqual(code, 200, result)
+            final = result[-1]["response"] if stream else result
+            calls = [item for item in final["output"] if item["type"] == "function_call"]
+            self.assertFalse(any(item["status"] == "completed" for item in calls))
+            for call in calls:
+                with self.assertRaises(ValueError):
+                    json.loads(call["arguments"])
+            self.assertEqual("".join(item["content"][0]["text"] for item in final["output"]
+                                     if item["type"] == "message"), text)
+
     def test_namespace_call_written_with_double_underscore(self):
         # Qwen writes Codex's MCP tools in their flat `mcp__server__tool` form; Codex only
         # runs the call when it comes back with its namespace.

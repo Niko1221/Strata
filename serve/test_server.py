@@ -1333,6 +1333,15 @@ class UnfinishedToolCall(unittest.TestCase):
             ("anthropic", False): ("end_turn", []),                      # call out: it has no arguments to give
             ("anthropic", True): ("end_turn", cut)})
 
+    def test_quoted_incomplete_wrapper_is_not_a_call(self):
+        text = "Format: " + self.WHOLE[len("</think>\n\n"):].removesuffix("</tool_call>") + "and then I explain it."
+        answers = self.answers("</think>\n\n" + text)
+        for api, stop in (("openai", "stop"), ("anthropic", "end_turn")):
+            self.assertEqual(answers[api, False], (stop, []))
+            self.assertEqual(answers[api, True][0], stop)
+            with self.assertRaises(ValueError):
+                json.loads(answers[api, True][1])
+
     def test_a_call_cut_at_the_token_limit(self):
         """The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call
         out in both APIs."""

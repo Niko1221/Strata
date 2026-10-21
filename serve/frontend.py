@@ -1087,7 +1087,7 @@ class OutputParser:
     def _reset_scan(self):
         self._call_end_checked = 0   # closing-tag search progress for the current wrapped call
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
-        self.ss = "name"             # name -> between -> str|raw -> ... -> done
+        self.ss = "name"             # name -> between -> str|raw -> ... -> function_done -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
         self.sfirst = True
         self.sval_started = False
@@ -1150,9 +1150,8 @@ class OutputParser:
                     else:
                         self.ss = "raw"
                 elif stripped.startswith("</function>"):
-                    args("}")
                     self.sp += len("</function>")
-                    self.ss = "done"
+                    self.ss = "function_done"
                 else:
                     return out          # a tag still arriving (or trailing text): wait
             elif self.ss == "str":
@@ -1200,7 +1199,7 @@ class OutputParser:
                 return out
 
     def _close_scan(self) -> list[Event]:
-        """A streamed call that ended without a clean </function>: close its JSON so clients can still parse it."""
+        """Close streamed JSON only after its call boundary has been confirmed."""
         out = []
         if self.scall is None or self.ss == "done":
             return out
@@ -1471,16 +1470,12 @@ class OutputParser:
                     i = self._wrapped_call_end()
                     if i >= 0:
                         drop = len(CALL_END)
-                    # A missing wrapper closer must not merge a later call's arguments
-                    # into this function. Keep partial closers and recovery batches open.
+                    # Only a following call opener confirms an omitted wrapper closer.
                     f = function_end(self.buf)
                     nxt = self.buf[f:].lstrip() if f >= 0 else ""
-                    if nxt and not any(t.startswith(nxt) or nxt.startswith(t)
-                                       for t in (CALL_END, FUNC_START, PARAM_START)):
+                    if re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", nxt):
                         i, drop = f, 0
-                    if self.recover:                # a batch in one wrapper: the next call follows this one's
-                        f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
-                        nxt = self.buf[f:].lstrip() if f >= 0 else ""
+                    if self.recover:                # a batch in one wrapper: the next call follows </function>
                         if nxt.startswith(PARAM_START) and self._follower(nxt) == "param":
                             at = len(self.buf) - len(nxt)
                             self.buf = self.buf[:at] + FUNC_START + nxt[len(PARAM_START):]
@@ -1522,8 +1517,12 @@ class OutputParser:
             return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
+            if self.ss == "function_done" and not self.buf[self.sp:].strip():
+                # A natural end immediately after </function> retains native streaming recovery.
+                out += self._close_scan()
                 out.append(Event("tool_call", call=self.scall))
+            elif self.ss == "function_done":
+                out.append(Event("content", self._track(CALL_START + self.buf)))
             self.buf = ""
             self._reset_scan()
             return out
