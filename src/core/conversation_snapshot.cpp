@@ -17,8 +17,14 @@ struct Layout {
     size_t data, scales, pooled, value_data, value_scales;
 };
 
+/// The page granule this state's pools really use: its own, or the artifact's when it never said
+/// (layer.hpp's QsaState::page_size; the Metal window's cell-major pools say 1).
+int64_t page_granule(const QsaState& st) {
+    return st.page_size > 0 ? st.page_size : strata::kernels::qsa_real_shapes().page_size;
+}
+
 bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
-    const int64_t page = strata::kernels::qsa_real_shapes().page_size;
+    const int64_t page = page_granule(st);
     if (upto < 0 || upto > st.max_cells || upto > std::numeric_limits<int64_t>::max() - (page - 1)) {
         error = "conversation snapshot: invalid K/V extent";
         return false;
@@ -39,7 +45,8 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         error = "conversation snapshot: invalid K/V geometry";
         return false;
     }
-    const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
+    const int64_t page = page_granule(st);
+    const int64_t cells = ((upto + page - 1) / page) * page;
     const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
@@ -50,7 +57,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
     // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
-    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, s.page_size, 0, 0, 0, 0, 0};
+    l = {(st.kv_hybrid ? 3 : qsa_kv_format(st)) + rotated, cells, pooled, page, 0, 0, 0, 0, 0};
     using conversation_detail::product;
     if (!product(l.data, {(uint64_t) cells, (uint64_t) g.n_head_kv, per}) ||
         !product(l.scales, {(uint64_t) cells, (uint64_t) g.n_head_kv,

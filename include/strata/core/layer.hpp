@@ -229,6 +229,12 @@ struct QsaState {
     int32_t* page_table = nullptr;   ///< (n_pages,) logical page -> physical page (-1: not resident, streamed)
     int64_t n_pages = 0;
     int64_t max_cells = 0;
+    /// THE PHYSICAL PAGE GRANULE THESE POOLS ARE LAID OUT WITH: `[page][kv_head][page_size][head_dim]`.  0 keeps the
+    /// artifact's own granule (`qsa_real_shapes().page_size`).  A backend whose pools are cell-major
+    /// (`[cell][kv_head][head_dim]`) sets 1 here and the snapshot code reads it directly: at page_size 1 the two
+    /// layouts are the same bytes.  The Metal decode window is the one such backend - its buffers are its own, and
+    /// this field is how the session-file/parking code learns where the K/V really is.
+    int64_t page_size = 0;
 
     /// KV STREAMING (docs/kv-streaming-design.md, `kv_stream.hpp`). `kv_mode` 0: every page in VRAM, identity
     /// table (n_slots == n_pages, no host copy). 1: streamed - the authoritative K/V in `host`, `n_slots` pages
