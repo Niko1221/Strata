@@ -160,7 +160,8 @@ cache) and from 0.053 to 0.115 in the RAM budget mode (A4000, 1,500 GPU slots), 
 budget mode (5 pairs each). On an RTX 5090 (UD-Q4_K_XL, 12,288 forced-token positions, KL against exact routing) it is
 0.01260 with every expert in RAM and 0.01331 with `--resident-budget-gib 40`, for decode x1.29 and x1.24
 ([DETAILS.md](DETAILS.md#route-tail-skip-strata_route_tail_skip-off-by-default-since-0217)).
-`STRATA_ROUTE_TAIL_SKIP=7` in a config's `"env"` turns it on; `STRATA_ROUTE_TAIL_SKIP=0` is the default.
+`STRATA_ROUTE_TAIL_SKIP=7` in a config's `"env"` turns it on; `STRATA_ROUTE_TAIL_SKIP=0` is the default. With a helper GPU attached
+only file-tier misses are skipped - an expert the helper holds, or one already in the host copy, is still computed.
 
 **The hyper-connections on NVIDIA:** the pack's `--compat-bf16` copy of the Q8_0 HC projections rounds them to BF16
 (and doubles their bytes). On NVIDIA the engine reads the file's own Q8_0 by default for files that carry them as Q8_0 (the Unsloth UD files); `STRATA_HC_Q8=0` restores the BF16 read. On the
