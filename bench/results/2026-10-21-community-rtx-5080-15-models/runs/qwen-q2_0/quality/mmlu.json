@@ -1,0 +1,777 @@
+{
+ "task": "mmlu",
+ "thinking": false,
+ "n": 100,
+ "seed": 1234,
+ "accuracy": 0.87,
+ "correct": 87,
+ "elapsed_s": 61,
+ "per_subject": {
+  "abstract_algebra": {
+   "correct": 1,
+   "n": 1
+  },
+  "anatomy": {
+   "correct": 0,
+   "n": 1
+  },
+  "astronomy": {
+   "correct": 3,
+   "n": 4
+  },
+  "business_ethics": {
+   "correct": 1,
+   "n": 1
+  },
+  "clinical_knowledge": {
+   "correct": 4,
+   "n": 4
+  },
+  "college_biology": {
+   "correct": 2,
+   "n": 2
+  },
+  "college_computer_science": {
+   "correct": 2,
+   "n": 2
+  },
+  "college_mathematics": {
+   "correct": 1,
+   "n": 2
+  },
+  "college_medicine": {
+   "correct": 2,
+   "n": 2
+  },
+  "college_physics": {
+   "correct": 1,
+   "n": 2
+  },
+  "computer_security": {
+   "correct": 2,
+   "n": 2
+  },
+  "conceptual_physics": {
+   "correct": 1,
+   "n": 1
+  },
+  "econometrics": {
+   "correct": 3,
+   "n": 3
+  },
+  "elementary_mathematics": {
+   "correct": 4,
+   "n": 4
+  },
+  "formal_logic": {
+   "correct": 1,
+   "n": 1
+  },
+  "high_school_biology": {
+   "correct": 3,
+   "n": 3
+  },
+  "high_school_chemistry": {
+   "correct": 0,
+   "n": 1
+  },
+  "high_school_computer_science": {
+   "correct": 1,
+   "n": 1
+  },
+  "high_school_geography": {
+   "correct": 1,
+   "n": 1
+  },
+  "high_school_macroeconomics": {
+   "correct": 3,
+   "n": 3
+  },
+  "high_school_mathematics": {
+   "correct": 3,
+   "n": 3
+  },
+  "high_school_microeconomics": {
+   "correct": 1,
+   "n": 1
+  },
+  "high_school_psychology": {
+   "correct": 2,
+   "n": 2
+  },
+  "high_school_statistics": {
+   "correct": 0,
+   "n": 1
+  },
+  "high_school_us_history": {
+   "correct": 4,
+   "n": 4
+  },
+  "human_aging": {
+   "correct": 1,
+   "n": 1
+  },
+  "logical_fallacies": {
+   "correct": 1,
+   "n": 1
+  },
+  "marketing": {
+   "correct": 1,
+   "n": 1
+  },
+  "miscellaneous": {
+   "correct": 9,
+   "n": 9
+  },
+  "moral_disputes": {
+   "correct": 3,
+   "n": 3
+  },
+  "moral_scenarios": {
+   "correct": 3,
+   "n": 5
+  },
+  "nutrition": {
+   "correct": 3,
+   "n": 3
+  },
+  "philosophy": {
+   "correct": 1,
+   "n": 1
+  },
+  "prehistory": {
+   "correct": 2,
+   "n": 2
+  },
+  "professional_accounting": {
+   "correct": 2,
+   "n": 2
+  },
+  "professional_law": {
+   "correct": 6,
+   "n": 11
+  },
+  "professional_psychology": {
+   "correct": 4,
+   "n": 4
+  },
+  "security_studies": {
+   "correct": 2,
+   "n": 2
+  },
+  "sociology": {
+   "correct": 1,
+   "n": 1
+  },
+  "virology": {
+   "correct": 1,
+   "n": 1
+  },
+  "world_religions": {
+   "correct": 1,
+   "n": 1
+  }
+ },
+ "details": [
+  {
+   "subject": "professional_psychology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "marketing",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "econometrics",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "anatomy",
+   "gold": "B",
+   "response": "A",
+   "ok": false
+  },
+  {
+   "subject": "computer_security",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "security_studies",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "nutrition",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "clinical_knowledge",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "college_physics",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "conceptual_physics",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "professional_psychology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "high_school_us_history",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "astronomy",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "clinical_knowledge",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "professional_psychology",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "astronomy",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "high_school_us_history",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "professional_accounting",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "prehistory",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "prehistory",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "elementary_mathematics",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "computer_security",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "high_school_chemistry",
+   "gold": "B",
+   "response": "C",
+   "ok": false
+  },
+  {
+   "subject": "professional_law",
+   "gold": "A",
+   "response": "C",
+   "ok": false
+  },
+  {
+   "subject": "econometrics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "virology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "astronomy",
+   "gold": "D",
+   "response": "A",
+   "ok": false
+  },
+  {
+   "subject": "moral_disputes",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "college_computer_science",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "moral_scenarios",
+   "gold": "A",
+   "response": "C",
+   "ok": false
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "college_mathematics",
+   "gold": "A",
+   "response": "B",
+   "ok": false
+  },
+  {
+   "subject": "philosophy",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "college_physics",
+   "gold": "D",
+   "response": "B",
+   "ok": false
+  },
+  {
+   "subject": "moral_disputes",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "nutrition",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "college_biology",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "high_school_mathematics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "sociology",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "moral_scenarios",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "college_computer_science",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "professional_accounting",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "high_school_psychology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "world_religions",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "high_school_us_history",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "high_school_mathematics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "high_school_computer_science",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "moral_scenarios",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "B",
+   "response": "D",
+   "ok": false
+  },
+  {
+   "subject": "astronomy",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "moral_disputes",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "college_mathematics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "abstract_algebra",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "high_school_statistics",
+   "gold": "D",
+   "response": "B",
+   "ok": false
+  },
+  {
+   "subject": "elementary_mathematics",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "D",
+   "response": "A",
+   "ok": false
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "D",
+   "response": "C",
+   "ok": false
+  },
+  {
+   "subject": "human_aging",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "high_school_biology",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "college_biology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "college_medicine",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "nutrition",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "high_school_biology",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "college_medicine",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "moral_scenarios",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "high_school_geography",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "elementary_mathematics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "business_ethics",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "high_school_us_history",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "professional_psychology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "econometrics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "moral_scenarios",
+   "gold": "A",
+   "response": "B",
+   "ok": false
+  },
+  {
+   "subject": "elementary_mathematics",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "high_school_psychology",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "miscellaneous",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "clinical_knowledge",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "logical_fallacies",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "gold": "B",
+   "response": "B",
+   "ok": true
+  },
+  {
+   "subject": "professional_law",
+   "gold": "B",
+   "response": "A",
+   "ok": false
+  },
+  {
+   "subject": "security_studies",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "clinical_knowledge",
+   "gold": "C",
+   "response": "C",
+   "ok": true
+  },
+  {
+   "subject": "high_school_biology",
+   "gold": "D",
+   "response": "D",
+   "ok": true
+  },
+  {
+   "subject": "high_school_mathematics",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  },
+  {
+   "subject": "formal_logic",
+   "gold": "A",
+   "response": "A",
+   "ok": true
+  }
+ ]
+}

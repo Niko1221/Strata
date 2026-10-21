@@ -1,0 +1,572 @@
+[
+ {
+  "model": "qwen-q2_0",
+  "quant": "Q2_0",
+  "family": "Qwen",
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "context": 262144,
+  "launch": "strata.exe --pack q2_0 --native Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --spec-min-p 0.5 --adapt-every 1 --adapt-swaps 80 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "bytes": 37623740192
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+    "bytes": 28800138432
+   }
+  ],
+  "calibration": {
+   "--spec-min-p": "0.5",
+   "--adapt-every": "1",
+   "--adapt-swaps": "80",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.73,
+   "weights_incl_ple_b": 176.93,
+   "ple_weights_b": 51.2,
+   "bits_per_weight": 3.0,
+   "routed_bits": 2.25,
+   "total_gb": 66.39
+  }
+ },
+ {
+  "model": "qwen-iq2_xs",
+  "quant": "IQ2_XS",
+  "family": "Qwen",
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "context": 262144,
+  "launch": "strata.exe --pack iq2_xs --native Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.70 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "bytes": 39225954592
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+    "bytes": 28800138432
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.70",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.73,
+   "weights_incl_ple_b": 176.93,
+   "ple_weights_b": 51.2,
+   "bits_per_weight": 3.07,
+   "routed_bits": 2.35,
+   "total_gb": 67.96
+  }
+ },
+ {
+  "model": "qwen-iq3_xxs",
+  "quant": "IQ3_XXS",
+  "family": "Qwen",
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "context": 262144,
+  "launch": "strata.exe --pack iq3_xxs --native Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.50 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "bytes": 47039860096
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+    "bytes": 28800138432
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.50",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.73,
+   "weights_incl_ple_b": 176.93,
+   "ple_weights_b": 51.2,
+   "bits_per_weight": 3.43,
+   "routed_bits": 2.84,
+   "total_gb": 75.76
+  }
+ },
+ {
+  "model": "qwen-iq3_s",
+  "quant": "IQ3_S",
+  "family": "Qwen",
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "context": 262144,
+  "launch": "strata.exe --pack iq3_s --native Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.50 --adapt-every 1 --adapt-swaps 80 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "bytes": 54817524224
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "bytes": 28800138432
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.50",
+   "--adapt-every": "1",
+   "--adapt-swaps": "80",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.73,
+   "weights_incl_ple_b": 176.93,
+   "ple_weights_b": 51.2,
+   "bits_per_weight": 3.78,
+   "routed_bits": 3.33,
+   "total_gb": 83.55
+  }
+ },
+ {
+  "model": "coder-iq1_m",
+  "quant": "IQ1_M",
+  "family": "Coder",
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF",
+  "revision": "5348543e0147355ac9cbcb031184a3546350988e",
+  "context": 262144,
+  "launch": "strata.exe --pack coder-iq1_m --native Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf --expert-profile expert-profile-coder.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.50 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "bytes": 29608446496
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "bytes": 28800138432
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.50",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 65.3,
+   "weights_incl_ple_b": 116.5,
+   "ple_weights_b": 51.2,
+   "bits_per_weight": 4.01,
+   "routed_bits": 3.33,
+   "total_gb": 58.34
+  }
+ },
+ {
+  "model": "swift-iq2_xs",
+  "quant": "IQ2_XS",
+  "family": "Swift",
+  "repository": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "b22d729eae29b5796f76fb70f91aef549b9fc52c",
+  "context": 262144,
+  "launch": "strata.exe --pack swift-iq2_xs --native Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.50 --adapt-every 1 --adapt-swaps 80 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+    "bytes": 39788473344
+   },
+   {
+    "name": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+    "bytes": 28363693824
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.50",
+   "--adapt-every": "1",
+   "--adapt-swaps": "80",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.73,
+   "weights_incl_ple_b": 176.96,
+   "ple_weights_b": 51.23,
+   "bits_per_weight": 3.08,
+   "routed_bits": 2.35,
+   "total_gb": 68.16
+  }
+ },
+ {
+  "model": "swift-iq3_xxs",
+  "quant": "IQ3_XXS",
+  "family": "Swift",
+  "repository": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "b22d729eae29b5796f76fb70f91aef549b9fc52c",
+  "context": 262144,
+  "launch": "strata.exe --pack swift-iq3_xxs --native Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --ple-gguf Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.70 --adapt-every 1 --adapt-swaps 80 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "bytes": 39785790560
+   },
+   {
+    "name": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+    "bytes": 36180282560
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.70",
+   "--adapt-every": "1",
+   "--adapt-swaps": "80",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.71,
+   "weights_incl_ple_b": 176.94,
+   "ple_weights_b": 51.23,
+   "bits_per_weight": 3.43,
+   "routed_bits": 2.84,
+   "total_gb": 75.94
+  }
+ },
+ {
+  "model": "swift-iq3_s",
+  "quant": "IQ3_S",
+  "family": "Swift",
+  "repository": "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "b22d729eae29b5796f76fb70f91aef549b9fc52c",
+  "context": 262144,
+  "launch": "strata.exe --pack swift-iq3_s --native Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.70 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "bytes": 44900816736
+   },
+   {
+    "name": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "bytes": 38842920384
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.70",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.72,
+   "weights_incl_ple_b": 176.95,
+   "ple_weights_b": 51.23,
+   "bits_per_weight": 3.79,
+   "routed_bits": 3.33,
+   "total_gb": 83.73
+  }
+ },
+ {
+  "model": "unsloth-ud-iq4_xs",
+  "quant": "UD-IQ4_XS",
+  "family": "Unsloth",
+  "repository": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+  "context": 262144,
+  "launch": "strata.exe --pack unsloth-ud-iq4_xs --native Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.70 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+    "bytes": 10946624
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf",
+    "bytes": 49835229856
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf",
+    "bytes": 43836407744
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.70",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.72,
+   "weights_incl_ple_b": 176.95,
+   "ple_weights_b": 51.23,
+   "bits_per_weight": 4.24,
+   "routed_bits": 3.94,
+   "total_gb": 93.68
+  }
+ },
+ {
+  "model": "unsloth-ud-q4_k_xl",
+  "quant": "UD-Q4_K_XL",
+  "family": "Unsloth",
+  "repository": "unsloth/Qwen3.8-Flash-Next-GGUF",
+  "revision": "38bb39ee97821de2c9009abb7e93950eec396e66",
+  "context": 262144,
+  "launch": "strata.exe --pack unsloth-ud-q4_k_xl --native Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.70 --pool-workers 4 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+    "bytes": 10946624
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf",
+    "bytes": 49859583136
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf",
+    "bytes": 49376141504
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf",
+    "bytes": 12087983520
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.70",
+   "--pool-workers": "4",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": 125.72,
+   "weights_incl_ple_b": 176.95,
+   "ple_weights_b": 51.23,
+   "bits_per_weight": 5.03,
+   "routed_bits": 5.1,
+   "total_gb": 111.34
+  }
+ },
+ {
+  "model": "nvfp4-nvfp4",
+  "quant": "NVFP4",
+  "family": "NVFP4",
+  "repository": "Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata",
+  "revision": "640a1db97446ddd5e89d2b70ecd0297987192c93",
+  "context": 262144,
+  "launch": "strata.exe --pack pack --native qwen-nvfp4-gptq-dense.gguf --native-dense-gguf qwen-nvfp4-gptq-dense.gguf --ple-gguf ple-fp8.gguf --embd-gguf token-embd-bf16.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.70 --pool-workers 4 --adapt-every 1 --adapt-swaps 160 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "ple-fp8.gguf",
+    "bytes": 51200246176
+   },
+   {
+    "name": "qwen-nvfp4-gptq-dense.gguf",
+    "bytes": 5991569472
+   },
+   {
+    "name": "token-embd-bf16.gguf",
+    "bytes": 1271398656
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.70",
+   "--pool-workers": "4",
+   "--adapt-every": "1",
+   "--adapt-swaps": "160",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": null,
+   "weights_incl_ple_b": null,
+   "ple_weights_b": null,
+   "bits_per_weight": null,
+   "routed_bits": null,
+   "total_gb": null
+  },
+  "pack": [
+   {
+    "name": "dense.bin",
+    "bytes": 1538035200
+   },
+   {
+    "name": "dense.bin.done",
+    "bytes": 71
+   },
+   {
+    "name": "experts.bin",
+    "bytes": 67948118016
+   },
+   {
+    "name": "experts.bin.done",
+    "bytes": 71
+   },
+   {
+    "name": "index.txt",
+    "bytes": 93663
+   },
+   {
+    "name": "index.txt.done",
+    "bytes": 71
+   },
+   {
+    "name": "native_experts.txt",
+    "bytes": 1599
+   },
+   {
+    "name": "native_experts.txt.done",
+    "bytes": 71
+   }
+  ]
+ },
+ {
+  "model": "nvfp4-nvidia",
+  "quant": "NVFP4-NVIDIA",
+  "family": "NVFP4",
+  "repository": "Maximilian228/Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata",
+  "revision": "cca8f7fee5ce0af932097340a75e06df25c4e57d",
+  "context": 262144,
+  "launch": "strata.exe --pack pack --native qwen-nvidia-nvfp4-dense.gguf --native-dense-gguf qwen-nvidia-nvfp4-dense.gguf --ple-gguf ple-fp8.gguf --embd-gguf token-embd-bf16.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 700 --pcie-frac 0.35 --spec-min-p 0.50 --pool-workers 4 --adapt-every 1 --adapt-swaps 80 --adapt-decay 0.97",
+  "gguf": [
+   {
+    "name": "ple-fp8.gguf",
+    "bytes": 51200246176
+   },
+   {
+    "name": "qwen-nvidia-nvfp4-dense.gguf",
+    "bytes": 5992176896
+   },
+   {
+    "name": "token-embd-bf16.gguf",
+    "bytes": 1271398656
+   }
+  ],
+  "calibration": {
+   "--pcie-frac": "0.35",
+   "--spec-min-p": "0.50",
+   "--pool-workers": "4",
+   "--adapt-every": "1",
+   "--adapt-swaps": "80",
+   "--adapt-decay": "0.97"
+  },
+  "inspect": {
+   "weights_b": null,
+   "weights_incl_ple_b": null,
+   "ple_weights_b": null,
+   "bits_per_weight": null,
+   "routed_bits": null,
+   "total_gb": null
+  },
+  "pack": [
+   {
+    "name": "dense.bin",
+    "bytes": 1538625024
+   },
+   {
+    "name": "dense.bin.done",
+    "bytes": 71
+   },
+   {
+    "name": "experts.bin",
+    "bytes": 67948118016
+   },
+   {
+    "name": "experts.bin.done",
+    "bytes": 71
+   },
+   {
+    "name": "index.txt",
+    "bytes": 117490
+   },
+   {
+    "name": "index.txt.done",
+    "bytes": 71
+   },
+   {
+    "name": "native_experts.txt",
+    "bytes": 1590
+   },
+   {
+    "name": "native_experts.txt.done",
+    "bytes": 71
+   }
+  ]
+ },
+ {
+  "model": "qwen36-ud-q4_k_xl",
+  "quant": "UD-Q4_K_XL",
+  "family": "Qwen3.6",
+  "repository": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+  "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+  "context": 65536,
+  "launch": "strata.exe --native Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 65536 --prefill auto --mtp 2 --vision",
+  "gguf": [
+   {
+    "name": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+    "bytes": 22853663008
+   }
+  ],
+  "calibration": {},
+  "inspect": {
+   "weights_b": 35.51,
+   "weights_incl_ple_b": 35.51,
+   "ple_weights_b": null,
+   "bits_per_weight": 5.15,
+   "routed_bits": 4.87,
+   "total_gb": 22.84
+  }
+ },
+ {
+  "model": "qwen36-ud-q6_k_xl",
+  "quant": "UD-Q6_K_XL",
+  "family": "Qwen3.6",
+  "repository": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+  "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+  "context": 65536,
+  "launch": "strata.exe --native Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf --max-context 65536 --prefill auto --mtp 2 --vision",
+  "gguf": [
+   {
+    "name": "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf",
+    "bytes": 32611711264
+   }
+  ],
+  "calibration": {},
+  "inspect": {
+   "weights_b": 35.51,
+   "weights_incl_ple_b": 35.51,
+   "ple_weights_b": null,
+   "bits_per_weight": 7.34,
+   "routed_bits": 7.24,
+   "total_gb": 32.6
+  }
+ },
+ {
+  "model": "qwen36-q8_0",
+  "quant": "Q8_0",
+  "family": "Qwen3.6",
+  "repository": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+  "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+  "context": 65536,
+  "launch": "strata.exe --native Qwen3.6-35B-A3B-Q8_0.gguf --max-context 65536 --prefill auto --mtp 2 --vision",
+  "gguf": [
+   {
+    "name": "Qwen3.6-35B-A3B-Q8_0.gguf",
+    "bytes": 37801097504
+   }
+  ],
+  "calibration": {},
+  "inspect": {
+   "weights_b": 35.51,
+   "weights_incl_ple_b": 35.51,
+   "ple_weights_b": null,
+   "bits_per_weight": 8.51,
+   "routed_bits": 8.5,
+   "total_gb": 37.79
+  }
+ }
+]

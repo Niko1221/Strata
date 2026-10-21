@@ -1,0 +1,14 @@
+=== qwen-iq2_xs ===
+shards: Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf (39.23 GB), Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf (28.8 GB)
+total 67.96 GB, 176.93 B weights, 3.07 bits/weight overall (every shard, PLE counted once)
+group                                weights       GB  bits/w  types
+n-gram/per-layer embeddings           51.20B    28.80    4.50  IQ4_NL 100%
+routed experts                       120.80B    35.45    2.35  IQ2_S 52%, Q2_0 32%, IQ2_XXS 13%, IQ1_M 3%
+hyper-connections                      0.64B     1.28   16.00  BF16 100%
+output head                            0.64B     0.34    4.25  IQ4_XS 100%
+token embedding                        0.64B     0.34    4.25  IQ4_XS 100%
+attention (incl. GDN qkv/gate)         2.13B     1.16    4.36  IQ4_XS 82%, IQ3_S 9%, Q6_K 5%, BF16 3%
+linear attn/SSM                        0.58B     0.32    4.41  IQ4_XS 76%, IQ3_S 13%, BF16 6%, Q6_K 4%, F32 2%
+shared experts                         0.24B     0.14    4.67  IQ4_XS 37%, IQ4_NL 25%, Q6_K 16%, IQ3_S 12%, Q8_0 9%, Q2_0 2%, BF16 0%
+router                                 0.06B     0.13   17.33  BF16 100%
+-> routed experts are 2.35 bits/weight (120.80B, 35.45 GB)

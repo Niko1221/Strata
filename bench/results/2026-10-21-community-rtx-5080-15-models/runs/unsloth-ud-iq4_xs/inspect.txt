@@ -1,0 +1,14 @@
+=== unsloth-ud-iq4_xs ===
+shards: Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf (0.01 GB), Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf (49.84 GB), Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf (43.84 GB)
+total 93.68 GB, 176.95 B weights, 4.24 bits/weight overall (every shard, PLE counted once)
+group                                weights       GB  bits/w  types
+n-gram/per-layer embeddings           51.23B    28.84    4.50  IQ4_NL 100%, Q8_0 0%, F32 0%
+routed experts                       120.80B    59.52    3.94  IQ3_S 59%, IQ4_NL 35%, Q8_0 7%
+hyper-connections                      0.64B     0.69    8.62  Q8_0 98%, F32 2%
+output head                            0.64B     0.52    6.50  Q6_K 100%
+token embedding                        0.64B     0.68    8.50  Q8_0 100%
+attention (incl. GDN qkv/gate)         2.13B     2.28    8.56  Q8_0 98%, BF16 2%
+linear attn/SSM                        0.58B     0.65    8.97  Q8_0 94%, F32 6%
+shared experts                         0.23B     0.25    8.70  Q8_0 100%, F32 0%
+router                                 0.06B     0.25   33.33  F32 100%
+-> routed experts are 3.94 bits/weight (120.80B, 59.52 GB)
