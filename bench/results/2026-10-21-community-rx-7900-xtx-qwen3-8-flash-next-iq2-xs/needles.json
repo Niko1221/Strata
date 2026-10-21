@@ -1,0 +1,72 @@
+{
+ "tool": "tools/needle_bench.py",
+ "command": "python tools/needle_bench.py --lengths 8k,32k,56k --depths 10,50,90 --timeout 900",
+ "note": "fresh server started after the speed suite; rows transcribed from the tool's console output (its --out file was not written: the path given was a folder)",
+ "found": 9,
+ "total": 9,
+ "rows": [
+  {
+   "length": "8k",
+   "depth_pct": 10,
+   "result": "FOUND",
+   "prompt_tokens": 6920,
+   "seconds": 8
+  },
+  {
+   "length": "8k",
+   "depth_pct": 50,
+   "result": "FOUND",
+   "prompt_tokens": 6920,
+   "seconds": 6
+  },
+  {
+   "length": "8k",
+   "depth_pct": 90,
+   "result": "FOUND",
+   "prompt_tokens": 6921,
+   "seconds": 6
+  },
+  {
+   "length": "32k",
+   "depth_pct": 10,
+   "result": "FOUND",
+   "prompt_tokens": 32793,
+   "seconds": 21
+  },
+  {
+   "length": "32k",
+   "depth_pct": 50,
+   "result": "FOUND",
+   "prompt_tokens": 32791,
+   "seconds": 21
+  },
+  {
+   "length": "32k",
+   "depth_pct": 90,
+   "result": "FOUND",
+   "prompt_tokens": 32791,
+   "seconds": 21
+  },
+  {
+   "length": "56k",
+   "depth_pct": 10,
+   "result": "FOUND",
+   "prompt_tokens": 57281,
+   "seconds": 39
+  },
+  {
+   "length": "56k",
+   "depth_pct": 50,
+   "result": "FOUND",
+   "prompt_tokens": 57281,
+   "seconds": 39
+  },
+  {
+   "length": "56k",
+   "depth_pct": 90,
+   "result": "FOUND",
+   "prompt_tokens": 57282,
+   "seconds": 30
+  }
+ ]
+}
