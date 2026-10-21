@@ -375,6 +375,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         const uint32_t oa[2] = {(uint32_t) nT, N};
         D(P_(b.lib, "moe_out"), {mtl::Arg::B(b.yr), mtl::Arg::B(b.ys), mtl::Arg::B(b.sgv), mtl::Arg::B(b.bo), mtl::Arg::V(oa)},
           (nT * N + 255) / 256, 1, 256);
+        if (taps_on_ && tap_slot_[l] >= 0) tap_dispatch(ds, l, b.R, b.bo, b.inj[cur_inj], tap_pro_buf(b.C + MAXT), nT);   // DFlash2
         if (l == 0 && ple_on_) {
             // layer 0's FFN write applied to R, then the PLE block (as the window: msl/ple.metal over nT rows)
             GrArgs a{N, HC, LR, (uint32_t) nT, 1u, eps_};
@@ -428,6 +429,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         ss.ple_prev[0] = ss.ple_prev[1];
         ss.ple_prev[1] = (int32_t) tokens[t];
     }
+    if (taps_on_ && !tap_deliver(tap_pro_, nT, pos0, err)) return false;   // DFlash2: the prompt rows the drafter looks at
     last_T_ = 0;   // nothing to commit
     return true;
 }
