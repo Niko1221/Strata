@@ -3097,6 +3097,13 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     libs = [str(Path(d).parent) for d in dirs[1:]]
     bitcode = next((p for p in (root / "lib" / "llvm" / "amdgcn" / "bitcode", root / "amdgcn" / "bitcode") if p.is_dir()),
                    root / "amdgcn" / "bitcode")
+    try:                                        # clang's HIP math wrapper: the decls for fmaxf, expf, fabsf, __fmul_rn
+        res_dir = subprocess.run([str(root / "llvm" / "bin" / "clang++"), "-print-resource-dir"],
+                                 capture_output=True, text=True).stdout.strip()
+        wrap = Path(res_dir) / "include" / "__clang_hip_runtime_wrapper.h" if res_dir else None
+        hip_math = f" --include {wrap}" if wrap and wrap.is_file() else ""
+    except (OSError, ValueError):
+        hip_math = ""
     os.environ.update({"HIP_PLATFORM": "amd", "HIP_COMPILER": "clang", "HIP_RUNTIME": "rocclr", "ROCM_PATH": str(root),
                        "HIP_PATH": str(root)})
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(dirs + [os.environ.get("LD_LIBRARY_PATH", "")]).rstrip(os.pathsep)
@@ -3110,7 +3117,7 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
                  "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
                  f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
-                 f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
+                 f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}{hip_math}",
                  f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
     if stale_binary(ROOT / "build-hip" / EXE):            # #2054: no stamp for a binary of another version
         fail(f"the engine build finished without a new engine ({EXE} is version "
