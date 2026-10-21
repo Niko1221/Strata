@@ -87,8 +87,8 @@ size):
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes IQ2_XS, IQ3_XXS, IQ3_S) is the
 alternative to `qwen`. `--family signal` (agentionai's Signal, a fine-tune that thinks more directly) has two
-~4-bit sizes for 48 GB or more: `AP-Q4_K_XL` (101 GB; part of the experts read from the SSD under ~90 GB
-of RAM) and `AP-IQ4_XS` (90 GB, under ~80 GB; not run by us yet). A model name is not case sensitive. More:
+~4-bit sizes for 48 GB or more: `AP-Q4_K_XL` (101 GB; part of the experts read from the SSD under ~80 GB
+of RAM) and `AP-IQ4_XS` (90 GB, under ~70 GB). A model name is not case sensitive. More:
 [MODELS.md](MODELS.md).
 
 ## 4. Set up and serve, without questions

@@ -96,10 +96,10 @@ FALLBACK_MODELS = {
     "NVFP4-QAD": {"about": "NVIDIA's FP4, trained for FP4 - slightly faster on short prompts; a 102 GB download "
                            "that this PC turns into a Strata pack once; it reads pictures",
                   "download_gb": 102.2, "ram_gb": 80, "arena_gb": 68.0, "families": ("nvfp4",), "vision": True},
-    "AP-Q4_K_XL": {"about": "4-bit (Agention Precision), Q4_K experts; on a PC with less than ~90 GB of RAM part of "
+    "AP-Q4_K_XL": {"about": "4-bit (Agention Precision), Q4_K experts; on a PC with less than ~80 GB of RAM part of "
                             "its experts are read from the SSD", "download_gb": 101.1, "ram_gb": 48, "arena_gb": 67.9,
                    "families": ("signal",), "budget": True, "vision": True},
-    "AP-IQ4_XS": {"about": "~4-bit (Agention Precision), IQ3_S experts, 10 GB smaller; on a PC with less than ~80 GB "
+    "AP-IQ4_XS": {"about": "~4-bit (Agention Precision), IQ3_S experts, 10 GB smaller; on a PC with less than ~70 GB "
                            "of RAM part of its experts are read from the SSD", "download_gb": 90.4, "ram_gb": 48,
                   "arena_gb": 57.3, "families": ("signal",), "budget": True, "vision": True},
 }
