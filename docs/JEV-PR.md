@@ -151,7 +151,10 @@ temperature refit on local data before they can be trusted.
 
 ## 3. Test strategy
 
-**Unit (mock engine) — 73/73 green (jev modules; full serve/ discovery 858 run, 0 fail, 11 skipped):** readout math invariants, prompt rendering
+**Unit (mock engine) — 73/73 green (jev modules; full serve/ discovery on the rebased
+revision `140f0a93`: 1002 run, 1 fail, 14 skipped — the single failure is
+`test_lifeline`'s portable watcher, a pre-existing `serve/lifeline.py` bug fixed in a
+separate PR, not by this one):** readout math invariants, prompt rendering
 (byte-pinned noul/choice blocks — the Yes/No-swap regression is now a golden test),
 per-tuple calibration isolation, V-mode softmax, image two-call/direct shapes,
 decide-then-generate, chat-surface validation arms, 7×3 concurrency + FIFO
@@ -323,12 +326,23 @@ path changes. One line runs on every verify window regardless of the flag
 env var absent: `/v1/systemone` and the chat `jev` extension return 404, plain chat
 returns 200. A stock Strata process is behaviorally unchanged.
 
-**Tested:** CUDA build and GPU runs on an RTX 3090 (QFN IQ3_XXS, Qwen3.8-Flash-Next); the
-full `serve/` test discovery (858 tests) passes with the jev modules opted in.
+**Tested:** rebased onto `main` at `011c9e60` - 42 commits, no conflicts, head `140f0a93`.
+CUDA build (nvcc 13.0.88, `CMAKE_CUDA_ARCHITECTURES=86`) exits 0 with no new warnings.
+`ctest` (156 tests): the 71 GPU-class tests were re-run on an RTX 3090 and 70 pass - the one
+exception needs `libstrata_kq.so`, which this CMake configuration does not build. On the same
+card, an engine built from this revision returns the same `BROW` row before and after the
+rebase, and `POST /v1/systemone` answers a `noul` / `choice` / `score` state with `platt_v1` /
+`T_choice_v1` / `T_score_v1` and three readout tokens. Full `serve/` discovery: 1002 tests,
+1 failure, 14 skipped - the failure is the pre-existing `test_lifeline` portable watcher bug,
+fixed in a separate PR. `pytest tests` (Terminal and Control): 1639 passed, 16 failed, and all
+16 reproduce on an unmodified `011c9e60` tree. `tools/test_setup_*.py`: 46 of 48 exit 0, the
+two failures reproducing on that same tree.
 
 **Not tested in this PR: HIP, SYCL and Metal builds.** `brow_row` is written for those
 backends (the HIP compat headers map `cudaMemcpy*` to `hipMemcpy*`; a Metal branch is
-included), but none of them was built or run as part of this PR.
+included), but none of them was built or run as part of this PR. Also not run: the app's UI
+tests (`npm test` in `apps/host`), Windows and macOS, and the live golden battery with pinned
+probabilities - the invariant battery ran against the mock engine instead.
 
 ## 7. References and prior work
 
