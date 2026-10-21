@@ -129,3 +129,11 @@ and starts the encoder with the model, as before) the GPU encoder is not started
 For automation: treat only `200` with `status: "ok"` as a call that ran, then check `vram_free_mib >= reserve_mib`
 yourself; retry a `409` later; on `503` or a `400` from the failure paths above, unload and load; keep your own record
 of what you asked for, because a server restart forgets it.
+
+## HIP runtime safety
+
+On Linux, HIP virtual memory is enabled only after a per-device startup probe. It requires a recommended
+allocation granularity of at least 2 MiB, checks that mapped VRAM is returned after release, and checks the
+open-file limit needed by ROCm physical allocations. The soft limit is raised only up to the hard limit.
+A failed probe disables the opt-in path with a reason, retaining a single-allocation cache. Windows HIP
+elastic resizing remains disabled. Without either opt-in, this probe is not called.

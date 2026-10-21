@@ -6169,9 +6169,14 @@ int main(int argc, char** argv) {
                         : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
                                       [](int n) { return n > 0; }) ? "the helper caches on other GPUs"
                         : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
-#if defined(STRATA_USE_HIP)
-        if (why == nullptr) why = "it is NVIDIA-only for now";
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+        if (why == nullptr) why = "HIP virtual memory was measured on Linux only";
 #endif
+        std::string vmm_why;
+        if (why == nullptr && !strata::core::vmm_device_supported()) {
+            vmm_why = strata::core::vmm_off_reason();
+            why = vmm_why.c_str();
+        }
         if (why != nullptr) {
             std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
             o.vram_elastic = false;
