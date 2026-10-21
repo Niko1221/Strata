@@ -1,0 +1,50 @@
+name: Windows Desktop Window Lifecycle
+
+on:
+  push:
+    paths:
+      - 'apps/desktop/src-tauri/**'
+      - '.github/workflows/desktop-window-lifecycle.yml'
+  pull_request:
+    paths:
+      - 'apps/desktop/src-tauri/**'
+      - '.github/workflows/desktop-window-lifecycle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Prepare Compile-Only Resources
+        shell: pwsh
+        run: |
+          # Tests and the unbundled executable need no downloaded Node, Control,
+          # Engine or frontend. Only this disposable build checkout is changed.
+          $configPath = 'apps/desktop/src-tauri/tauri.conf.json'
+          $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json -AsHashtable
+          $config.build.frontendDist = 'ci-placeholder'
+          $config.bundle.resources = @{}
+          $config.bundle.active = $false
+          New-Item -ItemType Directory -Path 'apps/desktop/src-tauri/ci-placeholder' -Force | Out-Null
+          Set-Content -LiteralPath 'apps/desktop/src-tauri/ci-placeholder/index.html' -Value '<!doctype html><title>Compile Only</title>'
+          $config | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $configPath
+      - name: Test Native Windows Lifecycle
+        shell: pwsh
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test --locked -- --test-threads=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Unbundled Native Shell
+        shell: pwsh
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo build --locked --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

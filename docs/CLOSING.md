@@ -42,6 +42,34 @@ in that order instead of the engine dying under a request.
 `strata_control/procs.py` is the identity rule behind every "is this still the process I started": PID **and** start time
 **and** command line, checked again at the moment of each signal. A PID alone is never signalled.
 
+## Optional Windows Close To Tray
+
+The default X still closes the App. A Windows Tray companion may opt into hiding
+the main window instead by supplying all three environment values when it launches
+the App:
+
+```text
+STRATA_CLOSE_TO_TRAY=1
+STRATA_TRAY_PID=<the live companion process ID>
+STRATA_TRAY_IMAGE=<the companion's absolute executable path>
+```
+
+The companion must provide a visible way to open and exit the App. The shell
+checks the process image, holds that exact process handle and watches its exit.
+A missing, inaccessible, exited or mismatched owner keeps normal X behavior.
+With a live verified owner, X hides only the main window and keeps the same Host
+alive. It does not detach an Engine or change its normal idle-unload setting.
+Launching the App again uses the existing single-instance restore path.
+
+`strata-desktop.exe --quit` is an explicit Windows exit, including while hidden.
+A cold `--quit` starts neither a Host nor a window. When the verified Tray owner
+exits, the App exits through the existing Host cleanup path. Updater exit, crash
+containment, the Windows Job and Linux/macOS behavior are unchanged. This adds no
+Tray icon, startup entry, launcher, HTTP endpoint or frontend permission.
+
+The [acceptance record](windows-close-to-tray/README.md) distinguishes the deployed
+Extension's real screenshot from build/test evidence for this upstream candidate.
+
 ## Leftovers, and how they are found
 
 Every engine, image encoder and server Strata starts writes a small private record (`<state>/procs/<pid>.json`: PID, start
