@@ -1,7 +1,13 @@
 // src/kernels/mmvq_il_parity.cpp - native_mmvq_il (2-4 columns from the interleaved q8_1 copy, fork F4) against
 // native_mmvq's multi-column kernels, bitwise, for every rows-a-warp choice; --bench times both per call.
 //
-//     build/mmvq_il_parity [--bench [--emit-table] [--hot] [--gap MB] [--persist] [--ab]]
+//     build/mmvq_il_parity [--bench [--emit-table] [--hot] [--gap MB] [--persist] [--ab] [--pf a,b,..] [--rounds N]]
+//
+// --pf a,b,..: the P1 / P2 kernel variants (native_mmvq_il_pf: 0 = today's kernel, 6 hoisted group loads, 3 + P2's exact
+// integer forms, 4 = 3 at 5 blocks a SM, 2 / 5 = 3 / 4 with a ring) are each bit-checked against native_mmvq, and with
+// --bench timed interleaved per (case, T, rows): N rounds
+// (default 5) of 100 calls each, variant after variant, the median of the rounds printed per variant (PFBENCH lines; the
+// table cells take the first listed variant).  Without --pf every call takes STRATA_MMVQ_IL_PF (unset: today's kernel).
 //
 // --hot times one copy of the weights (they sit in L2 after the first call: the ceiling of an L2
 // prefetch); --gap MB reads MB megabytes of OTHER weights (native_mmvq over other copies) before every timed call, as
@@ -23,6 +29,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -35,9 +42,11 @@
 namespace {
 using namespace strata::kernels;
 
-struct Cell { int type, T, n_out; double ref; double il[5]; };
+struct Cell { int type, T, n_out, pf; double ref; double il[5]; };   // pf: the variant the il[] times ran (-1: the environment's)
 std::vector<Cell> g_cells;
 bool g_hot = false, g_persist = false, g_ab = false;
+std::vector<int> g_pf;   // --pf: the variants to check and time; empty: the environment's
+int g_rounds = 5;
 std::size_t g_gap_bytes = 0;
 std::size_t g_gap_now = 0;   // the gap in force for the current arm (--ab) or g_gap_bytes
 // time `reps` calls of `fn` on `s`; with --gap each call is preceded by `gap` (other weights' reads) and timed on its own
@@ -195,6 +204,7 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
         std::vector<uint32_t> a((std::size_t) T * c.n_out), b(a.size());
         ck(cudaMemcpy(a.data(), yref, ybytes, cudaMemcpyDeviceToHost), "read ref");
         double best_ref = 0, best_il[5] = {0, 0, 0, 0, 0};
+        std::vector<std::array<double, 5>> pf_il(g_pf.size(), std::array<double, 5>{0, 0, 0, 0, 0});   // per --pf variant
         int table_r = 0;
         struct Arm { const char* name; bool hot; std::size_t gap; bool persist; };
         const Arm arms_ab[] = {{"cold", false, 0, false}, {"hot", true, 0, false}, {"hot+gap", true, g_gap_bytes, false},
@@ -208,34 +218,60 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
             g_gap_now = arms[ai].gap;
             if (arms[ai].persist != g_persist) { g_persist = arms[ai].persist; persist_window(s, dw[0], wbytes, g_persist); }
         }
+        const std::vector<int> pfs = g_pf.empty() ? std::vector<int>{-1} : g_pf;
         for (int r : {0, 1, 2, 4}) {
             native_mmvq_il_tune(r);
-            cudaMemset(yil, 0xff, ybytes);
-            native_mmvq_il(c.type, dw[0], xq, xil, yil, c.n_in, c.n_out, T, s);
-            ck(cudaStreamSynchronize(s), "il");
-            ck(cudaMemcpy(b.data(), yil, ybytes, cudaMemcpyDeviceToHost), "read il");
-            long long diff = 0, nonfinite = 0;
-            for (std::size_t i = 0; i < a.size(); ++i) {
-                float fa;
-                std::memcpy(&fa, &a[i], 4);
-                if (!std::isfinite(fa)) ++nonfinite;
-                if (a[i] != b[i]) ++diff;
+            for (int pf : pfs) {
+                native_mmvq_il_pf(pf);
+                cudaMemset(yil, 0xff, ybytes);
+                native_mmvq_il(c.type, dw[0], xq, xil, yil, c.n_in, c.n_out, T, s);
+                ck(cudaStreamSynchronize(s), "il");
+                ck(cudaMemcpy(b.data(), yil, ybytes, cudaMemcpyDeviceToHost), "read il");
+                long long diff = 0, nonfinite = 0;
+                for (std::size_t i = 0; i < a.size(); ++i) {
+                    float fa;
+                    std::memcpy(&fa, &a[i], 4);
+                    if (!std::isfinite(fa)) ++nonfinite;
+                    if (a[i] != b[i]) ++diff;
+                }
+                if (diff != 0 || nonfinite != 0) {
+                    ++bad;
+                    std::printf("FAIL %-26s T=%d rows=%d pf=%d: %lld bits differ, %lld non-finite of %zu\n", c.name, T, r, pf, diff,
+                                nonfinite, a.size());
+                }
             }
-            const bool used = r != 0 || native_mmvq_il_supported(c.type, T, c.n_out);
-            if (diff != 0 || nonfinite != 0) {
-                ++bad;
-                std::printf("FAIL %-26s T=%d rows=%d: %lld bits differ, %lld non-finite of %zu\n", c.name, T, r, diff, nonfinite, a.size());
-            }
-            (void) used;
+            native_mmvq_il_pf(-1);
             if (bench && r != 0) {
-                best_il[r] = time_us([&](int i) { native_mmvq_il(c.type, dw[g_hot ? 0 : i % copies], xq, xil, yil, c.n_in, c.n_out, T, s); }, 200, s, gap);
+                auto il_call = [&](int i) { native_mmvq_il(c.type, dw[g_hot ? 0 : i % copies], xq, xil, yil, c.n_in, c.n_out, T, s); };
+                if (g_pf.empty()) {
+                    best_il[r] = time_us(il_call, 200, s, gap);
+                } else {   // the variants interleaved, round after round; the median of each one's rounds
+                    std::vector<std::vector<double>> t(g_pf.size());
+                    for (int round = 0; round < g_rounds; ++round)
+                        for (std::size_t k = 0; k < g_pf.size(); ++k) {
+                            native_mmvq_il_pf(g_pf[k]);
+                            t[k].push_back(time_us(il_call, 100, s, gap));
+                        }
+                    native_mmvq_il_pf(-1);
+                    std::printf("PFBENCH %-26s T=%d rows=%d:", c.name, T, r);
+                    for (std::size_t k = 0; k < g_pf.size(); ++k) {
+                        std::sort(t[k].begin(), t[k].end());
+                        const double med = t[k][t[k].size() / 2];
+                        if (k == 0) best_il[r] = med;
+                        pf_il[k][r] = med;
+                        std::printf("  pf%d %.1f us (min %.1f max %.1f)", g_pf[k], med, t[k].front(), t[k].back());
+                    }
+                    std::printf("\n");
+                }
             }
         }
         native_mmvq_il_tune(0);
         if (bench) {
             best_ref = time_us([&](int i) { native_mmvq(c.type, dw[g_hot ? 0 : i % copies], xq, yref, c.n_in, c.n_out, T, s); }, 200, s, gap);
             (void) table_r;
-            g_cells.push_back({c.type, T, c.n_out, best_ref, {0, best_il[1], best_il[2], 0, best_il[4]}});
+            if (g_pf.empty()) g_cells.push_back({c.type, T, c.n_out, -1, best_ref, {0, best_il[1], best_il[2], 0, best_il[4]}});
+            for (std::size_t k = 0; k < g_pf.size(); ++k)
+                g_cells.push_back({c.type, T, c.n_out, g_pf[k], best_ref, {0, pf_il[k][1], pf_il[k][2], 0, pf_il[k][4]}});
             std::printf("BENCH %-26s T=%d %-16s multi %.1f us | il rows1 %.1f rows2 %.1f rows4 %.1f us\n", c.name, T,
                         arms[ai].name, best_ref, best_il[1], best_il[2], best_il[4]);
         }
@@ -256,33 +292,37 @@ void emit_table() {
     std::printf("// measured on this card by mmvq_il_parity --bench --emit-table\n");
     // per cell: the rows count whose WORST ratio to native_mmvq over the cell's measured shapes is the best, taken only
     // when that worst ratio is under 0.97 (else 0); a class with no measured shape takes its lower neighbour's value
-    auto pick_cell = [&](int type, int nc, int cls, int prev) {
+    // pf_sel: the cells of that variant (the environment's when --pf was not given, else 0 = today's kernel); -2: every
+    // listed variant, the answer then pf << 4 | rows (the kIlPf form), 0 when nothing beats native_mmvq by 3%
+    auto pick_cell = [&](int type, int nc, int cls, int prev, int pf_sel) {
         double best_worst = 1e9;
         int best = -1;
         bool any = false;
-        for (int r : {1, 2, 4}) {
-            double worst = 0;
-            bool have = false;
-            for (const Cell& c : g_cells) {
-                if (c.type != type || c.T != nc) continue;
-                const int cc = c.n_out < 2048 ? 0 : c.n_out < 4096 ? 1 : c.n_out < 8192 ? 2 : c.n_out < 12288 ? 3 : 4;
-                if (cc != cls || c.il[r] <= 0) continue;
-                have = true;
-                worst = std::max(worst, c.il[r] / c.ref);
+        for (int pf : (pf_sel == -2 ? (g_pf.empty() ? std::vector<int>{-1} : g_pf) : std::vector<int>{pf_sel}))
+            for (int r : {1, 2, 4}) {
+                double worst = 0;
+                bool have = false;
+                for (const Cell& c : g_cells) {
+                    if (c.type != type || c.T != nc || c.pf != pf) continue;
+                    const int cc = c.n_out < 2048 ? 0 : c.n_out < 4096 ? 1 : c.n_out < 8192 ? 2 : c.n_out < 12288 ? 3 : 4;
+                    if (cc != cls || c.il[r] <= 0) continue;
+                    have = true;
+                    worst = std::max(worst, c.il[r] / c.ref);
+                }
+                any = any || have;
+                if (have && worst < best_worst) { best_worst = worst; best = pf_sel == -2 ? (std::max(pf, 0) << 4 | r) : r; }
             }
-            any = any || have;
-            if (have && worst < best_worst) { best_worst = worst; best = r; }
-        }
         if (!any) return prev;
         return best_worst < 0.97 ? best : 0;
     };
+    const int pf_today = g_pf.empty() ? -1 : 0;
     for (int ti = 0; ti < 5; ++ti) {
         std::printf("    {%d, {", types[ti]);
         for (int nc = 2; nc <= 4; ++nc) {
             int prev = 0;
             std::printf("{");
             for (int cls = 0; cls < 5; ++cls) {
-                prev = pick_cell(types[ti], nc, cls, prev);
+                prev = pick_cell(types[ti], nc, cls, prev, pf_today);
                 std::printf("%d%s", prev, cls < 4 ? ", " : "");
             }
             std::printf("}%s", nc < 4 ? ", " : "");
@@ -296,19 +336,49 @@ void emit_table() {
             int prev = 0;
             std::printf("{");
             for (int cls = 0; cls < 5; ++cls) {
-                prev = pick_cell(types[ti], nc, cls, prev);
+                prev = pick_cell(types[ti], nc, cls, prev, pf_today);
                 std::printf("%d%s", prev, cls < 4 ? ", " : "");
             }
             std::printf("}%s", nc < 8 ? ", " : "");
         }
         std::printf("}},   // %s\n", names[ti]);
     }
+    if (!g_pf.empty()) {   // the joint (variant, rows) table over the listed variants: kIlPf_80 / kIlPf58_80
+        std::printf("// variant << 4 | rows over --pf (kIlPf_<cc>), 2-4 columns:\n");
+        for (int ti = 0; ti < 5; ++ti) {
+            std::printf("    {%d, {", types[ti]);
+            for (int nc = 2; nc <= 4; ++nc) {
+                int prev = 0;
+                std::printf("{");
+                for (int cls = 0; cls < 5; ++cls) {
+                    prev = pick_cell(types[ti], nc, cls, prev, -2);
+                    std::printf("0x%02x%s", prev, cls < 4 ? ", " : "");
+                }
+                std::printf("}%s", nc < 4 ? ", " : "");
+            }
+            std::printf("}},   // %s\n", names[ti]);
+        }
+        std::printf("// 5-8 columns (kIlPf58_<cc>):\n");
+        for (int ti = 0; ti < 5; ++ti) {
+            std::printf("    {%d, {", types[ti]);
+            for (int nc = 5; nc <= 8; ++nc) {
+                int prev = 0;
+                std::printf("{");
+                for (int cls = 0; cls < 5; ++cls) {
+                    prev = pick_cell(types[ti], nc, cls, prev, -2);
+                    std::printf("0x%02x%s", prev, cls < 4 ? ", " : "");
+                }
+                std::printf("}%s", nc < 8 ? ", " : "");
+            }
+            std::printf("}},   // %s\n", names[ti]);
+        }
+    }
     std::printf("// one column (kIl1RowsShared):\n");
     for (int ti = 0; ti < 5; ++ti) {
         std::printf("    {%d, {", types[ti]);
         int prev = 0;
         for (int cls = 0; cls < 5; ++cls) {
-            prev = pick_cell(types[ti], 1, cls, prev);
+            prev = pick_cell(types[ti], 1, cls, prev, pf_today);
             std::printf("%d%s", prev, cls < 4 ? ", " : "");
         }
         std::printf("}},   // %s\n", names[ti]);
@@ -354,12 +424,22 @@ int check_tables() {
 int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
     const bool emit = bench && argc > 2 && std::string(argv[2]) == "--emit-table";
-    for (int i = 2; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--hot") g_hot = true;
         else if (a == "--ab") g_ab = true;
         else if (a == "--persist") g_persist = true;
         else if (a == "--gap" && i + 1 < argc) g_gap_bytes = (std::size_t) std::atoi(argv[++i]) << 20;
+        else if (a == "--rounds" && i + 1 < argc) g_rounds = std::atoi(argv[++i]);
+        else if (a == "--pf" && i + 1 < argc) {
+            const std::string list = argv[++i];
+            for (std::size_t p = 0; p < list.size();) {
+                std::size_t q = list.find(',', p);
+                if (q == std::string::npos) q = list.size();
+                g_pf.push_back(std::atoi(list.substr(p, q - p).c_str()));
+                p = q + 1;
+            }
+        }
     }
     cudaStream_t s;
     cudaStreamCreate(&s);
