@@ -502,6 +502,39 @@ def gpu_info_local() -> dict:
         m2 = re.search(r"Driver version:\s*(\S+)", v)
         if m2:
             info["rocm_driver"] = m2.group(1)
+    if not info["gpus"] and os.name != "nt":
+        # ROCm 7 and newer ship `amd-smi` and no `rocm-smi`, so a Radeon wrote the server's vendor stub ("AMD
+        # Radeon", `...-community-unknown-...`) and `GPU driver: not read`. `static --asic` gives the marketing
+        # name, `static --driver` the kernel driver's version, the PCI address only comes from `amd-smi list` and
+        # the VRAM size is the amdgpu driver's sysfs file for that address (same probe as strata_cli/bench_facts.py).
+        def amd_json(args):
+            try:
+                return json.loads(run_cmd(["amd-smi", "static"] + args + ["--json"]).strip() or "{}").get("gpu_data") or []
+            except ValueError:                               # noqa: BLE001 - a report without the card's name is a report
+                return []
+        try:
+            bdf = {e.get("gpu"): (e.get("bdf") or "") for e in json.loads(run_cmd(["amd-smi", "list", "--json"]).strip() or "[]")}
+        except ValueError:
+            bdf = {}
+        drv = {e.get("gpu"): ((e.get("driver") or {}).get("version") or "") for e in amd_json(["--driver"])}
+        cards = []
+        for e in amd_json(["--asic"]):
+            name = ((e.get("asic") or {}).get("market_name") or "").strip()
+            if not name:
+                continue
+            d = drv.get(e.get("gpu"), "")
+            d = d if d.upper() not in ("", "N/A") else None
+            if d:
+                info["rocm_driver"] = info.get("rocm_driver") or d
+            vram = None
+            for dev in Path("/sys/class/drm").glob("card[0-9]*/device"):
+                try:
+                    if bdf.get(e.get("gpu")) and os.path.basename(os.path.realpath(dev)).lower() == bdf[e["gpu"]].lower():
+                        vram = int((dev / "mem_info_vram_total").read_text(encoding="utf-8").strip()) >> 20
+                except (OSError, ValueError):
+                    pass
+            cards.append({"name": name, "vram_mib": vram, "driver": d})
+        info["gpus"] = cards
     if not info["gpus"] and os.name == "nt":
         # #1587: Windows with only an AMD card has neither nvidia-smi nor rocm-smi; the display class in the registry
         # names the card, its VRAM and its driver (the run was labelled "CPU only" before)
@@ -623,6 +656,10 @@ def collect_machine(base: str, key: str, cfg: dict | None, gpu_arg: str | None =
     # engine runs on another vendor's card (an Intel Arc beside a GeForce): the server's names are the right ones, and
     # so is its VRAM total - the PC's NVIDIA cards were not used.
     served = [n for n in (static.get("gpu_name") or "").split(" + ") if n and n != "?"]
+    # the engine's own stub when the driver names no card is the vendor alone ("AMD Radeon"), not a card name:
+    # taking it as one would throw away the real name amd-smi read (same guard as strata_cli/bench_facts.py)
+    served = [n for n in served if not re.fullmatch(r"(?i)\s*(nvidia|amd|intel|advanced micro devices)"
+                                                    r"([ -](geforce|radeon|graphics|arc))?\s*", n)]
     if served and not all(n in {g["name"] for g in local["gpus"]} for n in served):
         gpu_names, used = served, []
         local = {**local, "cuda": None}            # the PC's CUDA belongs to cards the engine did not use
