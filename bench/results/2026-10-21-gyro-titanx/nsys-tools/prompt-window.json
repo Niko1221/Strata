@@ -1,0 +1,2696 @@
+{
+  "sqlite": "strata.sqlite",
+  "trace_start_ns": 38811345700,
+  "trace_end_ns": 144088525614,
+  "window": {
+    "start_ns": 64088345700,
+    "end_ns": 91088345700,
+    "seconds": 27.0,
+    "from_trace_start_s": 25.277
+  },
+  "gpu": {
+    "busy_ms": 9766.88,
+    "idle_ms": 17233.12,
+    "busy_pct": 36.17,
+    "kernel_launches": 17900,
+    "kernel_ms_sum": 9766.88
+  },
+  "copies": [
+    {
+      "kind": "H2D",
+      "count": 19250,
+      "total_ms": 1601.421,
+      "max_ms": 0.918,
+      "total_mb": 19271.74,
+      "avg_mb": 1.001
+    },
+    {
+      "kind": "D2H",
+      "count": 39,
+      "total_ms": 23.334,
+      "max_ms": 23.254,
+      "total_mb": 112.61,
+      "avg_mb": 2.887
+    },
+    {
+      "kind": "8",
+      "count": 2,
+      "total_ms": 0.359,
+      "max_ms": 0.352,
+      "total_mb": 43.32,
+      "avg_mb": 21.66
+    }
+  ],
+  "kernels": [
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)64, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 866,
+      "instances": 775,
+      "total_ms": 2675.967,
+      "avg_us": 3452.86,
+      "max_us": 6680.14,
+      "pct_of_window": 9.91,
+      "grid": [
+        20,
+        2,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 29.6
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)64, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 867,
+      "instances": 775,
+      "total_ms": 1613.756,
+      "avg_us": 2082.27,
+      "max_us": 4127.41,
+      "pct_of_window": 5.98,
+      "grid": [
+        40,
+        2,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 29.6
+    },
+    {
+      "name": "maxwell_sgemm_fp16_32x128_tn",
+      "short": "maxwell_sgemm_fp16_32x128_tn",
+      "node": 1146,
+      "instances": 84,
+      "total_ms": 995.77,
+      "avg_us": 11854.4,
+      "max_us": 17766.96,
+      "pct_of_window": 3.69,
+      "grid": [
+        320,
+        9,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 16.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::wait_flag_ge_kernel(const volatile unsigned int *, unsigned int)",
+      "short": "strata::kernels::<unnamed>::wait_flag_ge_kernel",
+      "node": 1031,
+      "instances": 142,
+      "total_ms": 924.588,
+      "avg_us": 6511.18,
+      "max_us": 80905.38,
+      "pct_of_window": 3.42,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        1,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "maxwell_sgemm_fp16_64x64_tn",
+      "short": "maxwell_sgemm_fp16_64x64_tn",
+      "node": 727,
+      "instances": 216,
+      "total_ms": 548.231,
+      "avg_us": 2538.11,
+      "max_us": 11105.0,
+      "pct_of_window": 2.03,
+      "grid": [
+        40,
+        18,
+        1
+      ],
+      "block": [
+        64,
+        1,
+        1
+      ],
+      "static_smem_kb": 8.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)48, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 870,
+      "instances": 202,
+      "total_ms": 523.891,
+      "avg_us": 2593.52,
+      "max_us": 3717.53,
+      "pct_of_window": 1.94,
+      "grid": [
+        20,
+        3,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 27.6
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)48, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 871,
+      "instances": 202,
+      "total_ms": 313.586,
+      "avg_us": 1552.4,
+      "max_us": 2461.35,
+      "pct_of_window": 1.16,
+      "grid": [
+        40,
+        3,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 27.6
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)40, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 868,
+      "instances": 124,
+      "total_ms": 260.202,
+      "avg_us": 2098.4,
+      "max_us": 2912.85,
+      "pct_of_window": 0.96,
+      "grid": [
+        20,
+        2,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 26.5
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::dequant_kernel<(int)13, strata::kernels::<unnamed>::H16, (bool)0>(const unsigned char *, long, long, long, long, long, T2 *)",
+      "short": "void strata::kernels::<unnamed>::dequant_kernel<",
+      "node": 825,
+      "instances": 252,
+      "total_ms": 235.966,
+      "avg_us": 936.37,
+      "max_us": 2772.55,
+      "pct_of_window": 0.87,
+      "grid": [
+        3200,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "maxwell_sgemm_128x64_tn",
+      "short": "maxwell_sgemm_128x64_tn",
+      "node": 1145,
+      "instances": 157,
+      "total_ms": 221.668,
+      "avg_us": 1411.9,
+      "max_us": 2159.87,
+      "pct_of_window": 0.82,
+      "grid": [
+        3,
+        18,
+        20
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 12.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "sgemm_128x128x8_NT_vec",
+      "short": "sgemm_128x128x8_NT_vec",
+      "node": 724,
+      "instances": 99,
+      "total_ms": 167.68,
+      "avg_us": 1693.74,
+      "max_us": 11797.85,
+      "pct_of_window": 0.62,
+      "grid": [
+        18,
+        40,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 16.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gdn_rec_cols_pipe_kernel(float *, const float *, const float *, const float *, float *, long)",
+      "short": "strata::prefill::<unnamed>::gdn_rec_cols_pipe_kernel",
+      "node": 835,
+      "instances": 36,
+      "total_ms": 164.612,
+      "avg_us": 4572.57,
+      "max_us": 4834.19,
+      "pct_of_window": 0.61,
+      "grid": [
+        192,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        4,
+        1
+      ],
+      "static_smem_kb": 1.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)40, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 869,
+      "instances": 124,
+      "total_ms": 155.419,
+      "avg_us": 1253.38,
+      "max_us": 1643.7,
+      "pct_of_window": 0.58,
+      "grid": [
+        40,
+        2,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 26.5
+    },
+    {
+      "name": "strata::prefill::mmq::<unnamed>::copy16_group_kernel(strata::prefill::mmq::<unnamed>::GroupArgs, int, int, long, long, long, uint4 *, uint4 *, uint4 *)",
+      "short": "strata::prefill::mmq::<unnamed>::copy16_group_kernel",
+      "node": 858,
+      "instances": 4669,
+      "total_ms": 150.57,
+      "avg_us": 32.25,
+      "max_us": 142.13,
+      "pct_of_window": 0.56,
+      "grid": [
+        257,
+        3,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::attn_chunk_kernel_pre75<(int)1, (int)2, (bool)0>(const float *, strata::kernels::QsaAttnPools, const int *, const int *, int, int, float, float *, float *, float *, int, int, long long)",
+      "short": "void strata::kernels::<unnamed>::attn_chunk_kernel_pre75<",
+      "node": 912,
+      "instances": 432,
+      "total_ms": 144.565,
+      "avg_us": 334.64,
+      "max_us": 967.55,
+      "pct_of_window": 0.54,
+      "grid": [
+        33,
+        2,
+        4
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 15.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::bf16_to_f32_kernel(const unsigned short *, float *, long)",
+      "short": "strata::prefill::<unnamed>::bf16_to_f32_kernel",
+      "node": 819,
+      "instances": 972,
+      "total_ms": 91.712,
+      "avg_us": 94.35,
+      "max_us": 657.92,
+      "pct_of_window": 0.34,
+      "grid": [
+        12800,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gr_write_norm_rs_kernel(float *, const float *, const float *, long, const float *, float, float *, unsigned short *, unsigned short *, long, int)",
+      "short": "strata::prefill::<unnamed>::gr_write_norm_rs_kernel",
+      "node": 839,
+      "instances": 94,
+      "total_ms": 82.478,
+      "avg_us": 877.43,
+      "max_us": 941.18,
+      "pct_of_window": 0.31,
+      "grid": [
+        4436,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gr_mix_r_kernel(const float *, const float *, const float *, const float *, float *, unsigned short *, long, unsigned short *, unsigned short *)",
+      "short": "strata::prefill::<unnamed>::gr_mix_r_kernel",
+      "node": 823,
+      "instances": 98,
+      "total_ms": 42.773,
+      "avg_us": 436.46,
+      "max_us": 466.93,
+      "pct_of_window": 0.16,
+      "grid": [
+        11090,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::hadamard_rows_kernel<float>(const T1 *, T1 *, long, const float *, float)",
+      "short": "void strata::kernels::<unnamed>::hadamard_rows_kernel<float>",
+      "node": 853,
+      "instances": 1316,
+      "total_ms": 40.589,
+      "avg_us": 30.84,
+      "max_us": 228.84,
+      "pct_of_window": 0.15,
+      "grid": [
+        20,
+        4,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.5
+    },
+    {
+      "name": "sgemm_32x32x32_NT_vec",
+      "short": "sgemm_32x32x32_NT_vec",
+      "node": 722,
+      "instances": 182,
+      "total_ms": 39.364,
+      "avg_us": 216.28,
+      "max_us": 352.67,
+      "pct_of_window": 0.15,
+      "grid": [
+        5,
+        1,
+        7
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 16.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::attn_merge_kernel(const float *, const float *, const float *, int, float *, long long)",
+      "short": "strata::kernels::<unnamed>::attn_merge_kernel",
+      "node": 914,
+      "instances": 432,
+      "total_ms": 33.468,
+      "avg_us": 77.47,
+      "max_us": 149.3,
+      "pct_of_window": 0.12,
+      "grid": [
+        24,
+        4,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::Q5KTraits, (int)4, (int)4, (int)2, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *)",
+      "short": "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kern",
+      "node": 1123,
+      "instances": 247,
+      "total_ms": 28.46,
+      "avg_us": 115.22,
+      "max_us": 317.02,
+      "pct_of_window": 0.11,
+      "grid": [
+        5120,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        4,
+        1
+      ],
+      "static_smem_kb": 3.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)32, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 860,
+      "instances": 18,
+      "total_ms": 28.331,
+      "avg_us": 1573.95,
+      "max_us": 1814.6,
+      "pct_of_window": 0.1,
+      "grid": [
+        20,
+        1,
+        9
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 25.5
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)8, (int)64, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 994,
+      "instances": 4,
+      "total_ms": 27.723,
+      "avg_us": 6930.68,
+      "max_us": 20269.83,
+      "pct_of_window": 0.1,
+      "grid": [
+        40,
+        17,
+        1
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 27.6
+    },
+    {
+      "name": "strata::prefill::<unnamed>::moe_combine4_kernel(const float *, const int *, const float *, const float4 *, const float *, float4 *, long, const float *)",
+      "short": "strata::prefill::<unnamed>::moe_combine4_kernel",
+      "node": 874,
+      "instances": 48,
+      "total_ms": 25.536,
+      "avg_us": 532.0,
+      "max_us": 561.48,
+      "pct_of_window": 0.09,
+      "grid": [
+        2773,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::mmq::<unnamed>::swiglu_kernel(const float *, float *, long, long, bool)",
+      "short": "strata::prefill::mmq::<unnamed>::swiglu_kernel",
+      "node": 862,
+      "instances": 1127,
+      "total_ms": 20.905,
+      "avg_us": 18.55,
+      "max_us": 58.78,
+      "pct_of_window": 0.08,
+      "grid": [
+        1283,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::native_gu_multi_kernel<(int)145, (bool)0, (bool)0>(const unsigned long long *, const int *, const int *, const int *, const block_q8_1 *, strata::kernels::NativeExpertLayout, float *, float *)",
+      "short": "void strata::kernels::<unnamed>::native_gu_multi_kernel<",
+      "node": 1033,
+      "instances": 94,
+      "total_ms": 19.342,
+      "avg_us": 205.77,
+      "max_us": 575.78,
+      "pct_of_window": 0.07,
+      "grid": [
+        160,
+        40,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)32, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 865,
+      "instances": 18,
+      "total_ms": 16.871,
+      "avg_us": 937.26,
+      "max_us": 1067.51,
+      "pct_of_window": 0.06,
+      "grid": [
+        40,
+        1,
+        9
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 25.5
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::native_down_multi_kernel<(int)146, (bool)1>(const unsigned long long *, const int *, const int *, const int *, const block_q8_1 *, strata::kernels::NativeExpertLayout, float *)",
+      "short": "void strata::kernels::<unnamed>::native_down_multi_kernel<",
+      "node": 1037,
+      "instances": 94,
+      "total_ms": 15.486,
+      "avg_us": 164.75,
+      "max_us": 447.86,
+      "pct_of_window": 0.06,
+      "grid": [
+        320,
+        40,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 2.8,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gdn_conv_tiled_kernel(const float *, const float *, const float *, float *, long)",
+      "short": "strata::prefill::<unnamed>::gdn_conv_tiled_kernel",
+      "node": 829,
+      "instances": 36,
+      "total_ms": 14.712,
+      "avg_us": 408.68,
+      "max_us": 433.78,
+      "pct_of_window": 0.05,
+      "grid": [
+        80,
+        18,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0, (bool)0>(const float *, const int *, void *, long, long, long, long, long, int, int, int)",
+      "short": "void quantize_mmq_q8_1<",
+      "node": 864,
+      "instances": 1135,
+      "total_ms": 13.445,
+      "avg_us": 11.85,
+      "max_us": 246.53,
+      "pct_of_window": 0.05,
+      "grid": [
+        513,
+        2,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gdn_out_norm_kernel(const float *, const float *, float, float *, unsigned short *, long)",
+      "short": "strata::prefill::<unnamed>::gdn_out_norm_kernel",
+      "node": 837,
+      "instances": 36,
+      "total_ms": 11.072,
+      "avg_us": 307.55,
+      "max_us": 327.36,
+      "pct_of_window": 0.04,
+      "grid": [
+        1109,
+        48,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void quantize_mmq_q8_1<(mmq_q8_1_ds_layout)0, (bool)1>(const float *, const int *, void *, long, long, long, long, long, int, int, int)",
+      "short": "void quantize_mmq_q8_1<",
+      "node": 855,
+      "instances": 48,
+      "total_ms": 9.581,
+      "avg_us": 199.59,
+      "max_us": 210.03,
+      "pct_of_window": 0.04,
+      "grid": [
+        1109,
+        5,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::gr_up_multi_kernel<(int)4, (bool)1, (bool)0>(strata::kernels::<unnamed>::GrMulti)",
+      "short": "void strata::kernels::<unnamed>::gr_up_multi_kernel<",
+      "node": 803,
+      "instances": 95,
+      "total_ms": 8.247,
+      "avg_us": 86.81,
+      "max_us": 99.61,
+      "pct_of_window": 0.03,
+      "grid": [
+        160,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 6.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::rms_rows_kernel(float *, const float *, long, long, float)",
+      "short": "strata::prefill::<unnamed>::rms_rows_kernel",
+      "node": 894,
+      "instances": 42,
+      "total_ms": 7.26,
+      "avg_us": 172.86,
+      "max_us": 571.72,
+      "pct_of_window": 0.03,
+      "grid": [
+        2218,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gate_attn_kernel(const float *, const float *, unsigned short *, long, long)",
+      "short": "strata::prefill::<unnamed>::gate_attn_kernel",
+      "node": 916,
+      "instances": 12,
+      "total_ms": 6.191,
+      "avg_us": 515.92,
+      "max_us": 558.21,
+      "pct_of_window": 0.02,
+      "grid": [
+        26616,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::gr_down_staged_kernel<(int)4, (bool)1>(strata::kernels::<unnamed>::GrMulti)",
+      "short": "void strata::kernels::<unnamed>::gr_down_staged_kernel<",
+      "node": 804,
+      "instances": 95,
+      "total_ms": 5.759,
+      "avg_us": 60.62,
+      "max_us": 63.03,
+      "pct_of_window": 0.02,
+      "grid": [
+        41,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 40.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gdn_l2_kernel(float *, float)",
+      "short": "strata::prefill::<unnamed>::gdn_l2_kernel",
+      "node": 833,
+      "instances": 36,
+      "total_ms": 5.738,
+      "avg_us": 159.4,
+      "max_us": 166.38,
+      "pct_of_window": 0.02,
+      "grid": [
+        32,
+        1109,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::Q6KTraits, (int)4, (int)4, (int)2, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *)",
+      "short": "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kern",
+      "node": 1126,
+      "instances": 1,
+      "total_ms": 5.503,
+      "avg_us": 5503.46,
+      "max_us": 5503.46,
+      "pct_of_window": 0.02,
+      "grid": [
+        124160,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        4,
+        1
+      ],
+      "static_smem_kb": 3.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, float, float, float, (bool)0, float, float, float, (bool)1, (bool)0, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",
+      "short": "void cublasLt::splitKreduce_kernel<",
+      "node": 845,
+      "instances": 120,
+      "total_ms": 5.095,
+      "avg_us": 42.46,
+      "max_us": 46.91,
+      "pct_of_window": 0.02,
+      "grid": [
+        20,
+        35,
+        1
+      ],
+      "block": [
+        32,
+        16,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)24, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 872,
+      "instances": 4,
+      "total_ms": 4.934,
+      "avg_us": 1233.62,
+      "max_us": 1408.01,
+      "pct_of_window": 0.02,
+      "grid": [
+        20,
+        1,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 24.5
+    },
+    {
+      "name": "strata::kernels::<unnamed>::fetch_blobs_kernel(const unsigned long long *, const int *, uint4 *, long long)",
+      "short": "strata::kernels::<unnamed>::fetch_blobs_kernel",
+      "node": 1039,
+      "instances": 47,
+      "total_ms": 4.773,
+      "avg_us": 101.55,
+      "max_us": 348.41,
+      "pct_of_window": 0.02,
+      "grid": [
+        384,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::block_scores_kernel(const float *, const float *, const float *, const int *, long, float *)",
+      "short": "strata::kernels::<unnamed>::block_scores_kernel",
+      "node": 908,
+      "instances": 60,
+      "total_ms": 4.675,
+      "avg_us": 77.92,
+      "max_us": 149.94,
+      "pct_of_window": 0.02,
+      "grid": [
+        9,
+        256,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::split_q_kernel(const float *, float *, long)",
+      "short": "strata::prefill::<unnamed>::split_q_kernel",
+      "node": 900,
+      "instances": 12,
+      "total_ms": 4.673,
+      "avg_us": 389.39,
+      "max_us": 419.44,
+      "pct_of_window": 0.02,
+      "grid": [
+        26616,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)16, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 890,
+      "instances": 3,
+      "total_ms": 3.221,
+      "avg_us": 1073.8,
+      "max_us": 1165.41,
+      "pct_of_window": 0.01,
+      "grid": [
+        20,
+        1,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 23.4
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)24, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 873,
+      "instances": 4,
+      "total_ms": 2.918,
+      "avg_us": 729.62,
+      "max_us": 844.33,
+      "pct_of_window": 0.01,
+      "grid": [
+        40,
+        1,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 24.5
+    },
+    {
+      "name": "void gemv2T_kernel_val<int, int, float, float, float, float, (int)128, (int)16, (int)2, (int)2, (bool)0, (bool)0, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<const float>, cublasGemvTensorStridedBatched<float>, float>>(T13, T6, T6)",
+      "short": "void gemv2T_kernel_val<int, int, float, float, float, float, ",
+      "node": 851,
+      "instances": 48,
+      "total_ms": 2.791,
+      "avg_us": 58.14,
+      "max_us": 60.12,
+      "pct_of_window": 0.01,
+      "grid": [
+        139,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 1.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::bf16_f32_mmvf_multi_kernel<(int)256, (int)4, (bool)1>(const float *, long, const unsigned short *, float *, long, int, int)",
+      "short": "void strata::kernels::<unnamed>::bf16_f32_mmvf_multi_kernel<",
+      "node": 1125,
+      "instances": 120,
+      "total_ms": 2.759,
+      "avg_us": 22.99,
+      "max_us": 508.17,
+      "pct_of_window": 0.01,
+      "grid": [
+        10240,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.5,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::prefill::<unnamed>::route_kernel<(int)16>(const float *, int *, float *, long)",
+      "short": "void strata::prefill::<unnamed>::route_kernel<",
+      "node": 841,
+      "instances": 48,
+      "total_ms": 1.938,
+      "avg_us": 40.39,
+      "max_us": 43.74,
+      "pct_of_window": 0.01,
+      "grid": [
+        139,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)16, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 891,
+      "instances": 3,
+      "total_ms": 1.924,
+      "avg_us": 641.34,
+      "max_us": 695.93,
+      "pct_of_window": 0.01,
+      "grid": [
+        40,
+        1,
+        16
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 23.4
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::gpu_stamp_kernel<(bool)0>(unsigned long long *, int)",
+      "short": "void strata::kernels::<unnamed>::gpu_stamp_kernel<",
+      "node": 1006,
+      "instances": 1027,
+      "total_ms": 1.814,
+      "avg_us": 1.77,
+      "max_us": 2.91,
+      "pct_of_window": 0.01,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        1,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::swiglu_pair_kernel(const float *, const float *, unsigned short *, long)",
+      "short": "strata::prefill::<unnamed>::swiglu_pair_kernel",
+      "node": 847,
+      "instances": 48,
+      "total_ms": 1.673,
+      "avg_us": 34.86,
+      "max_us": 36.0,
+      "pct_of_window": 0.01,
+      "grid": [
+        2773,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::rms_rep_kernel(const float *, const float *, float *)",
+      "short": "strata::kernels::<unnamed>::rms_rep_kernel",
+      "node": 880,
+      "instances": 3,
+      "total_ms": 1.484,
+      "avg_us": 494.68,
+      "max_us": 496.11,
+      "pct_of_window": 0.01,
+      "grid": [
+        4436,
+        1,
+        1
+      ],
+      "block": [
+        1024,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *)",
+      "short": "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kern",
+      "node": 1106,
+      "instances": 47,
+      "total_ms": 1.362,
+      "avg_us": 28.98,
+      "max_us": 29.31,
+      "pct_of_window": 0.01,
+      "grid": [
+        1280,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        4,
+        1
+      ],
+      "static_smem_kb": 3.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::gdn_step_norm_multi_kernel<(bool)1, (bool)0>(float *, const float *, int, const float *, const float *, const float *, const float *, float, float *, int, int, int, const int *, int, strata::kernels::<unnamed>::GdnQ81 *, strata::kernels::GdnGroups)",
+      "short": "void strata::kernels::<unnamed>::gdn_step_norm_multi_kernel<",
+      "node": 1016,
+      "instances": 35,
+      "total_ms": 1.335,
+      "avg_us": 38.14,
+      "max_us": 38.56,
+      "pct_of_window": 0.0,
+      "grid": [
+        48,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        4,
+        1
+      ],
+      "static_smem_kb": 6.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gr_write_kernel(float *, const float *, const float *, long, long)",
+      "short": "strata::prefill::<unnamed>::gr_write_kernel",
+      "node": 876,
+      "instances": 2,
+      "total_ms": 1.302,
+      "avg_us": 650.78,
+      "max_us": 651.16,
+      "pct_of_window": 0.0,
+      "grid": [
+        44360,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::copy_i32_kernel(int *, const int *, long)",
+      "short": "strata::prefill::<unnamed>::copy_i32_kernel",
+      "node": 843,
+      "instances": 192,
+      "total_ms": 1.258,
+      "avg_us": 6.55,
+      "max_us": 30.4,
+      "pct_of_window": 0.0,
+      "grid": [
+        44,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::prefill::<unnamed>::rope_kernel<(bool)0>(float *, long, long, long, long, float, float, float, float, float, float, const int *, strata::kernels::RopeTab)",
+      "short": "void strata::prefill::<unnamed>::rope_kernel<",
+      "node": 896,
+      "instances": 38,
+      "total_ms": 1.211,
+      "avg_us": 31.87,
+      "max_us": 77.37,
+      "pct_of_window": 0.0,
+      "grid": [
+        2218,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gr_silu_kernel(const float *, unsigned short *, unsigned short *, long)",
+      "short": "strata::prefill::<unnamed>::gr_silu_kernel",
+      "node": 821,
+      "instances": 98,
+      "total_ms": 1.203,
+      "avg_us": 12.28,
+      "max_us": 13.53,
+      "pct_of_window": 0.0,
+      "grid": [
+        1387,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::kv_append_kernel(const float *, const float *, long, const int *, long, unsigned short *, unsigned short *, signed char *, signed char *, unsigned short *, unsigned short *, strata::kernels::KvHostPools, strata::kernels::KvHostPools)",
+      "short": "strata::prefill::<unnamed>::kv_append_kernel",
+      "node": 898,
+      "instances": 14,
+      "total_ms": 1.143,
+      "avg_us": 81.64,
+      "max_us": 94.49,
+      "pct_of_window": 0.0,
+      "grid": [
+        1109,
+        2,
+        8
+      ],
+      "block": [
+        64,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::conv_residual_batch_kernel(const float *, const float *, const unsigned short *, float *, const float *, int)",
+      "short": "strata::kernels::<unnamed>::conv_residual_batch_kernel",
+      "node": 886,
+      "instances": 1,
+      "total_ms": 1.095,
+      "avg_us": 1094.61,
+      "max_us": 1094.61,
+      "pct_of_window": 0.0,
+      "grid": [
+        44360,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::gdn_step_commit_layers_kernel(float *, long long, const float *, long long, int, const float *, const float *, long long, int, int, const int *)",
+      "short": "strata::kernels::<unnamed>::gdn_step_commit_layers_kernel",
+      "node": 1079,
+      "instances": 1,
+      "total_ms": 1.037,
+      "avg_us": 1037.3,
+      "max_us": 1037.3,
+      "pct_of_window": 0.0,
+      "grid": [
+        48,
+        4,
+        36
+      ],
+      "block": [
+        32,
+        4,
+        1
+      ],
+      "static_smem_kb": 1.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gr_norm_rs_kernel(const float *, const float *, float, float *, unsigned short *, unsigned short *, long, int)",
+      "short": "strata::prefill::<unnamed>::gr_norm_rs_kernel",
+      "node": 817,
+      "instances": 4,
+      "total_ms": 1.019,
+      "avg_us": 254.85,
+      "max_us": 340.51,
+      "pct_of_window": 0.0,
+      "grid": [
+        4436,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::copy_rows_from_mapped_kernel(float4 *, const volatile float4 *, long, const int *, const int *, const volatile unsigned int *, unsigned int)",
+      "short": "strata::kernels::copy_rows_from_mapped_kernel",
+      "node": 1043,
+      "instances": 48,
+      "total_ms": 1.012,
+      "avg_us": 21.08,
+      "max_us": 27.74,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::route_multi(const float *, int *, float *, int)",
+      "short": "strata::kernels::<unnamed>::route_multi",
+      "node": 1020,
+      "instances": 47,
+      "total_ms": 0.962,
+      "avg_us": 20.46,
+      "max_us": 20.64,
+      "pct_of_window": 0.0,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::gr_norm_split_kernel(strata::kernels::<unnamed>::GrMulti)",
+      "short": "strata::kernels::<unnamed>::gr_norm_split_kernel",
+      "node": 791,
+      "instances": 95,
+      "total_ms": 0.954,
+      "avg_us": 10.04,
+      "max_us": 10.59,
+      "pct_of_window": 0.0,
+      "grid": [
+        4,
+        4,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::dequant_q8_0_kernel<strata::kernels::<unnamed>::H16>(const unsigned char *, long, long, long, long, T1 *)",
+      "short": "void strata::kernels::<unnamed>::dequant_q8_0_kernel<strata::kernels::",
+      "node": 849,
+      "instances": 48,
+      "total_ms": 0.941,
+      "avg_us": 19.6,
+      "max_us": 21.69,
+      "pct_of_window": 0.0,
+      "grid": [
+        800,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::block_topk_reg_kernel<(int)33>(const float *, const int *, long, long, int *)",
+      "short": "void strata::kernels::<unnamed>::block_topk_reg_kernel<",
+      "node": 910,
+      "instances": 72,
+      "total_ms": 0.674,
+      "avg_us": 9.36,
+      "max_us": 14.05,
+      "pct_of_window": 0.0,
+      "grid": [
+        4,
+        1,
+        1
+      ],
+      "block": [
+        1024,
+        1,
+        1
+      ],
+      "static_smem_kb": 32.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)8, (int)48, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 1150,
+      "instances": 1,
+      "total_ms": 0.566,
+      "avg_us": 566.47,
+      "max_us": 566.47,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        2,
+        1
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 25.5
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::gdn_ab_multi_kernel<(int)4, (bool)1>(const float *, const unsigned short *, const unsigned short *, const float *, const float *, float *, float *, int, int, int)",
+      "short": "void strata::kernels::<unnamed>::gdn_ab_multi_kernel<",
+      "node": 1124,
+      "instances": 35,
+      "total_ms": 0.545,
+      "avg_us": 15.57,
+      "max_us": 16.54,
+      "pct_of_window": 0.0,
+      "grid": [
+        48,
+        1,
+        1
+      ],
+      "block": [
+        64,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::add_streams_broadcast_kernel(const float *, const float *, float *, long, int)",
+      "short": "strata::kernels::<unnamed>::add_streams_broadcast_kernel",
+      "node": 995,
+      "instances": 2,
+      "total_ms": 0.507,
+      "avg_us": 253.43,
+      "max_us": 494.35,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1088,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::quantize_q8_1_kernel(const float *, block_q8_1 *, long long)",
+      "short": "strata::kernels::<unnamed>::quantize_q8_1_kernel",
+      "node": 1029,
+      "instances": 141,
+      "total_ms": 0.485,
+      "avg_us": 3.44,
+      "max_us": 4.0,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::native_quantize_q8_1_kernel(const float *, strata::kernels::<unnamed>::Q81Block *, int)",
+      "short": "strata::kernels::<unnamed>::native_quantize_q8_1_kernel",
+      "node": 1008,
+      "instances": 142,
+      "total_ms": 0.462,
+      "avg_us": 3.25,
+      "max_us": 3.55,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::doorbell_publish_res_kernel(const float *, const int *, const int *, int, int, int, float *, int *, unsigned int *)",
+      "short": "strata::kernels::doorbell_publish_res_kernel",
+      "node": 1022,
+      "instances": 47,
+      "total_ms": 0.461,
+      "avg_us": 9.81,
+      "max_us": 10.49,
+      "pct_of_window": 0.0,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        1024,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::broadcast_batch_kernel(const float *, const float *, float *, int)",
+      "short": "strata::kernels::<unnamed>::broadcast_batch_kernel",
+      "node": 884,
+      "instances": 1,
+      "total_ms": 0.461,
+      "avg_us": 461.2,
+      "max_us": 461.2,
+      "pct_of_window": 0.0,
+      "grid": [
+        44360,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gr_broadcast_kernel(const float *, float *, long)",
+      "short": "strata::prefill::<unnamed>::gr_broadcast_kernel",
+      "node": 815,
+      "instances": 1,
+      "total_ms": 0.434,
+      "avg_us": 433.94,
+      "max_us": 433.94,
+      "pct_of_window": 0.0,
+      "grid": [
+        44360,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::embed_rows_kernel(int, const unsigned char *, unsigned long, const int *, long, float *)",
+      "short": "strata::kernels::<unnamed>::embed_rows_kernel",
+      "node": 813,
+      "instances": 3,
+      "total_ms": 0.422,
+      "avg_us": 140.81,
+      "max_us": 216.81,
+      "pct_of_window": 0.0,
+      "grid": [
+        10,
+        1109,
+        1
+      ],
+      "block": [
+        32,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)8, (int)24, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 1149,
+      "instances": 3,
+      "total_ms": 0.406,
+      "avg_us": 135.42,
+      "max_us": 184.97,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 22.4
+    },
+    {
+      "name": "strata::kernels::<unnamed>::gate_kernel(const float *, const float *, float *, float)",
+      "short": "strata::kernels::<unnamed>::gate_kernel",
+      "node": 882,
+      "instances": 5,
+      "total_ms": 0.375,
+      "avg_us": 75.07,
+      "max_us": 362.36,
+      "pct_of_window": 0.0,
+      "grid": [
+        4,
+        1,
+        1
+      ],
+      "block": [
+        512,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::swiglu_entries_kernel(const float *, const float *, float *, long long)",
+      "short": "strata::kernels::<unnamed>::swiglu_entries_kernel",
+      "node": 1035,
+      "instances": 94,
+      "total_ms": 0.326,
+      "avg_us": 3.47,
+      "max_us": 3.74,
+      "pct_of_window": 0.0,
+      "grid": [
+        100,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::gdn_conv_l2_multi_kernel(float *, const float *, const float *, float *, int, int, float, int, bool)",
+      "short": "strata::kernels::<unnamed>::gdn_conv_l2_multi_kernel",
+      "node": 1012,
+      "instances": 35,
+      "total_ms": 0.241,
+      "avg_us": 6.9,
+      "max_us": 7.17,
+      "pct_of_window": 0.0,
+      "grid": [
+        80,
+        4,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::copy_i32_from_mapped_kernel(int *, const volatile int *, int)",
+      "short": "strata::kernels::copy_i32_from_mapped_kernel",
+      "node": 1002,
+      "instances": 48,
+      "total_ms": 0.24,
+      "avg_us": 5.01,
+      "max_us": 5.57,
+      "pct_of_window": 0.0,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gdn_gates_kernel(const float *, const float *, const float *, float *, float *, long)",
+      "short": "strata::prefill::<unnamed>::gdn_gates_kernel",
+      "node": 827,
+      "instances": 36,
+      "total_ms": 0.238,
+      "avg_us": 6.62,
+      "max_us": 7.04,
+      "pct_of_window": 0.0,
+      "grid": [
+        208,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::sampler_greedy_kernel(const float *, int, const int *, int, strata::kernels::SamplerParams, int, int, int *)",
+      "short": "strata::kernels::<unnamed>::sampler_greedy_kernel",
+      "node": 1072,
+      "instances": 2,
+      "total_ms": 0.214,
+      "avg_us": 106.95,
+      "max_us": 112.24,
+      "pct_of_window": 0.0,
+      "grid": [
+        4,
+        1,
+        1
+      ],
+      "block": [
+        1024,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.2,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::add_hits_kernel(float *, const float *, const int *, const int *, int)",
+      "short": "strata::kernels::<unnamed>::add_hits_kernel",
+      "node": 1045,
+      "instances": 48,
+      "total_ms": 0.213,
+      "avg_us": 4.44,
+      "max_us": 5.5,
+      "pct_of_window": 0.0,
+      "grid": [
+        8,
+        40,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)145, (int)8, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 892,
+      "instances": 1,
+      "total_ms": 0.213,
+      "avg_us": 213.03,
+      "max_us": 213.03,
+      "pct_of_window": 0.0,
+      "grid": [
+        20,
+        1,
+        3
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 22.4
+    },
+    {
+      "name": "strata::kernels::<unnamed>::combine_k10_vec4(const float4 *, const float *, const float4 *, float4 *, long)",
+      "short": "strata::kernels::<unnamed>::combine_k10_vec4",
+      "node": 1047,
+      "instances": 48,
+      "total_ms": 0.195,
+      "avg_us": 4.07,
+      "max_us": 4.29,
+      "pct_of_window": 0.0,
+      "grid": [
+        5,
+        4,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::gdn_conv_hist_kernel(float *, const float *, long)",
+      "short": "strata::prefill::<unnamed>::gdn_conv_hist_kernel",
+      "node": 831,
+      "instances": 36,
+      "total_ms": 0.175,
+      "avg_us": 4.85,
+      "max_us": 5.12,
+      "pct_of_window": 0.0,
+      "grid": [
+        80,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::native_swiglu_quantize_q8_1_kernel(const float *, const float *, strata::kernels::<unnamed>::Q81Block *, int)",
+      "short": "strata::kernels::<unnamed>::native_swiglu_quantize_q8_1_kernel",
+      "node": 1024,
+      "instances": 47,
+      "total_ms": 0.149,
+      "avg_us": 3.17,
+      "max_us": 3.26,
+      "pct_of_window": 0.0,
+      "grid": [
+        10,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::norm_rope_kernel<(bool)0>(const float *, int, const float *, float *, int, int, float, float, float, float, float, float, float, const int *, const int *, strata::kernels::RopeTab)",
+      "short": "void strata::kernels::<unnamed>::norm_rope_kernel<",
+      "node": 1061,
+      "instances": 36,
+      "total_ms": 0.149,
+      "avg_us": 4.14,
+      "max_us": 5.31,
+      "pct_of_window": 0.0,
+      "grid": [
+        8,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void mul_mat_q<(ggml_type)146, (int)8, (bool)0>(const char *, const int *, const int *, const int *, float *, float *, const float *, uint3, int, int, int, int, int, uint3, uint3, int, int, int, uint3, uint3, int, int, int, uint3)",
+      "short": "void mul_mat_q<",
+      "node": 893,
+      "instances": 1,
+      "total_ms": 0.124,
+      "avg_us": 123.76,
+      "max_us": 123.76,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        3
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 22.4
+    },
+    {
+      "name": "strata::kernels::<unnamed>::sigmoid_scale_rows_vec4_kernel(float4 *, const float *, int)",
+      "short": "strata::kernels::<unnamed>::sigmoid_scale_rows_vec4_kernel",
+      "node": 1027,
+      "instances": 47,
+      "total_ms": 0.119,
+      "avg_us": 2.52,
+      "max_us": 3.13,
+      "pct_of_window": 0.0,
+      "grid": [
+        5,
+        4,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::block_scores_multi_kernel(const float *, const float *, const float *, const int *, int, long, float *, bool, strata::kernels::QsaScoreRows)",
+      "short": "strata::kernels::<unnamed>::block_scores_multi_kernel",
+      "node": 1067,
+      "instances": 12,
+      "total_ms": 0.115,
+      "avg_us": 9.59,
+      "max_us": 9.73,
+      "pct_of_window": 0.0,
+      "grid": [
+        256,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 16.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::append_blocks<(bool)0>(const float *, long, long, int, const float *, float, const float *, const float *, float *, int *, long, long, float, float, float, float, float, float, const int *, strata::kernels::RopeTab)",
+      "short": "void strata::kernels::<unnamed>::append_blocks<",
+      "node": 904,
+      "instances": 12,
+      "total_ms": 0.103,
+      "avg_us": 8.54,
+      "max_us": 9.09,
+      "pct_of_window": 0.0,
+      "grid": [
+        277,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.6,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::rebase_ptrs_kernel(unsigned long long *, const int *, unsigned long long, long long)",
+      "short": "strata::kernels::<unnamed>::rebase_ptrs_kernel",
+      "node": 1041,
+      "instances": 47,
+      "total_ms": 0.1,
+      "avg_us": 2.13,
+      "max_us": 2.3,
+      "pct_of_window": 0.0,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::kv_append_q8_kernel<(bool)1>(signed char *, signed char *, unsigned short *, unsigned short *, const int *, const int *, const float *, const float *, int, int, int, strata::kernels::KvHostPools, int, int)",
+      "short": "void strata::kernels::<unnamed>::kv_append_q8_kernel<",
+      "node": 1063,
+      "instances": 12,
+      "total_ms": 0.078,
+      "avg_us": 6.54,
+      "max_us": 6.66,
+      "pct_of_window": 0.0,
+      "grid": [
+        2,
+        4,
+        8
+      ],
+      "block": [
+        64,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::<unnamed>::to_bf16_kernel(const float *, unsigned short *, unsigned short *, long)",
+      "short": "strata::prefill::<unnamed>::to_bf16_kernel",
+      "node": 878,
+      "instances": 1,
+      "total_ms": 0.077,
+      "avg_us": 76.5,
+      "max_us": 76.5,
+      "pct_of_window": 0.0,
+      "grid": [
+        4096,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::append<(bool)0>(const float *, const int *, int, int, int, const float *, float, float *, float *, float *, int *, int, float, float, float, float, float, float, const int *, strata::kernels::RopeTab)",
+      "short": "void strata::kernels::<unnamed>::append<",
+      "node": 1065,
+      "instances": 12,
+      "total_ms": 0.076,
+      "avg_us": 6.32,
+      "max_us": 6.5,
+      "pct_of_window": 0.0,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.6,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::copy_from_mapped_kernel(float4 *, const volatile float4 *, long)",
+      "short": "strata::kernels::copy_from_mapped_kernel",
+      "node": 1049,
+      "instances": 17,
+      "total_ms": 0.061,
+      "avg_us": 3.58,
+      "max_us": 6.78,
+      "pct_of_window": 0.0,
+      "grid": [
+        10,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::weighted_rms_norm<(int)1024>(const float *, const float *, float *, int, float)",
+      "short": "void strata::kernels::<unnamed>::weighted_rms_norm<",
+      "node": 1053,
+      "instances": 12,
+      "total_ms": 0.057,
+      "avg_us": 4.76,
+      "max_us": 6.66,
+      "pct_of_window": 0.0,
+      "grid": [
+        4,
+        1,
+        1
+      ],
+      "block": [
+        1024,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.1,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::history_advance_kernel(float *, const float *)",
+      "short": "strata::kernels::<unnamed>::history_advance_kernel",
+      "node": 1059,
+      "instances": 4,
+      "total_ms": 0.048,
+      "avg_us": 11.89,
+      "max_us": 12.22,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::gate(const float *, const float *, float *, int, int)",
+      "short": "strata::kernels::<unnamed>::gate",
+      "node": 1069,
+      "instances": 12,
+      "total_ms": 0.048,
+      "avg_us": 3.99,
+      "max_us": 4.06,
+      "pct_of_window": 0.0,
+      "grid": [
+        96,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::gdn_conv_commit_layers_kernel(float *, long long, const float *, long long, int, const int *)",
+      "short": "strata::kernels::<unnamed>::gdn_conv_commit_layers_kernel",
+      "node": 1077,
+      "instances": 1,
+      "total_ms": 0.046,
+      "avg_us": 45.69,
+      "max_us": 45.69,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        36,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::append_first<(bool)0>(const float *, const float *, float, float *, float *, float, float, float, float, float, float, const int *, strata::kernels::RopeTab)",
+      "short": "void strata::kernels::<unnamed>::append_first<",
+      "node": 902,
+      "instances": 12,
+      "total_ms": 0.043,
+      "avg_us": 3.56,
+      "max_us": 4.0,
+      "pct_of_window": 0.0,
+      "grid": [
+        1,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.6,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::append_tail(const float *, long, long, float *)",
+      "short": "strata::kernels::<unnamed>::append_tail",
+      "node": 906,
+      "instances": 12,
+      "total_ms": 0.026,
+      "avg_us": 2.17,
+      "max_us": 2.34,
+      "pct_of_window": 0.0,
+      "grid": [
+        3,
+        1,
+        1
+      ],
+      "block": [
+        128,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::conv_residual_kernel(const float *, const float *, const unsigned short *, const float *, const float *, float *, float *)",
+      "short": "strata::kernels::<unnamed>::conv_residual_kernel",
+      "node": 1057,
+      "instances": 4,
+      "total_ms": 0.018,
+      "avg_us": 4.58,
+      "max_us": 5.31,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::logits_nonfinite_kernel(const float *, int, int, unsigned int *)",
+      "short": "strata::kernels::<unnamed>::logits_nonfinite_kernel",
+      "node": 1074,
+      "instances": 1,
+      "total_ms": 0.014,
+      "avg_us": 13.98,
+      "max_us": 13.98,
+      "pct_of_window": 0.0,
+      "grid": [
+        16,
+        4,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::history_batch_kernel(float *, const float *, int)",
+      "short": "strata::kernels::<unnamed>::history_batch_kernel",
+      "node": 888,
+      "instances": 1,
+      "total_ms": 0.014,
+      "avg_us": 13.66,
+      "max_us": 13.66,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::post(const float *, const float *, const float *, float *, int, int, float)",
+      "short": "strata::kernels::<unnamed>::post",
+      "node": 1051,
+      "instances": 2,
+      "total_ms": 0.01,
+      "avg_us": 4.75,
+      "max_us": 4.96,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        4,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::broadcast_kernel(const float *, const float *, float *)",
+      "short": "strata::kernels::<unnamed>::broadcast_kernel",
+      "node": 1055,
+      "instances": 4,
+      "total_ms": 0.01,
+      "avg_us": 2.49,
+      "max_us": 2.88,
+      "pct_of_window": 0.0,
+      "grid": [
+        40,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "void strata::kernels::<unnamed>::append_layers<(bool)0>(const float *, long long, const int *, int, int, int, float, strata::kernels::QsaIndexerLayers, int, float, float, float, float, float, float, const int *, strata::kernels::RopeTab)",
+      "short": "void strata::kernels::<unnamed>::append_layers<",
+      "node": 1081,
+      "instances": 1,
+      "total_ms": 0.01,
+      "avg_us": 9.76,
+      "max_us": 9.76,
+      "pct_of_window": 0.0,
+      "grid": [
+        12,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.6,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::kernels::<unnamed>::copy_indexed_kernel(float *, const float *, long, const int *, long)",
+      "short": "strata::kernels::<unnamed>::copy_indexed_kernel",
+      "node": 1083,
+      "instances": 1,
+      "total_ms": 0.007,
+      "avg_us": 7.33,
+      "max_us": 7.33,
+      "pct_of_window": 0.0,
+      "grid": [
+        64,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    },
+    {
+      "name": "strata::prefill::mmq::<unnamed>::iota_kernel(int *, long)",
+      "short": "strata::prefill::mmq::<unnamed>::iota_kernel",
+      "node": 811,
+      "instances": 2,
+      "total_ms": 0.004,
+      "avg_us": 2.05,
+      "max_us": 2.18,
+      "pct_of_window": 0.0,
+      "grid": [
+        50,
+        1,
+        1
+      ],
+      "block": [
+        256,
+        1,
+        1
+      ],
+      "static_smem_kb": 0.0,
+      "dynamic_smem_kb": 0.0
+    }
+  ],
+  "buckets_1s": [
+    {
+      "t_s": 0.0,
+      "busy_ms": 997.0,
+      "idle_ms": 3.0,
+      "kernels": 3307
+    },
+    {
+      "t_s": 1.0,
+      "busy_ms": 18.1,
+      "idle_ms": 981.9,
+      "kernels": 22
+    },
+    {
+      "t_s": 2.0,
+      "busy_ms": 0.0,
+      "idle_ms": 1000.0,
+      "kernels": 0
+    },
+    {
+      "t_s": 3.0,
+      "busy_ms": 326.84,
+      "idle_ms": 673.16,
+      "kernels": 546
+    },
+    {
+      "t_s": 4.0,
+      "busy_ms": 357.72,
+      "idle_ms": 642.28,
+      "kernels": 642
+    },
+    {
+      "t_s": 5.0,
+      "busy_ms": 359.65,
+      "idle_ms": 640.35,
+      "kernels": 567
+    },
+    {
+      "t_s": 6.0,
+      "busy_ms": 413.4,
+      "idle_ms": 586.6,
+      "kernels": 754
+    },
+    {
+      "t_s": 7.0,
+      "busy_ms": 338.51,
+      "idle_ms": 661.49,
+      "kernels": 557
+    },
+    {
+      "t_s": 8.0,
+      "busy_ms": 350.18,
+      "idle_ms": 649.82,
+      "kernels": 656
+    },
+    {
+      "t_s": 9.0,
+      "busy_ms": 376.44,
+      "idle_ms": 623.56,
+      "kernels": 615
+    },
+    {
+      "t_s": 10.0,
+      "busy_ms": 286.14,
+      "idle_ms": 713.86,
+      "kernels": 545
+    },
+    {
+      "t_s": 11.0,
+      "busy_ms": 315.71,
+      "idle_ms": 684.29,
+      "kernels": 470
+    },
+    {
+      "t_s": 12.0,
+      "busy_ms": 445.6,
+      "idle_ms": 554.4,
+      "kernels": 747
+    },
+    {
+      "t_s": 13.0,
+      "busy_ms": 387.79,
+      "idle_ms": 612.21,
+      "kernels": 581
+    },
+    {
+      "t_s": 14.0,
+      "busy_ms": 419.16,
+      "idle_ms": 580.84,
+      "kernels": 665
+    },
+    {
+      "t_s": 15.0,
+      "busy_ms": 367.8,
+      "idle_ms": 632.2,
+      "kernels": 574
+    },
+    {
+      "t_s": 16.0,
+      "busy_ms": 397.63,
+      "idle_ms": 602.37,
+      "kernels": 694
+    },
+    {
+      "t_s": 17.0,
+      "busy_ms": 448.47,
+      "idle_ms": 551.53,
+      "kernels": 640
+    },
+    {
+      "t_s": 18.0,
+      "busy_ms": 336.59,
+      "idle_ms": 663.41,
+      "kernels": 629
+    },
+    {
+      "t_s": 19.0,
+      "busy_ms": 427.94,
+      "idle_ms": 572.06,
+      "kernels": 751
+    },
+    {
+      "t_s": 20.0,
+      "busy_ms": 371.41,
+      "idle_ms": 628.59,
+      "kernels": 582
+    },
+    {
+      "t_s": 21.0,
+      "busy_ms": 414.9,
+      "idle_ms": 585.1,
+      "kernels": 693
+    },
+    {
+      "t_s": 22.0,
+      "busy_ms": 369.79,
+      "idle_ms": 630.21,
+      "kernels": 538
+    },
+    {
+      "t_s": 23.0,
+      "busy_ms": 381.55,
+      "idle_ms": 618.45,
+      "kernels": 624
+    },
+    {
+      "t_s": 24.0,
+      "busy_ms": 271.87,
+      "idle_ms": 728.13,
+      "kernels": 472
+    },
+    {
+      "t_s": 25.0,
+      "busy_ms": 335.86,
+      "idle_ms": 664.14,
+      "kernels": 550
+    },
+    {
+      "t_s": 26.0,
+      "busy_ms": 236.6,
+      "idle_ms": 763.4,
+      "kernels": 490
+    }
+  ]
+}

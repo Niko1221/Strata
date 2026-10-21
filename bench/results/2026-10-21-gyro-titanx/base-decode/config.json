@@ -1,0 +1,41 @@
+{
+  "exe": "build-cuda12/strata",
+  "args": [
+    "--pack",
+    "packs/gyro-s",
+    "--native",
+    "SHARD1",
+    "--native",
+    "/home/mo/models/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+    "--expert-profile",
+    "data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--mmap-experts",
+    "--resident-budget-gib",
+    "6",
+    "--mtp",
+    "mtp/rt",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--max-context",
+    "8192",
+    "--kv",
+    "int8"
+  ],
+  "cwd": "/home/mo/strata-mainline",
+  "tokenizer": "packs/gyro-s/tokenizer",
+  "model_name": "gyro-s-strata-base-decode",
+  "log": "/home/mo/strata-mainline/bench/results/2026-10-21-gyro-titanx/base-decode/engine.log",
+  "host": "127.0.0.1",
+  "port": 60379,
+  "api_key": "sk-GUXK_zuLUi5tGiyqH_q14PCz9u5SiteyKmmpuI22esI",
+  "env": {
+    "STRATA_DECODE_TIMING": "1",
+    "STRATA_VERIFY_PROFILE": "1"
+  }
+}

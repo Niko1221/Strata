@@ -736,7 +736,7 @@ bool grow(uint16_t*& p, int64_t& have, int64_t want) {   // `have`, `want`: 2-by
 constexpr int64_t kXSliceElems = 16ll << 20;   // 32 MiB of FP16 activations per slice (64 MiB as fp32)
 
 #if defined(STRATA_EXPERIMENTAL_SM60)
-// ---- Pascal, opt-in (STRATA_DENSE_F32=1): the dense projections' FP16-operand GEMMs as cublasSgemm ----------------
+// ---- Pascal and Maxwell, opt-in (STRATA_DENSE_F32=1): the dense projections' FP16-operand GEMMs as cublasSgemm --
 // Measured on a Tesla P40 (sm_61) with cuBLAS 12.4.5.8 (bench/results/2026-10-12-p40-sm61-kernels).  For FP16
 // operands with FP32 sums cuBLAS has two Maxwell kernels there, maxwell_sgemm_fp16_64x64 and _32x128, and picks the
 // slow one for most chunk sizes: the 10240 x 2560 qkv projection runs at 7.6 TFLOPS for T 7030-7040 and at 4.3 from
@@ -749,8 +749,16 @@ constexpr int64_t kXSliceElems = 16ll << 20;   // 32 MiB of FP16 activations per
 // ~144 at 6144+ rows, under ~408 at 2560 rows - cuBLAS switches one of them to another kernel family and the bits
 // differ, so those keep the FP16 call).  The weight goes through the BF16 path's conversion buffer (126 MiB for the
 // largest, 21 MiB more than that path's own), the activations through its slices.
-// Opt-in, and on Pascal (compute capability 6.x) only: the equality belongs to the cuBLAS build, so run
-// gemm_f32_parity with yours before turning it on; newer cards have tensor cores for the FP16 call.
+//
+// Maxwell (sm_50/52, the experimental CUDA 12 build) has the same two cuBLAS kernels and no tensor cores, and the
+// same trade: on a GeForce GTX TITAN X (sm_52) with CUDA 12.9's cuBLAS, gemm_f32_parity says 5,201 chunk sizes
+// bitwise, and the FP32 route is 1.18-1.65x faster for the big shapes (qkv 10240x2560 at T 7,040: 166.5 -> 120.0 ms;
+// query 12288x2560 at T 7,041: 203.4 -> 149.8; gate 6144x2560: 101.0 -> 67.8; out 2560x6144: 127.5 -> 77.1) and
+// neutral from T 560 to 2,048 (0.97-1.06x).  Measured with the same tool, on that card, with that library.
+//
+// Opt-in, and on the cards whose cuBLAS has no tensor-core path for this call (compute capability 5.x and 6.x): the
+// equality belongs to the cuBLAS build, so run gemm_f32_parity with yours before turning it on; newer cards have
+// tensor cores for the FP16 call.
 __global__ void f16_to_f32_kernel(const uint16_t* __restrict__ in, float* __restrict__ out, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __half2float(__ushort_as_half(in[i]));
@@ -768,7 +776,9 @@ bool dense_f32_on() {
     if (g_dense_f32 >= 0) return g_dense_f32 != 0;
     if (!env) return false;
     const int cc = current_cc();
-    return cc >= 60 && cc < 70;
+    // 5.x (Maxwell) and 6.x (Pascal): cuBLAS has no tensor-core path for this call there, so the FP32 copies win
+    // for the big shapes (measured: a TITAN X with CUDA 12.9's cuBLAS, gemm_f32_parity bitwise on 5,201 sizes).
+    return cc >= 50 && cc < 70;
 }
 // The smallest T taken for a weight of N rows and K columns (0: never): the measured shapes only - the 2560-column
 // qkv (10240 rows), query (12288) and gate (6144) projections and the 2560-row output projections (6144 and 4096

@@ -15,9 +15,8 @@ the reporters' own, on one machine each, unless the text says the maintainers me
 | Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32; opt-in: `STRATA_Q8_SM60=1` runs the Q8_0 dense projections and head on a GP100 kernel ([below](#pascal-gp100-a-q8_0-decode-kernel-opt-in)) | 2x P100, IQ3_S, engine 0.1.39: prompt 526-532 tok/s, decode 28-32 tok/s at 128K prompt tokens, 3 of 3 needle checks at 122K ([report](../bench/results/2026-10-06-community-2x-p100/README.md), #1157); PH402 (4 GP100 dies), IQ3_XXS: decode 28.3 -> 38.9 tok/s with `STRATA_Q8_SM60=1` and a Q8_0 dense shard |
 | Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there, #395); the dense weights dequantized by a wide kernel, expert mode 8 and its own interleaved-matvec table; opt-in `STRATA_DENSE_F32=1`: the large dense GEMMs as `cublasSgemm` ([below](#tesla-p40-sm_61-what-was-measured-and-changed)) | P40, IQ3_S, engine 0.1.30: prompt 217-374 tok/s, decode 30-33 tok/s (#395); 0.1.43.1 with the sm_61 changes: prompt 255 tok/s at 565 tokens (was 205), decode 37-38 tok/s (was 34-35); with `STRATA_DENSE_F32=1` 464-474 tok/s at 7K tokens (was 360-432) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores (#655, #540); the prompt attention on `mma.m8n8k4` (#600); a leaner attention kernel (#540) | V100-PCIE-32GB, UD-IQ4_XS: prompt 1,123-1,251 tok/s (#600); V100 32GB, IQ2_XS: prompt +22% from #540 |
-
+| GeForce GTX TITAN X (and the other Maxwell cards) | 5.2 / 5.0 | the CUDA 12 engine | no `__dp4a` (the four-`vmad` fallback, bit-exact), no tensor cores; the dense projections' FP16 GEMMs as `cublasSgemm` on FP32 copies, opt-in `STRATA_DENSE_F32=1` ([below](#geforce-gtx-titan-x-sm_52-a-gyro-profile-and-what-it-says)) | TITAN X 12 GB, Gyro-S, engine 0.1.46.1: prompt read 91.5 -> 95.7 tok/s with `STRATA_DENSE_F32=1`; the GPU computes 9.0 s of a 53 s decode and waits 40.8 s for the expert data ([report](../bench/results/2026-10-21-gyro-titanx/README.md)) |
 | RTX 20 (Turing) | 7.5 | **supported**, the ready-made engine | opt-in: `STRATA_BF16_TC=1` runs the BF16 projections on the FP16 tensor cores | RTX 2080 Ti, Q2_0: prompt +15-18% (#655) |
-| GeForce GTX TITAN X (and the other Maxwell cards) | 5.2 / 5.0 | the CUDA 12 engine | no `__dp4a` (the four-`vmad` fallback, bit-exact), no tensor cores | TITAN X 12 GB, Gyro-S, engine 0.1.46.1: the GPU computes 9.0 s of a 53 s decode and waits 40.8 s for the expert data (the profile is in the next PR's report) |
 
 A card needs enough VRAM to be useful: 12 GB or more is recommended, as for every card (a 2 GB GT 1030 is compute
 capability 6.1 too, and cannot hold any of the model).
@@ -214,6 +213,86 @@ Two things to know when measuring on such a card:
   --adapt-swaps 0 --pcie-frac 0`: an expert computed on the CPU rounds differently for a lone token than in a window
   of several (`native_gu_mt_min`), and how many drafts a window holds depends on timing. Add `STRATA_IQ_MT_MIN=1`
   (and `STRATA_PREFILL_CPU_SHARE=0`, `STRATA_ROUTE_TAIL_SKIP=0`) to compare two builds' answers byte for byte.
+
+### GeForce GTX TITAN X (sm_52): a Gyro profile, and what it says
+
+One GeForce GTX TITAN X 12 GB in a PC with 12 logical CPUs and 15.7 GiB of RAM (an SK hynix SC311 SATA SSD), CUDA
+12.9, engine 0.1.46.1 built with `-DCMAKE_CUDA_ARCHITECTURES=50 -DSTRATA_EXPERIMENTAL_SM60=ON`, and the Gyro-S model
+(TQ1_0: the experts are TQK6 gate/up and TQK7 down in a Hadamard-rotated basis) with the repo's
+`strata-gyro-s.json`. Every number here is from that machine; the runs, the trace and the tools are in
+[bench/results/2026-10-21-gyro-titanx](../bench/results/2026-10-21-gyro-titanx/README.md).
+
+**What the card does with a request.** The GPU is not the bottleneck. In a real request (a 1,024-token prompt read,
+then 201 tokens decoded) the GPU computes 9.8 s of the 27 s prompt and 9.0 s of the 53 s decode; the rest it waits.
+The wait is the doorbell: 40.8 s of the decode window is one thread spinning on `wait_flag_ge_kernel` while the host
+fetches the experts the card does not hold. The engine's own timers say the same from the other side - of a 505.7 ms
+window, 405.2 ms is `waitCPU`, 38.8 ms the VRAM expert hits and about 50 ms the GPU's own layer work. The expert data
+comes off the SSD at the drive's 0.5 GB/s: 20.8 GB for 201 tokens, 104 MB per token, 41.2 s of the decode spent in
+`decode waited ... in 5787 fetches`. The copies are nothing (2.47 GB H2D in 210 ms). The reason is the card: Gyro-S's
+experts are 18 GiB, the card has 12 GiB of VRAM and the PC 15.7 GiB of RAM, and the engine's own start-up says the
+8,192-token prompt chunk lends 3,391 slots to the prompt path of which **0** fit in RAM, with only 327-559 MiB of VRAM
+free at the start of a request.
+
+**What the compute costs on this card.** The trace (Nsight Systems, `--cuda-graph-trace=node`, so the kernels inside
+the engine's CUDA graphs are named) gives the decode's 53 s as: the doorbell wait 40.8 s, the trellis expert kernels
+`native_gu_multi_kernel<145>` 1.85 s and `native_down_multi_kernel<146>` 1.45 s, the Q5_K dense weights 1.72 s, the
+GDN hyper-connection projections 1.01 s, the Q6_K/Q5_K weights, the head and the embedding 0.76 s, the expert fetch
+0.25 s, the doorbell's bookkeeping (`gpu_stamp_kernel`, 78,450 launches = 390 per token) 0.14 s, the attention
+0.09 s. The prompt's 27 s: the trellis prompt kernels (`mul_mat_q` on types 145 and 146) 5.53 s, cuBLAS 1.93 s, the
+rest 2.3 s.
+
+**Why Maxwell is slow in the expert kernels.** `cuobjdump -sass` shows the trellis gate/up kernel with 160 `VMAD`,
+245 `IMAD`, 240 `IADD` and no `IDP4A`: `__dp4a` arrived with compute capability 6.1 and this card is 5.2, and
+`vdp4a` does not exist there either (`ptxas`: "Not a name of any known instruction"). The engine's four-`vmad` fallback
+is still the best exact form on this card: the byte-wise alternative takes 128.3 ms where it takes 54.0 ms
+(`tools/sm60_dp4a_check.cu` here: 1.07e9 cases, 0 mismatches, 2.37x). The card's instruction rates, measured
+(`maxwell-instr-rates.cu`): FFMA 806 and F2F 660 instructions per SM per clock, IMAD 493, VMAD 268. So the expert
+kernel is integer-bound and it is not the dot products that cost: the trellis *state* extraction is 80 % of the
+instructions, and the kernel runs at 18 GB/s against the card's ~336 GB/s of memory bandwidth.
+
+**One change that measured faster.** The dense projections' GEMMs on this card go through cuBLAS's FP16-operand
+kernels (`maxwell_sgemm_fp16_32x128_tn`, 1.93 s of the prompt's compute). As on the P40, the FP32 copies
+(`STRATA_DENSE_F32=1`) are faster: `gemm_f32_parity` on this card with CUDA 12.9's cuBLAS says 5,201 chunk sizes
+**bitwise**, and the route is 1.18-1.65x faster for the big shapes (qkv 10,240x2,560 at T 7,040: 166.5 -> 120.0 ms;
+query 12,288x2,560 at T 7,041: 203.4 -> 149.8; gate 6,144x2,560: 101.0 -> 67.8; out 2,560x6,144: 127.5 -> 77.1) and
+neutral from T 560 to 2,048. Through the server, the prompt read goes from 91.5 to 95.7 tok/s (the medians of three
+repeats, the page cache evicted before each run). It stays **opt-in** because the equality belongs to the cuBLAS
+build, not to the code: run `gemm_f32_parity` with your toolkit's library first.
+
+**Measured and not changed** (every one of them on this card, for this model): the file tier's read-ahead
+(`STRATA_IO_PREFETCH=0`) costs 49 % of the prompt read and 58 % of the decode; a smaller prompt chunk
+(`--prefill 2048`) costs 12 % of the prompt read, because the RAM budget is already full and the lend region still
+gets 0 of its 1,024 slots; `--resident-budget-gib 8` changes nothing and `--resident-budget-gib 4` is +4.3 % (inside
+the noise, the two base runs agree to 0.2 % on the prompt read and 11 % on the decode);
+`STRATA_ADAPT_OVERLAP_RESIDENT=1` is +2.1 % (inside the noise); the other expert layouts are all slower here
+(`STRATA_EXP_MODE=2/4/5/6/7/8`: 1,138 -> 1,255 / 1,340 / 1,364 / 1,373 / 1,387 / 1,408 us for an 18-group call at
+2 tokens, all bitwise equal to mode 0) - mode 8, which is 35 % faster on a P40, is 8 % slower here.
+
+**What was not measured here.** No hardware counters: Nsight Compute is installed on this PC but its counters are
+refused on this GeForce card without root (`ERR_NVGPUCTRPERM`), so there are no occupancy, memory-throughput or
+stall numbers - the occupancy statements come from the SASS and the launch shapes. No second card: every number
+above is this one TITAN X on this PC, and the P40 numbers above are a different card with a different model. The
+HIP, SYCL and Metal engines were not built or run: this PC has no ROCm and no Intel toolchain. The kernel
+candidates that were dropped were dropped on this card, for this model, with this quant: the trellis state
+extraction and the dp4a fallback would matter differently on a card with `__dp4a`.
+
+**What to do next, in the order the profile gives it.** On a card that holds the experts, the compute is the
+work, and these are the kernels it is made of:
+
+1. The trellis gate/up and down expert kernels (3.3 s of the decode's 9.0 s of compute): integer-bound, and the
+   dot products are 18 % of their instructions - the trellis *state* extraction is the rest, so that is where a
+   rewrite would pay, not the dot product.
+2. The dense weights' MMVQ (1.7 s): the same dp4a story, and the same conclusion.
+3. The dense projections' GEMMs (1.9 s of the prompt's compute): the FP32 route is now available on this card.
+4. The doorbell's bookkeeping (`gpu_stamp_kernel`, 78,450 launches = 390 per token): 0.14 s of GPU time, but the
+   host pays for every launch, and on a card where the GPU waits anyway, fewer round trips is the same idea as
+   more overlap.
+
+On this card, though, the first thing to change is not a kernel: the model does not fit. A card with 24 GB, or a
+PC with 32 GiB of RAM, would put the decode on the compute path, and the list above would matter then. The
+engine's own start-up says it in two lines: the 8,192-token prompt chunk lends 3,391 slots to the prompt path and
+**0** of them fit in RAM, and only 327-559 MiB of VRAM are free at the start of a request (the engine warns that
+the driver may then page GPU memory to system RAM and the decode falls to a few tok/s).
 
 ### Quadro RTX 8000: measurements of existing switches
 

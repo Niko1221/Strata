@@ -1,0 +1,315 @@
+{
+  "variant": "nsys-node",
+  "config": {
+    "exe": "/home/mo/strata-mainline/bench/results/2026-10-21-gyro-titanx/nsys-tools/strata-nsys.sh",
+    "args": [
+      "--pack",
+      "packs/gyro-s",
+      "--native",
+      "SHARD1",
+      "--native",
+      "/home/mo/models/Qwen3.8-Flash-Next-Gyro-GGUF/Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf",
+      "--expert-profile",
+      "data/expert-profile.bin",
+      "--expert-cache",
+      "auto",
+      "--mmap-experts",
+      "--resident-budget-gib",
+      "6",
+      "--mtp",
+      "mtp/rt",
+      "--prefill",
+      "auto",
+      "--spec",
+      "4",
+      "--spec-min-p",
+      "0.5",
+      "--max-context",
+      "8192",
+      "--kv",
+      "int8"
+    ],
+    "cwd": "/home/mo/strata-mainline",
+    "tokenizer": "packs/gyro-s/tokenizer",
+    "model_name": "gyro-s-strata-nsys-node",
+    "log": "/home/mo/strata-mainline/bench/results/2026-10-21-gyro-titanx/nsys-node/engine.log",
+    "host": "127.0.0.1",
+    "port": 46757,
+    "api_key": "sk-GUXK_zuLUi5tGiyqH_q14PCz9u5SiteyKmmpuI22esI",
+    "env": {
+      "NSYS_OUT": "/home/mo/strata-mainline/bench/results/2026-10-21-gyro-titanx/nsys-tools/strata",
+      "STRATA_DECODE_TIMING": "1",
+      "STRATA_VERIFY_PROFILE": "1"
+    }
+  },
+  "port": 46757,
+  "started": "2026-10-21T11:39:47.356601+00:00",
+  "phase_env": true,
+  "runs": [
+    {
+      "workload": "decode",
+      "repeat": 1,
+      "tag": "nsys-node-r1",
+      "prompt_chars": 3449,
+      "prompt_tokens_estimate": 1063,
+      "ttft_s": 62.171,
+      "total_s": 76.978,
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 1114,
+        "prompt_ms": 27762.5,
+        "prompt_per_token_ms": 24.921,
+        "prompt_per_second": 40.1,
+        "predicted_n": 201,
+        "predicted_ms": 49204.7,
+        "predicted_per_token_ms": 244.8,
+        "predicted_per_second": 4.1,
+        "draft_n": 156,
+        "draft_n_accepted": 128
+      },
+      "usage": {
+        "prompt_tokens": 1114,
+        "completion_tokens": 201,
+        "total_tokens": 1315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish": "stop",
+      "answer_chars": 177,
+      "prompt_tokens": 1114,
+      "prompt_reused": 0,
+      "prompt_read": 1114,
+      "prompt_ms": 27763.0,
+      "prompt_tok_s": 40.1,
+      "generated": 201,
+      "decode_ms": 49205.0,
+      "decode_tok_s": 4.1,
+      "drafts_accepted": 128,
+      "drafts_offered": 156,
+      "draft_accept_pct": 82.1,
+      "expert_hit_pct": 83.9,
+      "expert_hits": 81546,
+      "expert_lookups": 97211,
+      "experts_over_pcie": 3085,
+      "os_read_mb": 33735.7,
+      "major_faults": 3660,
+      "expert_read_mb": 20823.0,
+      "page_cache_held_mb": 5950.5,
+      "page_cache_needed_mb": 14872.5,
+      "decode_wait_ms": 41248.7,
+      "decode_fetches": 5787,
+      "tier_gpu_hits": 81546,
+      "tier_ram_blobs": 21345,
+      "tier_file_blobs": 9760,
+      "tier_file_mb": 34367.1,
+      "route_tail_skipped": 11476,
+      "decode_timing": {
+        "windows": 74,
+        "avg_T": 3.11,
+        "tokens_per_window": 2.72,
+        "ms_per_window": 664.93,
+        "verify_ms": 648.39,
+        "gpu_reach_wait_ms": 61.65,
+        "per_layer_host_ms": 574.07,
+        "plan_ms": 0.42,
+        "actq_ms": 3.12,
+        "jobs_ms": 505.87,
+        "cpu_pool_ms": 64.27,
+        "stage_ms": 0.02,
+        "commit_emit_ms": 0.13,
+        "draft_ms": 8.26,
+        "cpu_experts_ms": 3.2,
+        "cpu_expert_entries": 4.41,
+        "vram_hits_ms": 22.96,
+        "pcie_ms": 0.76,
+        "adapt_wait_ms": 2.55,
+        "adapt_join_ms": 5.6,
+        "swaps_per_window": 24.6
+      },
+      "gpu_stages": {
+        "raw": "GDN layers: q8+qkv/q-idx gemv 8.53 conv 0.37 ab 0.61 z 5.00 rec 1.39 out-proj 4.47 router+plan+bell 2.22 shared+quant 3.78 waitA 6.19 VRAM hits 31.58 waitB 3.20 PCIe grp 2.68 waitCPU 413.40 copy+combine 0.95 (gap) 0.10 head 5.15   hc0 norm 1.19   hc0 down 2.12   hc0 up 2.82   hc1 norm 0.49   hc1 down 2.06   hc1 up 2.83 | QSA layers: q8+kv-idx 0.21 k/v+norm-rope 0.62 kv+idx append 0.26 q+q-idx 3.64 scores+topk 0.20 kv-resolve 0.03 attention 1.33 gate 0.09 out-proj 1.57 router+plan+bell 0.74 shared+quant 1.26 waitA 0.18 VRAM hits 10.74 waitB 0.71 PCIe grp 0.70 waitCPU 124.37 copy+combine 0.31 (gap) 0.03   hc0 norm 0.17   hc0 down 0.71   hc0 up 0.94   hc1 norm 0.16   hc1 down 0.70   hc1 up 0.94 | total 651.76 ms/window over 75 windows",
+        "total_ms_per_window": 651.76,
+        "windows": 75,
+        "GDN layers": {
+          "q8+qkv/q-idx gemv": 8.53,
+          "conv": 0.37,
+          "ab": 0.61,
+          "z": 5.0,
+          "rec": 1.39,
+          "out-proj": 4.47,
+          "router+plan+bell": 2.22,
+          "shared+quant": 3.78,
+          "waitA": 6.19,
+          "VRAM hits": 31.58,
+          "waitB": 3.2,
+          "PCIe grp": 2.68,
+          "waitCPU": 413.4,
+          "copy+combine": 0.95,
+          "(gap)": 0.1,
+          "head": 5.15,
+          "hc0 norm": 1.19,
+          "hc0 down": 2.12,
+          "hc0 up": 2.82,
+          "hc1 norm": 0.49,
+          "hc1 down": 2.06,
+          "hc1 up": 2.83
+        },
+        "QSA layers": {
+          "q8+kv-idx": 0.21,
+          "k/v+norm-rope": 0.62,
+          "kv+idx append": 0.26,
+          "q+q-idx": 3.64,
+          "scores+topk": 0.2,
+          "kv-resolve": 0.03,
+          "attention": 1.33,
+          "gate": 0.09,
+          "out-proj": 1.57,
+          "router+plan+bell": 0.74,
+          "shared+quant": 1.26,
+          "waitA": 0.18,
+          "VRAM hits": 10.74,
+          "waitB": 0.71,
+          "PCIe grp": 0.7,
+          "waitCPU": 124.37,
+          "copy+combine": 0.31,
+          "(gap)": 0.03,
+          "hc0 norm": 0.17,
+          "hc0 down": 0.71,
+          "hc0 up": 0.94,
+          "hc1 norm": 0.16,
+          "hc1 down": 0.7,
+          "hc1 up": 0.94
+        }
+      },
+      "proc_io": {
+        "rchar": 0,
+        "read_bytes": 0,
+        "syscr": 0,
+        "wchar": 0
+      }
+    }
+  ],
+  "cache_state": "cold",
+  "cache_eviction": {
+    "file": "/home/mo/.cache/strata-page-cache-evict.bin",
+    "gib": 16,
+    "ram_cached_mib_before": 4986,
+    "read_s": 3.6,
+    "ram_cached_mib_after": 9585,
+    "ok": true
+  },
+  "ready_s": 42.0,
+  "status": {
+    "service": "strata",
+    "model": "gyro-s-strata-nsys-node",
+    "loaded": true,
+    "auto_load": true,
+    "structured_output": {
+      "formats": [
+        "json_object",
+        "json_schema"
+      ],
+      "method": "prompt_and_validate",
+      "constrained_decoding": false,
+      "stream_buffered": true
+    },
+    "engine": "0.1.46.1",
+    "started": 1792582831,
+    "uptime_s": 1,
+    "cache_max_tokens": 8192,
+    "context": {
+      "native": 8192,
+      "max_positions": 8192
+    },
+    "concurrency": {
+      "serving": 1,
+      "requested": 1
+    },
+    "dialects": [
+      "/v1/chat/completions",
+      "/v1/messages",
+      "/v1/responses"
+    ],
+    "vision": {
+      "enabled": false,
+      "available": false,
+      "error": null
+    },
+    "image_generation": {
+      "enabled": false
+    },
+    "activity": {
+      "requests": 0,
+      "in_flight": 0,
+      "last_request_at": null
+    },
+    "last_timings": null,
+    "vram": {
+      "elastic": false
+    },
+    "machine": {
+      "at": 1792582833,
+      "gpu": {
+        "name": "NVIDIA GeForce GTX TITAN X",
+        "used_mib": 11728.0,
+        "total_mib": 12288.0,
+        "util_pct": 0,
+        "temp_c": 56,
+        "power_w": 84.008
+      },
+      "ram": {
+        "used_gib": 10.6,
+        "total_gib": 15.4
+      }
+    }
+  },
+  "startup": {
+    "expert_cache_slots": 6151,
+    "expert_cache_gib": 6.01,
+    "resident_ram_gib": 6.0,
+    "pcie_gbs": 12.9,
+    "file_cache_hold_pct": 27,
+    "direct_read_gbs": 0.56,
+    "cached_read_gbs": 0.15,
+    "page_cache_gib": 4.4,
+    "draft_vram_mib": 802,
+    "engine_version": "0.1.46.1",
+    "weights_mib": 1466,
+    "weights_load_s": 2.5,
+    "prefill_chunk": 8192,
+    "prefill_file_set_gib": 15.7,
+    "prefill_page_cache_gib": 4.4,
+    "prefill_drive_gb": 16.8
+  },
+  "engine_pid": 127738,
+  "ended": "2026-10-21T11:42:25.828120+00:00",
+  "summary": {
+    "decode": {
+      "workload": "decode",
+      "n": 1,
+      "prompt_tok_s": 40.1,
+      "decode_tok_s": 4.1,
+      "ttft_s": 62.17,
+      "total_s": 76.98,
+      "generated": 201,
+      "expert_hit_pct": 83.9,
+      "os_read_mb": 33735.7,
+      "expert_read_mb": 20823.0,
+      "decode_wait_ms": 41248.7,
+      "decode_fetches": 5787,
+      "draft_accept_pct": 82.1,
+      "page_cache_held_mb": 5950.5,
+      "stage_ms": 0.02,
+      "gpu_reach_wait_ms": 61.65,
+      "cpu_pool_ms": 64.27,
+      "commit_emit_ms": 0.13,
+      "draft_ms": 8.26,
+      "ms_per_window": 664.93,
+      "tokens_per_window": 2.72,
+      "vram_hits_ms": 22.96,
+      "pcie_ms": 0.76,
+      "cpu_experts_ms": 3.2
+    }
+  }
+}
