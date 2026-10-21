@@ -73,6 +73,12 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-21: AMD Radeon RX 6800 XT 16 GB (gfx1030), Ryzen 9 5950X, 128 GB RAM, Linux](../bench/results/2026-10-21-community-rx-6800-xt-linux/README.md):
+  ROCm 10.0.0 (and 10.1.0), Strata v0.2.1 and v0.2.2 source builds, original Flash-Next IQ3_S, 131,072-token context; one card.
+  Stock 521 / 546 / 525 tok/s prompt at 4K / 32K / 128K, with the gfx103x switches 986 / 1,112 / 1,033 (decode 48-52);
+  v0.2.2 + `--prefill auto:32768` 1,054 at 125K. Sweep of RDNA2 prompt switches, `--resident-experts`, a rocBLAS table
+  calibrated on the card (tables included), ROCm 10.1 vs 10.0, the conversation cache (7.7K-token chat resumed 8.6 -> 2.5 s),
+  and a standard-benchmark run (12/12 sanity). Vibe-coded: run and written by an AI agent for the card's owner.
 
 ## Run the standard benchmark
 
