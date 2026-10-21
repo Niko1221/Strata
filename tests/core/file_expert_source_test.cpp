@@ -654,6 +654,48 @@ void test_host_memory() {
     require(probe("4:memory:/docker/abc\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v1 unlimited");
     // a v1 group not visible here (another namespace): MemAvailable alone
     require(probe("4:memory:/elsewhere\n") && m.available == 100 * GiB, "v1 group not mounted");
+    // a v2 line whose group the mount does not show as such; each layout has its own mount
+    auto probe_at = [&](const std::string& self, const std::string& at) {
+        put("cgroup", self);
+        m.commit = 0;
+        const bool ok = host_available_memory(m, mi, cg, (t.path / at).string());
+        require(m.commit == ~0ull, "Linux memory probe retained a commit limit");
+        return ok;
+    };
+    // the host's own root group, "0::/" (WSL without systemd, #1856): no memory.max there, MemAvailable alone
+    put("host/cgroup.controllers", "memory\n");
+    require(probe_at("0::/\n", "host") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v2 root group");
+    // a container with an 8 GiB limit, 2 GiB charged: with its own cgroup namespace ("0::/"), or without one, where
+    // the line names its host path and the mount shows only the container's own subtree
+    put("ns/cgroup.controllers", "memory\n");
+    put("ns/memory.max", std::to_string(8 * GiB) + "\n");
+    put("ns/memory.current", std::to_string(2 * GiB) + "\n");
+    put("ns/memory.stat", "inactive_file 0\nfile_dirty 0\nfile_writeback 0\n");
+    require(probe_at("0::/\n", "ns") && m.available == 6 * GiB && m.cgroup_limit == 8 * GiB,
+            "v2 container, own namespace");
+    require(probe_at("0::/system.slice/docker-abc.scope\n", "ns") && m.available == 6 * GiB &&
+                m.cgroup_limit == 8 * GiB, "v2 container without a cgroup namespace");
+    // a hybrid host (systemd-hybrid, WSL2 with systemd): a v1 tmpfs at the mount and the v2 tree, without
+    // controllers, at unified/; every process lists a 0:: line, and the memory controller's v1 group decides
+    put("hy/unified/cgroup.controllers", "\n");
+    put("hy/memory/docker/abc/memory.limit_in_bytes", std::to_string(32 * GiB) + "\n");
+    put("hy/memory/docker/abc/memory.usage_in_bytes", std::to_string(10 * GiB) + "\n");
+    require(probe_at("4:memory:/docker/abc\n0::/system.slice/containerd.service\n", "hy") &&
+                m.available == 22 * GiB && m.cgroup_limit == 32 * GiB, "hybrid host, a v1 limit");
+    require(probe_at("5:memory:/init.scope\n0::/init.scope\n", "hy") && m.available == 100 * GiB &&
+                m.cgroup_limit == ~0ull, "hybrid host, no limit");
+    // a path the mount shows in part: its deepest part shown, a 4 GiB group with 1 GiB charged
+    put("walk/cgroup.controllers", "memory\n");
+    put("walk/a/memory.max", std::to_string(4 * GiB) + "\n");
+    put("walk/a/memory.current", std::to_string(1 * GiB) + "\n");
+    put("walk/a/memory.stat", "inactive_file 0\nfile_dirty 0\nfile_writeback 0\n");
+    require(probe_at("0::/a/gone\n", "walk") && m.available == 3 * GiB && m.cgroup_limit == 4 * GiB,
+            "v2 path shown in part");
+    // no cgroup mount at all: MemAvailable alone, as for a v1 group that is not visible
+    require(probe_at("0::/x\n", "none") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "no cgroup mount");
+    // a group path that leaves the mount, here into the limited group just above it
+    put("ns/sub/cgroup.controllers", "memory\n");
+    require(!probe_at("0::/../etc\n", "ns/sub"), "a v2 group outside the mount accepted");
 #else
     require(host_available_memory(m) && m.available > 0 && m.cgroup_limit == ~0ull, "this PC's RAM");
 #if defined(_WIN32)
