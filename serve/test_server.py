@@ -4314,10 +4314,13 @@ class ThinkingBudget(unittest.TestCase):
 
     def test_the_answer_room_has_its_limits(self):
         self.engine.THOUGHT = "Let me think step by step about two plus two. " * 40
-        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 300,        # below the floor: as before
+        code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 300,        # below the floor: 200
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
-        self.assertEqual(b["choices"][0]["finish_reason"], "length")
-        self.assertFalse(b["choices"][0]["message"]["content"])
+        # 2026-10-21: small caps used to be "left as they were": the thinking ate the whole cap and the reply came
+        # back (length) with no text and no tool call (the omp sub-agent harness sends 400 and gave up after 3).
+        # The answer now keeps its share (the #984 reserve): 300 leaves thinking 150 + answer room.
+        self.assertEqual(b["choices"][0]["message"]["content"], ThinkingEngine.ANSWER)
+        self.assertEqual(b["choices"][0]["finish_reason"], "stop")
         self.svc.answer_room = False                               # the config's "answer_room": false
         code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024,
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
@@ -4325,7 +4328,7 @@ class ThinkingBudget(unittest.TestCase):
         self.svc.answer_room = True
         code, b = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 1024, "reasoning_effort": "none",
                                                      "messages": [{"role": "user", "content": "2+2?"}]})
-        self.assertEqual(len(self.engine.prompts), 3)              # thinking off: no budget, one prompt each
+        self.assertEqual(len(self.engine.prompts), 4)              # 300: cut + wrap-up; 1024 off: 1; none: 1
 
     def test_anthropic_thinking_budget_tokens_is_a_budget(self):
         """0.1.45: thinking {type: enabled, budget_tokens: N} closes the thinking after N tokens (it was only a level)."""

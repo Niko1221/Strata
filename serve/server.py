@@ -4895,9 +4895,17 @@ class Service:
             # harness sends max_completion_tokens: 8192 on every request) and a task the model thinks long about got
             # the cut-off in the middle of the thinking and NO answer.  So thinking is closed early enough to leave
             # the answer its quarter of the cap (the budget's wrap-up: a short closing sentence, </think>, the answer).
-            # A request with a budget of its own, or max_tokens below ANSWER_ROOM_MIN_CAP, is left as it was.
+            # A request with a budget of its own is left as it was; below the floor the next branch answers.
             budget = max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
             if max_new <= 32768: print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
+                  "(\"answer_room\": false in the config turns this off)", flush=True)
+        if thinking and not budget and self.answer_room and max_new and 0 < max_new < ANSWER_ROOM_MIN_CAP:
+            # 2026-10-21: the omp sub-agent harness caps replies at max_tokens 400 and the model's thinking spent
+            # the whole cap: (length) with no text and no tool call, so the client's length-recovery gave up after
+            # 3 tries.  Below the 1024 floor the answer keeps the same proportional share (the #984 reserve, so
+            # 400 leaves 200 for thinking and 200 for the reply).  "answer_room": false leaves it as it was.
+            budget = max(1, max_new - min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2))
+            print(f"[strata] thinking limited to {budget} of max_tokens {max_new} so the answer has room "
                   "(\"answer_room\": false in the config turns this off)", flush=True)
         if budget and max_new and max_new > 0:
             # #984: a budget at or near max_tokens never fires before the reply is cut off while still thinking, so
