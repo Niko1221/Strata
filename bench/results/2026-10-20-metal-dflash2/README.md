@@ -16,14 +16,23 @@ greedy decoding. Main limitation: most cells are one run each; the leaders were 
 
 - Target: `DavidAU/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-GGUF`,
   revision b7f9593a, `Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-0000{1,2}-of-00002.gguf`, mmproj BF16 (vision on).
+- MTP layer (the baseline): not part of the target. DavidAU's GGUF has no MTP tensors (0 of 1224). It is the `mtp.*`
+  block (31 tensors) of the official `Qwen/Qwen3.8-Flash-Next` BF16 checkpoint, revision de4b8e4d, extracted by Strata's
+  setup and packed by `tools/mtp_pack.py` as `mtp-q2_0.gguf` (experts Q2_0, the rest BF16/F32;
+  sha256 a22206a4d74eafbf31063a84610292535fb3b49af9a339963817fd04aed81e4d). It was trained on the official model, not on
+  this abliterated fine-tune, and its experts are Q2_0 while the DFlash2 drafter is Q8_0: both favor DFlash2. The
+  comparison is what Strata runs for this GGUF today against this drafter, not two drafters made the same way.
+- Draft vocabulary (both arms): Strata's `data/draft_vocab_en.bin` (40525 token ids, English/code subset, sha256
+  369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced9597fb25). A list of token ids only; tokens outside it are never
+  drafted.
 - Drafters:
   - stock: `incoai/Qwen3.8-Flash-Next-DFlash2` converted with llama.cpp's `convert_hf_to_gguf.py`, then
-    `tools/dflash_head.py --draft-vocab` (Q8_0, target head rows of the MTP draft vocabulary).
+    `tools/dflash_head.py --draft-vocab` (Q8_0, the target's own output-head rows for the draft-vocabulary token ids).
     `dflash2-q8-dv.gguf`, sha256 32cd18db68465301d3281dd9a9e5a9e50f97ee070e5fd40683b1e5e822797312.
   - tuned: the stock drafter fine-tuned for 3000 steps (batch 32) on this target's own captured features (layers
     5/15/25/35/45, HC mean) and greedy continuations. `t3000-q8-dv.gguf`,
     sha256 e5412a73583755eea8daa4c4c5793f5b827af1fbc0e76bcdd5cc181cdbf46eb1. Published as
-    `hotocooo/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-DFlash2`.
+    `hotocooo/Qwen3.8-Flash-Next-Abliterated-Uncensored-Turbo-Brilliance-50x-Reasoning-Instruct-GSQ-RCO-DFlash`.
     Held-out drafts accepted per 7-token block: 3.568 (stock) to 3.796 (tuned).
 - Both arms: context 262144, `--mmap-experts`, `STRATA_METAL_STREAM=1`, `STRATA_METAL_LEAVE_SHARE=0.3`, prompt
   cache 12, prefill auto, `--suffix-draft 0` unless the name ends in `-sfx`, no reasoning limit, temperature 0.
