@@ -34,6 +34,17 @@ void check(const char* what) {
     if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
 }
 
+__device__ __forceinline__ void vk_sync_lds() {
+#if defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1200__) || defined(__gfx1201__))
+    asm volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#elif defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || \
+    defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__) || defined(__gfx1030__))
+    asm volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#else
+    __syncthreads();
+#endif
+}
+
 // `commit` (one token): the history then keeps it - [hist1, hist2, x_0], each thread its channel's, after reading them
 __device__ __forceinline__ void gdn_conv_l2_body(const int bx, const int by, float* hist, const float* __restrict__ qkv,
                                                               const float* __restrict__ w, float* __restrict__ h,
@@ -60,7 +71,7 @@ __device__ __forceinline__ void gdn_conv_l2_body(const int bx, const int by, flo
         float sq = y * y;
         for (int o = 16; o > 0; o >>= 1) sq += __shfl_xor_sync(0xffffffffu, sq, o);
         if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = sq;
-        __syncthreads();
+        vk_sync_lds();
         const float ss = part[0] + part[1] + part[2] + part[3];
         y *= rsqrtf(ss + eps);
     }
@@ -246,15 +257,15 @@ __device__ __forceinline__ void gdn_step_commit_body(float* __restrict__ state, 
     for (int r = 0; r < RPG; ++r) s[r] = base[r * row_stride];
     for (int t = 0; t < n; ++t) {
         const float* ht = hbuf + (size_t) t * C;
-        __syncthreads();
+        vk_sync_lds();
         sk[tid] = ht[qk + qh * S + tid];
-        __syncthreads();
+        vk_sync_lds();
         const float g = __expf(gate[(size_t) t * h_v + head]);
         float kv = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
         red[rg][col_local] = kv;
-        __syncthreads();
+        vk_sync_lds();
         const float kv_col = red[0][col_local] + red[1][col_local] + red[2][col_local] + red[3][col_local];
         const float delta = (ht[2 * qk + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
 #pragma unroll
@@ -314,40 +325,48 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
     const int qk = S * h_k;             // q at [0, qk), k at [qk, 2qk), v at [2qk, ...)
     const int value_dim = S * h_v;
     const int n = ALL_OUT ? T : (n_keep ? *n_keep : T);
-    if (n > 0) {
-        if (rg == 0) sk[0][col] = hbuf[qk + qh * S + col];
-        else if (rg == 1 && (ALL_OUT || 0 >= t_out_begin)) sq[0][col] = hbuf[qh * S + col];
-    }
-    const float gam = (rg == 0) ? gamma[col] : 0.0f;
     float s[RPG];
     float* base = state + ((size_t) (rg * RPG) * h_v + head) * S + col;
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) s[r] = ALL_OUT ? __ldg(&base[r * row_stride]) : base[r * row_stride];
+    const float gam = (rg == 0) ? gamma[col] : 0.0f;
+    if (n > 0 && (rg == 0 || (rg == 1 && (ALL_OUT || 0 >= t_out_begin)))) {
+        const float kq0 = hbuf[(rg == 0 ? qk : 0) + qh * S + col];
+        if (rg == 0) sk[0][col] = kq0;
+        else sq[0][col] = kq0;
+    }
     for (int t = 0; t < n; ++t) {
         const int cur = t & 1, nxt = (t + 1) & 1;
         const float* ht = hbuf + (size_t) t * C;
         const bool need_out = ALL_OUT || (t >= t_out_begin);
-        __syncthreads();
-        if (t + 1 < n) {
+        vk_sync_lds();
+        const bool load_kq = (t + 1 < n) && (rg == 0 || (rg == 1 && (ALL_OUT || (t + 1 >= t_out_begin))));
+        float kq_next = 0.0f;
+        if (load_kq) {
             const float* ht_next = ht + C;
-            const bool need_next = ALL_OUT || (t + 1 >= t_out_begin);
-            if (rg == 0) sk[nxt][col] = ht_next[qk + qh * S + col];
-            else if (rg == 1 && need_next) sq[nxt][col] = ht_next[qh * S + col];
+            kq_next = ht_next[(rg == 0 ? qk : 0) + qh * S + col];
         }
+        const float vt = ht[2 * qk + head * S + col];
         const float g = __expf(gate[(size_t) t * h_v + head]);
+        const float bt = beta[(size_t) t * h_v + head];
         float kv = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[cur][rg * RPG + r], kv);
         red_kv[rg][col] = kv;
-        __syncthreads();
+        if (load_kq) {
+            if (rg == 0) sk[nxt][col] = kq_next;
+            else sq[nxt][col] = kq_next;
+        }
+        vk_sync_lds();
         const float kv_col = red_kv[0][col] + red_kv[1][col] + red_kv[2][col] + red_kv[3][col];
-        const float delta = (ht[2 * qk + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
+        const float delta = (vt - g * kv_col) * bt;
         if (!need_out) {
 #pragma unroll
             for (int r = 0; r < RPG; ++r) s[r] = fmaf(g, s[r], sk[cur][rg * RPG + r] * delta);
             continue;
         }
+        const float zz = (rg == 0) ? z[(size_t) t * value_dim + head * S + col] : 0.0f;
         float o = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) {
@@ -355,7 +374,7 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
             o = fmaf(s[r], sq[cur][rg * RPG + r], o);
         }
         red_o[rg][col] = o;
-        __syncthreads();
+        vk_sync_lds();
         float oc = 0.0f, sq_part = 0.0f;
         if (rg == 0) {
             oc = (red_o[0][col] + red_o[1][col] + red_o[2][col] + red_o[3][col]) * rsqrtf((float) S);
@@ -365,11 +384,10 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
         // gfx1151 gave another rounding for 3% of the outputs (gdn_parity section 5 on Aurora)
         for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part += __shfl_xor_sync(0xffffffffu, sq_part, o2);
         if (rg == 0 && (col & 31) == 0) wsum[col >> 5] = sq_part;
-        __syncthreads();
+        vk_sync_lds();
         if (rg == 0) {
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
             const float scale = rsqrtf(ss / (float) S + eps);
-            const float zz = z[(size_t) t * value_dim + head * S + col];
             const float yv = oc * scale * gam * (1.0f / (1.0f + __expf(-zz)));
             y[(size_t) t * value_dim + head * S + col] = yv;
             if constexpr (Q) gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + head * S + col, yv);
@@ -399,8 +417,9 @@ __global__ void __launch_bounds__(GS_COLS * RG) gdn_step_split_kernel(float* __r
                                                                       float* __restrict__ y, int h_k, int h_v, int T,
                                                                       const int32_t* __restrict__ n_keep,
                                                                       int t_out_begin) {
-    __shared__ float sk[S], sq[S];
-    __shared__ float red[RG][GS_COLS];
+    __shared__ float sk[2][S], sq[2][S];
+    __shared__ float red_kv[RG][GS_COLS];
+    __shared__ float red_o[RG][GS_COLS];
     const int head = blockIdx.x;
     const int c0 = blockIdx.y * GS_COLS;
     const int lc = threadIdx.x;                 // local column
@@ -416,32 +435,46 @@ __global__ void __launch_bounds__(GS_COLS * RG) gdn_step_split_kernel(float* __r
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) s[r] = base[r * row_stride];
+    if (n > 0) {
+        sk[0][tid] = hbuf[qk + qh * S + tid];
+        sq[0][tid] = hbuf[qh * S + tid];
+    }
     for (int t = 0; t < n; ++t) {
+        const int cur = t & 1, nxt = (t + 1) & 1;
         const float* ht = hbuf + (size_t) t * C;
-        __syncthreads();
-        if (tid < S) { sk[tid] = ht[qk + qh * S + tid]; sq[tid] = ht[qh * S + tid]; }
-        __syncthreads();
+        vk_sync_lds();
+        float kn = 0.0f, qn = 0.0f;
+        if (t + 1 < n) {
+            const float* hn = ht + C;
+            kn = hn[qk + qh * S + tid];
+            qn = hn[qh * S + tid];
+        }
+        const float vt = ht[2 * qk + head * S + col];
         const float g = __expf(gate[(size_t) t * h_v + head]);
+        const float bt = beta[(size_t) t * h_v + head];
         float kv = 0.0f;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
-        red[rg][lc] = kv;
-        __syncthreads();
-        const float kv_col = red[0][lc] + red[1][lc] + red[2][lc] + red[3][lc];
-        const float delta = (ht[2 * qk + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
+        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[cur][rg * RPG + r], kv);
+        red_kv[rg][lc] = kv;
+        if (t + 1 < n) {
+            sk[nxt][tid] = kn;
+            sq[nxt][tid] = qn;
+        }
+        vk_sync_lds();
+        const float kv_col = red_kv[0][lc] + red_kv[1][lc] + red_kv[2][lc] + red_kv[3][lc];
+        const float delta = (vt - g * kv_col) * bt;
         float o = 0.0f;
 #pragma unroll
         for (int r = 0; r < RPG; ++r) {
-            s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
-            o = fmaf(s[r], sq[rg * RPG + r], o);
+            s[r] = fmaf(g, s[r], sk[cur][rg * RPG + r] * delta);
+            o = fmaf(s[r], sq[cur][rg * RPG + r], o);
         }
         if (!OUT) continue;
-        __syncthreads();
-        red[rg][lc] = o;
-        __syncthreads();
+        red_o[rg][lc] = o;
+        vk_sync_lds();
         if (rg == 0 && t >= t_out_begin)
             y[(size_t) t * value_dim + head * S + col] =
-                (red[0][lc] + red[1][lc] + red[2][lc] + red[3][lc]) * rsqrtf((float) S);
+                (red_o[0][lc] + red_o[1][lc] + red_o[2][lc] + red_o[3][lc]) * rsqrtf((float) S);
     }
     if (n_keep != nullptr && n > 0) {
 #pragma unroll
@@ -490,9 +523,9 @@ __global__ void __launch_bounds__(GS_COLS * RG) gdn_state_replay_kernel(float* _
 #pragma unroll
     for (int t = 0; t < MAXT; ++t) {
         if (t >= n) break;
-        __syncthreads();
+        vk_sync_lds();
         sk[tid] = kn; sq[tid] = qn;
-        __syncthreads();
+        vk_sync_lds();
         if (t + 1 < n) {
             const float* hn = hbuf + (size_t) (t + 1) * C;
             kn = hn[qk + qh * S + tid]; qn = hn[qh * S + tid];
@@ -502,7 +535,7 @@ __global__ void __launch_bounds__(GS_COLS * RG) gdn_state_replay_kernel(float* _
 #pragma unroll
         for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
         red[rg][lc] = kv;
-        __syncthreads();
+        vk_sync_lds();
         const float kv_col = red[0][lc] + red[1][lc] + red[2][lc] + red[3][lc];
         const float delta = (vv[t] - g * kv_col) * bv[t];
         float o = 0.0f;   // unused: kept because the measured code had it (without it: 51 us instead of 39 at 1 row)
@@ -538,7 +571,7 @@ __global__ void __launch_bounds__(S * RG) gdn_out_norm_kernel(const float* __res
     }
     for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part += __shfl_xor_sync(0xffffffffu, sq_part, o2);
     if ((tid & 31) == 0) wsum[tid >> 5] = sq_part;
-    __syncthreads();
+    vk_sync_lds();
     if (rg == 0) {
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = rsqrtf(ss / (float) S + eps);
@@ -1067,12 +1100,12 @@ void gdn_conv_commit(float* history, const float* qkv, int channels, const int32
 bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
                        const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
                        int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream) {
-    // the per-layer commit's kernel choice (gdn_step_norm_multi below): only its state-only kernel is batched here
+    // gdn_step_commit_layers_kernel is bitwise identical to both per-layer commit kernels (gdn_step_commit_kernel and
+    // gdn_state_replay_kernel), so STRATA_GDN_SPLIT=1 also uses the 2-launch batched commit unless STRATA_GDN_COMMIT_SPLIT=0
     static const bool per_layer = [] {
-        const char* sp = std::getenv("STRATA_GDN_SPLIT");
         const char* cs = std::getenv("STRATA_GDN_COMMIT_SPLIT");
         const char* dbg = std::getenv("STRATA_DBG_GDN");
-        return (sp && sp[0] == '1') || (cs && cs[0] == '0') || (dbg && dbg[0] == '1');
+        return (cs && cs[0] == '0') || (dbg && dbg[0] == '1');
     }();
     if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyMaxT || n_keep == nullptr ||
         h_v <= 0 || h_k <= 0 || h_v % h_k != 0)
