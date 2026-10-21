@@ -3,6 +3,7 @@ unload (Vision.unload keeps them), so a conversation that re-sends its pictures 
 clients do - must not pay the elastic start (seconds + the VRAM the expert cache gives up) on a cache hit.  A new
 picture, alone or alongside cached ones, still wakes it."""
 import io
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,6 +101,7 @@ class CacheWake(unittest.TestCase):
     def test_the_cache_lookup_needs_no_encoder_process(self):
         v = Vision({"exe": "e", "mmproj": "m", "model": "t", "elastic": True}, lazy=True)
         self.assertFalse(v.alive())                                      # nothing started
+        v._ensure_dir()                                                  # the folder exists (cached() guards on it, #3370)
         img = Image.new("RGB", (8, 6), (9, 9, 9))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -111,6 +113,7 @@ class CacheWake(unittest.TestCase):
 
     def test_a_cache_hit_keeps_the_picture_from_aging_out(self):
         v = Vision({"exe": "e", "mmproj": "m", "model": "t", "elastic": True}, lazy=True)
+        v._ensure_dir()                                                  # the folder exists (cached() guards on it, #3370)
         pngs = []
         for shade in range(3):                                           # three distinct pictures
             img = Image.new("RGB", (8, 6), (shade, shade, shade))
@@ -123,6 +126,25 @@ class CacheWake(unittest.TestCase):
         self.assertEqual(list(v.cache)[-1], v.key_of(pngs[0]))           # the lookup marks it most recently used, so
                                                                          # the 64-entry eviction (encode, oldest first)
                                                                          # takes a picture nobody re-sent instead
+
+    def test_a_temp_cleaner_removal_makes_the_all_cached_turn_re_encode(self):
+        # #3370 made encode() re-create a work folder a temp cleaner removed; the all-cached skip reads the same
+        # dict without ever entering encode(), so cached() must carry the same guard - dead .sve paths may not keep
+        # answering while the turn that would re-encode is skipped (prepare() would die on them every turn).
+        v = Vision({"exe": "e", "mmproj": "m", "model": "t", "elastic": True}, lazy=True)
+        img = Image.new("RGB", (8, 6), (9, 9, 9))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png = buf.getvalue()
+        v._ensure_dir()
+        v.cache[v.key_of(png)] = (v.dir / "x.sve", 42)
+        (v.dir / "x.sve").write_bytes(b"rows")
+        self.assertEqual(v.cached(png), (v.dir / "x.sve", 42))           # folder present: the file alone answers
+        shutil.rmtree(v.dir)                                             # Storage Sense removed it during the unload
+        self.assertIsNone(v.cached(png))                                 # the dead entry is gone with the folder...
+        self.assertEqual(v.cache, {})                                    # ...and the dict is cleared, so prepare()
+                                                                         # sees a miss and takes the encode path that
+                                                                         # re-creates the folder and re-encodes
 
     def test_a_non_elastic_turn_takes_todays_path_even_all_cached(self):
         self.vision.elastic = False                                      # a plain always-on encoder

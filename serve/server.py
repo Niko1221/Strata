@@ -2758,6 +2758,9 @@ class Vision:
         except Exception:
             return None                       # unreadable source: let encode() produce the proper error later
         with self.lock:
+            self._ensure_dir()                        # #3370, as encode() does: the folder can vanish while the encoder
+                                                      # is unloaded - a cleared cache then re-encodes instead of the
+                                                      # all-cached skip serving dead .sve paths every turn forever
             entry = self.cache.get(key)
             if entry is not None:
                 self.cache[key] = self.cache.pop(key)   # most recently used last, as encode() does on a hit: the
