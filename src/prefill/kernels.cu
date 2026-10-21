@@ -2795,8 +2795,8 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
 namespace {
 __global__ void moe_combine_peer_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
                                         const float* __restrict__ w, const float* __restrict__ shared,
-                                        const float* __restrict__ sg, const float* __restrict__ peer, int64_t rows_local,
-                                        float* __restrict__ bo, int64_t T) {
+                                        const float* __restrict__ sg, const float* peer, int64_t rows_local,
+                                        float* bo, int64_t T) {   // peer may be bo (STRATA_PF_PEER_PIECES)
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * N) return;
     const int64_t t = i / N, d = i % N;

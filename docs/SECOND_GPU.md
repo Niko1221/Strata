@@ -147,6 +147,11 @@ alternative to the CUDA1-3 caches above, not a third tier beside them.
   zeros and the first prompt came back NaN. A test copy each way now decides; if it arrives wrong the log says so
   and the prompt path uses the host route (the one without P2P: activations and rows through mapped host memory).
   `STRATA_PEER_NO_P2P=1` asks for that route by hand.
+- `STRATA_PF_PEER_PIECES=1` (opt-in, host route only): each MoE layer's two transfers go in 8 pieces. The
+  activations start towards the peer before the router, and the peer begins on each piece as soon as it arrives. The
+  peer's per-token sums come back the same way, and the primary copies each piece into its own memory as it lands.
+  The result is bit for bit the same. On 2x Tesla V100-PCIE-32GB without P2P, ~38K-token prompts were read 7.5 %
+  faster and ~10K-token prompts 7.0 % faster (medians of 4 rounds, every round faster).
 - `--peer-slots N` (default 0): cap the tier at N experts; 0 = as many as fit.
 - `--peer-adapt-swaps N` (default -1): swaps per adaptive round on the peer;
   -1 uses the primary's `--adapt-swaps`.
