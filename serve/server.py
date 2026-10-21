@@ -2574,12 +2574,20 @@ class Vision:
             args += ["--min-tokens", str(cfg["min_tokens"])]
         return args
 
-    def _ensure_dir(self):
-        """#3370: a temp cleaner (Windows Storage Sense) removes the empty work folder while the encoder is unloaded; the next
-        start then failed with WinError 267 for as long as the server lived.  Make it again; pictures cached in it are gone."""
-        if not self.dir.is_dir():
+    def _ensure_dir(self) -> bool:
+        """#3370: a temp cleaner (Windows Storage Sense, and on Linux systemd-tmpfiles over a tmpfs /tmp, which drops
+        directories nothing has been written into for 10 days) removes the work folder while the server runs; the next
+        start then failed with WinError 267 for as long as the server lived.  Make it again; pictures cached in it are
+        gone.  When the old path cannot be made again - its parent is gone, or it is not writable - a fresh scratch
+        directory is taken instead.  -> True when the folder had to be made again."""
+        if self.dir.is_dir():
+            return False
+        try:
             self.dir.mkdir(parents=True, exist_ok=True)
-            self.cache.clear()
+        except OSError:
+            self.dir = self.work_dir()                           # mkdtemp leaves it existing
+        self.cache.clear()                                       # every .sve it named went with the folder
+        return True
 
     def _start(self):
         """Start the reader.  When a GPU reader that has a CPU reader to fall back on does not start (the GPU runtime does not
@@ -2761,7 +2769,11 @@ class Vision:
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
-            self._ensure_dir()
+            if self._ensure_dir() and self.alive():
+                # the reader's cwd is the deleted inode, so it cannot open a file recreated under that name - the
+                # `ENC` lines name files relative to the cwd (#480).  Every picture after the loss then fails with
+                # `Unable to open file <key>.img`; replacing the reader gives it the folder just made.
+                self.restart()
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]

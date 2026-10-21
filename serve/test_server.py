@@ -5874,6 +5874,132 @@ class VisionCacheEviction(unittest.TestCase):
             self.assertFalse(first.exists())
 
 
+class VisionWorkDirDeleted(unittest.TestCase):
+    """#3370 made the reader's work folder again when a temp cleaner removed it (Windows Storage Sense; on Linux
+    systemd-tmpfiles over a tmpfs /tmp, which drops directories nothing has been written into for 10 days).  That
+    covers a reader that was unloaded.  A reader still running has its cwd on the deleted inode, so it cannot open a
+    file recreated under that name - the `ENC` lines name files relative to the cwd (#480) - and every picture after
+    the loss fails with `Unable to open file <key>.img`.  The next image replaces that reader too, drops the cache of
+    .sve files that went with the folder, and takes a fresh folder when the old path cannot be made again."""
+
+    def make(self, d):
+        import serve.server as server
+        v = server.Vision.__new__(server.Vision)
+        v.dir, v.cache, v.lock, v.stopped = d, {}, threading.Lock(), False
+        v.load = lambda src: src
+        v.normalize = staticmethod(lambda data: data)
+
+        class Pipe:
+            def __init__(self):
+                self.encs = []
+
+            def write(self, text):
+                self.encs.append(text)
+
+            def flush(self):
+                (d / self.encs[-1].split()[2]).write_bytes(b"x")   # the encoder writes the .sve into its cwd
+
+            def readline(self):
+                return "OK 3" + chr(10)
+
+        pipe = Pipe()                                        # the fake encoder, answering ENC lines
+        v.proc = SimpleNamespace(stdin=pipe, stdout=pipe, poll=lambda: None)
+        v.pipe, v.restart = pipe, lambda: None               # the real restart execs the reader; this stands in
+        return v
+
+    def test_an_image_after_the_directory_is_deleted_is_encoded_again(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "vision"
+            d.mkdir()
+            v = self.make(d)
+            self.assertTrue(v.encode(b"first")[0].exists())
+            shutil.rmtree(d)                                       # what tmpfs cleanup does to a running server
+            self.assertFalse(d.exists())
+            p, tokens = v.encode(b"second")
+            self.assertTrue(d.is_dir())
+            self.assertTrue(p.exists())
+            self.assertEqual(tokens, 3)
+
+    def test_the_cache_of_sve_files_that_went_with_it_is_dropped(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "vision"
+            d.mkdir()
+            v = self.make(d)
+            v.encode(b"same picture")
+            self.assertEqual(len(v.cache), 1)
+            shutil.rmtree(d)
+            p, _ = v.encode(b"same picture")                       # must not hand back the deleted .sve
+            self.assertEqual(len(v.pipe.encs), 2)                  # it was encoded a second time
+            self.assertTrue(p.exists())
+
+    def test_an_encoder_left_on_the_deleted_cwd_is_replaced(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "vision"
+            d.mkdir()
+            v = self.make(d)
+            restarts = []
+            v.restart = lambda: restarts.append(1)
+            shutil.rmtree(d)
+            v.encode(b"x")
+            self.assertEqual(restarts, [1])
+
+    def test_a_stopped_encoder_is_not_started_by_the_recovery(self):
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "vision"
+            d.mkdir()
+            v = self.make(d)
+            v.stopped = True                                       # alive() is False: the next request starts it
+            restarts = []
+            v.restart = lambda: restarts.append(1)
+            shutil.rmtree(d)
+            self.assertTrue(v.encode(b"x")[0].exists())
+            self.assertEqual(restarts, [])
+
+    def test_starting_the_encoder_makes_a_missing_directory(self):
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as t:
+            d = Path(t) / "vision"
+            d.mkdir()
+            shutil.rmtree(d)
+            v = server.Vision.__new__(server.Vision)
+            v.dir, v.spawn, v.stopped, v.fallback = d, (["strata-vision"], None, None), True, None
+            v.cache = {}
+            started = []
+
+            class Proc:
+                stdin, stdout = io.StringIO(), io.StringIO("READY" + chr(10))
+
+                def kill(self):
+                    pass
+
+                def wait(self, timeout=None):
+                    return 0
+
+            def fake_popen(*a, **kw):
+                started.append(kw["cwd"])                          # what the reader is given as its cwd
+                return Proc()
+
+            with mock.patch.object(server, "popen", fake_popen):
+                v._start()                                         # popen(cwd=d) fails while d is gone
+            self.assertTrue(d.is_dir())
+            self.assertEqual([Path(p) for p in started], [d])      # and the reader did get a directory that exists
+            self.assertFalse(v.stopped)
+
+    def test_a_directory_that_cannot_be_remade_falls_back_to_a_fresh_one(self):
+        import serve.server as server
+        with tempfile.TemporaryDirectory() as t:
+            (Path(t) / "afile").write_text("not a directory")
+            d = Path(t) / "afile" / "vision"                        # uncreatable: its parent is a plain file
+            v = server.Vision.__new__(server.Vision)
+            v.dir, v.cache = d, {}
+            v.proc, v.stopped, v.restart = None, True, lambda: None
+            v.work_dir = lambda: Path(tempfile.mkdtemp(prefix="strata-vision-test-", dir=t))
+            self.assertTrue(v._ensure_dir())
+            self.assertTrue(v.dir.is_dir())
+            self.assertNotEqual(v.dir, d)
+            self.addCleanup(lambda: shutil.rmtree(v.dir, ignore_errors=True))
+
+
 class BudgetOverRam(unittest.TestCase):
     """#1080: a RAM budget above what the PC has free is a warning at start, not silence and not a refusal."""
 

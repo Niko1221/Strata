@@ -1695,7 +1695,9 @@ starts the CPU reader by itself and prints one line ([AMD_HIP.md](AMD_HIP.md)).
 | CPU (the default under 24 GB) | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
-do on every turn, is encoded only once.
+do on every turn, is encoded only once. The reader's scratch directory is made again when something has cleaned it
+away (`/tmp` on Linux is a tmpfs, and `systemd-tmpfiles` drops directories nothing has written into for 10 days), so a
+server left running for days keeps reading pictures instead of failing every one after that.
 
 **More image tokens (0.1.39, #625):** `--vision-tokens N` at setup (`START-HERE.bat --setup --vision cpu
 --vision-tokens 768`) sets the most tokens a picture becomes - `"max_tokens"` in the `"vision"` section of
