@@ -27,6 +27,7 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
+#include "q36_f16.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -859,6 +860,7 @@ struct Layer {
 
 struct Model {
     strata::core::ModelGeometry g;
+    bool f16 = false;                          // --f16-weights: raw F16 matrices and experts, without requantization
     std::shared_ptr<strata::GgufModel> file;   // kept mapped: the experts are placed after the engine's buffers
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
@@ -956,8 +958,9 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     return d;
 }
 
-bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
+bool load(const std::string& path, Model& m, std::string& err, bool want_mtp, bool f16_weights) {
     const auto t0 = Clock::now();
+    m.f16 = f16_weights;
     m.file = std::make_shared<strata::GgufModel>(strata::GgufModel::open(path));
     const strata::GgufModel& gm = *m.file;
     if (!strata::core::geometry_from_gguf(gm.meta(), m.g, m.top_k, err)) return false;
@@ -966,7 +969,7 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         return false;
     }
     size_t checked = 0;
-    if (!strata::core::check_gguf_layout(gm, m.g, err, &checked)) return false;
+    if (!strata::core::check_gguf_layout(gm, m.g, err, &checked, m.f16)) return false;
     const auto& g = m.g;
     if (g.head_dim != 256 || g.ssm_state_size != 128 || g.ssm_d_conv != 4 || g.n_expert > 512 || m.top_k > 15) {
         err = "a geometry this driver's kernels do not take (head 256, state 128, conv 4, <= 512 experts, top-k <= 15)";
@@ -998,8 +1001,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         w.type = (int) t->type;
         w.n_in = (int) t->shape[0];
         w.n_out = (int) t->shape[1];
-        if (!K::native_mmvq_supported(w.type)) {
-            std::fprintf(stderr, "strata-q36: %s is %s, which the native MMVQ does not take\n", name.c_str(), t->type_name());
+        if (m.f16 ? w.type != 1 : !K::native_mmvq_supported(w.type)) {
+            std::fprintf(stderr, "strata-q36: %s is %s; %s\n", name.c_str(), t->type_name(),
+                         m.f16 ? "--f16-weights requires F16 matrices" : "the native MMVQ does not take this type");
             std::exit(1);
         }
         const uint64_t nb = strata::tensor_payload_bytes(*t);
@@ -1071,12 +1075,21 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             err = L(l, "ffn_gate_exps / ffn_up_exps differ in type");
             return false;
         }
-        if (!K::native_expert_supported((int) tg->type, (int) td->type, g.n_embd, g.n_ff)) {
-            err = L(l, "experts are ") + tg->type_name() + "/" + td->type_name() + ", which the native expert kernels " +
-                  "do not take (build with -DSTRATA_Q6K_EXPERTS=ON for Q6_K)";
+        if (m.f16 ? tg->type != 1 || td->type != 1 :
+                    !K::native_expert_supported((int) tg->type, (int) td->type, g.n_embd, g.n_ff)) {
+            err = L(l, "experts are ") + tg->type_name() + "/" + td->type_name() +
+                  (m.f16 ? "; --f16-weights requires F16 experts" :
+                   ", which the native expert kernels do not take (build with -DSTRATA_Q6K_EXPERTS=ON for Q6_K)");
             return false;
         }
-        y.L = K::native_expert_layout((int) tg->type, (int) td->type, g.n_embd, g.n_ff);
+        if (m.f16) {
+            y.L.gu_type = y.L.d_type = 1;
+            y.L.n_embd = g.n_embd; y.L.n_ff = g.n_ff;
+            y.L.gu_row = (size_t) g.n_embd * 2; y.L.d_row = (size_t) g.n_ff * 2;
+            y.L.up_off = (size_t) g.n_ff * y.L.gu_row;
+            y.L.down_off = 2 * y.L.up_off;
+            y.L.bytes = y.L.down_off + (size_t) g.n_embd * y.L.d_row;
+        } else y.L = K::native_expert_layout((int) tg->type, (int) td->type, g.n_embd, g.n_ff);
         const size_t gsz = (size_t) g.n_ff * y.L.gu_row, dsz = (size_t) g.n_embd * y.L.d_row;
         // a stride in whole blocks of both parts' types (MMQ steps over the experts by blocks), 16-byte aligned
         const size_t al = lcm_sz(lcm_sz(block_bytes(y.L.gu_type), block_bytes(y.L.d_type)), 16);
@@ -1100,6 +1113,7 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         size_t s = 0;
         const strata::TensorInfo* t = find("token_embd.weight", s);
         m.embd_type = (int) t->type;
+        if (m.f16 && m.embd_type != 1) { err = "--f16-weights requires an F16 embedding table"; return false; }
         m.embd_row = row_bytes(m.embd_type, (int64_t) t->shape[0]);
         const uint64_t nb = strata::tensor_payload_bytes(*t);
         uint8_t* d = nullptr;
@@ -1188,6 +1202,8 @@ struct Engine {
     void *mq_x = nullptr, *mq_hq = nullptr;
     float *mq_gu = nullptr, *mq_h = nullptr;
     __half* x16 = nullptr;
+    __half *f16_x = nullptr, *f16_h = nullptr;
+    float* f16_hidden = nullptr;
     bool use_graph = true;
     int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
 
@@ -1377,7 +1393,7 @@ struct Engine {
         };
         for (const Layer& L : m->layers) use_mmq = use_mmq && mmq_ok(L);
         if (m->has_mtp) use_mmq = use_mmq && mmq_ok(m->mtp);
-        if (use_mmq) {
+        if (use_mmq || m->f16) {
             const int64_t ne = (int64_t) T * Kp;
             mctx = std::make_unique<MMQ::Context>();
             rcnt = dalloc_t<int32_t>((size_t) g.n_expert);
@@ -1392,8 +1408,14 @@ struct Engine {
             CK(cudaMalloc(&mq_hq, MMQ::q8_bytes(ne, g.n_ff)));
             mq_gu = dalloc((size_t) ne * 2 * FF);
             mq_h = dalloc((size_t) ne * FF);
+            if (m->f16) {
+                f16_x = dalloc_t<__half>((size_t) ne * N);
+                f16_h = dalloc_t<__half>((size_t) ne * FF);
+                f16_hidden = dalloc((size_t) ne * FF);
+            }
         }
-        std::fprintf(stderr, "strata-q36: prompt experts on %s\n", use_mmq ? "MMQ (int8)" : "the native grouped kernels");
+        std::fprintf(stderr, "strata-q36: prompt experts on %s\n",
+                     m->f16 ? "F16 GEMMs" : use_mmq ? "MMQ (int8)" : "the native grouped kernels");
         {
             std::string gerr;
             int64_t big = 0;
@@ -1525,8 +1547,23 @@ struct Engine {
 
     /// y [T][n_out] = W x [T][n_in] on the native MMVQ, 8 columns per launch.
     void mm(const Mat& w, const float* xin, float* out, int T) {
+        if (m->f16) { f16_mm(w, xin, out, T); return; }
         prep(xin, w.n_in, T, q8);
         apply(w, q8, out, T);
+    }
+    void f16_mm(const Mat& w, const float* xin, float* out, int T) {
+        if (T <= kGemmT) {
+            q36f16::matvec<<<dim3((w.n_out + 7) / 8, T), 256, 0, st>>>(
+                reinterpret_cast<const __half*>(w.d), xin, out, w.n_in, w.n_out);
+        } else {
+            k_to_f16<<<grid1((int64_t) w.n_in * T), kThreads, 0, st>>>(xin, x16, (int64_t) w.n_in * T);
+            gemm.f16((const uint16_t*) x16, (const uint16_t*) w.d, out, T, w.n_out, w.n_in);
+        }
+    }
+    void embed(const int32_t* ids_, int T, float* out) {
+        if (m->f16)
+            q36f16::embed<<<T, 256, 0, st>>>(reinterpret_cast<const __half*>(m->embd), ids_, out, (int) m->g.n_embd);
+        else K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, ids_, T, (int) m->g.n_embd, out, st);
     }
     /// y [T][n_out] = W [n_out][n_in] (f32) x [T][n_in]: a decode batch on the warp-per-row kernel, a prompt chunk on
     /// cuBLAS's FP32 GEMM (the router and the GDN alpha / beta stay in FP32, as llama.cpp keeps them).
@@ -1566,8 +1603,9 @@ struct Engine {
         if (T > kGemmT) k_to_f16<<<grid1((int64_t) n * T), kThreads, 0, st>>>(xin, x16, (int64_t) n * T);
         else quant(xin, n, T, q);
     }
-    void apply(const Mat& w, const void* q, float* out, int T) {
-        if (T > kGemmT) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
+    void apply(const Mat& w, const void* q, float* out, int T, const float* source = nullptr) {
+        if (m->f16) f16_mm(w, source, out, T);
+        else if (T > kGemmT) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
         else mmq(w, q, out, T);
     }
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
@@ -1665,6 +1703,7 @@ struct Engine {
         }
     }
     void prep_in(int T) {
+        if (m->f16) return;
         if (xq_ready && T <= kGemmT) {
             xq_ready = false;
             return;
@@ -1890,8 +1929,8 @@ struct Engine {
             float* al_b = verify ? v_alpha[li] : alpha;
             float* be_b = verify ? v_beta[li] : beta;
             prep_in(T);
-            apply(L.qkv, xq, qkv_b, T);
-            apply(L.zg, xq, z, T);
+            apply(L.qkv, xq, qkv_b, T, h);
+            apply(L.zg, xq, z, T, h);
             if (T <= kGemmT) {
                 k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N,
                                                                       HV);
@@ -1927,9 +1966,9 @@ struct Engine {
             mm(L.ssm_out, gdn_y, y, T);
         } else {
             prep_in(T);
-            apply(L.wq, xq, qg, T);
-            apply(L.wk, xq, kx, T);
-            apply(L.wv, xq, vx, T);
+            apply(L.wq, xq, qg, T, h);
+            apply(L.wk, xq, kx, T, h);
+            apply(L.wv, xq, vx, T, h);
             RowSel rs;
             if (rows_mode) {
                 rs.cell = d_rcell;
@@ -2009,13 +2048,16 @@ struct Engine {
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
-        const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
+        const bool mmq_rows = !hy_rows && T > kGemmT && (use_mmq || m->f16);
         if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T, ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
         const int32_t* prow = nullptr;
         if (hy_rows) {
             moe_hybrid_gpu(L, li, T);
+        } else if (m->f16 && T > kGemmT) {
+            f16_prompt_experts(L, li, T);
+            prow = rinv;
         } else if (T > kGemmT && use_mmq) {
             // a prompt chunk: the experts on llama.cpp's MMQ (int8, the weights read once per expert): the entries
             // sorted by expert on the device, gate+up as one [2 FF] product per expert, SwiGLU, down into rows the
@@ -2049,13 +2091,20 @@ struct Engine {
             prow = rinv;
         } else {
             group_entries(L, nullptr, T);
-            if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
-            K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
-                                     std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+            if (m->f16) f16_grouped(L, T);
+            else {
+                if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
+                K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
+                                         std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+            }
         }
         // the shared expert, scaled by sigmoid(w . h)
-        if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
-        if (T <= kGemmT) {
+        if (m->f16) {
+            f16_mm(L.sh_gate, h, sg, T);
+            f16_mm(L.sh_up, h, su, T);
+            k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
+            f16_mm(L.sh_down, shh, sy, T);
+        } else if (T <= kGemmT) {
             if (!shared_gu(L, T)) {
                 apply(L.sh_gate, xq, sg, T);
                 apply(L.sh_up, xq, su, T);
@@ -2063,6 +2112,7 @@ struct Engine {
             }
             mmq(L.sh_down, q8, sy, T);
         } else {
+            k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
             apply(L.sh_gate, xq, sg, T);
             apply(L.sh_up, xq, su, T);
             k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
@@ -2080,13 +2130,13 @@ struct Engine {
     void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify) {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && T > hybrid_t && use_mmq) {
+        if (main_hybrid && T > hybrid_t && (use_mmq || m->f16)) {
             std::vector<int> seq;
             for (size_t l = 0; l < m->layers.size(); ++l)
                 if (lhy(l)) seq.push_back((int) l);
             stream_begin(seq);
         }
-        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
+        embed(tok, T, x);
         if (map_on) k_put_rows<<<T, kThreads, 0, st>>>(x, d_img, d_map, N);   // a picture's cells take its rows
         k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
         for (size_t l = 0; l < m->layers.size(); ++l) {
@@ -2136,8 +2186,8 @@ struct Engine {
     void forward_mtp(int T, int64_t p0, const float* seeds, bool draft, bool graph_mode) {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
-        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && (use_mmq || m->f16)) stream_begin({(int) m->layers.size()});
+        embed(tok_m, T, y);
         if (map_on) k_put_rows<<<T, kThreads, 0, st>>>(y, d_img, d_map, N);
         k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);              // [e | ...]
         k_rms_ld<<<T, kThreads, 0, st>>>(seeds, N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);      // [... | h]
@@ -2229,9 +2279,53 @@ struct Engine {
         CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaEventRecord(ev_route, st));
         group_entries(L, hy[li].slot_of_d, T);
-        if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
-        K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
-                                 std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+        if (m->f16) f16_grouped(L, T);
+        else {
+            if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
+            K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
+                                     std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+        }
+    }
+    void f16_grouped(const Layer&, int T) {
+        const int N = (int) m->g.n_embd, FF = (int) m->g.n_ff;
+        const int groups = std::min(T * (int) m->top_k, (int) m->g.n_expert);
+        q36f16::gate_up<<<dim3((FF + 7) / 8, groups), 256, 0, st>>>(
+            grp_ptr, grp_start, n_groups, ent_tok, h, f16_hidden, N, FF);
+        q36f16::down<<<dim3((N + 7) / 8, groups), 256, 0, st>>>(
+            grp_ptr, grp_start, n_groups, ent_dst, f16_hidden, eparts, N, FF);
+    }
+    // Prompt rows are sorted by expert. Existing F16 GEMMs reuse each expert across its rows;
+    // the inverse permutation lets the usual MoE combine consume the sorted outputs.
+    void f16_prompt_experts(const Layer& L, size_t li, int T) {
+        const int N = (int) m->g.n_embd, FF = (int) m->g.n_ff, ne = (int) m->g.n_expert;
+        const int Kp = (int) m->top_k, entries = T * Kp;
+        CK(cudaMemsetAsync(rcnt, 0, (size_t) ne * 4, st));
+        k_route_count<<<grid1(entries), kThreads, 0, st>>>(ids, entries, rcnt);
+        k_route_scan<<<1, 32, 0, st>>>(rcnt, ne, rbounds, rcur, rmax);
+        k_route_scatter<<<grid1(entries), kThreads, 0, st>>>(ids, entries, Kp, rcur, ent_dst, ent_tok, rinv);
+        std::vector<int32_t> bounds((size_t) ne + 1);
+        CK(cudaMemcpyAsync(bounds.data(), rbounds, bounds.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        if (lhy(li))
+            for (int e = 0; e < ne; ++e) hy[li].score[(size_t) e] += bounds[e + 1] - bounds[e];
+        const uint8_t* base = lhy(li) ? stream_take((int) li) : L.blobs;
+        q36f16::gather<<<entries, 256, 0, st>>>(h, ent_tok, f16_x, N, entries);
+        for (int e = 0; e < ne; ++e) {
+            const int rows = bounds[e + 1] - bounds[e];
+            if (!rows) continue;
+            gemm.f16((const uint16_t*) f16_x + (size_t) bounds[e] * N,
+                     (const uint16_t*) (base + (size_t) e * L.stride),
+                     mq_gu + (size_t) bounds[e] * 2 * FF, rows, 2 * FF, N);
+        }
+        q36f16::swiglu<<<grid1((int64_t) entries * FF), 256, 0, st>>>(mq_gu, f16_h, FF, entries);
+        for (int e = 0; e < ne; ++e) {
+            const int rows = bounds[e + 1] - bounds[e];
+            if (!rows) continue;
+            gemm.f16((const uint16_t*) f16_h + (size_t) bounds[e] * FF,
+                     (const uint16_t*) (base + (size_t) e * L.stride + L.L.down_off),
+                     eparts + (size_t) bounds[e] * N, rows, N, FF);
+        }
+        if (lhy(li)) stream_done();
     }
     /// The CPU half: the entries without a slot on the pool (ggml-cpu's arithmetic for the layer's formats), their
     /// rows uploaded and merged into the entries' rows.
@@ -2623,7 +2717,7 @@ struct Engine {
         rows_G = T;
         rows_deferred = true;
         run_graph_key(3000 + T, [&] {
-            K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+            embed(tok_m, T, y);
             k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);                 // [e | ...]
             k_rms_ld<<<T, kThreads, 0, st>>>(mtp_seed(), N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);   // [... | h]
             mm(m->eh_proj, mtp_cat, x, T);
@@ -2891,8 +2985,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     if (E.main_hybrid) E.use_graph = false;   // the host takes part in every layer
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
-    if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
-    const size_t staging = E.use_mmq && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
+    if (!E.use_mmq && !m.f16) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
+    const size_t staging = (E.use_mmq || m.f16) && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
@@ -3738,7 +3832,7 @@ int strata::qwen35::run(int argc, char** argv) {
     double expert_vram = -1.0;
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1;
-    bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
+    bool serve_mode = false, graph = true, vision = false, batch_mtp = false, f16_weights = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -3747,6 +3841,7 @@ int strata::qwen35::run(int argc, char** argv) {
         };
         // strata's names where they mean the same thing (the family switch passes strata's command line on)
         if (a == "--model" || a == "--native") model = next();
+        else if (a == "--f16-weights") f16_weights = true;
         else if (a == "--max-new") n_gen = std::atoi(next().c_str());
         else if (a == "--no-token-graph") graph = false;
         else if (a == "--pool-workers") cpu_threads = std::atoi(next().c_str());
@@ -3788,7 +3883,7 @@ int strata::qwen35::run(int argc, char** argv) {
             if (val) ++i;
         } else {
             std::fprintf(stderr,
-                         "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
+                         "usage: strata-q36 --model GGUF [--f16-weights] [--max-context 32768] [--chunk 512] [--no-graph]\n"
                          "       (--serve | --tokens IDS [--n 64] [--force IDS] [--dump-full-logits F] | --bench-pp N "
                          "--bench-tg N)\n");
             return 2;
@@ -3809,7 +3904,7 @@ int strata::qwen35::run(int argc, char** argv) {
     Model m;
     std::string err;
     try {
-        if (!load(model, m, err, mtp_d > 0)) { std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 1; }
+        if (!load(model, m, err, mtp_d > 0, f16_weights)) { std::fprintf(stderr, "strata-q36: %s\n", err.c_str()); return 1; }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "strata-q36: %s\n", e.what());
         return 1;
