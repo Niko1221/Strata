@@ -71,6 +71,30 @@ def gpu_groups(cfg: dict) -> list[list[int]]:
     return groups
 
 
+def port_mode(cfg: dict) -> list[int] | None:
+    """Port mode (see the module doc): the replicas' ports in entry order when every entry of a "replicas" list names
+    one, None when none does.  Ports on some entries only, a repeated port, a port that is not a whole number in
+    1..65535, or "replica_shared_arena" without ports are refused (ReplicaConfigError): what to do then is not clear."""
+    spec = cfg.get("replicas")
+    entries = spec if isinstance(spec, list) else []
+    ports = [e.get("port") if isinstance(e, dict) else None for e in entries]
+    named = [p for p in ports if p is not None]
+    if not named:
+        if cfg.get("replica_shared_arena"):
+            raise ReplicaConfigError('"replica_shared_arena" needs replica ports: give every "replicas" entry a "port"')
+        return None
+    if len(named) != len(ports):
+        missing = [i for i, p in enumerate(ports) if p is None]
+        raise ReplicaConfigError(f'every replica needs a "port" once one has one (entries {missing} have none)')
+    for i, p in enumerate(ports):
+        if isinstance(p, bool) or not isinstance(p, int) or not 1 <= p <= 65535:
+            raise ReplicaConfigError(f'replica {i}: "port" must be a whole number in 1..65535, not {p!r}')
+    seen = [p for p in ports if ports.count(p) > 1]
+    if seen:
+        raise ReplicaConfigError(f"two replicas have the port {seen[0]}")
+    return ports
+
+
 def _cards(g) -> list[int]:
     if g is None or g == "":
         return []

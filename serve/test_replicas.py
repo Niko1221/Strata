@@ -52,6 +52,33 @@ class Config(unittest.TestCase):
         self.assertIsNone(cpu_sets(2, enabled=False))
         self.assertIsNone(cpu_sets(1))
 
+    def test_port_mode_all_or_none(self):
+        from serve.replicas import port_mode
+        self.assertEqual(port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": 8081}]}),
+                         [8080, 8081])
+        self.assertIsNone(port_mode({"replicas": [{"gpus": [0]}, {"gpus": [1]}]}))
+        self.assertIsNone(port_mode({"replicas": 2, "gpu": [0, 1]}))
+        self.assertIsNone(port_mode({}))
+
+    def test_port_mode_mistakes(self):
+        from serve.replicas import port_mode
+        with self.assertRaisesRegex(ReplicaConfigError, "every replica"):
+            port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1]}]})
+        with self.assertRaisesRegex(ReplicaConfigError, "8080"):
+            port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": 8080}]})
+        for bad in ("8080", True, 0, 65536, 1.5):
+            with self.assertRaises(ReplicaConfigError, msg=bad):
+                port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": bad}]})
+
+    def test_shared_arena_needs_ports(self):
+        from serve.replicas import port_mode
+        with self.assertRaisesRegex(ReplicaConfigError, "replica_shared_arena"):
+            port_mode({"replicas": 2, "gpu": [0, 1], "replica_shared_arena": "/tmp/a"})
+        with self.assertRaisesRegex(ReplicaConfigError, "replica_shared_arena"):
+            port_mode({"replica_shared_arena": "/tmp/a"})
+        self.assertEqual(port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": 8081}],
+                                    "replica_shared_arena": "/tmp/a"}), [8080, 8081])
+
 
 class Routing(unittest.TestCase):
     def test_matched_prefix_per_replica(self):
