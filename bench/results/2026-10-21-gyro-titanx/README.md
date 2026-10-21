@@ -57,28 +57,72 @@ for 201 tokens - 104 MB per token - so it spends 41.2 s of its 53 s in `decode w
 | --- | --- | --- | --- | --- | --- |
 | `wait_flag_ge_kernel` | `src/kernels/cuda/verify_kernels.cu:1169` | 10,800 | 40,774 | 3,775 | the doorbell: the GPU's one thread waits for the host |
 | `native_gu_multi_kernel<145>` | `src/kernels/cuda/iq_kernels.cu:1804` | 7,200 | 1,849.5 | 256.9 | the TQK6 gate/up expert rows (145 = `GGML_TYPE_TQK6`) |
-| `native_mmvq_multi_kernel<Q5KTraits>` | `src/kernels/cuda/native_mmvq.cu:1173` | 16,380 | 1,720 | ~100 | the Q5_K dense weights |
+| `native_mmvq_multi_kernel<Q5KTraits>` | `src/kernels/cuda/native_mmvq.cu:1173` | 16,380 | 1,720 | ~105 | the Q5_K dense weights (the projections) |
 | `native_down_multi_kernel<146>` | `src/kernels/cuda/iq_kernels.cu:1967` | 7,200 | 1,445.8 | 200.8 | the TQK7 down expert rows (146 = `GGML_TYPE_TQK7`) |
-| `native_q6_k_mmvq_kernel` + `native_q5_k_mmvq_kernel` + `native_mmvq_multi_kernel<Q6KTraits>` | `native_mmvq.cu` | 2,462 | 764 | - | the Q6_K/Q5_K dense weights, the head, the 248,320-row embedding |
-| `gr_up_multi_kernel` + `gr_down_staged_kernel` | `src/kernels/cuda/` | 12,460 | 1,010 | - | the GDN hyper-connection projections |
-| `fetch_blobs_kernel` | `src/kernels/cuda/` | 3,600 | 250.7 | 69.6 | the expert fetch the doorbell waits for |
-| `gpu_stamp_kernel` | `src/kernels/cuda/verify_kernels.cu` | **78,450** | 140.6 | 1.8 | the doorbell's bookkeeping: 390 launches per token |
+| `gr_up_multi_kernel` | `src/kernels/cuda/fused_gr.cu:367` | 7,843 | 567.3 | 72.3 | the GDN hyper-connection's up projection (REG 40, 6.2 KB of shared memory) |
+| `gr_down_staged_kernel` | `src/kernels/cuda/fused_gr.cu:963` | 7,455 | 419.4 | 56.2 | the GDN hyper-connection's down projection, the staged one (REG 83, **40 KB** of shared memory per block) |
+| `native_mmvq_multi_kernel<Q6KTraits>` | `src/kernels/cuda/native_mmvq.cu:1173` | 2,325 | 334.1 | 143.7 | the Q6_K dense weights |
+| `native_q6_k_mmvq_kernel` | `src/kernels/cuda/native_mmvq.cu:674` | 199 | 299.9 | 1,507.2 | the token embedding: 248,320 rows of Q6_K, one call per token |
+| `fetch_blobs_kernel` | `src/kernels/cuda/verify_kernels.cu:591` | 3,600 | 250.7 | 69.6 | the expert fetch the doorbell waits for |
+| `bf16_f32_mmvf_multi_kernel` | `src/kernels/cuda/native_bf16.cu:78` | 6,835 | 150.1 | 22.0 | the BF16 dense weights, dequantized and multiplied (no tensor cores here: the FP32 path) |
+| `gpu_stamp_kernel` | `src/kernels/cuda/verify_kernels.cu:1527` | **78,450** | 140.6 | 1.8 | the doorbell's bookkeeping: 390 launches per token |
+| `native_q5_k_mmvq_kernel` | `src/kernels/cuda/native_mmvq.cu:255` | 2,520 | 131.2 | 52.0 | the head: 10,240 rows of Q5_K |
+| `gr_norm_split_kernel` | `src/kernels/cuda/fused_gr.cu:813` | 7,843 | 78.9 | 10.1 | the GDN's norm |
 | `attn_chunk_kernel_pre75` | `src/kernels/cuda/qsa_decode_attn.cu:545` | 1,089 | 88.3 | 81.1 | the QSA attention, the pre-sm_75 variant |
-| `attn_merge_kernel` | `src/kernels/cuda/qsa_decode_attn.cu` | 1,089 | 19.8 | 18.2 | the QSA attention's merge |
+| `gdn_step_norm_multi_kernel` | `src/kernels/cuda/verify_kernels.cu:286` | 2,340 | 83.6 | 35.7 | the GDN step's norm |
+| `gdn_step_commit_layers_kernel` | `src/kernels/cuda/verify_kernels.cu:198` | 65 | 67.0 | 1,030.3 | the GDN step's commit (one call per window) |
+| `route_multi` | `src/kernels/cuda/native_router.cu:100` | 3,120 | 65.0 | 20.8 | the router: the 512-expert top-10 per layer |
+| `hadamard_rows_kernel<float>` | `src/kernels/cuda/iq_kernels.cu:1904` | 10,800 | 46.6 | 4.3 | the Hadamard rotation of the trellis experts |
+| `copy_rows_from_mapped_kernel` | `src/kernels/cuda/elementwise.cu:238` | 3,600 | 41.9 | 11.6 | the copies of the expert rows into the device buffers |
+| `native_quantize_q8_1_kernel` | `src/kernels/cuda/native_mmvq.cu:156` | 12,112 | 38.9 | 3.2 | the activations quantized to q8_1 for the experts |
+| `quantize_q8_1_kernel` | `src/kernels/cuda/iq_kernels.cu:2510` | 10,800 | 36.3 | 3.4 | the same, the other path |
+| `doorbell_publish_res_kernel` | `src/kernels/cuda/elementwise.cu:329` | 3,600 | 34.1 | 9.5 | the doorbell's result publication |
+| `swiglu_entries_kernel` | `src/kernels/cuda/iq_kernels.cu:1924` | 7,200 | 24.3 | 3.4 | the SwiGLU of the expert rows |
+| `attn_merge_kernel` | `src/kernels/cuda/qsa_decode_attn.cu:699` | 1,089 | 19.8 | 18.2 | the QSA attention's merge |
+| `gdn_ab_multi_kernel` | `src/kernels/cuda/verify_kernels.cu:145` | 1,368 | 21.6 | 15.8 | the GDN's a/b step |
+| `sampler_greedy_kernel` | `src/kernels/cuda/sampler.cu:119` | 264 | 16.3 | 61.7 | the sampling of the tokens and the MTP drafts |
 | `block_scores_multi_kernel` | `src/kernels/cuda/qsa_select.cu:1032` | 900 | 8.6 | 9.5 | the QSA block scores (the router's second stage) |
-| `kv_append_q8_kernel` | `src/kernels/cuda/kv_q8.cu` | 1,090 | 7.2 | 6.6 | the K/V append (the int8 K/V) |
-| `append<false>` | `src/kernels/cuda/native_qsa_indexer.cu` | 900 | 5.1 | 5.7 | the QSA indexer's append |
-| `sampler_greedy_kernel` + `mtp_select_kernel` | `src/kernels/cuda/` | 453 | 18.5 | 41 | the MTP draft head's own GPU work (the sampler and the draft's selection): 0.03 % of the window - the draft costs the *host* 7.2 ms per window, not the GPU |
-| `hadamard_rows_kernel<float>` | `src/kernels/cuda/` | 10,800 | 46.6 | 4.3 | the Hadamard rotation of the trellis experts |
-| `bf16_f32_mmvf_multi_kernel`, `gdn_step_*`, `route_multi`, `copy_rows_from_mapped` | `src/kernels/cuda/` | ~30,000 | 800 | - | the router, the GDN steps, the copies |
+| `kv_append_q8_kernel` | `src/kernels/cuda/kv_q8.cu:33` | 1,090 | 7.2 | 6.6 | the K/V append (the int8 K/V) |
+| `append<false>` | `src/kernels/cuda/native_qsa_indexer.cu:120` | 900 | 5.1 | 5.7 | the QSA indexer's append |
+| `mtp_select_kernel` | `src/kernels/cuda/verify_kernels.cu:659` | 189 | 2.2 | 11.6 | the MTP draft head's selection |
+
+The MTP draft head's own GPU work is the sampler and the selection together: 18.5 ms of the 53 s window (0.03 %).
+The draft costs the *host* 7.2 ms per window, not the GPU.
+
+### What Maxwell does not have, and where it bites
+
+Four things, all measured on this card (the SASS with `cuobjdump`, the instruction rates with
+`maxwell-instr-rates.cu`):
+
+1. **No `__dp4a`** (it arrived with compute capability 6.1). The engine's four-`vmad` fallback
+   (`include/strata/kernels/dp4a.hpp`) stands in, and `vdp4a` does not exist here either (`ptxas`: "Not a name
+   of any known instruction"). The binary has **zero** `IDP4A`. The rates: VMAD 268 instructions per SM per
+   clock, IMAD 493, FFMA 806 - so the integer pipes are a third to two thirds of the FP32 rate, and the trellis
+   expert kernels (which are integer) run at 18 GB/s against the card's ~336 GB/s of memory bandwidth. The dot
+   products are 18 % of their instructions; the trellis *state* extraction is the rest.
+2. **No `cp.async`** (it arrived with compute capability 8.0). The binary has **zero** `CP.ASYNC` and **zero**
+   `LDGSTS`: the staged hyper-connection read compiles its plain-copy path on this card
+   (`src/kernels/cuda/fused_gr.cu:912` gates the async copy on `__CUDA_ARCH__ >= 800`). The engine's start-up
+   message does not know that - it says "the down projection's activations staged ahead by cp.async" on a card
+   that has none (`src/kernels/cuda/fused_gr.cu:2578`).
+3. **No tensor cores.** The dense projections' FP16-operand GEMMs have no tensor-core path here, and cuBLAS's
+   Maxwell kernels for them are slow - which is what the FP32 route in this pull request is for.
+4. **48 KB of shared memory per block** (96 KB per SM, the sm_50 limit). The GDN hyper-connection's staged down
+   projection takes **40 KB** of it per block (30 KB in its other variant), so an sm_50 SM holds two of them: the
+   registers (83 per thread) would allow three. The shared memory is what caps that kernel family, and it is the
+   one hot family where the limit bites.
 
 ### The kernels of the prompt window (27 s)
 
-| kernel | launches | total ms | what it is |
-| --- | --- | --- | --- |
-| `mul_mat_q<(ggml_type)145>` and `<146>` | 2,266 | 5,530 | the trellis prompt kernels (the MMQ instances from `third_party/ggml-tq/`) |
-| `maxwell_sgemm_fp16_32x128_tn`, `_64x64_tn`, `maxwell_sgemm_128x64_tn`, `sgemm_128x128x8_NT_vec` | 556 | 1,934 | cuBLAS, the dense projections' GEMMs |
-| `dequant_kernel<13,H16>`, `gdn_rec_cols_pipe_kernel`, `copy16_group_kernel`, the rest | ~15,000 | 2,300 | the dequantization, the GDN recurrence, the group copies |
+| kernel | source | launches | total ms | what it is |
+| --- | --- | --- | --- | --- |
+| `mul_mat_q<(ggml_type)145>` and `<146>` | the MMQ instances of `third_party/ggml-tq/` (the trellis prompt kernels, via the overlay in `cmake/strata_ggml_tq_overlay.cmake`) | 2,266 | 5,530 | the trellis prompt path: the experts' rows for the whole chunk |
+| `maxwell_sgemm_fp16_32x128_tn`, `_64x64_tn`, `maxwell_sgemm_128x64_tn`, `sgemm_128x128x8_NT_vec` | cuBLAS | 556 | 1,934 | the dense projections' GEMMs (the FP16-operand ones are the slow Maxwell kernels) |
+| `dequant_kernel<13,H16>` | `src/kernels/cuda/dequant_bf16.cu:176` | 252 | 236.0 | the BF16 weights' dequantization |
+| `gdn_rec_cols_pipe_kernel` | `src/prefill/gdn_rec_parity.cu:57` (the same code the engine builds) | 36 | 164.6 | the GDN recurrence, in shared memory |
+| `copy16_group_kernel` | `src/prefill/moe_mmq.cu:83` | 4,669 | 150.6 | the group copies of the MMQ path |
+| the rest (the GDN's gates, the norms, the attention, the copies) | `src/prefill/`, `src/kernels/cuda/` | ~12,000 | 1,460 | - |
+
 
 ## 2. Why Maxwell is slow here, from the SASS and the instruction rates
 
@@ -131,18 +175,30 @@ decode is not a result.
 | `STRATA_ADAPT_OVERLAP_RESIDENT=1` | the tier's swaps land between verify windows | the prompt read 89.95 -> 91.85 tok/s (+2.1 %) - inside the noise | **no** (inside the noise) |
 | `STRATA_EXP_MODE=2/4/5/6/7/8` (the other expert layouts) | the experts' kernel layout | every mode is slower than the default on this card: mode 2 1,138 -> 1,255 us, mode 4 -> 1,340, mode 5 -> 1,364, mode 6 -> 1,373, mode 7 -> 1,387, mode 8 -> 1,408 (all bitwise equal to mode 0) | **no** |
 | a faster byte dot product for sm_50 | the 4-`vmad` fallback | the byte-wise form is 2.37x slower here; `vdp4a` does not exist on sm_52 | **no** (the fallback is already the best) |
+| `STRATA_GR_FAST=1` (the AMD-style hyper-connection kernels) | the GDN's read | `fused_gr_bench` on this card: at the decode's window size (1-3 tokens) the old one is faster - 116.3 vs 122.3 us at 1 token, 133.0 vs 141.4 at 2, 162.4 vs 162.4 at 3; the fast one only wins from 5 tokens on (262.7 -> 246.7) | **no** (the decode's windows are 2-3 tokens) |
+| `STRATA_SM50_TABLE=1` (the interleaved small-batch matvec, a table for Maxwell) | the dense weights' MMVQ: a warp takes 2 or 4 rows, so the weights and the activations are reused across rows | the GPU's own stage timers (`STRATA_VERIFY_PROFILE=1`), the medians of 3 repeats: the dense-projection stage 8.92 -> 7.76 ms per window (**-13 %**, better in 3 of 3 repeats), the VRAM-hit stage 36.7 -> 34.5 ms (-6 %); the *request* does not move (the decode's tok/s is inside the noise), because the GPU waits 190-310 ms per window for the experts while it computes about 40 ms. `mmvq_il_parity` on this card: every case, T 1-8, rows 1/2/4 and the table, bitwise | **yes** (opt-in; the answers are the same) |
 | `STRATA_DENSE_F32=1` (the dense projections' GEMMs as `cublasSgemm` on FP32 copies) | cuBLAS's FP16-operand kernels, which are the slow Maxwell ones | `gemm_f32_parity` on this card: 5,201 chunk sizes **bitwise**; the route is 1.18-1.65x faster for the big shapes (qkv 10,240x2,560 at T 7,040: 166.5 -> 120.0 ms; query 12,288x2,560 at T 7,041: 203.4 -> 149.8; gate 6,144x2,560: 101.0 -> 67.8; out 2,560x6,144: 127.5 -> 77.1) and neutral from T 560 to 2,048 (0.97-1.06x); through the server the prompt read goes from 91.5 to 95.7 tok/s (the medians of three repeats; the two base runs agree to 0.2 % on that number) | **yes** (opt-in, see below) |
 
-The dense-GEMM route was the only change that measured faster, and it is worth about 0.5 s of a 27 s prompt
-read on this card: the prompt's cuBLAS time (1.93 s of the 9.8 s of compute) falls by about a third. It is
-opt-in, as on the P40, because the equality belongs to the cuBLAS build, not to the code.
+The two changes that measured faster are both opt-in, and they are worth a different amount in different places:
 
-The change that makes it possible on this card is one line in `src/prefill/gemm.cu`: the route was gated to
-compute capability 6.x, and it now also accepts 5.x (the cards whose cuBLAS has no tensor-core path for this
-call). The default path is unchanged - the switch is still `STRATA_DENSE_F32=1` - and the build is clean
-(`cmake --build build-cuda12`). The answers are the same: `gemm_f32_parity` says every chunk size is bitwise,
-and the end-to-end check (`parity-check.py`, the same prompt through the server with and without the switch,
-greedy) says the same.
+- **`STRATA_DENSE_F32=1`** (the dense projections' FP16 GEMMs as `cublasSgemm` on FP32 copies) is the one that moves
+  the *request* on this card: the prompt read goes from 91.5 to 95.7 tok/s, because the prompt's cuBLAS time
+  (1.93 s of the 9.8 s of compute) falls by about a third. The change that makes it possible on this card is one
+  line in `src/prefill/gemm.cu`: the route was gated to compute capability 6.x, and it now also accepts 5.x (the
+  cards whose cuBLAS has no tensor-core path for this call). The default path is unchanged - the switch is still
+  `STRATA_DENSE_F32=1` - and the build is clean (`cmake --build build-cuda12`).
+- **`STRATA_SM50_TABLE=1`** (the interleaved small-batch matvec, a table for Maxwell) makes the *compute* faster:
+  the GPU's dense-projection stage 13 % faster (better in 3 of 3 repeats) and the VRAM-hit stage 6 % faster. It does
+  not move the request on this card, because the GPU is idle 80 % of the time: it waits 190-310 ms per window for
+  the experts while it computes about 40 ms. On a card where the experts fit, that is where it would show. The
+  change is the table and its switch in `src/kernels/cuda/native_mmvq.cu` (the repo's documented procedure:
+  `mmvq_il_parity --bench --emit-table` on the card, then the table), and the interleaved kernels were compiled
+  for this architecture but never enabled on it (`il_arch_ok` stopped at compute capability 6).
+
+The answers are the same in both cases: `gemm_f32_parity` says every chunk size of the GEMM route is bitwise,
+`mmvq_il_parity` says every case of the interleaved kernels is bitwise, and the end-to-end check
+(`parity-check.py`, the same prompt through the server with and without the switch, greedy) says the same:
+`parity-answers-dense_f32.json` and `parity-answers-sm50-table.json` hold the two answers.
 
 The other candidates were dropped with their numbers:
 
@@ -156,21 +212,35 @@ The other candidates were dropped with their numbers:
 * A faster byte dot product: the four-`vmad` fallback is already 2.37x faster than the byte-wise form here, and
   `vdp4a` does not exist on sm_52.
 
-## 4. What the profile says to do next
+## 4. What the profile says to do next, in the order the profile gives it
 
-1. **The card is too small for this model.** Gyro-S's experts are 18 GiB; the card has 12 GiB of VRAM and the
-   PC 15.7 GiB of RAM. The engine's own start-up says so: the 8,192-token prompt chunk lends 3,391 slots to
-   the prompt path and **0 of them fit in RAM**, and only 327-559 MiB of VRAM are free at the start of a
-   request (the engine warns: "when the card is this full the driver can page GPU memory to system RAM,
-   decode falls to a few tok/s"). A card with 24 GB, or a PC with 32 GiB of RAM, would put the decode on the
-   compute path, and then the kernel work in section 2 is what matters.
-2. **The kernels to work on, when the data path is fixed** (in the order the profile gives):
-   the trellis gate/up and down expert kernels (3.3 s of the decode's 9.0 s of compute, integer-bound, and
-   the state extraction is the cost - not the dot products), the dense MMVQ (1.7 s, the same dp4a story), and
-   the dense projections' GEMMs (1.9 s of the prompt's compute, where the FP32 route is now available).
-3. **The MTP draft head's VRAM** (802 MiB) and the expert cache (6.02 GiB) compete for the last of the VRAM;
-   the draft acceptance is 66-85 % here, so the head is earning its keep, but the trade is worth measuring on
-   a card where the VRAM is not the limit.
+The decode's compute, largest first: the trellis expert kernels 3.30 s, the dense weights' MMVQ 1.72 s, the GDN
+hyper-connection 1.01 s, the head and the embedding 0.43 s, the attention 0.11 s, the MTP draft head 0.02 s.
+
+1. **The trellis gate/up and down expert kernels** (3.30 s): integer-bound, with no `__dp4a` and no `vdp4a` on this
+   card, and the dot products are only 18 % of their instructions - the trellis *state* extraction is the rest. So
+   a faster dot product is not where the win is; the state extraction is. (Measured: the byte-wise dot product is
+   2.37x slower than the four-`vmad` one here, and every other expert layout is slower too.)
+2. **The dense weights' MMVQ** (1.72 s) and the head and the embedding (0.43 s): the interleaved matvec with a
+   table for Maxwell is now in (`STRATA_SM50_TABLE=1`), 13 % faster on the dense-projection stage.
+3. **The GDN hyper-connection** (1.01 s): the staged down projection takes 40 KB of shared memory per block, so an
+   sm_50 SM holds two of them where the registers would allow three - the shared memory is the binding constraint
+   on this kernel family, and the card's 48 KB per block is the limit. A smaller staging tile is the thing to try
+   here. The staged read's other trick, `cp.async`, does not exist on this card at all (the binary has zero
+   `CP.ASYNC`), so on Maxwell it is only the "split" variant - and the engine's start-up message should not claim
+   otherwise.
+4. **The doorbell's bookkeeping** (`gpu_stamp_kernel`, 78,450 launches = 390 per token): 0.14 s of GPU time, but
+   the host pays for every launch, and on a card where the GPU waits anyway, fewer round trips is the same idea as
+   more overlap.
+
+**But on this card the first thing to change is not a kernel:** the model does not fit. Gyro-S's experts are
+18 GiB; the card has 12 GiB of VRAM and the PC 15.7 GiB of RAM. The engine's own start-up says so: the
+8,192-token prompt chunk lends 3,391 slots to the prompt path and **0 of them fit in RAM**, and only 327-559 MiB
+of VRAM are free at the start of a request (the engine warns: "when the card is this full the driver can page GPU
+memory to system RAM, decode falls to a few tok/s"). A card with 24 GB, or a PC with 32 GiB of RAM, would put the
+decode on the compute path, and the list above would matter then. The MTP draft head's VRAM (802 MiB) and the
+expert cache (6.02 GiB) compete for the last of the VRAM; the draft acceptance is 66-85 % here, so the head is
+earning its keep, but the trade is worth measuring on a card where the VRAM is not the limit.
 
 ## 5. What was not measured
 

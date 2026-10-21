@@ -1,0 +1,8 @@
+{
+  "same": true,
+  "off": "There are **22** records in total. Each record holds the same sequence of eight Greek letters: **alpha, beta, gamma, delta, epsilon, zeta, eta, theta**.",
+  "on": "There are **22** records in total. Each record holds the same sequence of eight Greek letters: **alpha, beta, gamma, delta, epsilon, zeta, eta, theta**.",
+  "env": {
+    "STRATA_SM50_TABLE": "1"
+  }
+}

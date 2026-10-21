@@ -32,7 +32,7 @@
   "model_name": "gyro-s-strata",
   "log": "/home/mo/strata-mainline/bench/results/2026-10-21-gyro-titanx/parity-off-engine.log",
   "host": "127.0.0.1",
-  "port": 42335,
+  "port": 53683,
   "api_key": "sk-GUXK_zuLUi5tGiyqH_q14PCz9u5SiteyKmmpuI22esI",
   "env": {}
 }

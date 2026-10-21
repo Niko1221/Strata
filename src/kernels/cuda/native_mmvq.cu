@@ -3056,6 +3056,20 @@ constexpr IlRows kIlRows_75[] = {
     {14, {{0, 0, 1, 2, 1}, {0, 2, 2, 4, 4}, {0, 4, 4, 4, 4}}},   // Q6_K
     {11, {{1, 2, 4, 4, 4}, {1, 2, 4, 4, 4}, {1, 2, 2, 2, 2}}},   // Q3_K
 };
+// Maxwell (sm_50/52): read off mmvq_il_parity --bench --emit-table on a GeForce GTX TITAN X (sm_52, 12 GB, 24 SMs,
+// CUDA 12.9), the same 3% rule.  Maxwell has no dp4a (strata_dp4a: four vmad) and no tensor cores, so the kernels
+// are integer-bound and more rows a warp (the weights and the activations reused across rows) pay: Q6_K 2560x10240
+// at 1 column 354 -> 141 us, Q5_K 2560x10240 at 2 columns 315 -> 253 us, Q6_K 2560x12288 at 3 columns 519 -> 478 us.
+// Bitwise equal to native_mmvq (mmvq_il_parity: every case, T 1-8, rows 1/2/4 and the table).  Opt-in on this
+// architecture (STRATA_SM50_TABLE=1): the table is one card's measurement, and the interleaved kernels were
+// written for the sm_80+ cards.
+constexpr IlRows kIlRows_52[] = {
+    {23, {{0, 1, 2, 1, 4}, {0, 0, 0, 1, 1}, {0, 0, 0, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 1, 2, 2}, {0, 0, 1, 1, 1}, {0, 1, 0, 0, 0}}},   // Q4_K
+    {13, {{0, 1, 1, 2, 0}, {0, 1, 4, 0, 0}, {0, 2, 2, 2, 0}}},   // Q5_K
+    {14, {{0, 0, 4, 1, 4}, {0, 2, 0, 0, 1}, {0, 0, 4, 1, 0}}},   // Q6_K
+    {11, {{0, 0, 0, 1, 0}, {0, 1, 0, 1, 1}, {0, 4, 0, 0, 0}}},   // Q3_K
+};
 // 147-verify: 5-8 columns (a verify window of 5+ rows) by n_out class, per architecture; 0 = native_mmvq's kernels.  Every
 // choice is bitwise native_mmvq's output (mmvq_il_parity, T 1-8), so a table is only speed.  Measured on an RTX PRO 5000
 // Blackwell (sm_120) with mmvq_il_parity --bench --emit-table; other cards have no table yet and keep native_mmvq's
@@ -3084,8 +3098,18 @@ constexpr Il1Rows kIl1Rows_61[] = {
     {13, {0, 0, 0, 2, 2}},   // Q5_K
     {11, {0, 0, 2, 2, 2}},   // Q3_K
 };
+// Maxwell (sm_50/52), the same tool on a GeForce GTX TITAN X: Q5_K 2560x10240 at 1 column 223 -> 129 us, Q6_K
+// 2560x10240 at 1 column 354 -> 141 us
+constexpr Il1Rows kIl1Rows_52[] = {
+    {23, {0, 0, 2, 0, 0}},   // IQ4_XS
+    {12, {0, 0, 2, 1, 1}},   // Q4_K
+    {13, {0, 0, 1, 1, 0}},   // Q5_K
+    {14, {0, 1, 1, 1, 1}},   // Q6_K
+    {11, {0, 2, 2, 1, 1}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
+    {52, kIl1Rows_52, sizeof(kIl1Rows_52) / sizeof(Il1Rows)},   // Maxwell: measured on a GeForce GTX TITAN X
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
 };
@@ -3097,6 +3121,7 @@ bool il_t1_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_T1"); return 
 bool il_q3k_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_Q3K"); return on; }
 struct IlArch { int cc; const IlRows* t; size_t n; };
 constexpr IlArch kIlArch[] = {
+    {52, kIlRows_52, sizeof(kIlRows_52) / sizeof(IlRows)},   // Maxwell: measured on a GeForce GTX TITAN X
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
     {61, kIlRows_61, sizeof(kIlRows_61) / sizeof(IlRows)},   // Pascal with dp4a: measured on a Tesla P40
     {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on an RTX 2080 Ti
@@ -3210,6 +3235,10 @@ bool sm60_table_on() { const char* v = std::getenv("STRATA_SM60_TABLE"); return 
 // Pascal (sm_61: Tesla P40 / P4, GTX 10 series; native dp4a): the same interleaved kernels (bitwise equal to
 // native_mmvq's, mmvq_il_parity), its own table kIlRows_61.  STRATA_SM61_TABLE=0 keeps native_mmvq's kernels.
 bool sm61_table_on() { const char* v = std::getenv("STRATA_SM61_TABLE"); return v == nullptr || std::atoi(v) != 0; }
+// Maxwell (sm_50/52): the same interleaved kernels (bitwise equal to native_mmvq's, mmvq_il_parity), its own table
+// kIlRows_52, measured on a GeForce GTX TITAN X.  Opt-in: STRATA_SM50_TABLE=1 turns the table on, =0 (or unset)
+// keeps native_mmvq's kernels - the table is one card's measurement.
+bool sm50_table_on() { const char* v = std::getenv("STRATA_SM50_TABLE"); return v != nullptr && std::atoi(v) != 0; }
 bool il_arch_ok() {
     static int ok[16] = {};   // 0 unknown, 1 yes, -1 no, by device ordinal
     int dev = 0;
@@ -3220,7 +3249,8 @@ bool il_arch_ok() {
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         ok[dev] = (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
                    (major >= 8 || (major == 7 && minor == 0 && sm70_opt_in()) || (major == 7 && minor == 5 && sm75_il_on(major, minor)) ||
-                    (major == 6 && minor == 0 && sm60_table_on()) || (major == 6 && minor == 1 && sm61_table_on()))) ? 1 : -1;
+                    (major == 6 && minor == 0 && sm60_table_on()) || (major == 6 && minor == 1 && sm61_table_on()) ||
+                    (major == 5 && sm50_table_on()))) ? 1 : -1;
     }
     return ok[dev] > 0;
 }

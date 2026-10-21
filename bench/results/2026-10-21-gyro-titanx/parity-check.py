@@ -74,9 +74,16 @@ def main():
         print(a["answer"])
         print("--- with:")
         print(b["answer"])
-    (OUT / "parity-answers.json").write_text(json.dumps({"same": same, "off": a["answer"], "on": b["answer"],
-                                                          "env": env_extra}, indent=2))
+    (OUT / f"parity-answers-{tag_of(env_extra)}.json").write_text(
+        json.dumps({"same": same, "off": a["answer"], "on": b["answer"], "env": env_extra}, indent=2))
     return 0 if same else 1
+
+
+def tag_of(env_extra: dict) -> str:
+    """The name of the setting under test, for the file the answers go to."""
+    if not env_extra:
+        return "default"
+    return "-".join(k.replace("STRATA_", "").lower() for k in sorted(env_extra))
 
 
 if __name__ == "__main__":

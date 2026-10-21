@@ -193,11 +193,14 @@ off the SSD (104 MB of experts per token, at the drive's 0.5 GB/s). The copies a
 The compute that exists is the trellis expert kernels (`native_gu_multi_kernel<145>` 1.85 s, `native_down_multi_kernel<146>`
 1.45 s of the decode), the dense weights' MMVQ (1.72 s) and the dense projections' GEMMs (1.93 s of the prompt).
 On this card the trellis kernels are integer-bound with no `__dp4a` (the four-`vmad` fallback, bit-exact, and
-2.37x faster than the byte-wise form here) and no tensor cores. One change measured faster: the dense projections'
-FP16-operand GEMMs as `cublasSgemm` on FP32 copies (`STRATA_DENSE_F32=1`, now allowed on compute capability 5.x
-as well): `gemm_f32_parity` says 5,201 chunk sizes bitwise on this card, and the prompt read goes from 91.5 to
-95.7 tok/s. The other expert layouts and the other switches were measured and dropped - the numbers are in the
-report and in [docs/OLDER_GPUS.md](OLDER_GPUS.md#geforce-gtx-titan-x-sm_52-a-gyro-profile-and-what-it-says).
+2.37x faster than the byte-wise form here) and no tensor cores. Two changes measured faster: the dense projections'
+FP16-operand GEMMs as `cublasSgemm` on FP32 copies (`STRATA_DENSE_F32=1`, now allowed on compute capability 5.x as
+well): `gemm_f32_parity` says 5,201 chunk sizes bitwise on this card, and the prompt read goes from 91.5 to
+95.7 tok/s; and the interleaved small-batch matvec with a table for this card (`STRATA_SM50_TABLE=1`), which makes
+the GPU's dense-projection stage 13 % faster (8.92 -> 7.76 ms per window, 3 of 3 repeats) without moving the
+request, because the GPU waits 190-310 ms per window for the experts while it computes about 40 ms. The other expert
+layouts and the other switches were measured and dropped - the numbers are in the report and in
+[docs/OLDER_GPUS.md](OLDER_GPUS.md#geforce-gtx-titan-x-sm_52-a-gyro-profile-and-what-it-says).
 
 ## Measured (the authors', rc2)
 

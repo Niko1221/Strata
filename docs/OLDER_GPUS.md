@@ -250,7 +250,17 @@ is still the best exact form on this card: the byte-wise alternative takes 128.3
 kernel is integer-bound and it is not the dot products that cost: the trellis *state* extraction is 80 % of the
 instructions, and the kernel runs at 18 GB/s against the card's ~336 GB/s of memory bandwidth.
 
-**One change that measured faster.** The dense projections' GEMMs on this card go through cuBLAS's FP16-operand
+**What else this card does not have, and where it bites.** No `cp.async` (it arrived with compute capability 8.0):
+the binary has zero `CP.ASYNC` and zero `LDGSTS`, and the staged hyper-connection read compiles its plain-copy path
+here (`src/kernels/cuda/fused_gr.cu:912`), so on Maxwell it is the "split" variant only - the engine's start-up
+message does not know that and says "the down projection's activations staged ahead by cp.async" on a card that has
+none (`src/kernels/cuda/fused_gr.cu:2578`). No tensor cores: the dense projections' FP16-operand GEMMs have no
+tensor-core path here (the change below). And 48 KB of shared memory per block (96 KB per SM): the GDN
+hyper-connection's staged down projection takes 40 KB of it per block, so an sm_50 SM holds two of them where the
+registers (83 per thread) would allow three - the shared memory is what caps that family, the third largest of the
+decode's compute.
+
+**Two changes that measured faster.** The dense projections' GEMMs on this card go through cuBLAS's FP16-operand
 kernels (`maxwell_sgemm_fp16_32x128_tn`, 1.93 s of the prompt's compute). As on the P40, the FP32 copies
 (`STRATA_DENSE_F32=1`) are faster: `gemm_f32_parity` on this card with CUDA 12.9's cuBLAS says 5,201 chunk sizes
 **bitwise**, and the route is 1.18-1.65x faster for the big shapes (qkv 10,240x2,560 at T 7,040: 166.5 -> 120.0 ms;
@@ -259,6 +269,14 @@ neutral from T 560 to 2,048. Through the server, the prompt read goes from 91.5 
 repeats, the page cache evicted before each run). It stays **opt-in** because the equality belongs to the cuBLAS
 build, not to the code: run `gemm_f32_parity` with your toolkit's library first.
 
+The second one is the interleaved small-batch matvec, which the engine has for the Pascal and Volta cards (a table
+each) but never enabled below compute capability 6. On this card the table read off `mmvq_il_parity --bench
+--emit-table` (every case, T 1-8, rows 1/2/4 and the table, bitwise) makes the GPU's dense-projection stage 13 %
+faster - 8.92 -> 7.76 ms per window, better in 3 of 3 repeats - and the VRAM-hit stage 6 % faster (36.7 -> 34.5 ms).
+It does not move the request on this card, because the GPU is idle 80 % of the time: it waits 190-310 ms per window
+for the experts while it computes about 40 ms. It is opt-in too (`STRATA_SM50_TABLE=1`), because the table is one
+card's measurement.
+
 **Measured and not changed** (every one of them on this card, for this model): the file tier's read-ahead
 (`STRATA_IO_PREFETCH=0`) costs 49 % of the prompt read and 58 % of the decode; a smaller prompt chunk
 (`--prefill 2048`) costs 12 % of the prompt read, because the RAM budget is already full and the lend region still
@@ -266,7 +284,10 @@ gets 0 of its 1,024 slots; `--resident-budget-gib 8` changes nothing and `--resi
 the noise, the two base runs agree to 0.2 % on the prompt read and 11 % on the decode);
 `STRATA_ADAPT_OVERLAP_RESIDENT=1` is +2.1 % (inside the noise); the other expert layouts are all slower here
 (`STRATA_EXP_MODE=2/4/5/6/7/8`: 1,138 -> 1,255 / 1,340 / 1,364 / 1,373 / 1,387 / 1,408 us for an 18-group call at
-2 tokens, all bitwise equal to mode 0) - mode 8, which is 35 % faster on a P40, is 8 % slower here.
+2 tokens, all bitwise equal to mode 0) - mode 8, which is 35 % faster on a P40, is 8 % slower here; the AMD-style
+hyper-connection kernels (`STRATA_GR_FAST=1`) are slower at the decode's window size (`fused_gr_bench` here: 116.3
+vs 122.3 us at 1 token, 133.0 vs 141.4 at 2, 162.4 vs 162.4 at 3; they only win from 5 tokens on, 262.7 -> 246.7),
+so the engine's own start-up check keeps the old ones.
 
 **What was not measured here.** No hardware counters: Nsight Compute is installed on this PC but its counters are
 refused on this GeForce card without root (`ERR_NVGPUCTRPERM`), so there are no occupancy, memory-throughput or
@@ -276,23 +297,32 @@ HIP, SYCL and Metal engines were not built or run: this PC has no ROCm and no In
 candidates that were dropped were dropped on this card, for this model, with this quant: the trellis state
 extraction and the dp4a fallback would matter differently on a card with `__dp4a`.
 
-**What to do next, in the order the profile gives it.** On a card that holds the experts, the compute is the
-work, and these are the kernels it is made of:
+**What to do next, in the order the profile gives it.** The decode's compute, largest first: the trellis expert
+kernels 3.30 s, the dense weights' MMVQ 1.72 s, the GDN hyper-connection 1.01 s, the head and the embedding 0.43 s,
+the attention 0.11 s, the MTP draft head 0.02 s.
 
-1. The trellis gate/up and down expert kernels (3.3 s of the decode's 9.0 s of compute): integer-bound, and the
-   dot products are 18 % of their instructions - the trellis *state* extraction is the rest, so that is where a
-   rewrite would pay, not the dot product.
-2. The dense weights' MMVQ (1.7 s): the same dp4a story, and the same conclusion.
-3. The dense projections' GEMMs (1.9 s of the prompt's compute): the FP32 route is now available on this card.
+1. The trellis gate/up and down expert kernels (3.30 s): integer-bound, and the dot products are 18 % of their
+   instructions - the trellis *state* extraction is the rest, so that is where a rewrite would pay, not the dot
+   product. (Measured here: the byte-wise dot product is 2.37x slower than the four-`vmad` one, and every other
+   expert layout is slower too.)
+2. The dense weights' MMVQ (1.72 s) and the head and the embedding (0.43 s): the interleaved matvec with a table
+   for Maxwell is now in (`STRATA_SM50_TABLE=1`), 13 % faster on the dense-projection stage.
+3. The GDN hyper-connection (1.01 s): the staged down projection's 40 KB of shared memory per block caps an sm_50 SM
+   at two blocks where the registers would allow three - a smaller staging tile is the thing to try. Its other
+   trick, `cp.async`, does not exist on this card at all, so on Maxwell it is only the "split" variant, and the
+   engine's start-up message should not claim otherwise.
 4. The doorbell's bookkeeping (`gpu_stamp_kernel`, 78,450 launches = 390 per token): 0.14 s of GPU time, but the
    host pays for every launch, and on a card where the GPU waits anyway, fewer round trips is the same idea as
    more overlap.
 
-On this card, though, the first thing to change is not a kernel: the model does not fit. A card with 24 GB, or a
-PC with 32 GiB of RAM, would put the decode on the compute path, and the list above would matter then. The
-engine's own start-up says it in two lines: the 8,192-token prompt chunk lends 3,391 slots to the prompt path and
-**0** of them fit in RAM, and only 327-559 MiB of VRAM are free at the start of a request (the engine warns that
-the driver may then page GPU memory to system RAM and the decode falls to a few tok/s).
+On this card, though, the first thing to change is not a kernel: the model does not fit. Gyro-S's experts are
+18 GiB; the card has 12 GiB of VRAM and the PC 15.7 GiB of RAM. The engine's own start-up says it in two lines: the
+8,192-token prompt chunk lends 3,391 slots to the prompt path and **0** of them fit in RAM, and only 327-559 MiB of
+VRAM are free at the start of a request (the engine warns that the driver may then page GPU memory to system RAM
+and the decode falls to a few tok/s). A card with 24 GB, or a PC with 32 GiB of RAM, would put the decode on the
+compute path, and the list above would matter then. The MTP draft head's VRAM (802 MiB) and the expert cache
+(6.02 GiB) compete for the last of the VRAM; the draft acceptance is 66-85 % here, so the head is earning its
+keep, but the trade is worth measuring on a card where the VRAM is not the limit.
 
 ### Quadro RTX 8000: measurements of existing switches
 
