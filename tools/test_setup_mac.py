@@ -170,11 +170,14 @@ class Swift(unittest.TestCase):
                 M.main(argv)
         return warned, said
 
-    def test_swift_takes_iq3_s_and_reads_no_images(self):
+    def test_swift_takes_iq3_s_and_reads_images(self):
         warned, said = self._choices(["--family", "swift", "--vision", "yes", "--yes"])
         self.assertTrue(any(s.startswith("IQ3_S, context") for s in said))
-        self.assertTrue(any("reads no images" in w for w in warned))
+        self.assertFalse(any("image" in w for w in warned))
         self.assertFalse(any("is a qwen file" in w for w in warned))   # --family swift is not overridden
+        # its own projector (setup.py's), pinned as on a PC
+        name = M.S.FAMILIES["swift"]["mmproj"]
+        self.assertEqual(M.VISION_SHA256[name], M.S.SWIFT_FILES[name])
 
     def test_an_unmeasured_swift_size_stops(self):
         with mock.patch.object(M, "mac_info", return_value={"chip": "Apple M5 Max", "ram_gb": 128.0, "macos": "27.2"}), \
@@ -188,7 +191,7 @@ class Swift(unittest.TestCase):
     def test_without_swift_the_choices_are_the_same(self):
         warned, said = self._choices(["--yes"])
         self.assertTrue(any(s.startswith("IQ3_S, context") for s in said))
-        self.assertFalse(any("reads no images" in w for w in warned))
+        self.assertFalse(any("image" in w for w in warned))
 
 
 class Vision(unittest.TestCase):

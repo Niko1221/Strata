@@ -165,7 +165,9 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
 VISION_SHA256 = {"mmproj-Qwen3.8-Flash-Next-BF16.gguf":
-                 (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")}
+                 (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0"),
+                 "mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf":
+                 (907543520, "cd1140f4abba943ce8d9fa92fed8407e389954d26907efde7b72153c75bd8a60")}
 VISION_EXE = ROOT / "build-vision" / "bin" / "strata-vision"
 
 
@@ -415,10 +417,7 @@ def main(argv=None) -> int:
     family = "swift" if swift else MAC_MODELS[model].get("family", "qwen")
     for n in model_note(model, info["ram_gb"], family):
         S.warn(n)
-    if swift and a.vision not in (None, "no"):
-        S.warn("Swift 1.5 reads no images on a Mac yet (the image encoder is checked with the original model only): "
-               "images off")
-    vision = "no" if swift else a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
+    vision = a.vision or ("yes" if S.ask("Should the model also read images? (the image encoder, ~1 GB more)",
                                           ["y", "n"], "y", a.yes) == "y" else "no")   # on by default (strata_control/vision_reader.py)
     if vision == "cpu":
         from strata_control import vision_reader as VR

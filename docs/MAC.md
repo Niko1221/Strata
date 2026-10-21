@@ -157,7 +157,9 @@ model are set up as before.
 - **The pack:** `tools/iq_pack.py` writes Swift's 96 router tensors, stored as F32, as BF16. All 96 are exact (max error 0).
 - **The draft layer:** the original model's MTP layer, as on a PC.
 - **The engine:** no change. The decode window maps the repacked file (`PLE on`).
-- **Images:** off. The image encoder is checked on the Mac with the original model only.
+- **Images:** on by default, as for the original model, with Swift's own projector (UkisAI's
+  `mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf`, pinned by SHA-256 as on a PC). Three test pictures were read right:
+  the count of shapes by color, an invoice's text word for word, and the order of five bars.
 - **Sizes:** IQ3_S only. IQ2_XS and IQ3_XXS are not measured on a Mac, so setup does not offer them.
 
 Measured with SC117's abliterated Swift 1.5 IQ3_S (`SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`, the same file
