@@ -1284,14 +1284,19 @@ keeps one conversation holding the pin. When the outgoing conversation fits only
 in the parked one's room, it keeps its place and the parked one is moved in
 whole, as before.
 Oversized snapshots or host allocation failures fall back to ordinary prompt processing.
-`--conversation-cache-min-tokens N` (default 0 = park every conversation) parks only conversations of at least N
-tokens. A parked conversation costs one of the slots whatever its length, and parking is a switch-time decision, so a
-client that interleaves short side requests with one long conversation spends the cache on the side requests and, once
-it is full, evicts the long one oldest-first - exactly the reuse it wanted. Setting the minimum above the side
-requests' length keeps the long conversation parked. The check runs before `make_room()`, so a skipped park evicts
-nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
-parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
-conversations keep a slot.
+`--conversation-cache-min-tokens WRITE[,READ]` (default 0,0) sets two length limits, in tokens. WRITE parks only
+conversations of at least that many tokens. A parked conversation costs one of the slots whatever its length, and
+parking is a switch-time decision, so a client that interleaves short side requests with one long conversation spends
+the cache on the side requests and, once it is full, evicts the long one oldest-first - exactly the reuse it wanted.
+Setting WRITE above the side requests' length keeps the long conversation parked. The check runs before `make_room()`,
+so a skipped park evicts nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens,
+below the M minimum; parked=P)`.
+READ is the other way round: the engine searches the parked conversations only for a complete prompt of at least that
+many tokens, cached history included - a request that brings 25967 tokens of history and 33 new ones counts 26000,
+not 33. Below READ it does not search and restores nothing, while the active session's own prefix, its checkpoints and
+the batch slots still work as they do; the prompt is then read as any prompt is. A single value is WRITE,0, the
+meaning the flag had before READ existed. 0 in either place is the pre-flag behaviour there and leaves the answers
+untouched - the limits only decide which parked conversations are searched and which keep a slot.
 `--conversation-cache-park-gain N` (opt-in, default 0 = park every turn) parks a conversation again only after it
 advanced N tokens past the copy it would supersede; a turn that grew by a few hundred tokens keeps the older copy
 instead of writing a whole snapshot that the next turn drops. The cost is that a resume from the older copy reads up

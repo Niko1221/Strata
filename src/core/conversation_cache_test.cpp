@@ -444,6 +444,40 @@ int main() {
         check(!disabled_min.enabled() && disabled_min.wants(1 << 20), "a disabled cache still answers for length");
     }
     {
+        // --conversation-cache-min-tokens WRITE[,READ]: a single value keeps the old meaning (WRITE,0)
+        ConversationCacheTokenLimits limits;
+        check(parse_conversation_cache_min_tokens("6000", limits) && limits.write_min_tokens == 6000 &&
+              limits.read_min_tokens == 0, "a single value is WRITE,0");
+        check(parse_conversation_cache_min_tokens("6000,0", limits) && limits.write_min_tokens == 6000 &&
+              limits.read_min_tokens == 0, "WRITE,0 is the single value spelled out");
+        check(parse_conversation_cache_min_tokens("6000,5000", limits) && limits.write_min_tokens == 6000 &&
+              limits.read_min_tokens == 5000, "WRITE,READ are the two limits");
+        check(parse_conversation_cache_min_tokens("2147483647,2147483647", limits) &&
+              limits.write_min_tokens == INT32_MAX && limits.read_min_tokens == INT32_MAX,
+              "both limits accept the maximum");
+        for (const char* bad : {"", "-1,2", "1,-2", ",2", "1,", "1,2,3", "6000x", "6000, 5000", "2147483648"})
+            check(!parse_conversation_cache_min_tokens(bad, limits), "a malformed WRITE,READ is refused");
+        // READ=0 has no limit; READ>0 measures the COMPLETE prompt, cached history included
+        check(!conversation_cache_should_read_parked(4999, 5000), "below READ the parked conversations are not searched");
+        check(conversation_cache_should_read_parked(5000, 5000), "READ itself is searched");
+        check(conversation_cache_should_read_parked(4999, 0) && conversation_cache_should_read_parked(0, 0),
+              "READ=0 searches every prompt, as before the flag");
+        std::vector<int32_t> history(25967, 3);
+        std::vector<int32_t> prompt = history;
+        prompt.insert(prompt.end(), 33, 4);
+        check(!conversation_cache_should_read_parked(33, 26000), "the 33 new tokens alone are below READ");
+        check(conversation_cache_should_read_parked((int64_t) prompt.size(), 26000),
+              "25967 cached tokens plus 33 new ones reach READ=26000");
+        // the gate skips the parked search only: the active session's prefix reuse is conversation_prefix()
+        SavedConversation active;
+        active.live.ids = history;
+        active.live.gdn.resize(64, 7);
+        check(!conversation_cache_should_read_parked((int64_t) prompt.size(), 30000),
+              "the full prompt stays below a higher READ");
+        check(conversation_prefix(active.live, prompt, {}) == (int64_t) history.size(),
+              "below READ the active session still reuses its whole prefix");
+    }
+    {
         // layer-split parking: checkpoints moved apart into stage parts and put back, no running state copied
         auto running = [](std::initializer_list<int32_t> ids, uint8_t salt, size_t parts) {
             ConversationCheckpoint c;

@@ -6,9 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -196,6 +199,40 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     }
     if (j != c.imgs.size()) return 0;
     return (int64_t) n;
+}
+
+/// `--conversation-cache-min-tokens`: the two length limits, in tokens.  WRITE is the shortest outgoing
+/// conversation worth one of the slots (ConversationCache::wants).  READ is the shortest complete prompt worth
+/// searching the parked conversations for.  A single value is WRITE,0: the meaning the flag had before READ existed.
+struct ConversationCacheTokenLimits {
+    int64_t write_min_tokens = 0;
+    int64_t read_min_tokens = 0;
+};
+
+/// "N" or "WRITE,READ": decimal, no spaces or signs, each in [0, 2147483647].  On false `limits` is left as it was.
+inline bool parse_conversation_cache_min_tokens(std::string_view text, ConversationCacheTokenLimits& limits) {
+    auto number = [](std::string_view field, int64_t& out) {
+        if (field.empty()) return false;
+        int64_t value = 0;
+        const auto result = std::from_chars(field.data(), field.data() + field.size(), value);
+        if (result.ec != std::errc{} || result.ptr != field.data() + field.size() || value < 0 || value > INT32_MAX)
+            return false;
+        out = value;
+        return true;
+    };
+    const size_t comma = text.find(',');
+    ConversationCacheTokenLimits parsed;
+    if (!number(text.substr(0, comma), parsed.write_min_tokens)) return false;
+    if (comma != std::string_view::npos && !number(text.substr(comma + 1), parsed.read_min_tokens)) return false;
+    limits = parsed;
+    return true;
+}
+
+/// Whether this request searches the parked conversations.  `prompt_tokens` is the complete prompt, cached history
+/// included, not just the part read now: below READ the engine keeps to the active session, its checkpoints and the
+/// batch slots and searches nothing (so it restores nothing).  0 = no limit, the pre-READ behaviour.
+inline bool conversation_cache_should_read_parked(int64_t prompt_tokens, int64_t read_min_tokens) {
+    return read_min_tokens <= 0 || prompt_tokens >= read_min_tokens;
 }
 
 class ConversationCache {
