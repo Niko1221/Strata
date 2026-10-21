@@ -250,7 +250,10 @@ def run_port_mode(cfg: dict, launch_args: list[str], host: str, *, server_py: st
         for i, (gpus, port) in enumerate(zip(groups, ports)):
             path = os.path.splitext(cfg_path)[0] + f".replica{i}.json" if cfg_path else os.path.join(tmp, f"replica{i}.json")
             written.append(path)
-            with open(path, "w", encoding="utf-8") as f:
+            if os.path.lexists(path):                # a new file, owner only: the config may hold an API key
+                os.unlink(path)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with open(fd, "w", encoding="utf-8") as f:
                 json.dump(port_child_cfg(cfg, i, gpus, port), f)
             pin = cpus[i] if cpus else None
             child = lifeline.popen([sys.executable, server_py, *child_argv(launch_args, path, port)],

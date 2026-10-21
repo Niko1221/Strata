@@ -516,10 +516,14 @@ class PortMode(unittest.TestCase):
 
     def test_shared_settings_kept_next_to_the_config(self):
         import signal
-        path = self.start(self.cfg())
+        import os
+        import stat
+        path = self.start(self.cfg(api_key="sk-local-test"))
         self.both_up()
+        if os.name != "nt":                                # the replica's run config may hold a key: owner only
+            self.assertEqual(stat.S_IMODE(os.stat(path.parent / "cfg.replica0.json").st_mode), 0o600)
         req = urllib.request.Request(f"http://127.0.0.1:{self.p0}/settings", data=json.dumps({"defaults": {"top_k": 20}}).encode(),
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer sk-local-test"})
         urllib.request.urlopen(req, timeout=10).read()
         self.proc.send_signal(signal.SIGTERM)
         self.assertEqual(self.proc.wait(90), 0)
