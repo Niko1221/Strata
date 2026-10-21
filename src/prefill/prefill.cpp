@@ -134,6 +134,12 @@ bool ple_compact_on() {
     static const bool on = [] { const char* v = std::getenv("STRATA_PLE_COMPACT"); return v != nullptr && v[0] == '1'; }();
     return on;
 }
+// STRATA_PLE_COPY_STREAM=1 (opt-in, with PLE_COMPACT): the raw rows go up on a stream of their own instead of the compute
+// stream, which otherwise idles for the DMA (4.7 MB a 3K chunk = 2.9 ms on a Gen2 x4 link); the same bytes and kernels
+bool ple_copy_stream_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_PLE_COPY_STREAM"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
 }  // namespace
 namespace strata::prefill {
 namespace {
@@ -992,6 +998,8 @@ struct Prefill::Impl {
     std::vector<uint32_t> ple_rows[2];
     bool ple_compact[2] = {false, false};    // STRATA_PLE_COMPACT: the pinned buffer holds raw IQ4_NL rows
     uint8_t* ple_raw_dev = nullptr;          // their device copy (cudaMalloc'd, the chunk's 16 rows a token)
+    cudaStream_t ple_copy = nullptr;         // STRATA_PLE_COPY_STREAM: the raw rows' upload stream (null: on cs)
+    cudaEvent_t ple_raw_free = nullptr;      // cs has dequantized ple_raw_dev: the next chunk's upload may overwrite it
     float* ple_norm = nullptr;
     uint8_t* region = nullptr;               // the attention/MoE scratch region (idle while the PLE block runs)
     uint64_t region_bytes = 0;
@@ -1079,6 +1087,7 @@ void Prefill::release() {
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
     if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
+    if (impl_->ple_copy) (void) cudaStreamSynchronize(impl_->ple_copy);
     for (int i = 0; i < RING_MAX; ++i) {
         if (impl_->copied[i]) cudaEventDestroy(impl_->copied[i]);
         if (impl_->used[i]) cudaEventDestroy(impl_->used[i]);
@@ -1094,6 +1103,8 @@ void Prefill::release() {
     }
     if (impl_->copy) cudaStreamDestroy(impl_->copy);
     if (impl_->kv_copy) cudaStreamDestroy(impl_->kv_copy);
+    if (impl_->ple_copy) (void) cudaStreamDestroy(impl_->ple_copy);
+    if (impl_->ple_raw_free) (void) cudaEventDestroy(impl_->ple_raw_free);
     if (impl_->kv_released) cudaEventDestroy(impl_->kv_released);
     if (impl_->kv_ready) cudaEventDestroy(impl_->kv_ready);
     if (impl_->grp_host) cudaFreeHost(impl_->grp_host);
@@ -1525,6 +1536,12 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             (void) cudaGetLastError();
         }
     }
+    // STRATA_PLE_COPY_STREAM: a stream of its own, not the expert copy stream - that one may hold a ring of blobs and
+    // waits on their slots' release, so a wait on it could idle the compute stream for longer than the DMA itself
+    if (ple_copy_stream_on() && m.ple_raw_dev != nullptr &&
+        ((!m.ple_copy && cudaStreamCreateWithFlags(&m.ple_copy, cudaStreamNonBlocking) != cudaSuccess) ||
+         (!m.ple_raw_free && cudaEventCreateWithFlags(&m.ple_raw_free, cudaEventDisableTiming) != cudaSuccess)))
+        ok = false;
     if (ss.qsa_states[ss.qsa_primary()].kv_mode == 1) {   // KV streaming: the staging pool's identity page table
         const int64_t pages = ss.qsa_states[ss.qsa_primary()].n_pages;
         std::vector<int32_t> ident((size_t) pages);
@@ -2623,6 +2640,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         cudaStream_t stream;
         ~KvDrain() { if (stream) cudaStreamSynchronize(stream); }
     } kv_drain{kv_prefetch ? m.kv_copy : nullptr};
+    KvDrain ple_drain{m.ple_copy};   // STRATA_PLE_COPY_STREAM: no upload left in flight from a buffer the next run refills
     int64_t kv_prefetches = 0;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
@@ -2835,18 +2853,31 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             }
             // #1996: the pageable fallback (no RAM to pin) goes up through a pinned slot; the pinned buffers as before
             const size_t raw_bytes = (size_t) T * strata::kernels::PLE_N_HEADS * strata::kernels::PLE_ROW_BYTES;
-            if ((m.ple_compact[ple_buf]
-                     ? cudaMemcpyAsync(m.ple_raw_dev, m.ple_emb_host[ple_buf], raw_bytes, cudaMemcpyHostToDevice, m.cs)
+            // STRATA_PLE_COPY_STREAM: the raw rows go up on their own stream once the previous chunk's dequant has read
+            // the buffer (ple_raw_free), and the compute stream waits for them (ple_copied) only at the dequant - the
+            // DMA overlaps layer 0 instead of idling the compute queue.  ple_copied still marks that buffer's upload
+            // done, on whichever stream ran it, for the host-side reuse guard below.
+            const bool ple_side = m.ple_compact[ple_buf] && m.ple_copy != nullptr;
+            const cudaStream_t ple_up = ple_side ? m.ple_copy : m.cs;
+            if ((ple_side && cudaStreamWaitEvent(m.ple_copy, m.ple_raw_free, 0) != cudaSuccess) ||
+                (m.ple_compact[ple_buf]
+                     ? cudaMemcpyAsync(m.ple_raw_dev, m.ple_emb_host[ple_buf], raw_bytes, cudaMemcpyHostToDevice, ple_up)
                      : m.ple_pageable[ple_buf].empty()
                      ? cudaMemcpyAsync(m.ple_emb, m.ple_emb_host[ple_buf], (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs)
                      : m.up_ring.h2d(m.ple_emb, m.ple_emb_host[ple_buf], (size_t) T * N * 4, m.cs)) !=
                     cudaSuccess ||
-                cudaEventRecord(m.ple_copied[ple_buf], m.cs) != cudaSuccess) {
+                cudaEventRecord(m.ple_copied[ple_buf], ple_up) != cudaSuccess ||
+                (ple_side && cudaStreamWaitEvent(m.cs, m.ple_copied[ple_buf], 0) != cudaSuccess)) {
                 err = std::string("prefill: the PLE rows' upload failed: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
-            if (m.ple_compact[ple_buf])
+            if (m.ple_compact[ple_buf]) {
                 strata::kernels::ple_iq4nl_dequant(m.ple_raw_dev, T * strata::kernels::PLE_N_HEADS, m.ple_emb, m.cs);
+                if (ple_side && cudaEventRecord(m.ple_raw_free, m.cs) != cudaSuccess) {
+                    err = std::string("prefill: the PLE rows' upload failed: ") + cudaGetErrorString(cudaGetLastError());
+                    return false;
+                }
+            }
             if (c0 + C < n) {
                 // the other buffer's upload (a chunk ago) is done before the SSD thread refills it
                 if (cudaEventSynchronize(m.ple_copied[ple_buf ^ 1]) != cudaSuccess) {
