@@ -1,0 +1,33 @@
+A3_SMOKE_BEGIN
+{"logical_device": 0, "device_name": "Ascend910_9362", "identity_max_abs_error": 0.0, "memory_free_total_bytes": [65389699072, 65787658240], "pid": 6813}
++------------------------------------------------------------------------------------------------+
+| npu-smi 25.5.5                   Version: 25.5.5                                               |
++---------------------------+---------------+----------------------------------------------------+
+| NPU   Name                | Health        | Power(W)    Temp(C)           Hugepages-Usage(page)|
+| Chip  Phy-ID              | Bus-Id        | AICore(%)   Memory-Usage(MB)  HBM-Usage(MB)        |
++===========================+===============+====================================================+
+| 1     Ascend910           | OK            | 175.3       55                0    / 0             |
+| 0     2                   | 0000:0A:00.0  | 0           0    / 0          3175 / 65536         |
++------------------------------------------------------------------------------------------------+
+| 1     Ascend910           | OK            | -           47                0    / 0             |
+| 1     3                   | 0000:0B:00.0  | 0           0    / 0          2870 / 65536         |
++===========================+===============+====================================================+
++---------------------------+---------------+----------------------------------------------------+
+| NPU     Chip              | Process id    | Process name             | Process memory(MB)      |
++===========================+===============+====================================================+
+| 1       0                 | 6813          | python3                  | 122                     |
++===========================+===============+====================================================+
+
+ASCENDC_CMAKE=<CANN_ROOT>/aarch64-linux/tikcpp/ascendc_kernel_cmake/ascendc.cmake
+/sys/fs/cgroup/memory/memory.limit_in_bytes=225485783040
+/sys/fs/cgroup/cpu/cpu.cfs_quota_us=3600000
+/sys/fs/cgroup/cpu/cpu.cfs_period_us=100000
+CANN_INSTALL_INFO=package_name=Ascend-cann-toolkit
+version=9.0.0
+innerversion=V100R001C10SPC001B250
+compatible_version=[V100R001C21],[V100R001C22],[V100R001C23],[V100R001C25],[V100R001C10]
+arch=aarch64
+os=linux
+path=<CANN_ROOT>
+
+A3_SMOKE_END

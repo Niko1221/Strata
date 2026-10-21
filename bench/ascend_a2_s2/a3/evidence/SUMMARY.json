@@ -1,0 +1,407 @@
+{
+  "device": "Ascend910_9362",
+  "single_logical_device": 0,
+  "decode_processes": 3,
+  "decode_cases_per_process": 12,
+  "projection_processes": 3,
+  "projection_cases_per_process": 21,
+  "all_passed": true,
+  "a3_output_hashes_stable": true,
+  "a2_output_hashes_matched": 21,
+  "total_cross_device_cases": 21,
+  "max_error_over_bound": 0.07719952822661247,
+  "projection_timings": [
+    {
+      "shape": [
+        640,
+        2560,
+        1
+      ],
+      "fused_median_ms": 0.26573366873587173,
+      "fused_range_ms": [
+        0.26328666717745364,
+        0.2668436694269379
+      ],
+      "split_median_ms": 0.9517370005293438,
+      "split_range_ms": [
+        0.9458603356809666,
+        0.9559373332497975
+      ]
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        2
+      ],
+      "fused_median_ms": 0.30245533465252566,
+      "fused_range_ms": [
+        0.3014583344338462,
+        0.30703866893115145
+      ],
+      "split_median_ms": 0.9483770021082213,
+      "split_range_ms": [
+        0.9461300020727018,
+        0.954184002087762
+      ]
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        4
+      ],
+      "fused_median_ms": 0.3776480007218197,
+      "fused_range_ms": [
+        0.37642800210354227,
+        0.37964500370435417
+      ],
+      "split_median_ms": 0.9498006693320349,
+      "split_range_ms": [
+        0.9466436652777096,
+        0.9523073337428892
+      ]
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        8
+      ],
+      "fused_median_ms": 0.5296106683090329,
+      "fused_range_ms": [
+        0.5282503358709315,
+        0.5321506663070371
+      ],
+      "split_median_ms": 0.9498970030108467,
+      "split_range_ms": [
+        0.9463836662083244,
+        0.9549073341380184
+      ]
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        1
+      ],
+      "fused_median_ms": 0.22814566909801215,
+      "fused_range_ms": [
+        0.22715866604509452,
+        0.2296123323806872
+      ],
+      "split_median_ms": 0.9506603334254274,
+      "split_range_ms": [
+        0.947523668097953,
+        0.9575639996910468
+      ]
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        2
+      ],
+      "fused_median_ms": 0.2634203313694646,
+      "fused_range_ms": [
+        0.2617733310520028,
+        0.27579066712254036
+      ],
+      "split_median_ms": 0.9509239995774502,
+      "split_range_ms": [
+        0.945786998878854,
+        0.9572076669428498
+      ]
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        4
+      ],
+      "fused_median_ms": 0.3335930038398753,
+      "fused_range_ms": [
+        0.3323263323788221,
+        0.33546299770629656
+      ],
+      "split_median_ms": 0.9509803348919377,
+      "split_range_ms": [
+        0.9471836674492806,
+        0.952830664270247
+      ]
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        8
+      ],
+      "fused_median_ms": 0.47393832937814295,
+      "fused_range_ms": [
+        0.4719286662293598,
+        0.47539199780051905
+      ],
+      "split_median_ms": 0.9502003328331435,
+      "split_range_ms": [
+        0.9475003316765651,
+        0.9554273322767889
+      ]
+    }
+  ],
+  "decode_timings": {
+    "pageable_host_copy_ms": {
+      "median_ms": 0.13658599345944822,
+      "range_ms": [
+        0.1271049986826256,
+        0.14845500118099153
+      ]
+    },
+    "native_launch_and_sync_ms": {
+      "median_ms": 0.9094494016608223,
+      "range_ms": [
+        0.9074973990209401,
+        0.9115375985857099
+      ]
+    },
+    "cpu_reference_ms": {
+      "median_ms": 1.5198131994111463,
+      "range_ms": [
+        1.5102828008821234,
+        1.5301275998353958
+      ]
+    }
+  },
+  "output_comparison": [
+    {
+      "shape": [
+        0,
+        64,
+        1
+      ],
+      "a3_output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "a2_output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        1,
+        64,
+        1
+      ],
+      "a3_output_sha256": "4aa3a769e16e88fbde9a1484b0f6bcd32a25dab4fe4e28cba16af3c02355dc0a",
+      "a2_output_sha256": "4aa3a769e16e88fbde9a1484b0f6bcd32a25dab4fe4e28cba16af3c02355dc0a",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        7,
+        64,
+        2
+      ],
+      "a3_output_sha256": "52441aa4d3f9d5361d6c8e7ce87c2f5c4b4352bc99d420b5cc9362c58e2270b3",
+      "a2_output_sha256": "52441aa4d3f9d5361d6c8e7ce87c2f5c4b4352bc99d420b5cc9362c58e2270b3",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        8,
+        640,
+        4
+      ],
+      "a3_output_sha256": "4b345bdd88f021f91c17feefe296a8acc8675560aa3e9eb014a9535d9a0bf8b2",
+      "a2_output_sha256": "4b345bdd88f021f91c17feefe296a8acc8675560aa3e9eb014a9535d9a0bf8b2",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        9,
+        2560,
+        8
+      ],
+      "a3_output_sha256": "0e84c69253ff452cc46c2edff828aecf6a1b943c7d51124a6ac9281ca9f288bd",
+      "a2_output_sha256": "0e84c69253ff452cc46c2edff828aecf6a1b943c7d51124a6ac9281ca9f288bd",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        31,
+        640,
+        1
+      ],
+      "a3_output_sha256": "c01c575044d42f4e4d663cc772076245f55ae7fac7e45a342f3e8dbcad0e251e",
+      "a2_output_sha256": "c01c575044d42f4e4d663cc772076245f55ae7fac7e45a342f3e8dbcad0e251e",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        32,
+        2560,
+        2
+      ],
+      "a3_output_sha256": "e0259d8c9dff9ac0c1341268debd41fc340a04d642083fc1a2823ee6326fd9d1",
+      "a2_output_sha256": "e0259d8c9dff9ac0c1341268debd41fc340a04d642083fc1a2823ee6326fd9d1",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        33,
+        2560,
+        4
+      ],
+      "a3_output_sha256": "8870a4b1a4ab4a9e88c9c1d2c33e40bc12ea5ea2eddd3dbd4983143f11419521",
+      "a2_output_sha256": "8870a4b1a4ab4a9e88c9c1d2c33e40bc12ea5ea2eddd3dbd4983143f11419521",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        257,
+        640,
+        8
+      ],
+      "a3_output_sha256": "8dc4a442c02bdaa53ba5460dbff1cb50eafe8241296cf7c542437985d342e5a7",
+      "a2_output_sha256": "8dc4a442c02bdaa53ba5460dbff1cb50eafe8241296cf7c542437985d342e5a7",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        1
+      ],
+      "a3_output_sha256": "51e95e02649e04ce575a20b075f706ec34b5aca89f85a77947e8c9e58976fb13",
+      "a2_output_sha256": "51e95e02649e04ce575a20b075f706ec34b5aca89f85a77947e8c9e58976fb13",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        2
+      ],
+      "a3_output_sha256": "0c34421a5a87ada05a7982b16e8f49ab94a318061b9b34d90bd0b7427d2bfdac",
+      "a2_output_sha256": "0c34421a5a87ada05a7982b16e8f49ab94a318061b9b34d90bd0b7427d2bfdac",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        4
+      ],
+      "a3_output_sha256": "46428414fe96975ad7db2885b1bd411d0a23bd88c7de9b3172e27bd71d857b1b",
+      "a2_output_sha256": "46428414fe96975ad7db2885b1bd411d0a23bd88c7de9b3172e27bd71d857b1b",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        8
+      ],
+      "a3_output_sha256": "3ec275dc09814d3318951188b447a21249738f83cb5230d6aa173751b2e2522c",
+      "a2_output_sha256": "3ec275dc09814d3318951188b447a21249738f83cb5230d6aa173751b2e2522c",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        1
+      ],
+      "a3_output_sha256": "3ca79ac50481a8fb735bafd3cd974a6e63bf359b11f8da7a48e3d908d5988596",
+      "a2_output_sha256": "3ca79ac50481a8fb735bafd3cd974a6e63bf359b11f8da7a48e3d908d5988596",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        2
+      ],
+      "a3_output_sha256": "3437617ab1ba43324324d5a8a07486b50cb23ecb513cecb390652606b85b6dff",
+      "a2_output_sha256": "3437617ab1ba43324324d5a8a07486b50cb23ecb513cecb390652606b85b6dff",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        4
+      ],
+      "a3_output_sha256": "c07016d325b01d672e5539558aa86c5c0dfd0c26211f4d270aef41a6c682ccc1",
+      "a2_output_sha256": "c07016d325b01d672e5539558aa86c5c0dfd0c26211f4d270aef41a6c682ccc1",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        8
+      ],
+      "a3_output_sha256": "2728f4010ce166449eccb66bfe78137c8f6005977b188660d60467a25561a25b",
+      "a2_output_sha256": "2728f4010ce166449eccb66bfe78137c8f6005977b188660d60467a25561a25b",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        8,
+        64,
+        3
+      ],
+      "a3_output_sha256": "de1b7c7b467de21f4a7605d7efe62f6fba51e5b0011b0a94edd5628940c71fb0",
+      "a2_output_sha256": "de1b7c7b467de21f4a7605d7efe62f6fba51e5b0011b0a94edd5628940c71fb0",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        9,
+        128,
+        5
+      ],
+      "a3_output_sha256": "3f9536e4536be1d42278b37e2b52ee5080286b5abbfad4b2f98949582e8627ec",
+      "a2_output_sha256": "3f9536e4536be1d42278b37e2b52ee5080286b5abbfad4b2f98949582e8627ec",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        7,
+        192,
+        6
+      ],
+      "a3_output_sha256": "b6fe78a53d1b56e726e5d48448a535ffac7459fd858a0780390c7ddadf041f4e",
+      "a2_output_sha256": "b6fe78a53d1b56e726e5d48448a535ffac7459fd858a0780390c7ddadf041f4e",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    },
+    {
+      "shape": [
+        33,
+        320,
+        7
+      ],
+      "a3_output_sha256": "8613603ac882db5cbc590210803f786e55c3c36644b48c6d86f24acbf9336b53",
+      "a2_output_sha256": "8613603ac882db5cbc590210803f786e55c3c36644b48c6d86f24acbf9336b53",
+      "all_a3_runs_match": true,
+      "matches_a2": true
+    }
+  ]
+}

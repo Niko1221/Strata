@@ -8,6 +8,9 @@ Strata model support on Ascend.
 Measured results, failures, reproduction commands and limits are in
 [RESULTS.md](RESULTS.md).
 
+The unchanged sources were also rebuilt and executed on an A3
+(`Ascend910_9362`): [A3 results and reproduction](a3/RESULTS.md).
+
 The separate [fused projection experiment](fused/README.md) extends this decode
 check to S2 matrix projections with quantized activations. Its measurements and
 limits are separate from the decode results below.

@@ -5,6 +5,10 @@ activations. It does not implement a complete expert or an inference backend.
 It is built separately from Strata. Measurements and rejected attempts are in
 [RESULTS.md](RESULTS.md).
 
+The [A3 validation report](../a3/RESULTS.md) records independent builds and
+execution of these unchanged sources on `Ascend910_9362`, including comparison
+with the A2 output hashes. Use its explicit SoC override for that target.
+
 ## Contract
 
 Inputs are resident device buffers:

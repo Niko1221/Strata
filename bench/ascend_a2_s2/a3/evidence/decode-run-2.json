@@ -1,0 +1,176 @@
+{
+  "kind": "strata-ascend-s2-correctness-prototype",
+  "machine": "aarch64",
+  "torch": "2.7.1+cpu",
+  "torch_npu": "2.7.1.post4",
+  "device": "Ascend910_9362",
+  "seed": 12345,
+  "kernel_sha256": "a1782aeaba9c0f1bdafcfcf39009073a1dad3526e6e58868c92cdb31ce1f6ec7",
+  "reference_sha256": "09d29b956c3e3efa8b8e952d024bea71110827ed4ff38b8e22ee23256cadde63",
+  "probe_sha256": "9e31443234fe5fe502f9a777ba19b213306ae43b838fb405574773a81439e7f0",
+  "cases": [
+    {
+      "blocks": 0,
+      "elements": 0,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 1,
+      "elements": 64,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 2,
+      "elements": 128,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 3,
+      "elements": 192,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 7,
+      "elements": 448,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 8,
+      "elements": 512,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 31,
+      "elements": 1984,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 32,
+      "elements": 2048,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 33,
+      "elements": 2112,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 256,
+      "elements": 16384,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 257,
+      "elements": 16448,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    },
+    {
+      "blocks": 4096,
+      "elements": 262144,
+      "bit_mismatches": 0,
+      "guards_ok": true,
+      "codes_unchanged": true,
+      "scales_unchanged": true
+    }
+  ],
+  "scope": "synthetic blocks; no engine integration or model validation",
+  "passed": true,
+  "timing_diagnostic": {
+    "blocks": 25600,
+    "matrix_shape": [
+      640,
+      2560
+    ],
+    "input_bytes": 512000,
+    "output_bytes": 6553600,
+    "warmups": 2,
+    "repeats": 3,
+    "calls_per_repeat": 5,
+    "pageable_host_copy_ms": [
+      0.14845500118099153,
+      0.1482359948568046,
+      0.14536599337588996
+    ],
+    "native_launch_and_sync_ms": [
+      0.9105475997785106,
+      0.9095576009713113,
+      0.9115375985857099
+    ],
+    "cpu_reference_ms": [
+      1.5270435978891328,
+      1.5301275998353958,
+      1.5271736017894
+    ],
+    "rounds": [
+      {
+        "warmup": true,
+        "index": -2,
+        "pageable_host_copy_ms": 0.14046599972061813,
+        "native_launch_and_sync_ms": 0.90747139765881,
+        "cpu_reference_ms": 1.6327396006090567
+      },
+      {
+        "warmup": true,
+        "index": -1,
+        "pageable_host_copy_ms": 0.15375600196421146,
+        "native_launch_and_sync_ms": 0.908935398911126,
+        "cpu_reference_ms": 1.52962580032181
+      },
+      {
+        "warmup": false,
+        "index": 0,
+        "pageable_host_copy_ms": 0.14845500118099153,
+        "native_launch_and_sync_ms": 0.9105475997785106,
+        "cpu_reference_ms": 1.5270435978891328
+      },
+      {
+        "warmup": false,
+        "index": 1,
+        "pageable_host_copy_ms": 0.1482359948568046,
+        "native_launch_and_sync_ms": 0.9095576009713113,
+        "cpu_reference_ms": 1.5301275998353958
+      },
+      {
+        "warmup": false,
+        "index": 2,
+        "pageable_host_copy_ms": 0.14536599337588996,
+        "native_launch_and_sync_ms": 0.9115375985857099,
+        "cpu_reference_ms": 1.5271736017894
+      }
+    ],
+    "bit_mismatches": 0
+  }
+}

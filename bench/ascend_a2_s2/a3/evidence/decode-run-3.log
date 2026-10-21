@@ -1,0 +1,16 @@
+<PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/utils/_path_manager.py:66: UserWarning: Permission mismatch: The owner of <PYTHON_ROOT>/lib/python3.11/site-packages/torch_npu/lib/libop_plugin_atb.so does not match.
+  warnings.warn(f"Permission mismatch: The owner of {path} does not match.")
+{"blocks": 0, "elements": 0, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 1, "elements": 64, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 2, "elements": 128, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 3, "elements": 192, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 7, "elements": 448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 8, "elements": 512, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 31, "elements": 1984, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 32, "elements": 2048, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 33, "elements": 2112, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 256, "elements": 16384, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 257, "elements": 16448, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 4096, "elements": 262144, "bit_mismatches": 0, "guards_ok": true, "codes_unchanged": true, "scales_unchanged": true}
+{"blocks": 25600, "matrix_shape": [640, 2560], "input_bytes": 512000, "output_bytes": 6553600, "warmups": 2, "repeats": 3, "calls_per_repeat": 5, "pageable_host_copy_ms": [0.1299150026170537, 0.13120500079821795, 0.1271049986826256], "native_launch_and_sync_ms": [0.9084274002816528, 0.9074973990209401, 0.9085636003874242], "cpu_reference_ms": [1.515413200831972, 1.512748998356983, 1.5102828008821234], "rounds": [{"warmup": true, "index": -2, "pageable_host_copy_ms": 0.13462499191518873, "native_launch_and_sync_ms": 0.9067294013220817, "cpu_reference_ms": 1.6287136008031666}, {"warmup": true, "index": -1, "pageable_host_copy_ms": 0.18100700981449336, "native_launch_and_sync_ms": 0.9100896015297621, "cpu_reference_ms": 1.5245733986375853}, {"warmup": false, "index": 0, "pageable_host_copy_ms": 0.1299150026170537, "native_launch_and_sync_ms": 0.9084274002816528, "cpu_reference_ms": 1.515413200831972}, {"warmup": false, "index": 1, "pageable_host_copy_ms": 0.13120500079821795, "native_launch_and_sync_ms": 0.9074973990209401, "cpu_reference_ms": 1.512748998356983}, {"warmup": false, "index": 2, "pageable_host_copy_ms": 0.1271049986826256, "native_launch_and_sync_ms": 0.9085636003874242, "cpu_reference_ms": 1.5102828008821234}], "bit_mismatches": 0}
+ASCEND_S2_PASS
