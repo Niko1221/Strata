@@ -1,0 +1,19 @@
+REF main011-1-lp.logpos: 5 cases, rows [506, 452, 578, 475, 482]
+
+== fin_off-1-lp.logpos against REF
+case           n  argmax   KL mean   KL p99    ppl ref/run bit for bit
+docs 34k     506  100.0%    0.0000   0.0000   76.33/ 76.33  yes
+docs 24k     452  100.0%    0.0000   0.0000   13.14/ 13.14  yes
+code 16k     578  100.0%    0.0000   0.0000   11.12/ 11.12  yes
+docs 8k      475  100.0%    0.0000   0.0000  311.17/311.17  yes
+code 3k      482  100.0%    0.0000   0.0000   10.06/ 10.06  yes
+all         2493  100.0%    0.0000   0.0000   31.36/ 31.36  yes
+
+== fin_on-1-lp.logpos against REF
+case           n  argmax   KL mean   KL p99    ppl ref/run bit for bit
+docs 34k     506  100.0%    0.0000   0.0000   76.33/ 76.33  yes
+docs 24k     452  100.0%    0.0000   0.0000   13.14/ 13.14  yes
+code 16k     578  100.0%    0.0000   0.0000   11.12/ 11.12  yes
+docs 8k      475  100.0%    0.0000   0.0000  311.17/311.17  yes
+code 3k      482  100.0%    0.0000   0.0000   10.06/ 10.06  yes
+all         2493  100.0%    0.0000   0.0000   31.36/ 31.36  yes
