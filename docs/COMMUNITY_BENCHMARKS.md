@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-18: RTX 4070 12 GB, Core i5-12600K, 64 GB DDR5-5800](../bench/results/2026-10-18-community-rtx4070-ddr5-5800/README.md):
+  Strata v0.1.45 source build, ISTA-DASLab IQ3_XXS with native MTP (Q2_0 draft head), K8V4 KV cache, 131,072-token context, Linux 2 MB Transparent Huge Pages (`MADV_HUGEPAGE`), and dynamic VRAM expert caching (3,086 hot experts): 65.80 tok/s steady decode (range 65.1–66.5 tok/s, 70.0 tok/s burst), prompt prefill 947 tok/s @ 2k and 1,885 tok/s @ 8k, needles 1/1 (100% pass at 4k); decode scales to 74.8 tok/s when streaming full uncompressed Q8_0 PLE from NVMe at zero VRAM penalty.
 
 ## Run the standard benchmark
 

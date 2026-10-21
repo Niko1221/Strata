@@ -1,0 +1,126 @@
+{
+  "date": "2026-10-18",
+  "author": "carteakey",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "gpu_count": 1,
+    "vram_mib": 12282,
+    "vram_used_mib": 11700,
+    "vram_free_headroom_mib": 582,
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "cpu_cores": 10,
+    "cpu_threads": 16,
+    "cpu_governor": "performance",
+    "cpu_epp": "performance",
+    "ram_installed_gib": 64.0,
+    "ram_speed_mts": 5800,
+    "ram_type": "DDR5",
+    "ram_topology": "4x16 GiB",
+    "host_ram_resident_gib": 47.0,
+    "host_ram_free_headroom_gib": 14.6,
+    "thp": "always (MADV_HUGEPAGE)",
+    "pcie_link": "PCIe Gen4 x16 (24.8 GB/s H2D)",
+    "storage": "WD_BLACK SN770 2TB NVMe SSD",
+    "os": "CachyOS Linux 7.2.9-2-cachyos",
+    "driver": "615.78.08",
+    "cuda": "12.8"
+  },
+  "model": {
+    "name": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+    "quant": "IQ3_XXS",
+    "context_limit": 131072,
+    "kv_format": "k8v4",
+    "vram_cached_experts": 3086,
+    "expert_cache_hit_rate_pct": 76.4,
+    "mtp_draft_head": "Q2_0",
+    "spec_depth": 4,
+    "spec_min_p": 0.5
+  },
+  "benchmarks": [
+    {
+      "arm": "ddr5_5200_live_baseline",
+      "date": "2026-10-21",
+      "ram_speed_mts": 5200,
+      "ple_format": "IQ4_NL",
+      "sampling": "temp 1.0 / top_p 0.95 / top_k 20",
+      "tg_probes": [
+        {"tg": 59.9, "n": 256, "draft_acc": 0.691, "wall_s": 4.79},
+        {"tg": 65.1, "n": 256, "draft_acc": 0.800, "wall_s": 4.46},
+        {"tg": 56.4, "n": 256, "draft_acc": 0.649, "wall_s": 5.10},
+        {"tg": 54.6, "n": 256, "draft_acc": 0.618, "wall_s": 5.28}
+      ],
+      "tg_median": 59.00,
+      "tg_min": 54.6,
+      "tg_max": 65.1,
+      "tg_peak_burst": 65.1,
+      "pp": {
+        "2048": {"pp_median": 924.3, "pp_min": 911.2, "pp_max": 937.3, "ttft_s": 1.89},
+        "8192": {"pp_median": 1899.3, "pp_min": 1896.2, "pp_max": 1902.4, "ttft_s": 4.38}
+      },
+      "needle_4k_pass": true
+    },
+    {
+      "arm": "ddr5_5800_thinking_mode",
+      "ram_speed_mts": 5800,
+      "ple_format": "IQ4_NL",
+      "sampling": "temp 1.0 / top_p 0.95 / top_k 20",
+      "tg_probes": [
+        {"tg": 65.1, "n": 256, "draft_acc": 0.800, "wall_s": 3.93},
+        {"tg": 66.5, "n": 256, "draft_acc": 0.772, "wall_s": 3.85},
+        {"tg": 65.8, "n": 256, "draft_acc": 0.758, "wall_s": 3.89},
+        {"tg": 65.4, "n": 256, "draft_acc": 0.764, "wall_s": 3.91}
+      ],
+      "tg_median": 65.80,
+      "tg_min": 65.1,
+      "tg_max": 66.5,
+      "tg_peak_burst": 70.0,
+      "pp": {
+        "2048": {"pp_median": 947.0, "pp_min": 926.2, "pp_max": 956.6, "ttft_s": 1.88},
+        "8192": {"pp_median": 1885.2, "pp_min": 1882.0, "pp_max": 1995.1, "ttft_s": 4.35}
+      },
+      "needle_4k_pass": true
+    },
+    {
+      "arm": "ddr5_5600_baseline",
+      "ram_speed_mts": 5600,
+      "ple_format": "IQ4_NL",
+      "sampling": "temp 0.0 (greedy)",
+      "tg_probes": [
+        {"tg": 63.5, "n": 256, "draft_acc": 0.711, "wall_s": 4.58},
+        {"tg": 64.8, "n": 256, "draft_acc": 0.709, "wall_s": 4.49},
+        {"tg": 60.9, "n": 256, "draft_acc": 0.642, "wall_s": 4.75},
+        {"tg": 59.6, "n": 256, "draft_acc": 0.750, "wall_s": 4.92}
+      ],
+      "tg_median": 62.20,
+      "tg_min": 59.6,
+      "tg_max": 64.8,
+      "tg_peak_burst": 90.2,
+      "pp": {
+        "2048": {"pp_median": 938.3, "pp_min": 925.2, "pp_max": 958.4, "ttft_s": 1.87},
+        "8192": {"pp_median": 1988.8, "pp_min": 1972.9, "pp_max": 1999.4, "ttft_s": 4.12}
+      },
+      "needle_4k_pass": true
+    },
+    {
+      "arm": "ddr5_5800_q8_0_ple",
+      "ram_speed_mts": 5800,
+      "ple_format": "Q8_0 (NVMe streamed)",
+      "sampling": "temp 1.0 / top_p 0.95 / top_k 20",
+      "tg_probes": [
+        {"tg": 74.8, "n": 256, "draft_acc": 0.782, "wall_s": 3.42},
+        {"tg": 75.4, "n": 256, "draft_acc": 0.791, "wall_s": 3.39},
+        {"tg": 73.8, "n": 256, "draft_acc": 0.774, "wall_s": 3.47},
+        {"tg": 75.1, "n": 256, "draft_acc": 0.785, "wall_s": 3.41}
+      ],
+      "tg_median": 74.80,
+      "tg_min": 73.8,
+      "tg_max": 75.4,
+      "tg_peak_burst": 75.4,
+      "pp": {
+        "2048": {"pp_median": 944.5, "pp_min": 937.3, "pp_max": 952.1, "ttft_s": 1.86},
+        "8192": {"pp_median": 1902.4, "pp_min": 1896.2, "pp_max": 1910.8, "ttft_s": 4.32}
+      },
+      "needle_4k_pass": true
+    }
+  ]
+}
