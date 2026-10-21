@@ -1205,8 +1205,8 @@ bool norm_fast_on() {
 
 // STRATA_QFUSE_HC_LOCAL=0 puts the atomic-tail up kernel back under STRATA_QFUSE_HC (default: the 32-column kernel)
 bool qfuse_hc_local() {
-    static const bool on = [] { const char* e = std::getenv("STRATA_QFUSE_HC_LOCAL"); return e == nullptr || std::atoi(e) != 0; }();
-    return on;
+    const char* e = std::getenv("STRATA_QFUSE_HC_LOCAL");
+    return e == nullptr || std::atoi(e) != 0;
 }
 // Transposed butterfly reduction (s26ts::tsum) in fused_gr: default ON on gfx12 (RDNA4), STRATA_GR_TSUM or STRATA_TSUM overrides.
 bool gr_tsum_on() {
@@ -2268,8 +2268,14 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             std::exit(1);
         }
     }
-    // S26 STRATA_QFUSE: every token needs its q8_1 destination and token 0 the counters; otherwise none is written
-    bool q8 = a[0].q8_cnt != nullptr;
+    // S26 STRATA_QFUSE: every token needs its q8_1 destination; gr_up_q32_kernel / gr_up_q8_q32_kernel own whole 32-col
+    // groups and need no atomic counter buffer (q8_cnt is only used when STRATA_QFUSE_HC_LOCAL=0 or STRATA_HC_REQ8)
+#if !STRATA_GR_FAST_BUILD
+    const bool q32_no_cnt = qfuse_hc_local() && a[0].s_down == nullptr;
+#else
+    const bool q32_no_cnt = false;
+#endif
+    bool q8 = a[0].q8_cnt != nullptr || q32_no_cnt;
     for (int t = 0; t < n_tok; ++t) q8 = q8 && a[t].q8_mixed != nullptr;
     if (!q8)
         for (int t = 0; t < n_tok; ++t) m.a[t].q8_mixed = nullptr;
