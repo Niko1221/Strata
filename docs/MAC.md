@@ -170,10 +170,12 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 `--spec 2` is the best default on mixed text. An explicit `--spec N` in the config's `args` is kept.
 
 **DFlash2 drafter (opt-in, `--dflash`).** A DFlash2 draft model can draft in place of the MTP layer. Setup does not
-offer it; build with `-DSTRATA_DFLASH=ON`, make the draft GGUF with `tools/dflash_head.py`, and put
+offer it; build with `-DSTRATA_DFLASH=ON`, make the draft GGUF with `tools/dflash_head.py --draft-vocab
+data/draft_vocab_en.bin` (the drafter reads a head over a draft vocabulary of at most 40960 tokens), and put
 `--dflash <draft.gguf>` (instead of `--mtp`) and `--spec 4` in the config's `args`. The drafter runs on Strata's own
 Metal kernels. `-DSTRATA_DFLASH_LLAMA=<a llama.cpp Metal shared build>` adds llama.cpp's graph as a second drafter
-(`STRATA_DFLASH_NATIVE=0` in `env`; about half as fast) and the parity tests.
+(`STRATA_DFLASH_NATIVE=0` in `env`; its drafts took 1.5 to 3 times as long in `dflash_native_parity_test` on an M4 Max,
+GPU shared with another job) and the parity tests.
 Without `--dflash` nothing changes. On an M4 Max with an abliterated IQ3_S target, a drafter fine-tuned on that target
 decoded 49.7 tok/s against MTP's 46.9-48.1 on short prompts, with the same greedy output; the stock incoai drafter was
 slower than MTP there. The runs: [bench/results/2026-10-20-metal-dflash2](../bench/results/2026-10-20-metal-dflash2/README.md).

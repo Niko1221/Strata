@@ -7,7 +7,7 @@
 //   draft   [last token, mask x (nb - 1)] through the 5 layers (the block's own k/v stay out of the ring), the draft
 //           head + selector gate, the top-16 per row and the candidate lattice; the host walks the lattice
 // The weights are the GGUF itself (mmap, wrapped, bound at their tensor offsets); only d2t (I64 to i32) and the
-// mask-token embedding (IQ4_XS row, dequantized once) are converted.
+// mask-token embedding (one token_embd row in the target's type, dequantized once) are converted.
 #include "strata/spec/dflash_backend.hpp"
 
 #include "gguf_lite.h"
@@ -25,7 +25,7 @@ namespace strata::spec {
 namespace {
 
 constexpr int D = 2560, NL = 5, MAXR = 8, RING = 2064, FF = 7680, FEAT = 5 * D, TOPK = 16, STAGE_ROWS = 64, VOCAB = 248320;
-constexpr int Q8 = 8, IQ4XS = 23;
+constexpr int Q8 = 8;
 
 struct GemvArgs { uint32_t n_in, n_out, n_tok, row_bytes, x_stride, y_stride; };
 struct QkvArgs { int32_t pos0, nb; };
@@ -144,14 +144,19 @@ bool NativeDflash::load(const std::string& path, std::string& err) {
         l.abase = f32(b + "attn_conv_base", 4 * D);
         l.fbase = f32(b + "ffn_conv_base", 4 * D);
     }
-    if (!missing_.empty()) { err = "--dflash: native drafter: missing or unexpected tensors:" + missing_; return false; }
-    if (emb_->type != IQ4XS || emb_->shape[0] != D || head_->type != Q8 || head_->shape[0] != D || d2t->type != 27 ||
-        d2t->shape[0] != head_->shape[1]) {
-        err = "--dflash: native drafter: token_embd must be IQ4_XS, output Q8_0 and d2t I64 over the draft vocab";
+    // the head over a draft vocabulary (d2t) is what tools/dflash_head.py --draft-vocab writes
+    const char* fix = "; make the draft GGUF with tools/dflash_head.py --draft-vocab <ids> (e.g. data/draft_vocab_en.bin)";
+    if (!missing_.empty()) { err = "--dflash: native drafter: missing or unexpected tensors:" + missing_ + fix; return false; }
+    if (std::string(ref::type_name(emb_->type)) == "?" || emb_->shape[0] != D || head_->type != Q8 || head_->shape[0] != D ||
+        d2t->type != 27 || d2t->shape[0] != head_->shape[1]) {
+        err = std::string("--dflash: native drafter: token_embd must be a known type, output Q8_0 and d2t I64 over the draft vocab") + fix;
         return false;
     }
     nv_ = (int) head_->shape[1];
-    if (nv_ > 40 * 1024) { err = "--dflash: native drafter: the draft vocab exceeds the top-k kernel's 40960 rows"; return false; }
+    if (nv_ > 40 * 1024) {
+        err = std::string("--dflash: native drafter: the draft vocab exceeds the top-k kernel's 40960 rows") + fix;
+        return false;
+    }
 
     cx_ = std::make_unique<mtl::Context>();
     wm_ = cx_->wrap(fm_.map, fm_.map_bytes);
@@ -207,8 +212,8 @@ bool NativeDflash::load(const std::string& path, std::string& err) {
     if (mask_id_ < 0 || mask_id_ >= emb_->shape[1] || mask_id_ >= VOCAB) { err = "--dflash: native drafter: mask token id outside the vocab"; return false; }
     std::fill_n(sp_.as<int32_t>(), RING, -1);
     // rows 1.. of the block's input are the mask token's embedding; row 0 (the anchor) is written per draft
-    const size_t rb = ref::row_bytes(IQ4XS, D);
-    ref::dequant(IQ4XS, (const uint8_t*) fm_.map + emb_->offset + (size_t) mask_id_ * rb, x0_.as<float>() + D, D);
+    const size_t rb = ref::row_bytes(emb_->type, D);
+    ref::dequant(emb_->type, (const uint8_t*) fm_.map + emb_->offset + (size_t) mask_id_ * rb, x0_.as<float>() + D, D);
     for (int r = 2; r < MAXR; ++r) std::memcpy(x0_.as<float>() + (size_t) r * D, x0_.as<float>() + D, D * 4);
     return true;
 }
@@ -362,8 +367,8 @@ int NativeDflash::draft(int32_t id_last, int pos0, int max_n, float p_min, int32
     if (id_last < 0 || id_last >= emb_->shape[1] || id_last >= VOCAB) return 0;
     if (max_n <= 0 || pos_max_ != pos0 - 1) return 0;   // the features up to id_last's position are not all in
     const int nb = std::min(block_, max_n + 1);
-    const size_t rb = ref::row_bytes(IQ4XS, D);
-    ref::dequant(IQ4XS, (const uint8_t*) fm_.map + emb_->offset + (size_t) id_last * rb, x0_.as<float>(), D);
+    const size_t rb = ref::row_bytes(emb_->type, D);
+    ref::dequant(emb_->type, (const uint8_t*) fm_.map + emb_->offset + (size_t) id_last * rb, x0_.as<float>(), D);
     ds_.clear();
     enc_draft(nb, pos0, id_last);
     cx_->run_graph(ds_);
