@@ -130,6 +130,37 @@ def replica_cfg(cfg: dict, i: int, gpus: list[int]) -> dict:
     return c
 
 
+def port_child_cfg(cfg: dict, i: int, gpus: list[int], port: int) -> dict:
+    """Port mode: the run config of replica i's own server - replica_cfg's, with its port, and the shared arena (when
+    "replica_shared_arena" is set) as the engine's --shared-expert-arena."""
+    c = replica_cfg(cfg, i, gpus)
+    arena = c.pop("replica_shared_arena", None)
+    c["port"] = port
+    if arena:
+        c["args"] = list(c.get("args") or []) + ["--shared-expert-arena", str(arena)]
+    return c
+
+
+# the supervisor's own options, not passed to a replica's server (each gets its own --config and --port)
+_PARENT_ONLY = ("--config", "--port", "--replicas", "--replica-shared-arena", "--gpu", "--ready-file", "--owner-fd")
+
+
+def child_argv(launch_args: list[str], cfg_path: str, port: int) -> list[str]:
+    """Port mode: a replica server's command-line options - the supervisor's own, less those in _PARENT_ONLY (as
+    "--opt value" or "--opt=value"), with this replica's --config and --port."""
+    out, skip = [], False
+    for x in launch_args:
+        if skip:
+            skip = False
+            continue
+        name = x.split("=", 1)[0]
+        if name in _PARENT_ONLY:
+            skip = "=" not in x
+            continue
+        out.append(x)
+    return out + ["--config", cfg_path, "--port", str(port)]
+
+
 def cpu_sets(n: int, enabled: bool = True):
     """n disjoint sets of CPUs (whole physical cores, SMT siblings together), or None (off, not Linux, or the topology
     cannot be read: the engines then share the cores as they would without replicas)."""

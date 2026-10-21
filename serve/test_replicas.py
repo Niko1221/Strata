@@ -79,6 +79,30 @@ class Config(unittest.TestCase):
         self.assertEqual(port_mode({"replicas": [{"gpus": [0], "port": 8080}, {"gpus": [1], "port": 8081}],
                                     "replica_shared_arena": "/tmp/a"}), [8080, 8081])
 
+    def test_port_child_cfg(self):
+        from serve.replicas import port_child_cfg
+        cfg = {"gpu": [0, 1], "args": ["--x"], "log": "/l/s.log", "replica_shared_arena": "/tmp/a.arena",
+               "replicas": [{"gpus": [0], "port": 8080},
+                            {"gpus": [1], "port": 8081, "args": ["--max-context", "131072"]}]}
+        c = port_child_cfg(cfg, 1, [1], 8081)
+        self.assertEqual((c["gpu"], c["port"], c["log"]), (1, 8081, "/l/s.r1.log"))
+        self.assertEqual(c["args"], ["--x", "--max-context", "131072", "--shared-expert-arena", "/tmp/a.arena"])
+        self.assertNotIn("replicas", c)
+        self.assertNotIn("replica_shared_arena", c)
+        self.assertEqual(cfg["args"], ["--x"])                       # the original is untouched
+        self.assertIn("replica_shared_arena", cfg)
+        plain = dict(cfg)
+        plain.pop("replica_shared_arena")
+        self.assertEqual(port_child_cfg(plain, 0, [0], 8080)["args"], ["--x"])
+
+    def test_child_argv(self):
+        from serve.replicas import child_argv
+        argv = ["--engine", "strata", "--config", "/c.json", "--port", "8095", "--host", "0.0.0.0", "--replicas=2",
+                "--ready-file", "/r", "--api-key", "k", "--replica-shared-arena", "/a", "--gpu=0,1", "--owner-fd", "3"]
+        self.assertEqual(child_argv(argv, "/t/r0.json", 8080),
+                         ["--engine", "strata", "--host", "0.0.0.0", "--api-key", "k",
+                          "--config", "/t/r0.json", "--port", "8080"])
+
 
 class Routing(unittest.TestCase):
     def test_matched_prefix_per_replica(self):
