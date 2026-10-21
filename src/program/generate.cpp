@@ -2280,6 +2280,23 @@ int main(int argc, char** argv) {
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+#if defined(STRATA_USE_HIP) && defined(_WIN32)
+    {   // 0.2.1.2: hipblas / libhipblaslt / rocblas are delay-loaded (CMakeLists.txt) and live in <exe folder>\rocm\bin, which only the
+        // launcher puts on PATH; make the folder part of this process's DLL search, so `strata.exe --version` run straight from the
+        // package folder works.  The HIP runtime and the C++ runtime sit beside the exe and are found without it.
+        wchar_t exe[MAX_PATH * 2] = {};
+        const DWORD n = GetModuleFileNameW(nullptr, exe, (DWORD) (sizeof(exe) / sizeof(exe[0])));
+        if (n > 0 && n < sizeof(exe) / sizeof(exe[0])) {
+            std::wstring dir(exe, n);
+            const size_t cut = dir.find_last_of(L"\\/");
+            if (cut != std::wstring::npos) {
+                dir.resize(cut);
+                dir += L"\\rocm\\bin";
+                if (GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) SetDllDirectoryW(dir.c_str());
+            }
+        }
+    }
+#endif
     // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched
     for (int i = 1; i < argc && i < 3; ++i) {
         if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-V") == 0) {

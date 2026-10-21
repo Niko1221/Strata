@@ -305,6 +305,26 @@ says so and starts the engine you had.
   GitHub at the commit `LLAMA_CPP_COMMIT` in `setup.py` names. Put that commit's tree in `third_party/llama.cpp`
   yourself (from a mirror or another PC) and setup uses it instead (#585).
 
+### Keeping the models on another disk
+
+The model files are the only big part (70 to 190 GB). Put them where there is room; the app and the Terminal use the same folder.
+
+- **In the app:** the first screen shows the model folder with a button to change it, and Settings > Storage changes it
+  later. Pick a folder you can save files in; a whole drive (`D:\`) becomes `D:\Strata`, which Strata makes and says so.
+  Models you already have in the old folder stay there and keep working; nothing is moved or deleted for you.
+- **In the Terminal:** `strata launch --data-dir D:\Strata` once. The folder is remembered for the next `strata launch`
+  and `strata models list`. Until you give it one, the Terminal uses the folder the app chose; the app keeps its own setting
+  (Settings > Storage) and does not read the Terminal's. `--move-data` moves the models you already have into it; without it they stay where they
+  are and the new folder gets the new downloads. Use your own files in place with `strata launch --model-path FOLDER` (a
+  folder of shards, a folder above it, or one `.gguf` file); a folder that holds several sizes needs the one `.gguf` file.
+- **Drives that are not NTFS** (exFAT, FAT32, a network share) work: Strata writes straight into `<folder>\models` and makes no
+  link there.
+- **What stays on C:** the engine (`%LOCALAPPDATA%\Strata\components`, 1 to 2 GB per version; `STRATA_COMPONENTS_DIR` moves it),
+  the app itself (the installer asks), your settings, chat history, tuning results and logs (`%LOCALAPPDATA%\Strata`,
+  `%APPDATA%\Strata`; a few MB). Nothing else large: downloads, the prepared model data (`packs`) and the draft layer (`mtp`) are
+  written in the model folder, and so are the half-finished files of an interrupted download.
+- **Docker:** `-v /mnt/big/strata:/data` (a folder on the big disk) instead of the volume `strata-data`; everything above lives in it.
+
 ## Setup's questions
 
 These are the questions of the installer from source (`START-HERE.bat`, `./setup.sh`). The app's first screen and

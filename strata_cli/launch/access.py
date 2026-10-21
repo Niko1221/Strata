@@ -376,7 +376,7 @@ def start_tunnel(name: str, port: int, *, wait: float = 45.0) -> tuple[str | Non
         stop_tunnel(name)
         return None, ("The Cloudflare tunnel did not come up in time. Check your internet connection and try again; "
                       "the server itself is running and still works on this computer.")
-    return url, "The Cloudflare tunnel is up. Anyone with the address can reach the server, so keep the API key on." + (" " + note if note else "")
+    return url, "The Cloudflare tunnel is up. Anyone with the address can reach the server; an API key keeps others out." + (" " + note if note else "")
 
 
 def tunnel_info(name: str) -> dict | None:

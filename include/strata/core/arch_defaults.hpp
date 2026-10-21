@@ -34,7 +34,8 @@ bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows);
 
 /// 021-minipc: UMA mode (the expert arena stays unregistered).  Exact (no bit changes) but NOT a default: measured on the 780M it was
 /// 1-4% slower and did not stop the resets (4 of 20 runs against 1 of 10), so kIgpuUmaArenaDefaultOn is false.  When true it applies
-/// to the Radeon 780M only (gfx1103, integrated, Linux); gfx1150 / gfx1151 are not covered (no hardware).  STRATA_UMA_REGISTER=1
+/// to the Radeon 780M only (gfx1103, integrated, Linux).  EXCEPT a Strix Halo on Windows (gfx1151, integrated): there it is always on (0.2.1.2,
+/// registering the arena used up all free VRAM and the engine did not start).  STRATA_UMA_REGISTER=1
 /// registers the arena as before; STRATA_ARENA_PIN_GIB=none selects UMA mode per run.
 inline constexpr bool kIgpuUmaArenaDefaultOn = false;
 bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on = kIgpuUmaArenaDefaultOn);

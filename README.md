@@ -246,7 +246,7 @@ strata doctor                                  # check the installed engine file
 
 `strata --help` lists everything. Starting and serving never download anything. Only the install, `strata launch` (when
 you choose a model) and `strata update` do. To reach Strata from your phone or another PC, use
-`strata launch --access lan`. It makes an API key and will not start on a network without one. No browser opens unless
+`strata launch --access lan`. It makes an API key (recommended; add `--no-api-key` to go without, with a warning). No browser opens unless
 you add `--open`. Guide: [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). Whole client: [docs/TERMINAL.md](docs/TERMINAL.md).
 
 ### With AI agents

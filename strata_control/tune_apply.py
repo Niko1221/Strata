@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from strata_control import user_args
+from strata_control import atomic as _atomic_mod
 
 SCHEMA_VERSION = 1
 
@@ -66,7 +67,7 @@ def _atomic_write(path: Path, payload: bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
+        _atomic_mod.replace(temp, path)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)

@@ -346,6 +346,17 @@ class Validation(FakeRoot):
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
 
+    def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
+        """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
+        folder still needs a Strata... name."""
+        chosen = self.root.parent / "my-big-disk"
+        chosen.mkdir()
+        self.assertRejected("strata_install", {"data_dir": str(chosen)}, "named Strata")
+        settings = self.tools.s.settings_path()
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"data_dir": str(chosen)}))
+        self.assertEqual(M.norm(self.tools.check_data_dir(str(chosen))), M.norm(chosen))
+
     def test_other_tools_arguments(self):
         self.assertRejected("strata_start", {"model": "../../etc/passwd"}, "not valid")
         self.assertRejected("strata_start", {"model": "q2_0"}, "no model is installed")
@@ -653,6 +664,22 @@ class Helpers(unittest.TestCase):
         self.assertEqual(r["context"], 32768)
 
 
+class PhysicalCores(unittest.TestCase):
+    """#3417: the hardware report's cpu.cores is the physical cores; the Work profile takes 80% of it for --pool-workers."""
+
+    def test_physical_not_logical(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"model": "x", "logical": 16, "physical": 8, "hybrid": False}),                 mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 8)
+
+    def test_unknown_falls_back_to_threads(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"physical": None}), mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 16)
+        with mock.patch.object(tune_machine, "cpu", side_effect=OSError("no")), mock.patch.object(M.os, "cpu_count", return_value=4):
+            self.assertEqual(M.physical_cores(), 4)
+
+
 class MacCatalog(unittest.TestCase):
     """A Mac (Apple Silicon): one pool of unified memory, judged by strata_control/mac_fit.py (the rules metal/setup_mac.py uses)."""
 
@@ -928,7 +955,7 @@ class DraftLayerAndCancel(unittest.TestCase):
             shard.write_bytes(b"x" * 20_000_000)
             job = {"files": [{"path": str(shard), "bytes": None, "role": "model"}], "total_gb": 60}
             prog = M.combined_progress(M.install_progress(lines), job)
-        self.assertEqual(prog["download"]["file"], "Speed-up layer")
+        self.assertEqual(prog["download"]["file"], "Draft layer")
         self.assertEqual([p["kind"] for p in prog["parts"]], ["model", "draft"])
         self.assertEqual(prog["parts"][0]["state"], "done")
         self.assertAlmostEqual(prog["parts"][1]["done_gb"], 2.0)

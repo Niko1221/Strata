@@ -17,6 +17,7 @@ import shlex
 import stat
 import subprocess
 import tempfile
+from strata_control import atomic as _atomic_mod
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -216,7 +217,7 @@ def _atomic(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp_name, path)
+        _atomic_mod.replace(temp_name, path)
         if os.name != "nt":
             try:
                 parent_fd = os.open(path.parent, os.O_RDONLY)

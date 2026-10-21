@@ -1015,8 +1015,15 @@ class StrataEngine:
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
-        self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env, **pin)
+        try:
+            self.proc = popen("the Strata engine", [exe, "--serve", *args], cwd=cwd, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=self.log, text=True, encoding="utf-8", bufsize=1, env=env,
+                              **pin)
+        except OSError:                                  # nothing started: the narrator stops, the log handle goes back
+            loading.set()
+            if log:
+                self.log.close()
+            raise
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
@@ -2560,6 +2567,13 @@ class Vision:
             args += ["--min-tokens", str(cfg["min_tokens"])]
         return args
 
+    def _ensure_dir(self):
+        """#3370: a temp cleaner (Windows Storage Sense) removes the empty work folder while the encoder is unloaded; the next
+        start then failed with WinError 267 for as long as the server lived.  Make it again; pictures cached in it are gone."""
+        if not self.dir.is_dir():
+            self.dir.mkdir(parents=True, exist_ok=True)
+            self.cache.clear()
+
     def _start(self):
         """Start the reader.  When a GPU reader that has a CPU reader to fall back on does not start (the GPU runtime does not
         load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
@@ -2577,6 +2591,7 @@ class Vision:
 
     def _start_reader(self):
         args, log, env = self.spawn
+        self._ensure_dir()
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
         self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
@@ -2739,6 +2754,7 @@ class Vision:
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
+            self._ensure_dir()
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
@@ -3776,10 +3792,13 @@ class Service:
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
 
     def reasoning_budget(self, req) -> int | None:
-        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
-        config's.  0 (or less) means no budget, so a request can turn a configured one off.  ValueError (a 400) for
-        anything that is not a whole number."""
-        value = (req or {}).get("reasoning_budget_tokens") if isinstance(req, dict) else None
+        """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens` (or, as
+        llama.cpp reads it, `thinking_budget_tokens`), else the config's.  0 (or less) means no budget, so a request can
+        turn a configured one off.  ValueError (a 400) for anything that is not a whole number."""
+        req = req if isinstance(req, dict) else {}
+        value = req.get("reasoning_budget_tokens")
+        if value is None:                                # a null does not hide the other name
+            value = req.get("thinking_budget_tokens")
         if value is None:
             value = self.reasoning_budget_tokens
         if isinstance(value, float) and value.is_integer():
@@ -3951,9 +3970,13 @@ class Service:
                   "(a minute or two) ...", flush=True)
         try:
             self.engine.restart()
-        except Exception:
+        except Exception as e:
             if vision_started:
                 self.vision.unload()
+            # the program could not be started at all (missing, not executable, or blocked by Windows - #735): the
+            # request path answers EngineDied with a 503, but takes a bare OSError for a client that went away (#2496)
+            if isinstance(e, OSError):
+                raise EngineDied(f"the engine could not be started: {e}") from e
             raise
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
@@ -5584,14 +5607,14 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
-            # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
-            # which is cache_read_input_tokens (message_start could only say the whole prompt).  At least the last
-            # prompt token is always read, and Claude Code takes an input_tokens of 0 as "not given" and keeps
-            # message_start's whole prompt beside cache_read_input_tokens: the prompt counted twice (#1013)
+            # the final counts (message_start could only say the whole prompt): what was read now stays for the next
+            # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
             reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
+            read_now = len(ids) - reused
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
                                                                        "stop_sequence": x.get("stop_sequence")},
-                                    "usage": {"input_tokens": len(ids) - reused, "cache_read_input_tokens": reused,
+                                    "usage": {"input_tokens": 1, "cache_creation_input_tokens": read_now - 1,
+                                              "cache_read_input_tokens": reused,
                                               "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
 
@@ -7200,6 +7223,22 @@ def key_list(value) -> list[str]:
     return [k.strip() for k in str(value).split(",") if k.strip()]
 
 
+def explicit_no_key(value) -> bool:
+    """The owner chose to serve without a key: "api_key": "none" in the config, STRATA_API_KEY=none or --api-key none
+    (or --no-api-key, handled by the caller).  Never a key called "none"."""
+    return isinstance(value, str) and value.strip().lower() == "none"
+
+
+def open_server_warning(port, public=False, tools=False) -> str:
+    """The one plain warning for a server on the network with no API key (recommend, never force)."""
+    msg = f"no API key: anyone who can reach port {port} can use the model" + (" and its tools" if tools else "") + "."
+    if tools:
+        msg += " The tools can read and change files on this computer."
+    if public:
+        msg += " This address is on the public internet, so anyone who finds it can use it."
+    return msg + " Add an API key to keep others out."
+
+
 def api_key_of(value):
     """The key as a client can send it (#725).  An HTTP header loses the spaces and line ends around its value, so a
     key kept with them (a config file or an environment file with CRLF line ends, a quoted " key ") matched no
@@ -7609,6 +7648,26 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def with_current_reader(cfg: dict, package: Path) -> dict:
+    """The picture reader (vision "exe", "cpu_exe") is written into the run config as an absolute path inside the engine package's folder,
+    and that folder is named after the engine version: after an engine update, or in a container made for another card, the path is gone
+    and the server would stop with "server_exited". Use the same file of the package that is installed now (the reader ships in the package)."""
+    vision = cfg.get("vision")
+    if not isinstance(vision, dict):
+        return cfg
+    fixed = dict(vision)
+    for key in ("exe", "cpu_exe"):
+        old = fixed.get(key)
+        if isinstance(old, str) and old and not engine_component.is_reference(old) and os.path.isabs(old) and not os.path.exists(old):
+            new = package / old.replace("\\", "/").rsplit("/", 1)[-1]
+            if new.is_file():
+                print(f"[strata] the picture reader {old} is not there any more; using {new} from the engine package in use", flush=True)
+                fixed[key] = str(new)
+    if fixed == vision:
+        return cfg
+    return {**cfg, "vision": fixed}
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -7617,6 +7676,7 @@ def with_component_engine(cfg: dict) -> dict:
     cfg = dict(cfg)
     cfg["exe"] = _component_exe(cfg["exe"], cfg)
     cfg["lib_dirs"] = [*engine_component.package_lib_dirs(Path(cfg["exe"]).parent), *(cfg.get("lib_dirs") or [])]
+    cfg = with_current_reader(cfg, Path(cfg["exe"]).parent)
     if cfg.get("backend") == "hip":     # AMD: the package's own hipBLASLt tuning table for this card, when its hipBLASLt version matches
         cfg = hipblaslt_tuning.apply(cfg, Path(cfg["exe"]).parent, say=lambda line: print(line, flush=True))
     return cfg
@@ -7698,6 +7758,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--api-key", default=os.environ.get("STRATA_API_KEY", ""),
                     help="require this key on /v1/* (Authorization: Bearer ... or x-api-key); also $STRATA_API_KEY. "
                          "Several keys: separate them with commas (key1,key2), as llama.cpp does")
+    ap.add_argument("--no-api-key", action="store_true",
+                    help="serve on the network without an API key (anyone who can reach the port can use the model; "
+                         "also \"api_key\": \"none\" in the config). Warns once, never refuses")
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
@@ -7803,14 +7866,16 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 x.strip() == "--api-key=" for i, x in enumerate(supplied_args)):
         print("[strata] an API key was given but it is empty: set a key, or leave it out", file=sys.stderr)
         return 2
+    raw_key = a.api_key or cfg.get("api_key", "")
+    no_key_chosen = bool(getattr(a, "no_api_key", False)) or explicit_no_key(raw_key)
+    if explicit_no_key(raw_key):
+        raw_key = ""
     try:
-        preflight_api_key = api_key_of(a.api_key or cfg.get("api_key", ""))
+        preflight_api_key = api_key_of(raw_key)
     except ValueError as e:
         print(f"[strata] {e}: set a key, or leave it out", file=sys.stderr)
         return 2
-    if a.host not in ("127.0.0.1", "localhost", "::1") and not preflight_api_key:
-        print("[strata] a non-loopback bind requires an inference API key", file=sys.stderr, flush=True)
-        return 2
+    # A key is recommended on a network, never required (owner decision 2026-10-20): the banner below warns once.
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError as e:
@@ -7992,7 +8057,7 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if set(key_list(svc.api_key)) & set(key_list(svc.telemetry_key)):
         print("[strata] telemetry_read_key must differ from every inference API key", file=sys.stderr)
         return 2
-    if not svc.api_key and "api_key" in cfg:             # #569: written, but empty: the server has none (a warning, not a stop)
+    if not svc.api_key and "api_key" in cfg and not no_key_chosen:             # #569: written, but empty: the server has none (a warning, not a stop)
         print("[strata] the api_key in the config is empty: this server has no API key (anyone who can reach it can "
               "use it); set one, or leave api_key out", file=sys.stderr, flush=True)
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
@@ -8116,8 +8181,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if not ips:
             print("       from other devices: http://<this PC's IP address>:" + str(bound_port) + "/", flush=True)
         if not svc.api_key:
-            print("       WARNING: no API key - anyone on your network can use this model. Add \"api_key\": \"...\" "
-                  "to the config (clients send it as their API key; the web page asks for it)", flush=True)
+            print("       WARNING: " + open_server_warning(bound_port, tools=svc.mcp is not None),
+                  flush=True)
         if os.name == "nt":
             print("       nothing arrives? Windows Firewall blocks it until allowed: accept its prompt for Python, or run "
                   "in an admin PowerShell:\n         New-NetFirewallRule -DisplayName \"Strata " + str(bound_port) + "\" "

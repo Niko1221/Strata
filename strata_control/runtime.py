@@ -38,7 +38,7 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, paths, private_files, procs, profiles, readiness, winproc
+from strata_control import owner_transport, paths, posix_owner, private_files, procs, profiles, readiness, winproc
 from serve import launch_identity
 from strata_control.profiles import ProfileError
 
@@ -56,7 +56,7 @@ def _is_private(details: os.stat_result, path: Path) -> bool:
             return private_files.is_unshared(path)
         except OSError:
             return False
-    return details.st_uid == os.getuid() and not stat.S_IMODE(details.st_mode) & 0o077
+    return not posix_owner.owner_only_wrong(path, details)
 
 
 def _lock_file(descriptor: int, *, exclusive: bool) -> bool:
@@ -109,12 +109,65 @@ def runtime_dir() -> Path:
         raise ProfileError("STRATA_RUNTIME_DIR must be absolute")
     existed = base.exists()
     _private_mkdir(base, parents=True, exist_ok=True)
-    if WINDOWS and not existed:
-        private_files.restrict_to_current_user(base, directory=True)   # no mode bits on NTFS: a protected ACL
     details = base.lstat()
+    if WINDOWS and stat.S_ISDIR(details.st_mode):
+        if not private_files.volume_has_acls(base):        # exFAT / FAT: no permissions exist, so there is nothing to check
+            _warn_no_acls(base)
+            return base
+        if not existed:
+            _make_private(base)                            # no mode bits on NTFS: a protected ACL
+        if not _is_private(details, base):
+            # A folder that was there before (made by an elevated install, an older version, or with the parent's ACL inherited) can
+            # name other accounts.  It is the user's own state folder: take that away instead of stopping the launch, then check again.
+            _make_private(base)
+            try:
+                details = base.lstat()
+            except OSError:
+                pass
     if not stat.S_ISDIR(details.st_mode) or not _is_private(details, base):
-        raise ProfileError("runtime directory must be owner-only (mode 0700)", 5)
+        raise ProfileError(_not_private_message(base), 5)
     return base
+
+
+def _make_private(base: Path) -> None:
+    """Windows: a protected ACL naming this user; where that is refused (a folder made by an elevated run), take ownership first."""
+    try:
+        private_files.restrict_to_current_user(base, directory=True)
+    except OSError:
+        pass
+    if _is_private(None, base):                             # type: ignore[arg-type] - details are not used on Windows
+        return
+    try:
+        private_files.repair_access(base, tree=False)
+    except OSError:
+        pass
+
+
+_NO_ACL_WARNED: set[str] = set()
+
+
+def _warn_no_acls(base: Path) -> None:
+    if str(base) not in _NO_ACL_WARNED:
+        _NO_ACL_WARNED.add(str(base))
+        print(f"[strata] {base} is on a drive that has no file permissions (FAT or exFAT), so other accounts on this PC could "
+              f"read what Strata keeps there. Use a drive formatted as NTFS if that matters.", file=sys.stderr, flush=True)
+
+
+def _not_private_message(base: Path) -> str:
+    if WINDOWS:
+        try:
+            names = private_files.who_can_reach(base) if base.is_dir() else []
+            readable = True
+        except OSError:
+            names, readable = [], False
+        if not readable:
+            return (f"Strata cannot read the permissions of {base}, the folder where it keeps its running state. Run Strata once as "
+                    f"yourself (not as administrator), or delete that folder: Strata makes a private one again.")
+        who = ", ".join(names) if names else "other accounts"
+        return (f"Strata keeps its running state in {base}, and {who} can open that folder. Strata could not change that. "
+                f"Right-click the folder, choose Properties > Security, and remove those accounts (or delete the folder: Strata "
+                f"makes a private one again).")
+    return "runtime directory must be owner-only (mode 0700)"
 
 
 def acquire_activity_lease(*, shared: bool) -> int:

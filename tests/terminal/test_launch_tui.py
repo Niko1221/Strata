@@ -259,10 +259,10 @@ class ModelStep(Base):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "o")
             self.assertIn("Type or paste the folder", text_of(app))
-            with mock.patch("strata_control.models.plan_import", return_value=plan) as pi:
+            with mock.patch("strata_control.models.plan_import", return_value=plan) as pi, mock.patch("strata_control.models.own_path_problem", return_value=None):
                 await typed(pilot, "/data/models/IQ3_XXS")
                 await press(pilot, "enter")
-            self.assertEqual(ctx.settings.model_path, str(Path("/data/models/IQ3_XXS")))
+            self.assertEqual(ctx.settings.model_path, os.path.abspath("/data/models/IQ3_XXS"))
             self.assertEqual((ctx.settings.family, ctx.settings.model), ("qwen", "IQ3_XXS"))
             self.assertIn("These files are qwen IQ3_XXS (2 file(s), 44 GB)", text_of(app))
             await press(pilot, "enter")
@@ -274,12 +274,23 @@ class ModelStep(Base):
 
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "o")
-            with mock.patch("strata_control.models.plan_import", return_value=plan):
+            with mock.patch("strata_control.models.plan_import", return_value=plan), mock.patch("strata_control.models.own_path_problem", return_value=None):
                 await typed(pilot, "/x")
                 await press(pilot, "enter")
             t = flat(app)
-            self.assertIn("some shards are missing", t)
+            self.assertIn("some parts of the model are missing", t)
             self.assertIn("pick a model from the list", t)
+            self.assertIsNone(ctx.settings.model_path)
+        self.run_app(case)
+
+    def test_own_files_folder_that_is_not_there_is_named(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "o")
+            await typed(pilot, "/no/such/folder")
+            await press(pilot, "enter")
+            t = flat(app)
+            self.assertIn("does not exist", t)
+            self.assertIn("Nothing was downloaded", t)
             self.assertIsNone(ctx.settings.model_path)
         self.run_app(case)
 
@@ -715,9 +726,30 @@ class AccessStep(Base):
             self.assertNotEqual(ctx.settings.api_key, first)
             await press(pilot, "t")
             self.assertIsNone(ctx.settings.api_key)
-            self.assertIn("will not start on a network without one", text_of(app))
+            self.assertTrue(ctx.settings.no_key)
+            self.assertIn("anyone who can reach this port can use the model and its tools", text_of(app))
             await press(pilot, "t")
             self.assertTrue(ctx.settings.api_key)
+            self.assertFalse(ctx.settings.no_key)
+        self.run_app(case)
+
+    def test_default_is_a_key_and_no_key_survives_moving_on(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach(), "down")
+            self.assertTrue(ctx.settings.api_key)                       # default: Strata makes a key
+            await press(pilot, "t")                                     # one keypress: no key
+            await press(pilot, "down")                                  # moving the cursor does not bring the key back
+            await press(pilot, "up")
+            self.assertIsNone(ctx.settings.api_key)
+            self.assertTrue(ctx.settings.no_key)
+        self.run_app(case)
+
+    def test_local_never_asks_for_a_key(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, *self.reach())
+            self.assertEqual(ctx.settings.access, "local")
+            self.assertIsNone(ctx.settings.api_key)
+            self.assertNotIn("An API key was made", text_of(app))
         self.run_app(case)
 
 

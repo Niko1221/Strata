@@ -907,7 +907,8 @@ print(r.choices[0].message.content)
   from going to sleep while at least one request is running or waiting (Windows' `SetThreadExecutionState` with
   `ES_SYSTEM_REQUIRED`; the screen may still turn off), and gives the normal sleep rules back when the server is idle
   and when it exits. Default off. On Linux and macOS it does nothing (one line at startup says so).
-- **A hard thinking budget (opt-in).** `"reasoning_budget_tokens": N` in a request (OpenAI or Anthropic) caps the
+- **A hard thinking budget (opt-in).** `"reasoning_budget_tokens": N` (or llama.cpp's `"thinking_budget_tokens": N`, which
+  clients written for llama-server send) in a request (OpenAI or Anthropic) caps the
   thinking at N tokens: when it gets there the server ends it with a short wrap-up line and `</think>`, and the model
   answers from there (the engine continues from what it already holds, so nothing is read again). The wrap-up is
   part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
@@ -1072,7 +1073,9 @@ print(r.choices[0].message.content)
   editable there.
 - **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:
   run setup with `START-HERE.bat --setup --host 0.0.0.0 --api-key some-long-secret` (or add `"host": "0.0.0.0"` and
-  `"api_key": "..."` to `strata-<model>.json`). The server window then prints this PC's addresses
+  `"api_key": "..."` to `strata-<model>.json`). The key is recommended, not required: without one the server still starts and
+  warns that anyone who can reach the port can use the model and its tools (to say it is on purpose, use `--no-api-key` on
+  the server or `"api_key": "none"` in the config, which silences the config-empty note). The server window then prints this PC's addresses
   (`from other devices: http://192.168.x.x:8080/`); open that on the other device, or use `.../v1` as an API base URL.
   On Windows the firewall blocks it until you allow it: accept its prompt for Python (private networks), or run
   `New-NetFirewallRule -DisplayName "Strata 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`

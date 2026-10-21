@@ -62,7 +62,12 @@ vcruntime140*.dll) are redistributable under the Visual Studio license (Distribu
 
 def imports(objdump: Path, dll: Path) -> list[str]:
     text = subprocess.run([str(objdump), "-p", str(dll)], capture_output=True, text=True, check=True).stdout
-    return [m.group(1) for m in re.finditer(r"DLL Name:\s*(\S+)", text)]
+    names = [m.group(1) for m in re.finditer(r"DLL Name:\s*(\S+)", text)]
+    # 0.2.1.2: strata.exe delay-loads hipblas / libhipblaslt / rocblas, which objdump -p does not list; dll_closure reads the delay-import table too
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from dll_closure import pe_imports
+    seen = {n.lower() for n in names}
+    return names + [n for n in pe_imports(dll) if n.lower() not in seen]
 
 
 def crt_dir() -> Path | None:

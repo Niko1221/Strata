@@ -30,6 +30,9 @@ examples:
 """
 
 
+PICTURE_WORDS = {"off": "off", "on": "on", "cpu": "on (the reader runs on the processor)", "gpu": "on (the reader runs on the graphics card)"}
+
+
 def _choice(label: str, options: tuple[str, ...]):
     def convert(value: str) -> str:
         v = str(value).strip().lower()
@@ -107,8 +110,12 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     a.add_argument("--api-key", metavar="KEY", help="the key clients must send (made for you when you share beyond this computer)")
     a.add_argument("--api-key-env", metavar="NAME", help="read the key from this environment variable")
     a.add_argument("--new-key", action="store_true", help="make a new API key")
+    a.add_argument("--no-api-key", action="store_true", help="share beyond this computer without an API key (a warning is shown, nothing is refused)")
     o = p.add_argument_group("running")
     o.add_argument("--save-preset", metavar="NAME", help="save these choices under this name")
+    o.add_argument("--retune", action="store_true",
+                   help="with --tune (quick is used when --tune is not given): measure again even when this model was already tuned on this computer "
+                        "(by default a stored tuning result is reused and no measuring is done)")
     o.add_argument("--no-tui", action="store_true", help="no screens: serve, print the address and return")
     o.add_argument("--open", action="store_true", help="open the server's web page in your browser once it is serving (nothing opens a browser without this)")
     o.add_argument("--yes", action="store_true", help="do not ask questions (for one: whether to download the model on a computer with no engine yet)")
@@ -219,6 +226,13 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         if not val:
             raise ValueError(f"The environment variable {a.api_key_env} is empty or not set.")
         s.api_key = val
+    if a.no_api_key:
+        if a.api_key or a.api_key_env:
+            notices.append(S.Notice("warn", "An API key was given as well as --no-api-key, so the key is kept.", ""))
+        else:
+            s.api_key, s.no_key = None, True             # also drops a key a saved preset had
+    elif s.api_key:
+        s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
     if a.save_preset:
@@ -258,7 +272,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                     notices.append(S.Notice("warn", "The engine installed here has no picture reader, so pictures are off.",
                                             "Update the engine to read pictures, or add --vision off to silence this."))
         notices += S.check_context(s, max_fit_tokens=None)
-    if s.access != "local" and not s.api_key:
+    if s.access != "local" and not s.api_key and not s.no_key:
         from strata_cli.launch import access
         s.api_key = access.new_key()
         notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
@@ -349,6 +363,16 @@ def _stop_all(name: str | None) -> int:
     elif not stopped:
         _say("Nothing from `strata launch` is running.")
     return 0
+
+
+def _can_ask() -> bool:
+    """A person may be typing although the streams are not a terminal (Git Bash, mintty): a normal Windows or Linux terminal session says so
+    through the environment. A pipe from a script or CI does not."""
+    if sys.stdin is None or sys.stdin.closed:
+        return False
+    if os.environ.get("CI") or os.environ.get("STRATA_NO_PROMPT"):
+        return False
+    return bool(os.environ.get("MSYSTEM") or os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or os.environ.get("WT_SESSION"))
 
 
 def _ask_yes(title: str, text: str) -> bool:
@@ -462,7 +486,7 @@ def launch_info(name: str | None = None) -> dict | None:
     if pick is None and preset is None:
         return None
     port = (pick or {}).get("port") or (preset.port if preset else S.DEFAULT_PORT)
-    return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": cfg.get("api_key") or (preset.api_key if preset else None),
+    return {"url": (pick or {}).get("url") or f"http://127.0.0.1:{port}", "key": (cfg.get("api_key") if str(cfg.get("api_key") or "").strip().lower() != "none" else None) or (preset.api_key if preset else None),
             "model": cfg.get("model_name") or "strata", "context": _cfg_context(cfg), "running": bool(pick), "name": (pick or {}).get("name") or (preset.name if preset else None),
             "port": port, "access": preset.access if preset else None}
 
@@ -492,7 +516,7 @@ def run_launch(a: argparse.Namespace) -> int:
                     sm = store.summary(i)
                     _say(f"{i.name:<28} {sm['model']:<14} {S.context_label(i.context):<6} "
                          f"{(str(i.parallel) + ' request' + ('s' if i.parallel != 1 else '')) if i.parallel else 'fit to card':<14} "
-                         f"{('tuned ' + (i.tuned_at or '')) if i.tuned_preset else 'not tuned':<16} {i.last_used or ''}")
+                         f"{('tuned ' + (i.tuned_at or '')) if i.is_tuned else 'not tuned':<16} {i.last_used or ''}")
             return 0
         if a.delete_preset:
             store.delete(a.delete_preset)
@@ -525,9 +549,15 @@ def run_launch(a: argparse.Namespace) -> int:
         s, notices = settings_from_args(a, catalog)
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune)
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
+        plain_questions = False
         if not have_choices and not interactive and not a.plan:
-            return fail("`strata launch` with no choices opens screens, and this is not a terminal. Name what to start: --preset NAME, or --model NAME "
-                        "(strata launch --help has examples; --plan shows what would happen without changing anything).", 2)
+            if machine or catalog is None or not _can_ask():
+                return fail("`strata launch` with no choices opens screens, and this is not a terminal. Name what to start: --preset NAME, or --model NAME "
+                            "(strata launch --help has examples; --plan shows what would happen without changing anything).", 2)
+            # Git Bash, mintty and some editor panels cannot show the screens although a person is typing: go on in plain lines, and ask first
+            plain_questions = True
+            _say("This window cannot show Strata's screens (Git Bash and similar windows do not pass the keyboard through). "
+                 "For the screens, open Windows Terminal, PowerShell or cmd, or run `winpty strata launch`. Going on with plain questions.")
         if interactive and not have_choices:
             if catalog is None:
                 return fail("This Terminal does not carry the model list, so the screens cannot open. Install it again with the one-line installer.", 5)
@@ -535,18 +565,25 @@ def run_launch(a: argparse.Namespace) -> int:
             return _tui(app.run_tui, None, catalog=catalog, feed=a.feed, open_page=bool(a.open))
         if catalog is None:
             return fail("This Terminal does not carry the model list. Install it again with the one-line installer.", 5)
+        if getattr(a, "retune", False) and s.tune == "skip":
+            s.tune = "quick"
+        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes,
+                        retune=bool(getattr(a, "retune", False)))
+        try:
+            runner.check_own_files()                         # the person's own files: a wrong path is said now, and the files name the model
+        except LaunchError as e:
+            return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
         errors = [n for n in notes if n.level == "error"]
         if errors:
             return fail(errors[0].line(), 2)
         if a.new_key:
             from strata_cli.launch import access
-            s.api_key = access.new_key()
+            s.api_key, s.no_key = access.new_key(), False
         if not s.name:
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
         move_data = _move_data_choice(a, s, catalog, machine)
-        runner = Runner(s, catalog=catalog, emit=_printer(machine), feed=a.feed, assume_yes=bool(a.yes or machine), confirm=_ask_yes,
-                        move_data=move_data)
+        runner.s, runner.move_data = s, move_data
         if a.plan:
             plan = runner.plan()
             plan["warnings"] = [n.line() for n in notes]
@@ -554,8 +591,14 @@ def run_launch(a: argparse.Namespace) -> int:
                 print(json.dumps({"schema_version": 1, "ok": True, "plan": plan}))
             else:
                 _say(f"Plan for '{s.name}':")
-                _say(f"  model     {s.family} {s.model}" if s.model else f"  model     your files at {s.model_path}")
-                _say(f"  context   {S.context_label(s.context)}    pictures {s.vision}    parallel {s.parallel or 'fit to your card'}")
+                m = plan.get("model") or {}
+                size = f", {m['model_gb']:.0f} GB" if m.get("model_gb") else ""
+                if s.model_path:
+                    _say(f"  model     {m.get('title') or 'your model files'}{size}   (your files in {s.model_path})")
+                else:
+                    _say(f"  model     {m.get('title') or f'{s.family} {s.model}'}{size}")
+                _say(f"  context   {S.context_label(s.context)}    pictures {PICTURE_WORDS.get(s.vision or 'off', s.vision)}    parallel {s.parallel or 'fit to your card'}")
+                _say(f"  download  {(plan.get('download') or {}).get('text', '')}")
                 _say(f"  tuning    {s.tune}    access {S.ACCESS_WORDS[s.access]}, port {s.port}"
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
@@ -570,10 +613,18 @@ def run_launch(a: argparse.Namespace) -> int:
         fw = _access.firewall_note(s.access)
         if fw and not machine:
             _say(f"[!] {fw}")
+        if plain_questions:
+            try:
+                answer = input("Start it now? Models can be tens of GB to download. [Y/n] ").strip().lower()
+            except EOFError:
+                return fail("There is nobody to answer. Name what to start: --preset NAME, or --model NAME (strata launch --help has examples).", 2)
+            if answer not in ("", "y", "yes"):
+                _say("Nothing was changed.")
+                return 0
         if interactive and have_choices:
             from strata_cli.launch import app
             return _tui(app.run_tui, s, catalog=catalog, feed=a.feed, auto_run=True, save=bool(a.save_preset), open_page=bool(a.open),
-                         move_data=move_data)
+                         move_data=move_data, retune=bool(getattr(a, "retune", False)))
         try:
             result = runner.run()
         except LaunchError as e:

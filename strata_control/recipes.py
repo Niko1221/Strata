@@ -22,6 +22,7 @@ from pathlib import Path
 
 from strata_control import profiles
 from strata_control.profiles import ProfileError
+from strata_control import posix_owner
 
 
 KINDS = frozenset({"runtime.restart", "engine.calibrate.measure", "components.verify"})
@@ -44,8 +45,8 @@ def _directory(profile: str, *, create: bool = False) -> Path:
         details = path.lstat()
         if not stat.S_ISDIR(details.st_mode):
             raise ProfileError("recipe directory must not be a symlink", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("recipe directory must be owner-only (mode 0700)", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(path, details)):
+            raise ProfileError(posix_owner.owner_only_text("recipe directory must be owner-only (mode 0700)", path), 5)
     if create:
         _private_mkdir(directory.parent, exist_ok=True)
         _private_mkdir(directory, exist_ok=True)
@@ -53,8 +54,8 @@ def _directory(profile: str, *, create: bool = False) -> Path:
         details = directory.lstat()
         if not stat.S_ISDIR(details.st_mode):
             raise ProfileError("recipe directory must not be a symlink", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("recipe directory must be owner-only (mode 0700)", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(directory, details)):
+            raise ProfileError(posix_owner.owner_only_text("recipe directory must be owner-only (mode 0700)", directory), 5)
     return directory
 
 
@@ -80,8 +81,8 @@ def _history_dir(profile: str, name: str, *, create: bool = False) -> Path:
         if path.exists():
             details = path.lstat()
             if not stat.S_ISDIR(details.st_mode) or (os.name == "posix" and
-                    (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-                raise ProfileError("recipe history directory must be owner-only", 5)
+                    (posix_owner.owner_only_wrong(path, details))):
+                raise ProfileError(posix_owner.owner_only_text("recipe history directory must be owner-only", path), 5)
     return directory
 
 
@@ -182,8 +183,8 @@ def load(profile: str, name: str) -> tuple[dict, str]:
         details = path.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_BYTES:
             raise ProfileError("recipe must be a regular file under 64 KiB", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("recipe file must be owner-only (mode 0600)", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(path, details)):
+            raise ProfileError(posix_owner.owner_only_text("recipe file must be owner-only (mode 0600)", path), 5)
         data = path.read_bytes()
         value = json.loads(data.decode("utf-8-sig"))
     except FileNotFoundError:
@@ -227,7 +228,7 @@ def save(profile: str, name: str, proposed: dict, expected_revision: str) -> tup
         if backup.exists() or backup.is_symlink():
             details = backup.lstat()
             if not stat.S_ISREG(details.st_mode) or (os.name == "posix" and
-                    (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)) or \
+                    (posix_owner.owner_only_wrong(backup, details))) or \
                     backup.read_bytes() != old:
                 raise ProfileError("recipe history conflicts with the saved revision", 5)
         else:
@@ -258,8 +259,8 @@ def rollback(profile: str, name: str, target_revision: str) -> tuple[dict, str, 
         details = path.lstat()
         if not stat.S_ISREG(details.st_mode) or details.st_size > MAX_BYTES:
             raise ProfileError("recipe history must be a regular file under 64 KiB", 5)
-        if os.name == "posix" and (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077):
-            raise ProfileError("recipe history file must be owner-only", 5)
+        if os.name == "posix" and (posix_owner.owner_only_wrong(path, details)):
+            raise ProfileError(posix_owner.owner_only_text("recipe history file must be owner-only", path), 5)
         data = path.read_bytes()
         if profiles._revision(data) != target_revision:
             raise ProfileError("recipe history content does not match its revision", 5)

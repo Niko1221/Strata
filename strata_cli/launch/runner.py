@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+from strata_control import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -69,24 +70,45 @@ class Result:
     final_text: str = ""                   # what to tell the person when serving is False
 
 
-NO_ENGINE_NEXT = ("Get the engine that matches this computer's graphics card (from whoever sent you Strata, or with `strata update --feed <address>`), "
-                  "then run `strata launch` again. Nothing was downloaded, and any model files you already have are kept.")
+NO_ENGINE_NEXT = ("Update Strata (`strata update`) and run `strata launch` again. Nothing was downloaded, and any model files you already have are kept.")
 
 STAGES = ("engine", "model", "config", "tune", "start", "access")
 
-NO_ENGINE_STEP = ("run `strata update --feed <address>` with the update source you were given, or ask whoever sent you Strata for the engine "
-                  "that matches this computer's graphics card, then run `strata launch` again")
+NO_ENGINE_STEP = ("run `strata update` to get the newest engines and start again; if this stays, your graphics card is not one Strata supports yet, "
+                  "and the model files stay on this computer for when it is")
+
+#: no graphics card Strata can use at all (an Intel UHD/Iris only, an AMD APU-only laptop, a virtual machine, Windows on ARM)
+NO_GPU_PREFIX = "no graphics card that Strata can use was found"
+NO_GPU_STEP = ("Strata needs an NVIDIA or AMD graphics card, an Intel Arc card or an Apple Silicon Mac, and there is no CPU-only engine for this "
+                "computer. Run Strata on a computer that has one; the model files stay here")
+
+
+def no_gpu_words(names: list[str] | None = None) -> str:
+    """The plain reason when nothing Strata can run on is in this computer, naming what is there when it is known."""
+    names = [n for n in (names or []) if n]
+    if names:
+        return f"{NO_GPU_PREFIX}; this computer has {', '.join(names[:3])}"
+    return NO_GPU_PREFIX
+
+
+def _step_for(reason: str) -> str:
+    return NO_GPU_STEP if reason.startswith(NO_GPU_PREFIX) else NO_ENGINE_STEP
 
 
 def no_engine_warning(reason: str) -> str:
     """The plain warning shown before a model is downloaded on a computer with no engine to run it."""
     reason = reason.strip().rstrip(".")
+    if reason.startswith(NO_GPU_PREFIX):
+        return (f"Strata can't run on this computer: {reason}. The model will download, but it will not run here "
+                f"(next step: {NO_GPU_STEP}).")
     return (f"Strata couldn't find an engine for this computer ({reason}). The model will download, but it may not run until you install "
             f"the right engine (next step: {NO_ENGINE_STEP}).")
 
 
 def no_engine_final(reason: str, name: str = "") -> str:
     reason = reason.strip().rstrip(".")
+    if reason.startswith(NO_GPU_PREFIX):
+        return f"The model is ready, but Strata can't start it on this computer: {reason}. Next step: {NO_GPU_STEP}."
     return (f"The model is ready, but Strata can't start it yet: it couldn't find an engine for this computer ({reason}). "
             f"Next step: {NO_ENGINE_STEP}. The model files stay on this computer.")
 
@@ -142,6 +164,8 @@ def files_present(cfg: dict) -> list[str]:
             missing.append(tok)
     for flag in ("--pack", "--mtp"):
         args = [str(a) for a in cfg.get("args") or []]
+        if flag == "--mtp" and flag in args and args.index(flag) + 1 < len(args) and args[args.index(flag) + 1].isdigit():
+            continue                                      # Qwen3.6: a number is the draft depth, not a folder (#3298)
         if flag in args and args.index(flag) + 1 < len(args) and not Path(args[args.index(flag) + 1]).exists():
             missing.append(args[args.index(flag) + 1])
     vision = cfg.get("vision")
@@ -221,6 +245,8 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     cfg["port"] = int(s.port)
     if s.api_key:
         cfg["api_key"] = s.api_key
+    elif s.no_key and s.access != "local":
+        cfg["api_key"] = "none"                              # served without a key on purpose (the server warns once at start)
     else:
         cfg.pop("api_key", None)
     cfg.setdefault("exe", "component:strata-engine")
@@ -254,7 +280,7 @@ def write_private(path: Path, data: dict) -> None:
             os.chmod(tmp, 0o600)
         except OSError:
             pass
-        os.replace(tmp, path)
+        _atomic_mod.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -276,19 +302,31 @@ def launch_dir() -> Path:
 # ----------------------------------------------------------------------------------------------- the runner
 
 
-def download_text(dl: dict, already: bool) -> str:
-    """The step line for the model download. A model whose files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
+def download_text(dl: dict, already: bool, label: str | None = None) -> str:
+    """The step line for a download or a check. `label` is what is being fetched, in words (strata_control/progress_words.py). A model whose
+    files were all on disk before this run says so instead of "Downloading 58.5 of 58.5 GB"."""
     if already:
-        return f"Model already downloaded ({dl['total_gb']:.1f} GB), checking the files"
-    return f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
+        return f"The model files are already on this computer ({dl['total_gb']:.1f} GB); checking them"
+    return f"{label}: {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB" if label else f"Downloading {dl['done_gb']:.1f} of {dl['total_gb']:.1f} GB"
+
+
+_END = object()
+
+
+def _elapsed(seconds: float) -> str:
+    """'40 s', '3 min' (plain, rounded down)."""
+    seconds = int(seconds)
+    return f"{seconds} s" if seconds < 90 else f"{seconds // 60} min"
 
 
 class Runner:
     def __init__(self, s: S.LaunchSettings, *, catalog: Catalog | None = None, emit: Callable[[Event], None] | None = None,
                  cancel: threading.Event | None = None, feed: str | None = None, python: str | None = None,
                  components_dir: str | None = None, hardware: dict | None = None,
-                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False, move_data: bool = False):
+                 confirm: Callable[[str, str], bool] | None = None, assume_yes: bool = False, move_data: bool = False,
+                 retune: bool = False):
         self.s = s
+        self.retune = retune                  # --retune: measure again even when a tuning result for this model on this computer is stored
         self.move_data = move_data            # --move-data / the answer "move": the model files already here go to the new --data-dir
         self.confirm = confirm                # asked (title, text) before a model is downloaded with no engine; True = go on
         self.assume_yes = assume_yes          # --yes: no questions
@@ -304,6 +342,7 @@ class Runner:
         self.notices: list[str] = []
         self.tune_result: dict | None = None
         self.config_path: Path | None = None
+        self._own_checked = False
 
     # ---- small helpers
     def emit(self, stage: str, text: str, pct: float | None = None, level: str = "info", **data: Any) -> None:
@@ -453,6 +492,14 @@ class Runner:
                     note = str(res.get("note") or "").strip()
         if not note:
             note = str(report.get("notice") or "").strip()
+        if "backend" in report and report["backend"] is None:                    # not even a graphics card Strata knows: say that, not "the feed has nothing"
+            names = []
+            try:
+                from strata_control import engine_component as ec
+                names = [a.get("name", "") for a in ec.windows_display_adapters()] if os.name == "nt" else []
+            except Exception:                                # noqa: BLE001 - the names are a nicety
+                pass
+            return no_gpu_words(names)
         if not note or note.startswith("No engine for this PC was found"):
             note = "There is no engine for this computer's graphics card in the update source."
         return note
@@ -507,6 +554,8 @@ class Runner:
             args += ["--data-dir", str(data)]
             if self.move_data and s.data_dir:             # only when the person said so: setup moves nothing otherwise
                 args.append("--move-data")
+            if s.data_dir:                                # a folder the person chose is remembered for the next start and for the app
+                args.append("--set-default-data-dir")
         if s.model_path:
             p = Path(s.model_path)
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
@@ -514,8 +563,9 @@ class Runner:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
-            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data"}
-            flags = ("--yes", "--no-start", "--move-data")
+            keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data",
+                    "--set-default-data-dir"}
+            flags = ("--yes", "--no-start", "--move-data", "--set-default-data-dir")
             out, i = [], 0
             while i < len(args):
                 if args[i] in keep:
@@ -585,10 +635,55 @@ class Runner:
         """(title, text) of the question before a download starts, naming exactly what is fetched."""
         return self.model_state().question()
 
+    #: seconds of silence from setup before a "still working" line (packing a 40 GB model prints nothing for minutes)
+    HEARTBEAT_S = 30.0
+
+    def _read_lines(self, p: subprocess.Popen):
+        """The lines setup prints, and None whenever a second passes with none, so a silent step can say it is still going and a cancel is
+        seen at once."""
+        import queue
+        q: queue.Queue = queue.Queue()
+
+        def pump() -> None:
+            try:
+                for ln in p.stdout:                          # type: ignore[union-attr]
+                    q.put(ln)
+            finally:
+                q.put(_END)
+        threading.Thread(target=pump, daemon=True).start()
+        while True:
+            try:
+                ln = q.get(timeout=min(1.0, max(0.05, self.HEARTBEAT_S / 2)))
+            except queue.Empty:
+                yield None
+                continue
+            if ln is _END:
+                return
+            yield ln
+
+    def progress_job(self) -> dict:
+        """What the download figure is counted over: the folder setup writes the model into (the data folder it is GIVEN, which may be the
+        person's --data-dir and not the default one) and every file of the install with the catalog's total, so a model in several shards
+        shows 'of 66.4 GB' from the start and not the size of the file being fetched."""
+        s, cat = self.s, self.catalog
+        data = Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or cat.data_dir())
+        models_dir = data / "models"
+        job = {"folder": str(models_dir / cat.tag_of(s.family, s.model)),
+               "total_gb": float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)}
+        try:
+            setup_module = cat.strata.setup_module()
+            if setup_module is not None and not s.model_path:
+                job["files"] = cat.mcp.expected_files(setup_module, str(s.family), str(s.model), models_dir, self.vision_word() != "no")
+                first = next((f for f in job["files"] if f.get("role") == "model"), None)
+                if first:                                    # the folder setup names it (Q2_0), not the lower-case run-config tag (q2_0)
+                    job["folder"] = str(Path(first["path"]).parent)
+        except Exception:                                    # noqa: BLE001 - progress is a convenience; the folder scan still counts
+            pass
+        return job
+
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
-        if s.model_path and not (s.family and s.model):
-            self.resolve_own_files()
+        self.check_own_files()
         self.resolved_vision()
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
@@ -603,7 +698,8 @@ class Runner:
             adopted = self.adopt_prepared_files("no Mac model installer in this Terminal")
             if adopted is not None:
                 return adopted
-        self.emit("model", f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
+        self.emit("model", f"Preparing {title} from your model files…" if s.model_path else
+                  f"Getting {title} ready (a download may be large; it continues where it stopped if interrupted)…", 0)
         argv = [self.python, str(cat.src / "setup.py"), *self.setup_args()]
         env = self._env()
         env.update(STRATA_CONTROL_INSTALL="1", STRATA_INSTALL_DIR=str(cat.root), PYTHONNOUSERSITE="1")
@@ -618,25 +714,39 @@ class Runner:
         p = self._spawn(argv, env=env, cwd=str(cat.src))
         lines: list[str] = []
         already: bool | None = None                          # all the model's files were on disk before this run wrote anything
-        folder = str(cat.data_dir() / "models" / cat.tag_of(s.family, s.model))
-        total = float(next((r.download_gb for r in cat.rows() if r.family == s.family and r.model == s.model), 0) or 0)
-        for line in p.stdout:                                # type: ignore[union-attr]
+        job = self.progress_job()
+        step_seen, step_since, quiet_since, said = None, time.monotonic(), time.monotonic(), None
+        for line in self._read_lines(p):
             if self.cancel.is_set():
                 self._stop_children()
                 raise Cancelled()
+            if line is None:                                 # nothing printed for a while: the long steps (packing, converting) are silent
+                if said and said[1] != "download" and time.monotonic() - quiet_since >= self.HEARTBEAT_S:
+                    quiet_since = time.monotonic()
+                    self.emit("model", f"{said[0]} (still working, {_elapsed(time.monotonic() - step_since)} so far)", None, step=step_seen)
+                continue
+            quiet_since = time.monotonic()
             line = line.rstrip()
             if not line:
                 continue
             lines.append(line)
-            lines[:] = lines[-400:]
+            lines[:] = lines[-1500:]
             prog = cat.mcp.install_progress(lines)
-            prog = cat.mcp.combined_progress(prog, {"folder": folder, "total_gb": total})
-            dl = prog.get("download")
-            if dl and not s.model_path and dl.get("total_gb", 0) >= 0.05:
-                if already is None:
+            prog = cat.mcp.combined_progress(prog, job)
+            dl, phase, label = prog.get("download"), prog.get("phase"), prog.get("label")
+            if prog.get("step") != step_seen:
+                step_seen, step_since = prog.get("step"), time.monotonic()
+            if label and not dl:
+                said = (label, phase)
+            else:
+                said = None
+            if dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
+                if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
-                text = download_text(dl, already)
+                text = download_text(dl, bool(already) and phase == "download", label)
                 self.emit("model", text, float(dl["percent"]), step=prog.get("step"))
+            elif label:
+                self.emit("model", label, None, step=prog.get("step"))
             elif prog.get("step"):
                 self.emit("model", f"Setup step {prog['step']}", None, step=prog.get("step"))
         code = p.wait()
@@ -655,7 +765,8 @@ class Runner:
             if adopted is not None:
                 return adopted
             raise LaunchError("The model could not be installed." + (f" {err}." if err else ""),
-                              hint or "Run it again: finished steps are skipped and a download continues where it stopped.", 6)
+                              hint or ("Run it again: finished steps are skipped." if s.model_path else
+                                       "Run it again: finished steps are skipped and a download continues where it stopped."), 6)
         path, _desc = self.installed_state()
         if path is None:
             raise LaunchError("Setup finished but no run config was written for this model.",
@@ -697,21 +808,45 @@ class Runner:
         self.emit("model", f"Used your prepared model files and wrote the run settings ({path.name}); this card is not one the built-in downloader sets up.", 100, level="warn")
         return path
 
+    def check_own_files(self) -> None:
+        """The person's own model files, looked at once: a path that is not there or holds no model is said in plain words first, and the
+        files are matched to the catalog model (resolve_own_files). Nothing else is done with a path that was already checked."""
+        if self.s.model_path and not self._own_checked:
+            self.resolve_own_files()
+            self._own_checked = True
+
     def resolve_own_files(self) -> None:
-        """"Use model files I already have": the fingerprint table says which catalog model the files are."""
+        """"Use model files I already have": the fingerprint table says which catalog model the files are, and which folder holds them (the
+        person may have named the folder above it). When the person also named the model (--model), the files are never refused here: setup
+        takes the files of that model out of the folder by name, as it always did (0.1.45), and says what is wrong when it cannot."""
         from strata_control import models
         s = self.s
+        problem = models.own_path_problem(s.model_path)
+        if problem:                                          # before the engine or setup are touched, with the path as typed
+            raise LaunchError(problem[0], problem[1], 2)
+        given = bool(s.family and s.model)
         try:
-            plan = models.plan_import(str(Path(s.model_path).expanduser().resolve()))
+            plan = models.plan_import(models.absolute(s.model_path))
         except Exception as e:                               # noqa: BLE001
+            if given:
+                return
             raise LaunchError(f"These model files cannot be used: {e}.", "Pick the folder with every shard of one model, or a .gguf file of it.", 5) from None
+        if given:
+            hold = [h for h in plan.get("folder_holds") or [] if (h.get("family"), h.get("model")) == (s.family, s.model)]
+            if len(hold) == 1 and hold[0].get("folder"):
+                s.model_path = hold[0]["folder"]
+            elif not plan.get("issues"):
+                s.model_path = models.import_target(s.model_path, plan)
+            return
         sel = plan.get("candidate_selection") or {}
         fam, model = sel.get("family"), sel.get("model")
         if not (fam and model) or plan.get("issues"):
-            issues = "; ".join(plain_issue(str(x)) for x in (plan.get("issues") or [])[:3]) or "they are not a model Strata knows"
-            raise LaunchError(f"These files cannot be used as they are ({issues}).",
+            issues = models.problem_words(plan.get("issues") or []) or "they are not a model Strata knows"
+            more = " " + next((m for m in plan.get("messages") or [] if "holds" in m), "")
+            raise LaunchError(f"These files cannot be used as they are ({issues}).{more.rstrip()}",
                               "Choose the matching model in the list, or check that every shard is in the folder.", 5)
         s.family, s.model = fam, model
+        s.model_path = models.import_target(s.model_path, plan)
         self.emit("model", f"These files are {fam} {model}.", None)
 
     # ---- 3. config and profile
@@ -757,13 +892,23 @@ class Runner:
         if s.tune == "skip":
             return
         from strata_control import presets
-        if s.tuned_preset:
-            try:
-                presets.find(s.tuned_preset)
-                self.emit("tune", "This preset is already tuned for this computer.", 100)
+        if not self.retune:
+            if s.tuned_preset:
+                try:
+                    presets.find(s.tuned_preset)
+                    self.emit("tune", "This preset is already tuned for this computer.", 100)
+                    return
+                except presets.PresetError:
+                    pass
+            elif s.tuned_at:                                 # measured before: the standard settings were already the fastest, nothing was saved
+                self.emit("tune", f"Already tuned on {s.tuned_at}: this computer runs best with the standard settings. Nothing to do.", 100)
                 return
-            except presets.PresetError:
-                pass
+            stored = self.stored_tuning()
+            if stored:                                       # the same model and choices were tuned on this computer before (a run by flags, no preset)
+                s.tuned_preset, s.tuned_at = stored["id"], stored["date"]
+                self.emit("tune", f"This model was already tuned for this computer on {stored['date']} ('{stored['name']}'), so that result is used "
+                                  "and nothing is measured again. Add --retune to measure again.", 100)
+                return
         mode = "thorough" if s.tune == "thorough" else "quick"
         status_file = launch_dir() / f"{self.name}.tune.json"
         try:
@@ -808,6 +953,22 @@ class Runner:
         elif result and result.get("outcome") == "default_confirmed":
             s.tuned_at = time.strftime("%Y-%m-%d")
         self.emit("tune", f"Tuning result: {word}. {sentence}", 100, level="info" if word in ("faster", "already fastest") else "warn", word=word)
+
+    def stored_tuning(self) -> dict | None:
+        """The tuning result stored for this launch's model, choices and computer (the active preset of its slot in the shared presets store,
+        which the start applies), or None. A result whose computer changed in a way that matters (a different card, processor or memory,
+        another model file) is not reused: it is measured again."""
+        if self.config_path is None:
+            return None
+        from strata_control import presets
+        try:
+            _cfg, info = presets.overlay(read_config(self.config_path))
+            if not info.get("applied") or not info.get("preset"):
+                return None
+            made = str(presets.load(info["preset"]["id"]).get("created") or "")[:10]
+            return {"id": info["preset"]["id"], "name": info["preset"]["name"], "date": made or time.strftime("%Y-%m-%d")}
+        except Exception:                                    # noqa: BLE001 - an unreadable store means: measure
+            return None
 
     tune_word: str | None = None
 
@@ -876,14 +1037,79 @@ class Runner:
         return tunnel
 
     # ---- all of it
+    def row(self):
+        """The catalog row of the chosen model (None for a model the list does not carry)."""
+        s = self.s
+        return next((r for r in self.catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
+
+    def download_plan(self) -> dict:
+        """What this launch would download, in numbers and words (nothing is changed): the model's missing files, and for a model that is
+        not on this computer yet also the draft layer and the picture reader that setup fetches after it. 0 when everything is here."""
+        from strata_control import engine_component
+        from strata_control.discovery import MMPROJ_GB, MTP_FETCH_GB
+        s = self.s
+        st = self.model_state()
+        parts = [{"kind": p.kind, "label": p.label, "gb": round(p.gb, 1)} for p in st.parts if p.gb >= 0.05]     # a part already on disk is not a download
+        row = self.row()
+        helpers = s.family in ("qwen", "swift", "coder", "unsloth")
+        wants_pictures = s.vision not in (None, "off") and row is not None and bool(row.images)
+        if helpers and (st.own_files or not st.installed):
+            # a model that is not set up yet (or the person's own files) comes without the draft layer and the picture reader: setup fetches them
+            # next to the prepared data, unless they are there already
+            have = {p["kind"] for p in parts}
+            try:
+                data = Path(st.folder) if st.folder else (Path(s.data_dir) if s.data_dir else (self.existing_data_dir() or self.catalog.data_dir()))
+                if s.mtp != "off" and "mtp" not in have and not (data / "mtp" / "rt" / "experts.bin").is_file():
+                    parts.append({"kind": "mtp", "label": "the draft layer", "gb": MTP_FETCH_GB})
+                has_reader = list((data / "models").glob("mmproj*.gguf")) or list((data / "Models").glob("mmproj*.gguf"))
+                if wants_pictures and "mmproj" not in have and not has_reader:
+                    parts.append({"kind": "mmproj", "label": "the picture reader", "gb": MMPROJ_GB})
+            except OSError:
+                pass
+        gb = round(sum(p["gb"] for p in parts), 1)
+        engine = True
+        try:
+            engine = bool(engine_component.status(Path(self.components_dir) if self.components_dir else None).get("usable"))
+        except Exception:                                    # noqa: BLE001 - the plan must not fail on this
+            pass
+        if gb < 0.05:
+            text = ("Nothing to download: your model files are used where they are." if st.own_files
+                    else "Nothing to download: the model is already on this computer.")
+        else:
+            names = [f"{p['label']} ({p['gb']:.1f} GB)" for p in parts]
+            what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            text = f"About {gb:.1f} GB to download: {what}."
+            if st.on_disk_gb >= 1:
+                text += f" {st.on_disk_gb:.0f} GB of the model is already in its folder."
+            if st.own_files:
+                text += " Your model files are used where they are."
+        if not engine:
+            text += " The engine for your graphics card is downloaded first (from the update source; its size is shown when it starts)."
+        return {"gb": gb, "parts": parts, "engine_missing": not engine, "own_files": st.own_files, "text": text}
+
     def plan(self) -> dict:
         s = self.s
+        self.check_own_files()
         warns = [n.line() for n in (*S.check_access(s),)]
+        row = self.row()
+        try:
+            self.resolved_vision()
+        except Exception:                                    # noqa: BLE001
+            pass
+        try:
+            download = self.download_plan()
+        except Exception:                                    # noqa: BLE001 - a plan that cannot count the download still shows the rest
+            download = {"gb": None, "parts": [], "engine_missing": None, "own_files": bool(s.model_path),
+                        "text": "How much would be downloaded could not be worked out here."}
+        title = row.title if row is not None else (f"{s.family} {s.model}" if s.model else None)
+        model = {"title": title, "family": s.family, "model": s.model, "model_gb": row.download_gb if row is not None else None,
+                 "own_files": bool(s.model_path), "folder": s.model_path}
         return {"profile": self.profile, "settings": s.to_dict(with_key=False), "warnings": warns,
-                "flags": S.flags_text(s), "steps": list(STAGES)}
+                "flags": S.flags_text(s), "steps": list(STAGES), "model": model, "download": download}
 
     def run(self, *, start: bool = True) -> Result:
         try:
+            self.check_own_files()                           # a wrong --model-path is said before the engine is downloaded
             self.ensure_engine()
             self.check_cancel()
             base = self.ensure_model()
@@ -921,30 +1147,7 @@ class Runner:
         return out
 
 
-ISSUE_WORDS = {
-    "multiple_model_groups": "the folder holds more than one model",
-    "incomplete_or_invalid_shard_set": "some shards are missing",
-    "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
-    "unsupported_or_missing_architecture": "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)",
-    "unsupported_or_incomplete_tokenizer_metadata": "the file has no usable tokenizer",
-    "missing_or_unexpected_expert_quantization": "its quantization is not one Strata knows",
-}
-
-
-def plain_issue(code: str) -> str:
-    """One problem from the GGUF preview, in words (it may be `file.gguf: GGUF shard is not a nonempty regular file` and the like)."""
-    if code in ISSUE_WORDS:
-        return ISSUE_WORDS[code]
-    low = code.lower()
-    if "not a nonempty regular file" in low or "unreadable" in low:
-        return "a file is empty, unreadable or not a regular file"
-    if "does not begin with a gguf header" in low or "header version" in low:
-        return "a file is not a GGUF model file"
-    if "unsupported_architecture" in low:
-        return "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"
-    if "symlink" in low:
-        return "a file is a shortcut (symbolic link); point at the real file"
-    return code.replace("_", " ")
+from strata_control.models import ISSUE_WORDS, plain_issue   # noqa: E402,F401  (one wording for the app, the Terminal and `models import`)
 
 
 def _read_json(path: Path) -> dict | None:

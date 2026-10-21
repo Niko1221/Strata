@@ -43,6 +43,17 @@ class SettingsRules(unittest.TestCase):
         self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=9), vram_gb=12)[0].level, "error")
         self.assertEqual(S.check_parallel(S.LaunchSettings(parallel=2), vram_gb=24), [])
 
+    def test_no_key_warnings_are_plain_and_stronger_in_public(self):
+        lan = S.check_access(S.LaunchSettings(access="lan", no_key=True))
+        self.assertEqual([n.level for n in lan], ["warn"])
+        self.assertIn("anyone who can reach this port can use the model and its tools", lan[0].line())
+        pub = S.check_access(S.LaunchSettings(access="cloudflare", no_key=True))
+        self.assertEqual([n.level for n in pub], ["warn"])
+        self.assertIn("public address", pub[0].line())
+        self.assertIn("anyone on the internet", pub[0].line())
+        self.assertEqual(S.check_access(S.LaunchSettings(access="lan", api_key="k")), [])
+        self.assertEqual(S.check_access(S.LaunchSettings(access="local", no_key=True)), [])
+
     def test_access_notes(self):
         self.assertEqual(S.check_access(S.LaunchSettings(access="local")), [])
         lan = S.check_access(S.LaunchSettings(access="lan"))
@@ -294,6 +305,14 @@ class RunConfig(unittest.TestCase):
             self.assertEqual(cfg["host"], "127.0.0.1")
             self.assertNotIn("api_key", cfg)
 
+    def test_no_key_is_written_as_none_and_a_key_wins(self):
+        cfg = derive_config(self.BASE, S.LaunchSettings(access="lan", no_key=True), bool_flags=frozenset())
+        self.assertEqual((cfg["host"], cfg["api_key"]), ("0.0.0.0", "none"))
+        cfg = derive_config(self.BASE, S.LaunchSettings(access="lan", no_key=True, api_key="sk-x"), bool_flags=frozenset())
+        self.assertEqual(cfg["api_key"], "sk-x")
+        cfg = derive_config(self.BASE, S.LaunchSettings(access="local", no_key=True), bool_flags=frozenset())
+        self.assertNotIn("api_key", cfg)
+
     def test_installed_config_matching(self):
         d = {"context": 32768, "kv": "int8", "images": "off"}
         self.assertTrue(desc_matches(d, S.LaunchSettings(context=32768)))
@@ -388,11 +407,13 @@ class SetupArgs(unittest.TestCase):
                      ["--gpu", "1"]):
             self.assertIn(pair[0], a)
             self.assertEqual(a[a.index(pair[0]) + 1], pair[1])
+        self.assertIn("--set-default-data-dir", a)             # a folder the person chose is the remembered one (the app and the next start use it)
 
     def test_a_mac_gets_only_the_options_its_setup_knows(self):
         with mock.patch.object(sys, "platform", "darwin"):
             a = self.runner(data_dir="/d", gpus=[0])
-        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no", "--data-dir", "/d"])
+        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no", "--data-dir", "/d",
+                             "--set-default-data-dir"])
 
 
 class AdoptRules(unittest.TestCase):
@@ -590,6 +611,20 @@ class AdoptRules(unittest.TestCase):
                 r.check_pictures(path)
             self.assertEqual(seen, [])
 
+    def test_tuning_that_found_the_standard_settings_fastest_is_not_run_again(self):
+        # "already fastest" saves no tuning preset, only tuned_at: the next start (a container restart with TUNE=quick) must not measure for 20 minutes again
+        with Home():
+            seen = []
+            s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, tune="quick", tuned_at="2026-10-20")
+            self.assertTrue(s.is_tuned)
+            r = Runner(s, catalog=catalog(HW_12), emit=seen.append)
+            with mock.patch.object(r, "_spawn", side_effect=AssertionError("tuned again")):
+                r.tune()
+            self.assertTrue(any("Already tuned on 2026-10-20" in e.text for e in seen))
+            self.assertFalse(S.LaunchSettings(tune="quick").is_tuned)
+            store.save(s, "Fastest")
+            self.assertTrue(store.summary(store.load("Fastest"))["tuned"])
+
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
         with Home() as h:
             d, m = self.files(h.base)
@@ -742,17 +777,61 @@ class FlagsCommand(unittest.TestCase):
         p = self.plan("--model", "q2_0", "--new-key")
         self.assertEqual(p["settings"]["api_key"], "set")
 
+    def test_no_api_key_flag(self):
+        p = self.plan("--model", "q2_0", "--access", "lan", "--no-api-key")
+        self.assertIsNone(p["settings"]["api_key"])
+        self.assertFalse(any("new API key was made" in w for w in p["warnings"]))
+        self.assertTrue(any("anyone who can reach this port can use the model and its tools" in w for w in p["warnings"]))
+        p = self.plan("--model", "q2_0", "--access", "cloudflare", "--no-api-key")
+        self.assertTrue(any("public address" in w and "anyone on the internet" in w for w in p["warnings"]))
+        p = self.plan("--model", "q2_0", "--access", "local", "--no-api-key")
+        self.assertEqual([w for w in p["warnings"] if "API key" in w], [])
+        # scripts that name LAN without a key flag keep getting a key, as before
+        p = self.plan("--model", "q2_0", "--access", "lan", "--yes")
+        self.assertEqual(p["settings"]["api_key"], "set")
+        self.assertTrue(any("new API key was made" in w for w in p["warnings"]))
+        # a key given as well wins over --no-api-key, with a note
+        p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-a", "--no-api-key")
+        self.assertEqual(p["settings"]["api_key"], "set")
+
     def test_model_path_is_used_instead_of_a_catalog_model(self):
-        p = self.plan("--model-path", "/data/models/IQ3_XXS")
-        s = p["settings"]
-        self.assertEqual(s["model_path"], str(Path("/data/models/IQ3_XXS")))
-        self.assertIsNone(s["model"])
+        import tempfile
+        from tests.terminal.test_own_files import IQ3XXS, gguf_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "IQ3_XXS"
+            folder.mkdir()
+            for n in IQ3XXS:
+                (folder / n).write_bytes(gguf_bytes(["IQ3_XXS"]))
+            s = self.plan("--model-path", str(folder))["settings"]
+        self.assertEqual(s["model_path"], str(folder))
+        self.assertEqual((s["family"], s["model"]), ("qwen", "IQ3_XXS"))      # the files say which model they are
 
     def test_no_choices_and_no_terminal_does_not_start_anything(self):
-        with mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, {"CI": "1"}), mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 2)
         self.assertIn("not a terminal", err)
+        self.assertIn("--preset NAME", err)
+
+    def test_git_bash_without_a_tty_goes_on_in_plain_questions(self):
+        fake = Result("launch-x", ["http://127.0.0.1:8080"], None, None, [], "/x")
+        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
+            code, out, err = run_cli(["launch"])
+        self.assertEqual(code, 0, err)
+        run.assert_called_once()
+        self.assertIn("cannot show Strata's screens", out + err)
+        self.assertIn("winpty strata launch", out + err)
+
+    def test_git_bash_answering_no_changes_nothing(self):
+        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+            code, out, err = run_cli(["launch"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Nothing was changed", out + err)
+
+    def test_a_pipe_with_nobody_to_answer_still_says_what_to_name(self):
+        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+            code, out, err = run_cli(["launch"])
+        self.assertEqual(code, 2)
         self.assertIn("--preset NAME", err)
 
     def test_unknown_model_names_the_closest_one(self):

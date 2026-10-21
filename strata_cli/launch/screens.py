@@ -241,9 +241,9 @@ class StartScreen(Base):
         for p in self.presets:
             sm = store.summary(p)
             req = (f"{p.parallel} request" + ("s" if p.parallel != 1 else "")) if p.parallel else "fit to card"
-            tuned = f"tuned {p.tuned_at[5:]}" if p.tuned_preset and p.tuned_at else "not tuned"
+            tuned = f"tuned {p.tuned_at[5:]}" if p.is_tuned and p.tuned_at else "not tuned"
             used = f"last used {p.last_used[5:10]}" if p.last_used else "not used yet"
-            items.append(Item([p.name or "?", str(sm["model"]), S.context_label(p.context), req, Cell(tuned, MUTE if not p.tuned_preset else ""),
+            items.append(Item([p.name or "?", str(sm["model"]), S.context_label(p.context), req, Cell(tuned, MUTE if not p.is_tuned else ""),
                                Cell(used, MUTE)], key=("preset", p.name)))
         items.append(Item([Cell("Set up from the beginning", "")], key=("new", None)))
         items.append(Item([Cell("Use model files I already have", "")], key=("own", None)))
@@ -492,17 +492,20 @@ class ModelScreen(Base):
         self.check_own(path)
 
     def check_own(self, path: str) -> None:
-        from strata_cli.launch.runner import plain_issue
         from strata_control import models
+        problem = models.own_path_problem(path)
+        if problem:
+            self.say(f"{problem[0]} {problem[1]}", True)
+            return
         try:
-            plan = models.plan_import(str(Path(path).expanduser().resolve()))
+            plan = models.plan_import(models.absolute(path))
         except Exception as e:                               # noqa: BLE001
             self.say(f"These files cannot be used: {e}. Pick the folder with every shard of one model, or a .gguf file of it.", True)
             return
         sel = plan.get("candidate_selection") or {}
         if sel.get("family") and sel.get("model") and not plan.get("issues"):
             s = self.ctx.settings
-            s.model_path, s.family, s.model = str(Path(path).expanduser()), sel["family"], sel["model"]
+            s.model_path, s.family, s.model = models.import_target(path, plan), sel["family"], sel["model"]
             self.ctx.picked_in_list = False
             self.close_field("own")
             gb = plan.get("total_bytes", 0) / 1e9
@@ -510,8 +513,10 @@ class ModelScreen(Base):
             self.menu().select((sel["family"], sel["model"]))
             self.paint()
         else:
-            why = "; ".join(plain_issue(str(x)) for x in (plan.get("issues") or [])[:3]) or "they are not a model Strata knows"
-            self.say(f"These files cannot be used as they are ({why}). Check that every shard is in the folder, or pick a model from the list.", True)
+            why = models.problem_words(plan.get("issues") or []) or "they are not a model Strata knows"
+            holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
+            self.say(f"These files cannot be used as they are ({why}). " + (holds + " " if holds else "") +
+                     "Check that every shard is in the folder, or pick a model from the list.", True)
 
     def action_back(self) -> None:
         if self.input_open():
@@ -919,11 +924,11 @@ class TuningScreen(Base):
 
     def on_mount(self) -> None:
         s = self.ctx.settings
-        first = self.ctx.fresh_setup and not s.tuned_preset
+        first = self.ctx.fresh_setup and not s.is_tuned
         items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
                  Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
                  Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
-        if not self.ctx.tune_chosen and s.tune == "skip" and not s.tuned_preset and self.ctx.fresh_setup:
+        if not self.ctx.tune_chosen and s.tune == "skip" and not s.is_tuned and self.ctx.fresh_setup:
             s.tune = "quick"
         self.query_one(Menu).set_items(items, {"quick": 0, "thorough": 1, "skip": 2}.get(s.tune, 0))
         self.paint()
@@ -1167,8 +1172,8 @@ class AdvancedScreen(Base):
 class AccessScreen(Base):
     step_id = "access"
     hints = "↑↓ choose   Enter next   p port   k new key   t key on/off   Esc back   ? help"
-    help_text = ("Who can use the model. 'This computer only' is the safe default. Anything beyond it needs the API key: the server will not "
-                 "start on a network without one.")
+    help_text = ("Who can use the model. 'This computer only' is the safe default and never needs a key. Beyond it Strata makes an API key "
+                 "for you (recommended); press t if you would rather have no key: it still starts, but anyone who can reach it can use it.")
 
     BINDINGS = Base.BINDINGS + [Binding("p", "port", show=False), Binding("k", "newkey", show=False), Binding("t", "keytoggle", show=False)]
 
@@ -1203,7 +1208,7 @@ class AccessScreen(Base):
         t = Text()
         t.append(f"\n   Port      [ {s.port} ]   press p to change\n")
         t.append(f"   API key   [ {'on' if on else 'off'} ]   {acc.mask_key(s.api_key)}  ", style=FG if on else WARN)
-        t.append("(recommended for anything beyond this computer)" if beyond else "(optional on this computer)", style=MUTE)
+        t.append(("(recommended for anything beyond this computer; t = no key)" if on else "(t = make a key)") if beyond else "(not needed on this computer)", style=MUTE)
         self.query_one("#portkey", Static).update(t)
 
     def explain(self) -> Text:
@@ -1217,9 +1222,9 @@ class AccessScreen(Base):
             if fw:
                 out.append(fw + "\n", style=WARN)
             if cur.key == "cloudflare":
-                out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so keep the API key on.", style=MUTE)
+                out.append("A Cloudflare quick tunnel gives a temporary public address; anyone with it can try to use the server, so an API key keeps others out.", style=MUTE)
             elif cur.key == "lan":
-                out.append("Other computers on your network can use it at the address shown. Keep the API key on.", style=MUTE)
+                out.append("Other computers on your network can use it at the address shown. An API key is recommended.", style=MUTE)
             elif cur.key == "tailscale":
                 out.append("Only devices signed in to your Tailscale network can reach it.", style=MUTE)
             else:
@@ -1230,9 +1235,11 @@ class AccessScreen(Base):
         kind = self.menu().current.key
         s = self.ctx.settings
         s.access = kind
-        if kind != "local" and not s.api_key:
+        if kind != "local" and not s.api_key and not s.no_key:
             s.api_key = acc.new_key()
-            self.say("An API key was made for you, because this reaches beyond your computer.")
+            self.say("An API key was made for you (recommended beyond this computer). Press t if you want no key.")
+        elif kind != "local" and s.no_key:
+            self.say(S.NO_KEY_PUBLIC if kind == "cloudflare" else S.NO_KEY_NETWORK, True)
 
     def action_port(self) -> None:
         self.open_field("portfield", str(self.ctx.settings.port), "port number")
@@ -1253,6 +1260,7 @@ class AccessScreen(Base):
 
     def action_newkey(self) -> None:
         self.ctx.settings.api_key = acc.new_key()
+        self.ctx.settings.no_key = False
         self.say("A new API key was made. Apps that used the old one need the new one (strata connect shows it).")
         self.paint()
 
@@ -1260,9 +1268,10 @@ class AccessScreen(Base):
         s = self.ctx.settings
         if s.api_key:
             s.api_key = None
-            self.say("The API key is off." + (" The server will not start on a network without one." if s.access != "local" else ""), s.access != "local")
+            s.no_key = s.access != "local"
+            self.say("The API key is off." + ((" " + (S.NO_KEY_PUBLIC if s.access == "cloudflare" else S.NO_KEY_NETWORK)) if s.access != "local" else ""), s.access != "local")
         else:
-            s.api_key = acc.new_key()
+            s.api_key, s.no_key = acc.new_key(), False
             self.say("The API key is on.")
         self.paint()
 
@@ -1275,7 +1284,7 @@ class AccessScreen(Base):
     def commit(self) -> None:
         s = self.ctx.settings
         s.access = self.menu().current.key
-        if s.access != "local" and not s.api_key:
+        if s.access != "local" and not s.api_key and not s.no_key:
             s.api_key = acc.new_key()
 
     def action_back(self) -> None:

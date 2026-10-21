@@ -114,7 +114,7 @@ def _line(name: str, result: dict) -> str:
         return f"{name:<8}{before or 'none'}   {result.get('note') or status}"
     if result.get("component") == "control":
         if status == "updated":
-            return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated (takes effect on the next start)"
+            return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated. The next `strata` command already runs it; the app switches on its next start"
         if status == "current":
             return f"{name:<8}{result.get('installed_before')}   up to date"
         if status == "not-in-feed":

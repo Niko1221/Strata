@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import sys
 import tempfile
 import types
@@ -186,6 +187,8 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "free_gb", lambda p: free),
+            # whatever else asks the disk (shutil.disk_usage) gets the same answer: the tests never depend on this PC's free space
+            mock.patch.object(shutil, "disk_usage", lambda p: shutil._ntuple_diskusage(int(max(free, 1000) * 1e9), int(max(free, 1000) * 1e9 - free * 1e9), int(free * 1e9))),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: not the test PC's disk
             mock.patch.object(setup, "is_wsl", lambda: False),            # #974: the tests are not run inside WSL
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
@@ -193,7 +196,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),
-            mock.patch.object(setup, "verify_sha256", lambda s, size, sha: self.verified.append((s.name, size, sha))),
+            mock.patch.object(setup, "verify_sha256", lambda s, size, sha, own=False: self.verified.append((s.name, size, sha))),
             mock.patch.object(setup, "run", fake_run),
             mock.patch.object(setup, "refresh_draft_vocab", lambda *a, **k: None),
             mock.patch.object(setup, "write_run_script", lambda tag, cfg, port, *_: self.t / f"start-{tag}.bat"),
@@ -298,8 +301,17 @@ class Main(Base):
         import shutil
         shutil.rmtree(self.t / "data" / "mtp", ignore_errors=True)       # #897: a draft layer already there needs less room
         (d / (list(setup.UNSLOTH_SHARDS)[0] + ".part")).write_bytes(b"x" * 1_500_000)
-        with mock.patch.dict(setup.MODELS[M], {"download_gb": 0.003}):              # 1.5 MB still missing: no room
+        with mock.patch.dict(setup.MODELS[M], {"download_gb": 0.003}):              # 1.5 MB still missing, but the 8 GB working room is only a guess (0.2.2): setup warns and goes on
             code, out, cfg = self.main(["--context", "8192"], free=8.001)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("not enough free disk space", out)
+        self.assertIn("little free disk space", out)
+        for f in d.iterdir():
+            f.unlink()
+        shutil.rmtree(self.t / "data" / "mtp", ignore_errors=True)
+        (d / (list(setup.UNSLOTH_SHARDS)[0] + ".part")).write_bytes(b"x" * 1_500_000)
+        with mock.patch.dict(setup.MODELS[M], {"download_gb": 3.0}):                # 1.5 GB of real files still to write, 1 GB free: refuse
+            code, out, cfg = self.main(["--context", "8192"], free=1.0)
         self.assertEqual(code, 1)
         self.assertIn("not enough free disk space", out)
 

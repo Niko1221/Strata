@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
-from strata_control import tune_machine
+from strata_control import loopback, tune_machine
 
 # --------------------------------------------------------------------------- the contract
 
@@ -304,7 +304,7 @@ class WorkerEngine:
     def _model_id(self) -> None:
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/models", headers=self._h())
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with loopback.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             self.model = ((data.get("data") or [{}])[0]).get("id") or self.model
         except Exception:  # noqa: BLE001
@@ -326,7 +326,7 @@ class WorkerEngine:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/v1/chat/completions",
                                      data=json.dumps(body).encode(), headers=self._h(), method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with loopback.urlopen(req, timeout=timeout) as r:
                 data = json.loads(r.read())
         except urllib.error.HTTPError as e:
             raise StartFailed("NO_TOKENS", f"the worker refused the request ({e.code}): {e.read()[:200]!r}") from None
@@ -488,7 +488,7 @@ class WorkerSession:
                     try:
                         req = urllib.request.Request(f"http://127.0.0.1:{port}/health",
                                                      headers={"authorization": f"Bearer {key}"})
-                        with urllib.request.urlopen(req, timeout=2) as r:
+                        with loopback.urlopen(req, timeout=2) as r:
                             if r.status == 200:
                                 ready = True
                                 break

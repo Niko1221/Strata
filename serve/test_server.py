@@ -74,7 +74,8 @@ class MaxTokens(unittest.TestCase):
             return s, b, u.get("prompt_tokens"), u.get("completion_tokens")
         s, b = self.post("/v1/messages", {"model": "m", "messages": msgs, **budget})
         u = b.get("usage", {})
-        return s, b, u.get("input_tokens"), u.get("output_tokens")
+        prompt = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        return s, b, prompt if u else None, u.get("output_tokens")
 
     def test_anthropic_thinks_only_when_asked(self):
         # #278: Anthropic's thinking is opt-in; "thinking", an effort or a reasoning_budget_tokens (#123) asks for it
@@ -3713,7 +3714,9 @@ class UsageAndStatus(unittest.TestCase):
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
-        self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], len(self.engine.last_prompt))
+        self.assertEqual(u["input_tokens"], 1)                     # what was read now is kept: written to the cache
+        self.assertEqual(u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"],
+                         len(self.engine.last_prompt))
         self.assertGreater(u["output_tokens"], 0)
 
     def test_v1_status(self):
@@ -4128,6 +4131,17 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(second, first + self.tok.encode(ThinkingEngine.THOUGHT[:20]) + extra)   # a prefix + more
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
+
+    def test_llama_cpp_thinking_budget_tokens_is_the_same_budget(self):
+        """llama.cpp's name (pi-llama-cpp sends it): the same wrap-up; reasoning_budget_tokens wins when both are set."""
+        from serve.server import REASONING_WRAP_UP
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        code, b = self.openai(thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20] + wrap)
+        code, b = self.openai(reasoning_budget_tokens=10, thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:10] + wrap)
 
     def test_a_stop_string_is_found_in_the_answer_after_the_wrap_up(self):
         """#454: the continuation after the thinking budget is cut at a stop string too."""

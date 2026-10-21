@@ -890,9 +890,9 @@ class Strata:
                 name, avx2, avx512 = S.cpu_info()
             else:
                 name, avx2, avx512 = platform.processor() or "unknown CPU", None, None
-            hw["cpu"] = {"name": name, "cores": os.cpu_count(), "avx2": avx2, "avx512": avx512}
+            hw["cpu"] = {"name": name, "cores": physical_cores(), "threads": os.cpu_count(), "avx2": avx2, "avx512": avx512}
         except Exception:                               # noqa: BLE001
-            hw["cpu"] = {"name": platform.processor(), "cores": os.cpu_count()}
+            hw["cpu"] = {"name": platform.processor(), "cores": physical_cores(), "threads": os.cpu_count()}
         if sys.platform == "darwin":                    # a Mac: one pool of unified memory, the Metal engine (strata_control/mac_fit.py)
             return self._mac_hardware(hw)
         nv = []
@@ -1241,12 +1241,15 @@ class Strata:
 
     def api_key_for(self, port: int) -> str | None:
         """The key a config of this folder set for that port (used for our own requests; never shown)."""
+        def real(cfg):                                   # "api_key": "none" = served without a key on purpose
+            k = cfg.get("api_key")
+            return k if k and str(k).strip().lower() != "none" else None
         for c in self.configs():
             cfg = self.read_config(c)
-            if cfg.get("api_key") and int(cfg.get("port", DEFAULT_PORT)) == port:
+            if real(cfg) and int(cfg.get("port", DEFAULT_PORT)) == port:
                 return cfg["api_key"]
         for c in self.configs():
-            if self.read_config(c).get("api_key"):
+            if real(self.read_config(c)):
                 return self.read_config(c)["api_key"]
         return None
 
@@ -1316,7 +1319,7 @@ class Strata:
         res = self.state("install-result")
         running = proc_alive(j.get("pid"), j.get("ident"))
         log_path = Path(j.get("log", ""))
-        tail = read_tail(log_path, 400) if log_path.name else []
+        tail = read_tail(log_path, 1500) if log_path.name else []   # a step's heading must stay inside it: the pack tools print hundreds of lines
         prog = install_progress(tail)
         prog = combined_progress(prog, j)
         out = {"running": running, "started": j.get("started"), "model": j.get("model"), "family": j.get("family"),
@@ -1403,8 +1406,12 @@ def files_progress(prog: dict, job: dict, files: list) -> dict:
         except OSError:
             state, have = "waiting", 0
         total = f.get("bytes") or (have if state == "done" else 0)
-        if state == "downloading" and not total and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
-            total = int(cur_gb * 1e9)
+        if state == "downloading" and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
+            # The .part file is as long as the furthest byte written, which the parallel pieces push to the full size well before the
+            # download is done: the pieces setup counts are the truth.
+            have = min(have, int(float(log.get("done_gb") or 0) * 1e9)) if have else have
+            if not total:
+                total = int(cur_gb * 1e9)
         rows.append({"role": f.get("role", "model"), "state": state, "have": have, "total": max(total, have)})
     plan_total = float(job.get("total_gb") or 0) * 1e9
     parts = []
@@ -1440,12 +1447,12 @@ def draft_progress(prog: dict, job: dict, dl: dict) -> dict:
     if job.get("files"):
         base = files_progress({}, job, job["files"])
         parts = [dict(p, state="done", done_gb=p["total_gb"]) for p in base.get("parts", []) if p.get("state") == "done"]
-    parts.append({"kind": "draft", "name": "Speed-up layer", "state": "done" if int(dl.get("percent") or 0) >= 100 else "downloading",
+    parts.append({"kind": "draft", "name": "Draft layer", "state": "done" if int(dl.get("percent") or 0) >= 100 else "downloading",
                   "done_gb": round(done_gb, 3), "total_gb": round(total_gb, 3)})
     total = sum(p["total_gb"] for p in parts)
     done = min(sum(p["done_gb"] for p in parts), total)
     prog["parts"] = parts
-    prog["download"] = {"file": "Speed-up layer", "done_gb": round(done, 3), "total_gb": round(total, 3),
+    prog["download"] = {"file": "Draft layer", "done_gb": round(done, 3), "total_gb": round(total, 3),
                         "remaining_gb": round(max(0.0, total - done), 3),
                         "percent": min(99, int(100 * done / total)) if total else 0}
     return prog
@@ -1460,6 +1467,13 @@ def combined_progress(prog: dict, job: dict) -> dict:
     dl = prog.get("download") or {}
     if step.startswith("6/") and str(dl.get("file", "")).startswith("MTP draft layer"):
         return draft_progress(prog, job, dl)
+    if step.startswith("5/") and str(dl.get("file", "")).startswith("checking "):
+        # setup is hashing files that are all on disk: the figure is the check's own (not a download at "99%")
+        if job.get("files"):
+            prog = files_progress(prog, job, job["files"])
+        prog["download"] = {"file": "checking files", "done_gb": dl["done_gb"], "total_gb": dl["total_gb"],
+                            "remaining_gb": round(max(0.0, dl["total_gb"] - dl["done_gb"]), 3), "percent": int(dl["percent"])}
+        return prog
     if job.get("files") and step.startswith("5/"):      # the install knows its files: count each of them
         return files_progress(prog, job, job["files"])
     if not folder or not total or not step.startswith("5/"):
@@ -1491,7 +1505,7 @@ def install_progress(lines: list[str]) -> dict:
     for i, line in enumerate(lines):
         m = re.search(r"=== Step (\d+): (.+?) ===", line)
         if m:
-            step, title, err = int(m.group(1)), m.group(2), None
+            step, title, err, dl = int(m.group(1)), m.group(2), None, None      # a download figure belongs to its own step
         m = re.match(r"\s*(\S.*?): +([\d.]+) / ([\d.]+) GB \((\d+)%\)", line)
         if m:
             dl = {"file": m.group(1), "done_gb": float(m.group(2)), "total_gb": float(m.group(3)),
@@ -1505,7 +1519,34 @@ def install_progress(lines: list[str]) -> dict:
         out["download"] = dl
     if err:
         out["error"] = err
+    words = progress_words_for(step, lines, dl)
+    if words:
+        out["label"], out["phase"] = words
     return out
+
+
+def physical_cores() -> int | None:
+    """The CPU's physical cores (os.cpu_count() counts logical threads: 16 on an 8-core SMT chip, and the app's Work profile took
+    80% of that for --pool-workers, more than the cores, #3417).  Falls back to the thread count when the machine cannot say."""
+    try:
+        from strata_control import tune_machine
+        n = tune_machine.cpu().get("physical")
+        if isinstance(n, int) and n > 0:
+            return n
+    except Exception:                                   # noqa: BLE001 - a hardware report must never fail on this
+        pass
+    return os.cpu_count()
+
+
+def progress_words_for(step, lines, download):
+    """(the plain sentence, its phase) for what setup is doing now (strata_control/progress_words.py, the words the Terminal uses too);
+    None when this Strata folder does not carry the module."""
+    try:
+        from strata_control import progress_words
+    except ImportError:
+        return None
+    w = progress_words.describe(step, lines, download)
+    return w.label, w.phase
 
 
 def own_ram_gb() -> float:

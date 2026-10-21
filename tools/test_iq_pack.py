@@ -515,6 +515,95 @@ class SplitArtifactTests(unittest.TestCase):
             self.assertEqual(rc, 0, log)
             self.assertEqual((pack / "experts.bin").read_bytes(), expected_experts(iq_pack.Model(paths[0])))
 
+    def test_interrupted_pack_continues_at_the_next_layer(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            paths = split_model(root)
+            pack = root / "pack"
+            real = np.concatenate
+            calls = []
+
+            def dies_on_layer_1(parts, axis):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt("killed")
+                return real(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", dies_on_layer_1):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_pack(paths[0], pack, "--experts-bin")
+            want = expected_experts(iq_pack.Model(paths[0]))
+            lines = [ln.split() for ln in (pack / "native_experts.txt").read_text().splitlines() if ln and not ln.startswith("#")]
+            one_layer = int(lines[1][3])                                                  # where layer 1 starts
+            self.assertFalse((pack / "experts.bin").exists())
+            self.assertEqual((pack / "experts.bin.tmp").stat().st_size, one_layer)       # layer 0 is on disk
+            self.assertEqual(json.loads((pack / "experts.bin.tmp.json").read_text())["layers"], 1)
+            # a partial write after the recorded layer (the kill came mid-write) is cut off
+            with open(pack / "experts.bin.tmp", "ab") as f:
+                f.write(b"garbage")
+            written = []
+            real_layer = iq_pack.np.concatenate
+
+            def counting(parts, axis):
+                written.append(1)
+                return real_layer(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", counting):
+                rc, log = run_pack(paths[0], pack, "--experts-bin")
+            self.assertEqual(rc, 0, log)
+            self.assertIn("keeping its first 1 of 2 layers and continuing with layer 1", log)
+            self.assertEqual((pack / "experts.bin").read_bytes(), want)
+            self.assertEqual(len(written), 2)                  # one layer re-read to check the kept one, one layer written
+            self.assertFalse((pack / "experts.bin.tmp").exists())
+            self.assertFalse((pack / "experts.bin.tmp.json").exists())
+            self.assertEqual(json.loads((pack / "experts.bin.src.json").read_text())["bytes"], len(want))
+
+    def test_interrupted_pack_of_another_model_is_not_continued(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            other = split_model(root / "a", name="other", seed=100)
+            paths = split_model(root / "b")
+            pack = root / "pack"
+            real = np.concatenate
+            calls = []
+
+            def dies_on_layer_1(parts, axis):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt("killed")
+                return real(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", dies_on_layer_1):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_pack(other[0], pack, "--experts-bin")
+            rc, log = run_pack(paths[0], pack, "--experts-bin")          # the same geometry, other weights
+            self.assertEqual(rc, 0, log)
+            self.assertIn("cannot be continued: starting it again", log)
+            self.assertEqual((pack / "experts.bin").read_bytes(), expected_experts(iq_pack.Model(paths[0])))
+
+    def test_a_kept_layer_that_no_longer_matches_is_not_trusted(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            paths = split_model(root)
+            pack = root / "pack"
+            real = np.concatenate
+            calls = []
+
+            def dies_on_layer_1(parts, axis):
+                calls.append(1)
+                if len(calls) == 2:
+                    raise KeyboardInterrupt("killed")
+                return real(parts, axis=axis)
+            with patch.object(iq_pack.np, "concatenate", dies_on_layer_1):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_pack(paths[0], pack, "--experts-bin")
+            data = bytearray((pack / "experts.bin.tmp").read_bytes())
+            data[0] ^= 0xFF                                               # the disk lost a bit
+            (pack / "experts.bin.tmp").write_bytes(bytes(data))
+            rc, log = run_pack(paths[0], pack, "--experts-bin")
+            self.assertEqual(rc, 0, log)
+            self.assertIn("cannot be continued", log)
+            self.assertEqual((pack / "experts.bin").read_bytes(), expected_experts(iq_pack.Model(paths[0])))
+
     def test_stale_same_size_experts_bin(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)

@@ -591,18 +591,12 @@ def _models(a: argparse.Namespace) -> int:
 
 def _import_problem(plan: dict) -> str:
     """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
-    from strata_cli.launch.runner import plain_issue
-    issues = [str(x) for x in plan.get("issues") or []]
-    if "multiple_model_groups" in issues:                    # several models in one folder: "not a size Strata knows" would only confuse
-        issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
-    words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
+    from strata_control import models as own_models
+    words = own_models.problem_words(plan.get("issues") or [])
     text = f"These files cannot be used as they are: {words}."
-    holds = plan.get("folder_holds") or []
+    holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
     if holds:
-        known = [f"{h['family']} {h['model']} ({h['file']})" for h in holds if h.get("model")]
-        other = [h["file"] for h in holds if not h.get("model")]
-        text += " The folder holds " + str(len(holds)) + " models" + (": " + ", ".join(known + other) if known or other else "") + \
-            ". Point at the .gguf file of the one you want."
+        text += " " + holds
     return text
 
 
@@ -684,13 +678,14 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     path, saved, revision, cfg = _source(ref)
     values, origins = _effective(cfg, saved, cli)
     host = values["host"]
-    from serve.server import api_key_of, key_list
-    try:
-        has_key = bool(key_list(api_key_of(os.environ.get("STRATA_API_KEY") or cfg.get("api_key", ""))))
-    except ValueError:
-        raise ProfileError("the inference API key is invalid", 5) from None
-    if host not in ("127.0.0.1", "localhost", "::1") and not has_key:
-        raise ProfileError("non-loopback serving requires an API key in the run config or STRATA_API_KEY")
+    from serve.server import api_key_of, explicit_no_key, key_list
+    raw_key = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
+    if not explicit_no_key(raw_key):
+        try:
+            key_list(api_key_of(raw_key))
+        except ValueError:
+            raise ProfileError("the inference API key is invalid", 5) from None
+    # A key is recommended on a network, never required: the server warns once at start (owner decision 2026-10-20).
     server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]
     if cli is not None:
@@ -1161,7 +1156,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
         authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
         url = f"http://{authority}:{plan['effective']['port']}"
-        if not key and cfg.get("api_key"):
+        if not key and cfg.get("api_key") and str(cfg["api_key"]).strip().lower() != "none":
             from serve.server import api_key_of, key_list
             keys = key_list(api_key_of(cfg["api_key"]))
             key = keys[0] if keys else None
@@ -1978,10 +1973,15 @@ def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
     if not (isinstance(error, PermissionError) or "PermissionError" in str(error)):
         return None
     as_json = bool(getattr(a, "json", False) or getattr(a, "output", None) in ("json", "jsonl"))
+    in_use = private_files.is_sharing_violation(error)
     if getattr(a, "_access_retried", False):
-        return _error(f"{private_files.ACCESS_MESSAGE} (details: {error})", 5, as_json)
+        message = private_files.IN_USE_MESSAGE if in_use else private_files.ACCESS_MESSAGE
+        return _error(f"{message} (details: {error})", 5, as_json)
     a._access_retried = True
-    private_files.repair_known_roots()
+    if in_use:
+        time.sleep(1.5)                                  # a scanner or a sync tool lets go of the file in a moment; repairing would not help
+    else:
+        private_files.repair_known_roots()
     return _run(a)
 
 
