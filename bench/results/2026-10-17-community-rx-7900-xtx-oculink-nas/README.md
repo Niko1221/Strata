@@ -168,6 +168,14 @@ Strata 0.2.1 on the same machine: engine 0.1.46 `hip-rx7900` with control 0.1.46
 - **The Docker image runs on gfx1100**, and its unchanged default-track `strata bench run` is complete with 12/12 sanity checks: [`../2026-10-21-standard-rx-7900-xtx-2c7f637a/`](../2026-10-21-standard-rx-7900-xtx-2c7f637a/README.md). Its defaults read prompts slower than the run config above (16K: 772 against 1,237 tok/s); the shipped gfx1100 hipBLASLt table, opt-in in 0.2.1, closes the gap (1,238 tok/s).
 - Both packaging notes of #3263 are fixed in 0.1.46. Fresh engines with MTP: 8 of 8 normal.
 
+## Follow-up 2026-10-21, evening: 0.2.2 (folder `followup-2026-10-21-v0.2.2/`)
+
+Engine 0.1.47 `hip-rx7900` with control 0.1.47 against the 0.2.1 packages, same run config.
+
+- **As fast as 0.2.1:** decode 62.1 against 60.5 tok/s in 3 interleaved pairs (inside the noise), 736 / 1,211 / 1,222 tok/s at 4K / 16K / 32K, needles 6/6, 8 of 8 fresh engines normal.
+- **`strata bench run` from the release package is complete now**, 21 of 21 requests and 12/12 sanity checks, because the control archive carries a `COMMIT` file.
+- The `0.2.2-rocm-gfx110x` image runs on gfx1100 with the same choices as 0.2.1 (700 MiB reserve, no hipBLASLt table), and its default-track run is complete.
+
 ## Correctness and limitations
 
 - Quality is covered by the engine comparison against llama.cpp and the needles; no coding or task-level suite is included.
