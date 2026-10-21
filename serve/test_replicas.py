@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.replicas import (BLOCK, SESSION_MAP, SESSION_MAP_MAX, ReplicaConfigError, ReplicaEngine, Router,
-                            conversation_id, conversation_key, cpu_sets, gpu_groups, replica_cfg,
-                            request_conversation)
+from serve.replicas import (BLOCK, LOAD_TOKENS, SESSION_MAP, SESSION_MAP_MAX, ReplicaConfigError, ReplicaEngine,
+                            Router, Scheduler, Ticket, conversation_id, conversation_key, cpu_sets, gpu_groups,
+                            replica_cfg, request_conversation)
 from serve.server import ByteTokenizer, Service, StrataEngine, serve
 from serve.test_parallel import FAKE_BATCH
 
@@ -136,67 +136,179 @@ class FakeEngine:
         yield 7
 
 
-class RouteChoice(unittest.TestCase):
-    def test_least_loaded_then_affinity(self):
-        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
-        picks = [e.route([i] * 100) for i in range(4)]             # nothing cached: spread
-        self.assertEqual(sorted(picks), [0, 0, 1, 1])
-        ids = list(range(BLOCK * 8))
-        e.inflight = [0, 0]
-        k = e.route(ids)
-        e.router.note(k, ids)
-        e.inflight = [0, 0]
-        self.assertEqual(e.route(ids + [5] * 10), k)                # the conversation goes back
-        e.inflight = [0, 0]
-        e.inflight[k] = 1                                           # 512 tokens held < 3000 per running request
-        self.assertNotEqual(e.route(ids + [5] * 10), k)
+class Scheduling(unittest.TestCase):
+    """The queue (Scheduler) on a hand-driven clock: two one-request replicas, 1,000 prompt tokens a second."""
 
-    def test_a_long_prefix_outweighs_load(self):
-        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
-        ids = list(range(BLOCK * 200))                              # 12,800 tokens held on replica 0
-        e.router.note(0, ids)
-        e.inflight = [2, 0]
-        self.assertEqual(e.route(ids + [1]), 0)
-        e.inflight = [5, 0]
-        self.assertEqual(e.route(ids + [1]), 1)
+    def sched(self, n=2, service_s=None):
+        s = Scheduler(Router(n), [1] * n, prefill_tok_s=1000.0)
+        if service_s is not None:
+            s.service_s = service_s
+        return s
 
-    def test_a_new_talk_takes_a_free_card_before_a_warm_one(self):
-        """A warm card that keeps taking new conversations leaves the other card idle: load comes first for a new one."""
-        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
-        warm = list(range(BLOCK * 200))                             # 12,800 tokens held on replica 0
-        e.router.note(0, warm)
-        ids = warm[:BLOCK * 100] + [42]                             # 6,400 of them match, so 0 is the cheap card
-        e.inflight = [1, 0]
-        self.assertEqual(e.route(ids, "first:abc"), 1)               # a named new conversation: the free card
-        e.inflight = [1, 0]
-        self.assertEqual(e.route(ids), 1)                            # an unnamed new talk: the same
+    def submit(self, s, ids, now=0.0, **kw):
+        t = Ticket(ids, now, **kw)
+        s.submit(t)
+        return t
 
-    def test_sessions_split_across_cards_even_while_idle(self):
-        """Two sessions arriving between bursts must not both pin to the warm card: placement counts conversations."""
-        e = ReplicaEngine([FakeEngine(), FakeEngine()], load_tokens=3000)
-        warm = list(range(BLOCK * 200))                             # both cards idle, one holds the shared prefix
-        e.router.note(0, warm)
-        first = e.route(warm[:BLOCK * 50], "first:a")
-        second = e.route(warm[:BLOCK * 50], "first:b")              # no request running: nothing says "busy"
-        self.assertNotEqual(first, second)
-        third = e.route(warm[:BLOCK * 50], "first:c")               # 1 vs 1: either card, both work
-        self.assertIn(third, [0, 1])
-        self.assertEqual(sorted(e.router.conv_balance), [1, 2])     # spread, not piled on the warm card
-        for _ in range(10):                                         # turns never move a bound session
-            e.inflight, e.conv_inflight = [0, 0], {}                # the previous turn of each finished
-            self.assertEqual(e.route(warm[:BLOCK * 50] + [1], "first:a"), first)
-            self.assertEqual(e.route(warm[:BLOCK * 50] + [2], "first:b"), second)
+    def test_nothing_cached_spreads_and_the_rest_queue(self):
+        s = self.sched()
+        ts = [self.submit(s, [i] * 100) for i in range(4)]
+        started = s.dispatch(0.0, [0, 1])
+        self.assertEqual(sorted(t.replica for t in started), [0, 1])
+        self.assertEqual(s.queue, ts[2:])
+        s.finish(started[0], 5.0)
+        self.assertEqual(s.dispatch(5.0, [0, 1]), [ts[2]])         # the oldest goes first
+        self.assertEqual(ts[2].replica, started[0].replica)
+
+    def test_a_turn_takes_its_free_warm_replica(self):
+        s = self.sched()
+        ids = list(range(BLOCK * 100))
+        s.router.note(1, ids)
+        t = self.submit(s, ids + [5] * 10)
+        s.dispatch(0.0, [0, 1])
+        self.assertEqual(t.replica, 1)
+        self.assertIsNone(t.away)
+
+    def test_a_turn_waits_for_its_busy_replica_until_waiting_costs_more_than_reading(self):
+        s = self.sched()
+        ids = list(range(BLOCK * 100))                             # 6,400 tokens held on replica 1: 6.4 s to read
+        s.router.note(1, ids)
+        s.running[1] = 1
+        t = self.submit(s, ids + [5])
+        self.assertEqual(s.dispatch(0.0, [0, 1]), [])              # replica 0 is free, but moving costs more
+        self.assertAlmostEqual(s.next_wake(0.0, [0, 1]), 6.4)
+        self.assertEqual(s.dispatch(6.0, [0, 1]), [])
+        self.assertEqual(s.dispatch(6.4, [0, 1]), [t])             # rent no longer: it moves
+        self.assertEqual((t.replica, t.away), (0, (6400, 6.4)))
+
+    def test_a_queue_behind_the_warm_replica_moves_without_waiting(self):
+        s = self.sched(service_s=10.0)
+        ids = list(range(BLOCK * 100))
+        s.router.note(1, ids)
+        s.running[1] = 1
+        first = self.submit(s, ids + [1])
+        second = self.submit(s, ids + [2])                         # the second waits one service time (10 s) > 6.4 s
+        self.assertEqual(s.dispatch(0.0, [0, 1]), [first])         # so one moves: the oldest, first come first served
+        self.assertEqual(first.replica, 0)
+        self.assertIsNone(second.replica)                          # the second now is next on its own card
+
+    def test_the_cheapest_move_goes_first(self):
+        s = self.sched(service_s=100.0)
+        long, short = list(range(BLOCK * 100)), list(range(10**6, 10**6 + BLOCK * 10))
+        s.router.note(1, long)
+        s.router.note(1, short)
+        s.running[1] = 1
+        a = self.submit(s, long + [1])
+        b = self.submit(s, long + [2])
+        c = self.submit(s, short + [3])
+        self.assertEqual(s.dispatch(0.0, [0, 1]), [c])             # 640 tokens to read on replica 0, not 6,400
+        self.assertEqual((a.replica, b.replica), (None, None))
+
+    def test_a_new_talk_is_at_home_everywhere(self):
+        s = self.sched()
+        shared = list(range(BLOCK * 100))                          # both replicas hold the shared system prompt
+        s.router.note(0, shared)
+        s.router.note(1, shared)
+        s.running[1] = 1
+        t = self.submit(s, shared + [9] * 300)
+        s.dispatch(0.0, [0, 1])
+        self.assertEqual((t.replica, t.away), (0, None))
+
+    def test_a_warm_new_talk_does_not_pile_on_the_warm_card(self):
+        """Only replica 0 holds the shared prefix: new talks start there, and replica 1 takes one as soon as waiting
+        costs more than reading the prefix — the warm card does not keep every session (2026-10-20, routed {0:11,1:2})."""
+        s = self.sched(service_s=10.0)
+        shared = list(range(BLOCK * 100))
+        s.router.note(0, shared)
+        ts = [self.submit(s, shared + [i] * 300) for i in range(3)]
+        s.dispatch(0.0, [0, 1])
+        self.assertEqual([t.replica for t in ts], [0, 1, None])
+
+    def test_a_pinned_request_waits_for_its_card(self):
+        s = self.sched()
+        s.running[1] = 1
+        t = self.submit(s, [1] * 100, pin=1)
+        self.assertEqual(s.dispatch(100.0, [0, 1]), [])
+        self.assertIsNone(s.next_wake(100.0, [0, 1]))
+        s.running[1] = 0
+        self.assertEqual(s.dispatch(100.0, [0, 1]), [t])
+        self.assertEqual(t.replica, 1)
+
+    def test_a_dead_pin_is_placed_like_any_request(self):
+        s = self.sched()
+        t = self.submit(s, [1] * 100, pin=1)
+        s.dispatch(0.0, [0])
+        self.assertEqual(t.replica, 0)
+
+    def test_the_conversation_name_breaks_a_tie_only(self):
+        s = self.sched()
+        t = self.submit(s, [1] * 100, hint=1)
+        s.dispatch(0.0, [0, 1])
+        self.assertEqual(t.replica, 1)
+        s = self.sched()
+        ids = list(range(BLOCK * 10))
+        s.router.note(0, ids)
+        s.running[0] = 1
+        t = self.submit(s, ids + [1], hint=0)                      # its name says 0, and 0 is warm, but busy
+        s.dispatch(0.0, [0, 1])
+        self.assertIsNone(t.replica)                               # it waits like any turn (640 tokens = 0.64 s)
+        s.dispatch(1.0, [0, 1])
+        self.assertEqual(t.replica, 1)
+
+    def test_a_held_replica_takes_nothing(self):
+        s = self.sched()
+        s.held[0] = 1
+        ts = [self.submit(s, [i] * 100) for i in range(2)]
+        s.dispatch(0.0, [0, 1])
+        self.assertEqual([t.replica for t in ts], [1, None])
+
+    def test_the_service_time_is_measured(self):
+        s = self.sched()
+        self.assertAlmostEqual(s.service_s, LOAD_TOKENS / 1000.0)  # the prior
+        t = self.submit(s, [1] * 100)
+        s.dispatch(0.0, [0, 1])
+        s.finish(t, 13.0)
+        self.assertAlmostEqual(s.service_s, 3.0 + 0.2 * (13.0 - 3.0))
+        t = self.submit(s, [2] * 100, now=20.0)
+        s.dispatch(20.0, [0, 1])
+        s.finish(t, 20.5, measured=False)                           # cancelled before a token: not a service time
+        self.assertAlmostEqual(s.service_s, 5.0)
+
+    def test_six_sessions_warm_on_one_card_use_both(self):
+        """The 2026-10-21 incident: six requests warm on replica 1, replica 0 idle for minutes."""
+        s = self.sched(service_s=8.0)
+        shared = list(range(BLOCK * 100))
+        s.router.note(0, shared)
+        convs = [shared + list(range(10**6 * (i + 1), 10**6 * (i + 1) + BLOCK * 90)) for i in range(6)]
+        for c in convs:
+            s.router.note(1, c)
+        ts = [self.submit(s, c + [1]) for c in convs]
+        s.dispatch(0.0, [0, 1])
+        self.assertEqual(s.running, [1, 1])                         # both cards work at once
+        self.assertEqual([t.replica for t in ts[:2]], [1, 0])       # the oldest kept its cache, the next one moved
+
+
+class ReplicaQueue(unittest.TestCase):
+    """ReplicaEngine around the Scheduler: threads, cancel, dead replicas, the conversation name."""
+
+    def engine(self, slots=0):
+        e = ReplicaEngine([FakeEngine(slots), FakeEngine(slots)])
+        e.heal = lambda: None
+        return e
 
     def test_a_dead_replica_is_skipped(self):
-        a, b = FakeEngine(), FakeEngine()
-        e = ReplicaEngine([a, b])
-        e.heal = lambda: None
-        ids = list(range(BLOCK * 3))
-        e.router.note(0, ids)
-        a.up = False
-        self.assertEqual(e.route(ids), 1)
-        b.up = False
-        self.assertEqual(e.route(ids), -1)
+        e = self.engine()
+        e.engines[0].up = False
+        cancel = threading.Event()
+        selected = []
+        cancel._strata_replica_selected = selected.append
+        self.assertEqual(list(e.generate(list(range(BLOCK * 3)), 1, {}, cancel)), [7])
+        self.assertEqual(selected, [1])
+        e.engines[1].up = False
+        from serve.server import EngineDied
+        with self.assertRaises(EngineDied):
+            list(e.generate([1, 2], 1, {}, threading.Event()))
+        self.assertEqual(e.sched.queue, [])
 
     def test_nonfinite_forgets_the_replica(self):
         """#879: after DONE ... nonfinite the engine holds no conversation: the router forgets that replica."""
@@ -211,82 +323,91 @@ class RouteChoice(unittest.TestCase):
         other, ids = [9] * (BLOCK * 4), list(range(BLOCK * 3))
         e.router.note(0, other)
         e.router.note(1, other)
-        k = 0
-        e.inflight[k] += 1                                          # as route() counts it
-        with mock.patch.object(e, "route", return_value=k):
-            with self.assertRaises(EngineNonFinite):
-                list(e.generate(ids, 10, {}, threading.Event()))
-        self.assertEqual(e.router.matched(ids)[k], 0)
-        self.assertEqual(e.router.matched(other)[k], 0)             # its older conversations too
-        self.assertEqual(e.router.matched(other)[1 - k], len(other))
-        self.assertEqual(e.inflight[k], 0)
+        e.sched.held[1] = 1                                         # replica 0 takes it
+        with self.assertRaises(EngineNonFinite):
+            list(e.generate(ids, 10, {}, threading.Event()))
+        self.assertEqual(e.router.matched(ids)[0], 0)
+        self.assertEqual(e.router.matched(other)[0], 0)             # its older conversations too
+        self.assertEqual(e.router.matched(other)[1], len(other))
+        self.assertEqual(e.inflight, [0, 0])
 
     def test_batch_is_the_sum(self):
         self.assertEqual(ReplicaEngine([FakeEngine(4), FakeEngine(4)]).batch, 8)
         self.assertEqual(ReplicaEngine([FakeEngine(0), FakeEngine(0)]).batch, 2)
 
     def test_selected_replica_is_reported_for_solo_requests_too(self):
-        engine = ReplicaEngine([FakeEngine(), FakeEngine()])
-        engine.inflight[0] = 1
+        e = self.engine(slots=4)
+        e.sched.running[0] = 1
         cancel = threading.Event()
         selected = []
         cancel._strata_replica_selected = selected.append
-        self.assertEqual(list(engine.generate([1, 2], 1, {}, cancel)), [7])
+        self.assertEqual(list(e.generate([1, 2], 1, {}, cancel)), [7])
         self.assertEqual(selected, [1])
 
-
-class Conversations(unittest.TestCase):
-    """Lever 3: a client that names its conversation gets strict stickiness; a new conversation picks by load."""
-
-    def engine(self):
-        e = ReplicaEngine([FakeEngine(), FakeEngine()])
-        e.heal = lambda: None
-        return e
-
-    def test_a_named_conversation_keeps_its_replica(self):
+    def test_a_queued_request_starts_when_a_replica_frees(self):
         e = self.engine()
-        ids = [1] * 100
-        k = e.route(ids, "c1")
-        e.inflight, e.conv_inflight = [0, 0], {}              # the first turn finished
-        e.inflight[k] = 3                                     # the other card is idle: a warm talk still stays
-        self.assertEqual(e.route(ids, "c1"), k)
+        e.sched.held = [1, 1]                                       # both replicas busy with a session file
+        out, selected = [], []
+        cancel = threading.Event()
+        cancel._strata_replica_selected = selected.append
+        th = threading.Thread(target=lambda: out.extend(e.generate([1] * 100, 1, {}, cancel)))
+        th.start()
+        deadline = time.time() + 5
+        while e.waiting < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(e.waiting, 1)
+        with e.cv:
+            e.sched.held[1] = 0
+            e.cv.notify_all()
+        th.join(5)
+        self.assertEqual((out, selected, e.waiting), ([7], [1], 0))
 
-    def test_a_new_conversation_takes_the_least_busy_card(self):
+    def test_a_cancelled_request_leaves_the_queue(self):
         e = self.engine()
-        e.routed, e.inflight = [5, 0], [2, 0]
-        self.assertEqual(e.route([1] * 100, "c2"), 1)
-        self.assertEqual(e.router.held("c2"), 1)
-        e.inflight, e.conv_inflight = [0, 0], {}              # the first request finished
-        self.assertEqual(e.route([1] * 100, "c2"), 1)         # and stays there
+        e.sched.held = [1, 1]
+        cancel = threading.Event()
+        out = []
+        th = threading.Thread(target=lambda: out.extend(e.generate([1] * 100, 1, {}, cancel)))
+        th.start()
+        deadline = time.time() + 5
+        while e.waiting < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        cancel.set()
+        th.join(5)
+        self.assertFalse(th.is_alive())
+        self.assertEqual((out, e.waiting, e.inflight), ([], 0, [0, 0]))
 
-    def test_a_replica_that_restarted_forgets_its_conversations(self):
+    def test_one_request_at_a_time_on_an_engine_without_slots(self):
         e = self.engine()
-        k = e.route([1] * 100, "c3")
-        e.router.forget(k)
-        self.assertIsNone(e.router.held("c3"))
-        self.assertEqual(e.route([1] * 100, "c3"), 1 - k)     # the card with nothing routed wins the tie
-        self.assertEqual(e.router.held("c3"), 1 - k)
+        gate = threading.Event()
 
-    def test_a_dead_replica_hands_its_conversations_back(self):
-        a, b = FakeEngine(), FakeEngine()
-        e = ReplicaEngine([a, b])
-        e.heal = lambda: None
-        self.assertEqual(e.route([1] * 100, "c5"), 0)
-        a.up = False
-        self.assertEqual(e.route([1] * 100, "c5"), 1)         # a conversation does not go to a corpse
-        self.assertEqual(e.router.held("c5"), 1)
-        self.assertEqual(e.route([1] * 100, "c5"), 1)         # and the binding survives a later busy card
+        class Slow(FakeEngine):
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                gate.wait(5)
+                yield 7
 
-    def test_identical_openings_do_not_pile_on_one_card(self):
-        """Content-derived names collide: sessions with byte-equal first messages are separate sessions, not one
-        conversation asking twice — five A/B arms with identical prompts ran on one card (2026-10-20)."""
-        e = self.engine()
-        ids = [1] * 100
-        arms = [e.route(ids, "first:same") for _ in range(4)]       # all four arrive while each other is live
-        self.assertEqual(arms, [0, 1, 0, 1])                        # strictly alternating, one session per card
-        self.assertEqual(e.routed, [2, 2])                          # both cards worked
-        e.inflight, e.conv_inflight = [0, 0], {}                    # all four finished
-        self.assertIn(e.route(ids, "first:same"), {0, 1})           # a quiet shared name: either card, by load
+        e.engines[:] = [Slow(0), Slow(0)]
+        ths = [threading.Thread(target=lambda i=i: list(e.generate([i] * 100, 1, {}, threading.Event())))
+               for i in range(3)]
+        for th in ths:
+            th.start()
+        deadline = time.time() + 5
+        while (e.inflight != [1, 1] or e.waiting != 1) and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual((e.inflight, e.waiting), ([1, 1], 1))
+        gate.set()
+        for th in ths:
+            th.join(5)
+        self.assertEqual((e.inflight, e.waiting, sum(e.routed)), ([0, 0], 0, 3))
+
+    def test_generate_binds_the_conversation(self):
+        e = self.engine(slots=4)
+        e.sched.running[0] = 2                                      # replica 1 has more room
+        cancel = threading.Event()
+        cancel._strata_conversation = "c4"
+        self.assertEqual(list(e.generate([1] * 100, 1, {}, cancel)), [7])
+        self.assertEqual(e.router.held("c4"), 1)
+        self.assertEqual(e.inflight, [2, 0])
 
     def test_the_conversation_map_is_bounded(self):
         r = Router(2, conv_cap=4)
@@ -296,22 +417,11 @@ class Conversations(unittest.TestCase):
         self.assertIsNone(r.held("c0"))
         self.assertEqual(r.held("c9"), 1)
 
-    def test_unnamed_conversations_keep_the_prefix_rule(self):
-        e = self.engine()
-        ids = list(range(BLOCK * 8))
-        k = e.route(ids)
-        e.router.note(k, ids)
-        e.inflight = [0, 0]
-        self.assertEqual(e.route(ids, None), k)               # the next turn goes back by the hashes
-
-    def test_generate_reads_the_conversation_from_the_cancel(self):
-        e = self.engine()
-        e.inflight[1] = 2                                     # the load rule would pick replica 0
-        cancel = threading.Event()
-        cancel._strata_conversation = "c4"
-        self.assertEqual(list(e.generate([1] * 100, 1, {}, cancel)), [7])
-        self.assertEqual(e.router.held("c4"), 0)
-        self.assertEqual(e.inflight, [0, 2])
+    def test_a_replica_that_restarted_forgets_its_conversations(self):
+        r = Router(2)
+        r.bind("c3", 0)
+        r.forget(0)
+        self.assertIsNone(r.held("c3"))
 
 
 class SessionEngine(FakeEngine):
@@ -418,12 +528,13 @@ class SessionFiles(unittest.TestCase):
             engines = [SessionEngine(0), SessionEngine(1)]
             engine = ReplicaEngine(engines)
             done = threading.Event()
-            busy = engine.run_locks[1]
-            self.assertTrue(busy.acquire(timeout=0))          # a request is running on replica 1
+            engine.sched.running[1] = 1                        # a request is running on replica 1
             thread = threading.Thread(target=lambda: (engine.session_file("save", path), done.set()))
             thread.start()
             self.assertFalse(done.wait(0.5))                   # the save waits for it
-            busy.release()
+            with engine.cv:
+                engine.sched.running[1] = 0
+                engine.cv.notify_all()
             self.assertTrue(done.wait(10))
             thread.join()
             self.assertTrue((Path(tmp) / "auto.r1.bin").exists())

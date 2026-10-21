@@ -12,19 +12,21 @@ Opt-in, in the run config:
 
 or `serve/server.py --replicas 2`.  Nothing changes without it.
 
-Routing.  Each request goes to the replica with the lowest cost, cost = prompt tokens the replica would have to read
-again (it holds the start of a conversation in its cache) + LOAD_TOKENS for every request already running there.  A
-conversation's next turn therefore goes back to its replica, until that replica is so much busier than another that
-reading the prompt again is cheaper than waiting.  What each replica holds is tracked as hashes of 64-token blocks of
-the prompts and answers it served (the engine itself checks the real prefix, as it always does).
+Scheduling (`Scheduler`).  A request is not given a replica when it arrives: it joins one queue, and a replica that has
+room takes the next request from it.  What each replica holds is tracked as hashes of 64-token blocks of the prompts
+and answers it served (the engine itself checks the real prefix, as it always does), so a request's "home" is the
+replica holding the longest start of its prompt; a new talk is at home everywhere.  A free replica first takes the
+oldest request at home there.  It takes a request whose home is busy only once waiting costs more than moving:
+moving reads the prompt tokens the free replica lacks (PREFILL_TOK_S); waiting is what the request has already
+waited plus one measured service time for every other request queued for the same home (moving the oldest of them
+shortens that queue).  It is the rent-or-buy rule: a lone request waits at most as long as moving would cost, and a
+card does not idle while a queue it could serve grows.  Placing by the held prefix needs no client to name its
+conversation.
 
-A conversation is named by the request itself: the standard `prompt_cache_key` when the client sends one (an
-explicit name wins), else the hash of the first user message, which every turn resends unchanged (see
-`request_conversation`).  A named conversation keeps the replica that first served it for as long as that
-replica runs, whatever the load, because a migration reads the prompt again; a new name takes the card holding
-the fewest conversations (sessions split across cards even when both look idle) and is bound there; a
-conversation whose replica restarted holds nothing there and is placed again.
-Clients that name nothing at all (no user text to derive it from) keep the cost rule with no stickiness.
+A conversation name (the standard `prompt_cache_key`, else the hash of the first user message, see
+`request_conversation`) only breaks ties between free replicas that hold the prompt equally well; it is kept so a
+session restore (`.map`) puts a conversation back on the card whose saved state holds it.  Names derived from content
+collide (agent sessions share their first message), which is why the name never decides alone.
 
 CPU cores.  On Linux the replicas get disjoint physical cores (serve/cpu_affinity.py, from PR #1436 by agorevski), so
 the host threads of the engines (the expert workers) do not compete.  "replica_cpus": false turns it off.
@@ -40,11 +42,14 @@ import threading
 import time
 
 BLOCK = 64                          # tokens per hashed block of a prompt
-LOAD_TOKENS = 3000                  # the cost of one request already running on a replica, in prompt tokens
+LOAD_TOKENS = 3000                  # one request's time on a replica, in prompt tokens, until a service time is measured
+PREFILL_TOK_S = 1000.0              # prompt tokens a replica reads per second (R9700 IQ3_S, 12K cold: 960-1,250)
+SERVICE_EWMA = 0.2                  # weight of the newest request in the measured service time
+WAIT_POLL_S = 0.25                  # longest sleep of a queued request: its cancel and the steal deadline are checked
 INDEX_MAX = 262144                  # block hashes kept (about 17M tokens of prompts)
-CONV_MAX = 4096                     # conversations remembered (each keeps its replica while that one runs)
+CONV_MAX = 4096                     # conversation names remembered (a tie-break and the session map, see the module doc)
 CONV_MAX_LEN = 128                  # characters kept of a conversation id
-NEW_TALK_SLACK = 2 * BLOCK          # tokens a prompt may lose to its own tail (a template boundary) and still be a turn
+HOME_SLACK = 2 * BLOCK              # tokens a prompt may lose to its own tail (a template boundary) and still be at home
 HEAL_COOLDOWN_S = 60.0              # a replica that died is started again at most this often
 SESSION_MAP = ".map"                # next to the session files: the router's conversation->replica bindings
 SESSION_MAP_MAX = 256               # bindings kept in it: the most recently used conversations
@@ -175,8 +180,6 @@ class Router:
         self.n, self.cap, self.conv_cap = n, cap, conv_cap
         self.blocks: collections.OrderedDict[int, int] = collections.OrderedDict()
         self.convs: collections.OrderedDict[str, int] = collections.OrderedDict()   # conversation id -> replica
-        self.longest = [0] * n            # the longest prompt each replica has served: tells a new talk from a turn
-        self.conv_balance = [0] * n       # conversations currently bound to each replica: spreads sessions, not steps
         self.lock = threading.Lock()
 
     @staticmethod
@@ -189,10 +192,14 @@ class Router:
 
     def matched(self, ids) -> list[int]:
         """Per replica: how many leading tokens of `ids` it holds (a multiple of BLOCK)."""
+        return self.matched_chain(self.chain(ids))
+
+    def matched_chain(self, chain: list[int]) -> list[int]:
+        """`matched` for a prompt already hashed with `chain` (a queued request is weighed again on every dispatch)."""
         got = [0] * self.n
         alive = (1 << self.n) - 1
         with self.lock:
-            for k, h in enumerate(self.chain(ids)):
+            for k, h in enumerate(chain):
                 m = self.blocks.get(h, 0) & alive
                 if not m:
                     break
@@ -208,7 +215,6 @@ class Router:
                 self.blocks[h] = self.blocks.pop(h, 0) | (1 << r)
             while len(self.blocks) > self.cap:
                 self.blocks.popitem(last=False)
-            self.longest[r] = max(self.longest[r], len(ids))
 
     def held(self, conv: str) -> int | None:
         """The replica that holds this conversation, or None (a return makes it the newest entry again)."""
@@ -219,23 +225,16 @@ class Router:
             return r
 
     def bind(self, conv: str, r: int) -> None:
-        """Record that replica r serves this conversation from now on (the oldest entry goes past the cap)."""
+        """Record that replica r served this conversation last (the oldest entry goes past the cap)."""
         with self.lock:
-            old = self.convs.get(conv)
-            if old is not None and old != r:
-                self.conv_balance[old] -= 1
-            if old is None:
-                self.conv_balance[r] += 1
             self.convs[conv] = r
             self.convs.move_to_end(conv)
             while len(self.convs) > self.conv_cap:
                 self.convs.popitem(last=False)
-                self.conv_balance[self.convs[next(iter(self.convs))]] -= 1  # popitem removed the oldest
 
     def forget(self, r: int) -> None:
         """Replica r lost its cache (it restarted), and with it its conversations."""
         with self.lock:
-            self.longest[r] = 0
             bit = ~(1 << r)
             for h in [h for h, m in self.blocks.items() if m >> r & 1]:
                 m = self.blocks[h] & bit
@@ -245,7 +244,117 @@ class Router:
                     del self.blocks[h]
             for conv in [c for c, k in self.convs.items() if k == r]:
                 del self.convs[conv]
-                self.conv_balance[r] -= 1
+
+
+class Ticket:
+    """One request, queued for a replica or running on one."""
+    __slots__ = ("chain", "since", "pin", "hint", "replica", "started", "away")
+
+    def __init__(self, ids, since: float, pin: int | None = None, hint: int | None = None):
+        self.chain = Router.chain(ids)
+        self.since, self.pin, self.hint = since, pin, hint
+        self.replica: int | None = None
+        self.started = 0.0
+        self.away: tuple[int, float] | None = None     # taken off its busy home: (tokens read beyond it, seconds waited)
+
+
+class Scheduler:
+    """Which queued request runs on which replica (see "Scheduling" in the module doc).  It keeps no lock and no clock:
+    the caller holds one lock around every call and passes `now`, so a simulated clock drives it the same way."""
+
+    def __init__(self, router: Router, caps: list[int], prefill_tok_s: float = PREFILL_TOK_S,
+                 load_tokens: int = LOAD_TOKENS):
+        n = len(caps)
+        self.router, self.caps, self.prefill_tok_s = router, list(caps), float(prefill_tok_s)
+        self.service_s = load_tokens / self.prefill_tok_s   # one request's time on a replica: a prior until measured
+        self.queue: list[Ticket] = []                        # oldest first
+        self.running = [0] * n
+        self.routed = [0] * n
+        self.held = [0] * n                                  # a session save/restore owns the replica meanwhile
+
+    def submit(self, t: Ticket) -> None:
+        self.queue.append(t)
+
+    def withdraw(self, t: Ticket) -> None:
+        if t in self.queue:
+            self.queue.remove(t)
+
+    def free(self, alive: list[int]) -> list[int]:
+        return [k for k in alive if not self.held[k] and self.running[k] < self.caps[k]]
+
+    def dispatch(self, now: float, alive: list[int]) -> list[Ticket]:
+        """Start queued requests on the replicas with room; returns the started ones (their `replica` set)."""
+        started = []
+        while self.queue:
+            free = self.free(alive)
+            if not free:
+                break
+            pick = self._pick(now, alive, free)
+            if pick is None:
+                break
+            t, k = pick
+            self.queue.remove(t)
+            t.replica, t.started = k, now
+            self.running[k] += 1
+            self.routed[k] += 1
+            started.append(t)
+        return started
+
+    def finish(self, t: Ticket, now: float, measured: bool = True) -> None:
+        self.running[t.replica] -= 1
+        if measured:
+            self.service_s += SERVICE_EWMA * ((now - t.started) - self.service_s)
+
+    def next_wake(self, now: float, alive: list[int]) -> float | None:
+        """Seconds until a queued request may move to a replica that has room now, None when nothing can."""
+        free = self.free(alive)
+        if not free:
+            return None
+        soonest = None
+        for t, _, extra, rivals in self._weigh(alive):
+            if extra is None:
+                continue
+            due = t.since + min(extra[k] for k in free) / self.prefill_tok_s - rivals * self.service_s - now
+            soonest = due if soonest is None else min(soonest, due)
+        return None if soonest is None else max(0.0, soonest)
+
+    def _weigh(self, alive: list[int]):
+        """Per queued request: its home replicas, the tokens each replica would read beyond the best one (None when
+        pinned), and how many other queued requests wait for the same home.  Moving any one of them shortens that
+        queue by one service time, so the whole queue's wait counts toward moving its oldest."""
+        rows = []
+        for t in self.queue:
+            if t.pin in alive:
+                home, extra = [t.pin], None
+            else:
+                got = self.router.matched_chain(t.chain)
+                best = max(got[k] for k in alive)
+                home = [k for k in alive if got[k] >= best - HOME_SLACK]
+                extra = {k: best - got[k] for k in alive}
+            rows.append((t, home, extra))
+        return [(t, home, extra, sum(1 for u, h, _ in rows if u is not t and set(h) & set(home)))
+                for t, home, extra in rows]
+
+    def _pick(self, now: float, alive: list[int], free: list[int]):
+        weighed = self._weigh(alive)
+        for t, home, _, _ in weighed:                       # the oldest request at home on a replica with room
+            room = [k for k in home if k in free]
+            if room:
+                return t, min(room, key=lambda k: (k != t.hint, self.running[k], self.routed[k], k))
+        best = None
+        for t, _, extra, rivals in weighed:                 # else one whose wait has outgrown the cost of moving
+            if extra is None:
+                continue
+            waited = now - t.since + rivals * self.service_s
+            for k in free:
+                cost = extra[k] / self.prefill_tok_s
+                if waited >= cost and (best is None or (cost, t.since) < best[0]):
+                    best = ((cost, t.since), t, k, extra[k], now - t.since)
+        if best is None:
+            return None
+        _, t, k, tokens, waited = best
+        t.away = (tokens, waited)
+        return t, k
 
 
 class ReplicaEngine:
@@ -254,25 +363,28 @@ class ReplicaEngine:
     NOT_HERE = {"vram", "ctl", "slot_cv"}       # not offered: VRAM resize, the control line (session files are per replica)
     PROPAGATE = {"silence_s", "gpu_busy"}
 
-    def __init__(self, engines: list, load_tokens: int = LOAD_TOKENS):
+    def __init__(self, engines: list, load_tokens: int = LOAD_TOKENS, prefill_tok_s: float = PREFILL_TOK_S):
         if len(engines) < 2:
             raise ValueError("ReplicaEngine needs two or more engines")
         d = self.__dict__
         d["engines"] = list(engines)
         d["router"] = Router(len(engines))
-        d["load_tokens"] = load_tokens
-        d["inflight"] = [0] * len(engines)
-        d["conv_inflight"] = {}                                 # requests live right now under each conversation name
-        d["active_convs"] = {k: set() for k in range(len(engines))}  # conversations with a live request per card
-        d["conv_stack"] = {k: [] for k in range(len(engines))}  # the names inflight on each replica, in route order
-        d["run_locks"] = [threading.Lock() for _ in engines]    # an engine without batch slots: one request at a time
-        d["lock"] = threading.Lock()
+        d["sched"] = Scheduler(d["router"], [1] * len(engines), prefill_tok_s, load_tokens)
+        d["cv"] = threading.Condition()        # guards sched; a queued request sleeps on it
         d["tl"] = threading.local()
         d["pin"] = threading.local()          # a dedicated port sets "index": that replica, whatever the cost
         d["healing"] = {}
         d["heal_at"] = [0.0] * len(engines)
-        d["routed"] = [0] * len(engines)
         d["gen_seen"] = [getattr(e, "gen", 0) for e in engines]
+
+    @property
+    def inflight(self) -> list[int]:
+        """Requests running on each replica (a queued one is not on any yet)."""
+        return self.sched.running
+
+    @property
+    def routed(self) -> list[int]:
+        return self.sched.routed
 
     # ---- attribute plumbing
     @property
@@ -313,7 +425,8 @@ class ReplicaEngine:
 
     @property
     def waiting(self) -> int:
-        return sum(int(getattr(e, "waiting", 0) or 0) for e in self.engines)
+        """Requests queued for a replica, plus those each engine holds for its control line."""
+        return len(self.sched.queue) + sum(int(getattr(e, "waiting", 0) or 0) for e in self.engines)
 
     @property
     def max_context(self) -> int:
@@ -413,9 +526,10 @@ class ReplicaEngine:
         for k, (engine, file) in enumerate(zip(self.engines, files)):
             if action == "restore" and k and not os.path.exists(file):
                 continue                                # nothing was saved for this replica
-            lock = self.run_locks[k]                    # a request running here ends first: one control line per engine
-            while not lock.acquire(timeout=0.25):
-                pass
+            with self.cv:                               # a request running here ends first: one control line per engine
+                self.sched.held[k] += 1                 # and none starts here until the file is done
+                while self.sched.running[k]:
+                    self.cv.wait(WAIT_POLL_S)
             try:
                 result = engine.session_file(action, file)
             except Exception as exc:                    # noqa: BLE001 - one card's cache, not the whole call
@@ -423,7 +537,9 @@ class ReplicaEngine:
                 print(f"[strata] replica {k}: session {action} of {os.path.basename(file)} failed: {exc}", flush=True)
                 continue
             finally:
-                lock.release()
+                with self.cv:
+                    self.sched.held[k] -= 1
+                    self.cv.notify_all()
             done += 1
             total["tokens"] += int(result.get("tokens") or 0)
             total["bytes"] += int(result.get("bytes") or 0)
@@ -509,76 +625,59 @@ class ReplicaEngine:
         if err:
             raise err
 
-    # ---- routing
-    def route(self, ids, conv: str | None = None) -> int:
-        """The replica for this prompt (and its running count raised): lowest cost among the living ones.
+    # ---- scheduling
+    def _alive(self) -> list[int]:
+        return [k for k, e in enumerate(self.engines) if e.alive()]
 
-        A named `conv` (see `conversation_id`) overrides the cost: it keeps the replica that first served it, and a
-        new one goes to the least busy replica, so a warm conversation is never read again on the other card.
+    def _dispatch(self, alive: list[int]) -> None:
+        """Start what can start (the caller holds cv) and wake the requests that were given a replica."""
+        self.sched.caps = [max(1, int(getattr(e, "batch", 0) or 0)) for e in self.engines]
+        started = self.sched.dispatch(time.monotonic(), alive)
+        for t in started:
+            if t.away is not None:
+                # the one decision that gives up a warm cache: logged, as utilization alone cannot show it
+                print(f"[strata] replica {t.replica} takes a request whose cache is busy elsewhere after "
+                      f"{t.away[1]:.1f} s queued (reads {t.away[0]} more prompt tokens; running {self.sched.running}, "
+                      f"queued {len(self.sched.queue)})", flush=True)
+        if started:
+            self.cv.notify_all()
 
-        A dedicated port (STRATA_DEDICATED_PORTS in server.py, this module's "pin") names its replica and
-        skips the cost: the client asked for that card, and prefix caching must not move it elsewhere."""
-        pinned = getattr(self.pin, "index", None)
-        got = self.router.matched(ids)
-        with self.lock:
-            alive = [k for k, e in enumerate(self.engines) if e.alive()]
-            if not alive:
-                return -1
-            if pinned in alive:
-                k = pinned
-            elif conv:
-                k = self._conversation_replica(conv, alive, ids, got)
-            else:
-                cost = {k: (len(ids) - got[k]) + self.load_tokens * self.inflight[k] for k in alive}
-                # the least loaded wins a tie of cost (equal cards, nothing cached): spread, do not pile on replica 0
-                k = min(alive, key=lambda k: (cost[k], self.inflight[k], self.routed[k]))
-                # A prompt the best replica has not seen up to its own longest one is a new talk, not the next turn of
-                # the one it holds: clients that share a long system prompt would otherwise all land on whichever
-                # replica served them first, and the other card would idle.  A new talk goes to the least busy card.
-                best = max(alive, key=lambda r: got[r])
-                longest = self.router.longest[best]
-                # the prompt's own last tokens (the assistant header, the turn marker) are not a prefix of the built
-                # prompt, so a continuation loses a few dozen tokens: only a real loss of two blocks means a new talk
-                if longest and got[best] < 0.98 * longest and longest - got[best] > NEW_TALK_SLACK:
-                    # a new talk pays its prefill anyway, so a free card comes before a warm one: a warm card that
-                    # keeps taking new conversations while it is busy would leave the other card idle
-                    k = min(alive, key=lambda r: (self.inflight[r], cost[r], self.routed[r]))
-            self.inflight[k] += 1
-            self.routed[k] += 1
-            if conv:
-                self.conv_inflight[conv] = self.conv_inflight.get(conv, 0) + 1
-                self.conv_stack[k].append(conv)
-                self.active_convs[k].add(conv)
-        if len(alive) < len(self.engines):
-            self.heal()
-        return k
+    def _admit(self, ids, cancel) -> Ticket | None:
+        """Queue this request until a replica takes it (see Scheduler); None when it was cancelled meanwhile.
 
-    def _conversation_replica(self, conv: str, alive: list[int], ids, got) -> int:
-        """A named conversation keeps its replica.  A new name is placed by the card holding the fewest
-        conversations and bound there; a replica that restarted forgot its conversations (Router.forget), so they
-        are new.  Two live requests under one name are two sessions, not one conversation re-asking: a name is
-        derived from content, and identical openings collide (measured 2026-10-20: five A/B arms with byte-equal
-        prompts merged into one name and ran on a single card).  The second concurrent arrival spreads."""
-        held = self.router.held(conv)
-        if held in alive and self.conv_inflight.get(conv, 0) < 1:      # the count is taken before this request joins
-            return held
-        if held in alive:
-            alive = [k for k in alive if k != held] or [held]   # one card left: two sessions share it after all
-        cost = {k: (len(ids) - got[k]) + self.load_tokens * self.inflight[k] for k in alive}
-        # place by conversations, not steps: a session arriving while both cards idle looks free on both, and a
-        # warmth-first or step-first rule then piles every hot session onto the card that cached the shared prefix
-        # first (live 2026-10-20: two DSH sessions, one card at 100% for 17 steps, the other idle).  A new
-        # conversation takes the card holding the fewest conversations, so sessions split and each card works.
-        # live conversations per card first: a card that just took one must not take the next while the other
-        # idles; inflight breaks a tie of conversations, then warmth, then history
-        act = self.active_convs
-        k = min(alive, key=lambda k: (len(act[k]), self.inflight[k], cost[k], self.routed[k]))
-        self.router.bind(conv, k)
-        # the binding table is otherwise invisible from outside: without this line an operator watching the cards
-        # cannot tell "both sessions are on one card" from "this card's session is simply idle right now"
-        print(f"[strata] replica {k}: bound new conversation {conv[:48]} (live conversations now "
-              f"{[len(act[r]) for r in range(len(self.engines))]}, running {self.inflight})", flush=True)
-        return k
+        A dedicated port (STRATA_DEDICATED_PORTS in server.py, this module's "pin") names its replica: the client asked
+        for that card, so the request waits for it and never moves."""
+        from serve.server import EngineDied     # imported here: serve.server imports this module
+        conv = getattr(cancel, "_strata_conversation", None)
+        t = Ticket(ids, time.monotonic(), getattr(self.pin, "index", None), self.router.held(conv) if conv else None)
+        with self.cv:
+            self.sched.submit(t)
+            try:
+                while True:
+                    alive = self._alive()
+                    if not alive:
+                        raise EngineDied("no replica is running; this request was not sent")
+                    if len(alive) < len(self.engines):
+                        self.heal()
+                    self._dispatch(alive)
+                    if t.replica is not None:
+                        break
+                    if cancel is not None and cancel.is_set():
+                        return None
+                    due = self.sched.next_wake(time.monotonic(), alive)
+                    self.cv.wait(WAIT_POLL_S if due is None else min(WAIT_POLL_S, due))
+            finally:
+                if t.replica is None:
+                    self.sched.withdraw(t)
+        if conv:
+            self.router.bind(conv, t.replica)
+        return t
+
+    def _release(self, t: Ticket, measured: bool) -> None:
+        with self.cv:
+            self.sched.finish(t, time.monotonic(), measured)
+            self._dispatch(self._alive())
+            self.cv.notify_all()                # a session save waits for this replica to empty
 
     def heal(self) -> None:
         """Start a replica that died again, in the background (the others keep serving)."""
@@ -604,51 +703,34 @@ class ReplicaEngine:
             threading.Thread(target=run, daemon=True).start()
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
-        # imported here: serve.server imports this module
-        from serve.server import EngineDied, EngineNonFinite
-        k = self.route(ids, getattr(cancel, "_strata_conversation", None))
-        if k < 0:
-            raise EngineDied("no replica is running; this request was not sent")
+        from serve.server import EngineNonFinite   # imported here: serve.server imports this module
+        t = self._admit(ids, cancel)
+        if t is None:
+            return
+        k = t.replica
         e = self.engines[k]
         self.tl.cur = e
         produced: list[int] = []
-        held = False
         nonfinite = False
         try:
             selected = getattr(cancel, "_strata_replica_selected", None)
             if selected is not None:
                 selected(k)
             self.router.note(k, ids)
-            if not int(getattr(e, "batch", 0) or 0):          # no slots: this replica takes one request at a time
-                lock = self.run_locks[k]
-                while not lock.acquire(timeout=0.25):
-                    if cancel is not None and cancel.is_set():
-                        return
-                held = True
             if embeddings is not None:
                 gen = e.generate(ids, max_new, sampling, cancel, embeddings=embeddings)
             else:
                 gen = e.generate(ids, max_new, sampling, cancel)
-            for t in gen:
-                if t is not None:
-                    produced.append(t)
-                yield t
+            for tok in gen:
+                if tok is not None:
+                    produced.append(tok)
+                yield tok
         except EngineNonFinite:
             nonfinite = True
             raise
         finally:
-            if held:
-                self.run_locks[k].release()
-            with self.lock:
-                self.inflight[k] -= 1
-                stack = self.conv_stack[k]
-                if stack:
-                    c = stack.pop()
-                    self.conv_inflight[c] -= 1
-                    if self.conv_inflight[c] <= 0:
-                        del self.conv_inflight[c]
-                        self.active_convs[k].discard(c)
             if nonfinite:                       # #879: the engine dropped every cached conversation
                 self.router.forget(k)
             elif produced:
                 self.router.note(k, list(ids) + produced)
+            self._release(t, measured=bool(produced))

@@ -7069,7 +7069,7 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
-            from serve.replicas import request_conversation  # lever 3: a named conversation keeps its replica
+            from serve.replicas import request_conversation  # replicas: a tie-break and the session map
             cancel._strata_conversation = request_conversation(req, messages)
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -7136,7 +7136,7 @@ def make_handler(svc: Service):
             if title is not None:
                 return self._responses_ready(req, title)
             cancel = threading.Event()
-            from serve.replicas import conversation_id       # lever 3: a named conversation keeps its replica
+            from serve.replicas import conversation_id       # replicas: a tie-break and the session map
             cancel._strata_conversation = conversation_id(req)   # the derived name needs messages: the prepare step has them
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             try:
@@ -7309,7 +7309,7 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             cancel = threading.Event()
-            from serve.replicas import request_conversation  # lever 3: a named conversation keeps its replica
+            from serve.replicas import request_conversation  # replicas: a tie-break and the session map
             cancel._strata_conversation = request_conversation(req, messages)
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -7932,7 +7932,7 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
     n = len(groups)
     cpus = rp.cpu_sets(n, cfg.get("replica_cpus") is not False)
     print(f"[strata] {n} replicas on the cards {' | '.join(','.join(map(str, g)) for g in groups)}"
-          f"{' (own CPU cores each)' if cpus else ''}: requests go to the least busy one, a conversation back to its own",
+          f"{' (own CPU cores each)' if cpus else ''}: one queue, a free replica takes the request whose prompt it holds",
           flush=True)
     engines: list = [None] * n
     errors: list = []
@@ -7965,7 +7965,8 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
         i, e = errors[0]
         raise SystemExit(f"[strata] replica {i} did not start: {e}")
     load = int(cfg.get("replica_load_tokens") or rp.LOAD_TOKENS)
-    return rp.ReplicaEngine(engines, load_tokens=load)
+    prefill = float(cfg.get("replica_prefill_tok_s") or rp.PREFILL_TOK_S)
+    return rp.ReplicaEngine(engines, load_tokens=load, prefill_tok_s=prefill)
 
 
 def check_request_sampling(req) -> None:
