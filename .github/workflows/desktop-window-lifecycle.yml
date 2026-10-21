@@ -48,3 +48,23 @@ jobs:
         run: |
           cargo build --locked --release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record Native Artifact Provenance
+        shell: pwsh
+        run: |
+          $exe = 'apps/desktop/src-tauri/target/release/strata-desktop.exe'
+          New-Item -ItemType Directory -Path 'window-lifecycle-artifact' | Out-Null
+          Copy-Item -LiteralPath $exe -Destination 'window-lifecycle-artifact/strata-desktop.exe'
+          @{
+            schema = 1
+            sourceCommit = $env:GITHUB_SHA
+            sourceRepository = $env:GITHUB_REPOSITORY
+            sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            bytes = (Get-Item -LiteralPath $exe).Length
+            compileOnlyResources = $true
+          } | ConvertTo-Json | Set-Content -LiteralPath 'window-lifecycle-artifact/provenance.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-window-lifecycle
+          path: window-lifecycle-artifact/
+          if-no-files-found: error
+          retention-days: 14
