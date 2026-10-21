@@ -54,7 +54,7 @@ display label and incidental usage figures. It contains no account identity,
 private path, hostname, credentials, original user screenshot or unrelated chat.
 The usage figures are not a benchmark or a speedup claim.
 
-![Actual Owner Web Reply While The App Was Hidden](web-background.png)
+![Actual Owner Web Reply While The App Was Hidden](web-background.jpg)
 
 The reference Extension also selected installed resources and handled companion
 startup outside its server Job. Those site-specific launcher/deployment changes
