@@ -350,12 +350,15 @@ int main(int argc, char** argv) {
                 if (cpu::active_numa_split().on || pool.numa_slices() != 0) { std::fprintf(stderr, "split on a %d-node machine\n", nodes); return 1; }
             }
             {   // the default worker count and cores of a one-node machine do not depend on the split code at all
+                // (compared with the real machine with the split off: on two real nodes it would run by itself)
                 build(1);
                 cpu::ExpertPool a(0, true, true);
                 const std::vector<int> a_cores = a.worker_cores();
                 const int a_workers = a.workers();
                 unset_env("STRATA_TEST_SYSFS_ROOT");
+                put_env("STRATA_NUMA_POOL", "0");
                 cpu::ExpertPool b(0, true, true);
+                unset_env("STRATA_NUMA_POOL");
                 if (a_workers != b.workers() || a_cores != b.worker_cores()) {
                     std::fprintf(stderr, "a one-node fake machine changed the pool's workers or cores\n");
                     return 1;
