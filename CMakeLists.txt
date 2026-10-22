@@ -1740,7 +1740,7 @@ if(STRATA_NATIVE_EXPERTS)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
     endforeach()
     if(_strata_mmq_tq_overlay)
-      foreach(_t tq2_t tqk6 tqk7)
+      foreach(_t tq2_t tqk6 tqk7 tqp5 tqp6 tqp7)
         target_sources(strata_mmq PRIVATE ${_strata_tq_overlay_dir}/template-instances/mmq-instance-${_t}.cu)
       endforeach()
       # first on the include path: the patched mmq.cuh / ggml.h shadow the pinned ones for this target only
