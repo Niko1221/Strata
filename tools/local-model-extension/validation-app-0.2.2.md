@@ -28,7 +28,7 @@ The real existing GGUF was read through a copied profile with 8192 context,
 24 GiB resident budget and no vision. No model download/copy or production-client
 configuration change was needed. The existing production Tray/server stayed running.
 
-## Passed
+## Passed In The Initial Run
 
 - Public `extension_manager.py install --source <package> --root <external-root>
   --activate`, `launch.py --config <disposable-config> --check` and actual
@@ -81,7 +81,7 @@ python -B -m unittest discover -s tools/local-model-extension -p test_*.py
 passed**. The companion Tray passed 81 C# checks, 16 managed tests, 15 IPC tests
 and 3 installed-App metadata checks. No backend source was touched.
 
-## Failed Or Limited
+## Initial Failures And Limits
 
 The initial test profile referenced a nonexistent expert-profile file, producing
 a terminal preload error. Only the disposable configuration was corrected.
@@ -97,8 +97,12 @@ A fresh isolated run used the same compiled public Tray binary and runtime
 source, with `Acceptance Menu Model`, selected/effective 8K Context and separate
 ports 18148/18149. A user-supplied native screenshot confirmed the real menu's
 Profile, effective Context/Idle, lifecycle controls and updater ownership labels.
-The Windows helper could target the App window but did not expose the Tray
-popup, so menu interactions are explicitly human-assisted.
+The initial menu discovery and Context/Idle group were human-assisted. A Windows
+UIAutomation harness then located the unique test notification icon, verified
+its executable/config and menu process ID, and invoked the actual native
+MenuItems. It inspected the live Context and Idle submenus and captured them
+without editing. Owner snapshots, live API state and process/listener identity
+provided separate evidence of each action's effect.
 
 **Open App passed at 2026-10-22T04:22:48.4492562Z.** The actual menu started the official App
 0.2.2: App PID 16504 had Tray PID 29212 as parent;
@@ -110,7 +114,19 @@ WebView2 used the isolated test profile. No Extension launcher/preload was used.
 The clean native model picker remained empty: launch/backend handoff does not
 register the externally owned model as a native download or select it in chat.
 
-Context/Idle and lifecycle menu dispatch are awaiting human-assisted execution.
+- **Context And Idle:** human-assisted Unload Model Now, Context 8K → 32K → 8K and Idle Never → 5 Minutes → Never matched continuous owner snapshots.
+- **Server Lifecycle:** automated native-menu Stop Server, Start Server and Apply Configuration / Restart matched owner state and process evidence. Stop ended server PID 23408; Start created PID 4112; Restart ended PID 4112 and created PID 10780, remaining lazy/unloaded.
+- **Model Lifecycle And Exit:** automated native-menu Preload Model created engine PID 3756 and reached loaded; Unload Model Now ended that engine and reached unloaded. Exit Tray And Stop Server ended the Tray, controller and upstream without forced termination; Tray exit code was 0 and test ports closed. Each of the six automated actions was invoked once.
+
+The [owner timeline](validation-app-0.2.2-followup.ndjson) preserves the observed
+transitions; its count and SHA-256 are recorded in the sanitized receipt.
+
+Admission was observed closed during startup/restart before Ready returned;
+the UI actions were not repeated. The isolated App/Host and recorder were also
+cleaned up. Production Tray PID 18596 and listeners 10100/19480, 8081/22316 and
+8080/7404 retained their identities. Of 206 protected files, 205 were unchanged;
+only the production owner's live `context-status.json` advanced. Installed
+pi-ai retained its original hash. GPU memory was 1285 MiB after cleanup.
 
 ## Follow-Up: Default-Agent Output Budget
 
@@ -134,5 +150,3 @@ larger-context allocation/inference; live App/Engine installer, signature or
 upgrade/restart; multiple-profile switching and auxiliary menu open/copy actions;
 long default-agent tasks at 8K. The bounded run does not certify future App
 layouts or a general upstream plugin API. No backend source changed here.
-
-The menu-dispatch steps not confirmed above remain pending.
