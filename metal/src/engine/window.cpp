@@ -373,6 +373,7 @@ private:
         std::vector<std::pair<int, int>> qsa;   // (dispatch, kind): 0 QsaArgs n_tok = T, 1 the merge (MAXT), 2 the scores;
                                                 // batch windows add 100 + t (row t's QsaArgs, n_tok = 1) and
                                                 // 200 + t (row t's scores grid)
+        int caps = 0;                           // STRATA_BATCH_VERIFY: the captures this graph replays per step
     };
     std::map<int, Cached> wcache_;
     // ---- a batch slot's state region (issue #3284, stage 1): the running state one row of a batch window
@@ -1542,6 +1543,17 @@ bool Window::run_batch(int S, const int* rows, const int32_t* tokens, const int6
                 else if (kind >= 100 && kind < 200 && x.bytes.size() == sizeof g) std::memcpy(x.bytes.data(), &g, sizeof g);
         }
     };
+    auto traj_emit = [&](int S) {   // STRATA_BATCH_VERIFY: the per-row fold trajectory of the window that just ran
+        const float* v = dsb_.as<float>();
+        static char tline[4096];
+        for (int t = 0; t < S; ++t) {
+            int w = std::snprintf(tline, sizeof tline, "traj b%d r%d:", S, t);
+            for (int i = 0; i < cap_ctr_ && w < 4000; ++i)
+                w += std::snprintf(tline + w, sizeof tline - w, " %.6g", v[(size_t) i * MAXT + t]);
+            std::fprintf(stderr, "%s\n", tline);
+        }
+        cap_on_ = false;
+    };
     auto tail = [&](Cached& c) {   // the solo finish()'s equivalents: the tokens, the parities, the row count
         for (int t = 0; t < S; ++t) {
             out[t] = tokout_.as<int32_t>()[t];
@@ -1564,6 +1576,7 @@ bool Window::run_batch(int S, const int* rows, const int32_t* tokens, const int6
         tail(c);
         post_fp("hit");
         if (bswap && S == 2) std::swap(out[0], out[1]);   // back to the driver's slot order
+        if (c.caps) { cap_ctr_ = c.caps; traj_emit(S); }
         if (bprobe)
             std::fprintf(stderr, "batch step out (cache hit): [%d,%d]\n", out[0], S > 1 ? out[1] : 0);
         return true;
@@ -1573,8 +1586,7 @@ bool Window::run_batch(int S, const int* rows, const int32_t* tokens, const int6
     rec_ = &cw.qsa;
     cuts_ = stream_ ? &cw.cuts : nullptr;
     std::vector<mtl::Dispatch>& ds = cw.ds;
-    static int capn = 0;
-    cap_on_ = bprobe && S == 2 && ++capn == 1;   // the first two-row graph captures its folds
+    cap_on_ = bprobe && S >= 2;   // every batch graph builds with its captures; each step prints its rows
     cap_ctr_ = 0;
     nb_ = false;
     gemv_plain_ = true;   // every GEMV keeps the plain tile: the batch window's sums are the solo T=1 sums
@@ -1661,17 +1673,8 @@ bool Window::run_batch(int S, const int* rows, const int32_t* tokens, const int6
     if (last_gpu_ms_ <= 0.0) { bcache_.erase(key); err = "metal window: the batch graph failed"; return false; }
     tail(cw);
     std::fprintf(stderr, "strata metal: batch window built: %d rows, %.1f ms (%d dispatches)\n", S, last_gpu_ms_, last_n_disp_);
-    if (cap_on_) {   // the batch graph's per-fold residual sums, both rows
-        const float* v = dsb_.as<float>();
-        static char tline[4096];
-        for (int t = 0; t < 2; ++t) {
-            int w = std::snprintf(tline, sizeof tline, "traj b1 r%d:", t);
-            for (int i = 0; i < cap_ctr_ && w < 4000; ++i)
-                w += std::snprintf(tline + w, sizeof tline - w, " %.6g", v[(size_t) i * MAXT + t]);
-            std::fprintf(stderr, "%s\n", tline);
-        }
-        cap_on_ = false;
-    }
+    cw.caps = cap_ctr_;
+    if (cw.caps) traj_emit(S);
     post_fp("build");
     if (bswap && S == 2) std::swap(out[0], out[1]);   // back to the driver's slot order
     static int fps2 = 0;
