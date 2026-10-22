@@ -283,12 +283,15 @@ logits, with top_k, top_p, min_p, penalties and a logit_bias. With temperature 0
   green triangle, the text "STRATA 42") was described correctly with both readers. Checked on one Mac only; the M5 Max is untested for pictures.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **Requests together (`--parallel`, batch slots): experimental, opt-in.** The Mac engine runs the batch slots in a batch window of its own: one dispatch batch, up to 8 rows, and each row reads and writes its own conversation's
-  parked state (its own region of the arena), so the byte order of every sum is the solo window's byte order. The state stays exact,
-  and a greedy token can still differ from the solo run where two openings are a near tie: kernels that batch rows in one
-  dispatch round at float-noise scale (measured on M1 Max: two slots identical, four slots two of four, all answers coherent).
-  Turn it on with `"parallel": N` in the run settings (or `--batch N` on the engine); several clients without it still queue,
-  one at a time, as before. `tools/metal_batch_try.sh` compares solo against batched on your Mac (same prompts, greedy):
-  numbers on M1 Max in BATCHING.md's "On Apple Silicon" section.
+  parked state (its own region of the arena). The per-slot state stays byte-exact (checked byte for byte at every
+  admission), but a batched row does not byte-replay the solo window: kernels that batch rows in one dispatch
+  round differently, and the measured drift enters at the batched PLE block and rides every later fold. A greedy
+  or sampled token can then differ from the solo run where two openings are a near tie (measured on M1 Max:
+  two slots identical, greedy and sampled; four slots two of four, all answers coherent).
+  Turn it on with `"parallel": N` in the run settings (or `--batch N` on the engine); several clients without it still
+  queue, one at a time, as before.
+  `tools/metal_batch_try.sh` compares solo against batched on your Mac (same prompts; add `--keys
+  "temperature=0.7 seed=7"` for the sampled rows): numbers on M1 Max in BATCHING.md's "On Apple Silicon" section.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.

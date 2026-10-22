@@ -554,6 +554,11 @@ block's deterministic arithmetic, not a race or corruption, and the captures the
 The four regions cost 15.4 GB of the arena (the engine prints it at start); each row-count graph builds once
 (two-row windows in 56 to 60 ms, three-row in 73 to 81, four-row in 92 to 98).
 
+Sampled on the same machine and the same two prompts (`--keys "temperature=0.7 seed=7"`, 64 tokens each, the
+seed keeping the two runs' random draws comparable): **42.7 tok/s from the first batch token** against 23 and
+25 solo, and both slots' 64 sampled tokens identical to their solo run's - with a shared seed a sampled chain
+that never crosses a near tie stays byte-identical, but identity under sampling remains luck, not a gate.
+
 Getting the second row's sums right needed a binding fix also found with the captures: a batch row's GDN step
 binds the prepared activation at its own slice, and the per-16 sums it writes for the GEMVs must land in the
 fixed sums region of the whole buffer, not a slice-row's width past it. Rows after the first wrote sums no one
@@ -563,9 +568,10 @@ dequantize from those sums, so their outputs were garbage on the second row onwa
 exact. The sums now have their own binding; the solo window and the first row address them bit-identically to
 before, and `metal/tests/gdn_parity.cpp` checks the row-slice layout against the base-bound one.
 
-Still not measured here: the prompt-interleave steps of `tools/batch_interleave_test.py` on a Mac, and sampled
-(`temperature` > 0) rows. To try it on your own Mac: `tools/metal_batch_try.sh 2 2 128`; it refuses to run
-while another big server holds the memory (see the script's header).
+Still not measured here: the prompt-interleave steps of `tools/batch_interleave_test.py` on a Mac (it takes
+`--exe build-metal/strata --config <run config>` like the batch script). To try it on your own Mac:
+`tools/metal_batch_try.sh 2 2 128`; it refuses to run while another big server holds the memory (see the
+script's header).
 
 ## Testing
 
