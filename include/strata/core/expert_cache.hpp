@@ -132,6 +132,20 @@ public:
     int64_t slot_guard() const { return guard_; }
     /// A sized slot's arena bytes: the blob plus the guard, 256-byte aligned.
     static int64_t slot_stride(int64_t blob, int64_t guard = 0) { return (blob + guard + 255) / 256 * 256; }
+    /// **The alignment `open_sized` rounds each slot's SIZE up to** (0: the caller's size is used as it is).
+    ///
+    /// The default (256) is what every caller but one wants: it puts every blob where the kernels' vector loads
+    /// expect it.  It is the WRONG choice for a cache whose slots a prompt MMQ steps over, though, because the
+    /// alignment is applied to the SLOT and the slot spacing is what MMQ walks.  MMQ addresses expert z as
+    /// `w + z * (expert_bytes / type_bytes(t))` - a TRUNCATING integer division (src/prefill/moe_mmq.cu) - so the
+    /// spacing must be a whole number of the weight type's blocks.  Rounding a caller's spacing up to 256 breaks
+    /// that whenever 256 is not a multiple of the block size (Q6_K's 210, Q5_K's 176, Q4_K's 144: none of them
+    /// divides 256).  A caller that already has the spacing it wants - the engine's own step between two experts,
+    /// which it builds as a whole number of both parts' blocks - says so here (0) and `open_sized` uses its sizes
+    /// verbatim.
+    void set_slot_align(int64_t a) { align_req_ = a > 0 ? a : 0; }
+    /// The alignment the open slots were laid out with (256 unless `set_slot_align` said otherwise; 0 = as given).
+    int64_t slot_align() const { return align_; }
     bool segmented() const { return !segs_.empty(); }
     int64_t segment_bytes() const { return seg_; }
     /// Bytes of the arena backed by VRAM now (a whole number of segments; the arena when not segmented).
@@ -246,6 +260,8 @@ private:
     int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
     int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
     int64_t guard_req_ = 0;             ///< STRATA_MMQ_DIRECT: bytes kept after each sized slot's blob (set_slot_guard)
+    int64_t align_req_ = 256;           ///< the alignment open_sized rounds each slot up to (set_slot_align; 0 = as given)
+    int64_t align_ = 256;                ///< ...the alignment the open slots were laid out with
     int64_t guard_ = 0;                 ///< ...the guard open_sized applied to the open slots (0: none)
     int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)
     uint64_t reserved_ = 0;             ///< #533: the reserved address range's size

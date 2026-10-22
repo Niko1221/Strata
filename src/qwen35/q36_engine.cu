@@ -1263,6 +1263,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         y.L = K::native_expert_layout((int) tg->type, (int) td->type, g.n_embd, g.n_ff);
         const size_t gsz = (size_t) g.n_ff * y.L.gu_row, dsz = (size_t) g.n_embd * y.L.d_row;
         // a stride in whole blocks of both parts' types (MMQ steps over the experts by blocks), 16-byte aligned
+        //
+        // The stride is also what a HELPER's expert cache has to use, because MMQ addresses the next expert as
+        // `w + z * (expert_bytes / type_bytes)`: the cache's step and the engine's step must be the same number, or
+        // every expert but the first is read from the wrong offset (NaN rows, not an error).  The helper cache is
+        // told this step (RemoteExperts::open) and lays its slots out with it verbatim rather than with its own
+        // 256-byte alignment, which would move the step (a Q6_K layer's 2041200 becomes 2041344).
         const size_t al = lcm_sz(lcm_sz(block_bytes(y.L.gu_type), block_bytes(y.L.d_type)), 16);
         y.stride = (y.L.bytes + al - 1) / al * al;
         y.src_g = gm.shard(sg).tensor_data(*tg);
@@ -4450,6 +4456,13 @@ bool open_helpers(Model& m, Engine& E, const std::array<int, 3>& want, const std
         }
         fmt.push_back(f);
         layouts.push_back(L->L);
+        // The step between two consecutive experts' blobs, for a cache that lays them out one after another.
+        // The engine's own step (q36_engine.cu's Layer::stride) is the least common multiple of the two parts'
+        // block sizes, so MMQ can step over the experts in whole blocks; a cache that used a different step (the
+        // 256-byte aligned one the expert cache defaults to) would put every expert but the first at an offset
+        // MMQ never reads, which is NaN rows rather than an error.  The helper caches get this so their slot
+        // layout is the one MMQ is given.
+        layouts.back().stride = L->stride;
         total += (uint64_t) f.bytes * (uint64_t) g.n_expert;
     }
     if (!C::expert_layout_set_native(g.n_layers, g.n_expert, fmt, total, err)) return false;

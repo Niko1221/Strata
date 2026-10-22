@@ -162,6 +162,22 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     device_ = device;
     n_expert_ = experts;
     const auto& lay = strata::kernels::cpu::expert_layout();
+    // Whether the caller gave a step for EVERY layer.  No table at all, a stride of 0, or a table that does not
+    // cover the layers means the engine's step is unknown - Flash-Next's native packs pass no table, q36's helpers
+    // always pass one with every stride set.  When it is unknown the cache keeps its own 256-BYTE ALIGNMENT, the
+    // layout it has always laid its slots out with: a slot narrower than that is not where the kernels' vector
+    // loads expect it, and the VRAM budget would change for every existing configuration.
+    step_known_ = lay.native && !layer_layouts_.empty() &&
+                  std::all_of(layer_layouts_.begin(), layer_layouts_.end(),
+                              [](const strata::kernels::NativeExpertLayout& l) { return l.stride > 0; });
+    // ONE answer to "how wide is this layer's slot", used by the VRAM budget and by open_sized alike.  Two
+    // separate expressions here drifted apart once already (the budget rounded to 256 and the sizes did not).
+    const auto slot_bytes_at = [&](int64_t layer) -> uint64_t {
+        const uint64_t blob = lay.blob_bytes(layer);
+        if (!step_known_) return (blob + 255) / 256 * 256;   // the cache's own alignment, unchanged
+        const uint64_t step = layer_layouts_[(size_t) layer].stride;
+        return step > blob ? step : blob;
+    };
     size_t free_bytes = 0, total_bytes = 0;
     if (!check(cudaMemGetInfo(&free_bytes, &total_bytes), "free memory", err, device)) { close(); return false; }
     uint64_t needed = 0;
@@ -172,7 +188,10 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         if (pair.first < 0 || pair.first >= layers || pair.second < 0 || pair.second >= experts) continue;
         const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
         if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
-            const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
+            // The bytes this expert takes in the cache: the layout's step when the caller gave one (the slot is
+            // that wide so the next expert starts where MMQ expects it), else the cache's own 256-byte alignment.
+            // The number here must be the one open_sized lays the slot out with, or the VRAM budget is wrong.
+            const uint64_t bytes = lay.native ? slot_bytes_at(pair.first) : lay.max_blob;
             if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
             selected.push_back(pair);
             needed += bytes;
@@ -188,7 +207,15 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     std::vector<int64_t> sizes;
     if (lay.native) {
         sizes.reserve(selected.size());
-        for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
+        for (const auto& pair : selected) sizes.push_back((int64_t) slot_bytes_at(pair.first));
+        // The slots are laid out with that step VERBATIM when the caller gave one: the cache's own 256-byte
+        // alignment would move it (a Q6_K layer's 2041200 becomes 2041344) and the MMQ, which steps over the
+        // experts in whole blocks, would then read every expert but the first from the wrong offset - NaN rows
+        // rather than an error.  Without a step from the caller (every caller but q36's helpers) the cache's own
+        // 256-byte alignment stays, so those caches keep the layout they had.
+        cache_.set_slot_align(step_known_ ? 0 : 256);
+    } else {
+        cache_.set_slot_align(256);   // the default: blobs where the kernels' vector loads expect them
     }
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
     if (needed + (512ull << 20) > free_bytes) {

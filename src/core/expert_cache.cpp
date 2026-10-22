@@ -566,9 +566,13 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     int64_t mx = 0;
     std::vector<uint64_t> off(slot_bytes.size() + 1, 0);
     for (size_t i = 0; i < slot_bytes.size(); ++i) {
-        // 256-byte aligned slots, so every blob starts where the kernels' vector loads expect it (and the
-        // STRATA_MMQ_DIRECT guard after each blob, 0 by default)
-        off[i + 1] = off[i] + (uint64_t) slot_stride(slot_bytes[i], guard_req_);
+        // Slots are aligned so every blob starts where the kernels' vector loads expect it (and the
+        // STRATA_MMQ_DIRECT guard after each blob, 0 by default).  The alignment is 256 unless the caller said
+        // otherwise with set_slot_align: a cache a prompt MMQ reads with a step of its own needs the step it was
+        // given, not one rounded up (see set_slot_align's comment).
+        const int64_t stride = align_req_ > 0 ? (slot_bytes[i] + guard_req_ + align_req_ - 1) / align_req_ * align_req_
+                                              : slot_bytes[i] + guard_req_;
+        off[i + 1] = off[i] + (uint64_t) stride;
         mx = slot_bytes[i] > mx ? slot_bytes[i] : mx;
     }
     // one allocation of the summed size, through the uniform path's checks: n "slots" of 1 byte
@@ -578,6 +582,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     blob_ = mx;
     off_ = std::move(off);
     guard_ = guard_req_;
+    align_ = align_req_;
 #if defined(STRATA_USE_HIP)
     if (!ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
@@ -603,6 +608,7 @@ void ExpertCache::close() {
 #endif
     off_.clear();
     guard_ = 0;
+    align_ = align_req_;   // the next open lays its slots out with the requested alignment again
     if (!segs_.empty()) {
         release_segmented();
     } else if (vmm_) {

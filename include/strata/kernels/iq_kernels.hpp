@@ -47,6 +47,13 @@ struct NativeExpertLayout {
     size_t gu_row = 0, d_row = 0;       // bytes per row
     size_t up_off = 0, down_off = 0;    // byte offsets inside the blob
     size_t bytes = 0;                   // the whole blob
+    /// The distance between two consecutive experts' blobs when they are laid out one after another, 0 when the
+    /// caller has no opinion.  MMQ steps over the experts by BLOCKS, so this step must be a whole number of the
+    /// weight type's blocks (MMQ::Context::run divides it by the block size); the engine's own step is the least
+    /// common multiple of the two parts' block sizes for exactly that reason.  A cache that lays its experts out
+    /// with a DIFFERENT step (say 256-byte aligned) than the one MMQ was given reads every expert but the first
+    /// from the wrong offset, which shows up as NaN rows rather than an error.
+    size_t stride = 0;
     size_t tail_off = 0;                // NVFP4: {s_gate, s_up, s_down, 0} at the blob's end; 0 = none
     // APR (prism.hadamard): the down weights are Hadamard-folded, so native_expert_grouped rotates h before
     // quantizing it (hadamard_rows).  had_block 0 = none; d_signs is a DEVICE vector of n_ff signs or nullptr.

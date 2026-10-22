@@ -80,6 +80,7 @@ private:
     int64_t cap_ = 80;        ///< the window's entry count, MAXT * k_ (Flash-Next: 8 * 10)
     int32_t groups_ = 0;
     std::vector<strata::kernels::NativeExpertLayout> layer_layouts_;   ///< per-layer native layout override; empty = use the global expert_layout() table
+    bool step_known_ = false;   ///< layer_layouts_ gives a step for EVERY layer (see open: known = verbatim, else 256)
     int64_t computed_ = 0;
     int64_t launched_layers_ = 0;
     uint64_t returned_bytes_ = 0;
