@@ -1,0 +1,58 @@
+{
+  "baseline": {
+    "code_long": {
+      "tok_s": 40.885860306643956,
+      "accepted": 58,
+      "offered": 87,
+      "change_pct": 0.0
+    },
+    "cache_long": {
+      "tok_s": 50.852844580993754,
+      "accepted": 66,
+      "offered": 78,
+      "change_pct": 0.0
+    }
+  },
+  "side1": {
+    "code_long": {
+      "tok_s": 41.03090139761508,
+      "accepted": 58,
+      "offered": 87,
+      "change_pct": 0.35474633500021113
+    },
+    "cache_long": {
+      "tok_s": 51.11821086261981,
+      "accepted": 66,
+      "offered": 78,
+      "change_pct": 0.5218317358892444
+    }
+  },
+  "side2": {
+    "code_long": {
+      "tok_s": 40.96611760689596,
+      "accepted": 58,
+      "offered": 87,
+      "change_pct": 0.19629598019970107
+    },
+    "cache_long": {
+      "tok_s": 50.955414012738856,
+      "accepted": 66,
+      "offered": 78,
+      "change_pct": 0.20169851380043013
+    }
+  },
+  "branch": {
+    "code_long": {
+      "tok_s": 40.87193460490463,
+      "accepted": 58,
+      "offered": 87,
+      "change_pct": -0.034059945504094635
+    },
+    "cache_long": {
+      "tok_s": 50.93919134033747,
+      "accepted": 66,
+      "offered": 78,
+      "change_pct": 0.16979730446777808
+    }
+  }
+}

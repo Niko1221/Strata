@@ -1,0 +1,46 @@
+{
+  "mtp": {
+    "code": {
+      "tok_s": 38.46307945029849,
+      "accepted": 60,
+      "offered": 103,
+      "wasted_target_rows": 43,
+      "target_rows": 139,
+      "windows": 36,
+      "cache_hits": 23633,
+      "cache_lookups": 66720
+    },
+    "long": {
+      "tok_s": 55.30909719421559,
+      "accepted": 64,
+      "offered": 68,
+      "wasted_target_rows": 4,
+      "target_rows": 100,
+      "windows": 32,
+      "cache_hits": 24589,
+      "cache_lookups": 48000
+    }
+  },
+  "dflash2-il": {
+    "code": {
+      "tok_s": 50.86092715231788,
+      "accepted": 70,
+      "offered": 84,
+      "wasted_target_rows": 14,
+      "target_rows": 110,
+      "windows": 26,
+      "cache_hits": 19397,
+      "cache_lookups": 52800
+    },
+    "long": {
+      "tok_s": 56.76778428241973,
+      "accepted": 68,
+      "offered": 71,
+      "wasted_target_rows": 3,
+      "target_rows": 99,
+      "windows": 28,
+      "cache_hits": 24230,
+      "cache_lookups": 47520
+    }
+  }
+}

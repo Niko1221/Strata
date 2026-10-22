@@ -1,0 +1,576 @@
+diff --git a/docs/DFLASH.md b/docs/DFLASH.md
+index b840dd6d..8345206c 100644
+--- a/docs/DFLASH.md
++++ b/docs/DFLASH.md
+@@ -72,6 +72,22 @@ vocabulary. The engine-only experiments are separate from setup's DFlash2 weight
+
+ ## Checks and diagnostics
+
++Experimental DFlash2 execution options are off by default. They do not change the
++checkpoint, target model or shared head:
++
++- `STRATA_DFLASH2_REGISTER_TOPK=1` keeps vocabulary tiles in registers during top-k.
++- `STRATA_DFLASH2_FUSED_CONV=1` combines each convolution with its BF16 conversion
++  or residual addition. Tensor-dump diagnostics retain the separate operations.
++- `STRATA_DFLASH2_LATTICE_SELECTOR=1` computes candidate transitions in parallel,
++  then walks the resulting scores. It reuses idle top-k scratch space and falls
++  back when that space is too small. Reference mode retains the serial selector.
++
++`STRATA_VERIFY_SPLIT_FIRST=1..7` changes the first group's size with `--spec-split`.
++Unset or zero retains the balanced split. This verifier option also affects MTP;
++record it when comparing runs. Kernel timing improvements alone do not establish
++faster generation. These options have local CUDA checks; HIP and SYCL validation
++is still required.
++
+ Loader and policy checks use `dflash_load_test` and `dflash_policy_test`. CUDA checks
+ cover taps, RoPE, owned pools, BF16 projections and indexed heads. The independent
+ `tools/dflash_stage_parity.py` forward checks every plain-DFlash layer against the
+diff --git a/include/strata/kernels/dflash2.hpp b/include/strata/kernels/dflash2.hpp
+index 95b1f576..5078e66c 100644
+--- a/include/strata/kernels/dflash2.hpp
++++ b/include/strata/kernels/dflash2.hpp
+@@ -8,6 +8,11 @@ namespace strata::kernels {
+ // dynamic: [rows][2][kernel][hidden/group], base: [2][kernel][hidden].
+ void dflash2_convolve(const float* x, const float* dynamic, const float* base, float* out,
+                      int rows, int hidden, int kernel, int group, int side, int block_rows, void* stream);
++// Same convolution, with exactly one output: BF16 conversion or residual addition.
++// Outputs must not alias inputs. Avoids an intermediate copy and a second kernel.
++void dflash2_convolve_epilogue(const float* x, const float* dynamic, const float* base,
++                               uint16_t* bf16, float* residual, int rows, int hidden,
++                               int kernel, int group, int side, int block_rows, void* stream);
+ // Top-k unary candidates for each row, with deterministic smaller-token tie breaking.
+ // Optional caller-owned workspace enables parallel vocabulary tiles followed by
+ // an exact candidate merge. No allocation or synchronization inside the call.
+@@ -21,10 +26,12 @@ void dflash2_select(const int32_t* candidates, const float* unary, const float*
+                     const float* predecessor, const float* successor, const int32_t* anchor,
+                     int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream);
+ // BF16 codebooks avoid duplicate full-vocabulary FP32 copies; arithmetic is identical.
++// The optional transition lattice reuses scratch after top-k completes. Missing
++// or undersized scratch retains the original selector, without writing scratch.
+ void dflash2_select_bf16(const int32_t* candidates, const float* unary, const float* hidden,
+                          const uint16_t* predecessor, const uint16_t* successor, const int32_t* anchor,
+                          int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream,
+-                         bool reference = false);
++                         bool reference = false, void* scratch = nullptr, std::size_t scratch_bytes = 0);
+ // Completed target residual [rows][hc][hidden], before the next layer's learned HC read.
+ void dflash2_hc_mean(const float* residual, float* out, uint16_t* out_bf16,
+                      int rows, int hidden, int hc, void* stream);
+diff --git a/src/core/dflash_runtime.cpp b/src/core/dflash_runtime.cpp
+index e10bad12..05b00eed 100644
+--- a/src/core/dflash_runtime.cpp
++++ b/src/core/dflash_runtime.cpp
+@@ -25,6 +25,7 @@
+ #include <chrono>
+ #include <cstdio>
+ #include <cstring>
++#include <cstdlib>
+ #include <map>
+ #include <string>
+ #include <vector>
+@@ -1003,6 +1004,12 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+         cudaGraphExecDestroy(graph_exec_[graph_slot]); graph_exec_[graph_slot] = nullptr;
+     }
+ #ifdef STRATA_ENABLE_DFLASH2
++    static const bool fused_conv_enabled = [] {
++        const char* value = std::getenv("STRATA_DFLASH2_FUSED_CONV");
++        return value && value[0] == '1';
++    }();
++    const bool fused_conv = dg.is_dflash2() && fused_conv_enabled && !reference &&
++                            !parity_want(cycle_) && !std::getenv("STRATA_DF_DBG");
+     auto conv = [&](const std::string& pre, const char* name, float* input, int side) {
+         const std::string cn = pre + "." + name;
+         if (side == 0) {
+@@ -1010,6 +1017,12 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+             project(xn16_, wp((cn + ".kernel_projection").c_str()), conv_dynamic_,
+                     (int) N, (int) (2 * dg.conv_kernel_size * (N / dg.conv_group_size)), K, cs_);
+         }
++        if (fused_conv) {
++            dflash2_convolve_epilogue(input, conv_dynamic_, wf((cn + ".base_kernel").c_str()),
++                side == 0 ? xn16_ : nullptr, side == 1 ? h_ : nullptr,
++                K, (int) N, (int) dg.conv_kernel_size, (int) dg.conv_group_size, side, K, cs_);
++            return;
++        }
+         dflash2_convolve(input, conv_dynamic_, wf((cn + ".base_kernel").c_str()), conv_result_,
+                          K, (int) N, (int) dg.conv_kernel_size, (int) dg.conv_group_size, side, K, cs_);
+         cudaMemcpyAsync(input, conv_result_, (size_t) K * N * 4, cudaMemcpyDeviceToDevice, cs_);
+@@ -1029,6 +1042,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+                 }
+ #ifdef STRATA_ENABLE_DFLASH2
+                 if (dg.is_dflash2()) conv(pre, "attention_conv", xn_, 0);
++                if (!fused_conv)
+ #endif
+                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
+             }
+@@ -1162,6 +1176,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+             }
+             {
+                 DFlashSection section("L*.residual_add");
++#ifdef STRATA_ENABLE_DFLASH2
++                if (!fused_conv)
++#endif
+                 add_inplace(h_, bo_, K * N, cs_);
+             }
+             if (parity_want(cycle_)) {
+@@ -1175,6 +1192,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+                 native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
+ #ifdef STRATA_ENABLE_DFLASH2
+                 if (dg.is_dflash2()) conv(pre, "mlp_conv", xn_, 0);
++                if (!fused_conv)
+ #endif
+                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
+             }
+@@ -1203,6 +1221,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+ #endif
+             {
+                 DFlashSection section("L*.residual_add");
++#ifdef STRATA_ENABLE_DFLASH2
++                if (!fused_conv)
++#endif
+                 add_inplace(h_, bo_, K * N, cs_);
+             }
+             if (parity_want(cycle_)) {
+@@ -1284,7 +1305,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
+                         reference ? 0 : dflash2_topk_scratch_bytes((int) max_rows_, vocab, (int) dg.selector_top_k));
+             dflash2_select_bf16(selector_ids_, selector_unary_, selector_hidden_, wp("selector.predecessor"),
+                            wp("selector.successor"), tok_, out_, probs ? (float*) (out_ + max_rows_) : nullptr,
+-                           K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_, reference);
++                           K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_, reference,
++                           reference ? nullptr : selector_scratch_, reference ? 0 :
++                           dflash2_topk_scratch_bytes((int) max_rows_, vocab, (int) dg.selector_top_k));
+             if (output_parity) {
+                 parity_dump(parity_dir_, "selector_hidden", selector_hidden_, K * dg.selector_rank, cs_);
+                 parity_dump(parity_dir_, "selector_ids", (const float*) selector_ids_, K * dg.selector_top_k, cs_);
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index dfb13659..25107636 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -95,6 +95,18 @@ namespace {
+ constexpr float EPS = 1e-6f;
+ using Clock = std::chrono::steady_clock;
+ double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
++// Keep the graph and both host-serving loops on the same group boundary.
++// Zero preserves the existing balanced split; the override is opt-in.
++int verify_group_boundary(int rows) {
++    static const int first = [] {
++        const char* value = std::getenv("STRATA_VERIFY_SPLIT_FIRST");
++        if (!value || !*value) return 0;
++        char* end = nullptr;
++        const long rows = std::strtol(value, &end, 10);
++        return end != value && !*end && rows >= 1 && rows <= 7 ? (int) rows : 0;
++    }();
++    return first > 0 && rows > 1 ? std::min(first, rows - 1) : (rows + 1) / 2;
++}
+ const bool g_dbg = std::getenv("STRATA_VERIFY_DEBUG") != nullptr;
+ inline bool g_lfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE"); return v != nullptr && v[0] == '1'; }(); return on; }
+ // STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi, default 6-9): residency-biased routing.
+@@ -1077,7 +1089,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+         if (prof_on_ && grp == 0) gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
+         if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
+     };
+-    const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
++    const int tb_[2] = {0, verify_group_boundary(T)}, te_[2] = {G == 2 ? verify_group_boundary(T) : T, T};
+     // S26 STRATA_LFUSE=1: where the shared expert's gate / scale fusions apply (the paths they replace are the ones taken)
+     auto lfuse_on = [&](int n) {
+         return g_lfuse() && ar_on() && native_moe_combine_enabled() && dec_batch && n > 1 && n <= 8 &&
+@@ -2843,7 +2855,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
+     volatile uint32_t* const seq = h_seq_;
+     volatile uint32_t* const flag = h_flag_;
+     const int G = groups_[T] > 0 ? groups_[T] : 1;
+-    const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
++    const int gtb[2] = {0, verify_group_boundary(T)}, gte[2] = {G == 2 ? verify_group_boundary(T) : T, T};
+     const int64_t steps = (le_ - lb_) * G;
+     if (ar_on() && !test_stall) {
+         if (flag_raised) {
+@@ -4162,7 +4174,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
+         return 1;
+     }
+     const int G = groups_[T] > 0 ? groups_[T] : 1;
+-    const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
++    const int gtb[2] = {0, verify_group_boundary(T)}, gte[2] = {G == 2 ? verify_group_boundary(T) : T, T};
+     while (fl_k_ < fl_total_) {
+         const int64_t l = lb_ + fl_k_ / G;
+         const uint32_t want = (uint32_t) (fl_k_ + 1);
+diff --git a/src/kernels/cuda/dflash2.cu b/src/kernels/cuda/dflash2.cu
+index eecf2ab9..4f74f4fe 100644
+--- a/src/kernels/cuda/dflash2.cu
++++ b/src/kernels/cuda/dflash2.cu
+@@ -11,8 +11,9 @@
+
+ namespace strata::kernels {
+ namespace {
++template<int Epilogue = 0>
+ __global__ void conv_kernel(const float* x, const float* dynamic, const float* base, float* out,
+-                            int rows, int hidden, int kernel, int group, int side, int block_rows) {
++                            int rows, int hidden, int kernel, int group, int side, int block_rows, uint16_t* bf16 = nullptr) {
+     const int i = blockIdx.x * blockDim.x + threadIdx.x;
+     if (i >= rows * hidden) return;
+     const int row = i / hidden, channel = i % hidden, groups = hidden / group;
+@@ -23,7 +24,14 @@ __global__ void conv_kernel(const float* x, const float* dynamic, const float* b
+             dynamic[((row * 2 + side) * kernel + tap) * groups + channel / group];
+         value += weight * x[(row - tap) * hidden + channel];
+     }
+-    out[i] = value;
++    if constexpr (Epilogue == 1) bf16[i] = bf16_from_f32(value);
++    else if constexpr (Epilogue == 2) {
++#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
++        out[i] = out[i] + value;
++#else
++        out[i] = __fadd_rn(out[i], value);
++#endif
++    } else out[i] = value;
+ }
+ // Retained for same-input timing and parity (STRATA_DFLASH2_SERIAL_TOPK=1).
+ __global__ void topk_kernel(const float* logits, int32_t* ids, float* unary, int vocab, int top_k) {
+@@ -45,6 +53,61 @@ __global__ void topk_kernel(const float* logits, int32_t* ids, float* unary, int
+ // One CTA per row/tile. A second pass merges the tiles' winners using the same
+ // reduction; only tile_count * K candidates need temporary storage. IDs break ties.
+ constexpr int kTopkTile = 4096;
++// Keep a tile's logits in registers rather than reloading them for every
++// winner. Ordered float bits plus the reverse token ID encode the same
++// score/ID comparison as the reference reduction. Inspired by llama.cpp #27342.
++__global__ void topk_register_kernel(const float* logits, int32_t* ids, float* unary,
++                                     int vocab, int top_k, int tiles) {
++    const int row = blockIdx.x, tile = blockIdx.y, t = threadIdx.x;
++    logits += (size_t) row * vocab;
++    const int begin = tile * kTopkTile;
++    unsigned long long keys[kTopkTile / 256];
++    __shared__ unsigned long long winners[8];
++#pragma unroll
++    for (int i = 0; i < kTopkTile / 256; ++i) {
++        const int token = begin + t + i * 256;
++        unsigned long long key = 0;
++        if (token < vocab) {
++            const float score = logits[token];
++            if (isfinite(score)) {
++                // Both signs of zero compare equal in the reference kernel.
++                unsigned bits = score == 0.0f ? 0 : __float_as_uint(score);
++                bits = bits & 0x80000000u ? ~bits : bits | 0x80000000u;
++                key = ((unsigned long long) bits << 32) | (unsigned) (vocab - 1 - token);
++            }
++        }
++        keys[i] = key;
++    }
++    const size_t at = ((size_t) row * tiles + tile) * top_k;
++    for (int k = 0; k < top_k; ++k) {
++        unsigned long long best = 0;
++#pragma unroll
++        for (int i = 0; i < kTopkTile / 256; ++i) best = max(best, keys[i]);
++        // Reduce within logical 32-lane warps first, then only eight warp
++        // winners. Integer max is associative, so score/tie bits are exact.
++        for (int offset = 16; offset; offset >>= 1)
++            best = max(best, __shfl_down_sync(0xffffffffu, best, offset));
++        if ((t & 31) == 0) winners[t / 32] = best;
++        __syncthreads();
++        if (t < 32) {
++            best = t < 8 ? winners[t] : 0;
++            for (int offset = 16; offset; offset >>= 1)
++                best = max(best, __shfl_down_sync(0xffffffffu, best, offset));
++            if (!t) winners[0] = best;
++        }
++        __syncthreads();
++        best = winners[0];
++        if (!t) {
++            const int token = best ? vocab - 1 - (int) (unsigned) best : -1;
++            ids[at + k] = token;
++            unary[at + k] = token >= 0 ? logits[token] : -INFINITY;
++        }
++#pragma unroll
++        for (int i = 0; i < kTopkTile / 256; ++i)
++            if (keys[i] == best) keys[i] = 0;
++        __syncthreads();
++    }
++}
+ __global__ void topk_parallel_kernel(const float* logits, const int32_t* candidates, int32_t* ids, float* unary,
+                                     int vocab, int top_k, int tile_width, int tiles) {
+     const int row = blockIdx.x, tile = blockIdx.y, t = threadIdx.x;
+@@ -171,6 +234,47 @@ __global__ void select_bf16_parallel(const int32_t* ids, const float* unary, con
+         __syncthreads();
+     }
+ }
++// A row after the first can follow any candidate in the preceding row.
++// Precompute that small lattice in parallel, retaining each rank sum's order.
++__global__ void selector_lattice(const int32_t* ids,const float* unary,const float* hidden,
++    const uint16_t* prev,const uint16_t* next,const int32_t* anchor,float* scores,int top_k,int rank) {
++    const int row=blockIdx.x+1, predecessor_slot=blockIdx.y, candidate=threadIdx.x;
++    if(candidate>=top_k || (row==1 && predecessor_slot!=0))return;
++    const int predecessor=row==1?anchor[0]:ids[(row-1)*top_k+predecessor_slot];
++    const int token=ids[row*top_k+candidate];
++    float score=-INFINITY;
++    if(predecessor>=0 && token>=0) {
++        score=0;
++        for(int j=0;j<rank;++j)
++            score+=(codebook_value(prev,(size_t)predecessor*rank+j)*hidden[row*rank+j])*
++                    codebook_value(next,(size_t)token*rank+j);
++        score+=unary[row*top_k+candidate];
++    }
++    scores[((row-1)*top_k+predecessor_slot)*top_k+candidate]=score;
++}
++__global__ void selector_lattice_walk(const int32_t* ids,const float* scores,const int32_t* anchor,
++    int32_t* out,float* confidence,int rows,int top_k) {
++    if(threadIdx.x || blockIdx.x)return;
++    bool valid=anchor[0]>=0;int predecessor_slot=0;
++    for(int row=1;row<rows;++row) {
++        const float* s=scores+((row-1)*top_k+predecessor_slot)*top_k;
++        int best=-1;bool row_valid=valid;
++        for(int k=0;k<top_k;++k) {
++            if(!valid || ids[row*top_k+k]<0)continue;
++            if(!isfinite(s[k]))row_valid=false;
++            if(isfinite(s[k]) && (best<0 || s[k]>s[best]))best=k;
++        }
++        valid=row_valid && best>=0;
++        if(!valid) {out[row-1]=-1;if(confidence)confidence[row-1]=0;}
++        else {
++            out[row-1]=ids[row*top_k+best];predecessor_slot=best;
++            if(confidence) {
++                float sum=0;for(int k=0;k<top_k;++k)sum+=expf(s[k]-s[best]);
++                confidence[row-1]=1.f/sum;
++            }
++        }
++    }
++}
+ }  // namespace
+
+ void dflash2_convolve(const float* x, const float* dynamic, const float* base, float* out,
+@@ -180,9 +284,23 @@ void dflash2_convolve(const float* x, const float* dynamic, const float* base, f
+         block_rows <= 0 || block_rows > 8 || rows % block_rows || side < 0 || side > 1 ||
+         x == out || dynamic == out || base == out)
+         throw std::invalid_argument("dflash2_convolve: invalid geometry or aliased output");
+-    conv_kernel<<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t) stream>>>(
++    conv_kernel<0><<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t) stream>>>(
+         x, dynamic, base, out, rows, hidden, kernel, group, side, block_rows);
+ }
++void dflash2_convolve_epilogue(const float* x, const float* dynamic, const float* base,
++                               uint16_t* bf16, float* residual, int rows, int hidden,
++                               int kernel, int group, int side, int block_rows, void* stream) {
++    if (!x || !dynamic || !base || (bool(bf16) == bool(residual)) || rows <= 0 || hidden <= 0 ||
++        (int64_t)rows * hidden > INT32_MAX - 255 || kernel <= 0 || kernel > 8 || group <= 0 || hidden % group ||
++        (int64_t)rows * (hidden / group) * 2 * kernel > INT32_MAX || block_rows <= 0 || block_rows > 8 ||
++        rows % block_rows || side < 0 || side > 1 || residual == x || residual == dynamic || residual == base ||
++        (const void*)bf16 == x || (const void*)bf16 == dynamic || (const void*)bf16 == base)
++        throw std::invalid_argument("dflash2_convolve_epilogue: invalid geometry or alias");
++    if (bf16) conv_kernel<1><<<(rows * hidden + 255) / 256,256,0,(cudaStream_t)stream>>>(
++        x,dynamic,base,nullptr,rows,hidden,kernel,group,side,block_rows,bf16);
++    else conv_kernel<2><<<(rows * hidden + 255) / 256,256,0,(cudaStream_t)stream>>>(
++        x,dynamic,base,residual,rows,hidden,kernel,group,side,block_rows);
++}
+ std::size_t dflash2_topk_scratch_bytes(int rows, int vocab, int top_k) {
+     if (rows <= 0 || vocab <= 0 || (int64_t) rows * vocab > INT32_MAX ||
+         top_k < 1 || top_k > 64 || top_k > vocab)
+@@ -210,8 +328,16 @@ void dflash2_topk(const float* logits, int32_t* ids, float* unary, int rows, int
+         const int tiles = (vocab + kTopkTile - 1LL) / kTopkTile;
+         int32_t* local_ids = (int32_t*) scratch;
+         float* local_scores = (float*) (local_ids + (size_t) rows * tiles * top_k);
+-        topk_parallel_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
+-            logits, nullptr, local_ids, local_scores, vocab, top_k, kTopkTile, tiles);
++        static const bool register_topk = [] {
++            const char* value = std::getenv("STRATA_DFLASH2_REGISTER_TOPK");
++            return value && value[0] == '1';
++        }();
++        if (register_topk)
++            topk_register_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
++                logits, local_ids, local_scores, vocab, top_k, tiles);
++        else
++            topk_parallel_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
++                logits, nullptr, local_ids, local_scores, vocab, top_k, kTopkTile, tiles);
+         topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
+             local_scores, local_ids, ids, unary, tiles * top_k, top_k, tiles * top_k, 1);
+     } else topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
+@@ -228,7 +354,7 @@ void dflash2_select(const int32_t* ids, const float* unary, const float* hidden,
+ }
+ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hidden,
+                          const uint16_t* prev, const uint16_t* next, const int32_t* anchor,
+-                         int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream, bool reference) {
++                         int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream, bool reference, void* scratch, std::size_t scratch_bytes) {
+     if (!ids || !unary || !hidden || !prev || !next || !anchor || !out ||
+         rows < 2 || rows > 8 || top_k < 1 || top_k > 64 || rank < 1 || rank > 1024)
+         throw std::invalid_argument("dflash2_select_bf16: invalid geometry");
+@@ -236,6 +362,18 @@ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hi
+         const char* value = std::getenv("STRATA_DFLASH2_SERIAL_SELECT");
+         return value && value[0] == '1';
+     }();
++    static const bool lattice = [] {
++        const char* value=std::getenv("STRATA_DFLASH2_LATTICE_SELECTOR");
++        return value && value[0]=='1';
++    }();
++    const size_t needed=(size_t)(rows-1)*top_k*top_k*sizeof(float);
++    if(lattice && !serial && !reference && scratch && scratch_bytes>=needed) {
++        selector_lattice<<<dim3(rows-1,top_k),64,0,(cudaStream_t)stream>>>(
++            ids,unary,hidden,prev,next,anchor,(float*)scratch,top_k,rank);
++        selector_lattice_walk<<<1,1,0,(cudaStream_t)stream>>>(
++            ids,(float*)scratch,anchor,out,confidence,rows,top_k);
++        return;
++    }
+     if (serial || reference) select_kernel<<<1, 1, 0, (cudaStream_t)stream>>>(
+         ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
+     else select_bf16_parallel<<<1, 64, 0, (cudaStream_t)stream>>>(
+diff --git a/src/kernels/dflash2_parity.cpp b/src/kernels/dflash2_parity.cpp
+index 06d48bd5..600d2b77 100644
+--- a/src/kernels/dflash2_parity.cpp
++++ b/src/kernels/dflash2_parity.cpp
+@@ -1,4 +1,6 @@
++#include "strata/kernels/bf16_bits.hpp"
+ #include "strata/kernels/dflash2.hpp"
++#include "strata/kernels/elementwise.hpp"
+ #include "strata/spec/dflash_policy.hpp"
+ #include <cuda_runtime.h>
+ #include <cuda_fp16.h>
+@@ -41,6 +43,21 @@ void convolve() {
+             dflash2_convolve(dx.p, dd.p, db.p, result.p, rows, hidden, taps, group, side, width, nullptr);
+             checked(cudaGetLastError());
+             const auto got = result.read(x.size());
++            Device<uint16_t> converted(x.size());
++            dflash2_convolve_epilogue(dx.p,dd.p,db.p,converted.p,nullptr,
++                                     rows,hidden,taps,group,side,width,nullptr);
++            const auto bits = converted.read(x.size());
++            for (size_t i = 0; i < x.size(); ++i)
++                if (bits[i] != bf16_from_f32(got[i])) throw std::runtime_error("fused convolution BF16 differs");
++            Device<float> residual(x);
++            dflash2_convolve_epilogue(dx.p,dd.p,db.p,nullptr,residual.p,
++                                     rows,hidden,taps,group,side,width,nullptr);
++            const auto sum = residual.read(x.size());
++            for (size_t i = 0; i < x.size(); ++i) {
++                const float expected = x[i] + got[i];
++                if (std::memcmp(&sum[i], &expected, sizeof(float)))
++                    throw std::runtime_error("fused convolution residual differs");
++            }
+             for (int row = 0; row < rows; ++row) for (int c = 0; c < hidden; ++c) {
+                 double expected = 0;
+                 for (int offset = 0; offset < taps; ++offset) {
+@@ -54,12 +71,44 @@ void convolve() {
+         }
+     }
+ }
++void convolution_benchmark() {
++    using namespace strata::kernels;
++    constexpr int rows=8, hidden=2560, taps=2, group=16, groups=hidden/group;
++    std::vector<float> x(rows*hidden,.125f), dynamic(rows*2*taps*groups,.01f), base(2*taps*hidden,.03f);
++    Device<float> dx(x), dd(dynamic), db(base), tmp(x.size()), copy(x.size()), residual(x);
++    Device<uint16_t> converted(x.size());
++    for (bool fused : {false,true}) {
++        cudaStream_t stream; checked(cudaStreamCreate(&stream));
++        cudaGraph_t graph; cudaGraphExec_t exec;
++        checked(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
++        for (int layer=0;layer<5;++layer) for (int half=0;half<2;++half) for(int side=0;side<2;++side) {
++            if (fused) dflash2_convolve_epilogue(dx.p,dd.p,db.p,side==0?converted.p:nullptr,
++                side==1?residual.p:nullptr,rows,hidden,taps,group,side,rows,stream);
++            else {
++                dflash2_convolve(dx.p,dd.p,db.p,tmp.p,rows,hidden,taps,group,side,rows,stream);
++                checked(cudaMemcpyAsync(copy.p,tmp.p,x.size()*sizeof(float),cudaMemcpyDeviceToDevice,stream));
++                if(side==0) f32_to_bf16_bulk(copy.p,converted.p,x.size(),stream);
++                else add_inplace(residual.p,copy.p,x.size(),stream);
++            }
++        }
++        checked(cudaStreamEndCapture(stream,&graph)); checked(cudaGraphInstantiate(&exec,graph,0));
++        for(int i=0;i<20;++i)checked(cudaGraphLaunch(exec,stream));
++        cudaEvent_t a,b; checked(cudaEventCreate(&a)); checked(cudaEventCreate(&b));
++        checked(cudaEventRecord(a,stream));
++        for(int i=0;i<100;++i)checked(cudaGraphLaunch(exec,stream));
++        checked(cudaEventRecord(b,stream)); checked(cudaEventSynchronize(b)); float ms;
++        checked(cudaEventElapsedTime(&ms,a,b));
++        std::printf("convolution 5 layers rows8 fused=%d: %.6f ms/pass\n",fused,ms/100);
++        checked(cudaEventDestroy(a)); checked(cudaEventDestroy(b)); checked(cudaGraphExecDestroy(exec));
++        checked(cudaGraphDestroy(graph)); checked(cudaStreamDestroy(stream));
++    }
++}
+ void selector(bool timing) {
+     using namespace strata::kernels;
+-    const int vocab = 17;
++    const int vocab = 67;
+     int reranked = 0;
+     for (int rank : {1,3,256,1024})
+-    for (int rows : {2, 3, 8}) for (int top_k : {1, 3, 16, 17}) {
++    for (int rows : {2, 3, 8}) for (int top_k : {1, 3, 16, 17, 32, 64}) {
+         std::vector<float> logits(rows * vocab), hidden(rows * rank), prev(vocab * rank), next(prev.size());
+         for (size_t i = 0; i < logits.size(); ++i) logits[i] = ((int)(i % 7) - 3) * 0.05f + (i % vocab) * 0.00037f;
+         std::fill(logits.begin(), logits.begin() + vocab, 0.1f); // top-k tie test
+@@ -89,6 +138,8 @@ void selector(bool timing) {
+                 near(got_unary[row * top_k + k], logits[row * vocab + order[k]]);
+             }
+         }
++        Device<uint8_t> lattice((size_t)rows*top_k*top_k*sizeof(float));
++        const size_t lattice_bytes=(size_t)rows*top_k*top_k*sizeof(float);
+         for (bool probabilities : {false, true}) {
+             dflash2_select(ids.p, du.p, dh.p, dp.p, dn.p, anchor.p, output.p,
+                            probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr);
+@@ -96,20 +147,30 @@ void selector(bool timing) {
+             auto got = output.read(rows - 1);
+             auto prob = probabilities ? confidence.read(rows - 1) : std::vector<float>{};
+             dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+-                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr);
++                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
+             if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
+                 throw std::runtime_error("BF16 and FP32 codebook selector results differ");
++            if (rows==8 && top_k==16 && rank==256 && probabilities) {
++                checked(cudaMemset(lattice.p,0xa5,lattice_bytes));
++                dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
++                    confidence.p,rows,top_k,rank,nullptr,false,lattice.p,1);
++                if(output.read(rows-1)!=got || confidence.read(rows-1)!=prob)
++                    throw std::runtime_error("small selector workspace changed output");
++                const auto sentinel=lattice.read(16);
++                for(auto byte:sentinel)if(byte!=0xa5)
++                    throw std::runtime_error("selector wrote an undersized workspace");
++            }
+             dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+-                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,true);
++                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,true,lattice.p,lattice_bytes);
+             if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
+                 throw std::runtime_error("reference-mode BF16 selector results differ");
+             if (timing && rows==8 && rank==256 && top_k==16) {
+                 cudaEvent_t a,b;checked(cudaEventCreate(&a));checked(cudaEventCreate(&b));
+                 for(int i=0;i<10;++i)dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+-                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr);
++                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
+                 checked(cudaEventRecord(a));
+                 for(int i=0;i<100;++i)dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+-                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr);
++                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
+                 checked(cudaEventRecord(b));checked(cudaEventSynchronize(b));float ms;
+                 checked(cudaEventElapsedTime(&ms,a,b));
+                 std::printf("BF16 selector rows=8 rank=256 k=16 confidence=%d: %.6f ms/pass\n",probabilities,ms/100);
+@@ -125,7 +186,7 @@ void selector(bool timing) {
+             dflash2_topk(dl.p + vocab, ids.p + top_k, du.p + top_k,
+                          rows - 1, vocab, top_k, nullptr);
+             dflash2_select_bf16(ids.p, du.p, dh.p, dp16.p, dn16.p, anchor.p, output.p,
+-                               probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr);
++                               probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr,false,lattice.p,lattice_bytes);
+             if (output.read(rows - 1) != got || (probabilities && confidence.read(rows - 1) != prob))
+                 throw std::runtime_error("omitting anchor logits changed the selector");
+             int predecessor = 7;
+@@ -180,7 +241,9 @@ void target_features_and_attention() {
+     const int hd=128;
+     for (int page : {64,96})
+     for (int heads : {4,32}) for (int rows : {2,4,8})
+-    for (int end : {9,73,2053}) for (int window : {0,2048}) {
++    for (int end : {9,73,2053,4101}) for (int window : {0,2048,4096}) {
++        if ((end == 4101 || window == 4096) &&
++            !(end == 4101 && window == 4096 && page == 64 && heads == 32 && rows == 4)) continue;
+         const int kv = heads == 32 ? 8 : 2;
+         const int pages=(end+page-1)/page;
+         std::vector<int32_t> table(pages), steps(rows*4);
+@@ -387,11 +450,16 @@ void invalid_model_values() {
+     for(float p:prob.read(2))if(p!=0)throw std::runtime_error("invalid selector confidence is not zero");
+     Device<uint16_t> prev16(std::vector<uint16_t>{0x3f80,0x3f80}),
+         next16(std::vector<uint16_t>{0x3f80,0x7fc0});
+-    dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,anchor.p,picks.p,prob.p,3,2,1,nullptr);
++    Device<float> lattice(12);
++    dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,anchor.p,picks.p,prob.p,3,2,1,nullptr,
++                       false,lattice.p,12*sizeof(float));
+     for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("BF16 selector masked an invalid transition");
+     Device<int32_t> negative_anchor(std::vector<int32_t>{-1});
+     dflash2_select(ids.p,unary.p,hidden.p,prev.p,next.p,negative_anchor.p,picks.p,prob.p,3,2,1,nullptr);
+     for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("negative selector anchor accepted");
++    dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,negative_anchor.p,picks.p,prob.p,3,2,1,nullptr,
++                       false,lattice.p,12*sizeof(float));
++    for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("negative BF16 selector anchor accepted");
+     // Rejected API calls must not launch a kernel which poisons the CUDA context.
+     bool refused=false;
+     try { dflash2_select(ids.p,unary.p,hidden.p,prev.p,next.p,anchor.p,picks.p,prob.p,3,2,1025,nullptr); }
+@@ -404,7 +472,7 @@ int main(int argc, char** argv) {
+     int devices = 0;
+     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
+     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
+-    try { invalid_model_values(); convolve(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
++    try { invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
+     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
+     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
+     return 0;

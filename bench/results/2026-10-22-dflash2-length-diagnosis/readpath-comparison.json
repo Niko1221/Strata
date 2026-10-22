@@ -1,0 +1,44 @@
+[
+  {
+    "task": "code_short",
+    "rep": -1,
+    "control": false,
+    "matches_read64": true,
+    "first_mismatch": null
+  },
+  {
+    "task": "code_long",
+    "rep": -1,
+    "control": false,
+    "matches_read64": false,
+    "first_mismatch": 30
+  },
+  {
+    "task": "code_short",
+    "rep": 0,
+    "control": false,
+    "matches_read64": true,
+    "first_mismatch": null
+  },
+  {
+    "task": "code_long",
+    "rep": 0,
+    "control": false,
+    "matches_read64": false,
+    "first_mismatch": 30
+  },
+  {
+    "task": "code_short",
+    "rep": -3,
+    "control": true,
+    "matches_read64": true,
+    "first_mismatch": null
+  },
+  {
+    "task": "code_long",
+    "rep": -3,
+    "control": true,
+    "matches_read64": false,
+    "first_mismatch": 30
+  }
+]

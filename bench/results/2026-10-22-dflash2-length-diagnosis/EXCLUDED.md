@@ -1,0 +1,1 @@
+MTP maxT3 interrupted: --mtp-max-t includes the input token, so maxT3 offered only two candidates. Not comparable to the original three-candidate MTP. Retained for audit, excluded from all conclusions. Restarted at maxT4. The target-only control was unaffected.
