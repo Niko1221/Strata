@@ -3707,7 +3707,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const size_t kend = seq_start[(size_t) l + 1];
                         // STRATA_PF_BATCH=N (opt-in): experts per launch (the same rows, so the same bits; a launch is one
                         // persistent grid, so fewer launches leave fewer grid tails) - at most kMaxBatch, or up to
-                        // kBatchRoom in a WideBatch on the native NT = 256 kernels (STRATA_PF_FUSED_NT=256)
+                        // kBatchRoom in a WideBatch on the native NT = 256 kernels (STRATA_PF_FUSED_NT=256 or _F16=1) or
+                        // the warp-specialized kernel (STRATA_PF_FUSED_WS=1)
                         static const int pf_batch = [] {
                             const char* v = std::getenv("STRATA_PF_BATCH");
                             const int n = v ? std::atoi(v) : 0;

@@ -66,7 +66,8 @@ struct Batch {
     const uint8_t* blob[kMaxBatch] = {};
 };
 /// Batch with room for kBatchRoom experts (e1 - e0 <= kBatchRoom): only the opt-in launches of STRATA_PF_BATCH above
-/// kMaxBatch on the native NT = 256 kernels (moe_fused_iq.hpp, native_wide()) take it; every other launch takes Batch.
+/// kMaxBatch on the native NT = 256 or warp-specialized kernels (moe_fused_iq.hpp, native_wide()) take it; every other
+/// launch takes Batch.
 struct WideBatch {
     int e0 = 0, e1 = 0;
     const uint8_t* blob[kBatchRoom] = {};
