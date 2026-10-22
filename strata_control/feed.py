@@ -388,5 +388,43 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
             fitting.append(pkg)
     if not fitting:
         return None, reasons
-    best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0"))))
+    fitting = _settle_hip_variants(fitting, hardware, reasons)
+    if not fitting:
+        return None, reasons
+    best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
+                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1))
     return best, reasons
+
+
+def _hip_variants(fitting) -> set[str]:
+    return {p.variant for p in fitting if p.backend == "hip"}
+
+
+def _settle_hip_variants(fitting: list, hardware: dict, reasons: list[str]) -> list:
+    """Several HIP builds "fit" only when this PC's gfx is unknown (an empty list fits everything). Version must never decide
+    between them: the newest build of the wrong card family would be refused at its test start. Order of evidence: the variant asked
+    for, the GPU's name, the variant already installed (an update never switches card family), then give up with a plain reason."""
+    if hardware.get("backend") != "hip" or hardware.get("gfx"):
+        return fitting
+    hip = [p for p in fitting if p.backend == "hip"]
+    if len({p.variant for p in hip}) < 2:
+        return fitting
+    from strata_control import engine_component as ec
+    chosen, why = [], ""
+    wanted = str(hardware.get("variant_wanted") or "").lower()
+    if wanted:
+        chosen = [p for p in hip if p.variant.lower() == wanted]
+        why = f"the {wanted} build was asked for"
+    if not chosen:
+        guesses = {g for g in (ec.gfx_from_name(n) for n in hardware.get("gpu_names") or []) if g}
+        chosen = [p for p in hip if any(a in guesses for a in p.archs)]
+        why = f"the GPU name ({', '.join(hardware.get('gpu_names') or [])}) is a {', '.join(sorted(guesses))}" if chosen else ""
+    if not chosen and hardware.get("installed_variant"):
+        chosen = [p for p in hip if p.variant == hardware["installed_variant"]]
+        why = f"the installed {hardware['installed_variant']} build is kept, this PC's AMD card could not be identified"
+    if not chosen:
+        reasons.append("Strata cannot tell which AMD build this PC needs (" + ", ".join(sorted(_hip_variants(hip))) +
+                       "); the card was not recognised, so nothing was chosen. Name the build with STRATA_ENGINE_BACKEND=hip-<build>")
+        return [p for p in fitting if p.backend != "hip"]
+    reasons.append(f"several AMD builds fit; chose {chosen[0].variant}: {why}")
+    return [p for p in fitting if p.backend != "hip" or p in chosen]

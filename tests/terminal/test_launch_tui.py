@@ -859,38 +859,58 @@ class SaveAndRun(Base):
 
 
 class CardsStep(Base):
-    def test_cards_step_defaults_to_the_largest_card_plus_ram_and_offers_the_split(self):
+    def test_cards_step_shows_a_role_for_every_card_and_the_recommendation_is_selected(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Which graphics cards should it use?", t)
             self.assertIn("Step 2 of 10", t)
             flat = " ".join(t.split())
-            self.assertIn("+ RAM", flat)                             # every choice says what it uses
-            self.assertIn("(layer split)", flat)                     # the second card is offered as a split
+            self.assertIn("[ Main ]", flat)                          # equal cards: the highest number is Main (the engine order stays [0, 1])
+            self.assertIn("[ Helper ]", flat)
             self.assertIn("recommended", flat)
-            self.assertIn("fits: needs", flat)                       # plain numbers
-            cur = app.screen.menu().current
-            self.assertEqual(len(cur.key), 1)                        # the recommended choice is the single largest card
-            await press(pilot, "enter")                              # keeping it stores "let Strata choose": the same rule runs in setup
+            self.assertIn("M Main", flat)
+            self.assertNotIn("slower", flat)                         # no explaining warning for a recommendation
+            await press(pilot, "enter")                              # keeping the recommendation stores "not set": a card added later is re-recommended
+            self.assertIsNone(ctx.settings.gpu_roles)
             self.assertIsNone(ctx.settings.gpus)
             self.assertIn("Where should the model files be stored?", text_of(app))
         self.run_app(case, ctx=make_ctx(HW_2X16))
 
-    def test_choosing_the_split_stores_both_cards(self):
-        async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter", "down", "enter")
-            self.assertEqual(ctx.settings.gpus, [0, 1])
-        self.run_app(case, ctx=make_ctx(HW_2X16))
-
-    def test_a_model_too_big_for_one_card_and_ram_recommends_the_split(self):
+    def test_m_h_o_set_the_role_of_the_card_under_the_cursor_and_r_goes_back(self):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "enter")
-            cur = app.screen.menu().current
-            self.assertEqual(sorted(cur.key), [0, 1])
-        hw = dict(HW_2X16)
-        hw["ram_gb"] = 24.0
-        self.run_app(case, ctx=make_ctx(hw))
+            await press(pilot, "o")                                  # card 1 (a Helper) Off
+            flat = " ".join(text_of(app).split())
+            self.assertIn("recommended: helper", flat)               # the muted tag says what was recommended
+            await press(pilot, "m")                                  # Main on card 1: card 2 becomes a Helper, one quiet line says so
+            flat = " ".join(text_of(app).split())
+            self.assertIn("is now a Helper.", flat)
+            await press(pilot, "enter")
+            self.assertEqual(ctx.settings.gpu_roles, {"0": "main", "1": "helper"})
+            self.assertIsNone(ctx.settings.gpus)
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_r_restores_the_recommendation(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "down", "o", "r", "enter")
+            self.assertIsNone(ctx.settings.gpu_roles)
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_every_card_off_is_allowed_with_one_short_line(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "down", "o", "up", "o")
+            flat = " ".join(text_of(app).split())
+            self.assertIn("! This engine needs a graphics card to start. Turn one on.", flat)
+            await press(pilot, "enter")
+            self.assertEqual(ctx.settings.gpu_roles, {"0": "off", "1": "off"})      # allowed; the server says plainly what the engine can do
+        self.run_app(case, ctx=make_ctx(HW_2X16))
+
+    def test_d_shows_what_the_roles_mean(self):
+        async def case(app, pilot, ctx):
+            await press(pilot, "enter", "enter", "d")
+            self.assertIn("Helper: holds a share of the model", " ".join(text_of(app).split()))
+        self.run_app(case, ctx=make_ctx(HW_2X16))
 
     def test_an_integrated_chip_beside_one_card_gives_no_cards_step(self):
         async def case(app, pilot, ctx):

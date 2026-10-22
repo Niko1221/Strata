@@ -95,6 +95,11 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
         raise SystemExit(f"unknown backend {backend!r}")
     if backend != "cpu" and not archs:
         raise SystemExit(f"a {backend} package needs at least one --arch (sm_86, gfx1201, ...)")
+    if backend == "cuda" and variant == "cuda12" and not any(a in ("sm_60", "sm_61", "sm_70") for a in archs):
+        # #3503: the cuda12 package is what the feed and docs/DOCKER.md offer to GTX 10 / P100 / V100; one built for
+        # sm_75 and up starts a restart loop on those cards ("this PC's GPU is sm_60")
+        raise SystemExit("refusing to package the cuda12 engine without sm_60, sm_61 or sm_70: it is the Pascal and Volta build "
+                         "(CUDA 12.9, -DSTRATA_EXPERIMENTAL_SM60=ON, --arch sm_60 --arch sm_61 --arch sm_70 ...; see packaging/build_cuda_linux.sh)")
     if backend == "hip":
         from strata_control import hipblaslt_tuning
         problems = hipblaslt_tuning.check_stage(src, archs)

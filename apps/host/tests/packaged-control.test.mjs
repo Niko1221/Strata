@@ -534,3 +534,19 @@ test('the app never adopts an older command-line install: Control is always told
   const env = controlEnvironment({ dir: '/c' }, { env: { APPDATA: '/old/appdata' }, components: join(tmpdir(), 'Strata', 'components') });
   assert.equal(env.STRATA_SETTINGS_FILE, join(tmpdir(), 'Strata', 'app-settings.json'));
 });
+
+test("onboarding 'use your own GGUF' (#3507, #3424): the models folder the person picked holds the GGUF files, so preparing them never takes it for the data folder", async () => {
+  const f = packagedFixture();
+  try {
+    const own = join(f.root, 'Strata-data', 'models', 'unsloth-UD-Q4_K_XL');
+    mkdirSync(own, { recursive: true });
+    await f.native.refresh(true);
+    f.native.setDownloadDirectory(own);                        // what the first-run folder chooser wrote
+    await f.native.plan({ family: 'qwen', model: 'IQ3_S', gguf_dir: own });
+    const sent = f.rpc.at(-1).arguments;
+    assert.equal(sent.gguf_dir, own);
+    assert.notEqual(sent.data_dir, own, 'the folder of GGUF files is not the data folder: the packs would be downloaded into it');
+    // a folder of GGUF files named like a data folder's models/<tag> hands its Strata folder to the installer
+    assert.ok(sent.data_dir === undefined || sent.data_dir === join(f.root, 'Strata-data'), `data_dir was ${sent.data_dir}`);
+  } finally { await f.native.close(); f.cleanup(); }
+});

@@ -18,6 +18,7 @@ captured, so their own changes are never mistaken for the person's.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 USER_KEY = "user_args"
@@ -27,6 +28,21 @@ WRITTEN_KEY = "args_written"
 #: (the control vector options of the experimental speed projection and the person's own vectors, #3216)
 USER_KEPT_FLAGS = frozenset({"--control-vector", "--control-vector-scaled", "--control-vector-layer-range", "--cvec-mode",
                              "--cvec-dir"})
+
+
+#: options that take more than one value, and how many (``--control-vector-layer-range 4 44``): written as separate argv
+#: entries, never as one ``4,44``, and removed with all of their values (#3504)
+MULTI_VALUE_FLAGS = {"--control-vector-layer-range": 2}
+
+
+def value_tokens(flag: str, value: Any) -> list[str]:
+    """The argv entries that follow ``flag`` for ``value``: one, or the several a multi-value option takes (``4 44``, ``4,44``,
+    ``4-44`` or a list)."""
+    n = MULTI_VALUE_FLAGS.get(flag, 1)
+    if n == 1:
+        return [str(value)]
+    parts = [str(v) for v in value] if isinstance(value, (list, tuple)) else re.split(r"[,;\s]+|(?<=\d)-(?=\d)", str(value).strip())
+    return [t for t in parts if t]
 
 
 def groups(args: Any) -> list[list[str]]:
@@ -114,5 +130,5 @@ def set_flag(user: list[str], flag: str, value: Any) -> list[str]:
     """``user`` with ``flag`` set to ``value`` (None: the person's option removed)."""
     rest = [g for g in groups(user) if flag_of(g) != flag]
     if value is not None:
-        rest.append([flag, str(value)])
+        rest.append([flag, *value_tokens(flag, value)])
     return flat(rest)

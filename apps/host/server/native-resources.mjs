@@ -30,7 +30,10 @@ export function defaultReserves(config,hardware,baselineReserve=0){
  const headless=placed.length>0&&placed.every(computeOnly);   // no display on the card (the desktop is on an integrated GPU): no desktop to keep room for
  const floor=headless?(config.vision?ENGINE_DEFAULT_RESERVE_MIB:COMPUTE_ONLY_RESERVE_MIB):gpuMemory.length&&Math.min(...gpuMemory)>16?1024:1536;
  const safety=headless?floor:Math.max(config.vision?2048:floor,baselineReserve);
- return {work:gpuMemory.length&&!headless?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety,performance:safety};
+ /* A card that shares the PC's memory (Strix Halo, other APUs) has no memory of its own to keep a fifth of: that fifth is RAM, and "Leave 20% for my work" already keeps it
+  *  through the RAM budget. A fifth of the shared pool here held back 16 GB of expert cache for nothing (#3510); the display floor stays. */
+ const shared=placed.length>0&&placed.some(g=>g.uma===true||g.unified===true);
+ return {work:gpuMemory.length&&!headless&&!shared?Math.max(safety,Math.floor(Math.min(...gpuMemory)*1024*.2)):safety,performance:safety};
 }
 
 /** The reserve the person asked for (null: nothing) and the default for each profile. A 0.2.0-beta file has the key and the same number in "args" with no note that the

@@ -190,7 +190,22 @@ def _gfx_names() -> list[str]:
                 found = sorted(set(re.findall(r"\bgfx[0-9a-f]{3,4}\b", done.stdout)))
             except (OSError, subprocess.SubprocessError):
                 pass
+    if not found and os.name == "nt":
+        # a normal Windows PC has no hipInfo (it ships with the HIP SDK): the display adapters' PCI ids / names say which gfx it is
+        try:
+            found = ec.hip_archs_present()
+        except Exception:                                   # noqa: BLE001 - detection is best effort
+            found = []
     return sorted(set(found))
+
+
+def _amd_card_names() -> list[str]:
+    if os.name != "nt":
+        return []
+    try:
+        return [c["name"] for c in ec.windows_amd_cards() if c.get("name")]
+    except Exception:                                       # noqa: BLE001
+        return []
 
 
 def detect_hardware(environ=None) -> dict:
@@ -198,14 +213,21 @@ def detect_hardware(environ=None) -> dict:
     ``STRATA_ENGINE_BACKEND`` overrides the backend like it does for a start. Anything unreadable is left empty, which the
     selection treats as "cannot tell", never as a refusal."""
     environ = os.environ if environ is None else environ
+    prefer = ""
+    forced = str(environ.get(ec.ENV_BACKEND, "")).strip().lower()
+    if forced.startswith("hip-") and forced not in ec.BACKEND_MATRIX:
+        # "hip-rx9070" is how the feed labels a package; accept it as "the hip family, this variant"
+        prefer = forced[4:]
+        environ = {**environ, ec.ENV_BACKEND: "hip"}
     backend, how = ec.detect_backend(environ)
     hw = {"platform": host_platform(), "backend": backend, "backend_source": how, "runtime": ec.runtime_version(),
-          "nvidia_driver": None, "cuda_archs": [], "gfx": []}
+          "nvidia_driver": None, "cuda_archs": [], "gfx": [], "gpu_names": [], "variant_wanted": prefer}
     if backend == "cuda":
         hw["nvidia_driver"] = ec.nvidia_driver_version()
         hw["cuda_archs"] = ec.cuda_archs_present()
     elif backend == "hip":
         hw["gfx"] = _gfx_names()
+        hw["gpu_names"] = _amd_card_names()
     return hw
 
 
@@ -454,7 +476,8 @@ def decide_engine(feed: feedmod.Feed, ctx: Context, state: State) -> dict:
 
 def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict, feedmod.EnginePackage | None]:
     installed, missing_reason = installed_engine(ctx.components, ctx.hardware)
-    offered, reasons = feedmod.select_engine([p for p in feed.engine], ctx.hardware)
+    sticky = {**ctx.hardware, "installed_variant": installed.variant if installed is not None and installed.backend == "hip" else ""}
+    offered, reasons = feedmod.select_engine([p for p in feed.engine], sticky)
     section = state.section("engine")
     report = {"installed": _engine_view(installed), "offered": offered.to_dict() if offered else None,
               "reasons": reasons, "status": "none-for-this-pc", "download_bytes": 0,

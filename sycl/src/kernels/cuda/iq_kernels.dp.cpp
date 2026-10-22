@@ -18,6 +18,8 @@
 #define GGML_COMMON_DECL_SYCL
 #define GGML_COMMON_IMPL_SYCL
 #include "ggml-common.h"
+#include "ggml-common-tq.h"                   // APR trellis types (agention llama.cpp fork)
+#include "strata/kernels/tq_lut_i8_sycl.hpp"   // int8 copy of the trellis codebook (one global scale) for the dp4a dot
 
 #include <sycl/ext/oneapi/matrix/matrix.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
@@ -27,6 +29,10 @@
 #include <utility>
 #include <cstdlib>
 #include <type_traits>
+#include <map>
+#include <mutex>
+#include <tuple>
+#include <cmath>
 
 namespace strata::kernels {
 namespace {
@@ -728,6 +734,85 @@ __dpct_inline__ float vec_dot_q8_0_q8_1(const void *__restrict__ vbq,
     return d8_0 * d8_1 * ((float) sumi);
 }
 
+// ---------------------------------------------------------------- APR trellis types (ggml 144 TQ2_T, 145 TQK6, 146 TQK7)
+// Transcribed from src/kernels/cuda/iq_kernels.cu (which has them from the agention llama.cpp fork's ggml-cuda/tq.cuh,
+// 6d3f2b1b8; format in ggml-common-tq.h).  A 128-value block is 8 lanes of 4 trellis steps (16 values); the dot of lane l
+// reads q8_1 block l/2, ints 4(l&1)..  Same integer and float operations in the same order as the CUDA kernels: the
+// decode reads the int8 codebook tq_lut_i8 (one global scale) against q8_1 activations.
+template<int TY> struct TqInfo;
+template<> struct TqInfo<144> { using block_t = block_tq2_t; };   // byte-aligned, no K
+template<> struct TqInfo<145> { using block_t = block_tqk6; static constexpr int K = 6; };
+template<> struct TqInfo<146> { using block_t = block_tqk7; static constexpr int K = 7; };
+__dpct_inline__ float tq_h2f(uint32_t bits) { return (float) sycl::bit_cast<sycl::half>((uint16_t) bits); }
+// the four unscaled weights of the step with state s: (a.x, a.y, b.x, b.y)
+__dpct_inline__ void tq_step(uint32_t s, float (&w)[4]) {
+    const uint32_t* lut = (const uint32_t*) tq_lut_f16;
+    const uint32_t x = (s & TQ_STATE_MASK) * 0x9e3779b1u;
+    const uint32_t pa = lut[x >> 21], pb = lut[(x >> 10) & 2047u];
+    w[0] = tq_h2f(pa & 0xFFFFu);
+    w[1] = tq_h2f(pa >> 16);
+    w[2] = tq_h2f(pb & 0xFFFFu);
+    w[3] = tq_h2f(pb >> 16);
+}
+// the states of steps 4l..4l+3 of one block (qs is 2-byte aligned: every trellis block has an even size)
+template<int TY>
+__dpct_inline__ void tq_states4(const uint8_t* qs, int l, uint32_t s[4]) {
+    const uint16_t* qs16 = (const uint16_t*) qs;
+    if constexpr (TY == 144) {   // s_t = qs[(t + 31) % 32] << 8 | qs[t]
+        const uint32_t w01 = qs16[2 * l + 0], w23 = qs16[2 * l + 1];
+        const uint32_t prev = qs[(4 * l + 31) & 31];
+        const uint32_t b0 = w01 & 0xFF, b1 = w01 >> 8, b2 = w23 & 0xFF, b3 = w23 >> 8;
+        s[0] = (prev << 8) | b0;
+        s[1] = (b0 << 8) | b1;
+        s[2] = (b1 << 8) | b2;
+        s[3] = (b2 << 8) | b3;
+    } else {
+        // step t's state: the 16 stream bits from bit (31 - t)*K, circular over 2K u16 words; steps 4l..4l+3 all
+        // lie in the four words from (28 - 4l)*K >> 4
+        constexpr int K = TqInfo<TY>::K, nwords = 2 * K;
+        const int off3 = (28 - 4 * l) * K, wb = off3 >> 4, r = off3 & 15;
+        const int wi1 = wb + 1 >= nwords ? wb + 1 - nwords : wb + 1;
+        const int wi2 = wb + 2 >= nwords ? wb + 2 - nwords : wb + 2;
+        const int wi3 = wb + 3 >= nwords ? wb + 3 - nwords : wb + 3;
+        const uint64_t v = (uint64_t) qs16[wb] | ((uint64_t) qs16[wi1] << 16) | ((uint64_t) qs16[wi2] << 32) |
+                           ((uint64_t) qs16[wi3] << 48);
+#pragma unroll
+        for (int i = 0; i < 4; ++i) s[i] = (uint32_t) (v >> (r + (3 - i) * K)) & 0xFFFFu;
+    }
+}
+// The lane's 16 codebook values as 4 ints of packed int8 (tq_load: the weight side only), the activation side in
+// tq_apply; vec_dot_tq_q8_1 is apply(load()).  Numerics as in the CUDA file: the int8 codebook is within 0.85% RMS of
+// the fp16 one; the prompt path decodes through the fp16 codebook (dq_tq below).
+struct TqLane { int q[4]; float d; };
+template<int TY>
+__dpct_inline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs) {
+    const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
+    uint32_t s[4];
+    tq_states4<TY>(b->qs, iqs / 4, s);
+    TqLane r;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const uint32_t x = (s[i] & TQ_STATE_MASK) * 0x9e3779b1u;
+        r.q[i] = (int) ((uint32_t) tq_lut_i8[x >> 21] | ((uint32_t) tq_lut_i8[(x >> 10) & 2047u] << 16));
+    }
+    r.d = tq_h2f(b->d);
+    return r;
+}
+__dpct_inline__ float tq_apply(const TqLane& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+    const int l = iqs / 4;
+    const block_q8_1* b8 = bq8_1 + l / 2;
+    const int* q8 = (const int*) b8->qs + 4 * (l & 1);
+    int sumi = 0;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) sumi = ggml_cuda_dp4a(r.q[i], q8[i], sumi);
+    return r.d * ((float) b8->ds[0] * TQ_LUT_I8_SCALE) * (float) sumi;
+}
+template<int TY>
+__dpct_inline__ float vec_dot_tq_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                      const int& kbx, const int& iqs) {
+    return tq_apply(tq_load<TY>(vbq, kbx, iqs), bq8_1, iqs);
+}
+
 // ---------------------------------------------------------------- the formats
 // qk = values per block, ipb = dot calls per block (qi / vdr), step = the iqs stride between calls.
 template<int TY> 
@@ -766,16 +851,23 @@ template<> struct Fmt<6> { static constexpr int qk = 32, ipb = QI5_0 / VDR_Q5_0,
     static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q5_0_q8_1(v, y, kbx, iqs); } };
 template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0, step = VDR_Q8_0;
     static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_q8_0_q8_1(v, y, kbx, iqs); } };
+// APR trellis types: 8 lanes of 4 steps per 128-value block, iqs = 4 * lane
+template<> struct Fmt<144> { static constexpr int qk = 128, ipb = 8, step = 4;
+    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_tq_q8_1<144>(v, y, kbx, iqs); } };
+template<> struct Fmt<145> { static constexpr int qk = 128, ipb = 8, step = 4;
+    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_tq_q8_1<145>(v, y, kbx, iqs); } };
+template<> struct Fmt<146> { static constexpr int qk = 128, ipb = 8, step = 4;
+    static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_tq_q8_1<146>(v, y, kbx, iqs); } };
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
 #ifdef STRATA_Q6K_EXPERTS   // opt-in build (-DSTRATA_Q6K_EXPERTS=ON): one more instance per kernel, loaded at start
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(144) X(145)
 #else
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(144) X(145)
 #endif
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8)
-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8)
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(144) X(146)
+#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(144) X(145) X(146)
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
@@ -1211,6 +1303,22 @@ template<> struct Split<42> {   // Q2_0
         return r.d2 * d8 * sumi;
     }
 };
+
+// APR trellis types: the lane's 16 decoded codebook values (tq_load / tq_apply above)
+template<> inline constexpr bool kSplit<144> = true;
+template<> inline constexpr bool kSplit<145> = true;
+template<> inline constexpr bool kSplit<146> = true;
+template<int TY> struct SplitTq {
+    using W = TqLane;
+    template<bool STAGE_GRID = false>   // (no grid table to stage: the codebook is read where it is)
+    static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        return tq_load<TY>(vbq, kbx, iqs);
+    }
+    static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) { return tq_apply(r, bq8_1, iqs); }
+};
+template<> struct Split<144> : SplitTq<144> {};
+template<> struct Split<145> : SplitTq<145> {};
+template<> struct Split<146> : SplitTq<146> {};
 
 // One row against the n <= NC activations x + off[0..n) (n >= 1, warp-uniform; offsets in q8_1 blocks, 32-bit to
 // spare registers), the whole warp.  Per activation this is row_dot: the same calls k, lane-strided the same way,
@@ -1758,6 +1866,17 @@ template <> struct Multi<42> {   // q2_0 (down)
 // instead of once per entry.  Every entry keeps its own lane-strided k order and lanes_sum: the outputs are bitwise
 // those of row_dot_lanes (native_grouped_parity --kq checks it).  STRATA_KQ_SPLIT=0: the per-entry kernels.
 template <int TY> struct KqSplit { static constexpr bool has = false; };
+// APR trellis types: tq_load decodes the lane's 16 codebook values once, tq_apply is the activation side per entry (the same
+// operations as vec_dot_tq_q8_1, so the outputs are the per-entry kernels' bits)
+template <int TY> struct KqSplitTq {
+    static constexpr bool has = true;
+    using W = TqLane;
+    __dpct_inline__ static W load(const void* __restrict__ vbq, int kbx, int iqs) { return tq_load<TY>(vbq, kbx, iqs); }
+    __dpct_inline__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) { return tq_apply(r, bq8_1, iqs); }
+};
+template <> struct KqSplit<144> : KqSplitTq<144> {};
+template <> struct KqSplit<145> : KqSplitTq<145> {};
+template <> struct KqSplit<146> : KqSplitTq<146> {};
 template <> struct KqSplit<12> {   // Q4_K (vec_dot_q4_K_q8_1)
     static constexpr bool has = true;
     struct W { int v[2]; uint16_t aux[2]; sycl::half2 dm; };
@@ -2066,7 +2185,7 @@ __dpct_inline__ void native_gu_multi_kernel(
         s_grid_buf, item_ct1.get_local_id(2), 256);
     const int nb = (int) (L.n_embd / Fmt<TG>::qk), xb = (int) (L.n_embd / 32);
     if constexpr (SUB16) {
-        if (xb == 80) {
+        if (xb == 80 && nb * Fmt<TG>::ipb == 80) {   // row_dot_80_sub16 covers exactly 80 dots (not the 128-value TQ blocks)
             const int subwarp = item_ct1.get_local_id(2) >> 4,
                       t = item_ct1.get_local_id(2) & 15;
             const int row = item_ct1.get_group(2) * 16 + subwarp; // 0 .. 2*n_ff
@@ -2153,6 +2272,46 @@ __dpct_inline__ void native_gu_multi_kernel(
             }
         }
     }
+}
+
+// APR (prism.hadamard): y = H_block (signs * x) per block of each row, block = the work-group size (a power of two <= 1024),
+// one work-group per (row block, row).  The butterflies are the CPU's (hadamard.cpp) in the same order, so the
+// rotated values are the same floats.
+template <typename T> __dpct_inline__ float ld_f(const T* p) { return (float) *p; }
+template <> __dpct_inline__ float ld_f<sycl::half>(const sycl::half* p) { return (float) *p; }
+template <typename T> __dpct_inline__ void st_f(T* p, float v) { *p = v; }
+template <> __dpct_inline__ void st_f<sycl::half>(sycl::half* p, float v) {
+    *p = sycl::vec<float, 1>(v).convert<sycl::half, sycl::rounding_mode::automatic>()[0];
+}
+template <typename T>
+__dpct_inline__ void hadamard_rows_kernel(const T* __restrict__ x, T* __restrict__ y, int64_t width,
+                                          const float* __restrict__ signs, float scale) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    auto& hbuf = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[1024]>(item_ct1.get_group());
+    const int n = (int) item_ct1.get_local_range(2), i = (int) item_ct1.get_local_id(2);
+    const int64_t col = (int64_t) item_ct1.get_group(2) * n + i, at = (int64_t) item_ct1.get_group(1) * width + col;
+    float v = ld_f<T>(x + at);
+    if (signs) v *= signs[col];
+    hbuf[i] = v;
+    for (int len = 1; len < n; len <<= 1) {
+        sycl::group_barrier(item_ct1.get_group());
+        if ((i & len) == 0) {
+            const float a = hbuf[i], c = hbuf[i + len];
+            hbuf[i] = a + c;
+            hbuf[i + len] = a - c;
+        }
+    }
+    sycl::group_barrier(item_ct1.get_group());
+    st_f<T>(y + at, hbuf[i] * scale);
+}
+template <typename T> class hadamard_rows_name;
+template <typename T>
+void launch_hadamard_rows(const T* x, T* y, int64_t rows, int64_t width, int block, const float* signs, dpct::queue_ptr s) {
+    const float scale = 1.0f / std::sqrt((float) block);
+    s->parallel_for<hadamard_rows_name<T>>(
+        sycl::nd_range<3>(sycl::range<3>(1, (size_t) rows, (size_t) (width / block) * (size_t) block),
+                          sycl::range<3>(1, 1, (size_t) block)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { hadamard_rows_kernel<T>(x, y, width, signs, scale); });
 }
 
 __dpct_inline__ void swiglu_entries_kernel(const float *__restrict__ gate,
@@ -2921,6 +3080,29 @@ inline void dq_bf16(const void *vx, int64_t ibs, dst_t *yy, int tid) {
         cvt<dst_t>(sycl::bit_cast<float>((uint32_t)x[j] << 16));
 }
 
+// APR trellis types: one 256-value call = two 128-blocks; thread tid decodes block tid/16, lane (tid/2)%8, steps
+// 2(tid%2)..2(tid%2)+1 (8 values)
+template <int TY, typename dst_t>
+inline void dq_tq(const void *vx, int64_t ibs, dst_t *yy, int tid) {
+    const int blk = tid >> 4, l = (tid >> 1) & 7, half = tid & 1;
+    const auto* b = (const typename TqInfo<TY>::block_t*) vx + 2 * ibs + blk;
+    const float d = tq_h2f(b->d);
+    uint32_t s[4];
+    tq_states4<TY>(b->qs, l, s);
+    dst_t* y = yy + blk * 128 + 16 * l + 8 * half;
+    float v[8];
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        float w[4];
+        tq_step(s[2 * half + i], w);
+        v[4 * i + 0] = d * w[0];
+        v[4 * i + 1] = d * w[1];
+        v[4 * i + 2] = d * w[2];
+        v[4 * i + 3] = d * w[3];
+    }
+    store_run<dst_t, 8>(y, v);
+}
+
 // Every type below must also be in is_iq() (BF16: embed_type_supported): the host entry points refuse the others,
 // so the default is unreachable.
 template <typename dst_t>
@@ -2951,6 +3133,9 @@ dq_dispatch(int ty, const void *vx, int64_t ibs, dst_t *y, int tid) {
         case 3: dq_q4_1(vx, ibs, y, tid); break;
         case 8: dq_q8_0(vx, ibs, y, tid); break;
         case 30: dq_bf16(vx, ibs, y, tid); break;
+        case 144: dq_tq<144>(vx, ibs, y, tid); break;
+        case 145: dq_tq<145>(vx, ibs, y, tid); break;
+        case 146: dq_tq<146>(vx, ibs, y, tid); break;
         default: break;
     }
 }
@@ -2978,7 +3163,7 @@ __dpct_inline__ void dequant_gu_kernel(
 
 // the types dq_dispatch dequantizes
 bool is_iq(int t) {
-    return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
+    return t == 144 || t == 145 || t == 146 || t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
 #ifdef STRATA_Q6K_EXPERTS
            t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8;
 #else
@@ -4454,6 +4639,58 @@ void iq_set_old_kernels(bool old) { g_old_kernels = old; }
 void native_expert_set_kq_split(bool on) { g_kq_split = on; }
 bool iq_old_kernels() { return g_old_kernels; }
 
+// APR (prism.hadamard): see iq_kernels.hpp.  A block that is not a power of two in [2, 1024] dividing the row width exits with a
+// message, like check() does for a failed launch.
+namespace {
+void hadamard_bad_block(const char* what, int block, int64_t width) {
+    std::fprintf(stderr, "%s: Hadamard block %d is not a power of two in [2, 1024] dividing the row width %lld "
+                         "(hadamard.txt's block and the expert widths disagree)\n", what, block, (long long) width);
+    std::exit(1);
+}
+constexpr int64_t kHadamardMaxRows = 65535;   // the CUDA grid limit; a prompt chunk's rows go up in the same slices
+bool hadamard_block_ok(int block, int64_t width) {
+    return block >= 2 && block <= 1024 && (block & (block - 1)) == 0 && width % block == 0;
+}
+}  // namespace
+
+void hadamard_rows(const float* x, float* y, int64_t rows, int64_t width, int block, const float* signs, void* stream) {
+    if (rows <= 0) return;
+    if (!hadamard_block_ok(block, width)) hadamard_bad_block("hadamard_rows", block, width);
+    dpct::queue_ptr s = strata::q_of(stream);
+    for (int64_t r0 = 0; r0 < rows; r0 += kHadamardMaxRows) {
+        const int64_t n = std::min<int64_t>(kHadamardMaxRows, rows - r0);
+        launch_hadamard_rows<float>(x + r0 * width, y + r0 * width, n, width, block, signs, s);
+    }
+    check("hadamard_rows");
+}
+
+void hadamard_rows_f16(uint16_t* x, int64_t rows, int64_t width, int block, const float* signs, void* stream) {
+    if (rows <= 0) return;
+    if (!hadamard_block_ok(block, width)) hadamard_bad_block("hadamard_rows_f16", block, width);
+    dpct::queue_ptr s = strata::q_of(stream);
+    for (int64_t r0 = 0; r0 < rows; r0 += kHadamardMaxRows) {
+        const int64_t n = std::min<int64_t>(kHadamardMaxRows, rows - r0);
+        launch_hadamard_rows<sycl::half>((const sycl::half*) x + r0 * width, (sycl::half*) x + r0 * width, n, width, block,
+                                         signs, s);
+    }
+    check("hadamard_rows_f16");
+}
+
+const float* hadamard_device_signs(const float* host, int width) {
+    if (host == nullptr || width <= 0) return nullptr;
+    static std::mutex mu;
+    static std::map<std::tuple<int, const float*, int>, float*> table;   // (device, host vector, width)
+    const int dev = dpct::get_current_device_id();
+    std::lock_guard<std::mutex> lock(mu);
+    float*& d = table[std::make_tuple(dev, host, width)];
+    if (d == nullptr) {
+        sycl::queue& q = dpct::get_in_order_queue();
+        d = (float*) strata::malloc_device_guarded((size_t) width * sizeof(float), q, "Hadamard signs");
+        q.memcpy(d, host, (size_t) width * sizeof(float)).wait();
+    }
+    return d;
+}
+
 bool iq_supported(int t) noexcept { return is_iq(t); }
 bool embed_type_supported(int t) noexcept { return is_iq(t) || t == 30; }
 
@@ -4477,6 +4714,9 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 2: return (size_t) (n / 32) * sizeof(block_q4_0);
         case 3: return (size_t) (n / 32) * sizeof(block_q4_1);
         case 8: return (size_t) (n / 32) * sizeof(block_q8_0);
+        case 144: return (size_t) (n / 128) * sizeof(block_tq2_t);   // APR trellis types
+        case 145: return (size_t) (n / 128) * sizeof(block_tqk6);
+        case 146: return (size_t) (n / 128) * sizeof(block_tqk7);
         case 30: return (size_t) n * 2;   // BF16: the token embedding only (iq_embed_rows, iq_dequant_f32)
         default: return 0;
     }
@@ -5462,7 +5702,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     const bool sw_v1 = v1;
 #endif
-    if (sw_v1) {
+    // APR: Hadamard-folded down weights take the rotated h, so h exists as floats first (the separate passes)
+    if (sw_v1 || L.had_block > 0) {
             {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
@@ -5477,6 +5718,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                         swiglu_entries_kernel(gate, up, h, nh);
                     });
             }
+            if (L.had_block > 0)   // APR: the down weights are Hadamard-folded, so is their input (in place, every entry row)
+                hadamard_rows(h, h, cap_entries, L.n_ff, L.had_block, L.d_signs, stream);
             {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
@@ -5625,8 +5868,9 @@ void launch(sycl::queue& q, int ty, bool gu, const sycl::half* X, float* Y, cons
                     // the decoder thread that writes values [o, o + 8) of the superblock: the IQ2/IQ3/IQ4_NL/IQ1_M and
                     // Q2_0 decoders write [8 tid, 8 tid + 8) (coalesced runs); IQ4_XS and the rest keep the
                     // (sub-run, 32-block) split
+                    // (the trellis decoder thread tid writes values [8 tid, 8 tid + 8) of the 256-value call as well)
                     const bool run8 = ty == 16 || ty == 17 || ty == 18 || ty == 20 || ty == 21 || ty == 22 ||
-                                      ty == 29 || ty == 42;
+                                      ty == 29 || ty == 42 || ty == 144 || ty == 145 || ty == 146;
                     const int tid = run8 ? (o >> 3) : (sub * 8 + (o32 >> 5));
                     dq_dispatch<sycl::half>(ty, base, ibs, pb + r * LDB - o32, tid);
                 }

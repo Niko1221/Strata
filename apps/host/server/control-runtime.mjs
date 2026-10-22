@@ -207,6 +207,43 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.json?.plan && Array.isArray(result.json.plan.issues)) return result.json.plan;
       throw failure(result, 'The files could not be checked.');
     },
+    /** What picking `to` as the models folder means (sizes, free space, which choices are possible, why not): nothing is changed. */
+    async planModelsMove(from, to) {
+      const result = await call(['models', 'move', to, ...(from ? ['--from', from] : []), '--plan', '--output', 'json'], { timeoutMs: 120_000 });
+      if (result.json?.plan) return result.json.plan;
+      throw failure(result, 'The folder could not be checked.');
+    },
+    /**
+     * Move the model files to `to` (copied, checked, then the old copies removed). `onEvent` gets the progress lines; a file at `cancelFile` stops it
+     * safely. Resolves with the summary (done / stopped, what moved, what is left); a failure is a ControlError whose `output` carries the details.
+     */
+    async moveModels(from, to, { installDir = null, cancelFile = null, onEvent = null } = {}) {
+      const args = ['models', 'move', to, ...(from ? ['--from', from] : []), ...(installDir ? ['--install-dir', installDir] : []), ...(cancelFile ? ['--cancel-file', cancelFile] : []), '--output', 'jsonl'];
+      const result = await call(args, { timeoutMs: 24 * 3600_000, onLine: onEvent ?? (() => {}) });
+      if (result.json?.ok && result.json.event === 'result') return result.json;
+      const error = result.json?.error;
+      throw Object.assign(new ControlError(error?.message ?? (result.stderr.split(/\r?\n/).filter(Boolean).pop() || 'The models could not be moved.'), { exitCode: result.code, output: result.json }), { code: error?.code ?? 'move_failed', details: error?.details ?? '' });
+    },
+    /** A move of the models folder that the last run left unfinished (`strata models move --status`): null, or {state, from, to, bytes}. */
+    async interruptedModelsMove(dataFolder) {
+      const result = await call(['models', 'move', '--status', ...(dataFolder ? ['--from', dataFolder] : []), '--output', 'json'], { timeoutMs: 30_000 });
+      if (result.json?.ok) return result.json.interrupted ?? null;
+      throw failure(result, 'The models folder could not be checked.');
+    },
+    /** "Finish it": the same move again, from where it stopped. Same events and result as moveModels. */
+    async resumeModelsMove(dataFolder, { installDir = null, cancelFile = null, onEvent = null } = {}) {
+      const args = ['models', 'move', '--resume', ...(dataFolder ? ['--from', dataFolder] : []), ...(installDir ? ['--install-dir', installDir] : []), ...(cancelFile ? ['--cancel-file', cancelFile] : []), '--output', 'jsonl'];
+      const result = await call(args, { timeoutMs: 24 * 3600_000, onLine: onEvent ?? (() => {}) });
+      if (result.json?.ok && result.json.event === 'result') return result.json;
+      const error = result.json?.error;
+      throw Object.assign(new ControlError(error?.message ?? (result.stderr.split(/\r?\n/).filter(Boolean).pop() || 'The models could not be moved.'), { exitCode: result.code, output: result.json }), { code: error?.code ?? 'move_failed', details: error?.details ?? '' });
+    },
+    /** "Leave it": keep the old folder, remove the partial copies in the new one. */
+    async leaveModelsMove(dataFolder, { installDir = null } = {}) {
+      const result = await call(['models', 'move', '--leave', ...(dataFolder ? ['--from', dataFolder] : []), ...(installDir ? ['--install-dir', installDir] : []), '--output', 'json'], { timeoutMs: 24 * 3600_000 });
+      if (result.json?.ok) return result.json;
+      throw Object.assign(failure(result, 'The partial copies could not be removed.'), { code: result.json?.error?.code ?? 'leave_failed', details: result.json?.error?.details ?? '' });
+    },
     async saveProfile(name, configPath) {
       const listed = await call(['profile', 'list', '--output', 'json'], { timeoutMs: 20_000 });
       const known = (listed.json?.profiles ?? []).some(p => p.id === name);

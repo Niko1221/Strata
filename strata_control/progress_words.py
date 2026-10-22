@@ -65,6 +65,11 @@ def describe(step: int | None, lines: list[str], download: dict | None = None) -
         return Words("engine", "Checking the engine for this PC")
     if step == 5:
         last = recent[-1] if recent else ""
+        for line in reversed(recent):                    # a file with a wrong SHA-256 is read again and only the bad parts rewritten
+            if "were damaged; downloading only those parts" in line:
+                return Words("repair", "Some parts of a model file were damaged; downloading only those parts again")
+            if CHECKING_RE.search(line) or "were different and have been written again" in line:
+                break
         if dl_file.startswith("checking") or CHECKING_RE.search(last):
             return Words("verify", "Checking that the model files are complete (a few minutes for a big model; nothing is downloaded)")
         if "vision" in dl_file or "picture" in dl_file or "mmproj" in dl_file:

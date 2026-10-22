@@ -86,6 +86,9 @@ if(STRATA_VISION_HIP)
   set(AMDGPU_TARGETS "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
   set(GPU_TARGETS "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
   set(CMAKE_HIP_ARCHITECTURES "${STRATA_VISION_HIP_ARCHS}" CACHE STRING "" FORCE)
+  # #3359: a Linux toolchain links a PIE; ggml-hip's objects must be position independent (the engine's HIP build says the same in
+  # cmake/hip_backend.cmake).  Only for the HIP reader: the other readers' builds stay as they were.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
 add_subdirectory(${LLAMA_DIR} llama EXCLUDE_FROM_ALL)
