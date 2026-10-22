@@ -28,6 +28,7 @@ import { ChildProjector } from './children.mjs';
 import { nearestBudget } from './llm-shape.mjs';
 import { DeliverableTracker, ActivityGroups } from './deliverables.mjs';
 import { SkillsUsed, skillInfoFrom } from './skills-used.mjs';
+import { turnEngineSpeed } from './engine-speed.mjs';
 import { TurnGuard, guardNote, GUARD_NOTES } from './turn-guard.mjs';
 import { PlanStore, planPrompt, parsePlan, parsePoints, stepObjective, stepLine, firstSentence, stepSummary, planAsPrompt, editedSteps, planView, researchPrompt, researchWritePrompt, RESEARCH_NUDGE, parseSources } from './plan.mjs';
 
@@ -226,6 +227,13 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     lastError = null;
     log(`agent · Harness ${h.version ?? ''} ready (pid ${hp.pid}, ${profile.routes.length} route(s))`);
     return next;
+  }
+
+  /** The local engine's own speed for this turn's requests (null when it cannot be read: the stream's estimate stays). */
+  async function engineSpeedOf(route, projector) {
+    const inst = localInstances().find(i => i.id === route.instanceId);
+    if (!inst) return null;
+    return turnEngineSpeed({ baseUrl: inst.baseUrl, key: inst.key, since: projector.startedAt, attempts: projector.streams.size, timeoutMs: 800 });
   }
 
   /** Make sure a runtime exists that knows the route this turn needs. */
@@ -429,7 +437,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       turn.finish(`The assistant stopped answering for ${mins > 1 ? mins + ' minutes' : 'a minute'}, so I ended this turn. Anything it already finished is kept. Send your message again to go on.`);
     }, Math.min(15_000, Math.max(200, Math.floor(stallMs / 4))));
     turn.watchdog.unref?.();
-    function finishTurn(failure) {
+    async function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
       clearTimeout(turn.settleTimer);
@@ -450,7 +458,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       }
       if (noteReason && !extra.some(f => f.type === 'plan' && f.event === 'proposed')) { const note = guardNote(noteReason); if (note) extra.push(note); }
       for (const f of extra) emit(f);
-      const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow });
+      // The answer speed of a turn on this computer is the engine's own (tokens it produced over its decode time, as the Monitor shows it).
+      const engine = !failure && route.kind === 'local' ? await engineSpeedOf(route, projector) : null;
+      const frames = failure ? [{ type: 'error', message: plainAgentFailure(failure), details: failure, code: 'AGENT_STOPPED' }] : projector.finish({ model: route.name, contextMax: route.contextWindow, engine });
       for (const f of frames.slice(0, -1)) emit(f);
       // Messages typed while the goal ran and not delivered between steps go back to the page now, to be sent as ordinary messages.
       if (turn.goalRun && attached) {

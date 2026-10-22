@@ -4,12 +4,12 @@
 # Run on a Linux box that has ROCm (TheRock Python wheels are enough); the tester packages were built in an Ubuntu 22.04 chroot
 # (glibc 2.35) so they run on every distribution since.  All settings are environment variables:
 #
-#   VARIANT=rx9070     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102) | halo (gfx1151) | igpu (gfx1103 gfx1150) | a name + ARCHS=
+#   VARIANT=rx9070     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102) | rx6000 (gfx1030 gfx1031) | halo (gfx1151) | igpu (gfx1103 gfx1150) | a name + ARCHS=
 #   ARCHS="gfx1200;gfx1201"          the code objects (default: the variant's)
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       at the pinned commit (setup.py LLAMA_CPP_COMMIT); mtmd and ggml come from it
 #   HP=<ROCm devel root>  CORE=<ROCm core root>  LIBW=<ROCm libraries root>   (TheRock: _rocm_sdk_devel, _rocm_sdk_core, _rocm_sdk_libraries_*)
-#   OUT=<work folder>  PKGVER=0.1.46  COMMIT=<source commit for the build id>  JOBS=16
+#   OUT=<work folder>  PKGVER=0.1.47  COMMIT=<source commit for the build id>  JOBS=16
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   NO_PACKAGE=1                     stop after the stage folder
 #   VISION_HIP_DEFS="-DGGML_CUDA_FA=OFF"   extra cmake definitions for the GPU reader only
@@ -17,7 +17,7 @@
 # Both readers get RUNPATH $ORIGIN (tools/vision/CMakeLists.txt), and every bundled library is patched to $ORIGIN, so the
 # component folder runs from anywhere with nothing from the environment (packaging/binary_deps.py checks it).
 set -u
-V=${VARIANT:?VARIANT=rx9070|rx7900|halo|igpu|<name> with ARCHS=}
+V=${VARIANT:?VARIANT=rx9070|rx7900|rx6000|halo|igpu|<name> with ARCHS=}
 SRC=${SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 LLAMA=${LLAMA:?LLAMA=<llama.cpp checkout at the pinned commit>}
 HP=${HP:?HP=<ROCm devel root>}
@@ -30,10 +30,12 @@ JOBS=${JOBS:-16}
 case "$V" in
   rx9070) ARCHS=${ARCHS:-gfx1200;gfx1201} ;;
   rx7900) ARCHS=${ARCHS:-gfx1100;gfx1101;gfx1102} ;;
+  rx6000) ARCHS=${ARCHS:-gfx1030;gfx1031} ;;   # RDNA2: no WMMA (plain kernels), no hipBLASLt kernels; built, not tested on a real RX 6000 card
   halo)   ARCHS=${ARCHS:-gfx1151} ;;
   igpu)   ARCHS=${ARCHS:-gfx1103;gfx1150} ;;
   *)      ARCHS=${ARCHS:?ARCHS=gfx...} ;;
 esac
+NOTE_EXTRA=""; [ "$V" = rx6000 ] && NOTE_EXTRA=" (built, not tested on a real RX 6000 card)"
 ARCHLIST=${ARCHS//;/ }
 DATAARCH=${ARCHS//;/,}
 mkdir -p "$OUT"; S=$OUT/build.status
@@ -95,7 +97,7 @@ st "tuning tables rc=$?: $(tail -n 1 "$OUT/stage_tuning.log")"
 rm -rf "$OUT/components"; mkdir -p "$OUT/components/engine"
 ARCHARGS=""; for a in $ARCHLIST; do ARCHARGS="$ARCHARGS --arch $a"; done
 python3 packaging/package_engine.py --src "$STAGE" --backend hip --version "$PKGVER" --out "$OUT/components/engine" $ARCHARGS \
-  --variant "$V" --build-id "$COMMIT+rocm" --tree --notes "AMD $V build: engine, CPU picture reader, GPU picture reader" > "$OUT/package.log" 2>&1
+  --variant "$V" --build-id "$COMMIT+rocm" --tree --notes "AMD $V build: engine, CPU picture reader, GPU picture reader${NOTE_EXTRA:-}" > "$OUT/package.log" 2>&1
 st "packaged rc=$?"
 cat "$OUT/package.log" >> "$S"
 st "BUILD-DONE"

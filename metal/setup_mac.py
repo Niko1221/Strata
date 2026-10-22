@@ -66,6 +66,8 @@ UD_SHARDS = {
 def model_shard_names(model: str) -> list[str]:
     """The model's files in order (shard 1 first)."""
     n = MAC_MODELS[model].get("shards", 2)
+    if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
+        return [S.model_file(S.FAMILIES["gyro"], model, 1)]
     if MAC_MODELS[model].get("family") == "unsloth":
         return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
@@ -324,8 +326,9 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth"], default=None,
-                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL (follows --model)")
+    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
+                    help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
+                         "(follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--port", type=int)
@@ -491,6 +494,8 @@ def main(argv=None) -> int:
             S.mark(native)
         ple = ple_shard(files)
         shards = [native, ple]
+    elif family == "gyro":
+        shards = [files[0], files[0]]                  # one file: the model and its n-gram table (--native, --ple-gguf)
     else:
         shards = files
     if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():

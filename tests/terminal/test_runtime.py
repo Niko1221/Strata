@@ -1144,6 +1144,21 @@ class RuntimeTests(unittest.TestCase):
             victim.kill()
             victim.wait(timeout=10)
 
+    def test_marker_without_creation_time_ignores_a_reused_pid_of_a_foreign_program(self):
+        # #3488: the marker had no `started`, the number was reused by another program, every load said "still present".
+        child = {"pid": 38552}
+        with mock.patch.object(runtime, "WINDOWS", True), \
+                mock.patch.object(runtime, "_pid_exists", return_value=True), \
+                mock.patch.object(runtime.winproc, "process_image", create=True) as image:
+            image.return_value = r"C:\Windows\System32\svchost.exe"
+            self.assertFalse(runtime._child_present(child))
+            image.return_value = r"C:\Users\a\AppData\Local\Strata\python\python.exe"
+            self.assertTrue(runtime._child_present(child))
+            image.return_value = None                                    # unreadable: keep refusing, never guess
+            self.assertTrue(runtime._child_present(child))
+            image.return_value = r"C:\Windows\System32\svchost.exe"
+            self.assertTrue(runtime._child_present({"pid": 1, "started": 5}))   # a creation time decides by itself
+
     @unittest.skipUnless(WINDOWS, "os.kill(pid, 0) ends a process on Windows; liveness is a handle query")
     def test_liveness_check_does_not_end_the_process_it_asks_about(self):
         victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])

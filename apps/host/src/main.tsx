@@ -26,3 +26,5 @@ import './styles/model-run.css';
 import './styles/onboarding.css';
 
 import './styles/board.css';
+
+import './styles/gpu-roles.css';

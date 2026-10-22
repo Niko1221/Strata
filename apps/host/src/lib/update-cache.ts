@@ -7,8 +7,8 @@ import type { UpdateCheckResult } from './types';
  */
 const KEY = 'strata.update-check.v1';
 
-interface Stored { result: UpdateCheckResult; appVersion: string | null; engineVersion: string | null }
-export interface InstalledVersions { appVersion?: string | null; engineVersion?: string | null }
+interface Stored { result: UpdateCheckResult; appVersion: string | null; engineVersion: string | null; controlVersion?: string | null }
+export interface InstalledVersions { appVersion?: string | null; engineVersion?: string | null; controlVersion?: string | null }
 
 const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
 
@@ -16,13 +16,15 @@ export function readUpdateCache(now: InstalledVersions): UpdateCheckResult | nul
   try {
     const stored = JSON.parse(localStorage.getItem(KEY) ?? 'null') as Stored | null;
     if (!stored?.result?.strata?.status || !stored.result.engine?.status || !stored.result.checkedAt) return null;
-    if (!same(stored.appVersion, now.appVersion) || !same(stored.engineVersion, now.engineVersion)) return null;
+    // Still loading (no app version yet): show nothing rather than a result that may belong to the version before an update.
+    if (!now.appVersion) return null;
+    if (!same(stored.appVersion, now.appVersion) || !same(stored.engineVersion, now.engineVersion) || !same(stored.controlVersion, now.controlVersion)) return null;
     return stored.result;
   } catch { return null; }
 }
 
 export function saveUpdateCache(result: UpdateCheckResult, now: InstalledVersions) {
-  try { localStorage.setItem(KEY, JSON.stringify({ result, appVersion: now.appVersion ?? null, engineVersion: now.engineVersion ?? null } satisfies Stored)); } catch { /* Not remembering a result is harmless. */ }
+  try { localStorage.setItem(KEY, JSON.stringify({ result, appVersion: now.appVersion ?? null, engineVersion: now.engineVersion ?? null, controlVersion: now.controlVersion ?? null } satisfies Stored)); } catch { /* Not remembering a result is harmless. */ }
 }
 
 export function clearUpdateCache() {

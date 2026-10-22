@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -99,10 +100,16 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="the draft layer that makes answers faster. off starts without it: about 1 GB less graphics memory and less RAM, "
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
+    g.add_argument("--gpu-roles", metavar="LIST", help="a role for each graphics card: main, helper or off, e.g. 1=main,0=helper (cards you do not name are off). "
+                   "Main does the last steps of every answer; a helper holds part of the model")
     g.add_argument("--tune", type=_choice("a tuning mode", S.TUNE_MODES), metavar="quick|thorough|skip", help="find the fastest settings first (default: skip here; the guided screens suggest quick the first time)")
     g.add_argument("--tune-allow-small", action="store_true", help="let the tuner also try settings that can change answers very slightly")
     g.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                    help="an advanced engine setting or STRATA_* variable, e.g. prefill=65536 (repeat); unknown names get a warning, not a refusal")
+    g.add_argument("--pool-cores", metavar="LIST",
+                   help="experimental: pin the CPU workers to exactly these logical processors, e.g. 2,4,6,8 or 2-14:2 (the numbers Task Manager or "
+                        "lscpu show). The default is one worker per physical core, which the engine's start line names; "
+                        "two entries on one core are kept with a warning")
     a = p.add_argument_group("who can use it")
     a.add_argument("--access", type=_choice("a way to share Strata", S.ACCESS_KINDS), metavar="local|lan|cloudflare|tailscale",
                    help="local: this computer only; lan: your network; cloudflare: a quick tunnel; tailscale: your tailnet")
@@ -209,8 +216,18 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.parallel = a.parallel
     if a.mtp:
         s.mtp = a.mtp
+    if a.gpu and getattr(a, "gpu_roles", None):
+        raise ValueError("Use --gpu (which cards) or --gpu-roles (a role for each card), not both.")
     if a.gpu:
         s.gpus = _gpus(a.gpu)
+        s.gpu_roles = None
+    if getattr(a, "gpu_roles", None):
+        from strata_control import gpu_roles as GR
+        try:
+            s.gpu_roles = {str(k): v for k, v in GR.parse_roles(a.gpu_roles).items()}
+        except ValueError as e:
+            raise ValueError(f"--gpu-roles: {e}") from None
+        s.gpus = None
     if a.tune:
         s.tune = a.tune
     if a.tune_allow_small:
@@ -235,6 +252,13 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
+    if a.pool_cores:
+        text = a.pool_cores.replace(" ", "")
+        if not re.fullmatch(r"\d+(-\d+(:\d+)?)?(,\d+(-\d+(:\d+)?)?)*", text):
+            notices.append(S.Notice("warn", f"'{a.pool_cores}' is not a list of logical processor numbers, so --pool-cores is left out.",
+                                    "Write it like 2,4,6,8 or 2-14:2. The CPU workers keep their default placement."))
+        else:
+            s.extra = {**s.extra, "--pool-cores": text}
     if a.save_preset:
         s.name = a.save_preset
     return s, notices
@@ -284,6 +308,24 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
     return s, notices
 
 
+def roles_line(s: S.LaunchSettings, catalog) -> str | None:
+    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None."""
+    if not (s.gpu_roles or s.gpus) or catalog is None:
+        return None
+    try:
+        from strata_control import gpu_roles
+        comp = catalog.computer()
+        cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        if s.gpu_roles:
+            named = {int(k): v for k, v in s.gpu_roles.items()}
+            roles = gpu_roles.normalize({int(c.get("index", 0)): named.get(int(c.get("index", 0)), "off") for c in cards}, cards)
+        else:
+            roles = gpu_roles.from_legacy(list(s.gpus), cards)
+        return gpu_roles.describe(roles, cards)
+    except Exception:                                        # noqa: BLE001 - a summary line must never stop a launch
+        return None
+
+
 def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
     """Cards of another make than the engine drives: never offered, never mixed into a split. Said in plain words: a named card of the other
     make is refused with the reason, and a better card of the other make is mentioned once (recommend, never force)."""
@@ -304,6 +346,15 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
                                     f"A model cannot be split across {make} and {omake} cards. {gpu_fit.SECOND_MODEL_SENTENCE}",
                                     f"Name a {make} card (" + ", ".join(str(g.get("index")) for g in comp.usable_gpus) + f"), or install the {omake} "
                                     "build of Strata to use that card."))
+    if s.gpu_roles and vendor:
+        from strata_control import gpu_roles
+        have = {int(c.get("index", -1)): c for c in gpu_roles.rows(comp.gpus, vendor)}
+        for k in s.gpu_roles:
+            if int(k) not in have:
+                out.append(S.Notice("error", f"There is no card {k} that this build of Strata can use.",
+                                    "Cards: " + (", ".join(str(i) for i in sorted(have)) or "none") + "."))
+        if not any(r != "off" for r in s.gpu_roles.values()) and not out:
+            out.append(S.Notice("warn", gpu_roles.NO_CARD_LINE, ""))
     note = comp.other_vendor_note
     if note:
         out.append(S.Notice("warn", note, ""))
@@ -315,6 +366,17 @@ def gpu_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
 def _say(line: str = "") -> None:
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
+
+
+def _interrupted_move_notice() -> None:
+    """One line when a move of the models folder was left unfinished (never blocks the launch)."""
+    try:
+        from strata_control import discovery, models_move
+        st = models_move.interrupted(discovery.data_dir(Path.home() / "Strata")[0])
+    except Exception:
+        return
+    if st:
+        _say("A move of your models was interrupted. Finish it with `strata models move --resume`, or keep them where they are with `strata models move --leave`.")
 
 
 def _printer(quiet: bool = False):
@@ -547,6 +609,8 @@ def run_launch(a: argparse.Namespace) -> int:
             if a.model or a.model_path:
                 return fail(str(e), 5)
         s, notices = settings_from_args(a, catalog)
+        if not machine:
+            _interrupted_move_notice()
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune)
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
@@ -574,6 +638,7 @@ def run_launch(a: argparse.Namespace) -> int:
         except LaunchError as e:
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
+        notes = [*notices, *notes]                           # what the flags themselves said (a --pool-cores list that could not be read, a key beside --no-api-key)
         errors = [n for n in notes if n.level == "error"]
         if errors:
             return fail(errors[0].line(), 2)
@@ -603,12 +668,19 @@ def run_launch(a: argparse.Namespace) -> int:
                      + ("    API key on" if s.api_key else ""))
                 for n in notes:
                     _say(f"  [!] {n.line()}")
+                line = roles_line(s, catalog)
+                if line:
+                    _say(f"  cards     {line}")
                 _say(f"  same as   {S.flags_text(s)}")
                 _say("Nothing was changed.")
             return 0
         for n in notes:
             if not machine:
                 _say(f"[!] {n.line()}")
+        if not machine:
+            line = roles_line(s, catalog)
+            if line:
+                _say(line)
         from strata_cli.launch import access as _access
         fw = _access.firewall_note(s.access)
         if fw and not machine:
