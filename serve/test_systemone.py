@@ -96,6 +96,8 @@ class DecisionEngine(MockEngine):
         super().__init__(tokenizer, script, max_context=max_context)
         self.prompts: list[list[int]] = []
         self.pins: list[dict] = []           # the sampling dict of each generate (M3.1 pin)
+        self.rows_read: list[int] = []       # the prompt positions BROWAT was asked for (fix B)
+        self.info = {"jevpos": 1}            # the engine build advertises row capture (fix B)
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
@@ -104,6 +106,12 @@ class DecisionEngine(MockEngine):
 
     def final_row_logits(self, ids, tokens):
         # the real engine answers only the asked tokens (BROW); the mock mirrors that
+        return {t: self.ROW[t] for t in tokens if t in self.ROW}
+
+    def row_logits_at(self, row, tokens):
+        # fix B (jevpos): the row captured at that prompt position.  This table is row-independent, so the
+        # mock proves the WIRING (one read, one row per field, same math) - the row's real value is live.
+        self.rows_read.append(int(row))
         return {t: self.ROW[t] for t in tokens if t in self.ROW}
 
 
@@ -305,6 +313,102 @@ class StatePin(unittest.TestCase):
         pin = pins[0]
         self.assertEqual(self.engine.prompts[0][:pin], self.engine.prompts[1][:pin],
                          "the option branches share the state + head prefix")
+
+
+class RowReadout(unittest.TestCase):
+    """M3.1 fix B (jevpos): one prompt read, one head row kept per field.
+
+    The mock's logits are row-independent, so these tests prove the CONTRACT - one generate, the cue
+    positions named in it, one row read per field, the same answers - not what the rows contain.  The
+    latency and the accuracy shift are live measurements (rowreadout_probe.py).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine, cls.httpd, cls.base = start_server()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        self._old = _os.environ.get("STRATA_JEV_ROWS")
+        _os.environ["STRATA_JEV_ROWS"] = "1"
+        self._old_info = dict(self.engine.info)
+        self.engine.prompts.clear()
+        self.engine.pins.clear()
+        self.engine.rows_read.clear()
+
+    def tearDown(self):
+        if self._old is None:
+            _os.environ.pop("STRATA_JEV_ROWS", None)
+        else:
+            _os.environ["STRATA_JEV_ROWS"] = self._old
+        self.engine.info.clear()
+        self.engine.info.update(self._old_info)
+
+    TWO = {"q1": {"type": "noul", "instructions": "Is it on?"},
+           "q2": {"type": "choice", "instructions": "Pick one.", "criteria": {"alpha": 1, "beta": 2}}}
+
+    def _post(self, questions):
+        return post(self.base, "/v1/systemone", {"state": {"hp": 7}, "questions": questions})
+
+    def test_two_fields_cost_one_read(self):
+        st, body = self._post(self.TWO)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 1, "one prompt, not one per field")
+        self.assertEqual(body["usage"]["prompt_tokens"], len(self.engine.prompts[0]))
+        rows = self.engine.pins[0].get("jevpos")
+        self.assertIsInstance(rows, list)
+        self.assertEqual(len(rows), 2, "one cue position per field")
+        self.assertLess(rows[0], rows[1])
+        for r in rows:
+            self.assertLess(r, len(self.engine.prompts[0]), "a row must be inside the prompt that ran")
+        self.assertEqual(self.engine.rows_read, rows, "each named row is the one read")
+        self.assertIs(self.engine.pins[0].get("strata_checkpoint"), False,
+                      "one-shot: nothing extends this turn, so no checkpoint")
+
+    def test_answers_match_the_per_question_path(self):
+        _, on = self._post(self.TWO)
+        _os.environ.pop("STRATA_JEV_ROWS", None)
+        _, off = self._post(self.TWO)
+        self.assertEqual(on["answers"], off["answers"],
+                         "the same row must produce the same answer on either path")
+
+    def test_env_off_keeps_the_per_question_path(self):
+        _os.environ.pop("STRATA_JEV_ROWS", None)
+        st, _ = self._post(self.TWO)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertFalse(any("jevpos" in p for p in self.engine.pins))
+
+    def test_an_engine_without_jevpos_is_not_asked_for_rows(self):
+        self.engine.info.pop("jevpos", None)
+        st, _ = self._post(self.TWO)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 2, "no capability, no one-prompt path")
+        self.assertFalse(any("jevpos" in p for p in self.engine.pins))
+
+    def test_one_field_never_takes_the_one_prompt_path(self):
+        st, _ = self._post({"q1": {"type": "noul", "instructions": "Is it on?"}})
+        self.assertEqual(st, 200)
+        self.assertFalse(any("jevpos" in p for p in self.engine.pins))
+
+
+class SamplingKeys(unittest.TestCase):
+    """The wire keys jev builds: a real position list only, never a malformed one."""
+
+    def test_jevpos_list(self):
+        self.assertEqual(StrataEngine.sampling_keys({"jevpos": [3, 40, 97]}), " jevpos=3,40,97")
+
+    def test_jevpos_rejects_junk(self):
+        for bad in ([], [-1], ["3"], [3, "x"], [True], None):
+            self.assertEqual(StrataEngine.sampling_keys({"jevpos": bad}), "", bad)
+
+    def test_pin_key(self):
+        self.assertEqual(StrataEngine.sampling_keys({"pin": 63}), " pin=63")
+        self.assertEqual(StrataEngine.sampling_keys({"pin": 0}), "")
 
 
 class SystemOneValidation(unittest.TestCase):
