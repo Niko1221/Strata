@@ -460,59 +460,10 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     return 200, dec
 
 
-def _row_readout_enabled() -> bool:
-    """M3.1 (BROWAT): one window, N rows.  Opt-in while it is measured - the readout position for
-    field i moves from "after this field's own prompt" to "after this field's turn in a shared
-    prompt", which is the same position in kind but not in context, and the calibration was fit on
-    the old one.  STRATA_JEV_ROWREADOUT=1 turns it on; unset/0 leaves the per-question path, which
-    is byte-identical to M3.0."""
-    import os
-    return os.environ.get("STRATA_JEV_ROWREADOUT", "0") not in ("", "0")
-
-
-def consolidated_rows(svc, state_text: str, qdefs: list):
-    """Render ONE prompt for all the questions and return (ids, rows) - the row index per question -
-    or None when the prefix cannot be kept exact (the caller then uses the per-question path).
-
-    Field 1's turn is the prompt M3.0 renders for it (system + state + question), so field 1's row is
-    byte-identical to M3.0's.  Each further field is its own turn appended after the earlier fields'
-    answer turns, so the state is prefilled once instead of N times and every field still ends at an
-    assistant cue - the readout position M3.0 reads, just from a window that also carries the other
-    fields' turns.
-
-    The placeholder answer "-" is never decoded and never read: it exists because the frontend drops a
-    COMPLETED EMPTY assistant turn (#843), which would delete the next field's cue with it.  It is a
-    real token, though, so field 2..N see the earlier fields' questions and placeholders - the same cue
-    position in kind, a different context.  That shift is what the M3.1 live probe measures (accuracy,
-    Brier, is_card against the per-question path); it is why this path is opt-in and why the calibration
-    fitted on the per-question position is not silently reused.
-
-    The prefix check is a comparison of encoded ids, not an assumption about the template: if a chat
-    template does not render the extension as literal string concatenation, tokenization at the seam can
-    merge and the row numbers would be off by a token - that case returns None.
-    """
-    units = []
-    for i, qdef in enumerate(qdefs):
-        content = (state_text + "\n\n" + question_block(qdef)) if i == 0 else question_block(qdef)
-        messages = [{"role": "system", "content": SYSTEM_V1}]
-        for prev in units:
-            messages.append({"role": "user", "content": prev["content"]})
-            messages.append({"role": "assistant", "content": "-"})   # never decoded; see above
-        messages.append({"role": "user", "content": content})
-        prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
-        ids = svc.tok.encode(prompt, parse_special=True)
-        if not ids:
-            return None
-        if units and units[-1]["ids"] != ids[:len(units[-1]["ids"])]:
-            return None                                            # seam moved: no row numbers to trust
-        units.append({"content": content, "ids": ids})
-    return units[-1]["ids"], [len(u["ids"]) - 1 for u in units]
-
-
 def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
     """The donor order once the logits are in hand (server.cpp:1134-1142): unrounded softmax for the
-    calib log, round 4dp, renormalise, THEN the per-tuple calibrator.  Shared by the per-question and
-    the consolidated paths so the same row produces the same answer on either."""
+    the calib log, round 4dp, renormalise, THEN the per-tuple calibrator.  One place, so the text and the
+    image paths cannot drift apart in the order they apply it."""
     pr_raw = softmax(scores)
     pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
     t = sum(pr)
@@ -530,34 +481,53 @@ def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
     return answers_from_calibrated(qdef["type"], pr, calib_id)
 
 
-def _consolidated(svc, engine, state_text: str, qdefs: list):
-    """M3.1: one prompt, one prefill, one row read per field.  Returns (answers, in_tokens, readouts), or
-    None when this engine or this template cannot serve it exactly - the caller then runs the per-question
-    path, which is byte-identical to M3.0.
+def _pin_enabled() -> bool:
+    """M3.1 fix C (state parking): tell the engine where the fields' shared prefix ends so it reads that
+    prefix once, pins the checkpoint there, and every later field reads only its own turn.  The prompts
+    stay byte-identical to M3.0, so the readout position - and the calibration fitted on it - is unchanged;
+    this is a caching hint, never a change to what the model sees.  STRATA_JEV_PIN=0 turns it off."""
+    import os
+    return os.environ.get("STRATA_JEV_PIN", "1") not in ("0", "false", "False", "off", "")
 
-    The prefill runs before the row count is known, and that order is the point: rows are numbered from the
-    LAST verify window's first token, and only the engine can say how many rows its window kept.  A prompt
-    longer than the engine's prefill chunk is read in several windows, so our numbering would name somebody
-    else's rows - and the server ends the engine on a row it cannot serve, so the count is a guard to obey,
-    never an error to retry.  Wasted prefill on that path costs one window; a wrong row would cost the
-    request its answer and the engine its life.
+
+def _shared_prefix_len(svc, texts: list) -> int:
+    """The longest token prefix every one of `texts` renders to (0 when they share nothing).
+
+    Each text is rendered and encoded exactly as the request will render it, then the ids are compared
+    position by position - so the number is the real shared prefix, not an estimate from the string
+    lengths (a BPE merge at a seam would make those differ).  A value of 0 means "do not pin".
     """
-    plan = consolidated_rows(svc, state_text, qdefs)
-    if plan is None:
-        return None
-    ids, rows = plan
-    cancel = threading.Event()
-    for _ in engine.generate(ids, 1, {}, cancel):
-        pass                                     # the one prefill; its rows are the readouts
-    if engine.brow_rows() != len(ids):
-        return None                              # read in more than one window: the per-question path it is
-    answers = {}
-    for qdef, row_i in zip(qdefs, rows):
-        variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
-        tokens = sorted({t for v in variants for t in v})
-        scores = readout_scores(engine.row_logits_at(row_i, tokens), variants)
-        answers[qdef["id"]] = _finish_answer(qdef, scores, False)   # image_state is False in this path
-    return answers, len(ids), len(qdefs)
+    if len(texts) < 2:
+        return 0
+    encoded = []
+    for text in texts:
+        prompt = svc.template.render([{"role": "system", "content": SYSTEM_V1},
+                                      {"role": "user", "content": text}],
+                                     add_generation_prompt=True, enable_thinking=False)
+        ids = svc.tok.encode(prompt, parse_special=True)
+        if not ids:
+            return 0
+        encoded.append(ids)
+    limit = min(len(x) for x in encoded)
+    n = 0
+    while n < limit and all(x[n] == encoded[0][n] for x in encoded):
+        n += 1
+    return n
+
+
+def _request_keys(pin: int) -> dict:
+    """The engine keys a decision request carries.
+
+    `pin: N` -> the first N prompt tokens are a shared read-only prefix: the engine reads it once and
+    pins its checkpoint, so the fields after the first resume from it instead of re-reading the state.
+
+    Do NOT add `strata_checkpoint: False` here: measured 2026-10-23, ckpt=0 on every field left nothing
+    to pin (`pin ignored: ckpt=0 keeps no checkpoint`) and made three fields 1906 ms against 1593 ms.
+    """
+    keys = {}
+    if pin > 0:
+        keys["pin"] = pin
+    return keys
 
 
 def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
@@ -580,29 +550,27 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     v_mode = mode == "V"
     image_state = isinstance(req.get("state"), dict) and "image_summary" in req.get("state", {})
     answers, in_tokens, readouts = {}, 0, 0
+    # M3.1 fix C (state parking): N fields on one state share the system + state prefix.  Pin it once
+    # (see _pin_enabled) so each field reads only its own question turn.  Computed from the rendered
+    # prompts, so the number is the real shared prefix; 0 = no pin (one field, or pinning off).
+    l_qdefs = [q for q in qdefs if not (v_mode and q["type"] == "choice")]
+    l_pin = 0
+    if len(l_qdefs) > 1 and not image_state and _pin_enabled():
+        l_pin = _shared_prefix_len(svc, [state_text + "\n\n" + question_block(q) for q in l_qdefs])
     with svc.fifo:                                       # the engine turn: one request at a time
-        # M3.1 (BROWAT, opt-in): text L-mode with more than one field - ONE prompt, one prefill and
-        # one row read per field, instead of one cold prefill per field.  Falls back to the
-        # per-question loop below whenever the engine or the template cannot support it exactly
-        # (no BROWAT op, a template whose seam moves, a prompt read in more than one window).
-        if (_row_readout_enabled() and len(qdefs) > 1 and not v_mode and not image_state
-                and hasattr(engine, "row_logits_at") and hasattr(engine, "brow_rows")):
-            try:
-                got = _consolidated(svc, engine, state_text, qdefs)
-            except ValueError as e:
-                return _err("state", f"logits readout failed: {e}")
-            if got is not None:
-                answers, in_tokens, readouts = got
-                return 200, {"answers": answers,
-                             "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts}}
+        l_seen = 0
         for qdef in qdefs:
             use_v = v_mode and qdef["type"] == "choice"   # X-Jev-Mode scopes to choice (donor :767)
             if use_v:
                 # ---- V mode (A2.6): shared head, one yes/no branch per option ----
                 head = question_head(qdef)
                 yes_no = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in ("No", "Yes")]
+                v_pin = 0
+                if len(qdef["labels"]) > 1 and _pin_enabled():
+                    v_pin = _shared_prefix_len(
+                        svc, [state_text + "\n\n" + head + v_branch(qdef, k) for k in qdef["labels"]])
                 d_scores = []
-                for key in qdef["labels"]:
+                for bi, key in enumerate(qdef["labels"]):
                     prompt = svc.template.render(
                         [{"role": "system", "content": SYSTEM_V1},
                          {"role": "user", "content": state_text + "\n\n" + head + v_branch(qdef, key)}],
@@ -612,7 +580,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                     if not ids:
                         return _err("state", "tokenization failed")
                     cancel = threading.Event()
-                    for _ in engine.generate(ids, 1, {}, cancel):
+                    for _ in engine.generate(ids, 1, _request_keys(v_pin), cancel):
                         pass
                     tokens = sorted({t for v in yes_no for t in v})
                     row = engine.final_row_logits(ids, tokens)
@@ -656,7 +624,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 return _err("state", "tokenization failed")
             variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
             cancel = threading.Event()
-            for _ in engine.generate(ids, 1, {}, cancel):
+            for _ in engine.generate(ids, 1, _request_keys(l_pin), cancel):
                 pass                                     # the one decode step; its logits row is the readout
             tokens = sorted({t for v in variants for t in v})
             row = engine.final_row_logits(ids, tokens)   # BROW: only the label tokens asked for
@@ -666,6 +634,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 return _err("state", f"logits readout failed: {e}")
             # ---- donor order (server.cpp:1134-1142): round 4dp, renormalize, THEN calibrate ----
             answers[qdef["id"]] = _finish_answer(qdef, scores, image_state)
+            l_seen += 1
             in_tokens += len(ids)
             readouts += 1
     return 200, {"answers": answers,
