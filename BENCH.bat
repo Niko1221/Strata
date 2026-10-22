@@ -11,7 +11,7 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-echo  Quick speed check. For results other people can compare with (the standard benchmark, 20 to 30 minutes), run: .venv\Scripts\python.exe strata.py bench run
+echo  Quick speed check. For results other people can compare with (the standard benchmark, a few minutes), run: .venv\Scripts\python.exe strata.py bench run
 echo.
 ".venv\Scripts\python.exe" tools\strata_bench.py %*
 set "RC=%ERRORLEVEL%"

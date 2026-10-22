@@ -30,6 +30,9 @@ PACKAGES = {
     ("linux-x86_64", "rx9070"): (("gfx1200", "gfx1201"), 100200, set()),                    # no table for 1.2.0 on RDNA4 (docs/AMD_HIP.md)
     ("linux-x86_64", "rx7900"): (("gfx1100", "gfx1101", "gfx1102"), 100200, {"gfx1100"}),
     ("linux-x86_64", "halo"): (("gfx1151",), 100401, {"gfx1151"}),
+    # 0.2.2 RX 6000 packages: hipBLASLt ships no gfx1030 / gfx1031 kernels at any version, so no table, plain hipBLAS
+    ("windows-x86_64", "rdna2"): (("gfx1030", "gfx1031"), 100500, set()),
+    ("linux-x86_64", "rx6000"): (("gfx1030", "gfx1031"), 100400, set()),
 }
 
 

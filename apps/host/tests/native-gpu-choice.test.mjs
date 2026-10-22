@@ -96,3 +96,22 @@ test('#3211 #3221: the Monitor opens on the model\'s assigned cards and the drop
   const css = await readFile(new URL('../src/styles/annotation-fixes.css', import.meta.url), 'utf8');
   assert.match(css, /\.select__opt \{ height: auto; min-height: 36px;/, 'a wrapped name no longer runs over the next row');
 });
+
+test('a card picked in the screen replaces an old AMD config\'s "hip_ordinal" (it would send the engine to the old card)', async () => {
+  const f = nativeFixture();
+  try {
+    await f.control.refresh(true);
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const path = join(f.repo, 'strata-iq2_xs.json');
+    const config = JSON.parse(readFileSync(path, 'utf8')); config.hip_ordinal = 0; writeFileSync(path, JSON.stringify(config));
+    await f.control.refresh(true);
+    const done = await finishJob(f.control, f.control.operation('load', { model: 'iq2_xs', gpus: [1] }).id);
+    assert.equal(done.state, 'done', done.error);
+    const instance = f.control.resolveInstance(done.result.instanceId);
+    assert.deepEqual(instance.gpus, [1]);
+    const written = JSON.parse(readFileSync(instance.configPath, 'utf8'));
+    assert.equal(written.gpu, 1);
+    assert.equal('hip_ordinal' in written, false);
+  } finally { await f.cleanup(); }
+});

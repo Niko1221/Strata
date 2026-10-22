@@ -174,7 +174,7 @@ class Ctx:
             from serve.server import engine_args
             import contextlib
             import io
-            d = derive_config(apply_choices(cfg, s), s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog))
+            d = derive_config(apply_choices(cfg, s), s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog, base=cfg))
             if s.parallel:
                 d["parallel"] = s.parallel
             with contextlib.redirect_stdout(io.StringIO()):

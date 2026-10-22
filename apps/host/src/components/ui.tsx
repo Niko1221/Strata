@@ -384,7 +384,7 @@ export function Select<T extends string>({ value, valueSuffix, options, onChange
     </>);
 }
 /** One modal surface for confirmations and narrow-screen inspectors. */
-export function Dialog({ open, title, onClose, children, actions, headerActions, compact = false, sheet = false, wide = false, hideTitle = false, className }: {
+export function Dialog({ open, title, onClose, children, actions, headerActions, compact = false, sheet = false, wide = false, hideTitle = false, className, noClose = false }: {
     open: boolean;
     title: ReactNode;
     onClose: () => void;
@@ -396,6 +396,8 @@ export function Dialog({ open, title, onClose, children, actions, headerActions,
     wide?: boolean;
     hideTitle?: boolean;
     className?: string;
+    /** No close button: the person must use the dialog's own buttons (a move that is running). */
+    noClose?: boolean;
 }) {
     const ref = useRef<HTMLElement>(null);
     const id = useId();
@@ -418,7 +420,7 @@ export function Dialog({ open, title, onClose, children, actions, headerActions,
     return createPortal(<div className="dialog-layer">
     <div className="dialog-scrim" onClick={onClose} aria-hidden="true"/>
     <section ref={ref} className={cx(`${sheet ? 'dialog-surface dialog-surface--sheet' : 'dialog-surface'}${wide ? ' dialog-surface--wide' : ''}${compact ? ' dialog-surface--compact' : ''}`, className)} role="dialog" aria-modal="true" aria-labelledby={id} tabIndex={-1}>
-      <header className="dialog-head"><h2 className={hideTitle ? 'sr-only' : 'h3'} id={id}>{tr(title)}</h2><div className="dialog-head__actions">{tr(headerActions)}<IconBtn name="x" title={typeof title === 'string' ? tr("Close {0}", [title]) : tr("Close")} onClick={onClose}/></div></header>
+      <header className="dialog-head"><h2 className={hideTitle ? 'sr-only' : 'h3'} id={id}>{tr(title)}</h2><div className="dialog-head__actions">{tr(headerActions)}{noClose ? null : <IconBtn name="x" title={typeof title === 'string' ? tr("Close {0}", [title]) : tr("Close")} onClick={onClose}/>}</div></header>
       <div className="dialog-body">{tr(children)}</div>
       {tr(actions ? <footer className="dialog-actions">{tr(actions)}</footer> : null)}
     </section>

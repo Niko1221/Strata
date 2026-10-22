@@ -7,6 +7,7 @@ const root=resolve(import.meta.dirname,'../../dist'),upstream=process.env.STRATA
 const native=process.env.STRATA_UI_PREVIEW==='1' ? JSON.parse(await readFile(new URL('./ui-preview-native.json',import.meta.url),'utf8')) : await (await fetch(upstream+'/api/native')).json();
 native.hardware={cpu:{cores:16},ram_gb:128,gpus:[{index:0,name:'NVIDIA RTX 4090',vram_gb:24,usable:true}],disk_free_gb:250};
 if(process.env.STRATA_ONBOARDING_SCENARIO==='multi-gpu')native.hardware.gpus.push({index:1,name:'NVIDIA RTX 3090',vram_gb:24,usable:true});
+if(process.env.STRATA_ONBOARDING_GPUS)native.hardware.gpus=JSON.parse(process.env.STRATA_ONBOARDING_GPUS);
 native.catalog.this_pc=native.hardware;
 native.catalog.recommendation={family:'qwen',model:'Q2_0',context:32768};
 native.catalog.summary='Supported hardware fixture';
@@ -60,6 +61,7 @@ if(['make-it-yours','ready'].includes(process.env.STRATA_ONBOARDING_START)){
   }
  }
 }
+if(process.env.STRATA_ONBOARDING_GPUS){native.instances=[];native.defaultId=null;}/* GPU roles previews: the model is prepared, not loaded, so the roles shown are the recommendation */
 if(process.env.STRATA_PREVIEW_STATE_FILE){const saved=JSON.parse(await readFile(process.env.STRATA_PREVIEW_STATE_FILE,'utf8'));Object.assign(native,saved.native);setup=saved.setup;const running=native.instances.find(i=>i.id===native.defaultId),entry=native.installed.models.find(m=>m.model===running?.model),family=native.catalog.families.find(f=>f.sizes.some(s=>s.id===entry?.model)),size=family?.sizes.find(s=>s.id===entry?.model);if(family&&size){selected={family:family.family,model:size.model,context:entry.context??32768,vision:entry.images==='off'?'no':'yes',kv:entry.kv??'int8',low_ram:entry.lowRamMode??'auto'};loadVision=entry.visionEnabled===false?'no':selected.vision;}}
 const server=http.createServer(async(req,res)=>{try{
  const path=new URL(req.url,'http://fixture').pathname;let payload='';if(req.method!=='GET')for await(const chunk of req)payload+=chunk;const body=payload?JSON.parse(payload):{};

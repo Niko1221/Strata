@@ -98,6 +98,12 @@ private:
     int64_t tc_x_elems_ = 0;
     bool native_mmq(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                     int64_t ldy);
+    /// A padded X (ldx > K) that no kernel above took: its T rows copied to a contiguous FP16 buffer of stride K, grown
+    /// as needed; nullptr when the allocation or the copy failed (then the caller reports it).  The padded product is
+    /// the gfx11 matrix cores' (STRATA_PF_PAD), so this is the path of another card whose activations arrived padded.
+    const uint16_t* unpad_x(const uint16_t* X, int64_t T, int64_t K, int64_t ldx);
+    uint16_t* unpadded_x_ = nullptr;
+    int64_t unpadded_x_elems_ = 0;
     void* mmq_ctx_ = nullptr;
     void* mmq_buf_ = nullptr;
     bool mmq_failed_ = false;

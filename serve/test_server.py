@@ -1726,6 +1726,19 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
 
+    def test_card_note_ties_the_engines_numbering_to_the_persons(self):
+        """The engine counts the cards it is given from 0, so GPU 1 reads "GPU 0 / CUDA0" in its log: one line says which is which."""
+        from serve.server import card_note, child_env
+        one = {"gpu": 1, "args": []}
+        self.assertIn("GPU 1", card_note(one, child_env(one)))
+        self.assertIn("GPU 0 / CUDA0", card_note(one, child_env(one)))
+        both = {"gpu": [1, 0], "args": [], "gpu_order": "as_given"}
+        line = card_note(both, child_env(both))
+        self.assertIn("GPU 1, then GPU 0", line)
+        self.assertIn("CUDA0, CUDA1", line)
+        for same in ({"gpu": 0, "args": []}, {"gpu": [0, 1], "args": [], "gpu_order": "as_given"}, {"args": []}, {"gpu": 1, "backend": "hip"}):
+            self.assertIsNone(card_note(same, child_env(same)), same)       # the numbers agree, or no card was chosen, or AMD (its own numbering)
+
     def test_card_order(self):
         """#1352: with an auto layer split the faster card (SMs x clock) goes last; ties, a manual split, a
         measurement we lack, HIP and "gpu_order": "as_given" keep the config's order."""
@@ -1758,6 +1771,71 @@ class GpuChoice(unittest.TestCase):
                                     {0: 8192, 1: 12288, 2: 24576}), [0, 1, 2])  # tail 1 (12G) < given tail 2 (24G)
         self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
+
+    def test_igpu_is_never_the_last_stage(self):
+        """Strix Halo (gfx1151, BIOS carve-out up to 96 GB) beside an R9700 (gfx1201, 32 GB): the #1576 memory guard used to keep the
+        iGPU LAST (head, draft layer, verify).  Built-in graphics goes first, the cards with memory of their own follow."""
+        from serve.server import ordered_gpus
+        cfg = {"gpu": [0, 1], "backend": "hip", "args": []}
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        speeds = {0: 80 * 2900.0, 1: 128 * 2350.0}
+        self.assertEqual(ordered_gpus(cfg, speeds, {0: 65536, 1: 32768}, arch), [0, 1])           # carve-out 64 GB > 32 GB: still first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, {0: 65536, 1: 32768}, arch), [0, 1])   # given R9700 first: iGPU moves first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, None, arch), [0, 1])
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "gpu_order": "as_given"}, speeds, None, arch), [1, 0])   # the person's order stays
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "layer_split": "24"}, speeds, None, arch), [1, 0])
+        # two cards of their own plus the iGPU: iGPU first, then the two by speed (faster last)
+        three = {"gpu": [1, 0, 2], "backend": "hip", "args": []}
+        arch3 = {0: "gfx1151", 1: "gfx1201", 2: "gfx1100"}
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 20.0}, None, arch3), [0, 2, 1])
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 30.0}, None, arch3), [0, 1, 2])   # equal cards keep their order
+        # no integrated chip, or only integrated chips: the old rule
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 1.0, 1: 2.0}, None, {0: "gfx1201", 1: "gfx1201"}), [0, 1])
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 2.0, 1: 1.0}, None, {0: "gfx1151", 1: "gfx1151"}), [1, 0])
+
+    def test_igpu_split_warning(self):
+        from serve.server import igpu_split_warning
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        line = igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, arch)
+        self.assertIn("GPU 0 is built-in graphics", line)
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1]}, arch))              # one card
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0]}, arch))
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1, 2]}, {1: "gfx1201", 2: "gfx1201"}))
+        self.assertIsNone(igpu_split_warning({"backend": "cuda", "gpu": [0, 1]}, arch))          # NVIDIA: not this rule
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, {0: "gfx1151", 1: "gfx1103"}))   # only integrated chips
+
+    def test_kfd_archs_and_engine_nice(self):
+        import tempfile
+        from serve.server import engine_nice, hip_gpu_archs
+        with tempfile.TemporaryDirectory() as d:
+            for n, simd, ver in ((0, 0, 0), (1, 80, 110501), (2, 128, 120001)):
+                os.makedirs(os.path.join(d, str(n)))
+                with open(os.path.join(d, str(n), "properties"), "w") as f:
+                    f.write(f"simd_count {simd}\nmax_engine_clk_fcompute 2000\ngfx_target_version {ver}\n")
+            self.assertEqual(hip_gpu_archs(root=d), {0: "gfx1151", 1: "gfx1201"})
+        self.assertIsNone(hip_gpu_archs(root="/nonexistent/kfd"))
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        self.assertEqual(engine_nice({}, arch, "linux"), 5)                            # built-in Radeon on the PC
+        self.assertEqual(engine_nice({}, {0: "gfx1201"}, "linux"), 0)                  # cards only: unchanged
+        self.assertEqual(engine_nice({}, arch, "win32"), 0)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "0"}, arch, "linux"), 0)   # the off switch
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "9"}, {0: "gfx1201"}, "linux"), 9)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "x"}, arch, "linux"), 0)
+
+    def test_picture_reader_not_on_the_igpu(self):
+        """The picture reader runs on the first visible card; with a split that starts on the iGPU it must use a card of its own."""
+        from serve.server import vision_env
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        cfg = {"backend": "hip", "gpu": [0, 1], "vision": {"exe": "v"}}
+        env = {"HIP_VISIBLE_DEVICES": "0,1", "PATH": "x"}
+        self.assertEqual(vision_env(cfg, env, arch)["HIP_VISIBLE_DEVICES"], "1")
+        self.assertEqual(env["HIP_VISIBLE_DEVICES"], "0,1")                            # the engine's own environment is not touched
+        self.assertEqual(vision_env({**cfg, "vision": {"exe": "v", "cuda_device": 0}}, env, arch)["HIP_VISIBLE_DEVICES"], "0")   # asked: kept
+        for e in ({"HIP_VISIBLE_DEVICES": "1"}, {"HIP_VISIBLE_DEVICES": "0"}, {}):
+            self.assertIs(vision_env(cfg, e, arch), e)                                 # one card: unchanged
+        two = {"HIP_VISIBLE_DEVICES": "0,1"}
+        self.assertIs(vision_env(cfg, two, {0: "gfx1201", 1: "gfx1201"}), two)         # no integrated chip
+        self.assertIs(vision_env(cfg, two, {0: "gfx1151", 1: "gfx1103"}), two)         # nothing with memory of its own
 
     def test_kfd_scores(self):
         """AMD on Linux: the GPU nodes of the KFD topology, SIMDs x clock, node order = the config's index."""
@@ -1803,7 +1881,6 @@ class GpuChoice(unittest.TestCase):
         self.assertIn("none of this computer's graphics cards has code in this Strata engine (it is built for gfx1200,gfx1201)", problem)
         self.assertIn("AMD Radeon RX 6800 XT (gfx1030)", problem)
         self.assertIn("760M Graphics (gfx1103, integrated)", problem)
-        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", problem)
         # through the engine's own program, and never over a card the config or the environment names
         with tempfile.TemporaryDirectory() as d:
             exe = Path(d) / ("strata.exe" if os.name == "nt" else "strata")
@@ -4398,6 +4475,41 @@ class ForcedToolChoice(unittest.TestCase):
                 args[tc["index"]] = args.get(tc["index"], "") + tc["function"].get("arguments", "")
             finish = c["choices"][0]["finish_reason"] or finish
         return finish, [(names[i], json.loads(args[i])) for i in sorted(names)], reasoning
+
+    def says(self, answer):
+        """The engine answers `answer` after an empty thought."""
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            self.engine.prompts.append(list(ids))
+            yield from self.tok.encode("</think>\n\n" + answer) + self.tok.encode("<|im_end|>", parse_special=True)
+        self.engine.generate = generate
+
+    def test_a_call_the_request_never_offered_stays_text(self):
+        """#3075: the model goes on writing the format it was shown; a request that offered no such tool gets text."""
+        from serve.frontend import CALL_END, CALL_START
+        answer = ("I will check that.\n" + CALL_START + "\n<function=lookup>\n<parameter=q>\n2+2\n</parameter>\n"
+                  "</function>\n" + CALL_END + "\nHere is the report.")
+        self.says(answer)
+        for label, extra in {"nothing declared": {"tools": []}, "tool_choice none": {"tool_choice": "none"},
+                             "other tools": {}}.items():
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream, **extra)
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("stop", []), b)
+                    if not stream:
+                        content = b["choices"][0]["message"]["content"] or ""
+                        self.assertIn("Here is the report.", content)
+                        self.assertIn("<function=lookup>", content)
+
+    def test_a_call_with_a_dropped_function_keyword_is_still_the_call(self):
+        """#3441: `<=search>` for `<function=search>`, as a model under a large tool surface writes it."""
+        from serve.frontend import CALL_END, CALL_START
+        self.says(CALL_START + "\n<=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]), b)
 
     def test_required_and_named_after_the_thinking(self):
         for choice in ("required", self.NAMED):

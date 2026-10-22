@@ -50,6 +50,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -502,6 +503,8 @@ struct Options {
     strata::kernels::cpu::PoolAffinity pool_affinity = strata::kernels::cpu::PoolAffinity::All;
     /// --host-core first|last (STRATA_HOST_CORE): the host thread's core (see HostCore in pool.hpp)
     std::string host_core;
+    /// --pool-cores LIST (STRATA_POOL_CORES; experimental, off by default): the logical processors the pool workers are pinned to
+    std::string pool_cores;
     /// R2.2's first half, as an A/B arm.  **ON by default**, because the measurement that justifies it is the
     /// pool's own drain: 33.7 GB/s against 5/6 x 44.14 = 36.8 for five workers, on a machine whose sixth core
     /// is reserved for a host thread that has nothing to do while the drain runs.
@@ -930,6 +933,9 @@ void usage() {
                  "                       interrupts to one logical processor, usually the first, and every copy that lands\n"
                  "                       raises one: a spinning host there waits for them.  Moves threads only, never a\n"
                  "                       result.  Not on hybrid CPUs (STRATA_HOST_CORE sets it too).\n"
+                 "  --pool-cores LIST    Experimental, off by default: pin the CPU workers to exactly these logical\n"
+                 "                       processors (0,2,4,6 or 2-14:2).  Two entries on one core, or the host's own, are\n"
+                 "                       kept with a warning.  STRATA_POOL_CORES sets it too.\n"
                  "  --pool-affinity MODE Worker CPU affinity: all (default: one worker per physical core, as\n"
                  "                       always), auto (hybrid CPUs: P-cores first, then their SMT siblings,\n"
                  "                       then E-cores) or p-cores (P-cores and their siblings only).\n"
@@ -1626,8 +1632,8 @@ catch (sycl::exception const &exc) {
 // what the x16 share costs.  Continuous (#485): before, 19.9 GB/s gave 0.42 and 20.0 the full 0.55 (and 4.0 GB/s
 // gave 0.08, 3.9 none), so a reading near either edge moved the share by a quarter of its range.  From 20 GB/s up
 // (an x16 PCIe 4/5 link: ~26-28 GB/s) the share is unchanged.
-double pcie_frac_for_gbps(double gbps, double base) {
-    return gbps <= 0.0 ? base : base * std::min(1.0, gbps / 20.0);
+double pcie_frac_for_gbps(double gbps, double base, double ref_gbps = 20.0) {
+    return gbps <= 0.0 ? base : base * std::min(1.0, gbps / ref_gbps);
 }
 
 // 0.1.42 (CUDA) / 0.1.48 (SYCL, opt-in STRATA_PCIE_FRAC_DEFAULT=auto): the share refined from what the CPU pool measures in
@@ -1834,6 +1840,7 @@ int main(int argc, char **argv) try {
         else if (a == "--graph-only") o.graph_only = true;
         else if (a == "--gpu-only-full") o.gpu_only_full = true;
         else if (a == "--pool-workers") o.pool_workers = std::atoi(next("--pool-workers"));
+        else if (a == "--pool-cores") o.pool_cores = next("--pool-cores");
         else if (a == "--host-core") {
             o.host_core = next("--host-core");
             if (o.host_core != "first" && o.host_core != "last") {
@@ -2069,6 +2076,18 @@ int main(int argc, char **argv) try {
         if (hc.empty())
             if (const char* e = std::getenv("STRATA_HOST_CORE")) hc = e;
         if (hc == "last") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Last);
+    }
+    {   // --pool-cores / STRATA_POOL_CORES (experimental, off by default), before the pool is built; a list that cannot be read is
+        // said and left out (recommend, never force)
+        std::string pc = o.pool_cores;
+        if (pc.empty())
+            if (const char* e = std::getenv("STRATA_POOL_CORES")) pc = e;
+        if (!pc.empty()) {
+            std::vector<int> cpus;
+            std::string perr;
+            if (strata::kernels::cpu::parse_pool_cores(pc, cpus, perr)) strata::kernels::cpu::set_pool_cores(cpus);
+            else std::fprintf(stderr, "strata generate: --pool-cores: %s; the pool uses its default placement\n", perr.c_str());
+        }
     }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
@@ -2610,6 +2629,11 @@ int main(int argc, char **argv) try {
                 return 1;
             }
         }
+        // APR (prism.hadamard) packs (Gyro): every expert path rotates its activations (CPU pool: native_quant_act / _h;
+        // GPU verify and the prompt's FP16 chain: hadamard_rows).  Validated on the Arc A750 (SYCL, JIT build).
+        if (strata::kernels::cpu::hadamard_spec().any())
+            std::fprintf(stderr, "strata generate: APR pack: Hadamard-folded experts (block %d)\n",
+                         strata::kernels::cpu::hadamard_spec().block);
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
@@ -2641,7 +2665,16 @@ int main(int argc, char **argv) try {
         if (!native_pack) {
             o.pcie_frac = base;
         } else if (bw > 0.0) {
-            o.pcie_frac = pcie_frac_for_gbps(bw, base);
+            // Gyro's trellis experts: the CPU pool decodes them at ~8 GB/s (48 cycles a block on AVX2, compute bound, a third of the
+            // i-quants' rate), so the link carries a bigger share of the misses than the 20 GB/s reference says.  Measured on the
+            // Arc A750 (10.5 GB/s link): 0.29 -> 12.8 tok/s, 0.45 -> 15.5, 0.60 -> 15.2 (5 interleaved pairs each).  The reference
+            // for these packs is 12 GB/s: 10.5 GB/s gives 0.48; from 12 GB/s up the measured 0.55 stays.
+            bool trellis = false;
+            {
+                const auto& lay = strata::kernels::cpu::expert_layout();
+                for (size_t l = 0; lay.native && l < lay.fmt.size(); ++l) trellis = trellis || lay.fmt[l].gu_type >= 144;
+            }
+            o.pcie_frac = pcie_frac_for_gbps(bw, base, trellis ? 12.0 : 20.0);
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s) -> pcie_frac %.2f "
                                  "(default %.2f)\n", bw, bursts.c_str(), o.pcie_frac, base);
             {   // PcieAuto on SYCL: opt-in (STRATA_PCIE_FRAC_DEFAULT=auto), one card, not the xe NO_HOST path
@@ -4428,6 +4461,8 @@ int main(int argc, char **argv) try {
                              "(--host-core %s)\n", pool.workers(), on.c_str(), ht.host_core,
                      pool.host_works() ? " (draining too)" : "",
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last ? "last" : "first");
+        // the same facts in plain words, and whether each worker has a physical core of its own
+        std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
     }
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`

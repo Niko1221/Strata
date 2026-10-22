@@ -267,6 +267,22 @@ class TunerTest(unittest.TestCase):
         self.assertEqual(r.outcome, "default_confirmed")
         self.assertTrue(any(a["status"] == "skipped" and "memory" in a["reason"] for a in r.arms))
 
+    def test_memory_wait_gives_up_when_nothing_is_freed(self):
+        # #3490: a loaded model keeps the memory; ten minutes of waiting per candidate made a tuning last for hours
+        model = speed_with({})
+        clock = FakeClock()
+        session = StubSession(model=model, clock=clock)
+
+        def system():
+            out = session.system()
+            out["memory"]["available_mib"] = 40000 if not session.runs else 3000
+            return out
+        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(per_request=False), clock=clock,
+                           sleep=clock.sleep, system=system, total_ram_mib=64000, quiet=lambda: None)
+        before = clock()
+        t.run()
+        self.assertLess(clock() - before, 600.0, "waited for the whole ten minutes per candidate")
+
     def test_nothing_compared_is_inconclusive_not_default_confirmed(self):
         model = speed_with({})
         clock = FakeClock()

@@ -1,6 +1,7 @@
 import { migrateSetup } from './setup.mjs';
 /** Tiny persisted state for the host: one JSON file under STRATA_HOME. */
 import { accessSync, constants, mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync, readdirSync, statSync, statfsSync, symlinkSync } from 'node:fs';
+import { alignModels, isDriveRoot, libraryFolderFromPick, makeFolder } from './model-folder.mjs';
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { defaultModelDirectory } from './model-directory-default.mjs';
@@ -58,29 +59,42 @@ function read() {
 
 let state = read();
 const DEFAULT_MODELS_DIRECTORY=defaultModelDirectory();
-function initialModelsDirectory() {
- if(state.modelsDir)return state.modelsDir;
- const legacy=realpathSync(join(HOME,'models'));
- // Keep an existing library in place. A new install uses Documents/Strata/Models.
+/**
+ * The model folder for a new install: the saved one, an existing library inside STRATA_HOME, else Documents/Strata/Models. A Documents folder
+ * that cannot be made (Controlled folder access, a disconnected share, an offline OneDrive known folder) must not stop the host from starting:
+ * the models go to STRATA_HOME/models instead, and `notice` says so in plain words.
+ */
+export function pickModelsDirectory({ saved, home, preferred, fixedByEnv = false }) {
+ if (saved) return { directory: saved, notice: '' };
+ const fallback = join(home, 'models');
+ let legacy = fallback;
+ try { legacy = realpathSync(fallback); } catch { /* the folder is made at start; keep the plain path */ }
  function hasWeights(folder,depth=0){try{return readdirSync(folder,{withFileTypes:true}).some(entry=>entry.isFile()&&/\.gguf(?:\.part|\.partial)?$/i.test(entry.name)||entry.isDirectory()&&depth<4&&hasWeights(join(folder,entry.name),depth+1));}catch{return false;}}
- if(!process.env.STRATA_MODELS_DIR&&hasWeights(legacy))return legacy;
- const directory=DEFAULT_MODELS_DIRECTORY;
- mkdirSync(directory,{recursive:true});
- return realpathSync(directory);
+ // Keep an existing library in place. A new install uses Documents/Strata/Models.
+ if (!fixedByEnv && hasWeights(legacy)) return { directory: legacy, notice: '' };
+ try {
+  mkdirSync(preferred, { recursive: true });
+  accessSync(preferred, constants.R_OK | constants.W_OK | constants.X_OK);
+  return { directory: realpathSync(preferred), notice: '' };
+ } catch (error) {
+  return { directory: legacy, notice: `Strata could not use ${preferred} for models (${error.code ?? error.message}), so models go to ${legacy}. You can pick another folder in Settings.` };
+ }
 }
-export let MODELS_DIR = initialModelsDirectory();
+const MODELS_PICK = pickModelsDirectory({ saved: state.modelsDir, home: HOME, preferred: DEFAULT_MODELS_DIRECTORY, fixedByEnv: !!process.env.STRATA_MODELS_DIR });
+/** Plain words for the person when the usual model folder could not be used (empty otherwise). */
+export const MODELS_DIR_NOTICE = MODELS_PICK.notice;
+if (MODELS_DIR_NOTICE) console.warn(`[strata] ${MODELS_DIR_NOTICE}`);
+export let MODELS_DIR = MODELS_PICK.directory;
 
 /** Native setup writes weights to data_dir/models. Keep its data root one level up. */
 export function nativeDataDirectory(input) {
  if(!input||process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY))return input;
+ if(MODELS_DIR_NOTICE)return input;
  const root=realpathSync(DEFAULT_MODELS_DIRECTORY);
  if(resolve(input)!==resolve(DEFAULT_MODELS_DIRECTORY)&&realpathSync(input)!==root)return input;
- const data=dirname(root),nativeModels=join(data,'models');
- // On Windows/macOS case-insensitive volumes, Models already resolves as models.
- // On Linux, a relative alias keeps the native layout inside the requested folder.
- if(!existsSync(nativeModels))symlinkSync(process.platform==='win32'?root:'Models',nativeModels,process.platform==='win32'?'junction':'dir');
- const a=statSync(nativeModels),b=statSync(root);
- if(realpathSync(nativeModels)!==root&&!(a.ino&&a.ino===b.ino&&a.dev===b.dev))throw new Error('The default model folder conflicts with another library. Choose a different folder.');
+ const data=dirname(root);
+ // `models` and `Models` are one folder on Windows and macOS; where they are not (Linux) a link makes them one, and where no link can be made (exFAT, a share) models go in `models`.
+ alignModels(data,root);
  return data;
 }
 
@@ -95,6 +109,8 @@ export function validateModelsDirectory(input) {
     if (!statSync(directory).isDirectory()) throw new Error();
     accessSync(directory, constants.R_OK | constants.W_OK | constants.X_OK);
   } catch { throw new Error('This folder is unavailable or not writable. Check the path and folder permissions.'); }
+  // A whole drive (D:\) is not filled with models: D:\Strata\Models is made and used.
+  if (isDriveRoot(directory)) directory = realpathSync(makeFolder(libraryFolderFromPick(directory).path));
   const data = realpathSync(DATA_DIR);
   const contains = (parent, child) => { const r = relative(parent, child); return !r || !r.startsWith('..') && !isAbsolute(r); };
   if (directory === parse(directory).root || contains(directory, data) || contains(data, directory)) throw new Error('Choose a separate folder for models, outside Strata’s app data.');
