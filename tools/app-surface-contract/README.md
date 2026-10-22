@@ -33,14 +33,15 @@ credentials and unknown fields. Treat it as local owner metadata: hardware facts
 are not meant for anonymous publication. It does not confirm that a model is loaded
 or that a client has adopted a context length.
 
-App 0.2.1 is the tested contract. Missing components, unknown versions or changed
+App 0.2.1 and 0.2.2 are the tested contracts. Missing components, unknown versions or changed
 Context/Idle/host interfaces produce `needs_validation` and a nonzero exit. Do not
 turn a failed read into invented defaults. A source fingerprint is an identity check
 for files in the installation the user trusts; it does not replace vendor signatures.
 
 ## Reviewed Surface Ownership
 
-The snapshot also exports `surface.schema: 1`, `surface.appVersion: "0.2.1"` and
+The snapshot also exports `surface.schema: 1`, the inspected version in
+`surface.appVersion` (`"0.2.1"` or `"0.2.2"`) and
 `surface.validation: "source-anchors-only"`. Each `surface.areas` entry contains an
 `area`, its `owner` and representative `routes` with only `path` and `method`.
 The version of this section is independent of the snapshot/asset manifest schema.
@@ -135,3 +136,8 @@ packaging or installer file. Compare against the recorded base before submitting
 ```text
 git diff <base-revision> -- . ":!tools/app-surface-contract"
 ```
+
+The [App 0.2.2 Windows acceptance report](validation-app-0.2.2.md) records the
+installed metadata read, byte-preserving export and fresh verification separately
+from the fixture suite. Support is limited to the two explicitly reviewed
+versions; unchanged version labels do not bypass source or contract drift checks.

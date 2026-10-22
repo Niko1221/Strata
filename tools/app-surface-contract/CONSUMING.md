@@ -1,8 +1,9 @@
 # Consuming The Contract
 
 These lessons describe how a companion should consume the optional snapshot and
-unmodified asset export. They come from static inspection of App 0.2.1 source,
-not live integration validation. The helper implements no production bridge.
+unmodified asset export. They come from static inspection of App 0.2.1 source
+and installed App 0.2.2 metadata/source-identity acceptance, not live API integration
+validation. The helper implements no production bridge.
 Route descriptors identify owners; they grant no permission to call an API.
 
 ## Model Identity And Context

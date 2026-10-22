@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { reviewedSurface } from './surfaces.mjs';
+import { reviewedSurface, REVIEWED_APP_VERSIONS } from './surfaces.mjs';
 
 const CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288];
 const MAX_FILE = 32 * 1024 * 1024, MAX_TOTAL = 128 * 1024 * 1024;
@@ -186,10 +186,10 @@ export async function inspectApp(hostDir) {
     if (typeof hostDir !== 'string' || !isAbsolute(hostDir)) throw failure('official_host_required');
     hostDir = resolve(hostDir);
     const { version: appVersion } = await jsonFile(join(hostDir, 'package.json'));
-    if (appVersion !== '0.2.1') throw failure('official_app_version_needs_validation');
+    if (!REVIEWED_APP_VERSIONS.includes(appVersion)) throw failure('official_app_version_needs_validation');
     const hostFingerprint = await fingerprint(hostDir);
     const source = (await bytes(join(hostDir, 'server/index.mjs'))).toString('utf8');
-    const surface = reviewedSurface(source);
+    const surface = reviewedSurface(source, appVersion);
     // Query strings also avoid stale module instances on a later inspection.
     const owner = await import(`${pathToFileURL(join(hostDir, 'server/control-runtime.mjs')).href}?contract=${hostFingerprint}`);
     const { NATIVE_FIELDS: fields } = await import(`${pathToFileURL(join(hostDir, 'server/native-settings.mjs')).href}?contract=${hostFingerprint}`);

@@ -1,4 +1,5 @@
-/** Reviewed App 0.2.1 source anchors, not a router, permission list or live probe. */
+/** Reviewed App 0.2.1/0.2.2 source anchors, not a router, permission list or live probe. */
+export const REVIEWED_APP_VERSIONS = Object.freeze(['0.2.1', '0.2.2']);
 // Whitespace changes are harmless; changed route/method/owner anchors need review.
 const compact = text => text.replace(/\s+/g, '');
 const route = (path, method, ownerCall) => ({
@@ -56,7 +57,9 @@ const reviewed = [
   ['updates', 'official-app-control', [route('/api/updates/check', 'GET', 'checkComponentUpdates(')]],
 ];
 
-export function reviewedSurface(source) {
+export function reviewedSurface(source, appVersion = '0.2.1') {
+  if (!REVIEWED_APP_VERSIONS.includes(appVersion))
+    throw Object.assign(new Error('official_app_version_needs_validation'), { code: 'official_app_version_needs_validation' });
   const text = compact(source);
   for (const [, , routes] of reviewed) {
     for (const { anchors } of routes) {
@@ -65,6 +68,6 @@ export function reviewedSurface(source) {
     }
   }
   // Construct fresh allowlisted records: no caller metadata, URLs or commands.
-  return { schema: 1, appVersion: '0.2.1', validation: 'source-anchors-only',
+  return { schema: 1, appVersion, validation: 'source-anchors-only',
     areas: reviewed.map(([area, owner, routes]) => ({ area, owner, routes: routes.map(({ api }) => ({ ...api })) })) };
 }

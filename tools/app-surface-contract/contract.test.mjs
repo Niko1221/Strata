@@ -34,7 +34,7 @@ function catalog() {
 const reply = raw => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: raw } }) + '\n';
 const rejects = (action, code) => assert.rejects(action, error => error.code === code && error.message === code);
 
-async function fixture(t) {
+async function fixture(t, appVersion = '0.2.1') {
   // Disposable files stay within the authorized checkout, never a live App or user profile.
   const root = await mkdtemp(join(here, '.contract-fixture-'));
   t.after(() => {
@@ -46,7 +46,7 @@ async function fixture(t) {
   const host = join(root, 'host'), control = join(root, 'control');
   for (const dir of ['host/server', 'host/dist', 'control/python/bin', 'control/tools', 'control/strata_control'])
     await mkdir(join(root, dir), { recursive: true });
-  await writeFile(join(host, 'package.json'), JSON.stringify({ type: 'module', version: '0.2.1' }));
+  await writeFile(join(host, 'package.json'), JSON.stringify({ type: 'module', version: appVersion }));
   await writeFile(join(host, 'dist/index.html'), '<title>Official Fixture</title>');
   // Read source as text only. Importing index.mjs would start the real Host.
   await writeFile(join(host, 'server/index.mjs'), await readFile(join(repo, 'apps/host/server/index.mjs')));
@@ -128,9 +128,29 @@ test('reads official values, strips nested private fields, and issues only the r
   assert.equal(await digest(root), before, 'metadata reads preserve every fixture file');
 });
 
+test('App 0.2.2 exports and freshly verifies its own versioned surface without changing source', async t => {
+  const { root, host, control } = await fixture(t, '0.2.2');
+  const before = await digest(host), controlBefore = await digest(control);
+  const settings = await readFile(join(root, 'app-settings.json'));
+  const inspected = await inspectApp(host);
+  const snapshot = await readCapabilities(inspected, { run: async () => reply(catalog()) });
+  assert.equal(snapshot.app.version, '0.2.2');
+  assert.equal(snapshot.surface.appVersion, '0.2.2');
+  assert.deepEqual(snapshot.surface.areas, reviewedSurface(await readFile(join(host, 'server/index.mjs'), 'utf8')).areas);
+  const output = join(root, 'candidate');
+  const receipt = await exportCandidate(inspected, output, snapshot);
+  const fresh = await readCapabilities(await inspectApp(host), { run: async () => reply(catalog()) });
+  assert.equal((await verifyCandidate(output, { manifestSha256: receipt.manifestSha256, current: fresh })).state, 'verified');
+  await assert.rejects(() => verifyCandidate(output, { manifestSha256: receipt.manifestSha256,
+    current: { ...fresh, app: { ...fresh.app, version: '0.2.1' } } }), /app_source_changed/);
+  assert.equal(await digest(host), before);
+  assert.equal(await digest(control), controlBefore);
+  assert.deepEqual(await readFile(join(root, 'app-settings.json')), settings);
+});
+
 test('unsupported App version fails before importing host modules', async t => {
   const { host } = await fixture(t);
-  await writeFile(join(host, 'package.json'), '{"version":"0.2.2"}');
+  await writeFile(join(host, 'package.json'), '{"version":"0.2.3"}');
   await writeFile(join(host, 'server/control-runtime.mjs'), 'throw Error("must not import");');
   await rejects(() => inspectApp(host), 'official_app_version_needs_validation');
   await rejects(() => inspectApp('relative/host'), 'official_host_required');
@@ -143,28 +163,30 @@ test('missing routes fail closed', async t => {
 });
 
 test('changed surface route, method and owner anchors fail before imports with safe CLI errors', async t => {
-  for (const [before, after] of [
-    ["path === '/api/model-providers' && method === 'GET'", "path === '/api/model-providers' && method === 'HEAD'"],
-    ['/api/monitor', '/api/changed-monitor'],
-    ['native.setDefault(nativeInstance[1])', 'changedOwner()'],
-    ['native.save(nativeSettings[1],await readBody(req))', 'changedSettings()'],
-    ['agent.researchCommand(', 'changedResearch('],
-    ['agentTools.update(await readBody(req))', 'changedTools()'],
-    ['/api/workspace/file', '/api/changed-file'],
-    ['checkComponentUpdates(', 'changedUpdates('],
-  ]) {
-    const { host } = await fixture(t), path = join(host, 'server/index.mjs');
-    const source = await readFile(path, 'utf8');
-    assert.equal(reviewedSurface(source).schema, 1, 'the unmodified source must pass first');
-    assert.ok(source.includes(before));
-    await writeFile(path, source.replaceAll(before, after));
-    await writeFile(join(host, 'server/control-runtime.mjs'), 'throw Error("secret-import-must-not-run");');
-    await rejects(() => inspectApp(host), 'official_host_contract_changed');
-    const cli = spawnSync(process.execPath, [join(here, 'cli.mjs'), 'snapshot', '--host', host],
-      { encoding: 'utf8', windowsHide: true });
-    assert.equal(cli.status, 1);
-    assert.equal(cli.stderr, '');
-    assert.deepEqual(JSON.parse(cli.stdout), { schema: 1, state: 'needs_validation', reason: 'official_host_contract_changed' });
+  for (const appVersion of ['0.2.1', '0.2.2']) {
+    for (const [before, after] of [
+      ["path === '/api/model-providers' && method === 'GET'", "path === '/api/model-providers' && method === 'HEAD'"],
+      ['/api/monitor', '/api/changed-monitor'],
+      ['native.setDefault(nativeInstance[1])', 'changedOwner()'],
+      ['native.save(nativeSettings[1],await readBody(req))', 'changedSettings()'],
+      ['agent.researchCommand(', 'changedResearch('],
+      ['agentTools.update(await readBody(req))', 'changedTools()'],
+      ['/api/workspace/file', '/api/changed-file'],
+      ['checkComponentUpdates(', 'changedUpdates('],
+    ]) {
+      const { host } = await fixture(t, appVersion), path = join(host, 'server/index.mjs');
+      const source = await readFile(path, 'utf8');
+      assert.equal(reviewedSurface(source, appVersion).schema, 1, 'the unmodified source must pass first');
+      assert.ok(source.includes(before));
+      await writeFile(path, source.replaceAll(before, after));
+      await writeFile(join(host, 'server/control-runtime.mjs'), 'throw Error("secret-import-must-not-run");');
+      await rejects(() => inspectApp(host), 'official_host_contract_changed');
+      const cli = spawnSync(process.execPath, [join(here, 'cli.mjs'), 'snapshot', '--host', host],
+        { encoding: 'utf8', windowsHide: true });
+      assert.equal(cli.status, 1);
+      assert.equal(cli.stderr, '');
+      assert.deepEqual(JSON.parse(cli.stdout), { schema: 1, state: 'needs_validation', reason: 'official_host_contract_changed' });
+    }
   }
 });
 
