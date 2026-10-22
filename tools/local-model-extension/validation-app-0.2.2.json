@@ -1,0 +1,520 @@
+{
+  "schema": 1,
+  "date": "2026-10-22",
+  "environment": {
+    "os": "Windows 11 x64 10.0.26300",
+    "gpu": "NVIDIA GeForce RTX 5080, 16303 MiB reported",
+    "app": "0.2.2",
+    "control": "0.1.47",
+    "engine": "0.1.47",
+    "python": "3.12.10",
+    "node": "24.12.0",
+    "model": "Existing Swift Qwen3.8 IQ3_XXS GGUF, unchanged source profile; disposable 24 GiB resident budget and 8192-token context"
+  },
+  "tray": {
+    "source": "ff69390ecaeb6e130cbe1939d78c64d6fa60a81b",
+    "binarySha256": "1d226b998942de822c5752caf74205266d0166da86a3b6dd40004f8fcb276e72",
+    "sourceFilesVerifiedBeforeDocumentation": 30,
+    "sourceManifestSha256": "e2f0652ba99e310bea5e1a3fe31addc434f7c5949f7ab9814488492dce4ee900"
+  },
+  "extension": {
+    "source": "71e26101131235b42422494bff0550cb193200cf",
+    "originalPackage": "1.0.0-dd445334ea48",
+    "correctedPackage": {
+      "release": "1.0.0-088a8606771d",
+      "sha256": "088a8606771d8182c2959cf9a2274dbbdba3e27a874e15ee699a10243df8bf92"
+    },
+    "sourceFilesSha256": {
+      "host-preload.mjs": "101b618fc051020050c2fc62af3f833de1f9da9c0f859626580b750f05b490d2",
+      "extension_bridge.mjs": "773248e17147fcfe7ff85635a62cd6d0a55b0fd20c9d9e84220dd46f60ec059a",
+      "owner_api.mjs": "1d8e004ddcb4638a1232778473d87df5e67126ebb2023b69525eae5b6c3941bd",
+      "launch.py": "68b68fe24f15d5ea926f0d1ed55dd439fcb6c510bfed3e71ca9b59ea72c8d489",
+      "extension_manager.py": "cd82c301fcd20c36f91c15c126073a6caa10b9427586b9ae09f8e7b059fbf792",
+      "package/ui/connected.mjs": "f09cab41580337928308f0eeef2d4d2747c927c80a563dc4020d08ba5572efc1"
+    },
+    "inventoryMatchesSource": true
+  },
+  "preservation": {
+    "observedFiles": 206,
+    "installedAppFiles": 188,
+    "unchangedFiles": 205,
+    "changedFileNames": [
+      "context-status.json"
+    ],
+    "mutableStatusNote": "The existing production owner publishes context-status.json with updated_at. It was read only and was not restored. All original profiles, Tray settings and client configurations in the baseline are unchanged.",
+    "installedExecutableSha256": "b9da619d16885e4963fa56a6bd442d2890411db2d09d844c67f71e87af14bb05",
+    "installedHostEntrySha256": "3e3c9e3bc98ee8ba500a93d346e534054f7e76d9f8f4d836a308874f49d62aaf",
+    "installedControlServerSha256": "bc09af76400932500f9ce09f401bf097ad7e7b120374d2cfbe3f4142fadd2304",
+    "nativeDownloadsRemainZero": true,
+    "originalProfilesAndClientSettingsIncluded": true
+  },
+  "uiObservations": {
+    "originalStorageConnectedCards": 2,
+    "correctedStorageConnectedCards": 1,
+    "nativeModelsFolderAndModelDirectoryPreserved": true,
+    "nativeDownloadCount": "No downloaded models; 0.0 GB",
+    "exactPickerTitle": "Acceptance Local API · acceptance-local-model",
+    "currentModelUseInChatConfirmed": true,
+    "manageModelsUseInChatConfirmed": true,
+    "correctedStorageUseInChatConfirmed": true,
+    "directChatResponse": "OK",
+    "directChatEnvironment": "STRATA_AGENT=off in disposable App child only"
+  },
+  "recovery": {
+    "disabled": {
+      "utc": "2026-10-22T11:28:16.259958+08:00",
+      "disabledHomeByteIdentical": true,
+      "disabledControlStatus": 503,
+      "requestUnchanged": true,
+      "preferencesSha256": "567912af5610c9c1e8ff2106ffc92834737f30900151b3324f8cebf2c428062c"
+    },
+    "syntheticUpdatePackage": "1.0.1-9cccc5339324",
+    "rollbackRestoredOriginalPackage": "1.0.0-dd445334ea48",
+    "rollbackNativeCurrentModelVisible": true,
+    "preferencesSha256Unchanged": true
+  },
+  "tests": {
+    "csharp": 81,
+    "managedPython": 16,
+    "extensionPython": 15,
+    "extensionNode": 71,
+    "packageManagerPython": 13,
+    "installedAppMetadata": 3,
+    "nodeSkipped": 0,
+    "storageRegressionBefore": "2 !== 1",
+    "storageRegressionAfter": "passed"
+  },
+  "limitations": [
+    "The first QA profile used a nonexistent expert-profile file; its owner request failed and was retained. Correcting only the disposable profile allowed preload; no product workaround was added.",
+    "Default agent chat reached the real server with 6545 prompt tokens at 8192 context and ended with a length limit/no answer. Direct chat returned OK; full agent-task acceptance is not claimed.",
+    "Physical Tray notification-area menu interaction, Open App menu action and graceful Exit menu action were not exercised. The real compiled Tray/owner/server and its file IPC were exercised.",
+    "Windows reboot/autostart, multiple monitors, other GPU backends, larger-context memory fit, live installer/signature/update/restart were not run. No benchmark or speedup claim."
+  ],
+  "stages": [
+    {
+      "stage": "initial-and-chat-selection",
+      "utc": "2026-10-22T11:15:27.692997+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 0,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 0,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": null,
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": null
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "explicit-preload",
+      "utc": "2026-10-22T11:18:32.927364+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 0,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 0,
+        "context": 8192
+      },
+      "loaded": {
+        "health": true,
+        "owner": true,
+        "api": true
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "7939e4e9-4044-4e2e-a6d1-cc7fd0ca3395",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": 1792639108
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "explicit-unload",
+      "utc": "2026-10-22T11:19:01.062776+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 0,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 0,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "17931982-ef92-4795-8e51-33681a00b876",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": 1792639108
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "context-65536",
+      "utc": "2026-10-22T11:21:01.600056+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 0,
+        "context": 65536
+      },
+      "effective": {
+        "idle": 0,
+        "context": 65536
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 65536,
+        "health": 65536,
+        "api": 65536
+      },
+      "request": {
+        "id": "1f35e85a-bb48-4206-aa97-6c839dbaeafc",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": null
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "context-restored-8192",
+      "utc": "2026-10-22T11:21:22.161348+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 0,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 0,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "60e24847-8060-40df-939e-7a86ee89a465",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": null
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "idle-300",
+      "utc": "2026-10-22T11:21:39.351037+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 300,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 300,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "84bae36f-b3a5-4941-8513-d1fa984d1159",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": null
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "native-agent-no-answer",
+      "utc": "2026-10-22T11:24:08.866441+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 300,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 300,
+        "context": 8192
+      },
+      "loaded": {
+        "health": true,
+        "owner": true,
+        "api": true
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "84bae36f-b3a5-4941-8513-d1fa984d1159",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 1,
+        "in_flight": 0,
+        "last_request_at": 1792639391
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "direct-chat-ok",
+      "utc": "2026-10-22T11:26:30.127023+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-dd445334ea48",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 300,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 300,
+        "context": 8192
+      },
+      "loaded": {
+        "health": true,
+        "owner": true,
+        "api": true
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "84bae36f-b3a5-4941-8513-d1fa984d1159",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 2,
+        "in_flight": 0,
+        "last_request_at": 1792639557
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "idle-auto-unloaded",
+      "utc": "2026-10-22T11:31:11.481375+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-088a8606771d",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 300,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 300,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "84bae36f-b3a5-4941-8513-d1fa984d1159",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 2,
+        "in_flight": 0,
+        "last_request_at": 1792639557
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "corrected-storage-handoff",
+      "utc": "2026-10-22T11:33:41.525278+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-088a8606771d",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 300,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 300,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "84bae36f-b3a5-4941-8513-d1fa984d1159",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 2,
+        "in_flight": 0,
+        "last_request_at": 1792639557
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    },
+    {
+      "stage": "restarted-lazy",
+      "utc": "2026-10-22T11:34:13.380242+08:00",
+      "appVersion": "0.2.2",
+      "package": "1.0.0-088a8606771d",
+      "physicalId": "acceptance-local-model",
+      "phase": "ready",
+      "selected": {
+        "idle": 300,
+        "context": 8192
+      },
+      "effective": {
+        "idle": 300,
+        "context": 8192
+      },
+      "loaded": {
+        "health": false,
+        "owner": false,
+        "api": false
+      },
+      "context": {
+        "cache": 8192,
+        "health": 8192,
+        "api": 8192
+      },
+      "request": {
+        "id": "84bae36f-b3a5-4941-8513-d1fa984d1159",
+        "state": "done"
+      },
+      "activity": {
+        "requests": 0,
+        "in_flight": 0,
+        "last_request_at": null
+      },
+      "credentialPreserved": true,
+      "unrelatedModelPreserved": true
+    }
+  ],
+  "cleanup": {
+    "qaListenersClosed": true,
+    "productionTrayAndListenerIdentitiesPreserved": true,
+    "termination": "Only owned test processes stopped; Windows Job cleanup observed. Physical graceful Exit menu action not exercised."
+  },
+  "catalogContexts": [
+    8192,
+    32768,
+    65536,
+    131072,
+    204800,
+    262144,
+    393216,
+    524288
+  ],
+  "idleChoices": [
+    0,
+    300,
+    600,
+    1800
+  ]
+}

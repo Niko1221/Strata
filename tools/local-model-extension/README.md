@@ -110,6 +110,8 @@ These are anonymous, simulated fixtures rendered from the actual extension
 assets and the actual `NativeModels` / `SettingsStorage` React components.
 They are not captures of a running model. No original user screenshot, private
 path, account detail, API credential or real hardware measurement is included.
+These images predate the App 0.2.2 Storage correction; the current connected card
+appears once, after the native Storage sections. See the acceptance report above.
 
 ![Current Model panel with catalog context and idle controls](examples/current-model.png)
 
@@ -132,6 +134,11 @@ that no model mutation was requested. No inference is run.
 
 ## Validation
 
+[App 0.2.2 acceptance](validation-app-0.2.2.md) records native App launch,
+Current Model/Manage Models/Storage integration, the Storage duplication fix,
+real owner controls, 300-second idle unload and disable/rollback. It separates
+the successful direct chat from the default agent's 8K output-budget limit.
+
 ```powershell
 node.exe --test tools/local-model-extension/owner_api.test.mjs tools/local-model-extension/extension_bridge.test.mjs tools/local-model-extension/host-preload.test.mjs tools/local-model-extension/package/ui.test.mjs
 python.exe -B -m unittest discover -s tools/local-model-extension -p test_*.py
@@ -144,6 +151,7 @@ Tray module when available. For a separate Tray checkout, set
 `STRATA_TEST_PYTHON` to the actual `python.exe`. Without that candidate, this one
 case is explicitly skipped; the independent API checks still run.
 
-Passing fixture/unit checks do not prove an installed App update, live inference,
-memory capacity, native GPU allocation or hardware load/unload. Those acceptance
-checks remain outstanding for this portable draft candidate.
+Fixture/unit checks and the bounded App 0.2.2 acceptance do not establish an
+installed App upgrade, arbitrary memory capacity, other GPU backends or future
+App layout compatibility. See the acceptance report for passed, limited and
+not-run checks.
