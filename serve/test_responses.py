@@ -560,9 +560,10 @@ class ToolRoundTrip(Server):
             code, r = self.post({"model": "m", "input": "go", "tools": tools, "stream": stream})
             self.assertEqual(code, 200, r)
             output = r[-1]["response"]["output"] if stream else r["output"]
-            call, = output
-            self.assertNotIn("namespace", call)
-            self.assertEqual(call["name"], "a__b__c")
+            self.assertFalse(any(item["type"] == "function_call" for item in output))
+            self.assertEqual("".join(item["content"][0]["text"] for item in output
+                                     if item["type"] == "message"),
+                             "<tool_call>\n<function=a__b__c>\n</function>\n</tool_call>")
 
         # A declared exact name wins over alias spellings and keeps its string schema.
         tools.append({"type": "function", "name": "a__b__c", "parameters": {

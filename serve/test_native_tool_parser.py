@@ -42,7 +42,7 @@ class NativeTools(unittest.TestCase):
                                                 for event in events if event.kind == "tool_start"))
 
 
-    def test_padded_unknown_wrapper_stays_text_and_unpadded_stays_native(self):
+    def test_padded_and_unpadded_unknown_wrappers_stay_text(self):
         for recover in (False, True):
             for streaming in (False, True):
                 for step in (1, 7, 4096):
@@ -61,7 +61,8 @@ class NativeTools(unittest.TestCase):
                     for i in range(0, len(text), step):
                         events += parser.feed(text[i:i + step])
                     events += parser.finish()
-                    self.assertEqual([event.call.name for event in events if event.kind == "tool_call"], ["missing"])
+                    self.assertFalse(any(event.kind.startswith("tool") for event in events))
+                    self.assertEqual("".join(event.text for event in events if event.kind == "content"), text)
 
 
     def test_padded_unknown_second_call_is_not_announced(self):
@@ -135,8 +136,9 @@ class NativeTools(unittest.TestCase):
         ambiguous = [{"name": "a.b__c"}, {"name": "a__b.c"}]
         parser = OutputParser(thinking=False, tools=ambiguous)
         text = CALL.replace("mcp__files__read", "a__b__c")
-        call = next(e.call for e in parser.feed(text)+parser.finish() if e.kind == "tool_call")
-        self.assertEqual(call.name, "a__b__c")
+        events = parser.feed(text) + parser.finish()
+        self.assertFalse(any(event.kind.startswith("tool") for event in events))
+        self.assertEqual("".join(event.text for event in events if event.kind == "content"), text)
 
 
 if __name__ == "__main__":
