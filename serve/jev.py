@@ -530,6 +530,47 @@ def _request_keys(pin: int) -> dict:
     return keys
 
 
+def _row_readout_enabled() -> bool:
+    """M3.1 fix B (jevpos): ONE prompt, N rows.  Off by default: fields 2..N read their cue from a window that
+    also carries the earlier questions - the same cue position, a different context - so this stays opt-in
+    until the accuracy/Brier A/B says the shift is free.  STRATA_JEV_ROWS=1 turns it on."""
+    import os
+    return os.environ.get("STRATA_JEV_ROWS", "0") not in ("0", "false", "False", "off", "")
+
+
+def consolidated_rows(svc, state_text: str, qdefs: list):
+    """Render ONE prompt for all the questions and return (ids, rows) - the absolute prompt position of each
+    field's cue - or None when the prefix cannot be kept exact.
+
+    Field 1's turn is exactly what M3.0 renders for it, so field 1's row is byte-identical to M3.0's.  Each
+    further field is its own user turn after the earlier fields' answer turns, so the state is read once and
+    every field still ends at an assistant cue.
+
+    The placeholder answer "-" is never decoded and never read: it exists because the frontend drops a
+    COMPLETED EMPTY assistant turn (#843), which would delete the next field's cue with it.  It is a real
+    token, so fields 2..N carry the earlier questions - the shift this path's A/B has to price.
+
+    The prefix check compares encoded ids rather than trusting the template: a BPE merge at a seam moves every
+    later position by a token, and a row read one token off answers the wrong question while looking fine.
+    """
+    units = []
+    for i, qdef in enumerate(qdefs):
+        content = (state_text + "\n\n" + question_block(qdef)) if i == 0 else question_block(qdef)
+        messages = [{"role": "system", "content": SYSTEM_V1}]
+        for prev in units:
+            messages.append({"role": "user", "content": prev["content"]})
+            messages.append({"role": "assistant", "content": "-"})   # never decoded; see above
+        messages.append({"role": "user", "content": content})
+        prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
+        ids = svc.tok.encode(prompt, parse_special=True)
+        if not ids:
+            return None
+        if units and units[-1]["ids"] != ids[:len(units[-1]["ids"])]:
+            return None                                            # seam moved: no row numbers to trust
+        units.append({"content": content, "ids": ids})
+    return units[-1]["ids"], [len(u["ids"]) - 1 for u in units]
+
+
 def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
     (svc.fifo), like every other engine-touching path."""
@@ -558,6 +599,28 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     if len(l_qdefs) > 1 and not image_state and _pin_enabled():
         l_pin = _shared_prefix_len(svc, [state_text + "\n\n" + question_block(q) for q in l_qdefs])
     with svc.fifo:                                       # the engine turn: one request at a time
+        # M3.1 fix B (jevpos, opt-in): text L-mode with more than one field - ONE prompt read, one head row
+        # kept per field, instead of one prompt per field.  Falls back to the per-question path whenever the
+        # engine cannot serve it (no jevpos, a template whose seam moves, a tokenizer that merges).
+        if (_row_readout_enabled() and len(qdefs) > 1 and not v_mode and not image_state
+                and getattr(engine, "info", {}).get("jevpos") == 1 and hasattr(engine, "row_logits_at")):
+            plan = consolidated_rows(svc, state_text, qdefs)
+            if plan is not None:
+                ids, rows = plan
+                cancel = threading.Event()
+                # one read, and the rows named in the same request; nothing extends this turn, so no checkpoint
+                for _ in engine.generate(ids, 1, {"jevpos": rows, "strata_checkpoint": False}, cancel):
+                    pass
+                for qdef, row_at in zip(qdefs, rows):
+                    variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+                    tokens = sorted({t for v in variants for t in v})
+                    try:
+                        scores = readout_scores(engine.row_logits_at(row_at, tokens), variants)
+                    except ValueError as e:
+                        return _err("state", f"logits readout failed: {e}")
+                    answers[qdef["id"]] = _finish_answer(qdef, scores, image_state)
+                return 200, {"answers": answers,
+                             "usage": {"prompt_tokens": len(ids), "readout_tokens": len(qdefs)}}
         l_seen = 0
         for qdef in qdefs:
             use_v = v_mode and qdef["type"] == "choice"   # X-Jev-Mode scopes to choice (donor :767)
