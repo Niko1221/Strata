@@ -190,6 +190,10 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     for (int l = 0; l < 48; ++l) {
         const std::string bl = "blk." + std::to_string(l) + ".";
         hc_read(bl + "hc_attn", l > 0 && !(l == 1 && ple_on_));
+        if (df_on_ && df_col(l) >= 0) {
+            if (b.F.bytes < (size_t) 4 * b.C * DF_W) b.F = cx_->alloc((size_t) 4 * b.C * DF_W);
+            ds.push_back(df_mean(b.R, b.F, df_col(l), nT));
+        }
         if (l % 4 != 3) {
             dq(T(bl + "attn_qkv.weight"), b.Wqkv);
             dq(T(bl + "attn_gate.weight"), b.Wz);
@@ -410,6 +414,7 @@ bool Window::prompt(const int64_t* tokens, int64_t n, int64_t pos0,
         const int nT = (int) std::min<int64_t>(C, n - c);
         if (pos0 + c + nT + 1 >= max_cells_) { err = "metal prompt: the prompt runs past the context"; return false; }
         if (!pc_chunk(tokens + c, nT, pos0 + c, err)) return false;
+        df_src_ = df_on_ ? &pb_.F : nullptr;
         if (on_chunk) {
             const double tm0 = now_ms();
             mpsrc_ = &pb_.R;   // the drafter's prompt rows are this chunk's final residuals

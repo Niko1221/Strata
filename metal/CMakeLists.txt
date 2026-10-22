@@ -122,3 +122,35 @@ target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
 add_executable(strata ${S}/program/generate.cpp)
 target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)
+
+# --dflash (opt-in): the DFlash2 drafter in place of the MTP layer, on Strata's own Metal kernels (src/engine/dflash.cpp).
+# STRATA_DFLASH=ON builds it.  STRATA_DFLASH_LLAMA (optional, implies STRATA_DFLASH): a shared build of STRATA_GGML_DIR
+# with GGML_METAL (cmake -S $STRATA_GGML_DIR -B <dir> -DGGML_METAL=ON -DLLAMA_BUILD_SERVER=OFF; its bin/ holds
+# libllama.dylib and the ggml dylibs) adds llama.cpp's DFLASH graph as a second backend (STRATA_DFLASH_NATIVE=0) and the
+# parity tests.  Neither set: --dflash is refused.
+option(STRATA_DFLASH "--dflash: the DFlash2 drafter (native Metal kernels)" OFF)
+set(STRATA_DFLASH_LLAMA "" CACHE PATH "llama.cpp Metal build dir (bin/libllama.dylib): --dflash's llama.cpp backend and parity tests")
+if(STRATA_DFLASH OR STRATA_DFLASH_LLAMA)
+  add_library(strata_dflash STATIC ${S}/spec/dflash_drafter.cpp)
+  target_include_directories(strata_dflash PRIVATE ${STRATA_ROOT}/include)
+  # the native backend lives in the engine's kernel library
+  target_link_libraries(strata_dflash PUBLIC strata_metal_kernels)
+  target_compile_definitions(strata PRIVATE STRATA_DFLASH=1)
+  target_link_libraries(strata PRIVATE strata_dflash)
+endif()
+if(STRATA_DFLASH_LLAMA)
+  if(NOT EXISTS "${STRATA_DFLASH_LLAMA}/bin/libllama.dylib")
+    message(FATAL_ERROR "STRATA_DFLASH_LLAMA='${STRATA_DFLASH_LLAMA}' has no bin/libllama.dylib")
+  endif()
+  # llama.h and llama-ext.h (the DFlash2 lattice) only: ggml's headers come through llama.h from the same checkout
+  target_include_directories(strata_dflash PRIVATE ${STRATA_GGML_DIR}/include ${STRATA_GGML_DIR}/src ${STRATA_GGML_DIR}/ggml/include)
+  target_compile_definitions(strata_dflash PRIVATE STRATA_DFLASH_LLAMA=1)
+  target_link_libraries(strata_dflash PUBLIC "${STRATA_DFLASH_LLAMA}/bin/libllama.dylib")
+  target_link_options(strata_dflash INTERFACE "LINKER:-rpath,${STRATA_DFLASH_LLAMA}/bin")
+  add_executable(dflash_drafter_test ${S}/spec/dflash_drafter_test.cpp)
+  target_include_directories(dflash_drafter_test PRIVATE ${STRATA_ROOT}/include)
+  target_link_libraries(dflash_drafter_test PRIVATE strata_dflash)
+  add_executable(dflash_native_parity_test ${S}/spec/dflash_native_parity_test.cpp)
+  target_include_directories(dflash_native_parity_test PRIVATE ${STRATA_ROOT}/include src)   # src: the reference reads the GGUF with gguf_lite / ref_quant
+  target_link_libraries(dflash_native_parity_test PRIVATE strata_dflash)
+endif()
