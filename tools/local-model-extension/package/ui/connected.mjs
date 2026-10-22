@@ -39,7 +39,7 @@ export function connectedTile({ win, target, kind, onUseInChat, theme, api = cre
   unload.addEventListener('click', () => void controller.perform('unload'), options);
   refresh.addEventListener('click', () => void controller.refresh(), options);
   if (kind === 'manage') target.insertBefore(host, target.querySelector('.native-manage-foot'));
-  else target.parentElement.insertBefore(host, target.nextSibling);
+  else target.append(host);
   return { host, controller,
     sync() { controller.setVisible(win.document.visibilityState !== 'hidden' && visible(win, target) && host.isConnected); },
     dispose() { events.abort(); controller.dispose(); host.remove(); },
@@ -55,9 +55,10 @@ export function observeConnectedModels({ win, onUseInChat, onError = () => {}, t
     for (const [target, tile] of records) {
       if (!target.isConnected || !tile.host.isConnected) { tile.dispose(); records.delete(target); }
     }
-    for (const target of doc.querySelectorAll('.native-manage, .storage-directory')) {
-      if (records.has(target) || !visible(win, target)) continue;
-      const kind = target.matches('.native-manage') ? 'manage' : 'storage';
+    for (const anchor of doc.querySelectorAll('.native-manage, .storage-directory')) {
+      const kind = anchor.matches('.native-manage') ? 'manage' : 'storage';
+      const target = kind === 'manage' ? anchor : anchor.closest('[role="tabpanel"]') ?? anchor.parentElement;
+      if (records.has(target) || !visible(win, anchor)) continue;
       const foot = target.querySelector('.native-manage-foot');
       if (kind === 'manage' && (!target.closest('[role="dialog"]') || foot?.parentElement !== target)) {
         if (!rejected.has(target)) { rejected.add(target); onError(new Error('Manage Models Layout Is Unsupported. Use Current Model To Access The Connected Model.')); }

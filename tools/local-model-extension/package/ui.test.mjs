@@ -708,13 +708,38 @@ function tileApi({ get: overrideGet, post: overridePost } = {}) {
   return { api, calls, setModel: value => { data = value; } };
 }
 
+test('Storage with two native directory sections has one connected tile per panel and preserves both sections', async t => {
+  const f = domFixture(), native = nativeSurfaces(f), api = tileApi(); native.dialog.remove();
+  native.storageCard.setAttribute('role', 'tabpanel'); native.storageCard.id = 'settings-panel-Storage';
+  const directory = f.element('section', { class: 'storage-directory' });
+  const heading = f.element('h3', {}, 'Model Directory');
+  const path = f.element('code', { class: 'storage-directory__path' }, 'D:\\Local Models');
+  const input = f.element('input'); input.value = 'D:\\Local Models';
+  directory.append(heading, path, input); native.storageCard.append(directory);
+  const observer = observeConnectedModels({ win: f.win, apiFactory: () => api.api, onUseInChat() {} }); t.after(() => observer.dispose());
+  await tick(); const hosts = native.storageCard.querySelectorAll('strata-connected-local-models');
+  assert.equal(hosts.length, 1);
+  observer.reconcile(); await tick(); assert.equal(native.storageCard.querySelectorAll('strata-connected-local-models').length, 1);
+  assert.deepEqual(native.storageCard.querySelectorAll('.storage-directory'), [native.storage, directory]);
+  assert.equal(native.path.textContent, 'C:\\Models\\Strata'); assert.equal(native.optimized.textContent, 'C:\\Models\\Strata');
+  assert.equal(native.input.value, 'C:\\Models\\Strata'); assert.equal(native.versions.textContent, '0 Versions Found');
+  assert.equal(heading.textContent, 'Model Directory'); assert.equal(path.textContent, 'D:\\Local Models'); assert.equal(input.value, 'D:\\Local Models');
+  assert.ok(api.calls.every(call => call.method === 'GET'));
+  native.storage.remove(); await tick();
+  assert.equal(native.storageCard.querySelector('strata-connected-local-models'), hosts[0], 'The Panel Anchor Survives A Directory Section Replacement');
+  native.storageCard.remove(); await tick(); assert.equal(hosts[0].isConnected, false);
+  f.doc.body.append(native.storageCard); await tick();
+  assert.equal(native.storageCard.querySelectorAll('strata-connected-local-models').length, 1);
+  assert.notEqual(native.storageCard.querySelector('strata-connected-local-models'), hosts[0]);
+});
+
 test('Manage Models and Storage show the one real connected model in isolated tiles without changing native counts or paths', async t => {
   const f = domFixture(), native = nativeSurfaces(f), api = tileApi();
   const data = model(); data.model.name = 'Example Local Model'; api.setModel(data);
   const observer = observeConnectedModels({ win: f.win, apiFactory: () => api.api, onUseInChat() {}, theme: 'light' }); t.after(() => observer.dispose());
   await tick(); const hosts = f.doc.querySelectorAll('strata-connected-local-models'); assert.equal(hosts.length, 2);
   assert.equal(native.manage.children.at(-2), hosts[0]); assert.equal(native.manage.children.at(-1), native.foot);
-  assert.equal(native.storage.nextSibling, hosts[1]); assert.equal(hosts[1].nextSibling, native.versions);
+  assert.equal(native.storage.nextSibling, native.versions); assert.equal(native.versions.nextSibling, hosts[1]);
   for (const host of hosts) {
     const root = host.shadowRoot;
     assert.equal(host.dataset.theme, 'light'); assert.equal(root.querySelectorAll('strong').length, 1);
@@ -733,7 +758,7 @@ test('connected tiles render literal metadata, optional files directory and trut
   const f = domFixture(), native = nativeSurfaces(f), api = tileApi(); native.dialog.remove();
   const data = model(); data.model.name = '<svg onload=alert(1)>'; data.model.filesDirectory = 'C:\\Models\\Strata\\weights'; data.model.loaded = true; api.setModel(data);
   const observer = observeConnectedModels({ win: f.win, apiFactory: () => api.api, onUseInChat() {} }); t.after(() => observer.dispose());
-  await tick(); const root = native.storage.nextSibling.shadowRoot;
+  await tick(); const root = native.storageCard.querySelector('strata-connected-local-models').shadowRoot;
   assert.equal(root.querySelector('strong').textContent, data.model.name); assert.match(root.textContent, /Model Files: C:\\Models\\Strata\\weights/);
   assert.match(root.querySelector('[role="status"]').textContent, /^Loaded · Ready To Chat/);
   data.available = false; api.setModel(data); root.querySelectorAll('button').find(button => button.textContent === 'Refresh Status').click(); await tick();
@@ -755,7 +780,7 @@ test('hidden or detached native surfaces stop reads, abort outstanding requests 
   await tick(); assert.equal(f.doc.querySelectorAll('strata-connected-local-models').length, 0);
   native.storageCard.hidden = false; await tick(); assert.equal(pending.length, 4);
   f.doc.visibilityState = 'hidden'; f.doc.dispatchEvent(new Event('visibilitychange')); assert.ok(pending.every(request => request.signal.aborted));
-  native.storage.nextSibling.shadowRoot.querySelectorAll('button').find(button => button.textContent === 'Refresh Status').click();
+  native.storageCard.querySelector('strata-connected-local-models').shadowRoot.querySelectorAll('button').find(button => button.textContent === 'Refresh Status').click();
   assert.equal(api.calls.length, 4); assert.ok(api.calls.every(call => call.method === 'GET'));
 });
 
@@ -802,7 +827,7 @@ test('the mounted entry wires native tiles, verified iframe handoff, feedback an
   assert.ok(calls.every(call => call.method === 'GET')); assert.equal(f.selected(), 0);
   // An explicit Storage action uses the same coordinator and leaves directory inputs intact.
   native.dialog.remove(); await tick();
-  native.storage.nextSibling.shadowRoot.querySelector('button').click(); await tick();
+  native.storageCard.querySelector('strata-connected-local-models').shadowRoot.querySelector('button').click(); await tick();
   assert.equal(f.selected(), 1); assert.match(host.shadowRoot.querySelector('aside').textContent, /Selected In Chat/);
   assert.equal(native.input.value, 'C:\\Models\\Strata'); assert.equal(native.versions.textContent, '0 Versions Found');
   assert.deepEqual(calls.filter(call => call.method === 'POST').map(call => ({ path: new URL(call.url).pathname, body: call.body })),
