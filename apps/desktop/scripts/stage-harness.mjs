@@ -19,6 +19,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { flattenPnpm } from './flatten-pnpm.mjs';
 import { isOtherOsBinaryFolder, missingHarnessImports } from './harness-prune.mjs';
+import { patchStagedHarnessBudget } from './harness-budget.mjs';
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : fallback; };
@@ -144,6 +145,9 @@ function prune(dir) {
 }
 prune(out);
 
+// Strata's provenance-recorded output-budget correction applies only to this copy.
+const patches = [patchStagedHarnessBudget(out)];
+
 // --- licence: the MIT text and the third-party notices travel with the files ---------------------------------------------
 for (const name of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
   if (existsSync(join(src, name))) cpSync(join(src, name), join(out, name));
@@ -156,6 +160,7 @@ const total = size(out);
 writeFileSync(join(out, 'BUNDLE.json'), JSON.stringify({
   component: 'deepseek-harness', version: cli.version, commit, license: 'MIT', platform, node: process.version,
   bytes: total.bytes, files: total.files, entry: 'apps/cli/lib/bin.js', builtAt: new Date().toISOString(),
+  patches,
   note: 'Pruned production install (pnpm deploy --prod). No package manager runs on the user\'s PC.',
 }, null, 2));
 

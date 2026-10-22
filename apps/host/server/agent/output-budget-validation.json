@@ -1,0 +1,98 @@
+{
+  "date": "2026-10-22",
+  "sourceBase": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+  "environment": {
+    "os": "Windows",
+    "node": "v24.12.0",
+    "gpu": "RTX 5080",
+    "vramMiB": 16303,
+    "ramGiB": 61,
+    "app": "0.2.2",
+    "harness": "0.2.1-alpha.3",
+    "piAi": "1.1.0",
+    "engine": "0.1.47",
+    "model": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS"
+  },
+  "path": "Shipped Host API plus real default Harness; no native UI rendering claim",
+  "prompt": "Reply with exactly OK.",
+  "history": [],
+  "savedModel": {
+    "contextMax": 8192,
+    "maxOutput": null,
+    "vision": null,
+    "reasoning": null
+  },
+  "variants": {
+    "baseline": {
+      "agent": true,
+      "demo": false,
+      "context": 8192,
+      "mode": "manual",
+      "thinking": {
+        "enable_thinking": true,
+        "reasoning_effort": "medium"
+      },
+      "wireMaxCompletionTokens": 1,
+      "messageCount": 5,
+      "toolCount": 26,
+      "messageChars": 3436,
+      "toolChars": 24071,
+      "promptTokens": 6540,
+      "completionTokens": 1,
+      "finishReason": "length",
+      "answer": "",
+      "emptyAnswerNotice": true
+    },
+    "candidate": {
+      "agent": true,
+      "demo": false,
+      "context": 8192,
+      "mode": "manual",
+      "thinking": {
+        "enable_thinking": true,
+        "reasoning_effort": "medium"
+      },
+      "wireMaxCompletionTokens": 104,
+      "messageCount": 5,
+      "toolCount": 26,
+      "messageChars": 3436,
+      "toolChars": 24071,
+      "promptTokens": 6540,
+      "completionTokens": 25,
+      "finishReason": "stop",
+      "answer": "OK",
+      "emptyAnswerNotice": false
+    }
+  },
+  "patch": {
+    "id": "strata-pi-ai-context-safety-v1",
+    "package": "@earendil-works/pi-ai",
+    "version": "1.1.0",
+    "file": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js",
+    "beforeSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2",
+    "afterSha256": "1cf2c37a3d99e6339ad2c9ddae530462f6eb6dde9a870910edee0c4bd19d4611"
+  },
+  "installedOriginalClampUnchanged": true,
+  "validation": {
+    "focused": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "affected": {
+      "passed": 24,
+      "failed": 0,
+      "skipped": 3
+    },
+    "preFixRegression": "Expected failure: 1 instead of 1135",
+    "syntax": "passed",
+    "diffCheck": "passed"
+  },
+  "limits": [
+    "Live candidate output cap is 104; the synthetic 6545-estimate fixture yields 1135",
+    "Candidate reused 6110 cached prompt tokens; no performance comparison",
+    "Full pnpm deploy/staging pipeline and signed installer build not run",
+    "Native candidate rendering, other OS/providers, long thinking/tool conversations not run",
+    "Existing installed components unchanged; no startup patching"
+  ]
+}
