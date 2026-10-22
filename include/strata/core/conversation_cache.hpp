@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -204,6 +206,9 @@ struct SavedConversation {
     std::shared_ptr<void> pending;
     // STRATA_CKPT_ASYNC: the same for the background copy that fills `live.gdn` (the park's running state)
     std::shared_ptr<void> live_pending;
+    /// --conversation-cache-dir: the disk tier's copy of this conversation (conversation_disk.hpp), 0 = none yet,
+    /// UINT64_MAX = a write was tried and failed (not tried again until the entry is evicted).  Run-time only.
+    uint64_t disk_id = 0;
 
     /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
     bool pinned() const {
@@ -445,6 +450,20 @@ public:
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
 
+    // --conversation-cache-dir (conversation_disk.hpp).  `on_evict` sees every entry drop_oldest() is about to drop
+    // (an eviction for room, not take(), clear() or drop_superseded(): those are not the last copy of a conversation
+    // worth keeping); it must not change the cache.  The idle writer walks the parked entries the disk tier does not
+    // hold yet (`disk_id` 0) of at least `min_tokens`, least recently active first, and marks each it has written.
+    void on_evict(std::function<void(const SavedConversation&)> fn) { on_evict_ = std::move(fn); }
+    size_t unpersisted(int64_t min_tokens = 0) const {
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (entries_[i].disk_id == 0 && (min_tokens <= 0 || (int64_t) entries_[i].live.ids.size() >= min_tokens))
+                return i;
+        return SIZE_MAX;
+    }
+    const SavedConversation& at(size_t index) const { return entries_.at(index); }
+    void mark_persisted(size_t index, uint64_t disk_id) { entries_.at(index).disk_id = disk_id; }
+
     // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:
     // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
     // is the tail the client rewrote (the reply as it was generated, before the next request re-rendered it) and
@@ -544,6 +563,11 @@ private:
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (on_evict_) {
+                // --conversation-cache-dir: the disk tier keeps it (a synchronous write unless it holds it already).
+                // The hook logs its own failures; an eviction never fails because the disk did.
+                try { on_evict_(entries_[i]); } catch (const std::exception&) {}
+            }
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -562,6 +586,7 @@ private:
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
     ConversationKvReuse reuse_;
+    std::function<void(const SavedConversation&)> on_evict_;
 };
 
 } // namespace strata::core
