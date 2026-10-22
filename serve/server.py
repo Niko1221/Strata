@@ -5338,9 +5338,11 @@ class LogprobEntries:
     text of the reply are left out, because spell() gives each piece of text the tokens that
     spell it.
 
-    `allowed_token_ids` (vLLM's semantics): only those ids are kept, and the logprobs are
-    renormalised over them, so a caller asking about specific candidates gets a distribution
-    over exactly those instead of a top-K list it has to hope contains them.
+    `allowed_token_ids`: only those ids are kept, and the logprobs are renormalised over them,
+    so a caller asking about specific candidates gets a distribution over exactly those instead
+    of a top-K list it has to hope contains them.  vLLM, which named the field, masks generation
+    with these ids instead (every other logit -inf before sampling) and reports the unmasked
+    distribution; here they filter what is reported, so the chosen token can be outside them.
     """
 
     def __init__(self, svc, allowed=(), owner=None):
@@ -5408,20 +5410,39 @@ class LogprobEntries:
                     e["top_logprobs"].append({"token": alt.decode("utf-8", "replace"),
                                               "logprob": v, "bytes": list(alt)})
                 if self.allowed:
-                    e = self._renormalise(e)
+                    e = self._renormalise(e, t, lp)
                 out.append(e)
         return out
 
-    def _renormalise(self, e):
-        """vLLM: keep only the named ids and normalise over them, so they sum to 1."""
-        if not e["top_logprobs"]:
-            return None
-        mx = max(x["logprob"] for x in e["top_logprobs"])
-        se = sum(math.exp(x["logprob"] - mx) for x in e["top_logprobs"])
+    def _renormalise(self, e, t, lp):
+        """Keep only the named ids and normalise over them, so they sum to 1.
+
+        The line carries the chosen token's own logprob on its head and the named ids after it, and never
+        repeats the chosen one among them.  So the chosen token is put back when the caller named it: with
+        `allowed_token_ids` naming only the token the model chose, that token is then the whole distribution,
+        at 1 (logprob 0), which is what vLLM's mask gives -- here it used to leave nothing to normalise over,
+        which returned None, the entry was appended all the same, and the reply failed on e["token"].  A line
+        that carries none of the named ids has nothing to normalise over either: the entry keeps the chosen
+        token and its own logprob, with no alternatives.  It is never None and never dropped, because the
+        reply's tokens have to keep spelling its text.
+        """
+        cand = e["top_logprobs"]
+        own = None
+        if t in self.allowed:                      # named, and not repeated on the line: it is a candidate
+            b = self.raw(t)
+            own = {"token": b.decode("utf-8", "replace"), "logprob": lp, "bytes": list(b)}
+            cand = [own] + cand
+        if not cand:
+            return e                               # no named id observed for this token: its own logprob, no top
+        mx = max(x["logprob"] for x in cand)
+        se = sum(math.exp(x["logprob"] - mx) for x in cand)
         lse = mx + math.log(se)
-        for x in e["top_logprobs"]:
+        for x in cand:
             x["logprob"] -= lse
-        e["logprob"] = e["top_logprobs"][0]["logprob"] if e["top_logprobs"] else e["logprob"]
+        cand.sort(key=lambda x: -x["logprob"])     # most likely first, as the unfiltered top-k already is
+        e["top_logprobs"] = cand
+        if own is not None:                        # the chosen token is in the distribution: report its own value
+            e["logprob"] = own["logprob"]           # (it used to copy the first alternative's, another token's)
         return e
 
 def prompt_progress(svc: Service):
