@@ -95,6 +95,8 @@ class DecisionEngine(MockEngine):
     def __init__(self, tokenizer, script, max_context=32768):
         super().__init__(tokenizer, script, max_context=max_context)
         self.prompts: list[list[int]] = []
+        self.row_reads: list[int] = []
+        self.row_count_override = None       # a test's stand-in for "the engine kept fewer rows"
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
@@ -103,6 +105,20 @@ class DecisionEngine(MockEngine):
     def final_row_logits(self, ids, tokens):
         # the real engine answers only the asked tokens (BROW); the mock mirrors that
         return {t: self.ROW[t] for t in tokens if t in self.ROW}
+
+    def row_logits_at(self, row, tokens):
+        # M3.1 BROWAT: the real engine answers any row of the last window.  This table is
+        # row-independent, so the mock can only prove the WIRING (one prefill, one read per field,
+        # same math) - the row's real value is a live-engine measurement, not a unit test.
+        self.row_reads.append(row)
+        return {t: self.ROW[t] for t in tokens if t in self.ROW}
+
+    def brow_rows(self):
+        # the real engine reports the LAST window's row count; this mock read every prompt in one
+        # window, so the count is the prompt's own length (the override stands in for a chunked read)
+        if self.row_count_override is not None:
+            return self.row_count_override
+        return len(self.prompts[-1]) if self.prompts else 0
 
 
 def start_server():
@@ -208,6 +224,117 @@ class BrowWire(unittest.TestCase):
             self.fail("expected EngineDied")
         except Exception as e:
             self.assertIn("BROWATD", str(e))
+
+    def test_browrows_reports_the_last_window(self):
+        self.eng.script = ["BROWROWSD 98\n"]
+        self.assertEqual(self.eng.brow_rows(), 98)
+        self.assertEqual(self.eng.proc.sent[-1], "BROWROWS\n")
+
+    def test_browrows_malformed_answer_fails_closed(self):
+        self.eng.script = ["BROWROWSD 98 99\n"]             # one integer, or nothing
+        try:
+            self.eng.brow_rows()
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWROWSD", str(e))
+
+
+class RowReadout(unittest.TestCase):
+    """M3.1 (BROWAT): STRATA_JEV_ROWREADOUT=1 - N fields in ONE prompt, one prefill, N row reads.
+
+    The mock's logits table is row-independent, so what these tests can prove is the WIRING: the
+    prompt count, the row indices, the usage numbers, and that the same row yields the same answer
+    as the per-question path.  What the rows *contain* is a live-engine measurement (M3.1 probe).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine, cls.httpd, cls.base = start_server()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        self._old = _os.environ.get("STRATA_JEV_ROWREADOUT")
+        _os.environ["STRATA_JEV_ROWREADOUT"] = "1"
+        self.engine.row_count_override = None
+
+    def tearDown(self):
+        # pop, do not restore-to-None: leaving "1" in the environment would gate every later test
+        if self._old is None:
+            _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
+        else:
+            _os.environ["STRATA_JEV_ROWREADOUT"] = self._old
+        self.engine.row_count_override = None
+
+    TWO_FIELDS = {"q1": {"type": "noul", "instructions": "Is it on?"},
+                  "q2": {"type": "choice", "instructions": "Pick one.",
+                         "criteria": {"alpha": 1, "beta": 2}}}
+
+    def _post(self, questions, state=None):
+        return post(self.base, "/v1/systemone",
+                    {"state": state or {"hp": 7}, "questions": questions})
+
+    def test_two_fields_share_one_prefill(self):
+        self.engine.prompts.clear()
+        self.engine.row_reads.clear()
+        st, body = self._post(self.TWO_FIELDS)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 1, "two fields must cost one prefill, not two")
+        self.assertEqual(len(self.engine.row_reads), 2, "one row read per field")
+        self.assertEqual(body["usage"]["readout_tokens"], 2)
+        self.assertEqual(body["usage"]["prompt_tokens"], len(self.engine.prompts[0]))
+        ids = self.engine.prompts[0]
+        r1, r2 = self.engine.row_reads
+        self.assertLess(r1, r2, "field 2's cue comes after field 1's")
+        self.assertLess(r2, len(ids), "a row must be inside the window that was prefilled")
+
+    def test_same_row_same_answer_as_the_per_question_path(self):
+        q = self.TWO_FIELDS
+        _, on = self._post(q)
+        _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
+        _, off = self._post(q)
+        self.assertEqual(on["answers"], off["answers"],
+                         "the consolidated path must answer exactly what M3.0 answers")
+
+    def test_prompt_tokens_do_not_grow_with_every_field(self):
+        # The claim is about the STATE, not about the fields: M3.0 prefills state+question once per
+        # field; M3.1 prefills the state once and appends one question turn per field, so the extra
+        # cost of a field is its question block, never a whole state prompt again.
+        one = {"q1": {"type": "noul", "instructions": "Is it on?"}}
+        five = {f"q{i}": {"type": "noul", "instructions": "Is it on?"} for i in range(1, 6)}
+        _, a = self._post(one)                       # one field: the same bytes M3.0 sends
+        _, b = self._post(five)                      # five fields, one prompt
+        _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
+        _, off = self._post(five)                    # five fields, M3.0's per-question path
+        per_field = (b["usage"]["prompt_tokens"] - a["usage"]["prompt_tokens"]) / 4
+        self.assertLess(per_field, 0.5 * a["usage"]["prompt_tokens"],
+                        "each extra field must cost a question turn, not a whole state prompt")
+        self.assertLess(b["usage"]["prompt_tokens"], off["usage"]["prompt_tokens"],
+                        "M3.1 must send fewer prompt tokens than M3.0 for the same five fields")
+
+    def test_a_prompt_read_in_more_than_one_window_falls_back(self):
+        # the engine reports fewer rows than we sent: our row numbering names another window's rows, so
+        # the request must go the per-question way instead of reading a row that is not its own
+        self.engine.prompts.clear()
+        self.engine.row_reads.clear()
+        self.engine.row_count_override = 32
+        st, body = self._post(self.TWO_FIELDS)
+        self.assertEqual(st, 200)
+        self.assertEqual(self.engine.row_reads, [], "a chunked prompt must not read rows")
+        self.assertEqual(len(self.engine.prompts), 3, "the wasted prefill, then one per field")
+        self.assertEqual(set(body["answers"]), {"q1", "q2"})
+
+    def test_env_unset_keeps_the_per_question_path(self):
+        _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
+        self.engine.prompts.clear()
+        self.engine.row_reads.clear()
+        st, _ = self._post(self.TWO_FIELDS)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 2)
+        self.assertEqual(self.engine.row_reads, [])
 
 
 class SystemOneValidation(unittest.TestCase):
