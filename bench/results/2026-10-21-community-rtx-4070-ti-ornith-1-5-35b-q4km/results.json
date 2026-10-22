@@ -1,0 +1,1395 @@
+{
+ "hardware": {
+  "gpu": "NVIDIA GeForce RTX 4070 Ti, 12282 MiB (driver 617.14)",
+  "cpu": "13th Gen Intel Core i7-13700K",
+  "ram": "64 GB (63.8 GiB usable)",
+  "os": "Windows 11 (10.0.26200)"
+ },
+ "software": {
+  "engine": "strata-q36 (src/qwen35) built from source: MSVC 2022 BuildTools + Ninja, CUDA 12.8, sm_89",
+  "builds": {
+   "024f24d4": "sha256 prefix of the engine binary of the 150K/180K rows (quantized KV, pre attention rework)",
+   "5d169a8d": "sha256 prefix of the engine binary of the 30k-ab row (quantized KV + chunked attention)"
+  },
+  "model": "Ornith-1.5-35B-A3B Q4_K_M GGUF, 20.22 GiB (qwen35moe: 41 layers, 256 experts / 8 active, GQA 16:2, head dim 256, SSM hybrid with full attention every 4th layer, native 262144 ctx, 1 MTP draft layer)",
+  "sampling": "greedy (temperature 0, top_p 0.8, top_k 20), penalties neutral"
+ },
+ "method": {
+  "harness": "test-ornith/bench_matrix.py and test-ornith/ab_kv.py (local, not part of this repo); one request per row, fresh engine start per row, prompt_reused=0 in every record",
+  "metrics": "prefill = engine timings prompt_per_second; decode = engine timings predicted_per_second (produced tokens over decode time, MTP draft tokens included); draft = accepted/offered from the engine log",
+  "repeats": "matrix rows are single runs; the ab_kv pairs are 2 back-to-back repeats per KV type",
+  "sanitization": "local absolute path prefixes shortened to <workdir>; generated text bodies and log paths dropped from the records (needle_pass / timings / config kept verbatim)"
+ },
+ "runs": [
+  {
+   "run": 0,
+   "tag": "00_30k-ab_int8_mtp2_ev5p5_ch2048_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T08:56:11+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>\\fixture_30k.txt",
+    "chars": 96732,
+    "ctx": "30k-ab",
+    "needle_expected": "XQ7M-4419-ZK"
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 2,
+    "max_context": 65536,
+    "expert_vram_gib": 5.5,
+    "chunk": 2048,
+    "pool_workers": null,
+    "max_tokens": 300
+   },
+   "binary": {
+    "path": "<workdir>\\strata-q36.exe",
+    "sha256": "5d169a8db1c8283f0f56f94c625a873b84f0e819296c8068c65ec2015b433071",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "65536",
+     "--chunk",
+     "2048",
+     "--kv",
+     "int8",
+     "--mtp",
+     "2",
+     "--expert-vram",
+     "5.50",
+     "--serve"
+    ],
+    "cwd": "<workdir>",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>\\bench_matrix\\00_30k-ab_int8_mtp2_ev5p5_ch2048_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 300,
+    "tokenizer": "<workdir>/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>\\bench_matrix\\00_30k-ab_int8_mtp2_ev5p5_ch2048_r0.json",
+   "gpu_used_before_mib": 705,
+   "boot_s": 27.2,
+   "wall_s": 15.087,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 29746,
+    "completion_tokens": 64,
+    "total_tokens": 29810,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 29746,
+    "prompt_ms": 14226.2,
+    "prompt_per_token_ms": 0.478,
+    "prompt_per_second": 2090.9,
+    "predicted_n": 64,
+    "predicted_ms": 805.6,
+    "predicted_per_token_ms": 12.588,
+    "predicted_per_second": 79.4,
+    "draft_n": 46,
+    "draft_n_accepted": 41
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 29746,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 29746,
+   "prefill_tok_s_log": 2090.9,
+   "generated": 64,
+   "decode_tok_s_log": 79.4,
+   "draft_accepted": 41,
+   "draft_offered": 46,
+   "prompt_tokens_usage": 29746,
+   "prefill_tok_s": 2090.9,
+   "decode_tok_s": 79.4,
+   "draft_n": 46,
+   "draft_n_accepted": 41,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 695
+  },
+  {
+   "run": 0,
+   "tag": "00_150k_int8_mtp0_ev3p72_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T02:34:18+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 0,
+    "max_context": 172032,
+    "expert_vram_gib": 3.72,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "1024",
+     "--kv",
+     "int8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "3.72",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\00_150k_int8_mtp0_ev3p72_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\00_150k_int8_mtp0_ev3p72_ch1024_r0.json",
+   "gpu_used_before_mib": 471,
+   "boot_s": 20.1,
+   "wall_s": 265.824,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 72,
+    "total_tokens": 150482,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 261154.0,
+    "prompt_per_token_ms": 1.736,
+    "prompt_per_second": 575.9,
+    "predicted_n": 72,
+    "predicted_ms": 4500.1,
+    "predicted_per_token_ms": 62.501,
+    "predicted_per_second": 16.0,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 575.9,
+   "generated": 72,
+   "decode_tok_s_log": 16.0,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 575.9,
+   "decode_tok_s": 16.0,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 481
+  },
+  {
+   "run": 1,
+   "tag": "01_150k_fp8_mtp0_ev3p72_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T02:39:05+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "fp8",
+    "mtp": 0,
+    "max_context": 172032,
+    "expert_vram_gib": 3.72,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "1024",
+     "--kv",
+     "fp8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "3.72",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\01_150k_fp8_mtp0_ev3p72_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\01_150k_fp8_mtp0_ev3p72_ch1024_r0.json",
+   "gpu_used_before_mib": 481,
+   "boot_s": 21.1,
+   "wall_s": 265.103,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 72,
+    "total_tokens": 150482,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 259587.4,
+    "prompt_per_token_ms": 1.726,
+    "prompt_per_second": 579.4,
+    "predicted_n": 72,
+    "predicted_ms": 5351.6,
+    "predicted_per_token_ms": 74.328,
+    "predicted_per_second": 13.5,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 579.4,
+   "generated": 72,
+   "decode_tok_s_log": 13.5,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 579.4,
+   "decode_tok_s": 13.5,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 489
+  },
+  {
+   "run": 2,
+   "tag": "02_180k_int8_mtp0_ev3p72_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T02:43:52+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_180k.txt",
+    "chars": 582511,
+    "ctx": "180k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 180026
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 0,
+    "max_context": 204800,
+    "expert_vram_gib": 3.72,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "204800",
+     "--chunk",
+     "1024",
+     "--kv",
+     "int8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "3.72",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\02_180k_int8_mtp0_ev3p72_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\02_180k_int8_mtp0_ev3p72_ch1024_r0.json",
+   "gpu_used_before_mib": 489,
+   "boot_s": 21.2,
+   "wall_s": 384.629,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 180067,
+    "completion_tokens": 71,
+    "total_tokens": 180138,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 180067,
+    "prompt_ms": 379077.3,
+    "prompt_per_token_ms": 2.105,
+    "prompt_per_second": 475.0,
+    "predicted_n": 71,
+    "predicted_ms": 5355.7,
+    "predicted_per_token_ms": 75.432,
+    "predicted_per_second": 13.3,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 180067,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 180067,
+   "prefill_tok_s_log": 475.0,
+   "generated": 71,
+   "decode_tok_s_log": 13.3,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 180067,
+   "prefill_tok_s": 475.0,
+   "decode_tok_s": 13.3,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 489
+  },
+  {
+   "run": 3,
+   "tag": "03_180k_fp8_mtp0_ev3p72_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T02:50:38+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_180k.txt",
+    "chars": 582511,
+    "ctx": "180k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 180026
+   },
+   "requested": {
+    "kv": "fp8",
+    "mtp": 0,
+    "max_context": 204800,
+    "expert_vram_gib": 3.72,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "204800",
+     "--chunk",
+     "1024",
+     "--kv",
+     "fp8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "3.72",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\03_180k_fp8_mtp0_ev3p72_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\03_180k_fp8_mtp0_ev3p72_ch1024_r0.json",
+   "gpu_used_before_mib": 489,
+   "boot_s": 22.2,
+   "wall_s": 384.849,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 180067,
+    "completion_tokens": 71,
+    "total_tokens": 180138,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 180067,
+    "prompt_ms": 378733.7,
+    "prompt_per_token_ms": 2.103,
+    "prompt_per_second": 475.4,
+    "predicted_n": 71,
+    "predicted_ms": 5927.7,
+    "predicted_per_token_ms": 83.489,
+    "predicted_per_second": 12.0,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 180067,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 180067,
+   "prefill_tok_s_log": 475.4,
+   "generated": 71,
+   "decode_tok_s_log": 12.0,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 180067,
+   "prefill_tok_s": 475.4,
+   "decode_tok_s": 12.0,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 579
+  },
+  {
+   "run": 0,
+   "tag": "00_150k_int8_mtp0_ev4p5_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T02:58:04+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 0,
+    "max_context": 172032,
+    "expert_vram_gib": 4.5,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "1024",
+     "--kv",
+     "int8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "4.50",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\00_150k_int8_mtp0_ev4p5_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\00_150k_int8_mtp0_ev4p5_ch1024_r0.json",
+   "gpu_used_before_mib": 579,
+   "boot_s": 20.1,
+   "wall_s": 267.576,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 76,
+    "total_tokens": 150486,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 262352.9,
+    "prompt_per_token_ms": 1.744,
+    "prompt_per_second": 573.3,
+    "predicted_n": 76,
+    "predicted_ms": 5070.8,
+    "predicted_per_token_ms": 66.721,
+    "predicted_per_second": 15.0,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 573.3,
+   "generated": 76,
+   "decode_tok_s_log": 15.0,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 573.3,
+   "decode_tok_s": 15.0,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 579
+  },
+  {
+   "run": 1,
+   "tag": "01_150k_int8_mtp0_ev5p0_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T03:02:52+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 0,
+    "max_context": 172032,
+    "expert_vram_gib": 5.0,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "1024",
+     "--kv",
+     "int8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "5.00",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\01_150k_int8_mtp0_ev5p0_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\01_150k_int8_mtp0_ev5p0_ch1024_r0.json",
+   "gpu_used_before_mib": 579,
+   "boot_s": 22.2,
+   "wall_s": 267.292,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 76,
+    "total_tokens": 150486,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 262068.4,
+    "prompt_per_token_ms": 1.742,
+    "prompt_per_second": 573.9,
+    "predicted_n": 76,
+    "predicted_ms": 5026.2,
+    "predicted_per_token_ms": 66.134,
+    "predicted_per_second": 15.1,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 573.9,
+   "generated": 76,
+   "decode_tok_s_log": 15.1,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 573.9,
+   "decode_tok_s": 15.1,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 579
+  },
+  {
+   "run": 2,
+   "tag": "02_150k_int8_mtp2_ev3p72_ch1024_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T03:07:42+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 2,
+    "max_context": 172032,
+    "expert_vram_gib": 3.72,
+    "chunk": 1024,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "1024",
+     "--kv",
+     "int8",
+     "--mtp",
+     "2",
+     "--expert-vram",
+     "3.72",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\02_150k_int8_mtp2_ev3p72_ch1024_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\02_150k_int8_mtp2_ev3p72_ch1024_r0.json",
+   "gpu_used_before_mib": 579,
+   "boot_s": 20.1,
+   "wall_s": 287.454,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 72,
+    "total_tokens": 150482,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 282033.7,
+    "prompt_per_token_ms": 1.875,
+    "prompt_per_second": 533.3,
+    "predicted_n": 72,
+    "predicted_ms": 5265.8,
+    "predicted_per_token_ms": 73.136,
+    "predicted_per_second": 13.7,
+    "draft_n": 56,
+    "draft_n_accepted": 44
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 533.3,
+   "generated": 72,
+   "decode_tok_s_log": 13.7,
+   "draft_accepted": 44,
+   "draft_offered": 56,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 533.3,
+   "decode_tok_s": 13.7,
+   "draft_n": 56,
+   "draft_n_accepted": 44,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 531
+  },
+  {
+   "run": 3,
+   "tag": "03_150k_int8_mtp0_ev3p72_ch1024_pw8_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T03:12:50+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 0,
+    "max_context": 172032,
+    "expert_vram_gib": 3.72,
+    "chunk": 1024,
+    "pool_workers": 8,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "1024",
+     "--kv",
+     "int8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "3.72",
+     "--pool-workers",
+     "8",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\03_150k_int8_mtp0_ev3p72_ch1024_pw8_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\03_150k_int8_mtp0_ev3p72_ch1024_pw8_r0.json",
+   "gpu_used_before_mib": 531,
+   "boot_s": 21.2,
+   "wall_s": 269.725,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 72,
+    "total_tokens": 150482,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 264516.8,
+    "prompt_per_token_ms": 1.759,
+    "prompt_per_second": 568.6,
+    "predicted_n": 72,
+    "predicted_ms": 5029.3,
+    "predicted_per_token_ms": 69.851,
+    "predicted_per_second": 14.3,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 568.6,
+   "generated": 72,
+   "decode_tok_s_log": 14.3,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 568.6,
+   "decode_tok_s": 14.3,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 536
+  },
+  {
+   "run": 4,
+   "tag": "04_150k_int8_mtp0_ev3p72_ch2048_r0",
+   "status": "ok",
+   "timestamp_utc": "2026-10-21T03:17:42+00:00",
+   "port": 8097,
+   "fixture": {
+    "path": "<workdir>-up\\test-ornith\\fixture_150k.txt",
+    "chars": 492830,
+    "ctx": "150k",
+    "needle_expected": "XQ7M-4419-ZK",
+    "tokenizer_estimate": 150373
+   },
+   "requested": {
+    "kv": "int8",
+    "mtp": 0,
+    "max_context": 172032,
+    "expert_vram_gib": 3.72,
+    "chunk": 2048,
+    "pool_workers": null,
+    "max_tokens": 128
+   },
+   "binary": {
+    "path": "<workdir>-up\\build\\strata-q36.exe",
+    "sha256": "024f24d49cb23432e665f760c1e381c08728895c16bb97a334f5b8395a353f83",
+    "pinned_pre_perf": "a78393a918d049ea0f4e8ea2d985a7170d3a416395f961c55a3a6edbfcb461d8 *build/strata-q36.exe"
+   },
+   "model": {
+    "path": "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+    "size_bytes": 21713463040,
+    "size_gib": 20.22,
+    "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f"
+   },
+   "config": {
+    "exe": "<workdir>-up\\build\\strata-q36.exe",
+    "args": [
+     "--model",
+     "<workdir>\\models\\Ornith-1.5-35B-Q4_K_M.gguf",
+     "--max-context",
+     "172032",
+     "--chunk",
+     "2048",
+     "--kv",
+     "int8",
+     "--mtp",
+     "0",
+     "--expert-vram",
+     "3.72",
+     "--serve"
+    ],
+    "cwd": "<workdir>-up",
+    "model_name": "ornith-1.5-35b",
+    "arch": "qwen35moe",
+    "log": "<workdir>-up\\test-ornith\\bench_matrix\\04_150k_int8_mtp0_ev3p72_ch2048_r0-engine.log",
+    "lib_dirs": [
+     "<workdir>-upstream"
+    ],
+    "port": 8097,
+    "parallel": 1,
+    "sampling": {
+     "temperature": 0.0,
+     "top_p": 0.8,
+     "top_k": 20,
+     "min_p": 0,
+     "presence_penalty": 0.0,
+     "frequency_penalty": 0.0
+    },
+    "reasoning_budget_tokens": 0,
+    "fit_max_tokens": true,
+    "max_tokens": 128,
+    "tokenizer": "<workdir>-up/pack-q36/tokenizer"
+   },
+   "config_path": "<workdir>-up\\test-ornith\\bench_matrix\\04_150k_int8_mtp0_ev3p72_ch2048_r0.json",
+   "gpu_used_before_mib": 536,
+   "boot_s": 20.2,
+   "wall_s": 225.217,
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 150410,
+    "completion_tokens": 73,
+    "total_tokens": 150483,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 150410,
+    "prompt_ms": 220174.0,
+    "prompt_per_token_ms": 1.464,
+    "prompt_per_second": 683.1,
+    "predicted_n": 73,
+    "predicted_ms": 4868.8,
+    "predicted_per_token_ms": 66.696,
+    "predicted_per_second": 15.0,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "needle_pass": true,
+   "needle_in_reasoning": true,
+   "needle_in_any": true,
+   "extra_engine_flags": [],
+   "prompt_tokens": 150410,
+   "prompt_reused": 0,
+   "prompt_read_tokens": 150410,
+   "prefill_tok_s_log": 683.1,
+   "generated": 73,
+   "decode_tok_s_log": 15.0,
+   "draft_accepted": 0,
+   "draft_offered": 0,
+   "prompt_tokens_usage": 150410,
+   "prefill_tok_s": 683.1,
+   "decode_tok_s": 15.0,
+   "draft_n": 0,
+   "draft_n_accepted": 0,
+   "prompt_tokens_source": "engine_log",
+   "gpu_used_after_mib": 604
+  }
+ ],
+ "ab_kv_prompt_52k": [
+  {
+   "tag": "int8_r0",
+   "kv": "int8",
+   "rep": 0,
+   "ctx": 131072,
+   "expert_vram": "3.72",
+   "status": "ready",
+   "wall_s": 51.978,
+   "usage": {
+    "prompt_tokens": 52460,
+    "completion_tokens": 72,
+    "total_tokens": 52532,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 52460,
+    "prompt_ms": 49161.1,
+    "prompt_per_token_ms": 0.937,
+    "prompt_per_second": 1067.1,
+    "predicted_n": 72,
+    "predicted_ms": 2745.9,
+    "predicted_per_token_ms": 38.138,
+    "predicted_per_second": 26.2,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "engine_lines": [
+    "[strata] 2026-10-21 10:08:05 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv int8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: int8, 11616 B/token (11 caches), K/V per-64 scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.46 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 15.0 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 50965 ms (1029.3 tok/s), 69 generated in 2623 ms (26.3 tok/s), drafts accepted 0 of 0 (stop)",
+    "strata-q36: hybrid experts: 3100 of 21760 batch entries on the GPU (14.2%), 18660 on the CPU pool in 877 ms, 1262 slot replacements",
+    "[strata] 2026-10-21 10:28:47 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv int8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: int8, 11616 B/token (11 caches), K/V per-64 scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.46 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 13.5 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 49161 ms (1067.1 tok/s), 72 generated in 2746 ms (26.2 tok/s), drafts accepted 0 of 0 (stop)"
+   ]
+  },
+  {
+   "tag": "int8_r1",
+   "kv": "int8",
+   "rep": 1,
+   "ctx": 131072,
+   "expert_vram": "3.72",
+   "status": "ready",
+   "wall_s": 51.963,
+   "usage": {
+    "prompt_tokens": 52460,
+    "completion_tokens": 72,
+    "total_tokens": 52532,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 52460,
+    "prompt_ms": 49291.3,
+    "prompt_per_token_ms": 0.94,
+    "prompt_per_second": 1064.3,
+    "predicted_n": 72,
+    "predicted_ms": 2592.9,
+    "predicted_per_token_ms": 36.013,
+    "predicted_per_second": 27.8,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "engine_lines": [
+    "[strata] 2026-10-21 10:09:23 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv int8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: int8, 11616 B/token (11 caches), K/V per-64 scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.46 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 14.9 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 49257 ms (1065.0 tok/s), 69 generated in 2483 ms (27.8 tok/s), drafts accepted 0 of 0 (stop)",
+    "[strata] 2026-10-21 10:30:02 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv int8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: int8, 11616 B/token (11 caches), K/V per-64 scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.46 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 13.6 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 49291 ms (1064.3 tok/s), 72 generated in 2593 ms (27.8 tok/s), drafts accepted 0 of 0 (stop)"
+   ]
+  },
+  {
+   "tag": "fp8_r0",
+   "kv": "fp8",
+   "rep": 0,
+   "ctx": 131072,
+   "expert_vram": "3.72",
+   "status": "ready",
+   "wall_s": 51.706,
+   "usage": {
+    "prompt_tokens": 52460,
+    "completion_tokens": 73,
+    "total_tokens": 52533,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 52460,
+    "prompt_ms": 48750.8,
+    "prompt_per_token_ms": 0.929,
+    "prompt_per_second": 1076.1,
+    "predicted_n": 73,
+    "predicted_ms": 2881.1,
+    "predicted_per_token_ms": 39.467,
+    "predicted_per_second": 25.3,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "engine_lines": [
+    "[strata] 2026-10-21 10:10:39 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv fp8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: fp8, 11352 B/token (11 caches), K/V per-token scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.50 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 14.5 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 48611 ms (1079.2 tok/s), 69 generated in 2512 ms (27.5 tok/s), drafts accepted 0 of 0 (stop)",
+    "[strata] 2026-10-21 10:31:16 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv fp8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: fp8, 11352 B/token (11 caches), K/V per-token scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.50 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 13.3 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 48751 ms (1076.1 tok/s), 73 generated in 2881 ms (25.3 tok/s), drafts accepted 0 of 0 (stop)"
+   ]
+  },
+  {
+   "tag": "fp8_r1",
+   "kv": "fp8",
+   "rep": 1,
+   "ctx": 131072,
+   "expert_vram": "3.72",
+   "status": "ready",
+   "wall_s": 51.595,
+   "usage": {
+    "prompt_tokens": 52460,
+    "completion_tokens": 73,
+    "total_tokens": 52533,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "timings": {
+    "cache_n": 0,
+    "prompt_n": 52460,
+    "prompt_ms": 48754.4,
+    "prompt_per_token_ms": 0.929,
+    "prompt_per_second": 1076.0,
+    "predicted_n": 73,
+    "predicted_ms": 2769.9,
+    "predicted_per_token_ms": 37.944,
+    "predicted_per_second": 26.4,
+    "draft_n": 0,
+    "draft_n_accepted": 0
+   },
+   "engine_lines": [
+    "[strata] 2026-10-21 10:11:53 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv fp8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: fp8, 11352 B/token (11 caches), K/V per-token scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.50 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 13.2 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 49197 ms (1066.3 tok/s), 69 generated in 2639 ms (26.2 tok/s), drafts accepted 0 of 0 (stop)",
+    "[strata] 2026-10-21 10:32:31 engine started: <workdir>-up/build/strata-q36.exe --serve --model <workdir>/models/Ornith-1.5-35B-Q4_K_M.gguf --max-context 131072 --chunk 1024 --kv fp8 --mtp 0 --expert-vram 3.72 --serve",
+    "strata-q36: KV cache: fp8, 11352 B/token (11 caches), K/V per-token scales, 256 MiB prompt staging",
+    "strata-q36: context 131072 cells, prompt chunk 1024, MTP block loaded, 5.50 GiB of VRAM free",
+    "strata-q36: hybrid experts: 37 of 256 per layer in VRAM (2.70 GiB), all 18.66 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (0.97 GiB staging); 13.4 s",
+    "strata serve: session 0: prompt 52460 tokens = 0 reused + 52460 read in 48754 ms (1076.0 tok/s), 73 generated in 2770 ms (26.4 tok/s), drafts accepted 0 of 0 (stop)"
+   ]
+  }
+ ],
+ "quality": {
+  "needle": {
+   "pass": 10,
+   "total": 10
+  },
+  "mtp_identity_2k": {
+   "fixture": "fixture_2k.txt",
+   "greedy": {
+    "temperature": 0,
+    "presence_penalty": 0.0
+   },
+   "content_sha256_per_mtp": {
+    "mtp0": "2e3c3853a7f81a9719408298fc257d54f84299613f50af8c9e7ccd8a3d7330ff",
+    "mtp1": "2e3c3853a7f81a9719408298fc257d54f84299613f50af8c9e7ccd8a3d7330ff"
+   },
+   "mtp0_equals_mtp1": true
+  }
+ }
+}
