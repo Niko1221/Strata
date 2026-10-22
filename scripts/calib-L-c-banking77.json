@@ -1,0 +1,8 @@
+{
+ "tuple": "qfn-iq3_xxs|jev-port|none|v1|L|mf-banking77",
+ "a_noul": 0.485557,
+ "c_noul": -1.638447,
+ "T_choice": 2.430149,
+ "T_score": 2.263,
+ "provenance": "fit /tmp/mf-C-train.json (banking77 two-field is_card+group, seed 11, n=600); held-out /tmp/mf-C.json n=200: is_card ECE 0.1576->0.0907, group ECE 0.2078->0.0889"
+}
