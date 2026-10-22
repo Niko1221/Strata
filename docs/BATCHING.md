@@ -569,17 +569,23 @@ exact. The sums now have their own binding; the solo window and the first row ad
 before, and `metal/tests/gdn_parity.cpp` checks the row-slice layout against the base-bound one.
 
 The prompt-interleave steps of `tools/batch_interleave_test.py` are measured on a Mac too (same machine,
-2026-10-23, `--exe build-metal/strata --config <run config>`): 126 slot tokens decoded while the 4888-token
-prompt C was being read in; the read that gave way at a chunk boundary (`YIELDED 2 1024`) went on in its slot
-identical to solo; a request stopped part-way in a slot came back identical on the solo path; a next turn
-read from its slot stayed identical; a prompt chunk cancelled mid-read re-read from its checkpoint
-(`1024 of 4890 read`, cancelled, then `1024 reused + 3866 read`). The harness's byte-identity gate missed
-three times - slots C, F and F2 at output tokens 32, 30 and 27, all slots that decoded part of their reply
-in the slot window (C while others still decoded, F and F2 alone in theirs) - the flips the drift above
-predicts; their texts are not yet shown to stay coherent, so the harness now prints both sides' decoded
-tokens at the first difference and a re-run settles it. To try it on your own Mac:
-`tools/metal_batch_try.sh 2 2 128` (add `--keys "temperature=0.7 seed=7"` for sampled rows); it refuses to
-run while another big server holds the memory (see the script's header).
+2026-10-23, `--exe build-metal/strata --config <run config>`). Every structural step worked in both runs:
+about 126 slot tokens decoded while the 4888-token prompt C was read in; a read that gave way at a chunk
+boundary (`YIELDED 2 1024`) went on in its slot to the end; a request stopped part-way in a slot came back
+identical on the solo path; a next turn read from its slot stayed identical; a prompt chunk cancelled
+mid-read re-read from its checkpoint (`1024 of 4890 read`, cancelled, then `1024 reused + 3866 read`).
+The byte-identity gate missed three slots each run, and the second run printed both sides' decoded text at
+each miss, which settles what they are: near ties, not wrongness - D at token 26 continued "…extensive and
+complex:" with "It is described" where the slot wrote "…extensive and complex," with "characterized by a
+long" (both true sentences of the same history), F at 30 added one period after a bracket, F2 at 27 wrote
+`static int compare_intervals` where solo wrote `int` under a `// Comparator` comment (both valid C);
+no slot ever strayed off its own question. Which slot misses moves between runs (C missed the first and was
+exact the second, D the reverse, while the single-row tails F and F2 missed at the same tokens twice),
+because a slot's steps interleave with live prompt reads, whose arrival timing sets what each window row
+shares its dispatch with; the batch script's runs, where admissions finish before decoding, repeated their
+flip tokens exactly. To try it on your own Mac: `tools/metal_batch_try.sh 2 2 128` (add
+`--keys "temperature=0.7 seed=7"` for sampled rows); it refuses to run while another big server holds the
+memory (see the script's header).
 
 ## Testing
 
