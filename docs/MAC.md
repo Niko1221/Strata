@@ -253,7 +253,18 @@ reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplie
   and starts the same program on the CPU. With Q2_0 streaming from the SSD on that M4, the STRATA 42 test picture (red circle, blue square,
   green triangle, the text "STRATA 42") was described correctly with both readers. Checked on one Mac only; the M5 Max is untested for pictures.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
-- **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
+- **Several requests at once:** `--parallel N` (batch slots, [BATCHING.md](BATCHING.md)) runs on the Mac engine, with a
+  difference. Metal has no co-decode: the slots time-share the one decode window. Each slot keeps a copy of the window's
+  persistent state (the GDN recurrences, the PLE history, the QSA K/V), swapped into the live buffers when its turn comes
+  and written back when another slot or a prompt read takes the window; a slot that decodes several tokens in a row copies
+  nothing. A batch window runs the active slots' tokens one after the other. The weights are read from the mapped model
+  file every step either way, so what it buys is concurrency, not throughput: a request no longer waits for another's whole
+  answer. Each slot decodes exactly what it would alone (`tools/batch_test.py` and `tools/batch_interleave_test.py`, the
+  checks the PC engine uses; measured on an M1 Max, Q2_0, below). The slots decode one token per step (no per-slot draft
+  layer), and a prompt is still read in one piece. The cost is memory: a slot's state copy is about 0.55 GiB at 32K context,
+  1 GiB at 64K, 1.9 GiB at 128K and 3.6 GiB at 256K; once the model is loaded the engine keeps as many slots as fit in what
+  is left (1 GiB kept) and says so, or turns batching off when not two fit. `strata launch --model q2_0 --context 64k
+  --parallel 2`, or `"parallel": 2` in the run config.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
@@ -279,6 +290,7 @@ reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplie
 | `STRATA_METAL_IGNORE_REPACK=1` | Start the engine although a model repack or setup's preparation is running beside it (the engine refuses by default: it froze this Mac) |
 | `STRATA_METAL_KEEP_HOST_WEIGHTS=1` | Streaming: keep the host code's own copies of the weights (2-3 GB) instead of giving them back to macOS |
 | `STRATA_METAL_TRACE=1`, `STRATA_METAL_PROFILE=1`, `STRATA_METAL_KPROF=T` | Per-window traces, a time breakdown, per-kernel GPU times |
+| `STRATA_METAL_BATCH_TRACE=1` | Batch slots: one line per admission, restore and step (the slot, token, position) |
 
 **Two opt-ins an M1 Max cannot run (measured on an M1 Max, macOS 26.6.2, Q2_0):** `STRATA_METAL_PROMPT_EXPERTS=v3` - the
 prompt's expert GEMMs with the M5's layout, `mm_gu3` - loses the threadgroup once a prompt spreads over more than 40
