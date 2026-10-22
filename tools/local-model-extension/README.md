@@ -111,7 +111,8 @@ assets and the actual `NativeModels` / `SettingsStorage` React components.
 They are not captures of a running model. No original user screenshot, private
 path, account detail, API credential or real hardware measurement is included.
 These images predate the App 0.2.2 Storage correction; the current connected card
-appears once, after the native Storage sections. See the acceptance report above.
+appears once, after the native Storage sections. See the
+[App 0.2.2 acceptance report](validation-app-0.2.2.md).
 
 ![Current Model panel with catalog context and idle controls](examples/current-model.png)
 
