@@ -7666,10 +7666,22 @@ int main(int argc, char **argv) try {
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
-            // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached))
+            // nothing the outgoing chain does not, apart from the tail this conversation rewrote).
+            // #3321: retain() is empty after a prompt-cache restore, so keep the largest superseded copy's K/V pages
+            // and recopy into them.  checks is still whole here; the split below moves it.
+            strata::core::ConversationCache::SupersededReuse harvested;
+            if (conversations.retained_bytes() == 0)
+                harvested = conversations.take_superseded_reuse(live, live_imgs, checks, cvec_cached);
+            else if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached))
                 std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                              "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+            if (harvested.dropped > 0)
+                std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
+                             "conversation; parked=%zu\n", harvested.dropped, harvested.dropped == 1 ? "y" : "ies",
+                             conversations.size());
+            if (!harvested.reuse.kv.empty())
+                std::fprintf(stderr, "strata serve: conversation cache: kept %zu MiB of superseded K/V pages for this "
+                                     "park\n", harvested.reuse.bytes() >> 20);
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their
             // stage parts for the capture and put back together whichever way this ends (no running state copied).
@@ -7686,6 +7698,7 @@ int main(int argc, char **argv) try {
             } merge_back{cs, checks, n_st > 0};
             const strata::core::ConversationView view{live, live_imgs, n_st > 0 ? cs.stage0 : checks, cvec_cached};
             auto reuse = conversations.take_reuse();
+            if (reuse.kv.empty() && !harvested.reuse.kv.empty()) reuse = std::move(harvested.reuse);
             std::vector<strata::core::ConversationKvReuse> stage_reuse = std::move(reuse.stages);
             stage_reuse.resize(n_st);
             reuse.stages.clear();
@@ -8977,6 +8990,19 @@ int main(int argc, char **argv) try {
             in_lines.pop_front();
             return true;
         };
+        // #3321: reuse one host image per stage and layer. STRATA_SLOT_SHUTTLE=0 allocates a fresh one each time.
+        static const bool slot_shuttle_off = [] {
+            const char* v = std::getenv("STRATA_SLOT_SHUTTLE");
+            return v != nullptr && v[0] == '0';
+        }();
+        std::vector<std::vector<strata::core::ConversationKv>> slot_shuttle;
+        strata::core::ConversationKv mtp_shuttle;
+        auto shuttle_kv = [&](size_t stage, int64_t layer) -> strata::core::ConversationKv& {
+            if (slot_shuttle.size() <= stage) slot_shuttle.resize(stage + 1);
+            auto& layers = slot_shuttle[stage];
+            if ((int64_t) layers.size() <= layer) layers.resize((size_t) layer + 1);
+            return layers[(size_t) layer];
+        };
         // the session a request just left behind (its prompt) -> slot b's sessions, on every stage
         auto copy_to_slot = [&](int b, const std::vector<int32_t> &ids,
                                 std::string &e) -> bool {
@@ -8997,14 +9023,16 @@ int main(int argc, char **argv) try {
                     !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                     return false;
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                    strata::core::ConversationKv img;
-                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
+                    strata::core::ConversationKv fresh;
+                    strata::core::ConversationKv* img = &fresh;
+                    if (!slot_shuttle_off) img = &shuttle_kv(k, j);
+                    if (!strata::core::conversation_kv_save(*img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
                     if (DPCT_CHECK_ERROR(dpct::get_current_device()
                                              .queues_wait_and_throw()) != 0) {
                         e = "batch admission: device sync failed"; return false;
                     }
-                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
+                    if (!strata::core::conversation_kv_restore(*img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
                         return false;
                 }
                 if (DPCT_CHECK_ERROR(
@@ -9015,13 +9043,14 @@ int main(int argc, char **argv) try {
             }
             if (batch_mtp) {
                 // Admission first builds the solo draft KV; copy it into the slot before drafting.
-                strata::core::ConversationKv image;
+                strata::core::ConversationKv fresh_mtp;
+                strata::core::ConversationKv* image = slot_shuttle_off ? &fresh_mtp : &mtp_shuttle;
                 if (!mtp.idle(e) || !slot_mtp[(size_t)b]->idle(e) ||
-                    !strata::core::conversation_kv_save(image, mtp.kv_state(),
+                    !strata::core::conversation_kv_save(*image, mtp.kv_state(),
                                                         draft_geometry, upto,
                                                         false, e) ||
                     !strata::core::conversation_kv_restore(
-                        image, slot_mtp[(size_t)b]->kv_state(), draft_geometry,
+                        *image, slot_mtp[(size_t)b]->kv_state(), draft_geometry,
                         upto, false, e) ||
                     DPCT_CHECK_ERROR(
                         dpct::get_current_device().queues_wait_and_throw()) !=
@@ -9066,15 +9095,17 @@ int main(int argc, char **argv) try {
                         return false;
                 }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
-                    strata::core::ConversationKv img;
-                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
+                    strata::core::ConversationKv fresh;
+                    strata::core::ConversationKv* img = &fresh;
+                    if (!slot_shuttle_off) img = &shuttle_kv(k, j);
+                    if (!strata::core::conversation_kv_save(*img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
                     if (DPCT_CHECK_ERROR(dpct::get_current_device()
                                              .queues_wait_and_throw()) != 0) {
                         e = "batch slot restore: device sync failed";
                         return false;
                     }
-                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
+                    if (!strata::core::conversation_kv_restore(*img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
                         return false;
                 }
                 if (DPCT_CHECK_ERROR(
@@ -9085,13 +9116,14 @@ int main(int argc, char **argv) try {
             }
             if (batch_mtp) {
                 // A returning solo request resumes from its slot's draft KV.
-                strata::core::ConversationKv image;
+                strata::core::ConversationKv fresh_mtp;
+                strata::core::ConversationKv* image = slot_shuttle_off ? &fresh_mtp : &mtp_shuttle;
                 if (!slot_mtp[(size_t)b]->idle(e) || !mtp.idle(e) ||
                     !strata::core::conversation_kv_save(
-                        image, slot_mtp[(size_t)b]->kv_state(), draft_geometry,
+                        *image, slot_mtp[(size_t)b]->kv_state(), draft_geometry,
                         upto, false, e) ||
                     !strata::core::conversation_kv_restore(
-                        image, mtp.kv_state(), draft_geometry, upto, false,
+                        *image, mtp.kv_state(), draft_geometry, upto, false,
                         e) ||
                     DPCT_CHECK_ERROR(
                         dpct::get_current_device().queues_wait_and_throw()) !=

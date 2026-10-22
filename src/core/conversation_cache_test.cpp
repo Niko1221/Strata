@@ -558,5 +558,68 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        ConversationBuffer bytes;
+        bytes.resize(ConversationBuffer::segment_bytes, 1);
+        uint8_t* first = nullptr;
+        bytes.visit(0, 1, [&](uint8_t* p, size_t, size_t) { first = p; return true; });
+        bytes.resize(ConversationBuffer::segment_bytes, 2);
+        uint8_t* second = nullptr;
+        bytes.visit(0, 1, [&](uint8_t* p, size_t, size_t) { second = p; return true; });
+        check(first != nullptr && first == second, "a same-length resize keeps the segment pages");
+    }
+    {
+        // #3321: a superseded park is moved, not freed, so the next capture can write the warm pages.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        auto with_kv = [](std::vector<int32_t> ids) {
+            SavedConversation s = image({});
+            s.live.ids = std::move(ids);
+            ConversationKv layer;
+            layer.cells = 8;
+            layer.k.resize(ConversationBuffer::segment_bytes, 9);
+            s.kv.push_back(std::move(layer));
+            ConversationKv stage_layer;
+            stage_layer.k.resize(1 << 20, 3);
+            SavedConversation stage;
+            stage.kv.push_back(std::move(stage_layer));
+            s.stage_images.push_back(std::move(stage));
+            return s;
+        };
+        ConversationCache cache(64 << 20, 4);
+        SavedConversation old = with_kv({1, 2, 3, 4, 10, 11});
+        old.checkpoints = {cp({1, 2, 3, 4})};
+        uint8_t* page = nullptr;
+        old.kv[0].k.visit(0, 1, [&](uint8_t* p, size_t, size_t) { page = p; return true; });
+        const size_t kept = old.kv[0].k.bytes() + old.stage_images[0].kv[0].k.bytes();
+        check(cache.put(std::move(old)), "park the copy a turn back");
+        SavedConversation other = image({9, 9, 9});
+        other.checkpoints = {cp({9, 9})};
+        check(cache.put(std::move(other)), "park an unrelated conversation");
+        const std::vector<int32_t> live = {1, 2, 3, 4, 10, 12, 13};
+        const std::vector<ConversationCheckpoint> chain = {cp({1, 2, 3, 4})};
+        const auto donor = cache.best(std::vector<int32_t>{1, 2, 3, 4, 10, 11, 99}, {}, true).serial;
+        check(donor != 0, "the copy a turn back is still parked");
+        cache.guard(donor);
+        auto blocked = cache.take_superseded_reuse(live, {}, chain, true);
+        check(blocked.dropped == 0 && blocked.reuse.kv.empty() && cache.size() == 2,
+              "a guarded donor is not harvested");
+        cache.unguard();
+        auto got = cache.take_superseded_reuse(live, {}, chain, true);
+        check(got.dropped == 1 && cache.size() == 1 && cache.superseded() == 1, "the superseded copy is removed");
+        check(cache.bytes() < (8 << 20), "harvested pages are no longer charged to the cache");
+        check(got.reuse.unchanged_tokens == 0 && got.reuse.captured_tokens == 6, "pages are recopied, not trusted as a prefix");
+        check(got.reuse.kv.size() == 1 && got.reuse.stages.size() == 1 && got.reuse.stages[0].kv.size() == 1,
+              "main and stage K/V both move");
+        uint8_t* moved = nullptr;
+        got.reuse.kv[0].k.visit(0, 1, [&](uint8_t* p, size_t, size_t) { moved = p; return true; });
+        check(moved == page && got.reuse.bytes() >= kept, "the segment pages themselves are kept");
+        auto none = cache.take_superseded_reuse(live, {}, chain, true);
+        check(none.dropped == 0 && none.reuse.kv.empty(), "a second take finds nothing");
+        SavedConversation sibling = with_kv({1, 2, 3, 4, 80});
+        sibling.checkpoints = {cp({1, 2, 3, 4, 80})};
+        check(cache.put(std::move(sibling)), "park a sibling that only shares the root");
+        auto kept_sibling = cache.take_superseded_reuse(live, {}, chain, true);
+        check(kept_sibling.dropped == 0 && cache.size() == 2, "a different deepest checkpoint is not harvested");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
