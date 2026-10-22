@@ -904,6 +904,7 @@ them on your own card.
 | `--pool-affinity measure` | Hybrid CPUs, native packs | Times the `all` and `p-cores` layouts at start (about a second) and takes the faster. The measurement is taken once; where the E-cores' speed changes while the engine runs, `--pool-affinity p-cores` is the steady choice. | |
 | `STRATA_KEEP_EMPTY_TURNS=1`, `STRATA_TOPK_STREAM=0` | | See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). | |
 | HIP `STRATA_DENSE_MMQ=1`, `STRATA_HIP_ADAPT_KERNEL_COPY=1` | HIP | See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration). | |
+| `STRATA_PF_FUSED_Q2N=1` | CUDA sm_80 and newer, the native Q2_0 pack | Its Q2_0 / Q2_0 prompt experts run on the fused int8 kernels (#2145's Q2_0 gate/up, otherwise set up on a 7.5 card only). Changes rounding: first-token KL against the FP16 prompt path 0.0110, MMQ's 0.0112. Unset, nothing changes; `STRATA_PF_FUSED=1` alone keeps its bits. | Faster on an RTX 5080 (see History); one card measured, and #2145's RTX A4000 read 4K prompts 4.5% slower. |
 
 ### CUDA opt-in kernels (sm_80 and newer)
 
@@ -935,7 +936,7 @@ that wins in both directions: `STRATA_SM75_IL`, `STRATA_SM75_EXP`, `STRATA_GR_UP
 `STRATA_TOPK_SPLIT`, `STRATA_TOPK_SAMPLE`, `STRATA_ATTN_V3`, `STRATA_Q2_WARP`, `STRATA_FUSE_WAIT=2`, `STRATA_QIL`,
 `STRATA_TC_SM75`, `STRATA_PA_V1_PREFETCH`, `STRATA_SCORES_THREAD` (a thread-per-head block scorer; `=1` works on any CUDA card).
 Options that change answers stay separate: `STRATA_SELECT_SIMT=1|2`, `STRATA_PA_V2T=1`, `STRATA_PF_FUSED=1 STRATA_PF_FUSED_SM75=1`
-(Q2_0 pack, 7.5 card only) and `STRATA_BF16_TC=1` with `STRATA_XN_F16`.
+(Q2_0 pack, 7.5 card only), `STRATA_PF_FUSED_Q2N=1` (native Q2_0 pack, sm_80+) and `STRATA_BF16_TC=1` with `STRATA_XN_F16`.
 
 ---
 
@@ -1279,6 +1280,7 @@ with `--batch 2` at 262,144 context saw 538 MiB at the free line become 395 MiB 
 | `STRATA_SPEC_COUPLED` / `STRATA_SPEC_PROB` (0.1.40.2) | RTX 3060 IQ3_XXS, 200-token answers, 10 pairs | Median tok/s at temperature 0.3 / 0.7 / 1.0: default 42.4 / 43.2 / 43.3, coupled 40.6 / 42.4 / 43.3, rejection sampling 41.0 / 42.6 / 42.6 |
 | `STRATA_STAGER_SLEEP=1` | Ryzen 9 7940HS laptop, RTX 4070, IQ3_S, 64K (issue #1101) | Prompts of 5,914 and 22,305 tokens read 5-6% slower; whole-machine CPU use 77-90% -> 21-25%. An RTX 5070 read an 8K Q2_0 prompt 1.2% faster with spinning |
 | Stager threads for a GGUF read in place | Big-RAM box, 124K-token Q8 prompt | 57 -> 350-410 tok/s with the 4-thread RAM profile instead of the 32-thread SSD profile (#1353) |
+| `STRATA_PF_FUSED_Q2N=1` | RTX 5080 16 GB, i9-14900K, native Q2_0 pack, 2,100 experts in VRAM, CPU prompt share off, 4-5 interleaved rounds | Prompts of 4K / 16K / 23K tokens 2-3.5% faster at the same 4,864-token chunk (4/4 each); with `--prefill auto` the fused path's smaller buffers make the chunk 5,632, and the 16K prompt reads 32-33% faster (2,592 -> 3,438 tok/s, 5/5), the 23K one 14% (5/5), a 4K one 0-2%. Per layer 1.92x / 1.37x / 1.30x the MMQ kernel at 2,048 / 4,864 / 8,192 tokens with MMQ's error against FP32. First-token KL against the FP16 prompt path 0.0110 (MMQ 0.0112) over 30 prompts of 1.5-4.6K tokens. Unset, the engine is byte-identical to 0.2.2 (40 prompts). |
 
 ### Threads, sockets and sessions
 
