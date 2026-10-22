@@ -90,10 +90,49 @@ Default agent chat reached the real server with 6545 prompt tokens at 8192
 context but ended with a length limit and no answer; direct chat passed.
 No effort, Fast, permissions or retry policy was changed to conceal that limit.
 
+
+## Follow-Up: Public Native Menus And Open App
+
+A fresh isolated run used the same compiled public Tray binary and runtime
+source, with `Acceptance Menu Model`, selected/effective 8K Context and separate
+ports 18148/18149. A user-supplied native screenshot confirmed the real menu's
+Profile, effective Context/Idle, lifecycle controls and updater ownership labels.
+The Windows helper could target the App window but did not expose the Tray
+popup, so menu interactions are explicitly human-assisted.
+
+**Open App passed at 2026-10-22T04:22:48.4492562Z.** The actual menu started the official App
+0.2.2: App PID 16504 had Tray PID 29212 as parent;
+Host PID 2180 was the App's child. `/api/health` reported the
+managed `http://127.0.0.1:18148/v1` URL, physical model `acceptance-menu-model`
+and Context 8192. This overrode the deliberately unused inherited port 19999.
+Native automation observed the real App window and rendered chat controls;
+WebView2 used the isolated test profile. No Extension launcher/preload was used.
+The clean native model picker remained empty: launch/backend handoff does not
+register the externally owned model as a native download or select it in chat.
+
+Context/Idle and lifecycle menu dispatch are awaiting human-assisted execution.
+
+## Follow-Up: Default-Agent Output Budget
+
+The earlier no-answer result is reproduced independently in the shipped App
+0.2.2 Host/default Harness, with 6540 native prompt tokens at Context 8192.
+The bundled pi-ai clamp sent `max_completion_tokens: 1`. A staged candidate
+Harness copy using [draft #3684](https://github.com/Niko1221/Strata/pull/3684)
+sent 104 instead and returned `OK`: 25 completion tokens, finish reason `stop`.
+Model, Context, Medium effort and Manual mode were identical. This is Host API
+acceptance; the candidate was not injected into the original installed App or
+the portable Extension package. Long agent tasks at 8K remain unverified.
+
+The source-bound [budget report](https://github.com/medking82/Strata/blob/2ee3fbe32aa3c27a0159fb837137231063b1a58b/apps/host/server/agent/output-budget-validation.md)
+separates the synthetic 1135-token fixture from the live 104-token cap and lists
+the full staging/installer and other-provider gaps. No performance gain is claimed.
+
 ## Not Run
 
-Live App/Engine installation, signature verification or upgrade/restart;
-Windows reboot/autostart; physical Tray menus and Open App action;
-multiple-monitor transitions; other GPU backends; larger-context memory fit;
-full default agent-task acceptance. These results do not establish arbitrary
-future App 0.2.x DOM compatibility or a general upstream plugin API.
+Windows reboot/autostart; cross-monitor transitions; other GPU backends;
+larger-context allocation/inference; live App/Engine installer, signature or
+upgrade/restart; multiple-profile switching and auxiliary menu open/copy actions;
+long default-agent tasks at 8K. The bounded run does not certify future App
+layouts or a general upstream plugin API. No backend source changed here.
+
+The menu-dispatch steps not confirmed above remain pending.
