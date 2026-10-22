@@ -13,8 +13,11 @@
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+#include "ggml-backend.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include "gguf_meta.h"
+#include "gpu_arch.h"
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -23,6 +26,10 @@
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <unistd.h>
+#elif defined(STRATA_VISION_HIP)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
 #endif
 #include <chrono>
 #include <cstdio>
@@ -36,7 +43,14 @@
 
 namespace {
 
+// the GPU architectures ggml-hip printed while it started ("  Device 0: ..., gfx1201:sramecc-:xnack- (0x1201), ...")
+std::vector<std::string> g_gfx;
+
 void quiet_log(ggml_log_level level, const char* text, void*) {
+    if (level == GGML_LOG_LEVEL_INFO && std::strstr(text, "Device ") != nullptr) {
+        const std::string gfx = strata_gfx_in(text);
+        if (!gfx.empty()) g_gfx.push_back(gfx);
+    }
     if (level >= GGML_LOG_LEVEL_WARN) std::fputs(text, stderr);
 }
 
@@ -55,6 +69,22 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#if defined(_WIN32) && defined(STRATA_VISION_HIP)
+    // hipblas.dll is delay-loaded (tools/vision/CMakeLists.txt): it and the ROCm DLLs behind it (rocblas.dll finds its kernel
+    // library and ../.kpack beside itself) stay in rocm\bin of the engine package, which is not on the DLL search path of a
+    // program started with nothing but System32 in PATH.  Put that folder on it before the first call.
+    {
+        wchar_t exe[MAX_PATH];
+        const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::wstring dir(exe, n);
+        const size_t cut = dir.find_last_of(L"\\/");
+        if (cut != std::wstring::npos) {
+            dir.resize(cut);
+            const std::wstring rocm = dir + L"\\rocm\\bin";
+            if (GetFileAttributesW(rocm.c_str()) != INVALID_FILE_ATTRIBUTES) SetDllDirectoryW(rocm.c_str());
+        }
+    }
+#endif
     std::string mmproj, model;
     bool gpu = false;
     int threads = 0, max_tokens = 0, min_tokens = 0;
@@ -69,6 +99,18 @@ int main(int argc, char** argv) {
         if (a == "--mmproj") mmproj = next();
         else if (a == "--model") model = next();
         else if (a == "--gpu") gpu = true;
+        else if (a == "--version") {
+#ifdef STRATA_VISION_HIP
+            std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
+#elif defined(STRATA_VISION_METAL)
+            std::printf("strata-vision metal\n");
+#elif defined(STRATA_VISION_SYCL)
+            std::printf("strata-vision sycl (Intel GPU)\n");
+#else
+            std::printf("strata-vision\n");
+#endif
+            return 0;
+        }
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
         else if (a == "--min-tokens") min_tokens = std::atoi(next().c_str());   // mtmd image_min_tokens (#767)
@@ -90,16 +132,67 @@ int main(int argc, char** argv) {
     if (!gpu) {
 #ifdef _WIN32
         _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+        _putenv_s("HIP_VISIBLE_DEVICES", "-1");
 #else
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+        setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
     }
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+#if defined(STRATA_VISION_HIP) || defined(STRATA_VISION_SYCL)
+#ifdef STRATA_VISION_SYCL
+#define STRATA_VISION_BUILT_FOR "Intel GPUs"
+#else
+#define STRATA_VISION_BUILT_FOR STRATA_VISION_HIP_ARCHS
+#endif
+    if (gpu) {
+        // The AMD / Intel GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
+        // (a second, slower CPU reader inside the HIP program), and a card the build has no code for would abort at its first
+        // kernel.  Both end here with a line the server reads: it then starts the CPU reader (serve/server.py, Vision._start).
+        bool have_gpu = false;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        }
+        if (!have_gpu) {
+            std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_BUILT_FOR);
+            std::fflush(stdout);
+            return 3;
+        }
+#ifdef STRATA_VISION_HIP
+        const char* check = std::getenv("STRATA_VISION_ARCH_CHECK");
+        if (!g_gfx.empty() && (check == nullptr || std::atoi(check) != 0) &&
+            !strata_arch_listed(STRATA_VISION_HIP_ARCHS, g_gfx.front())) {
+            std::printf("ERR this GPU (%s) is not in the picture reader's build (%s)\n", g_gfx.front().c_str(),
+                        STRATA_VISION_HIP_ARCHS);
+            std::fflush(stdout);
+            return 3;
+        }
+#endif
+    }
+#endif
+#ifdef STRATA_VISION_METAL
+    if (gpu) {
+        // The Mac: the same program reads on the GPU (--gpu, ggml's Metal backend) or on the CPU.  With --gpu and no Metal device (a
+        // virtual machine without a GPU, say), mtmd would quietly use the CPU, which reads a picture in ~50 s: say so instead, and
+        // the server starts the program again without --gpu (serve/server.py, Vision._start) with one log line.
+        bool have_gpu = false;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        }
+        if (!have_gpu) {
+            std::printf("ERR this Mac has no Metal GPU for the picture reader\n");
+            std::fflush(stdout);
+            return 3;
+        }
+    }
+#endif
 
     const auto load_t0 = std::chrono::steady_clock::now();
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)   // macOS has no posix_fadvise
     // ask the OS for the projector file up front (128 KiB steps) so the loader's sequential reads find it cached;
     // STRATA_READ_AHEAD=0 turns it off, as in the engine
     if (const char* ra = std::getenv("STRATA_READ_AHEAD"); ra == nullptr || std::atoi(ra) != 0) {
@@ -112,10 +205,11 @@ int main(int argc, char** argv) {
         }
     }
 #endif
-    llama_model_params mp = llama_model_default_params();
-    mp.vocab_only = true;
-    llama_model* text = llama_model_load_from_file(model.c_str(), mp);
-    if (!text) { std::printf("ERR cannot open the text model %s\n", model.c_str()); std::fflush(stdout); return 1; }
+    // the vocabulary and header only: the weights (and their tensor types, which can be Strata-private ones such as
+    // Gyro's TQK6 / TQK7) are never touched - see gguf_meta.h
+    std::string how;
+    llama_model* text = strata_open_text_model(model, &how);
+    if (!text) { std::printf("ERR cannot open the text model %s (%s)\n", model.c_str(), how.c_str()); std::fflush(stdout); return 1; }
 
     mtmd_context_params cp = mtmd_context_params_default();
     cp.use_gpu = gpu;
@@ -129,7 +223,8 @@ int main(int argc, char** argv) {
     if (!gpu && !fa_given && ggml_cpu_has_avx512()) fa = LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cp.flash_attn_type = fa;
     // on the CPU without --threads: one per core (mtmd's own default is 4 threads)
-    if (threads <= 0 && !gpu) threads = std::max(1u, std::thread::hardware_concurrency() / 2);
+    // (at most 16: a 256-thread server does not need 128 encoder threads; --threads overrides)
+    if (threads <= 0 && !gpu) threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency() / 2));
     if (threads > 0) cp.n_threads = threads;
     if (max_tokens > 0) cp.image_max_tokens = max_tokens;
     if (min_tokens > 0) cp.image_min_tokens = min_tokens;

@@ -1,5 +1,6 @@
 // src/kernels/cpu/expert_layout.cpp - plan v0.3 P6: the per-layer expert table.  See the header.
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -60,7 +61,9 @@ bool cpu_avx512_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
@@ -92,7 +95,9 @@ bool cpu_avx512bw_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
@@ -126,7 +131,9 @@ bool cpu_avx2_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0x6) != 0x6) return false;            // the OS saves the SSE and AVX state
@@ -154,7 +161,9 @@ bool cpu_avx1_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         return (xcr0 & 0x6) == 0x6;
@@ -348,12 +357,21 @@ void cpu_require_expert_support() {
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
-    else q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);   // issue #1699: the third rung
+}
+
+void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
+                        int r0, int r1) {
+    if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2_legacy(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else q2_0_gguf_rows_multi_avx1_legacy(w, row_bytes, nblocks, a, nt, out, r0, r1);
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
-    else act_quant_q8_1_avx2(x, n, a);
+    else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
+    else act_quant_q8_1_avx1(x, n, a);   // issue #1699
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)
@@ -374,6 +392,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
     std::ifstream in(pack_dir + "/native_experts.txt");
     if (!in) {
         L.total = (uint64_t) n_layers * (uint64_t) n_expert * (uint64_t) BLOB;
+        hadamard_set({});
         g_layout = L;
         return true;
     }
@@ -470,6 +489,48 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
         at += L.bytes[(size_t) l] * (uint64_t) L.n_expert;
     }
     L.total = at;
+    // v5: Agention's Hadamard-folded experts (prism.hadamard, hadamard.hpp).  The pack must say which layers are
+    // rotated and with what signs; a v5 pack without hadamard.txt (or the reverse) is refused, never run unrotated.
+    {
+        std::ifstream probe(pack_dir + "/hadamard.txt");
+        const bool have = (bool) probe;
+        if (L.version >= 5 && !have) {
+            err = "native_experts.txt v5 declares Hadamard-folded experts, but " + pack_dir + "/hadamard.txt is missing";
+            return false;
+        }
+        if (have && L.version < 5) {
+            err = pack_dir + "/hadamard.txt exists but native_experts.txt is v" + std::to_string(L.version) +
+                  ": the pack is inconsistent (repack with tools/iq_pack.py)";
+            return false;
+        }
+        HadamardSpec h;
+        if (have && !hadamard_parse(pack_dir + "/hadamard.txt", n_layers, h, err)) return false;
+        hadamard_set(std::move(h));
+        const HadamardSpec& hs = hadamard_spec();
+        for (int64_t l = 0; hs.any() && l < n_layers; ++l) {
+            NativeFmt& f = L.fmt[(size_t) l];
+            f.had_block = hs.block;
+            f.had_gu = hs.gu(l);
+            f.had_d = hs.down(l);
+            if ((f.had_gu && f.n_embd % hs.block) || (f.had_d && f.n_ff % hs.block)) {
+                err = "hadamard.txt: block " + std::to_string(hs.block) + " does not divide layer " +
+                      std::to_string(l) + "'s expert widths";
+                return false;
+            }
+            // the Q2_0 rows quantize their activations with Strata's own act_quant_any, which does not rotate
+            if ((f.had_gu && f.gu_type == 42) || (f.had_d && f.d_type == 42)) {
+                err = "hadamard.txt: layer " + std::to_string(l) + " folds a Q2_0 expert, which this engine cannot rotate";
+                return false;
+            }
+            f.gu_signs = f.had_gu ? hadamard_signs((int) f.n_embd) : nullptr;
+            f.d_signs = f.had_d ? hadamard_signs((int) f.n_ff) : nullptr;
+            // explicit signs are per width: a width without a vector would silently mean identity signs
+            if (!hs.signs.empty() && ((f.had_gu && !f.gu_signs) || (f.had_d && !f.d_signs))) {
+                err = "hadamard.txt: no sign vector for layer " + std::to_string(l) + "'s expert width";
+                return false;
+            }
+        }
+    }
     g_layout = L;
     return true;
 #endif

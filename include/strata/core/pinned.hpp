@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace strata::core {
@@ -27,6 +28,19 @@ enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
 /// decides, as in 0.1.30), 0 = no cap (the whole arena, or as many slices as the driver takes), N > 0 = at most N GiB,
 /// -2 for "auto" (Windows: the sliced pin stays below the GPU's shared-memory budget).
 int arena_pin_cap_gib();
+
+/// 153-igpu, UMA mode: the engine sets this on an integrated GPU whose firmware cannot survive a KFD queue eviction (the Radeon
+/// 780M, gfx1103).  The expert arena is then NOT registered with the GPU driver: a registered range is a userptr that the
+/// kernel's page migration (compaction, reclaim) invalidates, and every invalidation evicts the process's GPU queues (MES
+/// REMOVE_QUEUE), which resets that GPU while a dispatch sits in a barrier.  The arena stays resident through the working-set
+/// lock (no experts are reachable over "PCIe": there is none), and the GPU gets what it needs by copy.
+inline std::atomic<bool>& arena_uma_no_register_flag() {
+    static std::atomic<bool> f{false};
+    return f;
+}
+/// True when the arena is to stay unregistered: STRATA_ARENA_PIN_GIB=none always, otherwise the flag above unless the user set
+/// STRATA_ARENA_PIN_GIB to a number (STRATA_ARENA_PIN_GIB=0 registers the whole arena as before).
+bool arena_no_register();
 
 struct PinnedArena {
     void* base = nullptr;
@@ -52,6 +66,19 @@ struct PinnedArena {
     /// existing allocation path.  Population/coordination and backing-file lifetime remain the caller's job.
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0,
                 const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+    /// Pin by need (STRATA_PIN_BY_NEED=1): register only the given byte ranges (offset, length), in the given order
+    /// (the caller's priority: the hottest experts the GPU does not hold first), each rounded out to 4 KiB pages and
+    /// trimmed against the ranges already registered; stops at the first refusal of the driver (the WDDM budget is
+    /// not raisable: we choose WHAT to pin), or when `max_pinned_bytes` (or STRATA_ARENA_PIN_GIB) would be passed.
+    /// Everything not registered - the holes - is locked resident instead.  Registered before any page is touched,
+    /// as the other constructors do.  `registered_bytes` is then the TOTAL registered, not a prefix: use
+    /// `pin_ranges`.
+    struct ByNeed {};
+    PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+                uint64_t max_pinned_bytes = 0, const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+    bool by_need = false;
+    std::vector<std::pair<uint64_t, uint64_t>> pin_ranges;    ///< registered (offset, length), sorted by offset, page-rounded
+    std::vector<std::pair<uint64_t, uint64_t>> locked_ranges; ///< the holes locked resident (offset, length)
     /// #285: reserve only; the caller registers the slices with register_slices(), on a thread, while its readers
     /// fill the ones already registered (one registration of the whole arena cost ~2.5 s at 33 GiB of 4 KB pages).
     struct Deferred {};
@@ -109,13 +136,28 @@ struct LoadStats {
 // by the old and the new reader must produce identical `layer_checksums`.
 LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_bytes, uint64_t blobs_per_layer,
                        uint64_t layers, int threads, uint64_t chunk);
+/// Pin by need: the arena's page-aligned blob stride.  Layer L's blob e sits at `dst_off[L] + e * stride[L]` (stride =
+/// blob rounded up to 4 KiB, the pad is never read), instead of the packed `layer_off[L] + e * blob[L]`; the FILE
+/// offsets stay the packed ones.  Every blob then starts on a page, so any set of blobs registers exactly.
+struct PadMap {
+    std::vector<uint64_t> dst_off, blob, stride;   ///< per layer
+    uint64_t total = 0;                            ///< arena bytes of the padded layout (without the spare blob)
+    uint64_t blob_off(int64_t layer, int64_t expert) const {
+        return dst_off[(size_t) layer] + (uint64_t) expert * stride[(size_t) layer];
+    }
+};
 /// Plan v0.3 P6: the same with one byte range per layer (`layer_off[L]`, `layer_bytes[L]`).
+/// `pad` (optional): the destination is the padded layout above (`layer_off` stays the file offsets).
 /// `ready` (optional): layer L is written only once *ready > L + 1 - its slice and the next one registered (a
 /// PinnedArena registering its slices meanwhile: writing a page while cudaHostRegister runs on it corrupted the
 /// arena under WDDM, even on large pages; a layer boundary inside a page puts that page in both registrations).
 LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
                               const std::atomic<int>* ready = nullptr);
+/// (an overload, not a default argument: the SYCL build has its own pinned.dp.cpp that defines the signature above only)
+LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
+                              const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
+                              const std::atomic<int>* ready, const PadMap* pad);
 
 /// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer and no file-cache copy - the
 /// drive's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned; returns ok =

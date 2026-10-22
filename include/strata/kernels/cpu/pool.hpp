@@ -29,6 +29,7 @@
 
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
+#include "strata/kernels/cpu/pool_plan.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -37,6 +38,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -61,6 +63,9 @@ struct ExpertJobMulti {
     float* out[MAXT] = {};
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
+    /// 149-cold: this job's own layout (null: the layer's) - the GGUF read in place, where gate / up / down are three
+    /// tensors: `blob` is the gate rows and the offsets reach the expert's up and down rows in the mapping.
+    const NativeFmt* fmt = nullptr;
 };
 
 /// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
@@ -78,17 +83,47 @@ struct CpuTopology {
     int e_cores = 0;                ///< Efficient cores
     std::vector<int> worker_cores;  ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
     int host_core = -1;             ///< Logical core reserved for host thread
+    int host_sibling = -1;          ///< The host core's SMT sibling (-1: none), the logical processor `Sibling` takes
+    /// For the default worker count (pool_plan.hpp): the CPU package (socket) of each worker core (parallel to
+    /// `worker_cores`, -1: not known) and of the host core, the logical processors the process may use, whether the
+    /// OS told physical cores from SMT siblings, and the container's CPU quota (0: none).  On a multi-socket CPU the
+    /// host's package comes first in `worker_cores`.
+    std::vector<int> worker_package;
+    int host_package = -1;
+    int logical = 0;
+    bool layout_known = true;
+    double cpu_quota = 0;
 };
 
+/// The description plan_pool_workers() takes, from a detected topology.
+PoolPlanInput pool_plan_input(const CpuTopology& topo);
+/// The CPUs a container quota allows (cgroup v2 cpu.max / v1 cfs quota), 0 when none or not Linux.
+double container_cpu_quota();
+
 /// Which core the host thread - the layer loop that spins on the GPU's flags - takes when `skip_first` reserves one
-/// (--host-core first|last, STRATA_HOST_CORE).  `First` is the layout the pool has always used.  `Last` (eddoursul's
-/// fork, F12) puts the host on the last physical core and lets the workers have the first: Windows sends a GPU's
-/// interrupts to one logical processor, usually the first, and every copy that lands raises one (~13 us in the ISR
-/// and a DPC), which delays a spinning host there.  The placement changes no result, only where threads run.  A hybrid
-/// CPU keeps `First` (its first core is the best P-core).
-enum class HostCore { First, Last };
+/// (--host-core first|last|sibling, STRATA_HOST_CORE).  `First` is the layout the pool has always used.  `Last`
+/// (eddoursul's fork, F12) puts the host on the last physical core and lets the workers have the first: Windows sends
+/// a GPU's interrupts to one logical processor, usually the first, and every copy that lands raises one (~13 us in the
+/// ISR and a DPC), which delays a spinning host there.  The placement changes no result, only where threads run.  A
+/// hybrid CPU keeps `First` under `Last` (its first core is the best P-core).  `Sibling` keeps the host on that first
+/// core but on its other hardware thread: the interrupts stay on the first logical processor, no worker shares the
+/// core (the workers take one logical processor per core), and it applies to hybrid CPUs too.  Without an SMT sibling
+/// it is `First`.
+enum class HostCore { First, Last, Sibling };
 void set_host_core(HostCore where);
 HostCore host_core_setting();
+
+/// `--pool-cores LIST` / STRATA_POOL_CORES / the config's "pool_cores" (experimental, off by default): pin the pool's
+/// workers to exactly these logical processors, in this order, instead of one per physical core.  An empty list (the
+/// default) leaves the placement as it has always been.  Set before the pool is built.  Processors the process may not
+/// run on are left out with a warning; SMT siblings of one core and the host's processor are kept with a warning (a
+/// person who asks for them gets them).  The worker count is the list's length unless --pool-workers says otherwise.
+void set_pool_cores(const std::vector<int>& cpus);
+const std::vector<int>& pool_cores_setting();
+
+/// Every logical processor this process may run on and the physical core it belongs to (see LogicalCpuInfo).  Empty when
+/// the system does not say (macOS, a sandbox without the topology).
+std::vector<LogicalCpuInfo> logical_cpu_layout();
 
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity = PoolAffinity::All);
 
@@ -131,6 +166,20 @@ struct ThreadAffinity {
 ThreadAffinity pin_current_thread(int core);
 void restore_thread_affinity(const ThreadAffinity& previous);
 
+/// STRATA_NUMA_SPLIT's decision for a pool (see `ExpertPool`'s NodeSync).  `1` splits on the real NUMA nodes of
+/// the pinned threads (Linux, exactly 2 nodes); `test` splits by thread index (thread j -> slice j % 2) with no real
+/// node, for the parity test.
+struct NumaSplitPlan {
+    bool on = false;                  ///< split enabled
+    bool test = false;                ///< STRATA_NUMA_SPLIT=test: no real nodes, never places memory
+    int nodes[2] = {-1, -1};          ///< real node id of slice 0 and 1 (ascending); -1 in test mode
+    std::vector<int> cores[2];        ///< the cores the pool pinned for each slice (workers + host)
+    std::string why;                  ///< reason when off ("" when on, or when the env var is unset)
+};
+/// The live pool's decision (set by the ExpertPool constructor, reset by its destructor); `on == false` when no
+/// pool exists or the split is off.
+const NumaSplitPlan& active_numa_split();
+
 class ExpertPool {
 public:
     /// `n_workers <= 0` means "every physical core except the first".  Workers are pinned to physical cores
@@ -158,11 +207,27 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    /// What bounded the default worker count (pool_plan.hpp; "" when a count was configured), the physical cores
+    /// and logical processors counted - for the start-up line.
+    const char* plan_limit() const { return plan_limit_; }
+    /// True when the workers sit where `--pool-cores` said (the list, minus what could not be used).
+    bool explicit_cores() const { return explicit_cores_; }
+    /// The start-up line about where the workers and the host run ("CPU workers on logical processors 2,4,...,30 (15
+    /// workers, one per physical core; host on 0)"); "" without workers.
+    std::string placement_line() const;
+    int plan_cores() const { return plan_cores_; }
+    int plan_logical() const { return plan_logical_; }
+    /// STRATA_NUMA_SPLIT: 2 when the native row phases are split per NUMA node, 0 when off.
+    int numa_slices() const { return numa_n_; }
+    /// Accumulated drain time of slice `s` over the mode-5/6 phases, ms: publish to the slice's last `done`.
+    double numa_slice_ms(int s) const { return s >= 0 && s < numa_n_ ? slice_ms_[s] : 0.0; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
 
     bool is_hybrid() const { return topo_.is_hybrid; }
+    /// The CPUs worker i is pinned to, in worker order (STRATA_NUMA_SPLIT reorders them: interleave_packages).
+    const std::vector<int>& worker_cores() const { return topo_.worker_cores; }
     int p_cores() const { return topo_.p_cores; }
     int p_threads() const { return topo_.p_threads; }
     int e_cores() const { return topo_.e_cores; }
@@ -235,6 +300,12 @@ private:
     void publish();
 
     int n_ = 0;
+    bool explicit_cores_ = false;
+    bool pinned_ = true;
+    std::vector<LogicalCpuInfo> layout_;   // the logical processors and their cores, read when the pool was built (the caller may be pinned later)
+    const char* plan_limit_ = "";
+    int plan_cores_ = 0;
+    int plan_logical_ = 0;
     bool host_works_ = true;
     ExpertJob* jobs_ = nullptr;
     int njobs_ = 0;
@@ -296,6 +367,48 @@ private:
     };
     const NativeFmt* nfmt_ = nullptr;
     std::vector<SplitBufMulti> split_multi_;
+    // STRATA_NUMA_SPLIT=1 (opt-in, Linux, exactly 2 nodes): in the native row phases (modes 5/6) every expert's rows
+    // are cut into one slice per NUMA node (slice k = rows [per*k/2, per*(k+1)/2) of the gate/up or down matrix, the
+    // part the resident complement places on node k in step B), and each node's threads claim and count on their own
+    // slice's counters; in every mode they park on their own `parked`.  Off (`numa_n_ == 0`, the decision is final in
+    // the constructor): none of this is touched and the pool is as before.
+    //
+    // THE CLAIM PROTOCOL IS issue #29's, ONCE PER SLICE.  Each slice head packs `epoch | njobs | index` and is claimed
+    // with the same CAS as `head_`.  A mode-5/6 batch stores every slice head with its epoch and leaves `head_` alone;
+    // any other batch stores `head_` and leaves the slice heads alone.  So for batch `e` exactly one family of heads
+    // carries `e`, and a stale head is always exhausted (`wait_done` saw every task of it done).  A worker therefore
+    // never reads `mode_` to pick a counter: it tries its slice head, then `head_`, and the epoch tag makes the wrong
+    // one fail - as it makes a late worker's claim fail.
+    struct NodeSync {
+        alignas(64) std::atomic<uint64_t> head{0};       // as `head_`, for this slice of the phase
+        alignas(64) std::atomic<uint32_t> done{0};       // as `done_`
+        alignas(64) std::atomic<uint32_t> parked{0};     // as `parked_`, this slice's workers only
+        alignas(64) std::atomic<int64_t> drained_ns{0};  // steady_clock ns when `done` reached `tasks` (0: not yet)
+        // the batch's description, written by the host before the head's release store, read after a claim
+        alignas(64) int base = 0;   // the slice's first task index in the phase (task ids are global for `diag`)
+        int tasks = 0;              // T: the slice's task count
+        int h = 0;                  // rows of each expert in the slice
+        int row0 = 0;               // the slice's first matrix row (per*k/2)
+        int64_t rows = 0;           // R = experts * h
+    };
+    // CBA: the NodeSync blocks live wherever `new` puts them (the host's node); per-node pages if the remote home
+    // of a line ever shows up in the counters.
+    std::unique_ptr<NodeSync[]> nsync_;
+    int numa_n_ = 0;                  // slices (2 when on), 0 = off
+    std::vector<int> wslice_;         // each worker's slice
+    int hslice_ = 0;                  // the host's slice (when it drains)
+    std::vector<int> slice_threads_;  // threads draining each slice (the host counted in its own)
+    int64_t pub_ns_ = 0;              // the current mode-5/6 phase's publish time (host only)
+    double slice_ms_[2] = {0.0, 0.0}; // accumulated per-slice drain time (host only)
+    bool numa_phase() const { return numa_n_ > 0 && mode_ >= 5; }
+    /// The claim of `claim()` on slice `slice`'s head: `base + i`, or -1.
+    int claim_slice(uint32_t epoch, int slice);
+    std::atomic<uint32_t>& parked_of(int id) { return numa_n_ > 0 ? nsync_[(size_t) wslice_[(size_t) id]].parked : parked_; }
+    uint32_t parked_count() const;
+    /// Fill the slices' descriptions for a mode-5/6 phase of `nb` experts of `per` rows; returns the total tasks.
+    int numa_plan_phase(int per, int nb);
+    /// Per-slice counters for the stall messages and `diag` ("" when off).
+    std::string numa_counters() const;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
 };

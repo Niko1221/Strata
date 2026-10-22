@@ -201,6 +201,7 @@ def check_split(files) -> None:
 ROLES = ("gate", "up", "down")
 N_EXPERT = 512
 ALIGN = 64
+NVFP4_TAIL = 16          # {s_gate, s_up, s_down, 0} after an NVFP4 expert blob
 
 
 def read_index(path: pathlib.Path):
@@ -451,11 +452,25 @@ def expert_layout(model: Model, src: pathlib.Path):
         if per[0] != per[1] or ts[0].type_name != ts[1].type_name:
             return "layer %d: gate and up differ in type" % l
         blob = per[0] + per[1] + per[2]
+        nvfp4 = ts[0].type_name == "NVFP4" or ts[2].type_name == "NVFP4"
+        if nvfp4:
+            # NVFP4 (ModelOpt) carries one F32 weight_scale_2 per expert and projection, which the block format has
+            # no room for. Each blob gets a 16-byte tail {s_gate, s_up, s_down, 0} so every consumer that already
+            # moves whole blobs (the arena, the device cache, the prefill staging, a second GPU) moves the scales
+            # with the weights; the gate/up kernels read it. See tools/nvfp4_convert.py.
+            # a mixed expert (e.g. NVFP4 gate/up + Q8_0 down) has the tail too, with 1.0 for the other projection
+            if any(t.type_name == "NVFP4" and "blk.%d.ffn_%s_exps.scale" % (l, r) not in T for t, r in zip(ts, ROLES)):
+                return "layer %d: NVFP4 experts without their .scale tensors" % l
+            blob += NVFP4_TAIL
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         ws = [model.where[n] for n in names]
         files = ["" if w[3] == src else w[3].name for w in ws]
         column = files[0] if len(set(files)) == 1 else ",".join(files)
         n_split += len(set(files)) != 1
+        if nvfp4:   # no GGUF offsets: experts.bin is the only source that carries the scale tails
+            lines.append("%d %d %d %d %d" % (l, ts[0].type_id, ts[2].type_id, offset, blob))
+            offset += blob * n_expert
+            continue
         line = "%d %d %d %d %d %d %d %d" % (l, ts[0].type_id, ts[2].type_id, offset, blob,
                                             *[w[0].data_start + w[1].offset for w in ws])
         lines.append(line + ("" if not column else " " + column))
@@ -471,6 +486,92 @@ def expert_layout(model: Model, src: pathlib.Path):
                 "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
                 % (n_expert, offset, src.name))
     return layout, head + "".join(line + "\n" for line in lines), n_expert, offset
+
+
+NATIVE_HEAD = re.compile(r"^# strata native experts v(\d+):")
+
+
+def native_experts_v5(text: str) -> str:
+    """native_experts.txt as expert_layout writes it (v3, or v4 with per-role shards) -> the same table marked v5
+    (Hadamard-folded experts, hadamard.txt beside it), or an error string naming the version it cannot mark."""
+    head, rest = text.split("\n", 1) if "\n" in text else (text, "")
+    m = NATIVE_HEAD.match(head)
+    if not m or m.group(1) not in ("3", "4"):
+        found = "v" + m.group(1) if m else "without a version header (%r)" % head[:40]
+        return ("cannot mark native_experts.txt %s as v5 for Hadamard-folded experts: only v3 and v4 tables are "
+                "supported" % found)
+    return "# strata native experts v5:" + head[m.end():] + " - v5: Hadamard-folded experts, see hadamard.txt\n" + rest
+
+
+HADAMARD_ROLE = re.compile(r"^blk\.(\d+)\.ffn_(gate|up|down)_exps\.weight$")
+
+
+def hadamard_spec(meta: dict, layout, n_embd: int, n_ff: int):
+    """prism.hadamard.* (Agention's APR files: routed experts stored in a block-Hadamard-rotated basis; the runtime
+    must rotate their input activations, see include/strata/kernels/cpu/hadamard.hpp) -> the text of hadamard.txt,
+    None for a model without the metadata, or an error string.  Anything this engine cannot apply is refused: a
+    folded weight it would run unrotated computes plausible garbage."""
+    if "prism.hadamard.version" not in meta:
+        return None
+    if int(meta["prism.hadamard.version"]) != 1:
+        return "unsupported prism.hadamard.version %s" % meta["prism.hadamard.version"]
+    block = int(meta.get("prism.hadamard.block_size", 0))
+    if block <= 1 or block & (block - 1):
+        return "invalid prism.hadamard.block_size %r" % block
+    if meta.get("prism.hadamard.transform") != "normalized-sylvester-walsh-hadamard":
+        return "unsupported prism.hadamard.transform %r" % meta.get("prism.hadamard.transform")
+    if meta.get("prism.hadamard.axis") != "input-last-dimension":
+        return "unsupported prism.hadamard.axis %r" % meta.get("prism.hadamard.axis")
+    mode = meta.get("prism.hadamard.sign_mode")
+    if mode not in ("identity", "explicit"):
+        return "unsupported prism.hadamard.sign_mode %r" % mode
+    if meta.get("prism.hadamard.inverse_weight_names"):
+        return ("prism.hadamard.inverse_weight_names (a rotated token embedding) is not supported by this engine: "
+                "%s" % ", ".join(meta["prism.hadamard.inverse_weight_names"][:4]))
+    names = meta.get("prism.hadamard.weight_names") or []
+    if not names:
+        return "prism.hadamard.weight_names is empty"
+    n_layers = len(layout)
+    roles = [0] * n_layers
+    for name in names:
+        m = HADAMARD_ROLE.match(name)
+        if not m or int(m.group(1)) >= n_layers:
+            return ("prism.hadamard folds %s; this engine applies the activation rotation to the routed experts "
+                    "(blk.N.ffn_{gate,up,down}_exps) only" % name)
+        bit = {"gate": 1, "up": 2, "down": 4}[m.group(2)]
+        if roles[int(m.group(1))] & bit:
+            return "duplicate prism.hadamard weight %s" % name
+        roles[int(m.group(1))] |= bit
+    for l, r in enumerate(roles):
+        if bool(r & 1) != bool(r & 2):
+            return "layer %d: prism.hadamard folds only one of gate/up (they share one input)" % l
+        if r and 42 in (layout[l][1] if r & 3 else -1, layout[l][2] if r & 4 else -1):
+            return "layer %d: a Hadamard-folded Q2_0 expert (the engine's Q2_0 rows cannot rotate)" % l
+    lines = ["# strata hadamard v1: prism.hadamard (normalized-sylvester-walsh-hadamard, input-last-dimension, "
+             "sign_mode %s), written by tools/iq_pack.py" % mode, "block %d" % block]
+    widths = {n_embd for r in roles if r & 3} | {n_ff for r in roles if r & 4}
+    if any(w % block for w in widths):
+        return "prism.hadamard block %d does not divide the expert widths %s" % (block, sorted(widths))
+    if mode == "explicit":
+        sw = [int(w) for w in meta.get("prism.hadamard.sign_widths") or []]
+        sv = [int(v) for v in meta.get("prism.hadamard.sign_values") or []]
+        if not sw or sum(sw) != len(sv) or any(w <= 0 or w % block for w in sw) or len(set(sw)) != len(sw):
+            return "prism.hadamard sign_widths / sign_values are inconsistent"
+        if any(v not in (1, -1) for v in sv):
+            return "prism.hadamard sign values must be +1/-1"
+        at, table = 0, {}
+        for w in sw:
+            table[w] = sv[at:at + w]
+            at += w
+        missing = sorted(widths - set(table))
+        if missing:
+            return "prism.hadamard has no sign vector for width(s) %s" % missing
+        for w in sorted(table):
+            lines.append("signs %d %s" % (w, " ".join(str(v) for v in table[w])))
+    for l, r in enumerate(roles):
+        if r:
+            lines.append("layer %d %d %d %d" % (l, r & 1, (r >> 1) & 1, (r >> 2) & 1))
+    return "\n".join(lines) + "\n"
 
 
 def experts_source(model: Model, text: str, total: int) -> dict:
@@ -522,14 +623,51 @@ def main() -> int:
         print(got)
         return 1
     layout, text, n_expert, offset = got
+    if any(t.type_name == "NVFP4" for *_, ts in layout for t in ts):
+        a.experts_bin = True   # the GGUF holds the weights without the scale tails: the engine must read experts.bin
+    # ---- prism.hadamard: rotated experts need hadamard.txt beside native_experts.txt, which becomes v5 so an engine
+    # that cannot rotate refuses the pack (instead of running the folded experts on unrotated activations)
+    t0 = layout[0][5]
+    had = hadamard_spec(g.metadata, layout, int(t0[0].shape[0]), int(t0[2].shape[0]))
+    if isinstance(had, str) and not had.startswith("# strata hadamard"):
+        print("prism.hadamard: " + had)
+        return 1
+    if had is not None:
+        text = native_experts_v5(text)
+        if not text.startswith("# strata native experts v5:"):
+            print("prism.hadamard: " + text)
+            return 1
+        print("prism.hadamard: %d layer(s) of Hadamard-folded experts (block %s, %s signs): hadamard.txt, "
+              "native_experts.txt v5" % (sum(1 for ln in had.splitlines() if ln.startswith("layer ")),
+                                         g.metadata["prism.hadamard.block_size"],
+                                         g.metadata["prism.hadamard.sign_mode"]))
     path = out / "experts.bin"
     sidecar = out / "experts.bin.src.json"
     want = experts_source(model, text, offset)
     reuse = path.exists() and path.stat().st_size == offset and read_json(sidecar) == want
 
-    def layer_blobs(blob, ts):
-        chunk = np.concatenate([model.bytes(t.name).reshape(n_expert, -1) for t in ts], axis=1)
-        assert chunk.shape == (n_expert, blob)             # (n_expert, blob): gate | up | down per expert
+    def nvfp4_tails(l, ts):
+        """(n_expert, NVFP4_TAIL) bytes {s_gate, s_up, s_down, 0} of a layer with an NVFP4 projection; a projection in
+        another format gets exactly 1.0 (the engine multiplies by the tail unconditionally). None for a bad scale."""
+        s = [np.frombuffer(model.bytes("blk.%d.ffn_%s_exps.scale" % (l, r)).tobytes(), dtype=np.float32)
+             if t.type_name == "NVFP4" else np.ones(n_expert, dtype=np.float32) for t, r in zip(ts, ROLES)]
+        tail = np.zeros((n_expert, NVFP4_TAIL // 4), dtype=np.float32)
+        tail[:, 0], tail[:, 1], tail[:, 2] = s[0], s[1], s[2]
+        if not np.isfinite(tail).all() or (tail[:, :3] <= 0).any():
+            print("layer %d: a non-finite or non-positive NVFP4 scale" % l)
+            return None
+        return tail.view(np.uint8)
+
+    def layer_blobs(l, blob, ts):
+        """(n_expert, blob): gate | up | down [| the NVFP4 scale tail] per expert; None for a bad NVFP4 scale."""
+        parts = [model.bytes(t.name).reshape(n_expert, -1) for t in ts]
+        if any(t.type_name == "NVFP4" for t in ts):
+            tail = nvfp4_tails(l, ts)
+            if tail is None:
+                return None
+            parts.append(tail)
+        chunk = np.concatenate(parts, axis=1)
+        assert chunk.shape == (n_expert, blob)
         return chunk
 
     if reuse:
@@ -541,6 +679,9 @@ def main() -> int:
                 for e in (0, n_expert - 1):
                     f.seek(off + e * blob)
                     want_blob = b"".join(model.bytes(t.name).reshape(n_expert, -1)[e].tobytes() for t in ts)
+                    if any(t.type_name == "NVFP4" for t in ts):
+                        tail = nvfp4_tails(l, ts)
+                        want_blob += tail[e].tobytes() if tail is not None else b""
                     if f.read(blob) != want_blob:
                         reuse = False
         if not reuse:
@@ -569,6 +710,12 @@ def main() -> int:
     # ---- the experts.  native_experts.txt is written to a temporary name and renamed only when every layer is
     # in: a stop part-way (a layer split across shards, #171) left a partial native_experts.txt that the next setup
     # run took as a finished pack (#172).  It is the pack's completion marker, so it is published last.
+    htmp = out / "hadamard.txt.tmp"
+    if had is not None:
+        htmp.write_text(had, encoding="utf-8", newline="\n")
+        htmp.replace(out / "hadamard.txt")
+    else:
+        (out / "hadamard.txt").unlink(missing_ok=True)      # a previous Hadamard model's, packed into this folder
     tmp = out / "native_experts.txt.tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as fo:
         fo.write(text)
@@ -584,13 +731,48 @@ def main() -> int:
     # experts.bin, and an experts.bin without its sidecar is never reused
     sidecar.unlink(missing_ok=True)
     part = out / "experts.bin.tmp"
-    with open(part, "wb") as fo:
-        for l, gt, dt, off, blob, ts in layout:
-            fo.write(layer_blobs(blob, ts).tobytes())
+    progress = out / "experts.bin.tmp.json"
+    # A stop part-way (a kill, a power cut) used to cost the whole write again (40 GB, minutes).  The finished layers are kept:
+    # after every layer the file is flushed to disk and experts.bin.tmp.json says how many layers are in it and which source they were
+    # cut from.  The next run continues at that layer when the source is the same and the last kept layer still matches the GGUF.
+    start = 0
+    if part.exists():
+        done = read_json(progress)
+        k = done.get("layers") if isinstance(done, dict) and done.get("want") == want else None
+        if isinstance(k, int) and 0 < k <= len(layout) and part.stat().st_size >= (layout[k][3] if k < len(layout) else offset):
+            l, gt, dt, off, blob, ts = layout[k - 1]
+            last = layer_blobs(l, blob, ts)
+            if last is not None:
+                with open(part, "rb") as f:
+                    f.seek(off)
+                    kept = f.read(n_expert * blob)
+                if kept == last.tobytes():
+                    start = k
+        if start:
+            print("the earlier packing was interrupted: keeping its first %d of %d layers and continuing with layer %d"
+                  % (start, len(layout), start), flush=True)
+        else:
+            print("the earlier packing was interrupted and cannot be continued: starting it again", flush=True)
+    resume_at = layout[start][3] if start < len(layout) else offset
+    with open(part, "r+b" if start else "wb") as fo:
+        if start:
+            fo.truncate(resume_at)       # whatever followed the last recorded layer is a partial write
+            fo.seek(resume_at)
+        for l, gt, dt, off, blob, ts in layout[start:]:
+            chunk = layer_blobs(l, blob, ts)
+            if chunk is None:
+                return 1
+            fo.write(chunk.tobytes())
+            fo.flush()
+            os.fsync(fo.fileno())
+            note = out / "experts.bin.tmp.json.new"
+            note.write_text(json.dumps({"want": want, "layers": l + 1}), encoding="utf-8")
+            note.replace(progress)
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)
     part.replace(path)
+    progress.unlink(missing_ok=True)
     side_tmp = out / "experts.bin.src.json.tmp"
     side_tmp.write_text(json.dumps(want, indent=2) + "\n", encoding="utf-8")
     side_tmp.replace(sidecar)
