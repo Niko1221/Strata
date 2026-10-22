@@ -460,6 +460,106 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     return 200, dec
 
 
+def _row_readout_enabled() -> bool:
+    """M3.1 (BROWAT): one window, N rows.  Opt-in while it is measured - the readout position for
+    field i moves from "after this field's own prompt" to "after this field's turn in a shared
+    prompt", which is the same position in kind but not in context, and the calibration was fit on
+    the old one.  STRATA_JEV_ROWREADOUT=1 turns it on; unset/0 leaves the per-question path, which
+    is byte-identical to M3.0."""
+    import os
+    return os.environ.get("STRATA_JEV_ROWREADOUT", "0") not in ("", "0")
+
+
+def consolidated_rows(svc, state_text: str, qdefs: list):
+    """Render ONE prompt for all the questions and return (ids, rows) - the row index per question -
+    or None when the prefix cannot be kept exact (the caller then uses the per-question path).
+
+    Field 1's turn is the prompt M3.0 renders for it (system + state + question), so field 1's row is
+    byte-identical to M3.0's.  Each further field is its own turn appended after the earlier fields'
+    answer turns, so the state is prefilled once instead of N times and every field still ends at an
+    assistant cue - the readout position M3.0 reads, just from a window that also carries the other
+    fields' turns.
+
+    The placeholder answer "-" is never decoded and never read: it exists because the frontend drops a
+    COMPLETED EMPTY assistant turn (#843), which would delete the next field's cue with it.  It is a
+    real token, though, so field 2..N see the earlier fields' questions and placeholders - the same cue
+    position in kind, a different context.  That shift is what the M3.1 live probe measures (accuracy,
+    Brier, is_card against the per-question path); it is why this path is opt-in and why the calibration
+    fitted on the per-question position is not silently reused.
+
+    The prefix check is a comparison of encoded ids, not an assumption about the template: if a chat
+    template does not render the extension as literal string concatenation, tokenization at the seam can
+    merge and the row numbers would be off by a token - that case returns None.
+    """
+    units = []
+    for i, qdef in enumerate(qdefs):
+        content = (state_text + "\n\n" + question_block(qdef)) if i == 0 else question_block(qdef)
+        messages = [{"role": "system", "content": SYSTEM_V1}]
+        for prev in units:
+            messages.append({"role": "user", "content": prev["content"]})
+            messages.append({"role": "assistant", "content": "-"})   # never decoded; see above
+        messages.append({"role": "user", "content": content})
+        prompt = svc.template.render(messages, add_generation_prompt=True, enable_thinking=False)
+        ids = svc.tok.encode(prompt, parse_special=True)
+        if not ids:
+            return None
+        if units and units[-1]["ids"] != ids[:len(units[-1]["ids"])]:
+            return None                                            # seam moved: no row numbers to trust
+        units.append({"content": content, "ids": ids})
+    return units[-1]["ids"], [len(u["ids"]) - 1 for u in units]
+
+
+def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
+    """The donor order once the logits are in hand (server.cpp:1134-1142): unrounded softmax for the
+    calib log, round 4dp, renormalise, THEN the per-tuple calibrator.  Shared by the per-question and
+    the consolidated paths so the same row produces the same answer on either."""
+    pr_raw = softmax(scores)
+    pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
+    t = sum(pr)
+    if t > 0:
+        pr = [x / t for x in pr]
+    pr, calib_id = jev_calib.apply(qdef["type"], pr, "S" if image_state else "L")
+    # M2 B1.1 log row (unrounded raw_p; donor schema minus label_mass, BROW is sparse)
+    jev_calib.log_enqueue({
+        "ts": int(time.time()),
+        "tuple": jev_calib.tuple_of("S" if image_state else "L", qdef["type"]),
+        "qid": qdef["id"],
+        "type": qdef["type"],
+        "raw_p": pr_raw,
+    })
+    return answers_from_calibrated(qdef["type"], pr, calib_id)
+
+
+def _consolidated(svc, engine, state_text: str, qdefs: list):
+    """M3.1: one prompt, one prefill, one row read per field.  Returns (answers, in_tokens, readouts), or
+    None when this engine or this template cannot serve it exactly - the caller then runs the per-question
+    path, which is byte-identical to M3.0.
+
+    The prefill runs before the row count is known, and that order is the point: rows are numbered from the
+    LAST verify window's first token, and only the engine can say how many rows its window kept.  A prompt
+    longer than the engine's prefill chunk is read in several windows, so our numbering would name somebody
+    else's rows - and the server ends the engine on a row it cannot serve, so the count is a guard to obey,
+    never an error to retry.  Wasted prefill on that path costs one window; a wrong row would cost the
+    request its answer and the engine its life.
+    """
+    plan = consolidated_rows(svc, state_text, qdefs)
+    if plan is None:
+        return None
+    ids, rows = plan
+    cancel = threading.Event()
+    for _ in engine.generate(ids, 1, {}, cancel):
+        pass                                     # the one prefill; its rows are the readouts
+    if engine.brow_rows() != len(ids):
+        return None                              # read in more than one window: the per-question path it is
+    answers = {}
+    for qdef, row_i in zip(qdefs, rows):
+        variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+        tokens = sorted({t for v in variants for t in v})
+        scores = readout_scores(engine.row_logits_at(row_i, tokens), variants)
+        answers[qdef["id"]] = _finish_answer(qdef, scores, False)   # image_state is False in this path
+    return answers, len(ids), len(qdefs)
+
+
 def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     """POST /v1/systemone -> (HTTP status, body).  The whole inference holds the engine turn
     (svc.fifo), like every other engine-touching path."""
@@ -481,6 +581,20 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     image_state = isinstance(req.get("state"), dict) and "image_summary" in req.get("state", {})
     answers, in_tokens, readouts = {}, 0, 0
     with svc.fifo:                                       # the engine turn: one request at a time
+        # M3.1 (BROWAT, opt-in): text L-mode with more than one field - ONE prompt, one prefill and
+        # one row read per field, instead of one cold prefill per field.  Falls back to the
+        # per-question loop below whenever the engine or the template cannot support it exactly
+        # (no BROWAT op, a template whose seam moves, a prompt read in more than one window).
+        if (_row_readout_enabled() and len(qdefs) > 1 and not v_mode and not image_state
+                and hasattr(engine, "row_logits_at") and hasattr(engine, "brow_rows")):
+            try:
+                got = _consolidated(svc, engine, state_text, qdefs)
+            except ValueError as e:
+                return _err("state", f"logits readout failed: {e}")
+            if got is not None:
+                answers, in_tokens, readouts = got
+                return 200, {"answers": answers,
+                             "usage": {"prompt_tokens": in_tokens, "readout_tokens": readouts}}
         for qdef in qdefs:
             use_v = v_mode and qdef["type"] == "choice"   # X-Jev-Mode scopes to choice (donor :767)
             if use_v:
@@ -551,22 +665,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             except ValueError as e:
                 return _err("state", f"logits readout failed: {e}")
             # ---- donor order (server.cpp:1134-1142): round 4dp, renormalize, THEN calibrate ----
-            pr_raw = softmax(scores)                     # unrounded, for the calib log
-            pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
-            t = sum(pr)
-            if t > 0:
-                pr = [x / t for x in pr]
-            calib_id = None
-            pr, calib_id = jev_calib.apply(qdef["type"], pr, "S" if image_state else "L")
-            answers[qdef["id"]] = answers_from_calibrated(qdef["type"], pr, calib_id)
-            # M2 B1.1 log row (unrounded raw_p; donor schema minus label_mass, BROW is sparse)
-            jev_calib.log_enqueue({
-                "ts": int(time.time()),
-                "tuple": jev_calib.tuple_of("S" if image_state else "L", qdef["type"]),
-                "qid": qdef["id"],
-                "type": qdef["type"],
-                "raw_p": pr_raw,
-            })
+            answers[qdef["id"]] = _finish_answer(qdef, scores, image_state)
             in_tokens += len(ids)
             readouts += 1
     return 200, {"answers": answers,
