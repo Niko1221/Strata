@@ -21,6 +21,14 @@
 > 1. **下方的下载链接是 Niko1221/Strata 的原版应用。** 预编译二进制**不包含**此分支的搜索功能。带搜索的版本只存在于源码中:`git clone`,分支 `web-search`,然后 START-HERE.bat / setup.sh。
 > 2. **此分支也适合精简的 Terminal 路线**:只需要 headless 服务器上的轻量 serve/CLI (无应用、无聊天界面) 的人,用同一份源码即可,搜索内置于 serve 前端。
 >
+> **通过 CLI 安装**（此分支，`web-search` 分支）：克隆并按 Strata 源码方式安装，搜索已内置。本 Fork
+> 的完整安装指南（终端 / 源码，含更新）见 [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md)：
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
 > RTX 4080 SUPER / Ryzen 9 7950X3D 的基准测试结果在 `bench/`。
 
 <p align="center">

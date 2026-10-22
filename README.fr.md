@@ -21,6 +21,14 @@
 > 1. **Les liens de téléchargement ci-dessous sont l'app upstream d'origine** de Niko1221/Strata. Les binaires prêts à l'emploi **ne contiennent pas** la recherche de ce fork. La version avec recherche n'existe que dans le source : `git clone`, branche `web-search`, puis START-HERE.bat / setup.sh.
 > 2. **Ce fork convient aussi à la route Terminal économe en ressources** : ceux qui veulent seulement le serve/CLI léger sur un serveur headless (pas d'app, pas d'UI de chat) l'obtiennent de ce même source, avec la recherche intégrée au frontend serve.
 >
+> **Installation via CLI** (ce fork, branche `web-search`) : clonez et installez exactement comme Strata depuis le source, avec la recherche intégrée.
+> Le guide d'installation propre à ce fork (terminal / source, et mise à jour) est dans [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md) :
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
 > Les résultats de bench sur RTX 4080 SUPER / Ryzen 9 7950X3D sont dans `bench/`.
 
 <p align="center">

@@ -21,6 +21,14 @@
 > 1. **下のダウンロードリンクは Niko1221/Strata の素のアップストリームアプリ**です。プリビルドバイナリにこのフォークの検索は**入りません**。検索付きの版はソースのみ:`git clone`、ブランチ `web-search`、その後 START-HERE.bat / setup.sh。
 > 2. **このフォークは軽量な Terminal 経路のためでもある**:ヘッドレスサーバーで簡素な serve/CLI だけを使う人 (アプリなし、チャット UI なし) も同じソースから使えます。検索は serve フロントエンド内蔵。
 >
+> **CLI でのインストール**（このフォーク、`web-search` ブランチ）：Strata のソースと同じようにクローンしてセットアップします（検索は内蔵）。
+> このフォーク独自のインストールガイド（ターミナル / ソース、更新方法込み）は [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md)：
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
 > RTX 4080 SUPER / Ryzen 9 7950X3D のベンチ結果は `bench/` にあります。
 
 <p align="center">
