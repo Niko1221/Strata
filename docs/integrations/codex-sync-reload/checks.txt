@@ -1,0 +1,8 @@
+Windows x64; Python 3.12. External companion integration suites.
+Command: python -B -m unittest carrier.tests.test_client_sync carrier.tests.test_supervisor deployment.test_configure_codex -q
+21 client-sync/observer checks + 66 supervisor/configuration regression checks.
+Sanitized terminal excerpt; private path-bearing warning/fixture diagnostics omitted.
+
+Ran 87 tests in 126.275s
+
+OK
