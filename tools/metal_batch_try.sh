@@ -2,15 +2,20 @@
 # metal_batch_try.sh - stage-1 proof for batch slots on the Mac (Metal) engine.
 #
 # Runs the same prompts decoded alone (GEN, the solo window) and together in the batch windows (BGEN),
-# greedy, and compares every slot's tokens with its solo tokens: they must be IDENTICAL (the batch
-# window commits to the same summation order as the solo T=1 window).  It prints the batch window's
-# build line and the aggregate decode rate.  Everything is logged, so a run can be read after the fact.
+# greedy by default, and prints every slot's tokens against its solo tokens.  Exact identity of the
+# sampled or batched picks is NOT the gate (docs/BATCHING.md: batched rows round differently at the PLE
+# block and flips at near ties are luck); read the DIFFERS text before believing corruption.  It prints
+# the batch window's build line and the aggregate decode rate.  Everything is logged, so a run can be
+# read after the fact.
 #
 #   ./tools/metal_batch_try.sh            # 2 slots, 2 prompts, 128 tokens each
 #   ./tools/metal_batch_try.sh 4 4 64     # 4 slots, 4 prompts, 64 tokens each
 #
 # The engine holds ~43 GB (a 33 GB arena plus weights) and sushi serve holds ~53 GB GPU-wired.  Both at
 # once panicked this box (kernel watchdog, 2026-10-20): the script refuses to run while sushi is up.
+# The numeric free-memory gate is a soft backstop (real refusals are the holder checks); override with
+# METAL_BATCH_TRY_FORCE=1 when you know the big holders are gone and vm_stat's raw free pages undercount
+# what macOS can reclaim.  Extra arguments go to batch_test.py (e.g. --keys "temperature=0.7 seed=7").
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
@@ -52,10 +57,16 @@ free = n("Pages free") + n("Pages speculative")
 print(free * ps // 2**30)
 PY
 )
-say "free memory: ~${FREE_GB} GB (the engine needs ~43 GB); swap used: ${SWAP_USED}M"
-if [ "${FREE_GB:-0}" -lt 50 ]; then
-    say "refusing: under 50 GB free.  Close memory hogs (or drop sushi) and re-run."
-    exit 1
+MIN_GB="${METAL_BATCH_TRY_MIN_GB:-44}"   # the engine's measured footprint is ~43 GB
+if [ "${FREE_GB:-0}" -lt "$MIN_GB" ]; then
+    say "free memory ~${FREE_GB} GB is under ${MIN_GB} GB."
+    if [ "${METAL_BATCH_TRY_FORCE:-0}" != "1" ]; then
+        say "refusing.  Close memory hogs and re-run, or METAL_BATCH_TRY_FORCE=1 if you know the box."
+        exit 1
+    fi
+    say "METAL_BATCH_TRY_FORCE=1: continuing anyway."
+elif [ "${FREE_GB:-0}" -lt 50 ]; then
+    say "margin is thin (under 50 GB free); continuing, but keep the box quiet."
 fi
 
 # 2) the engine binary must be the freshly built one
@@ -72,7 +83,7 @@ export STRATA_PARK_DEBUG=1
 export STRATA_BATCH_VERIFY=1
 BATCH_TEST_LOG="$OUT/engine.log" python3 tools/batch_test.py \
     --exe "$EXE" --config "$CFG" --batch "$BATCH" --n "$N" --max-new "$MAXNEW" \
-    --dump "$OUT/tokens.json" 2>&1 | tee "$LOG"
+    --dump "$OUT/tokens.json" "${@:4}" 2>&1 | tee "$LOG"
 rc=$?
 say "batch_test exit $rc (0: every slot IDENTICAL to solo; 2: at least one DIFFERS)"
 
