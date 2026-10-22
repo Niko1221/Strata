@@ -15,6 +15,7 @@
 #include <cuda_runtime.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -151,6 +152,9 @@ int main(int argc, char** argv) {
         for (int round = 0; round < 3; ++round)   // interleaved, the minimum: the clocks wander between runs
             for (int k = 0; k < 2; ++k)
                 for (int p = 0; p < 3; ++p) us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
+        uint64_t fnv = 1469598103934665603ull;   // FNV-1a of the output bytes: equal hashes across two builds = bitwise equal outputs
+        for (size_t i = 0; i < got.size() * 4; ++i) fnv = (fnv ^ reinterpret_cast<const uint8_t*>(got.data())[i]) * 1099511628211ull;
+        std::printf("hash %016llx\n", (unsigned long long) fnv);
         std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
                     " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s) | %s\n",
                     l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T,

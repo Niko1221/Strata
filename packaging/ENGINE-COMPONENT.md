@@ -99,8 +99,10 @@ the manifest file (which holds every file's hash), used as the package's digest 
 | `windows-x86_64` cuda, variant `cuda13` | the owner PC, the same cmake line as the release zips (CUDA 13.0, `75;86;89;120` real + `120` PTX, `STRATA_PORTABLE=ON`) | `strata.exe`, `strata_kq.dll`, `strata-vision.exe` (reused, unchanged since 0.1.44), `BUILD.json` | `min_driver` nvidia 580.65 |
 | `windows-x86_64` cuda, variant `cuda12` | the owner PC (CUDA 12.9, `60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | the same four files | experimental, `min_driver` nvidia 575.51; the CUDA 13 build wins when both fit |
 | `windows-x86_64` hip | the owner PC, `tools/hip/build_windows.bat` (ROCm 10.2 nightly wheels) then `tools/hip/package_windows.py` | `strata.exe`, `strata-device.exe`, the ROCm DLLs and the rocBLAS/hipBLASLt kernels of the zip (`--tree`) | no Windows AMD test machine yet; with `STRATA_NO_VISION` unset it also builds the two picture readers (`strata-vision.exe` on the CPU, `strata-vision-hip.exe` on the GPU) |
-| `linux-x86_64` cuda | a Linux box with the CUDA toolkit | `strata`, `libstrata_kq.so`, `libcudart/libcublas/libcublasLt` (13.x) | the GPU driver's `libcuda` stays the PC's |
+| `linux-x86_64` cuda, variant `cuda13` | a Linux box with the CUDA 13 toolkit, `VARIANT=cuda13 packaging/build_cuda_linux.sh` | `strata`, `libstrata_kq.so`, `libcudart/libcublas/libcublasLt` (13.x) | the GPU driver's `libcuda` stays the PC's |
+| `linux-x86_64` cuda, variant `cuda12` | a Linux box with CUDA 12.9, `VARIANT=cuda12 packaging/build_cuda_linux.sh` (`60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | the same files with the 12.x libraries | experimental, `min_driver` nvidia 575.51; the Pascal and Volta package (the 0.2.1 one lacked sm_60 / 61 / 70, #3503); `package_engine.py` refuses a cuda12 package without them |
 | `linux-x86_64` hip | a box with ROCm (the Python wheels are enough) | `strata`, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, comgr + libLLVM, `rocblas/library` and `hipblaslt/library` for the listed gfx archs; `packaging/build_hip_linux.sh` builds it with both picture readers |
+| `linux-x86_64` hip, variant `rx6000` (RX 6000, gfx1030 / gfx1031) | `VARIANT=rx6000 packaging/build_hip_linux.sh` in the jammy chroot, ROCm 7.13.0a20260515 `gfx103X-all` wheels | the same set as the other HIP packages, with `rocblas/library` for gfx1030 / gfx1031; no `hipblaslt/library` kernels exist for them and no `tuning/` table | built, not tested on a real RX 6000 card (the manifest notes say so). `windows-x86_64` hip, variant `rdna2`: the same archs from `tools/hip/build_windows.bat` with `STRATA_HIP_ARCHS=gfx1030;gfx1031`, packaged with `--variant rdna2`. A PC with an RX 7000 / 9000 card beside an RX 6000 one never takes it (`engine_component.hip_preference`) |
 | `linux-x86_64` hip, gfx1103 (Radeon 780M / Phoenix iGPU) | `packaging/build_hip_gfx1103.sh` on the mini PC (TheRock gfx110X-all SDK) | the same set as the gfx1200/1201 package, with `rocblas/library` and `hipblaslt/library` for gfx1103 (600 MiB) | experimental, unvalidated: the iGPU resets now and then (MES REMOVE_QUEUE); never kill the engine mid-request; run configs set `STRATA_NO_ARENA_THP=1`. `engine_component.resolve` picks a HIP package only when its `archs` list a gfx target the Linux kfd topology reports |
 | `linux-x86_64` sycl | a box with oneAPI DPC++ | `strata` (JIT from SPIR-V), libsycl, the Unified Runtime adapters, MKL SYCL libraries | the Level Zero loader and compute runtime are the PC's driver |
 | `macos-arm64` metal | an Apple Silicon Mac | `strata`, `metal/kernels/*.metal`, `metal/engine-msl/*.metal`, `metal/ggml-common.h`, `metal/data/*.bin` | the Metal engine compiles its kernel sources when it starts; since S1 it finds them beside the executable (`metal/src/resource_path.h`: environment variable, then `<exe dir>/metal/`, then the compiled-in source path) |
@@ -108,6 +110,17 @@ the manifest file (which holds every file's hash), used as the package's digest 
 `packaging/collect_libs.py` gathers the Linux libraries (an `ldd` closure with the dlopen'd extras named, kernel data filtered by
 GPU architecture) into the folder `package_engine.py` packages; libraries the distribution provides are listed in
 `SYSTEM-LIBS.txt` inside the package so a missing one can be named on a target PC.
+
+## hipBLASLt tuning tables in an AMD package
+
+An AMD package records the hipBLASLt it bundles (`hipblaslt_version` in BUILD.json, 1.5.0 is `100500`) and carries the tables of `tools/hip`
+for exactly that version and its `archs` as `tuning/<arch>-hipblaslt-<version>.txt`. They are ordinary files of the manifest (hashed and signed
+with the package). `packaging/stage_tuning.py` does it for the Linux build script, `tools/hip/package_windows.py` for the Windows zip, and
+`package_engine.py` refuses an AMD stage without `hipblaslt_version` or with a table for another version or architecture. The server's start
+(`serve/server.py with_component_engine`, rule in `strata_control/hipblaslt_tuning.py`) picks the table of the card and sets
+`STRATA_HIPBLASLT_TUNING` for the engine; a version mismatch, an unreadable card or a missing version are one log line and plain hipBLAS.
+`STRATA_HIPBLASLT_TABLE=on|off` (or `"hipblaslt_table"` in the run config) overrides; unset it follows `AUTO_USES_TABLE`, which is off until the
+owner decides, because a table changes the rounding of the prompt's GEMMs (docs/AMD_HIP.md, Tuning table). Tests: `tests/terminal/test_hipblaslt_tuning.py`.
 
 ## Picture readers in an AMD package
 

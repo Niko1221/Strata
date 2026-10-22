@@ -44,7 +44,7 @@ import * as serving from './serving.mjs';
 import * as store from './store.mjs';
 import * as supervisor from './supervisor.mjs';
 import * as engineInstall from './engine-install.mjs';
-import { detectBackend, currentBackend, streamChat } from './inference.mjs';
+import { detectBackend, currentBackend, streamChat, inferenceLine } from './inference.mjs';
 import { CONTEXT_TOKENS, VARIANTS, localModels, variant } from './catalog.mjs';
 import { browseLocalModels, inspectLocalModel } from './local-models.mjs';
 import { EventHub, error, json, readBody, readRaw, uid } from './util.mjs';
@@ -58,6 +58,7 @@ import { createForkTimeskip } from './timeskip-fork.mjs';
 import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
+import { plainNoModel } from './no-model-text.mjs';
 import { createAppUi } from './app-ui.mjs';
 import { appVersionFrom, appVersionToShow } from './app-version.mjs';
 import { createImageModels } from './image-models.mjs';
@@ -71,6 +72,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
+import { findFreePort, listenProblem } from './ports.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -126,6 +128,16 @@ const bundledEngine = control && !process.env.STRATA_NO_BUNDLED_ENGINE
   : Promise.resolve({ action: 'none' });
 let bundledEngineSettled = !(control && !process.env.STRATA_NO_BUNDLED_ENGINE);
 bundledEngine.then(() => { bundledEngineSettled = true; }, () => { bundledEngineSettled = true; });
+/* A build made for another make of graphics card is not unpacked; Control's answer then carries the plain sentence (with the right download) instead of its own. */
+let bundledWrongMake = null;
+bundledEngine.then(result => { if (result?.action === 'wrong-make') { bundledWrongMake = result.notice; console.log(result.notice); } }, () => {});
+if (control) {
+  const engineOf = control.engine.bind(control);
+  control.engine = async (...args) => {
+    const answer = await engineOf(...args);
+    return answer && !answer.usable && bundledWrongMake ? { ...answer, notice: bundledWrongMake, wrongMake: true } : answer;
+  };
+}
 const native=createNativeControl({control,ready:bundledEngine,appUpdater,hardwareProbe:()=>(hardware.cachedHardware()?.gpus??[]).map((g,n)=>({index:g.index??n,vram_gb:g.vramGb})),directory:store.DATA_DIR,modelsDirectory:()=>store.MODELS_DIR,nativeDataDirectory:store.nativeDataDirectory,beforeLoad:async()=>{if(models.REAL&&models.library().loaded){if(serving.state().requests.some(r=>runtimeModels.state().instances.some(i=>i.id===r.instanceId)&&["queued","generating"].includes(r.state)))throw new Error("Finish requests before switching engines.");await models.unload();runtimeState();}},requests:()=>serving.state().requests,changed:value=>hub.send('native',value)});
 /* The agent: chats become DeepSeek Harness sessions when that component is installed. It is a separate
    pinned component (STRATA_HARNESS_DIR), not part of this host, so its absence is a visible capability
@@ -240,7 +252,9 @@ const backend = await detectBackend({ force: true });
 
 console.log(`strata host  ·  http://${HOST}:${PORT}`);
 console.log(`hardware     ·  ${boot.accelerator.label} / ${boot.accelerator.backend} / ${boot.cpu.cores} cores / ${Math.round(boot.memory.totalGb)} GB`);
-console.log(`inference    ·  ${models.REAL ? (bundledEngineSettled ? backend.name : 'unpacking the bundled engine… (about a minute the first time)') : 'simulated (design iteration) — set STRATA_REAL_ENGINE=1 for a real engine'}`);
+const printInference = engine => console.log(`inference    ·  ${models.REAL ? inferenceLine({ backend, engine, settled: bundledEngineSettled }) : 'simulated (design iteration) — set STRATA_REAL_ENGINE=1 for a real engine'}`);
+if (models.REAL && control && backend.kind === 'unavailable' && bundledEngineSettled) void control.engine().catch(() => null).then(printInference);
+else printInference(null);
 console.log(`models dir   ·  ${store.MODELS_DIR}`);
 console.log(`workspace    ·  ${WORKSPACE}`);
 
@@ -256,7 +270,7 @@ function setupState() {
     flowVersion: 2,
     completedAt: s.setup.completedAt,
     history: s.setup.history ?? [],
-    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR },
+    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR, modelsDirNotice: store.MODELS_DIR_NOTICE },
   };
 }
 
@@ -572,7 +586,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
   }
   else {
     try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); }
-    catch (e) { write({ type: 'error', message: e.message }); return; }
+    catch (e) { write({ type: 'error', message: plainNoModel(e.message) }); return; }
     choice = { instanceId: instance.id };
   }
   const started = Date.now();
@@ -604,7 +618,7 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
 async function runTurn({ message, history = [], onFrame, signal, client, workspaceId = null, sessionId = null, remoteModel = null, runtimeModelId = undefined, nativeModelId, images=[], useTools=false, thinking='medium', thinkingBudget=0 }) {
   if (remoteModel) return runRemoteTurn({ selection: remoteModel, message, history, images, onFrame, signal, workspaceId });
   if(native.hasLive()||nativeModelId){
-    let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){onFrame({type:'error',message:e.message});return {error:e.message};}const started=Date.now(),cancel=new AbortController();
+    let instance;try{instance=native.resolveInstance(nativeModelId??native.state().defaultId);}catch(e){const message=plainNoModel(e.message);onFrame({type:'error',message});return {error:message};}const started=Date.now(),cancel=new AbortController();
     const entry=serving.open({client:client??'Strata chat',endpoint:'/chat/completions',model:instance.apiModelId,instanceId:instance.id,gpuIds:instance.gpus.map(String),cancel:()=>cancel.abort()});
     try{serving.mark(entry.id,{state:'generating'});const applied=selectSkills(skillState,message,workspaceId);const result=await proxyCompletion({baseUrl:`http://127.0.0.1:${instance.port}/v1`,modelId:instance.apiModelId,authorization:instance.key,message,history,images,extra:{strata_mcp:useTools===true,...(thinkingBudget>0&&String(thinking).toLowerCase()!=='off'?{reasoning_budget_tokens:thinkingBudget}:{}),reasoning_effort:({off:'none',max:'high'}[String(thinking).toLowerCase()]??String(thinking).toLowerCase())},systemPrompt:[SYSTEM_PROMPT,skillInstructions(applied)].filter(Boolean).join('\n\n'),signal:signal?AbortSignal.any([signal,cancel.signal]):cancel.signal,onFrame:frame=>onFrame({...frame,requestId:entry.id,model:instance.label,contextMax:instance.metrics?.engine?.max_context??instance.context,skills:applied.map(s=>s.name)})});serving.mark(entry.id,{...result,usageSource:result.usageSource});serving.finish(entry.id,{tokensOut:result.tokensOut,durationMs:Date.now()-started});return result;}catch(e){serving.finish(entry.id,{durationMs:Date.now()-started,error:e.message});onFrame({type:'error',message:e.message,requestId:entry.id});return {error:e.message};}
   }
@@ -696,6 +710,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
           durationMs: Date.now() - started,
           ttftMs: firstTokenMs ?? undefined,
           cachedTokens: result.cachedTokens,
+          tps: result.tps,
           usageSource: result.usageSource,
         });
         if(models.REAL){monitor.setRecordedContext({ ...result, requestId: entry.id, sessionId });monitor.idle();}
@@ -793,7 +808,7 @@ function createTuning({ repoRoot, python, pythonArgs = [], env = process.env } =
   function runCli(args) {
     return new Promise((resolve) => {
       const child = spawn(python, [...pythonArgs, cli, ...args, '--output', 'json'], {
-        cwd: repoRoot, windowsHide: true, env: { ...env, STRATA_TUNE_DIR: stateDir() },
+        cwd: repoRoot, windowsHide: true, env: { ...env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', STRATA_TUNE_DIR: stateDir() },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let out = '', err = '';
@@ -895,8 +910,10 @@ const tasks = createTaskService({
 const taskTimer = setInterval(() => tasks.tick(), 15000);
 taskTimer.unref();
 
-const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
-const tunnelPort = Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2);
+// The share and tunnel listeners take a free port (the next ones above the host's own) instead of a fixed PORT+1 / PORT+2 that Docker, WSL or Hyper-V may hold or reserve.
+const sharePort = await findFreePort(Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), '0.0.0.0', { skip: [PORT] });
+const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: sharePort, changed: () => serving.setSharing(localShare.state()) });
+const tunnelPort = await findFreePort(Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2), '127.0.0.1', { skip: [PORT, sharePort] });
 const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, host: '127.0.0.1', port: tunnelPort });
 const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine', 'cloudflare'), componentDirectory: join(componentsDirectory(), 'cloudflared') });
 const cloudflare = createCloudflare({ origin: tunnelOrigin, originUrl: `http://127.0.0.1:${tunnelPort}`, hasKey: () => !!store.get().serving?.apiKey, changed: serving.setTunnel, locate: connector.locate, prepareConnector: connector.ensure, connectorInfo: connector.connector, findRunning: findRunningConnector });
@@ -949,6 +966,17 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native'&&method==='GET')return json(res,200,await native.refresh(url.searchParams.get('refresh')==='1'));
   if(path==='/api/native'&&method==='PATCH')return json(res,200,await native.configure(await readBody(req)));
   if(path==='/api/native/directory'&&method==='POST')return json(res,200,native.setDownloadDirectory((await readBody(req)).directory));
+  /* Settings > Storage > Models folder: pick (or type) a folder, say what it means, then start the choice. Copying is Control's (strata models move). */
+  if(path==='/api/native/models-folder/plan'&&method==='POST'){
+   const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
+   const picked=typed?{path:typed}:await chooseFolder('Choose a folder for your models');
+   if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});}
+   if(picked.cancelled)return json(res,200,{cancelled:true});
+   return json(res,200,{plan:await native.planModelsFolder(picked.path)});}
+  if(path==='/api/native/models-folder/start'&&method==='POST'){const body=await readBody(req);const result=await native.startModelsFolder({folder:body.path,choice:body.choice,stopRunning:body.stopRunning===true});return json(res,result.id?202:200,result);}
+  if(path==='/api/native/models-folder/interrupted'&&method==='GET')return json(res,200,{interrupted:await native.interruptedMove()});
+  if(path==='/api/native/models-folder/resume'&&method==='POST'){const body=await readBody(req);return json(res,202,await native.finishInterruptedMove({stopRunning:body.stopRunning===true}));}
+  if(path==='/api/native/models-folder/leave'&&method==='POST')return json(res,200,await native.leaveInterruptedMove());
   if(path==='/api/native/plan'&&method==='POST')return json(res,200,await native.plan(await readBody(req)));
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});
@@ -966,7 +994,7 @@ async function api(req, res, path, method, url) {
    return json(res,200,{path:file});}
   if(path==='/api/native/local/preview'&&method==='POST'){
    /* "Use a local GGUF": pick (or type) the folder, and Control says what is in it. Nothing is copied or changed. */
-   const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
+   const typed=await typedFolder((await readBody(req)).path,{isAbsolute,fileType:/\.gguf$/i});
    const picked=typed?{path:typed}:await chooseFolder('Choose the folder that holds your GGUF files');
    if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
    if(picked.cancelled)return json(res,200,{cancelled:true});
@@ -993,7 +1021,7 @@ async function api(req, res, path, method, url) {
   if(nativeSettingsFile&&method==='POST')return json(res,200,await native.openSettingsFile(nativeSettingsFile[1]));
 
   // Credentials are handled only on the host. Responses and events expose a key-set flag.
-  return error(res,404,'Unknown native control action.');}catch(e){return error(res,/Finish|Unload|running|current operation/.test(e.message)?409:400,e.message);}}
+  return error(res,404,'Unknown native control action.');}catch(e){return error(res,/Finish|Unload|running|current operation/.test(e.message)?409:400,e.message,{...(e.code&&typeof e.code==='string'?{code:e.code}:{}),...(e.details?{details:String(e.details)}:{})});}}
 
   if (path === '/api/model-providers' && method === 'GET') return json(res, 200, withPictureAnswers(modelProviders.list()));
   if (path === '/api/model-providers/discover' && method === 'POST') {
@@ -1410,7 +1438,7 @@ async function api(req, res, path, method, url) {
   if (modelMatch) {
     const [, id, action] = modelMatch;
     if (method === 'DELETE') {if(runtimeModels.hasVariant(id))return error(res,409,'Unload every instance of this model before deleting its files.');return json(res, 200, runtimeModels.libraryState(models.remove(id)));}
-    if (method === 'POST' && action === 'install') return json(res, 200, runtimeModels.libraryState(await models.install(id)));
+    if (method === 'POST' && action === 'install') { try { return json(res, 200, runtimeModels.libraryState(await models.install(id))); } catch (err) { return error(res, err.status ?? 500, err.message); } }
     if (method === 'POST' && action === 'cancel') return json(res, 200, runtimeModels.libraryState(models.cancel(id)));
     if (method === 'POST' && action === 'load') {
       const hw = await hardware.detect();
@@ -1844,8 +1872,10 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, agentTools.removeCustom(customToolRoute[1])); } catch (e) { return error(res, 400, e.message); }
   }
   if (path === '/api/agent/pending' && method === 'GET') {
-    const chat = new URL(req.url, 'http://x').searchParams.get('chatId') ?? '';
-    return json(res, 200, { pending: agent.pendingFor(chat) });
+    const params = new URL(req.url, 'http://x').searchParams;
+    // No chat named: every chat with an approval waiting (the task board lists them without opening each chat).
+    if (!params.has('chatId')) return json(res, 200, { chats: agent.pendingAll() });
+    return json(res, 200, { pending: agent.pendingFor(params.get('chatId') ?? '') });
   }
   /* Approve / Deny a tool the agent asked about. The answer reaches the Harness approval for exactly
      that chat and call; a stale or foreign id is refused. */
@@ -2146,6 +2176,12 @@ async function staticFile(req, res, path) {
 
 /* ------------------------------------------------------------------ start --- */
 
+server.on('error', error => {
+  if (server.listening) { console.error(`[strata] ${error.message}`); return; }
+  // a taken or Windows-reserved port: one plain sentence instead of a stack trace
+  console.error(`[strata] ${listenProblem(error, PORT, HOST)}`);
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.

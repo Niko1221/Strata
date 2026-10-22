@@ -387,6 +387,11 @@ class Catalog:
                 rec = min(rec, int(mod.ram_ctx(model, hw["ram_gb"], False)))
             except Exception:                                  # noqa: BLE001
                 pass
+        if usable:                                             # 0.2.2: a model a few hundred MiB short on this card gets the next context down
+            from strata_control import vram_fit
+            best = max(usable, key=lambda g: float(g.get("vram_gb") or 0))
+            rec = vram_fit.fit_context(f"{family} {model}", float(best.get("vram_gb") or 0), rec, "int8", 300,
+                                       str(best.get("vendor") or ""))
         return rec
 
     # ---- pictures
@@ -420,12 +425,18 @@ class Catalog:
     def picture_default(self, images: bool) -> str:
         """The picture setting nobody chose: off for a model that cannot read pictures or an engine without the reader; else on, with the
         reader the one rule of strata_control/vision_reader.py gives: the CPU reader under 24 GB of graphics memory, the GPU reader from 24 GB,
-        on every make of card (owner decision 2026-10-18). Without a usable graphics card there is nothing to read on: the CPU reader."""
+        on every make of card (owner decision 2026-10-18); on a Mac the Metal reader (unified memory). Without a usable graphics card there is nothing to read on: the CPU reader."""
         from strata_control import vision_reader as VR
         if not images or self.reader_state() == "missing":
             return "off"
+        if self.is_mac():
+            return VR.default_mode(None, unified=True)           # a Mac (unified memory): the Metal reader, nothing to keep free for a card
         vram = self.computer().main_vram_gb
-        return VR.default_mode(vram) if vram > 0 else "cpu"      # a Mac (unified memory) or no card: nothing to keep free, the CPU reader
+        return VR.default_mode(vram) if vram > 0 else "cpu"      # no usable card: nothing to read on, the CPU reader
+
+    def is_mac(self) -> bool:
+        """An Apple Silicon Mac: the chip's memory is the system's (the Metal engine; strata_control/vision_reader.py)."""
+        return self.engine_backend() == "metal"
 
     # ---- installed models
     def installed_configs(self) -> list[dict]:

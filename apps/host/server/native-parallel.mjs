@@ -41,6 +41,12 @@ export const CACHE_LOSS_SHARE = 0.2;
  * about 6.9 GiB goes to everything else; a second card in a layer split about 2 GiB).
  */
 export const FIRST_CARD_OTHER_GB = 6.9;
+/**
+ * The draft layer (MTP) is part of that 6.9: about 1 GB of graphics memory (786 MiB of files and the draft head's ~218 MiB,
+ * phaseA-tests/notes-021-settings.md). With "Draft layer (MTP)" off in Expert settings (`"mtp": false`) the engine does not load it, so
+ * the card has that much more cache and the slots may use it.
+ */
+export const MTP_VRAM_GB = 1.0;
 export const NEXT_CARD_OTHER_GB = 2.0;
 /**
  * `--batch-mtp` lets each slot verify draft tokens. Where it pays and where it does not (all measured):
@@ -77,7 +83,7 @@ export function engineFacts(config = {}) {
   const gpus = Array.isArray(config.gpu) ? config.gpu : config.gpu === undefined || config.gpu === null ? [0] : [config.gpu];
   return {
     args, context, kv, family, gpus,
-    mtp: args.includes('--mtp'),
+    mtp: args.includes('--mtp') && config.mtp !== false,
     batchMtp: args.includes('--batch-mtp'),
     explicitBatch: args.includes('--batch') || args.includes('--slots'),
   };
@@ -107,7 +113,7 @@ export function chooseParallel({ config = {}, values = {}, hardware = null, requ
   if (!cards.length) return { slots: PARALLEL_POLICY === 'fixed' ? requested : 1, batchMtp: false, explicit: false, requested, note: null, slotGb: slot };
   const total = cards.reduce((a, b) => a + b, 0);
   const oneCard = facts.gpus.length === 1 && cards.length === 1;
-  const soloCache = Math.max(0, total - FIRST_CARD_OTHER_GB - NEXT_CARD_OTHER_GB * (cards.length - 1));
+  const soloCache = Math.max(0, total - (FIRST_CARD_OTHER_GB - (facts.mtp ? 0 : MTP_VRAM_GB)) - NEXT_CARD_OTHER_GB * (cards.length - 1));
   let slots = requested;
   if (PARALLEL_POLICY === 'fit') while (slots > 1 && slots * slot > CACHE_LOSS_SHARE * soloCache) slots -= 1;
   const note = slots >= requested ? null

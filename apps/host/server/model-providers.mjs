@@ -30,6 +30,16 @@ export const PROVIDER_CATALOG = [
 const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic'];
 const fail = message => { throw new Error(message); };
 const text = (value, max = 160) => typeof value === 'string' ? value.trim().slice(0, max) : '';
+/** The answer speed of a model API's reply: the tokens it reports over the time from its first streamed token to the end, never over the whole
+ *  wait (that would put the time to the first token, often seconds of prompt reading, into the speed). null when it reported no tokens;
+ *  with no usable first-token time (or under a quarter of a second) the whole time is the best there is. */
+export function answerSpeed(tokensOut, durationMs, firstTokenMs) {
+  if (!Number.isFinite(tokensOut) || tokensOut <= 0) return null;
+  const decodeMs = Number.isFinite(firstTokenMs) ? durationMs - firstTokenMs : NaN;
+  const ms = decodeMs >= 250 ? decodeMs : durationMs;
+  return Number((tokensOut / Math.max(0.001, ms / 1000)).toFixed(1));
+}
+
 export function normalizeBaseUrl(value) {
   let url; try { url = new URL(text(value, 2048)); } catch { fail('Enter a full http:// or https:// API address.'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) fail('Use an HTTP or HTTPS base URL without credentials, a query, or a fragment.');
@@ -207,7 +217,7 @@ export function createModelProviders({ directory, changed = () => {}, fetchImpl 
       if (!textLength) fail('The model returned no text. Choose a model that supports text chat.');
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     const durationMs = Date.now() - started;
-    const result = { tokensIn, tokensOut, usageSource: tokensIn !== null && tokensOut !== null ? 'reported' : 'unavailable', durationMs, ttftMs: firstToken, tps: tokensOut !== null ? tokensOut / Math.max(0.001, durationMs / 1000) : null };
+    const result = { tokensIn, tokensOut, usageSource: tokensIn !== null && tokensOut !== null ? 'reported' : 'unavailable', durationMs, ttftMs: firstToken, tps: answerSpeed(tokensOut, durationMs, firstToken) };
     onFrame({ type: 'done', ...result }); return result;
   }
   /** Connections WITH their keys, for the host's own agent bridge only; never serialised to a client. */

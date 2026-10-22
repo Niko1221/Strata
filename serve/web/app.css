@@ -4,7 +4,7 @@
 html, body { height: 100%; }
 body { display: flex; flex-direction: column; overflow: hidden; }
 main { flex: 1; min-height: 0; display: flex; }
-.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .view[hidden] { display: none; }
 .muted { color: var(--st-ink-muted); }
 .small { font-size: var(--st-fs-xs); }
@@ -53,8 +53,9 @@ main { flex: 1; min-height: 0; display: flex; }
              font-size: var(--st-fs-md); }
 /* MCP tool calls inside an answer: one compact collapsible block per call */
 .st-bubble .tool-call { margin: var(--st-s-3) 0; }
-.tool-call > summary { min-width: 0; padding: 8px 12px; }
-.tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap; }
+.tool-call > summary { min-width: 0; padding: 8px 12px; overflow: hidden; }
+.tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap;
+                   min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tool-call__preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-xs); }
 .tool-call .st-badge, .tool-call summary .small { flex: none; }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }

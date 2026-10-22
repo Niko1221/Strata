@@ -311,3 +311,23 @@ test('a failed update job shows plain words and keeps the technical reason as de
     assert.match(job.details, /ConnectionResetError/);
   } finally { await f.native.close(); f.cleanup(); }
 });
+
+test('offline, the signed-feed check says there is no internet connection in plain words and keeps the reason in details', async () => {
+  for (const raw of ['fetch failed', '<urlopen error [Errno 11001] getaddrinfo failed>', 'getaddrinfo ENOTFOUND updates.example']) {
+    const control = { version: '0.1.45', async updateCheck() { throw new Error(raw); } };
+    const result = await checkComponentUpdates({ control, appVersion: '0.2.0' });
+    assert.equal(result.strata.status, 'error', raw);
+    assert.equal(result.strata.message, "No internet connection. Try again when you're online.", raw);
+    assert.equal(result.engine.message, "No internet connection. Try again when you're online.", raw);
+    assert.equal(result.strata.details, raw);
+  }
+});
+
+test('the app updater and the host never reach the network by themselves: only check() does', async () => {
+  const calls = [];
+  const updater = createAppUpdater({ env: { STRATA_SHELL_BRIDGE: 'http://127.0.0.1:4000', STRATA_SHELL_TOKEN: 'tok' }, fetcher: async url => { calls.push(url); return Response.json({ available: false }); } });
+  assert.ok(updater);
+  assert.equal(calls.length, 0, 'creating the updater makes no call');
+  await updater.check();
+  assert.equal(calls.length, 1);
+});

@@ -104,6 +104,19 @@ class ParsingTest(unittest.TestCase):
         self.assertEqual(failure_kind("", -9)[0], "OOM")
         self.assertEqual(failure_kind("something else broke", 1)[0], "FAIL_BOOT")
 
+    def test_cuda_init_failure_with_the_memory_guard_line_is_not_oom(self):
+        # #3502: the informational memory guard line was present in every failed run
+        text = ("ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected\n"
+                "strata generate: memory guard: limit 63.8 GiB (source: meminfo), current 12.6 GiB, reclaimable cache "
+                "credited 0.0 GiB; available 51.2 GiB (MemAvailable 51.2 GiB), floor 2560 MiB\n"
+                "strata generate: expert arena: cudaHostRegister of the whole arena FAILED (out of memory)\n")
+        status, why = failure_kind(text, 1)
+        self.assertEqual(status, "FAIL_BOOT")
+        self.assertIn("Unload the model", why)
+        self.assertNotIn("memory guard", why)
+        info = "strata generate: memory guard: limit 63.8 GiB, available 51.2 GiB\nsomething else broke"
+        self.assertEqual(failure_kind(info, 1)[0], "FAIL_BOOT")
+
     def test_gpu_cache_wording_is_not_the_low_ram_mode(self):
         self.assertFalse(parse_facts("R4 hit path ON - resident experts are computed on the GPU")["resident_ram"])
         self.assertTrue(parse_facts("WARNING: the whole resident RAM mode does not fit (FileExpertSource: resident complement 34.47 GiB")["resident_ram"])

@@ -28,6 +28,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <atomic>
 #include <chrono>
@@ -115,6 +116,15 @@ uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
 /// SMALLEST node's free), i.e. what an even spread would find.  Only lowers the figure, so the pages are then taken in
 /// steps (which reclaim cache as they fault) instead of in one driver call; it never refuses and never caps.
 uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_free);
+/// Byte ranges [first, second) of slice `slice` of 2 inside one complement slot at arena offset `slot_off`, whose roles
+/// (gate, up, down) are `role_bytes[0..2]` long and back to back. Role r's slice-0 bytes are [start_r, start_r + role_r/2),
+/// its slice-1 bytes the rest. Page rule (absolute arena offsets): any page holding a slice-0 byte belongs to slice 0,
+/// so slice-0 ranges round OUTWARDS (start down, end up) and slice-1 ranges round INWARDS (start up, end down) - this
+/// also settles pages shared across role and slot boundaries. Returns three ranges in arena offsets, possibly empty
+/// (first == second). Adjacent roles smaller than a page may give overlapping slice-0 ranges: harmless (same node, the
+/// caller coalesces them).
+std::array<std::pair<uint64_t, uint64_t>, 3> numa_slice_ranges(uint64_t slot_off, const uint64_t role_bytes[3],
+                                                               int slice, uint64_t page = 4096);
 /// The sentence appended to a "not enough RAM" start failure: how much of the RAM is file cache (Cached + Buffers of
 /// `meminfo_text`, mapped pages included) and what to do about it; "" when under 1 GiB of cache (nothing to say).
 std::string page_cache_hint(const std::string& meminfo_text);
@@ -706,6 +716,9 @@ public:
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
     /// CS-T: the --native shard (native_experts.txt names the other files beside it); see `open`.
     void set_gguf(const std::string& native) { gguf_ = native; }
+    /// STRATA_NUMA_SPLIT: files the engine read at start outside this source (the pack's dense.bin, the MTP head),
+    /// whose cached pages the placement's drop gives back too.  Set BEFORE `pin_cache_complement`.
+    void set_extra_drop_files(std::vector<std::string> paths) { extra_drop_files_ = std::move(paths); }
     /// Whether the experts are read from the GGUF shards in place (no experts.bin).
     bool gguf_mode() const { return !role_ptr_.empty(); }
     /// Pin a compact host mirror of experts absent from a fully filled static GPU cache. The mmap remains open
@@ -997,6 +1010,20 @@ public:
 #if defined(__linux__)
     bool linux_file_defaults() const override { return !role_ptr_.empty(); }   // the GGUF in place only (measured)
 #endif
+    /// 0.2.1: io prefetch + the decode gate by default also for an experts.bin pack (zero-copy is moot there: its blob is one
+    /// contiguous range the kernels already read from the mapping; the COLD_OVERLAP default stays with the GGUF in place).
+    /// Measured (RTX 3060, 43 GB pack): 32 GB of RAM decode +20..+34%, 16 GB decode +3..+8% but the cold 4K prompt -4..-6%, so
+    /// below the gate's room test the pack keeps reading as before
+    bool linux_io_defaults() const {
+#if defined(__linux__)
+        return role_ptr_.empty() ? cache_room_ratio() >= 0.55 : true;   // experts.bin: only while the page cache has room for it
+#else
+        return false;
+#endif
+    }
+    /// the memory the page cache can use (the tightest cgroup limit less what is not page cache, else MemAvailable) over the
+    /// experts' bytes; 0 when unknown.  The decode gate's room test (STRATA_IO_PF_GATE_LO), asked once at start.
+    double cache_room_ratio() const;
     bool gate_on() const { return gate_on_; }
     double gate_held() const { return gate_ewma_; }
     int64_t gate_closed_windows() const { return gate_closed_w_; }
@@ -1038,6 +1065,7 @@ private:
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
+    std::vector<std::string> extra_drop_files_;   ///< set_extra_drop_files
     struct Map {
         const uint8_t* base = nullptr;
         uint64_t bytes = 0;

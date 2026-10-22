@@ -175,9 +175,18 @@ def _name(c: dict) -> str:
     return n + (f" (card {c.get('index')})" if c.get("_dup") else "")
 
 
+def own_memory_gb(c: dict) -> float:
+    """The graphics memory a card adds BESIDE the RAM.  A discrete card: its VRAM.  A chip that shares the system memory (Strix Halo, an APU): only
+    its BIOS carve-out (`dedicated_gb`; 0 when the report does not give it) - its "shared" pool is the RAM itself, and counting it as VRAM as well as
+    as RAM made a model look like it fit twice (setup.py low_ram_vram does the same)."""
+    if c.get("uma") or c.get("integrated"):
+        return float(c.get("dedicated_gb") or 0)
+    return float(c.get("vram_gb") or 0)
+
+
 def _option(key: str, cards: list[dict], memory_gb: float, ram_gb: float | None) -> dict[str, Any]:
     n = len(cards)
-    total = sum(float(c.get("vram_gb") or 0) for c in cards)
+    total = sum(own_memory_gb(c) for c in cards)
     eff = total - SPLIT_CARD_OVERHEAD_GB * (n - 1)
     f = fit(memory_gb, ram_gb, eff)
     v = verdict(f)

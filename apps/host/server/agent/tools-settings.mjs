@@ -32,6 +32,8 @@ function normalize(raw) {
     off: [...new Set((Array.isArray(r.off) ? r.off : []).filter(id => GROUP_IDS.includes(id)))],
     search: { provider: SEARCH_PROVIDERS.includes(search.provider) ? search.provider : 'builtin', key: typeof search.key === 'string' ? search.key : '' },
     browser: { enabled: r.browser?.enabled === true },
+    // Manual mode asks once per chat before the first web search or page. This switch (off unless the person turned it on) skips that question.
+    webWithoutAsking: r.webWithoutAsking === true,
     custom: (Array.isArray(r.custom) ? r.custom : []).filter(t => t && NAME.test(t.name ?? '') && KINDS.includes(t.kind)).slice(0, MAX_CUSTOM).map(t => ({
       id: String(t.id), name: String(t.name), about: clean(t.about, 300), kind: t.kind, enabled: t.enabled !== false,
       instructions: clean(t.instructions, 20000), command: clean(t.command, 2000), address: clean(t.address, 2000),
@@ -106,6 +108,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
     return {
       groups: TOOL_GROUPS.map(g => ({ id: g.id, name: g.name, about: g.about, area: g.area, asks: g.asks, enabled: !s.off.includes(g.id) })),
       search: { provider: s.search.provider, keySet: !!s.search.key },
+      webWithoutAsking: s.webWithoutAsking,
       // `found` means the browser tool can run: a browser on this computer AND the tool server in the agent component.
       browser: { enabled: s.browser.enabled, found: !!(probe.found && probe.cli), name: probe.name ?? null, ...(probe.found && !probe.cli ? { missing: 'component' } : {}) },
       custom: s.custom.map(t => ({
@@ -131,6 +134,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
       return {
         off: new Set(s.off),
         search: s.search,
+        webWithoutAsking: s.webWithoutAsking,
         browserEnabled: s.browser.enabled && !!(browser().found && browser().cli),
         browserPath: browser().path ?? null,
         browserCli: browser().cli ?? null,
@@ -160,6 +164,7 @@ export function createAgentTools({ read, write, dataDir, browser = () => ({ foun
           s.search = { ...s.search, key };
         }
       }
+      if (typeof change?.webWithoutAsking === 'boolean') s.webWithoutAsking = change.webWithoutAsking;
       if (change?.browser && typeof change.browser.enabled === 'boolean') s.browser = { enabled: change.browser.enabled };
       if (change?.custom) {
         for (const [id, on] of Object.entries(change.custom)) {

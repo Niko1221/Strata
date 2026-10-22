@@ -26,6 +26,11 @@ MAC_MODELS = {
     "UD-Q4_K_XL": {"shard1_gb": 82.6, "tested": True, "family": "unsloth", "shards": 4},
     "UD-Q5_K_XL": {"shard1_gb": 103.9, "tested": True, "family": "unsloth", "shards": 6},
     "UD-Q6_K_XL": {"shard1_gb": 114.8, "tested": True, "family": "unsloth", "shards": 6},
+    # agentionai's Gyro files (family "gyro", docs/GYRO.md): ONE file with the n-gram table inside (58.5 / 92.0 GB to download);
+    # shard1_gb is what the GPU needs of it, without that table (the engine reads the table from the SSD a few rows at a time).
+    # The trellis experts run on the Metal engine from the release that added metal/kernels' TQ types (docs/MAC.md).
+    "Gyro-S": {"shard1_gb": 29.7, "tested": True, "family": "gyro", "shards": 1, "file_gb": 58.5},
+    "Gyro-M": {"shard1_gb": 63.2, "tested": False, "family": "gyro", "shards": 1, "file_gb": 92.0},
 }
 
 # The recommended sizes (owner's decision): IQ3_S is the default where it stays resident, UD-Q4_K_XL the higher-quality one
@@ -57,7 +62,9 @@ CONTEXTS = [8192, 32768, 65536, 131072]
 MAC_ABOUT = {"Q2_0": "2-bit, the fastest", "IQ3_XXS": "3-bit i-quant, better quality",
              "IQ3_S": "3.5-bit i-quant, the best quality (matches the full model), the slowest",
              "UD-Q4_K_XL": "Unsloth ~4.5-bit (111 GB download)", "UD-Q5_K_XL": "Unsloth ~5.5-bit (158 GB download)",
-             "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)"}
+             "UD-Q6_K_XL": "Unsloth ~6.5-bit (169 GB download)",
+             "Gyro-S": "agentionai's trellis experts, the smallest (58 GB download, the n-gram table is inside it)",
+             "Gyro-M": "agentionai's trellis experts, about IQ3_XXS quality in less memory (92 GB download)"}
 TESTED_CONTEXT = 32768     # needles and the KL harness ran to 32K on the Mac
 # Below this much unified memory the app says a model does not fit (a Mac this small was never run: 32 GB is the smallest that was).
 # The Terminal keeps its rule of recommending and never forcing: the person can still pick one there.

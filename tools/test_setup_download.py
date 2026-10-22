@@ -142,7 +142,7 @@ def pin_of(data):
 @contextlib.contextmanager
 def small_pieces(**extra):
     """Setup's piece size, size floor and waits scaled down to the test file."""
-    consts = dict(DL_CHUNK=CHUNK, DL_MIN_PARALLEL=0, DL_BACKOFF=0.0, DL_SAVE_EVERY=0.05, DL_CONNECTIONS=4)
+    consts = dict(DL_CHUNK=CHUNK, DL_RUN=1, DL_MIN_PARALLEL=0, DL_BACKOFF=0.0, DL_SAVE_EVERY=0.05, DL_CONNECTIONS=4)
     consts.update(extra)
     with contextlib.ExitStack() as st:
         for k, v in consts.items():
@@ -230,28 +230,38 @@ class NoRangeSupport(unittest.TestCase):
             self.assertEqual(srv.max_active, 1)
             self.assertEqual(files(d), [NAME, NAME + ".done"])
 
-    def test_a_server_without_a_length_is_read_in_one_stream(self):
-        with small_pieces(), Server(length=False) as srv, tempfile.TemporaryDirectory() as d:
+    def test_a_server_without_any_length_is_read_in_one_stream(self):
+        with small_pieces(), Server(length=False, ranges=False) as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d, pin=None)                                # no length, so nothing to check a pin against first
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
             self.assertEqual(srv.max_active, 1)
+
+    def test_a_head_without_a_length_still_gets_the_connections(self):
+        """ModelScope's HEAD has no Content-Length (#1915): the length comes from a one-byte ranged GET, not 'unknown'."""
+        with small_pieces(), Server(length=False) as srv, tempfile.TemporaryDirectory() as d:
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+            self.assertGreater(srv.max_active, 1)
+            self.assertEqual(sorted(asked(srv)), list(range(41)))
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
 
     def test_range_stopping_in_the_middle_falls_back_to_the_unbroken_start(self):
         def faults(path, start, end, nth):
             return None
 
         with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d:
-            real = setup._fetch_piece
+            real = setup._fetch_run
             calls = []
 
-            def fetch(src, st, f, i):
-                calls.append(i)
+            def fetch(src, st, f, run):
+                calls.append(run)
                 if len(calls) == 6:
                     raise setup._NoRange("HTTP 200")
-                return real(src, st, f, i)
+                return real(src, st, f, run)
 
-            with mock.patch.object(setup, "_fetch_piece", fetch):
+            with mock.patch.object(setup, "_fetch_run", fetch):
                 code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)           # the pin check passed: no gaps were kept
@@ -471,3 +481,80 @@ class SignedAddress(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Runs(unittest.TestCase):
+    """One request asks for several neighbouring pieces (DL_RUN): fewer connections to open, the same piece list."""
+
+    def test_a_request_covers_several_pieces(self):
+        with small_pieces(DL_RUN=4), Server() as srv, tempfile.TemporaryDirectory() as d:
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            spans = [(s, e) for s, e in srv.gets if (s, e) != (0, 0)]
+            self.assertLess(len(spans), 41)                                 # fewer requests than pieces
+            self.assertTrue(any(e - s + 1 > CHUNK for s, e in spans), spans)
+            self.assertTrue(all(e - s + 1 <= 4 * CHUNK for s, e in spans), spans)
+            covered = sorted(i for s, e in spans for i in range(s // CHUNK, e // CHUNK + 1))
+            self.assertEqual(covered, list(range(41)))                       # every piece once, none twice
+
+    def test_the_last_pieces_are_asked_for_one_by_one(self):
+        st = setup._Pieces(CHUNK * 100, set(), conns=4)
+        todo = list(range(100))
+        self.assertEqual(setup._take_run(st, todo), [0, 1, 2, 3])
+        with mock.patch.object(setup, "DL_RUN", 4):
+            self.assertEqual(setup._take_run(st, list(range(60, 100))), [60, 61, 62, 63])
+            self.assertEqual(setup._take_run(st, list(range(93, 100))), [93])      # fewer than two rounds left
+            self.assertEqual(setup._take_run(st, [5, 9, 10]), [5])                  # only neighbours go together
+
+    def test_a_broken_run_continues_from_the_byte_it_reached(self):
+        cuts = []
+
+        def faults(path, start, end, nth):
+            if end - start + 1 > 2 * CHUNK and not cuts:
+                cuts.append(start)
+                return ("cut", int(2.5 * CHUNK))                           # drops inside the third piece of the run
+            return None
+
+        with small_pieces(DL_RUN=4, DL_CONNECTIONS=2), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d:
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+            self.assertEqual(len(cuts), 1)
+            first = cuts[0]
+            again = [s for s, e in srv.gets if first < s < first + 4 * CHUNK]
+            self.assertEqual(len(again), 1)                                  # one more request: for the rest
+            self.assertGreaterEqual(again[0], first + 2 * CHUNK)              # the two whole pieces are not fetched again
+
+    def test_a_connection_that_keeps_moving_is_not_given_up_on(self):
+        """Seven breaks in a row (more than DL_CHUNK_TRIES) that each carried bytes forward do not end the request."""
+        count = [0]
+
+        def faults(path, start, end, nth):
+            if start < 4 * CHUNK and end - start + 1 > CHUNK // 2 and count[0] < 7:
+                count[0] += 1
+                return ("cut", CHUNK // 3)
+            return None
+
+        with small_pieces(DL_RUN=4, DL_CONNECTIONS=2, DL_ROUNDS=1), Server(faults=faults) as srv,                 tempfile.TemporaryDirectory() as d:
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+            self.assertEqual(count[0], 7)
+
+    def test_a_request_without_progress_still_gives_up(self):
+        def faults(path, start, end, nth):
+            if start >= 4 * CHUNK:
+                return ("status", 500)
+            return None
+
+        with small_pieces(DL_RUN=4, DL_ROUNDS=1, DL_CHUNK_TRIES=2), Server(faults=faults) as srv,                 tempfile.TemporaryDirectory() as d:
+            code, out = run(srv, d)
+            self.assertEqual(code, 1)
+            self.assertIn("could not finish downloading", out)
+
+    def test_the_default_is_many_connections_and_runs(self):
+        self.assertGreaterEqual(setup.DL_CONNECTIONS, 8)
+        self.assertGreaterEqual(setup.DL_RUN, 2)
+        self.assertEqual(setup.DL_CHUNK, 32 << 20)                           # the piece list on disk names this size: resumes need it

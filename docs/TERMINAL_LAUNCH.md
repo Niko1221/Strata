@@ -22,7 +22,7 @@ The release folder is the latest GitHub release of Niko1221/Strata (`https://git
 1. **Start**: saved presets (name, model, context, parallel requests, tuned or not, last used) or "Set up from the beginning" or "Use model files I already have".
 2. **Model**: the catalog of the app and `setup.py` (one source), with download size, what it needs (graphics memory + RAM) and "fits / tight / does not fit this computer".
    A warning, never a block. The n-gram table stays on your SSD and is not counted. `o` = your own files (a folder or a .gguf; checked with the fingerprint table).
-   *(Cards: only with two or more usable graphics cards.)*
+   *(Cards: only with two or more usable graphics cards. Each card gets a role: M Main, H Helper, O Off, R back to the recommendation, D details. `--gpu-roles 1=main,0=helper` does the same from the command line; see [MULTI_GPU.md](MULTI_GPU.md).)*
 3. **Folder**: where model files are stored, free space shown. For a model that is already installed (also one the desktop app installed) it starts where the model is, says
    "Already downloaded" and lists only what is really missing with its size (the draft layer, about 5.2 GB; the picture reader, 0.9 GB). It never says "download the model" when only
    a helper file is missing.
@@ -38,7 +38,7 @@ The release folder is the latest GitHub release of Niko1221/Strata (`https://git
 8. **Advanced** (optional): every engine setting with default, tuned value and your value; edit, reset, add a setting by name (checked against the engine's own list; a warning, not a refusal);
    the exact command (it includes the context, memory format and picture choice you made above; it has its own scroll area: Tab, then the arrows) and the matching `strata launch` flags.
 9. **Access**: this computer only (127.0.0.1), your network (LAN address, key), Cloudflare quick tunnel (needs `cloudflared`), Tailscale (needs it installed and connected); port; API key
-   (made for you beyond this computer: the server will not start on a network without one).
+   (optional, recommended beyond this computer: Strata makes one for you, and one keypress (`t`) turns it off. Without a key the server still starts and warns that anyone who can reach the port can use the model and its tools; `--no-api-key` does the same without the screens, and on a Cloudflare tunnel the warning is stronger. This computer only never needs a key).
 10. **Save as preset** and launch. Then downloads (with progress), engine start, and the monitor. In a small window the summary shrinks so the three choices stay on screen,
     and the key line says what Enter will do. No web page opens by itself; only `--open` opens one.
 
@@ -62,6 +62,7 @@ strata launch --model iq3_xxs --context 128k --parallel 4 --vision off --tune qu
               --access lan --port 8080 --save-preset "Office" --no-tui   # serve and print the address
 strata launch --model-path /data/models/IQ3_XXS --no-tui               # files you already have
 strata launch --preset Office --set prefill=65536 --set STRATA_PIN_BY_NEED=1 --no-tui
+strata launch --model q2_0 --pool-cores 2-14:2 --no-tui               # experimental: pin the CPU workers to these logical processors (see DETAILS.md)
 strata launch --plan --model q2_0                                      # what would happen; nothing changes
 strata launch --model q2_0 --yes --no-tui                              # no questions (for one: download on a computer with no engine yet)
 strata launch --model q2_0 --open                                      # also open the server's page in your browser once it serves
@@ -70,7 +71,7 @@ strata launch --list-presets | --delete-preset NAME | --status | --stop [--prese
 
 `strata launch --help` lists everything with examples. An unknown model or flag gets a plain message with the closest match. Presets are small files in `launch-presets/` beside the profiles
 folder; the run uses the shared profile `launch-<name>` and the shared tuning presets (`strata presets`), so the app sees them too. Flags next to `--preset` change that start only
-(add `--save-preset` to keep them).
+(add `--save-preset` to keep them). `--plan` shows the model (also for your own files, which it recognises), the context, the picture setting and what would be downloaded and how big (0 when everything is already here). A model that was tuned before for the same choices on the same computer is not measured again by `--tune quick`; the stored result is used and the run says so. Add `--retune` to measure again.
 
 ## Connect your apps: `strata connect`
 

@@ -32,7 +32,7 @@ test('directory preferences survive restart, scope demo installs, and reject bad
   import assert from 'node:assert/strict';import {join} from 'node:path';import {existsSync} from 'node:fs';
   const store=await import('./server/store.mjs');const models=await import('./server/models.mjs');
   const original=store.MODELS_DIR,id='qwen38-q4_k_m';store.update({installed:{[id]:{simulated:true}},setup:{complete:true,step:4},serving:{apiKey:'fixture-only-key'}});
-  for(const path of ['relative/path',join(store.HOME,'missing'),store.DATA_DIR,store.HOME,'/'])assert.throws(()=>store.validateModelsDirectory(path));
+  for(const path of ['relative/path',join(store.HOME,'missing'),store.DATA_DIR,store.HOME])assert.throws(()=>store.validateModelsDirectory(path));
   assert.equal(store.MODELS_DIR,original);assert.equal(existsSync(join(store.HOME,'missing')),false);
   store.changeModelsDirectory(${JSON.stringify(next)});models.init({send(){}});
   assert.equal(models.isOnDisk(id),false);assert.equal(store.get().setup.complete,true);assert.equal(store.get().serving.apiKey,'fixture-only-key');

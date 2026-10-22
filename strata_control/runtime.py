@@ -38,7 +38,7 @@ try:
 except ImportError:  # Windows has no qualified owner transport yet.
     fcntl = None
 
-from strata_control import owner_transport, paths, private_files, procs, profiles, readiness, winproc
+from strata_control import owner_transport, paths, posix_owner, private_files, procs, profiles, readiness, winproc
 from serve import launch_identity
 from strata_control.profiles import ProfileError
 
@@ -56,7 +56,7 @@ def _is_private(details: os.stat_result, path: Path) -> bool:
             return private_files.is_unshared(path)
         except OSError:
             return False
-    return details.st_uid == os.getuid() and not stat.S_IMODE(details.st_mode) & 0o077
+    return not posix_owner.owner_only_wrong(path, details)
 
 
 def _lock_file(descriptor: int, *, exclusive: bool) -> bool:
@@ -109,12 +109,65 @@ def runtime_dir() -> Path:
         raise ProfileError("STRATA_RUNTIME_DIR must be absolute")
     existed = base.exists()
     _private_mkdir(base, parents=True, exist_ok=True)
-    if WINDOWS and not existed:
-        private_files.restrict_to_current_user(base, directory=True)   # no mode bits on NTFS: a protected ACL
     details = base.lstat()
+    if WINDOWS and stat.S_ISDIR(details.st_mode):
+        if not private_files.volume_has_acls(base):        # exFAT / FAT: no permissions exist, so there is nothing to check
+            _warn_no_acls(base)
+            return base
+        if not existed:
+            _make_private(base)                            # no mode bits on NTFS: a protected ACL
+        if not _is_private(details, base):
+            # A folder that was there before (made by an elevated install, an older version, or with the parent's ACL inherited) can
+            # name other accounts.  It is the user's own state folder: take that away instead of stopping the launch, then check again.
+            _make_private(base)
+            try:
+                details = base.lstat()
+            except OSError:
+                pass
     if not stat.S_ISDIR(details.st_mode) or not _is_private(details, base):
-        raise ProfileError("runtime directory must be owner-only (mode 0700)", 5)
+        raise ProfileError(_not_private_message(base), 5)
     return base
+
+
+def _make_private(base: Path) -> None:
+    """Windows: a protected ACL naming this user; where that is refused (a folder made by an elevated run), take ownership first."""
+    try:
+        private_files.restrict_to_current_user(base, directory=True)
+    except OSError:
+        pass
+    if _is_private(None, base):                             # type: ignore[arg-type] - details are not used on Windows
+        return
+    try:
+        private_files.repair_access(base, tree=False)
+    except OSError:
+        pass
+
+
+_NO_ACL_WARNED: set[str] = set()
+
+
+def _warn_no_acls(base: Path) -> None:
+    if str(base) not in _NO_ACL_WARNED:
+        _NO_ACL_WARNED.add(str(base))
+        print(f"[strata] {base} is on a drive that has no file permissions (FAT or exFAT), so other accounts on this PC could "
+              f"read what Strata keeps there. Use a drive formatted as NTFS if that matters.", file=sys.stderr, flush=True)
+
+
+def _not_private_message(base: Path) -> str:
+    if WINDOWS:
+        try:
+            names = private_files.who_can_reach(base) if base.is_dir() else []
+            readable = True
+        except OSError:
+            names, readable = [], False
+        if not readable:
+            return (f"Strata cannot read the permissions of {base}, the folder where it keeps its running state. Run Strata once as "
+                    f"yourself (not as administrator), or delete that folder: Strata makes a private one again.")
+        who = ", ".join(names) if names else "other accounts"
+        return (f"Strata keeps its running state in {base}, and {who} can open that folder. Strata could not change that. "
+                f"Right-click the folder, choose Properties > Security, and remove those accounts (or delete the folder: Strata "
+                f"makes a private one again).")
+    return "runtime directory must be owner-only (mode 0700)"
 
 
 def acquire_activity_lease(*, shared: bool) -> int:
@@ -201,6 +254,22 @@ def _pid_exists(pid: int, started: int | None = None) -> bool:
     return True
 
 
+def _child_present(child: dict) -> bool:
+    """Whether the child recorded in an owner marker is still there. A marker without a creation time (Windows could not
+    read it when the child started) cannot tell the recorded server from a later process that reused the number, so
+    a live process that is not a Python or Strata executable is a reused number: the child is gone (#3488)."""
+    started = child.get("started") if type(child.get("started")) is int else None
+    if not _pid_exists(child["pid"], started):
+        return False
+    if WINDOWS and started is None:
+        image = winproc.process_image(child["pid"])
+        if image is not None:
+            name = os.path.basename(image).lower()
+            if "python" not in name and "strata" not in name:
+                return False
+    return True
+
+
 def _host_lease_active(name: str) -> bool:
     path, _, _ = _paths(name)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -238,10 +307,9 @@ def _recover_stale(name: str, *, wait: float) -> bool:
                 child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
             raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
         deadline = time.monotonic() + min(45.0, max(5.0, wait))
-        started = child.get("started") if type(child.get("started")) is int else None
-        while _pid_exists(child["pid"], started) and time.monotonic() < deadline:
+        while _child_present(child) and time.monotonic() < deadline:
             time.sleep(0.1)
-        if _pid_exists(child["pid"], started):
+        if _child_present(child):
             raise ProfileError("lost host child is still present; retry after it exits", 6)
         if not isinstance(child.get("ready"), str):
             raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
@@ -662,6 +730,9 @@ class Host:
             payload.update(pid=pid, ready=str(ready))
             if WINDOWS:
                 started = winproc.process_started(pid)
+                if started is None:
+                    time.sleep(0.05)
+                    started = winproc.process_started(pid)     # one more try: the child may not be queryable yet
                 if started is not None:
                     payload["started"] = started   # tells this process from a later one with the same number
         profiles._atomic(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())

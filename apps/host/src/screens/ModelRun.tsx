@@ -9,6 +9,8 @@ import { api } from '../lib/client';
 import { RunningModels } from '../components/RunningModels';
 import { LocalModelImport } from '../components/LocalModelImport';
 import { gpuId } from '../lib/monitor-hardware';
+import { GpuRoles } from '../components/GpuRoles';
+import { normalize as normalizeRoles, order as roleOrder, recommend as recommendRoles, sameRoles, type RoleCard, type Roles } from '../lib/gpu-roles';
 import { RunImageModel } from '../components/RunImageModel';
 import { IMAGE_GENERATION_VISIBLE } from '../lib/features';
 import { FloatingMenu } from '../components/FloatingMenu';
@@ -49,6 +51,8 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
     const runtime = useStore(s => s.runtime);
     const [deviceChoice, setDeviceChoice] = useState('auto');
     const [customGpus, setCustomGpus] = useState<string[]>([]);
+    // Two or more cards (Expert settings): a role for each card instead of the "Run on" list. null = the recommended roles.
+    const [runRoles, setRunRoles] = useState<Roles | null>(null);
     const placementInitialized = useRef('');
     const imageModels = useStore(s => s.imageModels), imagePending = useStore(s => !!s.busy['image:select']);
     const imageChoice = imageModels?.selected ?? 'off';
@@ -123,8 +127,11 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
     const profileChanged = !!selectedProfile && !!config && (configIdentity(config) !== configIdentity(selectedProfile.config) || imageChoice !== (selectedProfile.imageModel ?? 'off'));
     const use = config?.headroom === 'full' ? 'full' : 'shared';
     const ctx = contextTokens(config?.beginner.contextLength ?? 'recommended');
+    const roleCards: RoleCard[] = (hardware?.gpus ?? []).map((g, i) => ({ index: i, name: g.name, vram_gb: g.vramGb ?? 0, integrated: !!g.unified, vendor: g.vendor }));
+    const rolesMode = expert && roleCards.length > 1;
+    const recommendedRoles = recommendRoles(roleCards).roles, effectiveRoles: Roles = runRoles ? normalizeRoles(runRoles, roleCards) : recommendedRoles;
     const effectiveDevice = expert ? deviceChoice : 'auto';
-    const gpuIds = hardware ? (effectiveDevice === 'auto' ? hardware.gpus.map(gpuId) : effectiveDevice === 'cpu' ? [] : effectiveDevice === 'custom' ? customGpus : [effectiveDevice]) : [];
+    const gpuIds = hardware ? (rolesMode ? roleOrder(effectiveRoles, roleCards).map(i => gpuId(hardware.gpus[i])) : effectiveDevice === 'auto' ? hardware.gpus.map(gpuId) : effectiveDevice === 'cpu' ? [] : effectiveDevice === 'custom' ? customGpus : [effectiveDevice]) : [];
     const executionHardware = hardware ? { ...hardware, gpus: hardware.gpus.filter(g => gpuIds.includes(gpuId(g))), accelerator: { ...hardware.accelerator, backend: gpuIds.length ? hardware.accelerator.backend : 'cpu', unified: gpuIds.length ? hardware.accelerator.unified : false, usableVramGb: hardware.gpus.filter(g => gpuIds.includes(gpuId(g))).reduce((n, g) => n + g.vramGb, 0) } } : null;
     const cfg = execution({ ...config?.expert, ...(!expert ? { 'gpu.layers': gpuIds.length ? 'Automatic' : 'CPU only' } : !gpuIds.length ? { 'gpu.layers': 'CPU only' } : {}) }, ctx);
     const baseExperience = estimate(model, executionHardware, cfg, 'document', library?.mode === 'simulated' && !model?.local);
@@ -213,7 +220,7 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
             });
         }, 180);
         return () => { active = false; clearTimeout(timer); };
-    }, [text, model?.id, deviceChoice, customGpus.join(','), runtime?.revision, connected, expert, executionMode]);
+    }, [text, model?.id, deviceChoice, customGpus.join(','), JSON.stringify(runRoles), runtime?.revision, connected, expert, executionMode]);
     function loadPatch(doc: ConfigDocument) {
         const patch = configPatch(doc);
         if (!expert || !gpuIds.length)
@@ -378,7 +385,7 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
             else {
                 if (!lifecycle.allowed)
                     throw new Error(lifecycle.reason);
-                if (expert && deviceChoice !== 'auto')
+                if (expert && (rolesMode ? !!runRoles : deviceChoice !== 'auto'))
                     throw new Error('GPU assignment requires a native engine adapter. Use Automatic with this host.');
                 await saveEngine(patch, true, true);
                 const ok = getState().library?.loaded === model.id ? await restartEngine() : await loadVariant(model.id);
@@ -443,9 +450,11 @@ function LegacyModelRunScreen({ importFirst = false, initialVariant }: {
           {tr(expert ? <section className="run-card run-placement">
             <div className="run-card__head"><span><Icon name="gpu" size={19}/><h2>{tr("Model execution")}</h2></span></div>
             <label className="run-multiple-choice"><span><strong>{tr("Run multiple models")}</strong><small>{tr("Keep models loaded when you add another.")}</small></span><input type="checkbox" role="switch" aria-label={tr("Run multiple models")} checked={allowMultiple} disabled={pending || runtime?.capabilities.multipleModels === false} onChange={e => { setAllowMultiple(e.target.checked); setIssues([]); setStage('idle'); }}/></label>
+            {rolesMode ? <GpuRoles cards={roleCards} roles={effectiveRoles} custom={!!runRoles && !sameRoles(effectiveRoles, recommendedRoles)} disabled={pending || runtime?.capabilities.deviceAssignment === false} onChange={next => { setRunRoles(sameRoles(next, recommendedRoles) ? null : next); setStage('idle'); setIssues([]); }} onBack={() => { setRunRoles(null); setStage('idle'); setIssues([]); }}/> : <>
             <span className="run-device-label">{tr("Run on")}</span>
             <Select ariaLabel={tr("Execution device")} value={deviceChoice} disabled={pending || runtime?.capabilities.deviceAssignment === false} options={[{ value: 'auto', label: hardware?.gpus.length ? hardware.gpus.length > 1 ? 'Automatic · all GPUs' : 'Automatic · GPU 1' : 'CPU only' }, { value: 'cpu', label: 'CPU only' }, ...(hardware?.gpus ?? []).map((g, i) => ({ value: gpuId(g), label: `GPU ${i + 1} · ${g.name}` })), ...((hardware?.gpus.length ?? 0) > 1 ? [{ value: 'custom', label: 'Choose GPUs…' }] : [])]} onChange={id => { setDeviceChoice(id); setStage('idle'); setIssues([]); }}/>
             {tr(deviceChoice === 'custom' ? <div className="run-gpu-options">{tr(hardware?.gpus.map((g, i) => <label key={gpuId(g)}><input type="checkbox" checked={customGpus.includes(gpuId(g))} onChange={e => { setCustomGpus(ids => e.target.checked ? [...ids, gpuId(g)] : ids.filter(id => id !== gpuId(g))); setStage('idle'); }}/><span>{tr("GPU ")}{tr(i + 1)} · {tr(g.name)}<small>{tr(g.unified ? 'Shared system memory' : `${sizeGb(g.vramGb)} VRAM`)}</small></span></label>))}</div> : null)}
+            </>}
             <p className="xs muted">{tr(runtime?.capabilities.multipleModels === false ? 'This native host currently supports one model with automatic GPU placement.' : !allowMultiple ? 'One model at a time. Loading switches to the selected model.' : placementPlan?.reloads ? 'Loading applies these settings to this instance. Other models stay loaded.' : 'Loading adds a model. Existing models keep their settings and GPU assignments.')}</p>
             {tr(runtime?.instances.length ? <div className="run-memory-reservations"><span>{tr(placementPlan && !placementPlan.alreadyLoaded ? 'Shared RAM after load' : 'Shared RAM reserved')} <strong>{tr((placementPlan?.budget.ramGb ?? runtime.memory.ramGb).toFixed(1))} / {tr((placementPlan?.budget.budgetGb ?? runtime.memory.budgetGb).toFixed(1))}{tr(" GB")}</strong></span><small>{tr(runtime.memory.reserveGb.toFixed(0))}{tr(" GB RAM headroom \u00B7 estimates include all loaded models")}</small>{tr((placementPlan?.budget.devices ?? runtime.memory.devices).map(d => <span key={d.id}>{tr(d.name)}<strong>{tr(d.usedGb.toFixed(1))} / {tr(d.budgetGb.toFixed(1))}{tr(" GB")}</strong></span>))}</div> : null)}
           </section> : null)}
