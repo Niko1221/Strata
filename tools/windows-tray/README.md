@@ -220,6 +220,10 @@ configuration is included.
 
 ## Screenshots and verification
 
+[App 0.2.2 acceptance](validation-app-0.2.2.md) records the actual installed-App,
+real model lifecycle, 300-second idle unload, preservation checks and remaining
+limits for this portable candidate.
+
 <img src="screenshots/favicon.png" width="32" height="32" alt="Official Strata App icon">
 
 The candidate uses the official App icon and native styling. Multi-monitor transitions
