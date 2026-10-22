@@ -296,6 +296,7 @@ def create(result: dict[str, Any], *, choices: dict[str, Any], identity: dict[st
                      "gain_pp_pct": result.get("gain_pp_pct")},
         "noise": result.get("noise") or {},
         "evidence": {"arms": result.get("arms"), "per_request": result.get("per_request"), "notes": result.get("notes"),
+                     "per_request_confirm": result.get("per_request_confirm"),
                      "classes": result.get("classes")},
         "recheck": {"request_set": RECHECK_SET, "last_ok": None, "last_ok_epoch": None, "last_result": None},
         "previous": None,

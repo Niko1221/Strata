@@ -34,7 +34,8 @@ def add_tune_auto(tune_sp: argparse._SubParsersAction) -> None:
                    help="also try settings that can change answers slightly (expert cache split, speculative window)")
     p.add_argument("--allow-not-repeatable", action="store_true", help="also try settings whose answers are not repeatable")
     p.add_argument("--name", default=None, help="the preset's name (default: model, context and your wish)")
-    p.add_argument("--time", dest="minutes", type=float, default=None, help="time to spend, in minutes")
+    p.add_argument("--time", dest="minutes", type=float, default=None,
+                   help="measurement budget in minutes, excluding waits; an in-flight measurement may finish after it")
     p.add_argument("--no-save", action="store_true", help="measure and report, but do not save a preset")
     p.add_argument("--gpu-lock", default=os.environ.get("STRATA_TUNE_GPU_LOCK"),
                    help="a lock file held around every engine run (shared boxes)")
@@ -211,6 +212,8 @@ def auto(a: argparse.Namespace) -> int:
         state["minutes_left"] = None if p.get("eta_s") is None else max(1, int(round(p["eta_s"] / 60.0)))
         state["text"] = (f"Finding the fastest settings for your PC… {minutes_text(p.get('eta_s'))}"
                          if p.get("eta_s") is not None else "Finding the fastest settings for your PC…")
+        if p.get("stage") == "done":
+            state["minutes_left"], state["text"] = 0, p["message"]
         _write_status(a.status_file, state)
         say(f"[{p.get('elapsed_s', 0) // 60:>3d}m] {p['message']}" + (f"  ({minutes_text(p['eta_s'])})" if p.get("eta_s") else ""))
 
