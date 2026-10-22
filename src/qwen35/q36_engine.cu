@@ -3666,8 +3666,11 @@ struct Engine {
     /// `cancel`: a stop asked for before the state moves keeps only x (the caller then emits no draft), so that a request
     /// stopped mid-answer leaves the state at the tokens it has shown: a conversation that continues from them (the server's
     /// hand-over of a stopped request to a batch slot) reuses it instead of reading them again.
+    /// `draw` (a sampled request, STRATA_Q36_MTP_SAMPLED): row r's token is draw(r), the request's sampler over row r's
+    /// logits with drafts 0 .. r - 1 in its history, instead of the row's greedy pick; a draft is taken when the draw
+    /// equals it (Flash-Next's rule, generate.cpp), so the text follows the target distribution.
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks,
-                  const std::atomic<bool>* cancel = nullptr) {
+                  const std::atomic<bool>* cancel = nullptr, const std::function<int32_t(int)>& draw = {}) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
@@ -3717,9 +3720,17 @@ struct Engine {
         CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         int a = 0;
-        while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+        if (draw) {
+            for (;;) {
+                picks[a] = draw(a);
+                if (a == D || picks[a] != drafts[(size_t) a]) break;
+                ++a;
+            }
+        } else {
+            while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+            for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
+        }
         if (cancel != nullptr && cancel->load()) a = 0;
-        for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
         commit(a + 1);
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         pos += a + 1;
@@ -4561,8 +4572,11 @@ struct Serve {
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
         // greedy requests alone with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
-        // text); sampled ones, and requests beside others, one token at a time
-        const bool spec = E.mtp_d > 0 && !smp.needs_logits() && !adm;
+        // text); sampled ones too with STRATA_Q36_MTP_SAMPLED (each verify row drawn, see spec_step); requests beside
+        // others one token at a time
+        static const bool mtp_sampled = std::getenv("STRATA_Q36_MTP_SAMPLED") != nullptr;
+        const bool spec = E.mtp_d > 0 && (mtp_sampled || !smp.needs_logits()) && !adm;
+        bool drawn = false;   // nx was drawn by the last speculative step (its row's logits are gone)
         std::vector<int32_t> fix, drafts;
         int32_t picks[16];
         int nx = smp.needs_logits() ? -1 : E.greedy();
@@ -4601,10 +4615,11 @@ struct Serve {
             return;
         }
         for (;;) {
-            if (smp.needs_logits()) {
+            if (smp.needs_logits() && !drawn) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
             }
+            drawn = false;
             auto emit = [&](int t) {   // false: the answer ends here
                 std::printf("T %d\n", t);
                 std::fflush(stdout);
@@ -4618,7 +4633,17 @@ struct Serve {
             if (!emit(nx)) break;
             if (n_active > 0) window();
             if (spec && n_active == 0 && E.pos + E.mtp_d + 1 <= E.ctx) {
-                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, &stop);
+                std::function<int32_t(int)> draw;
+                if (smp.needs_logits())
+                    draw = [&](int r) {   // hist holds x; the drafts before row r join it for the penalties
+                        E.host_logits_row(r, lg);
+                        const size_t h0 = hist.size();
+                        hist.insert(hist.end(), drafts.begin(), drafts.begin() + r);
+                        const int t = sample(lg, smp, hist, rng);
+                        hist.resize(h0);
+                        return (int32_t) t;
+                    };
+                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, &stop, draw);
                 offered += E.mtp_d;
                 accepted += a;
                 // the state now holds x and every accepted draft, whether or not the answer ends inside them (an end of
@@ -4633,6 +4658,7 @@ struct Serve {
                     if (!emit(drafts[(size_t) i])) ended = true;
                 if (ended) break;
                 nx = picks[a];
+                drawn = true;
                 continue;
             }
             if (E.pos + 1 > E.ctx) break;
