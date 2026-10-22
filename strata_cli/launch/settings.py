@@ -11,6 +11,7 @@ a value that cannot be run at all (a port that is not a number, an unknown acces
 from __future__ import annotations
 
 import difflib
+import ipaddress
 import re
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
@@ -114,6 +115,7 @@ class LaunchSettings:
     tune: str = "skip"                         # quick | thorough | skip
     tune_allow_small: bool = False             # the "answer-changing" tick, off by default, as in the app
     access: str = "local"
+    host: str | None = None                    # explicit IPv4 bind address or localhost; None follows access
     port: int = DEFAULT_PORT
     api_key: str | None = None                 # never shown whole; stored only in the private preset file
     no_key: bool = False                       # served beyond this computer without a key, on purpose (--no-api-key); a warning, never a refusal
@@ -132,6 +134,8 @@ class LaunchSettings:
 
     def to_dict(self, *, with_key: bool = True) -> dict[str, Any]:
         d = {"schema": SCHEMA, **asdict(self)}
+        if self.host is None:
+            d.pop("host")                      # presets and plans without an override keep their existing bytes
         if not with_key:
             d["api_key"] = "set" if self.api_key else None
         return d
@@ -189,6 +193,24 @@ NO_KEY_PUBLIC = ("No API key on a public address: anyone on the internet who fin
                  "(they can read and change files on this computer).")
 
 
+def parse_host(value: str) -> str:
+    """The managed HTTP server accepts IPv4 addresses and localhost, without a URL or port."""
+    if value == "localhost":
+        return value
+    try:
+        return str(ipaddress.IPv4Address(value))
+    except (ValueError, TypeError):
+        raise ValueError("Use an IPv4 address or localhost for --host, without http:// or a port.") from None
+
+
+def loopback_host(host: str) -> bool:
+    return host == "localhost" or ipaddress.IPv4Address(host).is_loopback
+
+
+def shared_access(s: LaunchSettings) -> bool:
+    return s.access != "local" or (s.host is not None and not loopback_host(s.host))
+
+
 def check_access(s: LaunchSettings) -> list[Notice]:
     out: list[Notice] = []
     if s.access not in ACCESS_KINDS:
@@ -196,10 +218,20 @@ def check_access(s: LaunchSettings) -> list[Notice]:
         out.append(Notice("error", f"'{s.access}' is not a way to share Strata.",
                           f"Choose one of: {', '.join(ACCESS_KINDS)}." + (f" Did you mean '{near}'?" if near else "")))
         return out
+    if s.host is not None:
+        try:
+            parse_host(s.host)
+        except ValueError as e:
+            return [Notice("error", str(e))]
+        # These helpers connect to fixed local addresses; a different bind would leave the advertised tunnel unreachable.
+        if s.access == "cloudflare" and s.host not in ("127.0.0.1", "localhost", "0.0.0.0"):
+            return [Notice("error", "Cloudflare connects to 127.0.0.1.", "Leave --host out, or use --host 127.0.0.1.")]
+        if s.access == "tailscale" and s.host != "0.0.0.0":
+            return [Notice("error", "Tailscale needs the server to listen on its network address.", "Leave --host out, or use --host 0.0.0.0.")]
     port = check_port(s.port)
     if port:
         out.append(port)
-    if s.access != "local" and not s.api_key:
+    if shared_access(s) and not s.api_key:
         if s.access == "cloudflare":
             out.append(Notice("warn", NO_KEY_PUBLIC, "Leave --no-api-key out to get a key."))
         elif s.no_key:
@@ -325,6 +357,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append("--gpu-roles " + ",".join(f"{k}={v}" for k, v in sorted(s.gpu_roles.items(), key=lambda kv: int(kv[0]))))
         elif s.gpus:
             parts.append("--gpu " + ",".join(str(g) for g in s.gpus))
+    if s.host is not None:
+        parts.append(f"--host {s.host}")
     for k, v in sorted(s.extra.items()):
         parts.append(f"--set {k[2:] if k.startswith('--') else k}={v}" if v else f"--set {k[2:] if k.startswith('--') else k}")
     return " ".join(parts)

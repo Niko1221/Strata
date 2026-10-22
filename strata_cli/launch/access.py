@@ -32,6 +32,15 @@ def host_for(kind: str) -> str:
     return "127.0.0.1" if kind in ("local", "cloudflare") else "0.0.0.0"
 
 
+def bind_host(s: LaunchSettings) -> str:
+    return s.host if s.host is not None else host_for(s.access)
+
+
+def client_url(host: str, port: int) -> str:
+    """A wildcard is a bind address, never a destination for clients."""
+    return f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
+
+
 def lan_ips() -> list[str]:
     """This computer's private IPv4 addresses, the one used for the default route first."""
     found: list[str] = []
@@ -284,6 +293,9 @@ def missing_helper(kind: str) -> str | None:
 
 def urls_for(s: LaunchSettings, *, tunnel_url: str | None = None) -> list[str]:
     """The addresses a client can use for these choices (the first is the main one)."""
+    if s.host is not None and s.host != "0.0.0.0":
+        base = [client_url(s.host, s.port)]
+        return [tunnel_url] + base if s.access == "cloudflare" and tunnel_url else base
     base = [f"http://127.0.0.1:{s.port}"]
     if s.access == "lan":
         base += [f"http://{ip}:{s.port}" for ip in lan_ips()[:1]]

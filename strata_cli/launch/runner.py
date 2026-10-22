@@ -494,11 +494,11 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced)."""
     from strata_control import tune_knobs
     cfg = json.loads(json.dumps(base))
-    cfg["host"] = acc.host_for(s.access)
+    cfg["host"] = acc.bind_host(s)
     cfg["port"] = int(s.port)
     if s.api_key:
         cfg["api_key"] = s.api_key
-    elif s.no_key and s.access != "local":
+    elif s.no_key and S.shared_access(s):
         cfg["api_key"] = "none"                              # served without a key on purpose (the server warns once at start)
     else:
         cfg.pop("api_key", None)
@@ -1406,7 +1406,7 @@ class Runner:
         from strata_control import profiles
         name = self.profile
         parallel = self.s.parallel if self.s.parallel else self.catalog_parallel()
-        sets = [f"host={acc.host_for(self.s.access)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
+        sets = [f"host={acc.bind_host(self.s)}", f"port={int(self.s.port)}"] + ([f"parallel={parallel}"] if parallel else [])
         try:
             current, _rev = profiles.load(name)
         except profiles.ProfileError:
@@ -1833,7 +1833,7 @@ class Runner:
     # ---- 6. access
     def open_access(self) -> str | None:
         s = self.s
-        missing = acc.missing_helper(s.access)
+        missing = None if s.host is not None and s.access == "lan" else acc.missing_helper(s.access)
         tunnel = None
         if s.access == "cloudflare":
             if missing:

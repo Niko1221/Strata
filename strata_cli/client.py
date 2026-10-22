@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import re
@@ -42,6 +43,28 @@ class ClientError(Exception):
         self.http_status = http_status
 
 
+def _local_address(host: str) -> bool:
+    """Permit HTTP to an explicitly bound interface on this computer, never an arbitrary LAN peer."""
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    if address.is_unspecified or address.is_multicast:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        return any(info.address == host for infos in psutil.net_if_addrs().values() for info in infos)
+    except (OSError, psutil.Error):
+        return False
+
+
 def server_url(raw: str) -> str:
     """Require a server root and prevent credential/path ambiguity."""
     if not isinstance(raw, str):
@@ -56,7 +79,7 @@ def server_url(raw: str) -> str:
     except ValueError as e:
         raise ValueError("invalid server port") from e
     host = u.hostname.lower()
-    local = host in ("localhost", "127.0.0.1", "::1")
+    local = _local_address(host)
     if u.scheme != "https" and not local:
         raise ValueError("remote monitoring requires HTTPS or a local SSH tunnel")
     authority = f"[{host}]" if ":" in host else host
@@ -105,7 +128,10 @@ class Endpoint:
         if self.credential:
             headers["Authorization"] = "Bearer " + self.credential
         req = urllib.request.Request(self.base_url + path, headers=headers)
-        opener = urllib.request.build_opener(_NoRedirect)
+        handlers = [_NoRedirect]
+        if _local_address(urllib.parse.urlsplit(self.root).hostname or ""):
+            handlers.append(urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(*handlers)
         try:
             with opener.open(req, timeout=self.timeout) as response:
                 content_type = response.headers.get("Content-Type", "")

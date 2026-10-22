@@ -78,6 +78,7 @@ strata launch --preset "IQ3_XXS 128K"                                  # a saved
 strata launch --family qwen --model iq3_xxs --context 128k --parallel 4 --vision off --tune quick \
               --access lan --port 8080 --save-preset "Office" --no-tui
 strata launch --model-path /data/models/IQ3_XXS --no-tui               # files you already have
+strata launch --family qwen --model iq3_s --host 192.168.1.20 --port 8080 --context 128k --vision gpu --no-tui
 strata launch --preset Office --set prefill=65536 --set STRATA_PIN_BY_NEED=1 --no-tui
 strata launch --family qwen --model q2_0 --context 64k --restart --no-tui
 strata launch --list-presets
@@ -101,6 +102,7 @@ strata launch --show-key
 | `--set KEY=VALUE` | An advanced engine setting or `STRATA_*` variable (repeatable). Unknown names get a warning. |
 | `--pool-cores LIST` | Experimental: pin CPU workers to these logical processors, for example `2-14:2` ([DETAILS.md](DETAILS.md)). |
 | `--access local\|lan\|cloudflare\|tailscale`, `--port N` | Who can reach the server. |
+| `--host ADDRESS` | Bind to an IPv4 address this computer owns, or `localhost`, instead of the access default. |
 | `--api-key KEY`, `--api-key-env NAME`, `--new-key`, `--no-api-key` | The key clients must send. |
 | `--save-preset NAME`, `--list-presets`, `--delete-preset NAME` | Presets. |
 | `--no-tui` | No screens: serve, print the address and return. |
@@ -114,6 +116,12 @@ strata launch --show-key
 
 Presets are small files in `launch-presets/` beside the profiles folder. A run uses the shared profile `launch-<name>` and the shared
 tuning presets (`strata presets`), so the app sees them too.
+
+`--host` takes an address without `http://` or a port. Without `--access`, a loopback address selects local access and another
+address selects LAN access, keeping the existing API-key behavior. The address is saved with `--save-preset`; `--host` beside
+`--preset` overrides it for that run. Choosing `--access` without `--host` clears a saved bind override. With neither, the access
+mode's existing bind address is unchanged. Cloudflare needs a bind reachable at `127.0.0.1` (`127.0.0.1`, `localhost` or
+`0.0.0.0`), and Tailscale needs `0.0.0.0`; incompatible overrides are rejected before starting.
 
 **Launching while a model is serving.** The same choices restart nothing and print the running addresses. Different choices
 (another context, pictures, access, or another model on the same port) make the screens ask once, "Restart the model with these

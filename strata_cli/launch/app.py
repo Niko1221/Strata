@@ -78,7 +78,7 @@ class Ctx:
             out.append(f"{r.title}: {r.words}.")
         if self.computer.other_vendor_note:
             out.append(self.computer.other_vendor_note)
-        missing = acc.missing_helper(s.access)
+        missing = None if s.host is not None and s.access == "lan" else acc.missing_helper(s.access)
         if missing:
             out.append(missing)
         return out
@@ -416,7 +416,7 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
     """Open the monitor for a running launch. q asks whether to keep serving or stop."""
     from strata_cli.client import Endpoint
     from strata_cli.launch.monitor_ext import LaunchMonitor
-    local = next((u for u in info.get("urls", []) if "127.0.0.1" in u), None) or f"http://127.0.0.1:{info.get('port', S.DEFAULT_PORT)}"
+    local = next((u for u in info.get("urls", []) if "127.0.0.1" in u), None) or info.get("url") or f"http://127.0.0.1:{info.get('port', S.DEFAULT_PORT)}"
     endpoint = Endpoint(local, info.get("key"), 3.0, "")
     app = LaunchMonitor(endpoint, None, info=info, color=color)
     app.run()
