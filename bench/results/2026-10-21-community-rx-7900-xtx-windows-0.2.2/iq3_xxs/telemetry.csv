@@ -1,0 +1,75 @@
+t_utc,cpu_pct,mem_avail_mib,top_other_procs
+2026-10-21T16:21:03Z,28,7933,memcompression:25 msmpeng.exe:48 system:67
+2026-10-21T16:21:10Z,66,7589,chrome.exe:79 msmpeng.exe:64 svchost.exe:29
+2026-10-21T16:21:17Z,63,7461,msmpeng.exe:52
+2026-10-21T16:21:23Z,34,7354,msmpeng.exe:43
+2026-10-21T16:21:30Z,26,7114,msmpeng.exe:44 system:25
+2026-10-21T16:21:36Z,24,7303,msmpeng.exe:51 system:26
+2026-10-21T16:21:43Z,26,6918,msmpeng.exe:42 system:26
+2026-10-21T16:21:50Z,22,6902,asusfancontrolservice.exe:22 msmpeng.exe:45
+2026-10-21T16:21:56Z,22,6822,msmpeng.exe:32 system:21
+2026-10-21T16:22:03Z,21,6808,msmpeng.exe:30
+2026-10-21T16:22:08Z,22,6972,msmpeng.exe:50
+2026-10-21T16:22:14Z,31,6681,msmpeng.exe:50
+2026-10-21T16:22:20Z,34,7206,chrome.exe:53 msmpeng.exe:56 system:57
+2026-10-21T16:22:26Z,30,6921,asusfancontrolservice.exe:31 msmpeng.exe:40 system:22
+2026-10-21T16:22:33Z,26,7301,msmpeng.exe:44 svchost.exe:22 system:32
+2026-10-21T16:22:39Z,28,7287,msmpeng.exe:52 system:22
+2026-10-21T16:22:46Z,33,6953,msmpeng.exe:51 system:20
+2026-10-21T16:22:53Z,27,6828,msmpeng.exe:45 system:54
+2026-10-21T16:22:59Z,26,7214,msmpeng.exe:44 system:48
+2026-10-21T16:23:06Z,31,7036,msmpeng.exe:47
+2026-10-21T16:23:13Z,31,6786,msmpeng.exe:43 system:52
+2026-10-21T16:23:20Z,25,7315,msmpeng.exe:46 svchost.exe:29 system:69
+2026-10-21T16:23:27Z,22,7497,msmpeng.exe:45 svchost.exe:22
+2026-10-21T16:23:33Z,21,7336,msmpeng.exe:37 svchost.exe:46
+2026-10-21T16:23:40Z,21,7490,msmpeng.exe:46 system:20
+2026-10-21T16:23:46Z,26,7559,msmpeng.exe:37 system:20
+2026-10-21T16:23:53Z,21,7421,msmpeng.exe:39 svchost.exe:24 system:21
+2026-10-21T16:23:59Z,24,6862,chrome.exe:23 msmpeng.exe:47 system:32
+2026-10-21T16:24:05Z,22,6951,msmpeng.exe:46
+2026-10-21T16:24:11Z,24,7119,msmpeng.exe:49 system:20
+2026-10-21T16:24:18Z,29,6800,chrome.exe:36 claude.exe:62 msmpeng.exe:53 svchost.exe:25
+2026-10-21T16:24:24Z,23,7261,memcompression:23 msmpeng.exe:42 system:37
+2026-10-21T16:24:30Z,23,7209,asusfancontrolservice.exe:20 msmpeng.exe:48 system:30
+2026-10-21T16:24:37Z,30,7077,chrome.exe:23 msmpeng.exe:43 system:45
+2026-10-21T16:24:43Z,28,7153,chrome.exe:22 msmpeng.exe:47 system:69
+2026-10-21T16:24:50Z,28,6862,chrome.exe:22 msmpeng.exe:58 system:62
+2026-10-21T16:24:56Z,23,6797,chrome.exe:22 msmpeng.exe:43 system:31
+2026-10-21T16:25:04Z,26,6559,msmpeng.exe:46 system:39
+2026-10-21T16:25:11Z,29,6730,asusfancontrolservice.exe:40 chrome.exe:22 msmpeng.exe:53 system:108
+2026-10-21T16:25:18Z,27,6539,msmpeng.exe:46 system:74 vmmemwsl:31
+2026-10-21T16:25:24Z,22,6339,msmpeng.exe:47
+2026-10-21T16:25:31Z,23,6344,chrome.exe:23 msmpeng.exe:47 system:21
+2026-10-21T16:25:38Z,24,6308,chrome.exe:26 msmpeng.exe:48 system:51
+2026-10-21T16:25:45Z,26,6219,asusfancontrolservice.exe:37 msmpeng.exe:50 system:44 vmmemwsl:20
+2026-10-21T16:25:52Z,24,6000,msmpeng.exe:42 system:80
+2026-10-21T16:25:59Z,28,5933,chrome.exe:25 msmpeng.exe:45 svchost.exe:33 system:101
+2026-10-21T16:26:06Z,23,5909,asusfancontrolservice.exe:39 msmpeng.exe:47 system:84
+2026-10-21T16:26:13Z,23,5884,msmpeng.exe:48
+2026-10-21T16:26:19Z,22,5733,asusfancontrolservice.exe:22 msmpeng.exe:40 system:20
+2026-10-21T16:26:26Z,22,5704,msmpeng.exe:50
+2026-10-21T16:26:33Z,24,5549,asusfancontrolservice.exe:20 chrome.exe:23 msmpeng.exe:46 svchost.exe:20
+2026-10-21T16:26:40Z,22,5519,asusfancontrolservice.exe:32 chrome.exe:25 msmpeng.exe:41
+2026-10-21T16:26:47Z,22,5469,chrome.exe:29 msmpeng.exe:49
+2026-10-21T16:26:53Z,24,5425,asusfancontrolservice.exe:28 msmpeng.exe:52
+2026-10-21T16:27:00Z,21,5316,msmpeng.exe:49
+2026-10-21T16:27:07Z,20,5280,msmpeng.exe:44
+2026-10-21T16:27:14Z,25,5804,msmpeng.exe:45 system:34
+2026-10-21T16:27:21Z,23,5719,msmpeng.exe:38 system:61
+2026-10-21T16:27:28Z,21,5703,msmpeng.exe:47 system:32
+2026-10-21T16:27:35Z,23,5567,msmpeng.exe:41 system:45
+2026-10-21T16:27:41Z,22,5490,msmpeng.exe:46 system:87
+2026-10-21T16:27:48Z,24,5515,msmpeng.exe:47 system:101
+2026-10-21T16:27:55Z,22,5514,asusfancontrolservice.exe:23 msmpeng.exe:43 system:70
+2026-10-21T16:28:01Z,22,5368,asusfancontrolservice.exe:20 msmpeng.exe:48 system:31
+2026-10-21T16:28:08Z,20,5371,msmpeng.exe:40
+2026-10-21T16:28:15Z,21,5205,msmpeng.exe:42
+2026-10-21T16:28:21Z,23,5658,asusfancontrolservice.exe:35 msmpeng.exe:59
+2026-10-21T16:28:28Z,23,5656,asusfancontrolservice.exe:42 msmpeng.exe:45 system:27
+2026-10-21T16:28:35Z,23,5465,asusfancontrolservice.exe:26 msmpeng.exe:50 system:35
+2026-10-21T16:28:42Z,24,5444,chrome.exe:23 msmpeng.exe:48 svchost.exe:23 system:22
+2026-10-21T16:28:48Z,20,5494,msmpeng.exe:49
+2026-10-21T16:28:55Z,21,5496,msmpeng.exe:47
+2026-10-21T16:29:01Z,22,5411,asusfancontrolservice.exe:35 msmpeng.exe:48 system:20
+2026-10-21T16:29:08Z,21,5283,msmpeng.exe:45
