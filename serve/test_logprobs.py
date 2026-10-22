@@ -10,16 +10,16 @@ lines into OpenAI's logprobs, and the parts that are easy to get wrong:
 """
 from __future__ import annotations
 
-import collections
 import json
 import queue
 import threading
 import unittest
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 from serve.frontend import ChatTemplate
-from serve.server import (ByteTokenizer, MockEngine, Service, StrataEngine, logprob_span,
+from serve.server import (ByteTokenizer, LogprobEntries, LPLines, MockEngine, Service, StrataEngine, logprob_span,
                           serve, top_logprobs, allowed_ids)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,13 +48,66 @@ class LpEngine(MockEngine):
         self.with_lines, self.sampling = lines, None
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
-        self.sampling, self.lp_lines = dict(sampling or {}), collections.deque()
+        self.sampling, self.lp_lines = dict(sampling or {}), LPLines(cancel)
         for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
             if self.with_lines:
                 self.lp_lines.append((
                     t, f"LP {-(i + 1) / 100:.6f} 65:-0.500000 72:-1.250000 "
                        f"88:-3.000000 91:-4.200000\n"))
             yield t
+
+
+class NextEngine(LpEngine):
+    """LpEngine for two requests: the second one stops after its first token (its LP line is in lp_lines)
+    until the first request's reply has been read."""
+
+    def __init__(self, tok, scripts, first_out):
+        super().__init__(tok, scripts)
+        self.first_out, self.calls = first_out, 0
+        self.first_in, self.first_generated, self.second_started = (threading.Event(), threading.Event(),
+                                                                    threading.Event())
+
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        self.calls += 1
+        mine = self.calls
+        if mine == 1:
+            self.first_in.set()
+        try:
+            for i, t in enumerate(super().generate(ids, max_new, sampling, cancel, embeddings)):
+                if mine == 2 and i == 0:
+                    self.second_started.set()
+                    self.first_out.wait(10)
+                yield t
+        finally:
+            if mine == 1:
+                self.first_generated.set()
+
+
+class HandOver:
+    """Service.fifo that, once the first request has generated, lets its turn go and then waits until the
+    next request is generating before the first one goes on."""
+
+    def __init__(self, engine):
+        self.lock, self.engine, self.waited = threading.Lock(), engine, False
+
+    def acquire(self, *a, **k):
+        return self.lock.acquire(*a, **k)
+
+    def release(self):
+        self.lock.release()
+        if self.engine.first_generated.is_set() and not self.waited:
+            self.waited = True
+            self.engine.second_started.wait(10)
+
+    def locked(self):
+        return self.lock.locked()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
 
 
 SCHEMA = {"type": "json_schema", "json_schema": {"name": "a", "strict": True, "schema": {
@@ -89,6 +142,15 @@ class Keys(unittest.TestCase):
                                            "allowed_token_ids": [7, 8, 9]})
         self.assertIn(" logprobs=2 ", keys)
         self.assertIn(" allowed=7,8,9", keys)
+
+    def test_unreadable_lines_give_no_entry(self):
+        a = threading.Event()
+        eng = SimpleNamespace(lp_lines=LPLines(a))
+        for line in ("LP nan", "LP -nan(ind)", "LP inf", "LP -0.1 65:x", "LP -0.1 65:-inf", "LP -0.1 65",
+                     "LP -0.200000 65:-1.0"):
+            eng.lp_lines.append((72, line))
+        got = LogprobEntries(SimpleNamespace(tok=Tokenizer(), stop_ids=set()), owner=a).take(eng)
+        self.assertEqual([e["logprob"] for e in got], [-0.2])
 
 
 class Generate(unittest.TestCase):
@@ -177,6 +239,42 @@ class Api(unittest.TestCase):
         self.assertEqual(lps[0]["logprob"], -0.01)
         self.assertEqual(lps[0]["top_logprobs"][0]["token"], "A")
         self.assertEqual(self.engine.sampling.get("logprobs"), True)
+
+    def test_a_request_reads_only_its_own_lines(self):
+        # A's last "." is held by its stop string and sent after A has left the queue, when B is
+        # already generating on the same engine: each reply's tokens must spell that reply
+        first_out = threading.Event()
+        engine = NextEngine(self.tok, ["Café costs €5.", "Bonjour!"], first_out)
+        svc = Service(engine, self.tok, TEMPLATE)
+        svc.fifo = HandOver(engine)
+        httpd = serve(svc, port=0)
+        got = {}
+        try:
+            self.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            a = threading.Thread(target=lambda: got.update(a=self.post({"logprobs": True, "stop": [".!"]})))
+            b = threading.Thread(target=lambda: got.update(b=self.post({"logprobs": True})))
+            a.start()
+            self.assertTrue(engine.first_in.wait(10))
+            b.start()
+            a.join(30)
+            first_out.set()
+            b.join(30)
+        finally:
+            first_out.set()
+            httpd.shutdown()
+            httpd.server_close()
+        for key, text in (("a", "Café costs €5."), ("b", "Bonjour!")):
+            choice = got[key]["choices"][0]
+            self.assertEqual(choice["message"]["content"], text)
+            self.assertEqual("".join(e["token"] for e in choice["logprobs"]["content"]), text, key)
+
+    def test_logprobs_need_a_bounded_reply(self):
+        for max_tokens in (0, -1, 5000):                   # 0 / -1: "the rest of the context"
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post({"logprobs": True, "max_tokens": max_tokens})
+            self.assertEqual(cm.exception.code, 400)
+        self.assertIn("logprobs", self.post({"logprobs": True, "max_tokens": 4096})["choices"][0])
+        self.assertNotIn("logprobs", self.post({"max_tokens": 0})["choices"][0])   # not asked: as before
 
     def test_streamed(self):
         chunks = self.post({"logprobs": True}, stream=True)
