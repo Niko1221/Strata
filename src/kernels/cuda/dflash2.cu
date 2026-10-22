@@ -11,8 +11,9 @@
 
 namespace strata::kernels {
 namespace {
+template<int Epilogue = 0>
 __global__ void conv_kernel(const float* x, const float* dynamic, const float* base, float* out,
-                            int rows, int hidden, int kernel, int group, int side, int block_rows) {
+                            int rows, int hidden, int kernel, int group, int side, int block_rows, uint16_t* bf16 = nullptr) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows * hidden) return;
     const int row = i / hidden, channel = i % hidden, groups = hidden / group;
@@ -23,7 +24,14 @@ __global__ void conv_kernel(const float* x, const float* dynamic, const float* b
             dynamic[((row * 2 + side) * kernel + tap) * groups + channel / group];
         value += weight * x[(row - tap) * hidden + channel];
     }
-    out[i] = value;
+    if constexpr (Epilogue == 1) bf16[i] = bf16_from_f32(value);
+    else if constexpr (Epilogue == 2) {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        out[i] = out[i] + value;
+#else
+        out[i] = __fadd_rn(out[i], value);
+#endif
+    } else out[i] = value;
 }
 // Retained for same-input timing and parity (STRATA_DFLASH2_SERIAL_TOPK=1).
 __global__ void topk_kernel(const float* logits, int32_t* ids, float* unary, int vocab, int top_k) {
@@ -45,6 +53,61 @@ __global__ void topk_kernel(const float* logits, int32_t* ids, float* unary, int
 // One CTA per row/tile. A second pass merges the tiles' winners using the same
 // reduction; only tile_count * K candidates need temporary storage. IDs break ties.
 constexpr int kTopkTile = 4096;
+// Keep a tile's logits in registers rather than reloading them for every
+// winner. Ordered float bits plus the reverse token ID encode the same
+// score/ID comparison as the reference reduction. Inspired by llama.cpp #27342.
+__global__ void topk_register_kernel(const float* logits, int32_t* ids, float* unary,
+                                     int vocab, int top_k, int tiles) {
+    const int row = blockIdx.x, tile = blockIdx.y, t = threadIdx.x;
+    logits += (size_t) row * vocab;
+    const int begin = tile * kTopkTile;
+    unsigned long long keys[kTopkTile / 256];
+    __shared__ unsigned long long winners[8];
+#pragma unroll
+    for (int i = 0; i < kTopkTile / 256; ++i) {
+        const int token = begin + t + i * 256;
+        unsigned long long key = 0;
+        if (token < vocab) {
+            const float score = logits[token];
+            if (isfinite(score)) {
+                // Both signs of zero compare equal in the reference kernel.
+                unsigned bits = score == 0.0f ? 0 : __float_as_uint(score);
+                bits = bits & 0x80000000u ? ~bits : bits | 0x80000000u;
+                key = ((unsigned long long) bits << 32) | (unsigned) (vocab - 1 - token);
+            }
+        }
+        keys[i] = key;
+    }
+    const size_t at = ((size_t) row * tiles + tile) * top_k;
+    for (int k = 0; k < top_k; ++k) {
+        unsigned long long best = 0;
+#pragma unroll
+        for (int i = 0; i < kTopkTile / 256; ++i) best = max(best, keys[i]);
+        // Reduce within logical 32-lane warps first, then only eight warp
+        // winners. Integer max is associative, so score/tie bits are exact.
+        for (int offset = 16; offset; offset >>= 1)
+            best = max(best, __shfl_down_sync(0xffffffffu, best, offset));
+        if ((t & 31) == 0) winners[t / 32] = best;
+        __syncthreads();
+        if (t < 32) {
+            best = t < 8 ? winners[t] : 0;
+            for (int offset = 16; offset; offset >>= 1)
+                best = max(best, __shfl_down_sync(0xffffffffu, best, offset));
+            if (!t) winners[0] = best;
+        }
+        __syncthreads();
+        best = winners[0];
+        if (!t) {
+            const int token = best ? vocab - 1 - (int) (unsigned) best : -1;
+            ids[at + k] = token;
+            unary[at + k] = token >= 0 ? logits[token] : -INFINITY;
+        }
+#pragma unroll
+        for (int i = 0; i < kTopkTile / 256; ++i)
+            if (keys[i] == best) keys[i] = 0;
+        __syncthreads();
+    }
+}
 __global__ void topk_parallel_kernel(const float* logits, const int32_t* candidates, int32_t* ids, float* unary,
                                     int vocab, int top_k, int tile_width, int tiles) {
     const int row = blockIdx.x, tile = blockIdx.y, t = threadIdx.x;
@@ -171,6 +234,47 @@ __global__ void select_bf16_parallel(const int32_t* ids, const float* unary, con
         __syncthreads();
     }
 }
+// A row after the first can follow any candidate in the preceding row.
+// Precompute that small lattice in parallel, retaining each rank sum's order.
+__global__ void selector_lattice(const int32_t* ids,const float* unary,const float* hidden,
+    const uint16_t* prev,const uint16_t* next,const int32_t* anchor,float* scores,int top_k,int rank) {
+    const int row=blockIdx.x+1, predecessor_slot=blockIdx.y, candidate=threadIdx.x;
+    if(candidate>=top_k || (row==1 && predecessor_slot!=0))return;
+    const int predecessor=row==1?anchor[0]:ids[(row-1)*top_k+predecessor_slot];
+    const int token=ids[row*top_k+candidate];
+    float score=-INFINITY;
+    if(predecessor>=0 && token>=0) {
+        score=0;
+        for(int j=0;j<rank;++j)
+            score+=(codebook_value(prev,(size_t)predecessor*rank+j)*hidden[row*rank+j])*
+                    codebook_value(next,(size_t)token*rank+j);
+        score+=unary[row*top_k+candidate];
+    }
+    scores[((row-1)*top_k+predecessor_slot)*top_k+candidate]=score;
+}
+__global__ void selector_lattice_walk(const int32_t* ids,const float* scores,const int32_t* anchor,
+    int32_t* out,float* confidence,int rows,int top_k) {
+    if(threadIdx.x || blockIdx.x)return;
+    bool valid=anchor[0]>=0;int predecessor_slot=0;
+    for(int row=1;row<rows;++row) {
+        const float* s=scores+((row-1)*top_k+predecessor_slot)*top_k;
+        int best=-1;bool row_valid=valid;
+        for(int k=0;k<top_k;++k) {
+            if(!valid || ids[row*top_k+k]<0)continue;
+            if(!isfinite(s[k]))row_valid=false;
+            if(isfinite(s[k]) && (best<0 || s[k]>s[best]))best=k;
+        }
+        valid=row_valid && best>=0;
+        if(!valid) {out[row-1]=-1;if(confidence)confidence[row-1]=0;}
+        else {
+            out[row-1]=ids[row*top_k+best];predecessor_slot=best;
+            if(confidence) {
+                float sum=0;for(int k=0;k<top_k;++k)sum+=expf(s[k]-s[best]);
+                confidence[row-1]=1.f/sum;
+            }
+        }
+    }
+}
 }  // namespace
 
 void dflash2_convolve(const float* x, const float* dynamic, const float* base, float* out,
@@ -180,8 +284,22 @@ void dflash2_convolve(const float* x, const float* dynamic, const float* base, f
         block_rows <= 0 || block_rows > 8 || rows % block_rows || side < 0 || side > 1 ||
         x == out || dynamic == out || base == out)
         throw std::invalid_argument("dflash2_convolve: invalid geometry or aliased output");
-    conv_kernel<<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t) stream>>>(
+    conv_kernel<0><<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t) stream>>>(
         x, dynamic, base, out, rows, hidden, kernel, group, side, block_rows);
+}
+void dflash2_convolve_epilogue(const float* x, const float* dynamic, const float* base,
+                               uint16_t* bf16, float* residual, int rows, int hidden,
+                               int kernel, int group, int side, int block_rows, void* stream) {
+    if (!x || !dynamic || !base || (bool(bf16) == bool(residual)) || rows <= 0 || hidden <= 0 ||
+        (int64_t)rows * hidden > INT32_MAX - 255 || kernel <= 0 || kernel > 8 || group <= 0 || hidden % group ||
+        (int64_t)rows * (hidden / group) * 2 * kernel > INT32_MAX || block_rows <= 0 || block_rows > 8 ||
+        rows % block_rows || side < 0 || side > 1 || residual == x || residual == dynamic || residual == base ||
+        (const void*)bf16 == x || (const void*)bf16 == dynamic || (const void*)bf16 == base)
+        throw std::invalid_argument("dflash2_convolve_epilogue: invalid geometry or alias");
+    if (bf16) conv_kernel<1><<<(rows * hidden + 255) / 256,256,0,(cudaStream_t)stream>>>(
+        x,dynamic,base,nullptr,rows,hidden,kernel,group,side,block_rows,bf16);
+    else conv_kernel<2><<<(rows * hidden + 255) / 256,256,0,(cudaStream_t)stream>>>(
+        x,dynamic,base,residual,rows,hidden,kernel,group,side,block_rows);
 }
 std::size_t dflash2_topk_scratch_bytes(int rows, int vocab, int top_k) {
     if (rows <= 0 || vocab <= 0 || (int64_t) rows * vocab > INT32_MAX ||
@@ -210,8 +328,16 @@ void dflash2_topk(const float* logits, int32_t* ids, float* unary, int rows, int
         const int tiles = (vocab + kTopkTile - 1LL) / kTopkTile;
         int32_t* local_ids = (int32_t*) scratch;
         float* local_scores = (float*) (local_ids + (size_t) rows * tiles * top_k);
-        topk_parallel_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
-            logits, nullptr, local_ids, local_scores, vocab, top_k, kTopkTile, tiles);
+        static const bool register_topk = [] {
+            const char* value = std::getenv("STRATA_DFLASH2_REGISTER_TOPK");
+            return value && value[0] == '1';
+        }();
+        if (register_topk)
+            topk_register_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
+                logits, local_ids, local_scores, vocab, top_k, tiles);
+        else
+            topk_parallel_kernel<<<dim3(rows, tiles), 256, 0, (cudaStream_t) stream>>>(
+                logits, nullptr, local_ids, local_scores, vocab, top_k, kTopkTile, tiles);
         topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
             local_scores, local_ids, ids, unary, tiles * top_k, top_k, tiles * top_k, 1);
     } else topk_parallel_kernel<<<rows, 256, 0, (cudaStream_t) stream>>>(
@@ -228,7 +354,7 @@ void dflash2_select(const int32_t* ids, const float* unary, const float* hidden,
 }
 void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hidden,
                          const uint16_t* prev, const uint16_t* next, const int32_t* anchor,
-                         int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream, bool reference) {
+                         int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream, bool reference, void* scratch, std::size_t scratch_bytes) {
     if (!ids || !unary || !hidden || !prev || !next || !anchor || !out ||
         rows < 2 || rows > 8 || top_k < 1 || top_k > 64 || rank < 1 || rank > 1024)
         throw std::invalid_argument("dflash2_select_bf16: invalid geometry");
@@ -236,6 +362,18 @@ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hi
         const char* value = std::getenv("STRATA_DFLASH2_SERIAL_SELECT");
         return value && value[0] == '1';
     }();
+    static const bool lattice = [] {
+        const char* value=std::getenv("STRATA_DFLASH2_LATTICE_SELECTOR");
+        return value && value[0]=='1';
+    }();
+    const size_t needed=(size_t)(rows-1)*top_k*top_k*sizeof(float);
+    if(lattice && !serial && !reference && scratch && scratch_bytes>=needed) {
+        selector_lattice<<<dim3(rows-1,top_k),64,0,(cudaStream_t)stream>>>(
+            ids,unary,hidden,prev,next,anchor,(float*)scratch,top_k,rank);
+        selector_lattice_walk<<<1,1,0,(cudaStream_t)stream>>>(
+            ids,(float*)scratch,anchor,out,confidence,rows,top_k);
+        return;
+    }
     if (serial || reference) select_kernel<<<1, 1, 0, (cudaStream_t)stream>>>(
         ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
     else select_bf16_parallel<<<1, 64, 0, (cudaStream_t)stream>>>(

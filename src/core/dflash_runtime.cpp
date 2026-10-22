@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <map>
 #include <string>
 #include <vector>
@@ -1003,12 +1004,24 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         cudaGraphExecDestroy(graph_exec_[graph_slot]); graph_exec_[graph_slot] = nullptr;
     }
 #ifdef STRATA_ENABLE_DFLASH2
+    static const bool fused_conv_enabled = [] {
+        const char* value = std::getenv("STRATA_DFLASH2_FUSED_CONV");
+        return value && value[0] == '1';
+    }();
+    const bool fused_conv = dg.is_dflash2() && fused_conv_enabled && !reference &&
+                            !parity_want(cycle_) && !std::getenv("STRATA_DF_DBG");
     auto conv = [&](const std::string& pre, const char* name, float* input, int side) {
         const std::string cn = pre + "." + name;
         if (side == 0) {
             f32_to_bf16_bulk(input, xn16_, (int64_t) K * N, cs_);
             project(xn16_, wp((cn + ".kernel_projection").c_str()), conv_dynamic_,
                     (int) N, (int) (2 * dg.conv_kernel_size * (N / dg.conv_group_size)), K, cs_);
+        }
+        if (fused_conv) {
+            dflash2_convolve_epilogue(input, conv_dynamic_, wf((cn + ".base_kernel").c_str()),
+                side == 0 ? xn16_ : nullptr, side == 1 ? h_ : nullptr,
+                K, (int) N, (int) dg.conv_kernel_size, (int) dg.conv_group_size, side, K, cs_);
+            return;
         }
         dflash2_convolve(input, conv_dynamic_, wf((cn + ".base_kernel").c_str()), conv_result_,
                          K, (int) N, (int) dg.conv_kernel_size, (int) dg.conv_group_size, side, K, cs_);
@@ -1029,6 +1042,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 }
 #ifdef STRATA_ENABLE_DFLASH2
                 if (dg.is_dflash2()) conv(pre, "attention_conv", xn_, 0);
+                if (!fused_conv)
 #endif
                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
             }
@@ -1162,6 +1176,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
             }
             {
                 DFlashSection section("L*.residual_add");
+#ifdef STRATA_ENABLE_DFLASH2
+                if (!fused_conv)
+#endif
                 add_inplace(h_, bo_, K * N, cs_);
             }
             if (parity_want(cycle_)) {
@@ -1175,6 +1192,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 native_qsa_rms_norm_weighted(h_, wf((pre + ".post_attention_layernorm").c_str()), xn_, (int) N, K, kEps, cs_);
 #ifdef STRATA_ENABLE_DFLASH2
                 if (dg.is_dflash2()) conv(pre, "mlp_conv", xn_, 0);
+                if (!fused_conv)
 #endif
                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
             }
@@ -1203,6 +1221,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
 #endif
             {
                 DFlashSection section("L*.residual_add");
+#ifdef STRATA_ENABLE_DFLASH2
+                if (!fused_conv)
+#endif
                 add_inplace(h_, bo_, K * N, cs_);
             }
             if (parity_want(cycle_)) {
@@ -1284,7 +1305,9 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                         reference ? 0 : dflash2_topk_scratch_bytes((int) max_rows_, vocab, (int) dg.selector_top_k));
             dflash2_select_bf16(selector_ids_, selector_unary_, selector_hidden_, wp("selector.predecessor"),
                            wp("selector.successor"), tok_, out_, probs ? (float*) (out_ + max_rows_) : nullptr,
-                           K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_, reference);
+                           K, (int) dg.selector_top_k, (int) dg.selector_rank, cs_, reference,
+                           reference ? nullptr : selector_scratch_, reference ? 0 :
+                           dflash2_topk_scratch_bytes((int) max_rows_, vocab, (int) dg.selector_top_k));
             if (output_parity) {
                 parity_dump(parity_dir_, "selector_hidden", selector_hidden_, K * dg.selector_rank, cs_);
                 parity_dump(parity_dir_, "selector_ids", (const float*) selector_ids_, K * dg.selector_top_k, cs_);

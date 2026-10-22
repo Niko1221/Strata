@@ -1,4 +1,6 @@
+#include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/dflash2.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/spec/dflash_policy.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -41,6 +43,21 @@ void convolve() {
             dflash2_convolve(dx.p, dd.p, db.p, result.p, rows, hidden, taps, group, side, width, nullptr);
             checked(cudaGetLastError());
             const auto got = result.read(x.size());
+            Device<uint16_t> converted(x.size());
+            dflash2_convolve_epilogue(dx.p,dd.p,db.p,converted.p,nullptr,
+                                     rows,hidden,taps,group,side,width,nullptr);
+            const auto bits = converted.read(x.size());
+            for (size_t i = 0; i < x.size(); ++i)
+                if (bits[i] != bf16_from_f32(got[i])) throw std::runtime_error("fused convolution BF16 differs");
+            Device<float> residual(x);
+            dflash2_convolve_epilogue(dx.p,dd.p,db.p,nullptr,residual.p,
+                                     rows,hidden,taps,group,side,width,nullptr);
+            const auto sum = residual.read(x.size());
+            for (size_t i = 0; i < x.size(); ++i) {
+                const float expected = x[i] + got[i];
+                if (std::memcmp(&sum[i], &expected, sizeof(float)))
+                    throw std::runtime_error("fused convolution residual differs");
+            }
             for (int row = 0; row < rows; ++row) for (int c = 0; c < hidden; ++c) {
                 double expected = 0;
                 for (int offset = 0; offset < taps; ++offset) {
@@ -54,12 +71,44 @@ void convolve() {
         }
     }
 }
+void convolution_benchmark() {
+    using namespace strata::kernels;
+    constexpr int rows=8, hidden=2560, taps=2, group=16, groups=hidden/group;
+    std::vector<float> x(rows*hidden,.125f), dynamic(rows*2*taps*groups,.01f), base(2*taps*hidden,.03f);
+    Device<float> dx(x), dd(dynamic), db(base), tmp(x.size()), copy(x.size()), residual(x);
+    Device<uint16_t> converted(x.size());
+    for (bool fused : {false,true}) {
+        cudaStream_t stream; checked(cudaStreamCreate(&stream));
+        cudaGraph_t graph; cudaGraphExec_t exec;
+        checked(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+        for (int layer=0;layer<5;++layer) for (int half=0;half<2;++half) for(int side=0;side<2;++side) {
+            if (fused) dflash2_convolve_epilogue(dx.p,dd.p,db.p,side==0?converted.p:nullptr,
+                side==1?residual.p:nullptr,rows,hidden,taps,group,side,rows,stream);
+            else {
+                dflash2_convolve(dx.p,dd.p,db.p,tmp.p,rows,hidden,taps,group,side,rows,stream);
+                checked(cudaMemcpyAsync(copy.p,tmp.p,x.size()*sizeof(float),cudaMemcpyDeviceToDevice,stream));
+                if(side==0) f32_to_bf16_bulk(copy.p,converted.p,x.size(),stream);
+                else add_inplace(residual.p,copy.p,x.size(),stream);
+            }
+        }
+        checked(cudaStreamEndCapture(stream,&graph)); checked(cudaGraphInstantiate(&exec,graph,0));
+        for(int i=0;i<20;++i)checked(cudaGraphLaunch(exec,stream));
+        cudaEvent_t a,b; checked(cudaEventCreate(&a)); checked(cudaEventCreate(&b));
+        checked(cudaEventRecord(a,stream));
+        for(int i=0;i<100;++i)checked(cudaGraphLaunch(exec,stream));
+        checked(cudaEventRecord(b,stream)); checked(cudaEventSynchronize(b)); float ms;
+        checked(cudaEventElapsedTime(&ms,a,b));
+        std::printf("convolution 5 layers rows8 fused=%d: %.6f ms/pass\n",fused,ms/100);
+        checked(cudaEventDestroy(a)); checked(cudaEventDestroy(b)); checked(cudaGraphExecDestroy(exec));
+        checked(cudaGraphDestroy(graph)); checked(cudaStreamDestroy(stream));
+    }
+}
 void selector(bool timing) {
     using namespace strata::kernels;
-    const int vocab = 17;
+    const int vocab = 67;
     int reranked = 0;
     for (int rank : {1,3,256,1024})
-    for (int rows : {2, 3, 8}) for (int top_k : {1, 3, 16, 17}) {
+    for (int rows : {2, 3, 8}) for (int top_k : {1, 3, 16, 17, 32, 64}) {
         std::vector<float> logits(rows * vocab), hidden(rows * rank), prev(vocab * rank), next(prev.size());
         for (size_t i = 0; i < logits.size(); ++i) logits[i] = ((int)(i % 7) - 3) * 0.05f + (i % vocab) * 0.00037f;
         std::fill(logits.begin(), logits.begin() + vocab, 0.1f); // top-k tie test
@@ -89,6 +138,8 @@ void selector(bool timing) {
                 near(got_unary[row * top_k + k], logits[row * vocab + order[k]]);
             }
         }
+        Device<uint8_t> lattice((size_t)rows*top_k*top_k*sizeof(float));
+        const size_t lattice_bytes=(size_t)rows*top_k*top_k*sizeof(float);
         for (bool probabilities : {false, true}) {
             dflash2_select(ids.p, du.p, dh.p, dp.p, dn.p, anchor.p, output.p,
                            probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr);
@@ -96,20 +147,30 @@ void selector(bool timing) {
             auto got = output.read(rows - 1);
             auto prob = probabilities ? confidence.read(rows - 1) : std::vector<float>{};
             dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
-                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr);
+                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
             if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
                 throw std::runtime_error("BF16 and FP32 codebook selector results differ");
+            if (rows==8 && top_k==16 && rank==256 && probabilities) {
+                checked(cudaMemset(lattice.p,0xa5,lattice_bytes));
+                dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
+                    confidence.p,rows,top_k,rank,nullptr,false,lattice.p,1);
+                if(output.read(rows-1)!=got || confidence.read(rows-1)!=prob)
+                    throw std::runtime_error("small selector workspace changed output");
+                const auto sentinel=lattice.read(16);
+                for(auto byte:sentinel)if(byte!=0xa5)
+                    throw std::runtime_error("selector wrote an undersized workspace");
+            }
             dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
-                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,true);
+                                probabilities ? confidence.p : nullptr,rows,top_k,rank,nullptr,true,lattice.p,lattice_bytes);
             if(output.read(rows-1)!=got || (probabilities && confidence.read(rows-1)!=prob))
                 throw std::runtime_error("reference-mode BF16 selector results differ");
             if (timing && rows==8 && rank==256 && top_k==16) {
                 cudaEvent_t a,b;checked(cudaEventCreate(&a));checked(cudaEventCreate(&b));
                 for(int i=0;i<10;++i)dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
-                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr);
+                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
                 checked(cudaEventRecord(a));
                 for(int i=0;i<100;++i)dflash2_select_bf16(ids.p,du.p,dh.p,dp16.p,dn16.p,anchor.p,output.p,
-                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr);
+                    probabilities?confidence.p:nullptr,rows,top_k,rank,nullptr,false,lattice.p,lattice_bytes);
                 checked(cudaEventRecord(b));checked(cudaEventSynchronize(b));float ms;
                 checked(cudaEventElapsedTime(&ms,a,b));
                 std::printf("BF16 selector rows=8 rank=256 k=16 confidence=%d: %.6f ms/pass\n",probabilities,ms/100);
@@ -125,7 +186,7 @@ void selector(bool timing) {
             dflash2_topk(dl.p + vocab, ids.p + top_k, du.p + top_k,
                          rows - 1, vocab, top_k, nullptr);
             dflash2_select_bf16(ids.p, du.p, dh.p, dp16.p, dn16.p, anchor.p, output.p,
-                               probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr);
+                               probabilities ? confidence.p : nullptr, rows, top_k, rank, nullptr,false,lattice.p,lattice_bytes);
             if (output.read(rows - 1) != got || (probabilities && confidence.read(rows - 1) != prob))
                 throw std::runtime_error("omitting anchor logits changed the selector");
             int predecessor = 7;
@@ -180,7 +241,9 @@ void target_features_and_attention() {
     const int hd=128;
     for (int page : {64,96})
     for (int heads : {4,32}) for (int rows : {2,4,8})
-    for (int end : {9,73,2053}) for (int window : {0,2048}) {
+    for (int end : {9,73,2053,4101}) for (int window : {0,2048,4096}) {
+        if ((end == 4101 || window == 4096) &&
+            !(end == 4101 && window == 4096 && page == 64 && heads == 32 && rows == 4)) continue;
         const int kv = heads == 32 ? 8 : 2;
         const int pages=(end+page-1)/page;
         std::vector<int32_t> table(pages), steps(rows*4);
@@ -387,11 +450,16 @@ void invalid_model_values() {
     for(float p:prob.read(2))if(p!=0)throw std::runtime_error("invalid selector confidence is not zero");
     Device<uint16_t> prev16(std::vector<uint16_t>{0x3f80,0x3f80}),
         next16(std::vector<uint16_t>{0x3f80,0x7fc0});
-    dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,anchor.p,picks.p,prob.p,3,2,1,nullptr);
+    Device<float> lattice(12);
+    dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,anchor.p,picks.p,prob.p,3,2,1,nullptr,
+                       false,lattice.p,12*sizeof(float));
     for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("BF16 selector masked an invalid transition");
     Device<int32_t> negative_anchor(std::vector<int32_t>{-1});
     dflash2_select(ids.p,unary.p,hidden.p,prev.p,next.p,negative_anchor.p,picks.p,prob.p,3,2,1,nullptr);
     for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("negative selector anchor accepted");
+    dflash2_select_bf16(ids.p,unary.p,hidden.p,prev16.p,next16.p,negative_anchor.p,picks.p,prob.p,3,2,1,nullptr,
+                       false,lattice.p,12*sizeof(float));
+    for(int t:picks.read(2))if(t!=-1)throw std::runtime_error("negative BF16 selector anchor accepted");
     // Rejected API calls must not launch a kernel which poisons the CUDA context.
     bool refused=false;
     try { dflash2_select(ids.p,unary.p,hidden.p,prev.p,next.p,anchor.p,picks.p,prob.p,3,2,1025,nullptr); }
@@ -404,7 +472,7 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
-    try { invalid_model_values(); convolve(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
+    try { invalid_model_values(); convolve(); if (timing) convolution_benchmark(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
     return 0;

@@ -106,6 +106,11 @@ namespace strata::kernels {
 // dynamic: [rows][2][kernel][hidden/group], base: [2][kernel][hidden].
 void dflash2_convolve(const float* x, const float* dynamic, const float* base, float* out,
                      int rows, int hidden, int kernel, int group, int side, int block_rows, void* stream);
+// Same convolution, with exactly one output: BF16 conversion or residual addition.
+// Outputs must not alias inputs. Avoids an intermediate copy and a second kernel.
+void dflash2_convolve_epilogue(const float* x, const float* dynamic, const float* base,
+                               uint16_t* bf16, float* residual, int rows, int hidden,
+                               int kernel, int group, int side, int block_rows, void* stream);
 // Top-k unary candidates for each row, with deterministic smaller-token tie breaking.
 // Optional caller-owned workspace enables parallel vocabulary tiles followed by
 // an exact candidate merge. No allocation or synchronization inside the call.
@@ -119,10 +124,12 @@ void dflash2_select(const int32_t* candidates, const float* unary, const float* 
                     const float* predecessor, const float* successor, const int32_t* anchor,
                     int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream);
 // BF16 codebooks avoid duplicate full-vocabulary FP32 copies; arithmetic is identical.
+// The optional transition lattice reuses scratch after top-k completes. Missing
+// or undersized scratch retains the original selector, without writing scratch.
 void dflash2_select_bf16(const int32_t* candidates, const float* unary, const float* hidden,
                          const uint16_t* predecessor, const uint16_t* successor, const int32_t* anchor,
                          int32_t* out, float* confidence, int rows, int top_k, int rank, void* stream,
-                         bool reference = false);
+                         bool reference = false, void* scratch = nullptr, std::size_t scratch_bytes = 0);
 // Completed target residual [rows][hc][hidden], before the next layer's learned HC read.
 void dflash2_hc_mean(const float* residual, float* out, uint16_t* out_bf16,
                      int rows, int hidden, int hc, void* stream);

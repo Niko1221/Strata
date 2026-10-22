@@ -72,6 +72,22 @@ vocabulary. The engine-only experiments are separate from setup's DFlash2 weight
 
 ## Checks and diagnostics
 
+Experimental DFlash2 execution options are off by default. They do not change the
+checkpoint, target model or shared head:
+
+- `STRATA_DFLASH2_REGISTER_TOPK=1` keeps vocabulary tiles in registers during top-k.
+- `STRATA_DFLASH2_FUSED_CONV=1` combines each convolution with its BF16 conversion
+  or residual addition. Tensor-dump diagnostics retain the separate operations.
+- `STRATA_DFLASH2_LATTICE_SELECTOR=1` computes candidate transitions in parallel,
+  then walks the resulting scores. It reuses idle top-k scratch space and falls
+  back when that space is too small. Reference mode retains the serial selector.
+
+`STRATA_VERIFY_SPLIT_FIRST=1..7` changes the first group's size with `--spec-split`.
+Unset or zero retains the balanced split. This verifier option also affects MTP;
+record it when comparing runs. Kernel timing improvements alone do not establish
+faster generation. These options have local CUDA checks; HIP and SYCL validation
+is still required.
+
 Loader and policy checks use `dflash_load_test` and `dflash_policy_test`. CUDA checks
 cover taps, RoPE, owned pools, BF16 projections and indexed heads. The independent
 `tools/dflash_stage_parity.py` forward checks every plain-DFlash layer against the

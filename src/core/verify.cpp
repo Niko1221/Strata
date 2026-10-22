@@ -98,6 +98,18 @@ namespace {
 constexpr float EPS = 1e-6f;
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+// Keep the graph and both host-serving loops on the same group boundary.
+// Zero preserves the existing balanced split; the override is opt-in.
+int verify_group_boundary(int rows) {
+    static const int first = [] {
+        const char* value = std::getenv("STRATA_VERIFY_SPLIT_FIRST");
+        if (!value || !*value) return 0;
+        char* end = nullptr;
+        const long rows = std::strtol(value, &end, 10);
+        return end != value && !*end && rows >= 1 && rows <= 7 ? (int) rows : 0;
+    }();
+    return first > 0 && rows > 1 ? std::min(first, rows - 1) : (rows + 1) / 2;
+}
 const bool g_dbg = std::getenv("STRATA_VERIFY_DEBUG") != nullptr;
 inline bool g_lfuse() { static const bool on = [] { const char* v = std::getenv("STRATA_LFUSE"); return v != nullptr && v[0] == '1'; }(); return on; }
 // STRATA_ROUTE_RESIDENT=<margin logits> (+ STRATA_ROUTE_RESIDENT_RANKS=lo-hi, default 6-9): residency-biased routing.
@@ -1143,7 +1155,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (prof_on_ && grp == 0) gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
         if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
     };
-    const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
+    const int tb_[2] = {0, verify_group_boundary(T)}, te_[2] = {G == 2 ? verify_group_boundary(T) : T, T};
     // S26 STRATA_LFUSE=1: where the shared expert's gate / scale fusions apply (the paths they replace are the ones taken)
     auto lfuse_on = [&](int n) {
         return g_lfuse() && ar_on() && native_moe_combine_enabled() && dec_batch && n > 1 && n <= 8 &&
@@ -2999,7 +3011,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
     const int G = groups_[T] > 0 ? groups_[T] : 1;
-    const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
+    const int gtb[2] = {0, verify_group_boundary(T)}, gte[2] = {G == 2 ? verify_group_boundary(T) : T, T};
     const int64_t steps = (le_ - lb_) * G;
     if (ar_on() && !test_stall) {
         if (flag_raised) {
@@ -4319,7 +4331,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
         return 1;
     }
     const int G = groups_[T] > 0 ? groups_[T] : 1;
-    const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
+    const int gtb[2] = {0, verify_group_boundary(T)}, gte[2] = {G == 2 ? verify_group_boundary(T) : T, T};
     while (fl_k_ < fl_total_) {
         const int64_t l = lb_ + fl_k_ / G;
         const uint32_t want = (uint32_t) (fl_k_ + 1);
