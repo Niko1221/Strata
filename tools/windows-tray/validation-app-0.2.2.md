@@ -31,7 +31,7 @@ source/package hashes, API/owner state and preservation checks. Extension source
 `71e26101131235b42422494bff0550cb193200cf` includes the Storage correction found
 during this run; initial lifecycle checks used its unchanged predecessor.
 
-## Passed
+## Passed In The Initial Run
 
 1. **Build and regression:** 81 C# checks; all 16 managed Python cases in two
    invocations (12 configuration/update/fake-backend checks, then the four real
@@ -67,7 +67,7 @@ during this run; initial lifecycle checks used its unchanged predecessor.
    profiles, Tray settings and observed client configurations stayed identical.
    That live status file was read only and was not restored.
 
-## Failed Or Limited
+## Initial Failures And Limits
 
 - Initial disposable configuration named a nonexistent expert-profile file.
   Preload failed with a terminal `RuntimeError`. Correcting only that test profile
@@ -87,8 +87,12 @@ A fresh isolated run used the same compiled public Tray binary and runtime
 source, with `Acceptance Menu Model`, selected/effective 8K Context and separate
 ports 18148/18149. A user-supplied native screenshot confirmed the real menu's
 Profile, effective Context/Idle, lifecycle controls and updater ownership labels.
-The Windows helper could target the App window but did not expose the Tray
-popup, so menu interactions are explicitly human-assisted.
+The initial menu discovery and Context/Idle group were human-assisted. A Windows
+UIAutomation harness then located the unique test notification icon, verified
+its executable/config and menu process ID, and invoked the actual native
+MenuItems. It inspected the live Context and Idle submenus and captured them
+without editing. Owner snapshots, live API state and process/listener identity
+provided separate evidence of each action's effect.
 
 **Open App passed at 2026-10-22T04:22:48.4492562Z.** The actual menu started the official App
 0.2.2: App PID 16504 had Tray PID 29212 as parent;
@@ -100,7 +104,19 @@ WebView2 used the isolated test profile. No Extension launcher/preload was used.
 The clean native model picker remained empty: launch/backend handoff does not
 register the externally owned model as a native download or select it in chat.
 
-Context/Idle and lifecycle menu dispatch are awaiting human-assisted execution.
+- **Context And Idle:** human-assisted Unload Model Now, Context 8K → 32K → 8K and Idle Never → 5 Minutes → Never matched continuous owner snapshots.
+- **Server Lifecycle:** automated native-menu Stop Server, Start Server and Apply Configuration / Restart matched owner state and process evidence. Stop ended server PID 23408; Start created PID 4112; Restart ended PID 4112 and created PID 10780, remaining lazy/unloaded.
+- **Model Lifecycle And Exit:** automated native-menu Preload Model created engine PID 3756 and reached loaded; Unload Model Now ended that engine and reached unloaded. Exit Tray And Stop Server ended the Tray, controller and upstream without forced termination; Tray exit code was 0 and test ports closed. Each of the six automated actions was invoked once.
+
+The [owner timeline](validation-app-0.2.2-followup.ndjson) preserves the observed
+transitions; its count and SHA-256 are recorded in the sanitized receipt.
+
+Admission was observed closed during startup/restart before Ready returned;
+the UI actions were not repeated. The isolated App/Host and recorder were also
+cleaned up. Production Tray PID 18596 and listeners 10100/19480, 8081/22316 and
+8080/7404 retained their identities. Of 206 protected files, 205 were unchanged;
+only the production owner's live `context-status.json` advanced. Installed
+pi-ai retained its original hash. GPU memory was 1285 MiB after cleanup.
 
 ## Follow-Up: Default-Agent Output Budget
 
@@ -117,6 +133,18 @@ The source-bound [budget report](https://github.com/medking82/Strata/blob/2ee3fb
 separates the synthetic 1135-token fixture from the live 104-token cap and lists
 the full staging/installer and other-provider gaps. No performance gain is claimed.
 
+## Actual Native Menu Captures
+
+These unedited captures show the actual public Tray in the isolated follow-up.
+Context and Idle choices were visually checked;
+their presence does not establish allocation or inference at every Context.
+
+![Actual native Tray menu](screenshots/acceptance-native-main.png)
+
+![Actual native Context submenu, 8K checked](screenshots/acceptance-native-context.png)
+
+![Actual native Idle submenu, Never checked](screenshots/acceptance-native-idle.png)
+
 ## Not Run
 
 Windows reboot/autostart; cross-monitor transitions; other GPU backends;
@@ -124,5 +152,3 @@ larger-context allocation/inference; live App/Engine installer, signature or
 upgrade/restart; multiple-profile switching and auxiliary menu open/copy actions;
 long default-agent tasks at 8K. The bounded run does not certify future App
 layouts or a general upstream plugin API. No backend source changed here.
-
-The menu-dispatch steps not confirmed above remain pending.

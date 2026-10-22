@@ -528,35 +528,167 @@
       18149
     ],
     "physicalMenu": {
-      "evidence": "User-supplied actual native menu screenshot; labels matched the owner snapshot",
+      "evidence": "User-supplied actual native screenshot plus independent Windows UIAutomation observations and unedited menu captures",
       "imageSha256": "92ac7026bf91b0e44db5bece90d9e750d7dead59059b0ba3ddc3eafd8518b817",
       "humanAssisted": true,
-      "confirmedActions": {},
-      "ownerTransitions": [
+      "confirmedActions": {
+        "group1": {
+          "passed": true,
+          "mechanism": "User completed the actual native-menu actions; continuous owner snapshots verified their ordered effects",
+          "actions": [
+            "Unload Model Now",
+            "Context 32K",
+            "Context 8K",
+            "Idle 5 Minutes",
+            "Idle Never"
+          ],
+          "observedUtc": [
+            "2026-10-22T04:32:07.244Z",
+            "2026-10-22T04:32:26.504Z",
+            "2026-10-22T04:32:33.620Z",
+            "2026-10-22T04:32:52.917Z",
+            "2026-10-22T04:33:00.026Z"
+          ],
+          "confirmedUtc": "2026-10-22T04:36:23.617814+00:00"
+        },
+        "group2": {
+          "passed": true,
+          "mechanism": "Actual public Tray MenuItem InvokePattern through Windows UIAutomation",
+          "actions": [
+            "Stop Server",
+            "Start Server",
+            "Apply Configuration / Restart"
+          ],
+          "stop": {
+            "utc": "2026-10-22T04:35:14.0871227Z",
+            "phase": "stopped",
+            "api": "unavailable",
+            "model": "unloaded",
+            "upstreamListenerClosed": true,
+            "previousServerPid": 23408,
+            "previousServerExited": true,
+            "trayAlive": true
+          },
+          "start": {
+            "utc": "2026-10-22T04:35:40.2662446Z",
+            "phase": "ready",
+            "loaded": false,
+            "model": "acceptance-menu-model",
+            "context": {
+              "native": 8192,
+              "max_positions": 8192
+            },
+            "upstreamPid": 4112,
+            "oldServerExited": true,
+            "startupProbe": "One immediate read observed the normal starting/draining admission guard; no action was retried."
+          },
+          "restart": {
+            "utc": "2026-10-22T04:37:02.3120140Z",
+            "phase": "ready",
+            "loaded": false,
+            "model": "acceptance-menu-model",
+            "context": 8192,
+            "upstreamPid": 10780,
+            "previousServerPid": 4112,
+            "previousServerExited": true,
+            "ownedEnginePids": [],
+            "wait": "Read-only lifecycle readiness observation; no action retries"
+          },
+          "invocationsEach": 1
+        },
+        "group3": {
+          "passed": true,
+          "mechanism": "Actual public Tray MenuItem InvokePattern through Windows UIAutomation",
+          "actions": [
+            "Preload Model",
+            "Unload Model Now",
+            "Exit Tray And Stop Server"
+          ],
+          "preload": {
+            "utc": "2026-10-22T04:38:37.6501748Z",
+            "phase": "ready",
+            "loaded": true,
+            "model": "acceptance-menu-model",
+            "context": 8192,
+            "upstreamPid": 10780,
+            "previousServerPid": 0,
+            "previousServerExited": false,
+            "ownedEnginePids": [
+              3756
+            ],
+            "wait": "Read-only lifecycle readiness observation; no action retries"
+          },
+          "unload": {
+            "utc": "2026-10-22T04:39:13.9262764Z",
+            "phase": "ready",
+            "loaded": false,
+            "model": "acceptance-menu-model",
+            "context": 8192,
+            "upstreamPid": 10780,
+            "previousServerPid": 0,
+            "previousServerExited": false,
+            "ownedEnginePids": [],
+            "wait": "Read-only lifecycle readiness observation; no action retries"
+          },
+          "exit": {
+            "utc": "2026-10-22T04:40:33.4454734Z",
+            "trigger": "Actual native menu Exit Tray And Stop Server via UIAutomation InvokePattern",
+            "trayExited": true,
+            "controllerExited": true,
+            "upstreamExited": true,
+            "engineExited": true,
+            "qaApiListenersClosed": true,
+            "forcedTerminationUsedForTray": false
+          },
+          "invocationsEach": 1
+        }
+      },
+      "ownerTransitions": {
+        "file": "validation-app-0.2.2-followup.ndjson",
+        "count": 23,
+        "sha256": "0ece9f83b6cbb52537dd5b8f2204d091ecbba1c400933479e1e1e9b25f0582af"
+      },
+      "automation": "Windows UIAutomation located the unique public test notification icon, verified its process/path/config, and invoked real MenuItems belonging to PID29212",
+      "automatedActionLogSha256": "6b16406de4912e8e8b9a517dfa44c8800d4296fabe22f52781a37e0812188f0d",
+      "nativeCaptures": [
         {
-          "utc": "2026-10-22T04:17:08.279Z",
-          "sourceCaptured": "2026-10-22T04:17:07.506938+00:00",
-          "source": "owner-snapshot",
-          "phase": "ready",
-          "api": "available",
-          "model": "loaded",
-          "loaded": true,
-          "active": 0,
-          "busy": false,
-          "error": "",
-          "selected": {
-            "profile": "Acceptance Menu Model",
-            "context": 8192,
-            "idle": 0,
-            "auto": false
-          },
-          "effective": {
-            "profile": "Acceptance Menu Model",
-            "context": 8192,
-            "idle": 0,
-            "auto": false
-          },
-          "apiBaseUrl": "http://127.0.0.1:18148/v1"
+          "name": "acceptance-native-main.png",
+          "sha256": "fb29f5f63d829b46a3fe836b113073302f49b20aac534b559d1e638b8bd4b8e1",
+          "pngChunks": [
+            "IHDR",
+            "sRGB",
+            "gAMA",
+            "pHYs",
+            "IDAT",
+            "IEND"
+          ],
+          "provenance": "Unedited screen capture bounded to the actual public Tray process menu; visually inspected; test-only generic labels"
+        },
+        {
+          "name": "acceptance-native-context.png",
+          "sha256": "27d5b8b234dbce6c98ac55403683b5a1276653e679942f45f53d4e64848edc4e",
+          "pngChunks": [
+            "IHDR",
+            "sRGB",
+            "gAMA",
+            "pHYs",
+            "IDAT",
+            "IEND"
+          ],
+          "provenance": "Unedited screen capture bounded to the actual public Tray process menu; visually inspected; test-only generic labels"
+        },
+        {
+          "name": "acceptance-native-idle.png",
+          "sha256": "75b1ebf878ecac95eba8060f4831306cb3f5c191bb9a0ca132a680b7a7789a72",
+          "pngChunks": [
+            "IHDR",
+            "sRGB",
+            "gAMA",
+            "pHYs",
+            "IDAT",
+            "IEND"
+          ],
+          "provenance": "Unedited screen capture bounded to the actual public Tray process menu; visually inspected; test-only generic labels"
         }
       ]
     },
@@ -625,6 +757,35 @@
       },
       "scope": "Staged candidate Harness copy only; installed components and portable runtime unchanged; short prompt only"
     },
-    "cleanup": null
+    "cleanup": {
+      "utc": "2026-10-22T04:41:40.4474521Z",
+      "qaPortsClosed": true,
+      "qaTrayControllerServerEngineExited": true,
+      "qaAppAndHostExited": true,
+      "trayExitCode": 0,
+      "forcedTerminationUsedForTray": false,
+      "productionTrayPid": 18596,
+      "productionListeners": [
+        {
+          "LocalPort": 10100,
+          "OwningProcess": 19480
+        },
+        {
+          "LocalPort": 8081,
+          "OwningProcess": 22316
+        },
+        {
+          "LocalPort": 8080,
+          "OwningProcess": 7404
+        }
+      ],
+      "protectedFiles": 206,
+      "unchangedFiles": 205,
+      "changedBasenames": [
+        "context-status.json"
+      ],
+      "mutableStatusOnly": true,
+      "installedPiAiSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2"
+    }
   }
 }
