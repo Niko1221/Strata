@@ -1467,6 +1467,14 @@ class StrataEngine:
         pin = sampling.get("pin")
         if isinstance(pin, int) and not isinstance(pin, bool) and pin > 0:
             keys += f" pin={pin}"
+        # "jevpos": [p1, p2, ...] - jev fix B: the absolute prompt positions whose head rows the engine keeps
+        # for the BROWAT reads that follow, so one prompt answers N questions.  Only a real position list is
+        # sent; a malformed one is not sent at all (the engine would then keep no rows, and a guessed position
+        # would answer a different question).
+        jp = sampling.get("jevpos")
+        if isinstance(jp, list) and 0 < len(jp) <= 32 and all(
+                isinstance(p, int) and not isinstance(p, bool) and p >= 0 for p in jp):
+            keys += " jevpos=" + ",".join(str(int(p)) for p in jp)
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
