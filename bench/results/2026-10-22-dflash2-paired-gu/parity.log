@@ -1,0 +1,17 @@
+avx2    random blocks, n 2560                worst |mine - ggml| / max|ggml| = 0.00e+00 over 1280 rows x 1..9 tokens, 0 beyond 1e-5, 0 not bit-equal
+avx2    random blocks, n 640                 worst |mine - ggml| / max|ggml| = 0.00e+00 over 2560 rows x 1..9 tokens, 0 beyond 1e-5, 0 not bit-equal
+avx2    expert 0: gate+up rows               worst |mine - ggml| / max|ggml| = 0.00e+00 over 1280 rows x 1..9 tokens, 0 beyond 1e-5, 0 not bit-equal
+avx2    expert 0: down rows                  worst |mine - ggml| / max|ggml| = 0.00e+00 over 2560 rows x 1..9 tokens, 0 beyond 1e-5, 0 not bit-equal
+avx2    expert 0: silu(gate) * up (s 6.6e-05/6.6e-05) worst |mine - ggml| / max|ggml| = 0.00e+00 over 640 rows x 1..9 tokens, 0 beyond 1e-5, 0 not bit-equal
+
+tokens    ggml ms  avx512 ms  speedup    avx2 ms  speedup   (one expert's gate+up, 1280 rows; best of 20)
+1           0.153      0.000    0.00x      0.135    1.13x
+2           0.304      0.000    0.00x      0.189    1.61x
+3           0.457      0.000    0.00x      0.250    1.83x
+4           0.609      0.000    0.00x      0.307    1.98x
+5           0.761      0.000    0.00x      0.364    2.09x
+6           0.914      0.000    0.00x      0.420    2.17x
+7           1.065      0.000    0.00x      0.479    2.22x
+8           1.218      0.000    0.00x      0.539    2.26x
+
+RESULT: parity OK

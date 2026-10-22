@@ -1,0 +1,199 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ba062ca7..bf653b1b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1696,6 +1696,8 @@ if(STRATA_NATIVE_EXPERTS)
+     target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
+     add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
+     set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
++    add_test(NAME pool_native_pipeline_test COMMAND pool_tasks_test --nvfp4)
++    set_tests_properties(pool_native_pipeline_test PROPERTIES TIMEOUT 180)
+     add_test(NAME router_dot_parity COMMAND router_dot_parity)
+     add_test(NAME router_dot_parity_avx COMMAND ${CMAKE_COMMAND} -E env STRATA_FORCE_ISA=avx $<TARGET_FILE:router_dot_parity>)
+   endif()
+diff --git a/include/strata/kernels/cpu/pool.hpp b/include/strata/kernels/cpu/pool.hpp
+index 6c21d2d2..c844ee27 100644
+--- a/include/strata/kernels/cpu/pool.hpp
++++ b/include/strata/kernels/cpu/pool.hpp
+@@ -250,7 +250,7 @@ public:
+     void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
+     static constexpr int kMaxSplitMulti = 96;
+     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
+-    double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
++    double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0, ms_multi_pipeline = 0;
+     int64_t multi_bytes = 0;
+
+     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
+@@ -367,6 +367,14 @@ private:
+     };
+     const NativeFmt* nfmt_ = nullptr;
+     std::vector<SplitBufMulti> split_multi_;
++    // Mode 7: GU chunks precede all down chunks in one published batch. A
++    // down job can wait only on GU jobs already claimed by some worker.
++    struct alignas(64) NativePipelineSync {
++        std::atomic<int> gu_done{0};
++        std::atomic<bool> quantized{false};
++    };
++    NativePipelineSync native_pipeline_[kMaxSplitMulti];
++    int native_pipeline_parts_ = 1, native_pipeline_gu_jobs_ = 0;
+     // STRATA_NUMA_SPLIT=1 (opt-in, Linux, exactly 2 nodes): in the native row phases (modes 5/6) every expert's rows
+     // are cut into one slice per NUMA node (slice k = rows [per*k/2, per*(k+1)/2) of the gate/up or down matrix, the
+     // part the resident complement places on node k in step B), and each node's threads claim and count on their own
+diff --git a/src/kernels/cpu/pool.cpp b/src/kernels/cpu/pool.cpp
+index cdcc8d79..8c096992 100644
+--- a/src/kernels/cpu/pool.cpp
++++ b/src/kernels/cpu/pool.cpp
+@@ -1196,6 +1196,42 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
+             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
+             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
+             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
++        } else if (mode_ == 7) {
++            const bool gu = (int) i < native_pipeline_gu_jobs_;
++            const int index = gu ? (int) i : (int) i - native_pipeline_gu_jobs_;
++            const int e = index / native_pipeline_parts_, part = index % native_pipeline_parts_;
++            const ExpertJobMulti& job = mjobs_[e];
++            const NativeFmt& fmt = job.fmt ? *job.fmt : *nfmt_;
++            SplitBufMulti& sb = split_multi_[(size_t) e];
++            NativePipelineSync& sync = native_pipeline_[e];
++            if (gu) {
++                float* ff[MAXT];
++                for (int t = 0; t < job.nt; ++t) ff[t] = sb.ff[t];
++                // Q8_0 quantizes independent groups of 32. Each GU chunk owns
++                // complete blocks and can quantize them while its FF stays hot.
++                const int blocks = (int) fmt.n_ff / 32;
++                const int r0 = blocks * part / native_pipeline_parts_ * 32;
++                const int r1 = blocks * (part + 1) / native_pipeline_parts_ * 32;
++                native_gu_rows(fmt, job.blob, job.nact, job.nt, ff, r0, r1);
++                NativeFmt quant_fmt = fmt;
++                quant_fmt.n_ff = r1 - r0;
++                const size_t offset = fmt.h_bytes * r0 / fmt.n_ff;
++                for (int t = 0; t < job.nt; ++t)
++                    native_quant_h(quant_fmt, sb.ff[t] + r0, sb.hq[t] + offset);
++                // Acquire every earlier chunk's FF/quantized activation writes.
++                if (sync.gu_done.fetch_add(1, std::memory_order_acq_rel) + 1 == native_pipeline_parts_)
++                    sync.quantized.store(true, std::memory_order_release);
++            } else {
++                // All GU jobs have been claimed before any down job is claimed.
++                // At least one worker is still progressing the dependency if it
++                // is not ready; down jobs never depend on another down job.
++                while (!sync.quantized.load(std::memory_order_acquire)) _mm_pause();
++                const void* hq[MAXT];
++                for (int t = 0; t < job.nt; ++t) hq[t] = sb.hq[t];
++                native_down_rows(fmt, job.blob, hq, job.nt, job.out,
++                    (int) (fmt.n_embd * part / native_pipeline_parts_),
++                    (int) (fmt.n_embd * (part + 1) / native_pipeline_parts_));
++            }
+         } else if (mode_ >= 5) {
+             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows (the layer's own n_ff / n_embd: Flash-Next's
+             // FF / H, or another family's smaller expert)
+@@ -1364,6 +1400,31 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
+         const int nb = (std::min)(kMaxSplitMulti, n - b0);
+         mjobs_ = jobs + b0;
+         nfmt_ = &f;
++        const char* pipeline = std::getenv("STRATA_CPU_EXPERT_PIPELINE");
++        if (pipeline && pipeline[0] == '1' && numa_n_ == 0 && tasks_ == 0 &&
++            f.d_act == 8 && !f.had_d && f.n_ff % 32 == 0 && f.gu_type == kNvfp4Type && f.d_type == kNvfp4Type) {
++            bool uniform = true;
++            for (int e = 0; e < nb; ++e) {
++                const NativeFmt* ef = mjobs_[e].fmt;
++                uniform = uniform && (!ef || (ef->gu_type == kNvfp4Type && ef->d_type == kNvfp4Type &&
++                    ef->n_embd == f.n_embd && ef->n_ff == f.n_ff && ef->d_act == 8 && !ef->had_d &&
++                    ef->h_bytes == f.h_bytes));
++            }
++            if (uniform) {
++                const int threads = n_ + (host_works_ ? 1 : 0);
++                native_pipeline_parts_ = (std::min)((int) (std::min)(f.n_ff / 32, f.n_embd),
++                                                   (std::max)(1, (3 * threads + nb - 1) / nb));
++                native_pipeline_gu_jobs_ = nb * native_pipeline_parts_;
++                for (int e = 0; e < nb; ++e) {
++                    native_pipeline_[e].gu_done.store(0, std::memory_order_relaxed);
++                    native_pipeline_[e].quantized.store(false, std::memory_order_relaxed);
++                }
++                const auto a = std::chrono::steady_clock::now();
++                run_phase(7, 2 * native_pipeline_gu_jobs_);
++                ms_multi_pipeline += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
++                continue;
++            }
++        }
+         mrows_ = (int64_t) nb * f.n_ff;
+         mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_ff, nb) : phase_tasks(mrows_);
+         const auto a = std::chrono::steady_clock::now();
+diff --git a/src/kernels/cpu/pool_tasks_test.cpp b/src/kernels/cpu/pool_tasks_test.cpp
+index aa272880..c603bc50 100644
+--- a/src/kernels/cpu/pool_tasks_test.cpp
++++ b/src/kernels/cpu/pool_tasks_test.cpp
+@@ -45,13 +45,14 @@ static void unset_env(const char* k) {
+ }
+
+ int main(int argc, char** argv) {
+-    if (argc != 1 && argc != 4) return 2;
++    const bool synthetic_nvfp4 = argc == 2 && std::string(argv[1]) == "--nvfp4";
++    if (argc != 1 && argc != 4 && !synthetic_nvfp4) return 2;
+     // its activation quantiser is the AVX one at least (act_quant_any): a CPU without AVX (Westmere) would stop on an illegal instruction
+     if (!cpu::cpu_avx1_ok()) { std::printf("pool_tasks_test: no AVX on this CPU, skipped\n"); return 0; }
+     cpu::NativeFmt f;
+     std::string err;
+-    if (!cpu::native_fmt(argc == 4 ? std::atoi(argv[1]) : GGML_TYPE_Q4_0,
+-                         argc == 4 ? std::atoi(argv[2]) : GGML_TYPE_Q4_0, cpu::H, cpu::FF, f, err)) {
++    if (!cpu::native_fmt(argc == 4 ? std::atoi(argv[1]) : synthetic_nvfp4 ? cpu::kNvfp4Type : GGML_TYPE_Q4_0,
++                         argc == 4 ? std::atoi(argv[2]) : synthetic_nvfp4 ? cpu::kNvfp4Type : GGML_TYPE_Q4_0, cpu::H, cpu::FF, f, err)) {
+         std::fprintf(stderr, "%s\n", err.c_str());
+         return 1;
+     }
+@@ -65,9 +66,13 @@ int main(int argc, char** argv) {
+     } else {
+         std::vector<float> weights((size_t) cpu::H * cpu::FF);
+         for (size_t i = 0; i < weights.size(); ++i) weights[i] = 0.02f * std::sin((float) i * 0.17f);
+-        ggml_quantize_chunk(GGML_TYPE_Q4_0, weights.data(), blob.data(), 0, cpu::FF, cpu::H, nullptr);
+-        ggml_quantize_chunk(GGML_TYPE_Q4_0, weights.data(), blob.data() + f.up_off, 0, cpu::FF, cpu::H, nullptr);
+-        ggml_quantize_chunk(GGML_TYPE_Q4_0, weights.data(), blob.data() + f.down_off, 0, cpu::H, cpu::FF, nullptr);
++        ggml_quantize_chunk((ggml_type) f.gu_type, weights.data(), blob.data(), 0, cpu::FF, cpu::H, nullptr);
++        ggml_quantize_chunk((ggml_type) f.gu_type, weights.data(), blob.data() + f.up_off, 0, cpu::FF, cpu::H, nullptr);
++        ggml_quantize_chunk((ggml_type) f.d_type, weights.data(), blob.data() + f.down_off, 0, cpu::H, cpu::FF, nullptr);
++        if (synthetic_nvfp4) {
++            const float tail[4] = {1.f, 1.f, 1.f, 0.f};
++            std::memcpy(blob.data() + f.tail_off, tail, sizeof tail);
++        }
+     }
+     for (int tasks : {-1, cpu::ExpertPool::kMaxTasks + 1}) {
+         try { cpu::ExpertPool invalid(1, false, true, cpu::PoolAffinity::All, tasks); return 1; }
+@@ -100,6 +105,23 @@ int main(int argc, char** argv) {
+         }
+         const auto ref = out;
+         for (float v : ref) if (!std::isfinite(v)) return 1;
++        if (f.gu_type == cpu::kNvfp4Type && f.d_type == cpu::kNvfp4Type) {
++            for (bool host : {false, true}) for (int workers : {1, 3, 11}) {
++                cpu::ExpertPool pipeline(workers, false, host);
++                for (int repeat = 0; repeat < 8; ++repeat) {
++                    put_env("STRATA_CPU_EXPERT_PIPELINE", repeat % 2 ? "0" : "1");
++                    std::fill(out.begin(), out.end(), 0.f);
++                    pipeline.run_split_multi_native(f, jobs.data(), n);
++                    if (std::memcmp(out.data(), ref.data(), out.size() * sizeof(float))) {
++                        std::fprintf(stderr, "expert pipeline differs: n=%d workers=%d host=%d repeat=%d\n",
++                                     n, workers, host, repeat);
++                        return 1;
++                    }
++                }
++                unset_env("STRATA_CPU_EXPERT_PIPELINE");
++            }
++        }
++
+         for (bool host : {false, true}) for (int workers : {1, 3})
+             for (int tasks : {0, 1, 41, 128, 192, 256, cpu::ExpertPool::kMaxTasks}) {
+                 cpu::ExpertPool pool(workers, false, host, cpu::PoolAffinity::All, tasks);
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 34f9e0be..8081167f 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -17028,8 +17028,10 @@ int main(int argc, char** argv) {
+             std::printf("%-24s gate/up %.3f  quantize %.3f  down %.3f ms/round; %.1f GB/s over the rows phases; "
+                         "CPU pool call %.3f ms/round", "pool multi", pool.ms_multi_gu / rounds,
+                         pool.ms_multi_q / rounds, pool.ms_multi_down / rounds,
+-                        (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down),
++                        (double) pool.multi_bytes / 1e6 / std::max(1e-9, pool.ms_multi_gu + pool.ms_multi_down + pool.ms_multi_pipeline),
+                         (drive.cpu_ms - pool_ms0) / rounds);
++        if (rounds > 0 && pool.ms_multi_pipeline > 0)
++            std::printf("; pipelined GU/quantize/down %.3f ms/round", pool.ms_multi_pipeline / rounds);
+         if (rounds > 0 && pool.numa_slices() == 2)   // STRATA_NUMA_SPLIT: each slice's drain, publish to its last task
+             std::printf("; numa slices: s0 %.3f ms  s1 %.3f ms", pool.numa_slice_ms(0) / rounds, pool.numa_slice_ms(1) / rounds);
+         if (rounds > 0) std::printf("\n");

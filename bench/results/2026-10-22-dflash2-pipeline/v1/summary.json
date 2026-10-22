@@ -1,0 +1,178 @@
+{
+  "dflash-before": {
+    "code_short": {
+      "median_tok_s": 48.61990377310712,
+      "individual_tok_s": [
+        48.98708986069296,
+        48.61990377310712,
+        47.730323671257395
+      ],
+      "accepted": 70,
+      "offered": 85,
+      "windows": 26.0,
+      "cpu_ms_per_token": 15.751666666666665
+    },
+    "code_long": {
+      "median_tok_s": 40.76952478022678,
+      "individual_tok_s": [
+        40.875415140935026,
+        40.76952478022678,
+        40.08685485217972
+      ],
+      "accepted": 58,
+      "offered": 87,
+      "windows": 38.0,
+      "cpu_ms_per_token": 17.416666666666668
+    },
+    "cache_long": {
+      "median_tok_s": 50.93378607809847,
+      "individual_tok_s": [
+        50.93378607809847,
+        50.96082386665251,
+        49.97917534360683
+      ],
+      "accepted": 66,
+      "offered": 78,
+      "windows": 30.0,
+      "cpu_ms_per_token": 13.94375
+    }
+  },
+  "mtp-before": {
+    "code_short": {
+      "median_tok_s": 37.728433876989584,
+      "individual_tok_s": [
+        37.84444356841566,
+        37.57632691404415,
+        37.728433876989584
+      ],
+      "accepted": 60,
+      "offered": 99,
+      "windows": 36.0,
+      "cpu_ms_per_token": 20.41875
+    },
+    "code_long": {
+      "median_tok_s": 36.66781253580841,
+      "individual_tok_s": [
+        36.66781253580841,
+        35.964485070992396,
+        36.75626005053986
+      ],
+      "accepted": 55,
+      "offered": 101,
+      "windows": 41.0,
+      "cpu_ms_per_token": 20.3334375
+    },
+    "cache_long": {
+      "median_tok_s": 50.638252980272185,
+      "individual_tok_s": [
+        50.638252980272185,
+        50.70244005492764,
+        50.51036514784805
+      ],
+      "accepted": 64,
+      "offered": 73,
+      "windows": 32.0,
+      "cpu_ms_per_token": 14.43
+    }
+  },
+  "dflash-pipeline": {
+    "code_short": {
+      "median_tok_s": 49.19292851652575,
+      "individual_tok_s": [
+        49.142564627591504,
+        49.19292851652575,
+        49.225720438929336
+      ],
+      "accepted": 70,
+      "offered": 85,
+      "windows": 26.0,
+      "cpu_ms_per_token": 15.483541666666667,
+      "change_pct": 1.1785805790417436,
+      "cpu_change_pct": -1.7022008253094745
+    },
+    "code_long": {
+      "median_tok_s": 40.79204555111753,
+      "individual_tok_s": [
+        40.78338077233527,
+        40.79204555111753,
+        40.8371618172537
+      ],
+      "accepted": 58,
+      "offered": 87,
+      "windows": 38.0,
+      "cpu_ms_per_token": 17.377083333333335,
+      "change_pct": 0.055239228350467684,
+      "cpu_change_pct": -0.2272727272727204
+    },
+    "cache_long": {
+      "median_tok_s": 50.858232676414495,
+      "individual_tok_s": [
+        50.83668714255454,
+        50.92297899427116,
+        50.858232676414495
+      ],
+      "accepted": 66,
+      "offered": 78,
+      "windows": 30.0,
+      "cpu_ms_per_token": 13.915625,
+      "change_pct": -0.14833651197286857,
+      "cpu_change_pct": -0.20170327207529315
+    }
+  },
+  "mtp-pipeline": {
+    "code_short": {
+      "median_tok_s": 38.18311987908679,
+      "individual_tok_s": [
+        38.43228311781897,
+        38.18311987908679,
+        37.93117072977992
+      ],
+      "accepted": 60,
+      "offered": 99,
+      "windows": 36.0,
+      "cpu_ms_per_token": 20.14125,
+      "change_pct": 1.2051547211836766,
+      "cpu_change_pct": -1.3590449954086314
+    },
+    "code_long": {
+      "median_tok_s": 37.05133153222694,
+      "individual_tok_s": [
+        36.93586241391251,
+        37.074225689348886,
+        37.05133153222694
+      ],
+      "accepted": 55,
+      "offered": 101,
+      "windows": 41.0,
+      "cpu_ms_per_token": 20.1284375,
+      "change_pct": 1.0459282130451664,
+      "cpu_change_pct": -1.00819155639571
+    },
+    "cache_long": {
+      "median_tok_s": 51.06654609287728,
+      "individual_tok_s": [
+        50.314465408805034,
+        51.06654609287728,
+        51.24646346020392
+      ],
+      "accepted": 64,
+      "offered": 73,
+      "windows": 32.0,
+      "cpu_ms_per_token": 14.293333333333335,
+      "change_pct": 0.8457896696632661,
+      "cpu_change_pct": -0.9471009471009317
+    }
+  },
+  "dflash_vs_mtp_pct": {
+    "before": {
+      "code_short": 28.868067865282356,
+      "code_long": 11.186138361574738,
+      "cache_long": 0.5836162988115401
+    },
+    "pipeline": {
+      "code_short": 28.83423007942607,
+      "code_long": 10.096031273901595,
+      "cache_long": -0.40792540792541354
+    }
+  }
+}
