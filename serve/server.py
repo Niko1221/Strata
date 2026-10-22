@@ -1403,6 +1403,13 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        # "pin": N - the first N prompt tokens are a shared read-only prefix (jev's N fields on one state).
+        # The engine reads the prefix once, pins its checkpoint, and a later request that resumes from it
+        # does not park the branch it leaves: N queries cost one prefix, not N.  A value that is not a
+        # positive int is not sent at all - never a pin of 0 written as a key.
+        pin = sampling.get("pin")
+        if isinstance(pin, int) and not isinstance(pin, bool) and pin > 0:
+            keys += f" pin={pin}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):

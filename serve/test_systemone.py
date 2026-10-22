@@ -95,30 +95,16 @@ class DecisionEngine(MockEngine):
     def __init__(self, tokenizer, script, max_context=32768):
         super().__init__(tokenizer, script, max_context=max_context)
         self.prompts: list[list[int]] = []
-        self.row_reads: list[int] = []
-        self.row_count_override = None       # a test's stand-in for "the engine kept fewer rows"
+        self.pins: list[dict] = []           # the sampling dict of each generate (M3.1 pin)
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
+        self.pins.append(dict(sampling or {}))
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
     def final_row_logits(self, ids, tokens):
         # the real engine answers only the asked tokens (BROW); the mock mirrors that
         return {t: self.ROW[t] for t in tokens if t in self.ROW}
-
-    def row_logits_at(self, row, tokens):
-        # M3.1 BROWAT: the real engine answers any row of the last window.  This table is
-        # row-independent, so the mock can only prove the WIRING (one prefill, one read per field,
-        # same math) - the row's real value is a live-engine measurement, not a unit test.
-        self.row_reads.append(row)
-        return {t: self.ROW[t] for t in tokens if t in self.ROW}
-
-    def brow_rows(self):
-        # the real engine reports the LAST window's row count; this mock read every prompt in one
-        # window, so the count is the prompt's own length (the override stands in for a chunked read)
-        if self.row_count_override is not None:
-            return self.row_count_override
-        return len(self.prompts[-1]) if self.prompts else 0
 
 
 def start_server():
@@ -129,9 +115,9 @@ def start_server():
     return engine, httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
 
 
-def post(base, path, body):
+def post(base, path, body, headers=None):
     req = urllib.request.Request(base + path, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(req) as r:
             return r.status, json.loads(r.read())
@@ -239,12 +225,14 @@ class BrowWire(unittest.TestCase):
             self.assertIn("BROWROWSD", str(e))
 
 
-class RowReadout(unittest.TestCase):
-    """M3.1 (BROWAT): STRATA_JEV_ROWREADOUT=1 - N fields in ONE prompt, one prefill, N row reads.
+class StatePin(unittest.TestCase):
+    """M3.1 fix C (state parking): N fields on one state send pin=<shared prefix>, so the engine reads the
+    state once and every later field reads only its own question turn.
 
-    The mock's logits table is row-independent, so what these tests can prove is the WIRING: the
-    prompt count, the row indices, the usage numbers, and that the same row yields the same answer
-    as the per-question path.  What the rows *contain* is a live-engine measurement (M3.1 probe).
+    The mock engine has no cache, so what these tests prove is the CONTRACT: the key is sent, its value is
+    the real shared token prefix of the rendered prompts, one-field requests never send it, the env switch
+    turns it off, and the answers are identical with and without it.  What the pin BUYS is a live
+    measurement (jevport.log 'request prompt P cached C'), not a unit test.
     """
 
     @classmethod
@@ -257,84 +245,66 @@ class RowReadout(unittest.TestCase):
         cls.httpd.server_close()
 
     def setUp(self):
-        self._old = _os.environ.get("STRATA_JEV_ROWREADOUT")
-        _os.environ["STRATA_JEV_ROWREADOUT"] = "1"
-        self.engine.row_count_override = None
+        self._old = _os.environ.get("STRATA_JEV_PIN")
+        _os.environ.pop("STRATA_JEV_PIN", None)          # default: pinning is on
+        self.engine.prompts.clear()
+        self.engine.pins.clear()
 
     def tearDown(self):
-        # pop, do not restore-to-None: leaving "1" in the environment would gate every later test
         if self._old is None:
-            _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
+            _os.environ.pop("STRATA_JEV_PIN", None)
         else:
-            _os.environ["STRATA_JEV_ROWREADOUT"] = self._old
-        self.engine.row_count_override = None
+            _os.environ["STRATA_JEV_PIN"] = self._old
 
-    TWO_FIELDS = {"q1": {"type": "noul", "instructions": "Is it on?"},
-                  "q2": {"type": "choice", "instructions": "Pick one.",
-                         "criteria": {"alpha": 1, "beta": 2}}}
+    THREE = {"q1": {"type": "noul", "instructions": "Is it on?"},
+             "q2": {"type": "choice", "instructions": "Pick one.",
+                    "criteria": {"alpha": 1, "beta": 2}},
+             "q3": {"type": "score", "instructions": "Rate it.", "criteria": ["low", "mid", "high"]}}
 
-    def _post(self, questions, state=None):
-        return post(self.base, "/v1/systemone",
-                    {"state": state or {"hp": 7}, "questions": questions})
+    def _post(self, questions, headers=None):
+        return post(self.base, "/v1/systemone", {"state": {"hp": 7}, "questions": questions}, headers)
 
-    def test_two_fields_share_one_prefill(self):
-        self.engine.prompts.clear()
-        self.engine.row_reads.clear()
-        st, body = self._post(self.TWO_FIELDS)
+    def test_multi_field_pins_the_shared_prefix(self):
+        st, _ = self._post(self.THREE)
         self.assertEqual(st, 200)
-        self.assertEqual(len(self.engine.prompts), 1, "two fields must cost one prefill, not two")
-        self.assertEqual(len(self.engine.row_reads), 2, "one row read per field")
-        self.assertEqual(body["usage"]["readout_tokens"], 2)
-        self.assertEqual(body["usage"]["prompt_tokens"], len(self.engine.prompts[0]))
-        ids = self.engine.prompts[0]
-        r1, r2 = self.engine.row_reads
-        self.assertLess(r1, r2, "field 2's cue comes after field 1's")
-        self.assertLess(r2, len(ids), "a row must be inside the window that was prefilled")
+        self.assertEqual(len(self.engine.prompts), 3, "still one request per field")
+        pins = [p.get("pin") for p in self.engine.pins]
+        self.assertTrue(all(isinstance(x, int) and x > 0 for x in pins), pins)
+        self.assertEqual(len(set(pins)), 1, "one shared prefix, so one pin number")
+        pin = pins[0]
+        for ids in self.engine.prompts:
+            self.assertLessEqual(pin, len(ids), "a pin longer than the prompt would be a lie")
+        self.assertEqual(self.engine.prompts[0][:pin], self.engine.prompts[1][:pin],
+                         "the pin must name the same tokens in every field's prompt")
+        self.assertEqual(self.engine.prompts[0][:pin], self.engine.prompts[2][:pin])
 
-    def test_same_row_same_answer_as_the_per_question_path(self):
-        q = self.TWO_FIELDS
-        _, on = self._post(q)
-        _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
-        _, off = self._post(q)
+    def test_answers_are_unchanged_by_the_pin(self):
+        _, on = self._post(self.THREE)
+        _os.environ["STRATA_JEV_PIN"] = "0"
+        _, off = self._post(self.THREE)
         self.assertEqual(on["answers"], off["answers"],
-                         "the consolidated path must answer exactly what M3.0 answers")
+                         "a caching hint must not move a single answer")
 
-    def test_prompt_tokens_do_not_grow_with_every_field(self):
-        # The claim is about the STATE, not about the fields: M3.0 prefills state+question once per
-        # field; M3.1 prefills the state once and appends one question turn per field, so the extra
-        # cost of a field is its question block, never a whole state prompt again.
-        one = {"q1": {"type": "noul", "instructions": "Is it on?"}}
-        five = {f"q{i}": {"type": "noul", "instructions": "Is it on?"} for i in range(1, 6)}
-        _, a = self._post(one)                       # one field: the same bytes M3.0 sends
-        _, b = self._post(five)                      # five fields, one prompt
-        _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
-        _, off = self._post(five)                    # five fields, M3.0's per-question path
-        per_field = (b["usage"]["prompt_tokens"] - a["usage"]["prompt_tokens"]) / 4
-        self.assertLess(per_field, 0.5 * a["usage"]["prompt_tokens"],
-                        "each extra field must cost a question turn, not a whole state prompt")
-        self.assertLess(b["usage"]["prompt_tokens"], off["usage"]["prompt_tokens"],
-                        "M3.1 must send fewer prompt tokens than M3.0 for the same five fields")
+    def test_one_field_sends_no_pin(self):
+        self._post({"q1": {"type": "noul", "instructions": "Is it on?"}})
+        self.assertNotIn("pin", self.engine.pins[-1])
 
-    def test_a_prompt_read_in_more_than_one_window_falls_back(self):
-        # the engine reports fewer rows than we sent: our row numbering names another window's rows, so
-        # the request must go the per-question way instead of reading a row that is not its own
-        self.engine.prompts.clear()
-        self.engine.row_reads.clear()
-        self.engine.row_count_override = 32
-        st, body = self._post(self.TWO_FIELDS)
+    def test_env_off_sends_no_pin(self):
+        _os.environ["STRATA_JEV_PIN"] = "0"
+        self._post(self.THREE)
+        self.assertFalse(any("pin" in p for p in self.engine.pins), self.engine.pins)
+
+    def test_v_mode_pins_the_option_head(self):
+        body = {"q1": {"type": "choice", "instructions": "Pick one.",
+                       "criteria": {"alpha": 1, "beta": 2, "gamma": 3}}}
+        st, _ = self._post(body, headers={"X-Jev-Mode": "V"})
         self.assertEqual(st, 200)
-        self.assertEqual(self.engine.row_reads, [], "a chunked prompt must not read rows")
-        self.assertEqual(len(self.engine.prompts), 3, "the wasted prefill, then one per field")
-        self.assertEqual(set(body["answers"]), {"q1", "q2"})
-
-    def test_env_unset_keeps_the_per_question_path(self):
-        _os.environ.pop("STRATA_JEV_ROWREADOUT", None)
-        self.engine.prompts.clear()
-        self.engine.row_reads.clear()
-        st, _ = self._post(self.TWO_FIELDS)
-        self.assertEqual(st, 200)
-        self.assertEqual(len(self.engine.prompts), 2)
-        self.assertEqual(self.engine.row_reads, [])
+        pins = [p.get("pin") for p in self.engine.pins]
+        self.assertEqual(len(pins), 3, "one branch per option")
+        self.assertTrue(all(isinstance(x, int) and x > 0 for x in pins), pins)
+        pin = pins[0]
+        self.assertEqual(self.engine.prompts[0][:pin], self.engine.prompts[1][:pin],
+                         "the option branches share the state + head prefix")
 
 
 class SystemOneValidation(unittest.TestCase):
