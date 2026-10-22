@@ -120,18 +120,30 @@ pi-ai retained its original hash. GPU memory was 1285 MiB after cleanup.
 
 ## Follow-Up: Default-Agent Output Budget
 
-The earlier no-answer result is reproduced independently in the shipped App
-0.2.2 Host/default Harness, with 6540 native prompt tokens at Context 8192.
-The bundled pi-ai clamp sent `max_completion_tokens: 1`. A staged candidate
-Harness copy using [draft #3684](https://github.com/Niko1221/Strata/pull/3684)
-sent 104 instead and returned `OK`: 25 completion tokens, finish reason `stop`.
-Model, Context, Medium effort and Manual mode were identical. This is Host API
-acceptance; the candidate was not injected into the original installed App or
-the portable Extension package. Long agent tasks at 8K remain unverified.
+The earlier no-answer result remains recorded in the initial evidence: the
+shipped default Harness sent a one-token output cap at 8K. The first candidate
+copy returned `OK` with a 104-token cap, but a later file-tool turn still ran
+out of answer room. These are historical results, not the final candidate.
 
-The source-bound [budget report](https://github.com/medking82/Strata/blob/2ee3fbe32aa3c27a0159fb837137231063b1a58b/apps/host/server/agent/output-budget-validation.md)
-separates the synthetic 1135-token fixture from the live 104-token cap and lists
-the full staging/installer and other-provider gaps. No performance gain is claimed.
+[#3684](https://github.com/Niko1221/Strata/pull/3684) is now **Ready For Review**
+at `f273ef65e8f4548125f3e72833cd61019b82080f`. Its final `strata-pi-ai-context-safety-v2` patch passed a
+fresh full Harness build (9 build gates), production deploy/staging and
+authenticated web-profile boot, plus 10 focused and 12 staged tests with no
+failures or skips.
+
+Actual native App 0.2.2 default-agent acceptance at 8K / Medium / Manual with
+26 tools completed `read` then displayed `READY-3684` (`stop`), with first and
+follow-up wire caps 298 and 242. Four additional real-model turns all answered
+with `stop`, including two completed reads; final context was 7106 tokens.
+The real Harness's separate scripted-model compaction fixture passed six
+long turns at 16K. The [source-bound budget report](https://github.com/medking82/Strata/blob/f273ef65e8f4548125f3e72833cd61019b82080f/apps/host/server/agent/output-budget-validation.md) separates
+these scopes and records the final patch/BUNDLE hashes and native capture.
+
+This correction is independent of the portable companion packages. Installed
+Harness files and the tested Tray/Extension runtime were not changed, and a
+combined patched-Harness plus portable-companion run was not performed.
+Unbounded 8K tool/long-form stress, signed installers and other providers/OS
+remain untested. No performance comparison is claimed.
 
 ## Actual Native Menu Captures
 
@@ -150,5 +162,5 @@ their presence does not establish allocation or inference at every Context.
 Windows reboot/autostart; cross-monitor transitions; other GPU backends;
 larger-context allocation/inference; live App/Engine installer, signature or
 upgrade/restart; multiple-profile switching and auxiliary menu open/copy actions;
-long default-agent tasks at 8K. The bounded run does not certify future App
+unbounded default-agent tool/long-form stress at 8K. The bounded run does not certify future App
 layouts or a general upstream plugin API. No backend source changed here.

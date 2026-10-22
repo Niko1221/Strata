@@ -85,10 +85,10 @@
     "storageRegressionAfter": "passed"
   },
   "limitations": [
-    "The first QA profile used a nonexistent expert-profile file; its owner request failed and was retained. Correcting only the disposable profile allowed preload; no product workaround was added.",
-    "Default agent chat reached the real server with 6545 prompt tokens at 8192 context and ended with a length limit/no answer. Direct chat returned OK; full agent-task acceptance is not claimed.",
-    "Physical Tray notification-area menu interaction, Open App menu action and graceful Exit menu action were not exercised. The real compiled Tray/owner/server and its file IPC were exercised.",
-    "Windows reboot/autostart, multiple monitors, other GPU backends, larger-context memory fit, live installer/signature/update/restart were not run. No benchmark or speedup claim."
+    "Windows reboot/autostart, cross-monitor transitions, other GPU backends, larger-context fit, multiple-profile switching and auxiliary open/copy actions remain untested.",
+    "Live App/Engine installer, signature, upgrade/restart and future App layouts remain untested.",
+    "The separate #3684 staged Harness correction is Ready For Review; it does not modify the installed Harness or this portable companion package.",
+    "Combined patched-Harness plus portable-companion acceptance and unbounded 8K tool/long-form stress were not run; no benchmark claim."
   ],
   "stages": [
     {
@@ -755,7 +755,71 @@
           "emptyAnswerNotice": false
         }
       },
-      "scope": "Staged candidate Harness copy only; installed components and portable runtime unchanged; short prompt only"
+      "scope": "Staged candidate Harness copy only; installed components and portable runtime unchanged; short prompt only",
+      "evidenceScope": "Historical first-candidate short-answer run; superseded for review readiness by finalStagedFollowUp. Original measurements retained.",
+      "finalStagedFollowUp": {
+        "pullRequest": "https://github.com/Niko1221/Strata/pull/3684",
+        "head": "f273ef65e8f4548125f3e72833cd61019b82080f",
+        "state": "Ready For Review",
+        "report": "https://github.com/medking82/Strata/blob/f273ef65e8f4548125f3e72833cd61019b82080f/apps/host/server/agent/output-budget-validation.md",
+        "patch": {
+          "id": "strata-pi-ai-context-safety-v2",
+          "package": "@earendil-works/pi-ai",
+          "version": "1.1.0",
+          "file": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js",
+          "beforeSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2",
+          "afterSha256": "fe657e357bdf1f32c686da1b7f06dc4dc91a2ad5e55d13a6850e63fb12b0d1fb"
+        },
+        "harnessBuildGates": {
+          "passed": 9,
+          "failed": 0,
+          "skipped": 0
+        },
+        "focusedTests": {
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "receiptSha256": "8f9673e52004af3ae8ddcb23cfd98646561b4d9677878a8a0929eb54078b156f"
+        },
+        "stagedTests": {
+          "passed": 12,
+          "failed": 0,
+          "skipped": 0,
+          "receiptSha256": "a876979ba3d05ff358dce2f02e3baf39c1e140a9b6031606a0e37eed65c09b77"
+        },
+        "fullStaging": true,
+        "authenticatedBoot": true,
+        "nativeApp": {
+          "version": "0.2.2",
+          "agent": true,
+          "demo": false,
+          "context": 8192,
+          "mode": "manual",
+          "thinking": "Medium",
+          "tools": 26,
+          "wireCaps": [
+            298,
+            242
+          ],
+          "tool": "read",
+          "answer": "READY-3684",
+          "finishReason": "stop"
+        },
+        "fourTurns": {
+          "answered": 4,
+          "reads": 2,
+          "finishReasons": [
+            "stop",
+            "stop",
+            "stop",
+            "stop"
+          ],
+          "finalContextTokens": 7106
+        },
+        "combinedPortableAcceptance": false,
+        "installedHarnessModified": false,
+        "portableRuntimeModified": false
+      }
     },
     "cleanup": {
       "utc": "2026-10-22T04:41:40.4474521Z",
@@ -787,5 +851,11 @@
       "mutableStatusOnly": true,
       "installedPiAiSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2"
     }
-  }
+  },
+  "initialRunLimitations": [
+    "The first QA profile used a nonexistent expert-profile file; its owner request failed and was retained. Correcting only the disposable profile allowed preload; no product workaround was added.",
+    "Default agent chat reached the real server with 6545 prompt tokens at 8192 context and ended with a length limit/no answer. Direct chat returned OK; full agent-task acceptance is not claimed.",
+    "Physical Tray notification-area menu interaction, Open App menu action and graceful Exit menu action were not exercised. The real compiled Tray/owner/server and its file IPC were exercised.",
+    "Windows reboot/autostart, multiple monitors, other GPU backends, larger-context memory fit, live installer/signature/update/restart were not run. No benchmark or speedup claim."
+  ]
 }
