@@ -321,6 +321,17 @@ class Api(unittest.TestCase):
         self.engine.batch = 0
         self.assertIn("logprobs", self.post({"logprobs": True})["choices"][0])
 
+    def test_allowed_token_ids_outside_the_vocabulary_is_a_400(self):
+        # emit_lp_line indexes its logits row with each named id, so an id past the vocabulary would read out of
+        # bounds; the request is refused before anything is generated
+        self.tok.tokens = [str(i) for i in range(300)]      # a tokenizer that knows its vocabulary
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post({"logprobs": True, "top_logprobs": 1, "allowed_token_ids": [300]})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertIn("allowed_token_ids", cm.exception.read().decode())
+        self.assertIn("logprobs", self.post({"logprobs": True, "top_logprobs": 1,
+                                            "allowed_token_ids": [299]})["choices"][0])
+
     def test_streamed(self):
         chunks = self.post({"logprobs": True}, stream=True)
         content = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c.get("choices"))

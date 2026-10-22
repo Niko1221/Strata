@@ -6871,6 +6871,14 @@ def make_handler(svc: Service):
                 raise ValueError("logprobs is not available when the engine runs requests in batch slots "
                                  "(--parallel/--batch): it writes no LP lines there; start the server without "
                                  "--parallel")
+            n_vocab = len(getattr(svc.tok, "tokens", ())) or None
+            if top_logprobs(req) is not None and n_vocab:
+                # emit_lp_line indexes the logits row with each named id as given, so an id past the vocabulary
+                # would read out of bounds: refused here, before anything is sent
+                bad = [i for i in allowed_ids(req) if i >= n_vocab]
+                if bad:
+                    raise ValueError(f"allowed_token_ids: {bad[0]} is outside the vocabulary "
+                                     f"(0..{n_vocab - 1})")
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
