@@ -1,0 +1,70 @@
+diff --git a/src/kernels/cuda/dflash2.cu b/src/kernels/cuda/dflash2.cu
+index be742972..15f533a2 100644
+--- a/src/kernels/cuda/dflash2.cu
++++ b/src/kernels/cuda/dflash2.cu
+@@ -380,13 +380,18 @@ void dflash2_select_bf16(const int32_t* ids, const float* unary, const float* hi
+         ids,unary,hidden,prev,next,anchor,out,confidence,rows,top_k,rank);
+ }
+ namespace {
++template<bool RoundStreams = false>
+ __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_bf16,
+                                int rows, int hidden, int hc) {
+     const int i = blockIdx.x * blockDim.x + threadIdx.x;
+     if (i >= rows * hidden) return;
+     const int row = i / hidden, c = i % hidden;
+     float sum = 0;
+-    for (int h = 0; h < hc; ++h) sum += residual[(row * hc + h) * hidden + c];
++    for (int h = 0; h < hc; ++h) {
++        float value = residual[(row * hc + h) * hidden + c];
++        if constexpr (RoundStreams) value = f32_from_bf16(bf16_from_f32(value));
++        sum += value;
++    }
+     sum /= hc;
+     if (out) out[i] = sum;
+     if (out_bf16) out_bf16[i] = bf16_from_f32(sum);
+@@ -472,7 +477,14 @@ void dflash2_hc_mean(const float* residual, float* out, uint16_t* out_bf16,
+     if (!residual || (!out && !out_bf16) || rows < 1 || hidden < 1 || hc < 1 ||
+         (int64_t)rows * hidden > INT32_MAX - 255 || (int64_t)rows * hidden * hc > INT32_MAX)
+         throw std::invalid_argument("dflash2_hc_mean: invalid geometry or missing buffers");
+-    hc_mean_kernel<<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t)stream>>>(residual, out, out_bf16, rows, hidden, hc);
++    static const bool round_streams = [] {
++        const char* value = std::getenv("STRATA_DFLASH2_BF16_STREAM_MEAN");
++        return value && value[0] == '1';
++    }();
++    if (round_streams)
++        hc_mean_kernel<true><<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t)stream>>>(residual, out, out_bf16, rows, hidden, hc);
++    else
++        hc_mean_kernel<false><<<(rows * hidden + 255) / 256, 256, 0, (cudaStream_t)stream>>>(residual, out, out_bf16, rows, hidden, hc);
+ }
+ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, const int32_t* table,
+                        const int32_t* steps, float* out, float* scratch, int rows, int heads,
+diff --git a/src/kernels/dflash2_parity.cpp b/src/kernels/dflash2_parity.cpp
+index 8791ea5f..4815b629 100644
+--- a/src/kernels/dflash2_parity.cpp
++++ b/src/kernels/dflash2_parity.cpp
+@@ -226,13 +226,23 @@ void target_features_and_attention() {
+     {
+         const int rows = 3, hidden = 33, hc = 4;
+         std::vector<float> r(rows*hidden*hc);
+-        for (size_t i = 0; i < r.size(); ++i) r[i] = ((int)(i%31)-15)*0.25f;
++        for (size_t i = 0; i < r.size(); ++i) r[i] = ((int)(i%31)-15)*0.2513f;
++        r[0]=128.007f;r[hidden]=-128.003f;r[2*hidden]=1.003f;r[3*hidden]=-1.007f;
++        const char* rounding = std::getenv("STRATA_DFLASH2_BF16_STREAM_MEAN");
++        const bool round_streams = rounding && rounding[0]=='1';
+         Device<float> dr(r), out(rows*hidden); Device<uint16_t> bf(rows*hidden);
+         dflash2_hc_mean(dr.p,out.p,bf.p,rows,hidden,hc,nullptr);
+         auto got=out.read(rows*hidden); auto bits=bf.read(rows*hidden);
+         for (int i=0;i<rows*hidden;++i) {
+             float expected=0;
+-            for(int h=0;h<hc;++h) expected+=r[(i/hidden*hc+h)*hidden+i%hidden]/hc;
++            for(int h=0;h<hc;++h) {
++                float value=r[(i/hidden*hc+h)*hidden+i%hidden];
++                if(round_streams) {
++                    uint32_t u;std::memcpy(&u,&value,4);u=(u+0x7fff+((u>>16)&1))&0xffff0000;
++                    std::memcpy(&value,&u,4);
++                }
++                expected+=value/hc;
++            }
+             near(got[i],expected);
+             uint32_t u; std::memcpy(&u,&expected,4);
+             if(bits[i] != ((u+0x7fff+((u>>16)&1))>>16)) throw std::runtime_error("HC BF16 mean differs");

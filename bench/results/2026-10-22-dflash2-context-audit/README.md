@@ -212,3 +212,67 @@ achieves +32% over MTP.
 Not run: HIP/SYCL/Metal/Windows builds, other model families, multi-GPU, vision,
 concurrent requests and fault-injected resource failures. Existing compiler
 warnings remain; no new backend compatibility is claimed.
+
+## Follow-up experiments rejected after the implementation commit
+
+These fixed algorithm experiments do not change the conclusion above. None is
+included in production source, and none changes the model files or shared head.
+The context and two-pass experiments use the joint BF16 reference capture, not
+native throughput measurements. No launch-parameter grid was searched.
+
+- Removing the known repeated-note padding or deduplicating exact 8-grams in
+  context, with original absolute positions and explicit local mask: padded-code
+  correct-prefix sum over 95 anchors changes from 256 to 258 or 261; cache changes
+  from 348 to 308 in either variant. Translating all RoPE positions by a common
+  offset gives 256 and 346. No consistent acceptance recovery.
+- A second complete drafter pass embeds its own first guess in the next row,
+  locks that guess and predicts the remaining rows again. Correct-prefix sums
+  change from 371/256/348 to 360/243/320 for short code/padded code/cache.
+- Per-request online selector correction consumes only a verified bonus token
+  after each accepted prefix, without future labels or persisted weights. A
+  minimal unit-margin scalar token-bias update keeps native-lattice accepted
+  counts at 70/58/66. A feature-aware rank-256 matrix update gives 70/57/67;
+  padded-code verification grows from 125 to 132 rows. These are offline
+  causal lattice replays, not native engine wins. The rank replay's captured
+  native projection vectors reproduce all original 285 proposal blocks exactly
+  before correction. Its added NumPy arithmetic is not bitwise CUDA parity.
+- Rounding each HC residual stream to BF16 before the feature mean, while leaving
+  target arithmetic untouched, passes the feature-kernel oracle but leaves both
+  long native accepted/offered counts unchanged at 58/87 and 66/78. The short
+  screening run gives 71/88; this is not a long-context improvement. One warmup
+  and one measurement; not a throughput claim.
+
+A native scheduling prototype launches the context V projection on a branch
+while K projection, K normalization and RoPE run on the main stream. It shares
+only read-only prepared activation and joins before KV append or buffer reuse.
+A separate off-default option isolates this from proposal Q/K/V parallelism.
+One immutable executable, unchanged settings above, small-page attention enabled
+in both arms, one warmup plus three measurements, original common target-only
+controls, all output IDs and accepted/offered counters match:
+
+| Task | Serial context median tok/s | Parallel context median tok/s |
+|---|---:|---:|
+| Code short |49.085|49.055|
+| Code padded |40.970|40.496|
+| Cache repeated |51.048|50.909|
+
+The ranges overlap; no benefit is established. The prototype was removed.
+
+A separate attention prototype replaces every thread's 64-cell maximum scan
+with two shared loads per lane and a warp maximum, preserving the ordered
+softmax and value sums. All 30 benchmark outputs remain bit-identical and both
+parity runs pass. At page 4, 8 rows and logical end 2053, timing is
+0.154179 versus 0.154271 ms/pass; no benefit, so this too was removed. Neither
+prototype was retained merely because its work looks more parallel.
+
+`followups/` preserves the analysis outputs, drivers, rejected patches and native
+measurement logs. Raw rank vectors and immutable diagnostic/native executables
+remain with the other external evidence. The production binary was rebuilt after
+removing the prototypes and has SHA256
+`42a56c9a217ddb47c58fa6f42ad331c77ae2c296a532d84c53b3610fedb4a3f2`,
+identical to the measured implementation commit's binary. No additional backend
+validation is claimed for these rejected patches.
+
+The compact context-parallel and rank-trace diagnostic patches use zero context;
+apply those only with `git apply --unidiff-zero` to an appropriate clean checkout.
+They are preserved for reproduction, not enabled production options.

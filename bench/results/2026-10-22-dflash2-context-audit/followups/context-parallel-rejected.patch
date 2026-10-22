@@ -1,0 +1,38 @@
+diff --git a/src/core/dflash_runtime.cpp b/src/core/dflash_runtime.cpp
+index 0faea842..fec4f3c3 100644
+--- a/src/core/dflash_runtime.cpp
++++ b/src/core/dflash_runtime.cpp
+@@ -375,1 +375,3 @@
+-    if (dg.is_dflash2() && parallel && parallel[0] == '1') {
++    const char* parallel_context = std::getenv("STRATA_DFLASH2_PARALLEL_CONTEXT");
++    if (dg.is_dflash2() && ((parallel && parallel[0] == '1') ||
++                            (parallel_context && parallel_context[0] == '1'))) {
+@@ -870,0 +873,4 @@
++    const char* context_parallel = std::getenv("STRATA_DFLASH2_PARALLEL_CONTEXT");
++    const bool parallel_context = dg.is_dflash2() && projection_streams_[0] &&
++        context_parallel && context_parallel[0] == '1' && !reference_mode_ &&
++        !parity_dir_[0] && !std::getenv("STRATA_DF_DBG") && !df_timing().on;
+@@ -872,0 +879,8 @@
++        // K and V share a prepared, read-only activation. Keep V on a branch
++        // while the main stream projects K and applies its norm and RoPE.
++        // Joining before append also protects both buffers from the next layer.
++        if (parallel_context &&
++            (cudaEventRecord(projection_ready_, cs_) != cudaSuccess ||
++             cudaStreamWaitEvent(projection_streams_[0], projection_ready_, 0) != cudaSuccess)) {
++            err = "dflash2: context projection fork failed"; return false;
++        }
+@@ -880,1 +894,2 @@
+-                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows, cs_, true);
++                project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, rows,
++                        parallel_context ? projection_streams_[0] : cs_, true);
+@@ -893,0 +909,6 @@
++        if (parallel_context &&
++            (cudaEventRecord(projection_done_[0], projection_streams_[0]) != cudaSuccess ||
++             cudaStreamWaitEvent(cs_, projection_done_[0], 0) != cudaSuccess)) {
++            err = "dflash2: context projection join failed"; return false;
++        }
++
+@@ -1070,0 +1092,1 @@
++    const char* parallel_setting = std::getenv("STRATA_DFLASH2_PARALLEL_PROJECTIONS");
+@@ -1071,0 +1094,1 @@
++        parallel_setting && parallel_setting[0] == '1' &&
