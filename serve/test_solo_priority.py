@@ -140,6 +140,20 @@ class Streaming(unittest.TestCase):
             if time.monotonic()>end: self.fail('timed out')
             time.sleep(.002)
 
+    def test_declared_only_survives_priority_wrapper(self):
+        # Chat Completions without tools must not execute a model-emitted tool
+        # envelope. Responses intentionally retains the legacy parser behavior.
+        for enabled in (False, True):
+            with self.subTest(priority=enabled):
+                with mock.patch.object(self.svc, 'solo_scheduler', self.sched if enabled else None), \
+                     mock.patch.object(self.eng, 'solo_scheduler', self.sched if enabled else None):
+                    events = list(self.svc.run([1, 999], False, None, 2000, {},
+                                              threading.Event(), declared_only=True))
+                parsed = [e for kind, e in events if kind == 'event']
+                self.assertFalse(any(e.kind == 'tool_call' for e in parsed))
+                self.assertIn('<function=edit>', ''.join(e.text or '' for e in parsed))
+                self.assertEqual(events[-1][1]['finish'], 'stop')
+
     def test_terminal_state_tracks_an_admitted_solo_request(self):
         seen = []
         def observe(_):
