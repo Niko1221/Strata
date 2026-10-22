@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
                   {mtl::Arg::B(gst[gi]), mtl::Arg::B(ghist[par][gi]), mtl::Arg::B(qkv), mtl::Arg::B(al), mtl::Arg::B(be),
                    mtl::Arg::B(z), mtl::Arg::B(W, T_(b + "ssm_conv1d.weight").offset), mtl::Arg::B(W, T_(b + "ssm_dt.bias").offset),
                    mtl::Arg::B(W, T_(b + "ssm_a").offset), mtl::Arg::B(W, T_(b + "ssm_norm.weight").offset), mtl::Arg::B(yg),
-                   mtl::Arg::V(a), mtl::Arg::B(ghist[1 - par][gi])},
+                   mtl::Arg::V(a), mtl::Arg::B(ghist[1 - par][gi]), mtl::Arg::B(yg)},
                   48, 1, 512, "gdn scan");
                 act16(yg, ygh, (size_t)T * 6144, "gdn proj");
                 gemm(ygh, Wout, bo, T, N, 6144, "gdn proj");

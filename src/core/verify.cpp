@@ -88,6 +88,11 @@ const float* window_logits(void* w, int t);
 // the request's sampling over one row of them, on the CPU (metal/src/engine/host_sampler.h: the CUDA sampler's chain)
 int sample_row(const float* logits, int n_vocab, const int32_t* history, int history_len,
                const strata::kernels::SamplerParams& p, const float* logit_bias, uint64_t counter);
+// the batch windows (issue #3284, stage 1): the slot regions, the S-row window and its host-side commit
+bool window_init_slots(void* w, int S, strata::core::SessionState* const* slots, std::string& err);
+bool window_run_batch(void* w, int S, const int* rows, const int32_t* tokens, const int64_t* pos, int32_t* out,
+                      std::string& err);
+bool window_commit_batch(void* w, int S, const int* rows, std::string& err);
 }  // namespace strata::metal_engine
 #endif
 
@@ -3334,6 +3339,17 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
             return false;
         }
     }
+
+#if defined(STRATA_GPU_METAL)
+    // the Mac engine: the window carves each slot's state region out of its arena and keeps the rows' state
+    // there (metal/src/engine/window.cpp's init_slots); the CUDA staging buffers below are never allocated.
+    slots_ = slots;
+    slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    if (!strata::metal_engine::window_init_slots(metal_, (int) slots.size(), slots.data(), err)) return false;
+    std::fprintf(stderr, "strata verify: Metal batch windows of up to %lld sequences (layers [%lld, %lld))\n",
+                 (long long) slots.size(), (long long) lb_, (long long) le_);
+    return true;
+#endif
     const strata::kernels::QsaShapes s = shapes_of(*g_);
     const int64_t S = (int64_t) slots.size(), CB = 2 + max_t_;
     const int64_t TS = (s.idx_block - 1) * g_->idx_key_dim, nQ = g_->n_qsa_layers();
@@ -3645,6 +3661,45 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                              void* user, int32_t* out, std::string& err) {
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+#if defined(STRATA_GPU_METAL)
+    // the Mac engine: the window runs the rows itself (window_run_batch): no graph capture, no staging, no
+    // doorbells.  The bookkeeping the commit reads (last_rows_, last_tokens_, last_pos_b_) is set here; the
+    // rows' picks come back in `out`, greedy like the solo window's.
+    (void) pool;
+    (void) user;
+    if (metal_ == nullptr) { err = "verify: the Metal window is not up"; return false; }
+    if (S < 1 || S > 8) { err = "verify: batch window out of range"; return false; }
+    for (int t = 0; t < S; ++t)
+        if (pos[t] < 0 || pos[t] + 1 > slots_[(size_t) rows[t]]->max_cells) {
+            err = "verify: slot " + std::to_string(rows[t]) + " runs past its context";
+            return false;
+        }
+    if (!strata::metal_engine::window_run_batch(metal_, S, rows, tokens, pos, out, err)) return false;
+    {   // a sampled row (its request's own temperature): the host sampler over the window's logits, the solo
+        // run()'s pattern with each slot's parameters (the CUDA batch path drops penalties the same way)
+        bool any = false;
+        for (int t = 0; t < S; ++t)
+            if (!slot_sp_[(size_t) rows[t]].greedy && slot_sp_[(size_t) rows[t]].temperature > 0.0f) { any = true; break; }
+        if (any)
+            for (int t = 0; t < S; ++t) {
+                strata::kernels::SamplerParams sp = slot_sp_[(size_t) rows[t]];
+                if (sp.greedy || sp.temperature <= 0.0f) continue;
+                const float* row = strata::metal_engine::window_logits(metal_, t);
+                if (row == nullptr) { err = "verify: the window's batch logits are missing"; return false; }
+                out[t] = strata::metal_engine::sample_row(row, (int) n_vocab_, nullptr, 0, sp, nullptr,
+                                                          (uint64_t) pos[t]);
+            }
+    }
+    last_t_ = S;
+    row_base_ = 0;
+    last_batch_ = true;
+    for (int t = 0; t < S; ++t) { last_rows_[t] = rows[t]; last_tokens_[t] = tokens[t]; last_pos_b_[t] = pos[t]; }
+    note_nonfinite(S, last_pos_b_, out);
+    ++windows;
+    progress_at("decode");
+    progress_beat();
+    return true;
+#endif
     const ModelGeometry& g = *g_;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
@@ -3756,6 +3811,25 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
     const OnDevice on_device(device_);
     if (!last_batch_ || last_t_ < 1) { err = "verify: commit_slots without a batch window"; return false; }
     const int S = last_t_;
+#if defined(STRATA_GPU_METAL)
+    const Clock::time_point tc0 = Clock::now();   // (the CUDA body below keeps its own `t0`: both compile here)
+    // the Mac engine: the rows committed inside the window (each region's parity flipped when its row ran);
+    // window_commit_batch lands the host-side PLE conv history and each slot's ple_prev chain.  Stage 1 carries
+    // one row per slot: a draft group has nowhere to fold to.
+    for (int t = 0; t < S;) {
+        const int first = t;
+        while (t < S && last_rows_[t] == last_rows_[first]) ++t;
+        const int n = keep[last_rows_[first]];
+        if (t - first > 1) { err = "verify: Metal batch windows carry one row per slot"; return false; }
+        if (n < 1 || n > t - first) {
+            err = "verify: accepted prefix is outside its slot group";
+            return false;
+        }
+    }
+    if (!strata::metal_engine::window_commit_batch(metal_, S, last_rows_, err)) return false;
+    ms_commit += ms_since(tc0);
+    return next_ == nullptr || next_->commit_slot_prefixes(keep, err);
+#endif
     const Clock::time_point t0 = Clock::now();
     const int64_t CB = 2 + max_t_;
     // One prefix per slot: rejected draft rows must not enter recurrent state.

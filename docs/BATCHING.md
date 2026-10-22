@@ -512,6 +512,41 @@ several chats that alternate, come back without reading their history again. Mea
 two long conversations alternating through the HTTP server: the first turns took 3.9 s and 5.7 s to the first token
 (their prompts read), the follow-ups 0.53 s and 0.46 s.
 
+
+## On Apple Silicon (Metal) (experimental)
+
+The Mac engine does not run batch rows through CUDA's grouped tiles. With `--batch N` it builds a batch window of
+its own: the same dispatch list the solo one-token window makes, once per row. Every GEMV keeps the plain tile (no
+Gyro tile that changes the chunk order may enter a batch window), and every kernel that touches state takes the row
+index, and the row reads and writes only its own conversation's region. The region is the solo window's own layout -
+the GDN state and scan history per layer, the QSA K/V cells, the indexer's tail, dead and pooled rows, and the PLE
+conv history - carved from the window's arena, and the engine prints the cost at start (`strata metal: N batch slot
+region(s): X GB`). That is why batched greedy tokens are meant to come out *identical* to the solo ones: not two
+schedules that happened to agree, but the same bytes in the same order per row.
+
+The slot sessions are set up as on CUDA; their CUDA-shaped buffers are given back when the window's stream starts
+(the window's cells are the live K/V, as they are for the main session). A conversation's state moves between the
+window and a slot's region through the same park and restore bytes the conversation cache uses, so `--parallel`
+combines with `--conversation-cache-mib`: an admitted prompt reads through the main window and is copied into its
+slot's region before its rows first run. If the regions do not fit the arena the engine says
+`--batch is off: the window's slot regions do not fit` and serves one request at a time, as before.
+
+Measured on an M1 Max with 64 GB (IQ3_XXS, greedy, 128 tokens, `tools/metal_batch_try.sh 2 2 128`) on
+2026-10-22: two slots decode together at **37.5 tok/s from the first batch token** against 23 and 25 tok/s
+for the same two prompts alone, and every slot's tokens are identical to its solo run. That identity needed
+a fix found with the debug captures (`STRATA_BATCH_VERIFY=1` prints a 315-value trajectory per step): a
+batch row's GDN step binds the prepared activation at its own slice, and the per-16 sums it writes for the
+GEMVs must land in the fixed sums region of the whole buffer, not a slice-row's width past it. Rows after
+the first write sums no one ever read back, and the layers whose `ssm_out.weight` is Q2_0/Q3_K/Q4_K/Q5_K/
+Q6_K quantized (the IQ kinds read the plain float plane instead) dequantize from those sums, so their
+outputs were garbage on the second row onward while the first row stayed exact. The sums now have their
+own binding; the solo window and the first row address them bit-identically to before.
+
+Still not measured here: the prompt-interleave steps of `tools/batch_interleave_test.py` on a Mac, sampled
+(`temperature` > 0) rows, and more than two rows (`tools/metal_batch_try.sh 4 4 128` - rows 2 and 3 read the
+same sums area at larger offsets). To prove the identity on your own Mac: `tools/metal_batch_try.sh 2 2 128`;
+it refuses to run while another big server holds the memory (see the script's header).
+
 ## Testing
 
 Four scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`
@@ -519,7 +554,7 @@ tests the server's side with a scripted engine (no GPU).
 
 | Script | What it checks |
 | --- | --- |
-| `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
+| `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. On a Mac run it through `tools/metal_batch_try.sh` (exit 0: every slot identical to its solo run), which guards the box (it refuses while another big server holds the memory). |
 | `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. On a two-stage layer split with pipelined groups add `--batch 4 --batch-groups 2` to `--extra` (its 3 slots do not divide into two groups) and set `STRATA_PIPED_READ_PIECE`; run it without a conversation cache, or step 4 restores the prompt instead of reading it. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |

@@ -166,8 +166,8 @@ bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const Ses
 }  // namespace strata::core
 namespace strata::metal_engine {
 // the running state lives in the Metal decode window (metal/src/engine/window.cpp), not in the session's buffers
-bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& error);
-bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& error);
+bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, const strata::core::SessionState* ss, std::string& error);
+bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, const strata::core::SessionState* ss, std::string& error);
 }  // namespace strata::metal_engine
 namespace strata::core {
 #endif
@@ -175,8 +175,10 @@ namespace strata::core {
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
 #if defined(STRATA_GPU_METAL)
-    (void) ss; (void) g;
-    return strata::metal_engine::window_checkpoint_save(c, error);
+    (void) g;
+    // `ss` names the window side to read: the stage's own session or one batch slot's region (window.cpp);
+    // a session with no region (batch never started) is parked through the main window, as before
+    return strata::metal_engine::window_checkpoint_save(c, &ss, error);
 #endif
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
@@ -198,7 +200,7 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
                                      const ModelGeometry& g, std::string& error) {
 #if defined(STRATA_GPU_METAL)
     (void) g;
-    if (!strata::metal_engine::window_checkpoint_restore(c, error)) return false;
+    if (!strata::metal_engine::window_checkpoint_restore(c, &ss, error)) return false;
     ss.ple_prev[0] = c.ids.size() >= 2 ? c.ids[c.ids.size() - 2] : -1;
     ss.ple_prev[1] = c.ids.size() >= 1 ? c.ids[c.ids.size() - 1] : -1;
     return true;
@@ -231,6 +233,18 @@ bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, co
     // sessions carved alike on the same device (a stage's own session and its batch slots): the same bytes into
     // the same places, through copy() like the restore (the private non-blocking stream, complete on return unless
     // `queued`: then the caller synchronizes the device).
+    //
+    // Metal: the running state lives in the window (the main session's window bytes, or one batch slot's region);
+    // the session's own CUDA-shaped buffers are not it.  The copy is the save and the restore, through a host
+    // checkpoint of the window's own byte order; `ids` drives the slot's ple_prev in the restore.
+#if defined(STRATA_GPU_METAL)
+    (void) queued;
+    ConversationCheckpoint c;
+    c.ids = ids;
+    if (!conversation_checkpoint_save(c, from, g, error)) return false;
+    if (!conversation_checkpoint_restore(c, to, g, error)) return false;
+    return true;
+#endif
     ConversationStateSizes zf, zt;
     if (!checkpoint_targets(from, g, ids.size(), zf, error) || !checkpoint_targets(to, g, ids.size(), zt, error))
         return false;

@@ -117,6 +117,9 @@
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
 namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+// STRATA_BATCH_VERIFY: a restored slot region's bytes vs the main window's (metal/src/engine/window.cpp)
+namespace strata::metal_engine { bool window_check_region(const strata::core::SessionState* ss, int64_t upto,
+                                                          std::string& rep); }
 #endif
 
 #include <array>
@@ -5441,6 +5444,12 @@ int main(int argc, char** argv) {
                     break;
                 }
                 strata::core::session_zero(*u, g, nullptr, nullptr);
+                // The PLE ngram hash constants are the artifact's (the same values the main session gets at
+                // the wiring above), and anything that computes a slot's PLE rows from the slot's own state -
+                // the Metal batch window, the drafter's session - reads them from here.  The rest of the PLE
+                // block (the table, the in-flight token's pointers) stays the main session's: a slot stays
+                // not `ready()` so the async gather never runs two sessions into one host scratch.
+                u->ple.consts = (k == 0 ? ss : stages[k - 1]->ss).ple.consts;
                 bslot_ss[k].push_back(std::move(u));
             }
             cudaDeviceSynchronize();
@@ -9152,16 +9161,27 @@ int main(int argc, char** argv) {
         }
         // each stage's verifier gets its stage's slot sessions
         if (o.batch > 0) {
-            for (size_t k = 0; k < bslot_ss.size(); ++k) {
+            bool slots_ok = true;
+            for (size_t k = 0; k < bslot_ss.size() && slots_ok; ++k) {
                 std::vector<strata::core::SessionState*> ptrs;
                 for (auto& u : bslot_ss[k]) ptrs.push_back(u.get());
                 strata::core::Verifier& vk = k == 0 ? ver : stages[k - 1]->ver;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
                 if (!vk.init_slots(ptrs, err)) {
+#if defined(STRATA_GPU_METAL)
+                    // the Mac engine: the regions come from the window's arena; when they do not fit, --batch turns
+                    // off and every client queues through the solo window, as it did before batch was ported
+                    std::fprintf(stderr, "strata serve: --batch is off: the window's slot regions do not fit (%s)\n",
+                                 err.c_str());
+                    slots_ok = false;
+                    break;
+#else
                     std::fprintf(stderr, "strata serve: --batch, stage %zu: %s\n", k + 1, err.c_str());
                     return 1;
+#endif
                 }
             }
+            if (!slots_ok) { bslot_ss.clear(); o.batch = 0; }
         }
         for (int st = 0; st < n_stages && n_stages > 1; ++st) {
             split_drive.plan[st] = stage_ver(st).plan_sink();
@@ -11371,19 +11391,37 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
                 strata::core::ConversationCheckpoint ck;
                 ck.ids = ids;
-                if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
-                    !strata::core::conversation_checkpoint_restore(ck, to, g, e))
-                    return false;
+                if (!strata::core::conversation_checkpoint_save(ck, from, g, e)) {
+                    e = "checkpoint save: " + e; return false;
+                }
+                if (!strata::core::conversation_checkpoint_restore(ck, to, g, e)) {
+                    e = "checkpoint restore: " + e; return false;
+                }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
                     strata::core::ConversationKv img;
-                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
-                        return false;
+                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e)) {
+                        e = "K/V save layer " + std::to_string(j) + ": " + e; return false;
+                    }
                     if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
-                        return false;
+                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e)) {
+                        e = "K/V restore layer " + std::to_string(j) + ": " + e; return false;
+                    }
                 }
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
+#if defined(STRATA_GPU_METAL)
+                if (std::getenv("STRATA_BATCH_VERIFY") != nullptr) {   // the admission's transport, byte for byte
+                    std::string rep;
+                    strata::metal_engine::window_check_region(&to, upto, rep);
+                    std::fprintf(stderr, "%s", rep.c_str());
+                    std::fflush(stderr);
+                }
+#endif
             }
+#if defined(STRATA_GPU_METAL)
+            // no drafter copy on Metal: the batch window drafts (when it drafts) from the slot region's own
+            // state, and the drafter session's ring is not window-backed, so a snapshot copy of it would
+            // refuse the admission.  A slot's drafter warms up on its own drafts from the first decode step.
+#else
             if (batch_mtp) {
                 // Admission first builds the solo draft KV; copy it into the slot before drafting.  Both drafters' K/V
                 // are on the drafter's device (the last stage's GPU with a layer split): the copy's ring refill is a
@@ -11398,6 +11436,7 @@ int main(int argc, char** argv) {
                     return false;
                 slot_mtp[(size_t) b]->set_prompt_len(upto);
             }
+#endif
             return true;
         };
         // slot b's sessions -> the main ones (the reverse of copy_to_slot): a request that continues the

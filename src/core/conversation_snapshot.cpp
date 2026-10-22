@@ -93,11 +93,34 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
 }
 
 bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    // The Metal decode window keeps the live cells and indexer keys; `kv_plan` therefore gives the session's QSA
+    // states no pools (`n_slots` and `idx_pooled_rows` are 0), which on CUDA means "refuse the copy".  For a state
+    // the window (or one of the batch regions) holds, those clauses describe bytes the copy never reads: the
+    // window-backed path replaces them, and the copy re-checks every payload against the window's own cap
+    // (`sizes[i] > cap[i]`).  A state the window does not hold still refuses, exactly as before.
+    void* wp[5];
+    size_t wc[5];
+    const bool via_window = st.kv_int8 && !st.kv_q4 && !st.kv_hybrid && st.kv_mode == 0 &&
+                            strata::metal_engine::window_kv_pools(st, wp, wc);
+#else
+    const bool via_window = false;
+#endif
     if (upto < 0 || upto > st.max_cells || st.n_pages < 0 || l.cells / l.page_size > st.n_pages ||
-        st.kv_mode < 0 || st.kv_mode > 2 || st.n_slots <= 0 ||
-        (st.kv_mode == 0 && st.n_slots < st.n_pages) ||
-        l.pooled_rows > st.idx_pooled_rows || (st.kv_mode != 0 && !st.host.present())) {
+        st.kv_mode < 0 || st.kv_mode > 2 || (st.kv_mode != 0 && !st.host.present()) ||
+        (!via_window && (st.n_slots <= 0 || (st.kv_mode == 0 && st.n_slots < st.n_pages) ||
+                         l.pooled_rows > st.idx_pooled_rows))) {
         error = "conversation snapshot: invalid K/V extent or missing authoritative host pool";
+#if defined(STRATA_GPU_METAL)
+        if (std::getenv("STRATA_PARK_DEBUG"))   // which one of these, and on which state (parking and batch admission debug)
+            std::fprintf(stderr, "strata metal park: valid() failed: upto %lld max_cells %lld n_pages %lld n_slots %lld "
+                                 "kv_mode %d cells %lld page %lld pooled %lld idx_pooled_rows %lld int8 %d q4 %d rot %d "
+                                 "via_window %d st %p\n",
+                         (long long) upto, (long long) st.max_cells, (long long) st.n_pages, (long long) st.n_slots,
+                         (int) st.kv_mode, (long long) l.cells, (long long) l.page_size, (long long) l.pooled_rows,
+                         (long long) st.idx_pooled_rows, (int) st.kv_int8, (int) st.kv_q4, (int) st.kv_rot,
+                         (int) via_window, (const void*) &st);
+#endif
         return false;
     }
     if (st.kv_mode == 1) {
@@ -254,9 +277,19 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     }
     for (size_t i = 0; i < src.size(); ++i)
         if (src[i]->size() != sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
+#if defined(STRATA_GPU_METAL)
+    // A window-backed state has no session pools at all (upstream 8311d8af): the window's (or the batch region's)
+    // own cells are the target, so presence and capacity are checked against those.
+    void* wp[5];
+    size_t cap[5];
+    if (!window_pools(st, wp, cap)) { error = "conversation snapshot: the Metal window holds no live cells for this K/V"; return false; }
+    for (size_t i = 0; i < src.size(); ++i)
+        if (sizes[i] > cap[i]) { error = "conversation snapshot: the snapshot is larger than the Metal window's cells"; return false; }
+#else
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
         if (sizes[i] && !dst[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
+#endif
     return true;
 }
 

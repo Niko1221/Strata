@@ -52,7 +52,7 @@ class Engine:
         if batch:
             args += ["--batch", str(batch)]
         args += extra_args
-        env = dict(os.environ, **extra_env)
+        env = dict(os.environ, **(cfg.get("env") or {}), **extra_env)   # (the config's env: on a Mac it carries STRATA_METAL_*; extra_env still wins)
         env["LD_LIBRARY_PATH"] = ":".join(cfg.get("lib_dirs", []) + [env.get("LD_LIBRARY_PATH", "")])
         if os.name == "nt":
             env["PATH"] = os.pathsep.join(cfg.get("lib_dirs", []) + [env.get("PATH", "")])
@@ -145,18 +145,19 @@ def main():
                     done[i] = line
                 break
     t_admitted = time.time()
-    for line in out:
-        if line.startswith("BT "):
-            _, s, y = line.split()
-            got[int(s)].append(int(y))
-            first_bt = first_bt or time.time()
-        elif line.startswith("BDONE "):
-            done[int(line.split()[1])] = line
-            if len(done) == len(prompts):
-                break
-        elif line.startswith("ERR"):
-            print("batch:", line)
-            return 1
+    if len(done) < len(prompts):   # (every slot already refused: BADM 0 - never wait for batch tokens that will not come)
+        for line in out:
+            if line.startswith("BT "):
+                _, s, y = line.split()
+                got[int(s)].append(int(y))
+                first_bt = first_bt or time.time()
+            elif line.startswith("BDONE "):
+                done[int(line.split()[1])] = line
+                if len(done) == len(prompts):
+                    break
+            elif line.startswith("ERR"):
+                print("batch:", line)
+                return 1
     t_end = time.time()
     total = sum(len(v) for v in got.values())
     print(f"batch: {len(prompts)} slots, {total} tokens; admissions {t_admitted - t_admit:.1f}s; "
@@ -166,6 +167,10 @@ def main():
     ok = True
     for i in range(len(prompts)):
         b = got[i]
+        if i in done and done[i].split()[2] == "0":   # the engine refused the admission: say so, never call it a token diff
+            ok = False
+            print(f"slot {i}: admission refused (BADM 0) - the reason is in the engine log")
+            continue
         if solo:
             same = b == solo[i]
             ok &= same
