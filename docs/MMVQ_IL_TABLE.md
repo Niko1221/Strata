@@ -34,3 +34,18 @@ Which table a card gets:
 
 The emit rule: per cell, the fastest rows count if it takes at least 3% off the plain kernel's time, else 0; shapes of one
 class that disagree give 0; a class with no measured shape copies its neighbour below.
+
+## The hoisted-load kernels (STRATA_MMVQ_IL_PF, sm_80 only so far)
+
+`STRATA_MMVQ_IL_PF=1` lets a second table pick, per cell, a variant of `native_mmvq_il` that issues every weight load of a
+group before its dots and forms the dots as exact integers (`kIlPf_80` for 2-4 tokens and `kIlPf58_80` for 5-8, in
+`src/kernels/cuda/native_mmvq.cu`; a cell is `variant << 4 | rows`, 0 = the rows table above with the plain kernel). Every
+variant gives the same bits as the plain kernels. Only Q6_K has cells so far: on the CMP 170HX the variants tie the plain
+kernel for Q4_K / Q5_K / IQ4_XS within the run-to-run noise. Unset or 0 keeps today's kernels; `=2` to `=6` run one variant
+for every type and shape (A/B only).
+
+To measure a card: `build/mmvq_il_parity --bench --emit-table --pf 0,3,4` (`--emit-table` must come right after `--bench`).
+Every listed variant is bit-checked against native_mmvq first, then timed interleaved per case (`--rounds N` rounds of 100
+calls, default 5; the median per variant on the `PFBENCH` lines). The last block (`variant << 4 | rows over --pf`) is in the
+source form of `kIlPf_<cc>`. `il_pf_table` reads only sm_80's table today, so a new card's block also needs its lookup
+there. Post the whole output on the issue.

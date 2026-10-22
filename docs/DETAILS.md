@@ -2563,3 +2563,14 @@ CUDA card, where it measured +1..3 % prompt speed on a Tesla P100 at 30-60K toke
 Options that change answers (other summation order) are separate and explicit: `STRATA_SELECT_SIMT=1|2` (FP32 tiled block scorer,
 KL 0.01 against the warp scorer per #2071), `STRATA_PA_V2T=1` (v2 prompt attention, #2092/#2146), `STRATA_PF_FUSED=1
 STRATA_PF_FUSED_SM75=1` (fused int8 prompt experts for the Q2_0 pack, #2145; only on a 7.5 card, sm_80+ is unchanged), `STRATA_BF16_TC=1` with `STRATA_XN_F16` (#2091).
+
+## CUDA opt-in decode switches measured on a CMP 170HX (sm_80; off unless you set them)
+
+Measured on one CMP 170HX (GA100, 70 SMs) with the Qwen3.8-Flash-Next IQ3_S native pack, `--spec 3`, decode after a ~3K-word
+prompt, a fresh engine per run, reference and switch runs interleaved. Both switches keep every output bit (the greedy answers to
+11 prompts are the same with the switch on and off). Neither does anything on HIP, gfx906 or Metal.
+
+| Switch | What | Answers | CMP 170HX |
+|---|---|---|---|
+| `STRATA_GRAPH_PRIO=1` | the verify window graph's kernel nodes run at their capturing stream's priority (`cudaGraphInstantiateFlagUseNodePriority`): the GDN gates / QSA indexer branch at the highest, the shared expert at the lowest. Nothing changes on a card whose priority range is 0..0 | bit-exact | decode +1.8% with `STRATA_QIL=1` (both runs above every reference run) |
+| `STRATA_MMVQ_IL_PF=1` | hoisted-load, exact-integer kernels for the interleaved small-batch matvec where the sm_80 table picks them (Q6_K only so far, [MMVQ_IL_TABLE.md](MMVQ_IL_TABLE.md)); `=2` to `=6` force one variant everywhere (A/B only) | bit-exact | decode +1.4% (two ref / on / ref / on sets) |
