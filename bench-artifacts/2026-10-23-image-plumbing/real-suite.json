@@ -1,0 +1,90 @@
+{
+ "noul-pope": {
+  "dataset": "POPE adversarial",
+  "mode": "direct",
+  "served_calib": [
+   "identity"
+  ],
+  "raw": {
+   "acc": 0.8833,
+   "nll": 0.2087,
+   "ece15": 0.0993,
+   "flips": 0,
+   "n": 60
+  },
+  "cal": {
+   "acc": 0.8833,
+   "nll": 0.2018,
+   "ece15": 0.1107,
+   "flips": 0,
+   "n": 60
+  },
+  "fit": {
+   "a": 1.145657,
+   "c": -0.076814,
+   "nll": 0.2686282323117881,
+   "nll_identity": 0.2711070928538245,
+   "improvement": 0.009143,
+   "flat": false,
+   "boundary": false
+  }
+ },
+ "choice-cvb": {
+  "dataset": "CV-Bench",
+  "mode": "direct",
+  "served_calib": [
+   "identity"
+  ],
+  "raw": {
+   "acc": 0.65,
+   "nll": 0.9428,
+   "ece15": 0.1848,
+   "flips": 0,
+   "n": 20
+  },
+  "cal": {
+   "acc": 0.65,
+   "nll": 0.8581,
+   "ece15": 0.0957,
+   "flips": 0,
+   "n": 20
+  },
+  "fit": {
+   "T": 1.534636,
+   "nll": 0.8728698995191673,
+   "nll_identity": 0.9502878726849003,
+   "improvement": 0.081468,
+   "flat": false,
+   "boundary": false
+  }
+ },
+ "score-countbench": {
+  "dataset": "CountBenchQA",
+  "mode": "direct",
+  "served_calib": [
+   "identity"
+  ],
+  "raw": {
+   "acc": 1.0,
+   "nll": 0.1136,
+   "ece15": 0.0992,
+   "flips": 0,
+   "n": 20
+  },
+  "cal": {
+   "acc": 1.0,
+   "nll": 0.0421,
+   "ece15": 0.0377,
+   "flips": 0,
+   "n": 20
+  },
+  "fit": {
+   "T": 0.62753,
+   "nll": 0.33572028090183403,
+   "nll_identity": 0.40304715784946266,
+   "improvement": 0.167045,
+   "flat": false,
+   "boundary": false
+  }
+ }
+}
