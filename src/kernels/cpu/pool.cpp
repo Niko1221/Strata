@@ -88,6 +88,11 @@ std::vector<int> g_pool_cores;   // --pool-cores: set once at start-up, before t
 void set_pool_cores(const std::vector<int>& cpus) { g_pool_cores = cpus; }
 const std::vector<int>& pool_cores_setting() { return g_pool_cores; }
 
+namespace {
+std::string g_numa_pool_veto;   // set at start-up, before the pool exists (as --pool-cores)
+}  // namespace
+void set_numa_pool_veto(const std::string& why) { g_numa_pool_veto = why; }
+
 std::vector<LogicalCpuInfo> logical_cpu_layout() {
     std::vector<LogicalCpuInfo> out;
 #if defined(_WIN32)
@@ -816,7 +821,12 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         *limit = wplan.limit;
         return (std::min)(wplan.workers, (std::max)(1, (int) topo_.worker_cores.size()));
     };
-    if (auto_pool) {
+    if (auto_pool && !g_numa_pool_veto.empty()) {   // not tried at all: the count and the cores stay the one-socket ones
+        auto_pool = env_known = false;
+        env_off = true;
+        std::fprintf(stderr, "strata cpu pool: NUMA pool off: %s (%d NUMA nodes found), the pool runs as before "
+                             "(STRATA_NUMA_SPLIT=1 forces the split)\n", g_numa_pool_veto.c_str(), numa_nodes);
+    } else if (auto_pool) {
         // try the split on a copy: when it cannot run the cores, the count and the plan stay exactly what they were
         const CpuTopology plain_topo = topo_;
         interleave_cores();
