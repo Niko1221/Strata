@@ -912,7 +912,8 @@ print(r.choices[0].message.content)
   keeps only those ids in `top_logprobs`, most likely first, renormalised to sum to 1; the chosen token is one of
   them when it was named (vLLM's field, but vLLM masks generation with it, while here it filters what is reported,
   so a token outside the named ids keeps its own `logprob` and an empty list). A token whose probability could not
-  be read gets no entry, and the reply goes on.
+  be read gets no entry, and the reply goes on. On a server started with `--parallel`, a request that asks for
+  logprobs gets a 400: the engine's batched loop writes no LP lines, so there is nothing to report.
 - **A reply that ends inside its thinking (#1053, opt-in).** Some turns write a sentence of reasoning and then the
   end-of-turn token with no `</think>`: the content is empty and an agent stops. `"reasoning_close_retry": true` in
   `strata-<model>.json` closes the thinking once (as the thinking budget does) and continues, once per request, only for

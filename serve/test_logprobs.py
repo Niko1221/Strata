@@ -309,6 +309,18 @@ class Api(unittest.TestCase):
         self.assertIn("logprobs", self.post({"logprobs": True, "max_tokens": 4096})["choices"][0])
         self.assertNotIn("logprobs", self.post({"max_tokens": 0})["choices"][0])   # not asked: as before
 
+    def test_logprobs_are_refused_on_the_batch_path(self):
+        # --parallel/--batch: the engine's batched loop prints "BT <slot> <id>" and never calls emit_lp_line
+        # (src/program/generate.cpp), so no LP line reaches the server and the field would simply be absent.
+        # Refused up front instead, before anything is generated; a request that does not ask is untouched.
+        self.engine.batch = 2
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post({"logprobs": True})
+        self.assertEqual(cm.exception.code, 400)
+        self.assertIn("--parallel", cm.exception.read().decode())
+        self.engine.batch = 0
+        self.assertIn("logprobs", self.post({"logprobs": True})["choices"][0])
+
     def test_streamed(self):
         chunks = self.post({"logprobs": True}, stream=True)
         content = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c.get("choices"))

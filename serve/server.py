@@ -5343,6 +5343,9 @@ class LogprobEntries:
     of a top-K list it has to hope contains them.  vLLM, which named the field, masks generation
     with these ids instead (every other logit -inf before sampling) and reports the unmasked
     distribution; here they filter what is reported, so the chosen token can be outside them.
+
+    Not on `--parallel`: the engine's batched loop prints `BT <slot> <id>` and never an LP line,
+    so a request that asks for logprobs on such a server is refused (400) before it starts.
     """
 
     def __init__(self, svc, allowed=(), owner=None):
@@ -6861,6 +6864,13 @@ def make_handler(svc: Service):
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             if top_logprobs(req) is not None and not 0 < max_req <= LOGPROBS_MAX_TOKENS:
                 raise ValueError(f"logprobs: max_tokens (or max_completion_tokens) 1..{LOGPROBS_MAX_TOKENS} is required")
+            if top_logprobs(req) is not None and getattr(svc.engine, "batch", 0):
+                # --parallel/--batch: the batched loop prints "BT <slot> <id>" and never calls emit_lp_line, so no
+                # LP line ever reaches the server there (src/program/generate.cpp).  Refused rather than answered
+                # with the field missing, which a client cannot tell from a reply that had no tokens.
+                raise ValueError("logprobs is not available when the engine runs requests in batch slots "
+                                 "(--parallel/--batch): it writes no LP lines there; start the server without "
+                                 "--parallel")
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             use_mcp = req.get("strata_mcp") is True and svc.mcp is not None      # the web app's opt-in (serve/mcp.py)
             own = {t.get("name") for t in tools or [] if isinstance(t, dict)}   # #592: a second line of defence
