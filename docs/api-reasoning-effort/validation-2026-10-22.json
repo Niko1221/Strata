@@ -1,0 +1,541 @@
+{
+  "schemaVersion": 1,
+  "validatedOn": "2026-10-22",
+  "pr": 3363,
+  "branch": "codex/upstream-api-reasoning-effort",
+  "testedHead": "ab57c5da90b76983fd44b79130acc17d5a735508",
+  "continuation": "Documentation only. Runtime and test sources are unchanged. Existing passed checks were reused after validating their source and evidence hashes; tests were not rerun for this documentation commit.",
+  "environment": {
+    "platform": "Windows x64",
+    "node": {
+      "version": "v24.12.0",
+      "sha256": "2ffe3acc0458fdde999f50d11809bbe7c9b7ef204dcf17094e325d26ace101d8"
+    },
+    "dependencies": [
+      {
+        "name": "react",
+        "version": "19.3.0"
+      },
+      {
+        "name": "react-dom",
+        "version": "19.3.0"
+      },
+      {
+        "name": "esbuild",
+        "version": "0.25.12"
+      },
+      {
+        "name": "typescript",
+        "version": "5.9.3"
+      },
+      {
+        "name": "vite",
+        "version": "6.4.3"
+      },
+      {
+        "name": "katex",
+        "version": "0.19.0"
+      },
+      {
+        "name": "commander",
+        "version": "15.0.0"
+      }
+    ],
+    "commandPlaceholders": {
+      "NODE": "Node v24.12.0 executable",
+      "HOST": "apps/host under the tested checkout or combined scratch source",
+      "OUT": "Disposable absolute output directory",
+      "HARNESS": "Built staged Harness described below"
+    },
+    "temp": "TEMP and TMP point to disposable output subdirectories",
+    "powershellModulePath": "${SystemRoot}/System32/WindowsPowerShell/v1.0/Modules for API/provider checks",
+    "hiddenRunner": "Top-level commands used invoke-hidden.ps1; a validation preload forces windowsHide on child spawn/spawnSync."
+  },
+  "individual": {
+    "scope": "This PR head only",
+    "passed": 21,
+    "failed": 0,
+    "skipped": 0,
+    "commands": [
+      {
+        "id": "pr3363-exact-narrow",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "--test",
+          "--test-reporter=tap",
+          "--test-reporter-destination=${OUT}/pr3363-exact-narrow.tap",
+          "tests/api-reasoning-effort.test.mjs"
+        ],
+        "exitCode": 0,
+        "counts": {
+          "tests": 7,
+          "passed": 7,
+          "failed": 0,
+          "skipped": 0
+        },
+        "evidence": {
+          "name": "pr3363-exact-narrow.tap",
+          "sha256": "f54f87b7e1faeb75cf997f58009b34885d2b16e04ccfd330465f6dcc54bbc754",
+          "tests": 7,
+          "passed": 7,
+          "failed": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "id": "pr3363-affected-harness",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "--test",
+          "--test-reporter=tap",
+          "--test-reporter-destination=${OUT}/pr3363-affected-harness.tap",
+          "tests/model-providers.test.mjs",
+          "tests/openrouter-reasoning.test.mjs",
+          "tests/thinking-direct.test.mjs"
+        ],
+        "exitCode": 0,
+        "counts": {
+          "tests": 14,
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0
+        },
+        "evidence": {
+          "name": "pr3363-affected-harness.tap",
+          "sha256": "f64363152e51e352d5fa7bc28b935ed5687f0e437dbddab4fd63f6e96ca16c00",
+          "tests": 14,
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0
+        },
+        "harnessRequired": true
+      }
+    ],
+    "sourceFiles": [
+      {
+        "path": "apps/host/server/index.mjs",
+        "sha256": "b263be2c0ba1cccf9256ae6ebdd1c3b49709be4e5cdff84511abb836f852d6a1",
+        "lfSha256": "f7c4172288f501fe8ca5a131eddd839d09e2de9bcdd69b41b03421d1c5ffe5c8"
+      },
+      {
+        "path": "apps/host/server/model-providers.mjs",
+        "sha256": "214e2b558bb45a86d4f3fa5de8f93c5e0798a6558d2d9f326455e86fbc441edc",
+        "lfSha256": "34fcd55b182ef5633f06695c0a9262d57d15d0cb2c4be45d58064b825b8fd6b9"
+      },
+      {
+        "path": "apps/host/tests/api-reasoning-effort.test.mjs",
+        "sha256": "2abddfca81b4c1eb2ad0082e60604bfcf6fd6d83acee76f3c48586e3ea5273bf",
+        "lfSha256": "90cc7ec382c46afab8b4ac5bd133424b938892b9174be98e9bd40f20477caecf"
+      },
+      {
+        "path": "apps/host/tests/mock-model-api.mjs",
+        "sha256": "172b53ebe9fbf1e4b6ec8cb0d960404a8db45a618d95cc6b574726ef797dbd4f",
+        "lfSha256": "8918440fc7d4b6693ca6d03de15803c8e3577c2989b0a37e0e310965cad5d082"
+      }
+    ],
+    "testInputFiles": [
+      {
+        "path": "apps/host/tests/api-reasoning-effort.test.mjs",
+        "sha256": "2abddfca81b4c1eb2ad0082e60604bfcf6fd6d83acee76f3c48586e3ea5273bf",
+        "lfSha256": "90cc7ec382c46afab8b4ac5bd133424b938892b9174be98e9bd40f20477caecf"
+      },
+      {
+        "path": "apps/host/tests/model-providers.test.mjs",
+        "sha256": "81ecd6e168742ca1230891b2de9b7c3b7d413f2324edabe275edc2987e4a1590",
+        "lfSha256": "fc40bc94973a8d8af5c3abc7f95d1d0909de7968321c076568dcf8a7a59de7a3"
+      },
+      {
+        "path": "apps/host/tests/openrouter-reasoning.test.mjs",
+        "sha256": "918f43fbad4617797cf78af275d8dd951ab13a7d77cc359e5597281bb359c1a5",
+        "lfSha256": "7bc113de43c39192c5b94185d29a8a2f030772516c98e39d9479cb9d3f8a54a5"
+      },
+      {
+        "path": "apps/host/tests/thinking-direct.test.mjs",
+        "sha256": "2bd82fb951ac601c9ffad776ffd6683965b6ab9890c12f80ab93fe21ef7fb0e2",
+        "lfSha256": "eea047b5aa6323bc73e273d3379fd5e999695e62ea355fa43c05366a8f5b6374"
+      }
+    ]
+  },
+  "combinedApp022": {
+    "scope": "One combined scratch candidate, separate from either submitted PR branch. The two reports describe this same 68-test result; do not add them together.",
+    "base": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+    "appVersion": "0.2.2",
+    "implementationInputs": [
+      {
+        "pr": 3361,
+        "head": "b910b705fa24555c658f9b01e7ee443cf728b73c",
+        "paths": [
+          "apps/host/src/components/NativeModels.tsx"
+        ]
+      },
+      {
+        "pr": 3363,
+        "head": "ab57c5da90b76983fd44b79130acc17d5a735508",
+        "paths": [
+          "apps/host/server/index.mjs",
+          "apps/host/server/model-providers.mjs"
+        ]
+      }
+    ],
+    "copiedTestInputs": [
+      {
+        "head": "b910b705fa24555c658f9b01e7ee443cf728b73c",
+        "path": "apps/host/tests/guided-setup-empty-catalog.test.mjs"
+      },
+      {
+        "head": "ab57c5da90b76983fd44b79130acc17d5a735508",
+        "path": "apps/host/tests/api-reasoning-effort.test.mjs"
+      },
+      {
+        "head": "ab57c5da90b76983fd44b79130acc17d5a735508",
+        "path": "apps/host/tests/mock-model-api.mjs"
+      }
+    ],
+    "baseline": {
+      "description": "Unpatched App0.2.2 implementation with the new regression fixtures. Expected failures: four UI and four direct API checks.",
+      "name": "app022-before-resolved.tap",
+      "sha256": "65633fc4c98c19d6fd722e04a1b862c72242cb87c56ce272ed0bcc810ae9f236",
+      "tests": 25,
+      "passed": 17,
+      "failed": 8,
+      "skipped": 0,
+      "exitCode": 1
+    },
+    "results": [
+      {
+        "name": "app022-after.tap",
+        "sha256": "a2133cc95edfcea8eaf75d2732a417ab732fc5447e19fab1874f2341f39b6eb0",
+        "tests": 39,
+        "passed": 39,
+        "failed": 0,
+        "skipped": 0
+      },
+      {
+        "name": "app022-affected-ui.tap",
+        "sha256": "91e3288a6d36568ad8e4eadac7083a85240f165adb2cc69fd0fa293b036a43d9",
+        "tests": 29,
+        "passed": 28,
+        "failed": 1,
+        "skipped": 0
+      },
+      {
+        "name": "app022-fit-missing-input-resolved.tap",
+        "sha256": "b9a778d64b5f43fdfb263e52b8babb2ec1cb5f54b370f80a4aa89da1d1d29c34",
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    ],
+    "uniquePassed": 68,
+    "counting": "39 core passes + 28 wider UI passes + the one previously blocked wider UI test after restoring its missing source files. The failed incomplete-input attempt is not a product regression or an extra pass. The 20 Host combinations are cases inside one test, not 20 additional tests.",
+    "commands": [
+      {
+        "id": "app022-before-resolved",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "--test",
+          "--test-reporter=tap",
+          "--test-reporter-destination=${OUT}/app022-before-resolved.tap",
+          "tests/guided-setup-empty-catalog.test.mjs",
+          "tests/api-reasoning-effort.test.mjs"
+        ],
+        "exitCode": 1,
+        "counts": {
+          "tests": 25,
+          "passed": 17,
+          "failed": 8,
+          "skipped": 0
+        },
+        "phase": "before implementation patches"
+      },
+      {
+        "id": "app022-after",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "--test",
+          "--test-reporter=tap",
+          "--test-reporter-destination=${OUT}/app022-after.tap",
+          "tests/guided-setup-empty-catalog.test.mjs",
+          "tests/api-reasoning-effort.test.mjs",
+          "tests/model-providers.test.mjs",
+          "tests/openrouter-reasoning.test.mjs",
+          "tests/thinking-direct.test.mjs"
+        ],
+        "exitCode": 0,
+        "counts": {
+          "tests": 39,
+          "passed": 39,
+          "failed": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "id": "app022-affected-ui",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "--test",
+          "--test-reporter=tap",
+          "--test-reporter-destination=${OUT}/app022-affected-ui.tap",
+          "tests/model-picker.test.mjs",
+          "tests/native-fit.test.mjs",
+          "tests/languages-and-catalog.test.mjs",
+          "tests/qa1-downloads.test.mjs",
+          "tests/native-fb5.test.mjs"
+        ],
+        "exitCode": 1,
+        "counts": {
+          "tests": 29,
+          "passed": 28,
+          "failed": 1,
+          "skipped": 0
+        },
+        "setupIssue": "The host-only source archive lacked setup.py and tools/strata_mcp.py. Those exact-base files were restored before the single-test rerun."
+      },
+      {
+        "id": "app022-fit-missing-input-resolved",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "--test",
+          "--test-name-pattern=the tiers of the engine",
+          "--test-reporter=tap",
+          "--test-reporter-destination=${OUT}/app022-fit-missing-input-resolved.tap",
+          "tests/native-fit.test.mjs"
+        ],
+        "exitCode": 0,
+        "counts": {
+          "tests": 1,
+          "passed": 1,
+          "failed": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "id": "app022-typecheck",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "node_modules/typescript/bin/tsc",
+          "--noEmit"
+        ],
+        "exitCode": 0,
+        "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "id": "app022-build",
+        "cwd": "${HOST}",
+        "executable": "${NODE}",
+        "args": [
+          "node_modules/vite/bin/vite.js",
+          "build",
+          "--outDir",
+          "${OUT}/dist/app022"
+        ],
+        "exitCode": 0,
+        "stdoutSha256": "29587c2a8c4b5c0ac9f8a66722d4ec68537a7a7bffe73e573fd9c71d22680940",
+        "stderrSha256": "f4ed28f4f43f1c7014702f96c0dcd70cdcd03ab0d381b3f8feea952e3edd1ea7"
+      }
+    ],
+    "sourceFiles": [
+      {
+        "path": "apps/host/src/components/NativeModels.tsx",
+        "sha256": "0d4a8f54c6f824283123f6c5aa705f0423a6d92e53bf091df3b73975d3591879",
+        "lfSha256": "c7ab3ff11c81be5de8d423aaea0860f2abc6ae68b394c824b51906f1cc731267"
+      },
+      {
+        "path": "apps/host/server/index.mjs",
+        "sha256": "bc50dfc52cf625f9fb857f84c197a16518fd1c81a8c653b010c3c67af596760d",
+        "lfSha256": "83dc71826fdd42fa025ecc0da18216b22622e74c83c29d6e72cdf767796882f2"
+      },
+      {
+        "path": "apps/host/server/model-providers.mjs",
+        "sha256": "e4ef9138047e50999893b678a48e79f57ac5900f4a05b94ab6ef91787ba1afdd",
+        "lfSha256": "547c16341eb973aea4db6ad9806409a9384a884fceece99daa5fbc427737431a"
+      },
+      {
+        "path": "apps/host/server/vision-probe.mjs",
+        "sha256": "f3d14fab00ebb84b798600175501281d0c0218e6eb5410a7750b23d20d5e2934",
+        "lfSha256": "e48523cd6f07211f8671f4625cbaf9c623358199aa383c9a2b0e0bd313f62a5e"
+      },
+      {
+        "path": "apps/host/server/agent/profile.mjs",
+        "sha256": "1d5ddd28f2de07838cac2c784752d0038543401c57c1d6f56dbd35e35c5e1338",
+        "lfSha256": "26c3d555c44a3e71384229498e4a44eccb54529079bbf5f474e192448c8abcda"
+      },
+      {
+        "path": "apps/host/tests/guided-setup-empty-catalog.test.mjs",
+        "sha256": "0c5e508afda36e6051ae35b48879fd8d7cb8b39d182bcf51a417c67c50aab0ae",
+        "lfSha256": "6f564a2b5be91c5f5468989dd4c0b99d8fce1631e09a4e291ba14761b239e315"
+      },
+      {
+        "path": "apps/host/tests/api-reasoning-effort.test.mjs",
+        "sha256": "2abddfca81b4c1eb2ad0082e60604bfcf6fd6d83acee76f3c48586e3ea5273bf",
+        "lfSha256": "90cc7ec382c46afab8b4ac5bd133424b938892b9174be98e9bd40f20477caecf"
+      },
+      {
+        "path": "apps/host/tests/mock-model-api.mjs",
+        "sha256": "172b53ebe9fbf1e4b6ec8cb0d960404a8db45a618d95cc6b574726ef797dbd4f",
+        "lfSha256": "8918440fc7d4b6693ca6d03de15803c8e3577c2989b0a37e0e310965cad5d082"
+      },
+      {
+        "path": "apps/host/package-lock.json",
+        "sha256": "f63801c25d8f51cc61708d7018d25dc1058886b8813571437626ac8e038d5ef3",
+        "lfSha256": "fe837d0f276161fbef36e67f47f553fe1f570f0fe9edb864148c298a0ae5846f"
+      }
+    ],
+    "testInputFiles": [
+      {
+        "path": "apps/host/tests/api-reasoning-effort.test.mjs",
+        "sha256": "2abddfca81b4c1eb2ad0082e60604bfcf6fd6d83acee76f3c48586e3ea5273bf",
+        "lfSha256": "90cc7ec382c46afab8b4ac5bd133424b938892b9174be98e9bd40f20477caecf"
+      },
+      {
+        "path": "apps/host/tests/guided-setup-empty-catalog.test.mjs",
+        "sha256": "0c5e508afda36e6051ae35b48879fd8d7cb8b39d182bcf51a417c67c50aab0ae",
+        "lfSha256": "6f564a2b5be91c5f5468989dd4c0b99d8fce1631e09a4e291ba14761b239e315"
+      },
+      {
+        "path": "apps/host/tests/languages-and-catalog.test.mjs",
+        "sha256": "80c668eae8e7e95f69745f36e94b11db2dd8ae6eaa29eff56f7203b8ecbb35e9",
+        "lfSha256": "0495be9a60054899fc2b8e30bff68b6f61816898a26d2e688e3314a1b9bc9a0a"
+      },
+      {
+        "path": "apps/host/tests/mock-model-api.mjs",
+        "sha256": "172b53ebe9fbf1e4b6ec8cb0d960404a8db45a618d95cc6b574726ef797dbd4f",
+        "lfSha256": "8918440fc7d4b6693ca6d03de15803c8e3577c2989b0a37e0e310965cad5d082"
+      },
+      {
+        "path": "apps/host/tests/model-picker.test.mjs",
+        "sha256": "9c95b1b1641827750bfa07a4bc816e891de15e6d44d6371184573e43c2cb83ab",
+        "lfSha256": "60ba89dfb640dae4839da1041f7511ddbc9ce4d3fd66a45a4d79914cd9f59cc1"
+      },
+      {
+        "path": "apps/host/tests/model-providers.test.mjs",
+        "sha256": "81ecd6e168742ca1230891b2de9b7c3b7d413f2324edabe275edc2987e4a1590",
+        "lfSha256": "fc40bc94973a8d8af5c3abc7f95d1d0909de7968321c076568dcf8a7a59de7a3"
+      },
+      {
+        "path": "apps/host/tests/native-fb5.test.mjs",
+        "sha256": "1a99544e32016c7df45cccedfeee709edcbcccd1d9fdedd9c328ce91227ca563",
+        "lfSha256": "16d3778b0898a25dd1287cf6f2df4e673957c304d10ae9b398233fdb227381dd"
+      },
+      {
+        "path": "apps/host/tests/native-fit.test.mjs",
+        "sha256": "1a84f2d0025541bce6c554ea63296c664aa6c1db4ada7f3012b8029d37c2bc69",
+        "lfSha256": "9af86e7ceb74971a64466fed0396d08e64df92cbb3260a26c89ffbb7b6329967"
+      },
+      {
+        "path": "apps/host/tests/openrouter-reasoning.test.mjs",
+        "sha256": "918f43fbad4617797cf78af275d8dd951ab13a7d77cc359e5597281bb359c1a5",
+        "lfSha256": "7bc113de43c39192c5b94185d29a8a2f030772516c98e39d9479cb9d3f8a54a5"
+      },
+      {
+        "path": "apps/host/tests/qa1-downloads.test.mjs",
+        "sha256": "e424887f6f115a1966e09c84d6c47e1f75a220af85ba39eb9e171f89d2f39de9",
+        "lfSha256": "fc4b2e349390bd463a634f78bf2354d69b5235008d9af2a0a563ffe552d3d2b4"
+      },
+      {
+        "path": "apps/host/tests/thinking-direct.test.mjs",
+        "sha256": "2bd82fb951ac601c9ffad776ffd6683965b6ab9890c12f80ab93fe21ef7fb0e2",
+        "lfSha256": "eea047b5aa6323bc73e273d3379fd5e999695e62ea355fa43c05366a8f5b6374"
+      }
+    ],
+    "extraSourceInputs": [
+      {
+        "path": "setup.py",
+        "sha256": "87f1028f46aaa9ac2c4bb3e8d8a4fc6178de782dafc3b4cd6c179d2c2230efab",
+        "lfSha256": "d3497638bc2edd8f7a065eb1f77837b40b3dad6a1e80f452099d3f3ba84c5ceb",
+        "revision": "011c9e600a93bbc9fd451c563501b5831c32bbca"
+      },
+      {
+        "path": "tools/strata_mcp.py",
+        "sha256": "df471c2f7f092f7345674169b166a0f0197a22cdffc1705f9967b54876b20048",
+        "lfSha256": "1f9363eca6d720072931ab7ad8b7c06f2334da2b28f19c655f0125239a417c72",
+        "revision": "011c9e600a93bbc9fd451c563501b5831c32bbca"
+      }
+    ],
+    "installedReference": {
+      "modified": false,
+      "comparison": "Text comparison ignores CRLF versus LF only.",
+      "files": [
+        {
+          "path": "apps/host/package.json",
+          "sourceArchiveSha256": "17bdd14a35104747bb00507e449554da993edd54aa8b5a77b735ab32fb6435a9",
+          "installedSha256": "7c462f799ad1a9567b9a72ef64ef58fc0443343d75192c785288ed838f6f3009",
+          "sameTextIgnoringCRLF": true
+        },
+        {
+          "path": "apps/host/server/index.mjs",
+          "sourceArchiveSha256": "04d2c27820debb67018d98141cdf67420a9b247def12598437c6d3eb8e682776",
+          "installedSha256": "3e3c9e3bc98ee8ba500a93d346e534054f7e76d9f8f4d836a308874f49d62aaf",
+          "sameTextIgnoringCRLF": true
+        },
+        {
+          "path": "apps/host/server/model-providers.mjs",
+          "sourceArchiveSha256": "95e079bbbe9dd55f5fe0d7d02f02569e643145e20d9d29b83b25395c6fc6a2b9",
+          "installedSha256": "eb7882a0ea45e5312a237fbbc81e65d0f1e577008e983e37781b98488188298b",
+          "sameTextIgnoringCRLF": true
+        },
+        {
+          "path": "apps/host/server/vision-probe.mjs",
+          "sourceArchiveSha256": "f3d14fab00ebb84b798600175501281d0c0218e6eb5410a7750b23d20d5e2934",
+          "installedSha256": "e48523cd6f07211f8671f4625cbaf9c623358199aa383c9a2b0e0bd313f62a5e",
+          "sameTextIgnoringCRLF": true
+        },
+        {
+          "path": "apps/host/server/agent/profile.mjs",
+          "sourceArchiveSha256": "1d5ddd28f2de07838cac2c784752d0038543401c57c1d6f56dbd35e35c5e1338",
+          "installedSha256": "26c3d555c44a3e71384229498e4a44eccb54529079bbf5f474e192448c8abcda",
+          "sameTextIgnoringCRLF": true
+        }
+      ]
+    }
+  },
+  "harness": {
+    "implementation": "Real staged DeepSeek Harness connected only to a scripted loopback model fixture.",
+    "version": "0.2.1-alpha.3",
+    "commit": "571902028a75c64c1d767f4ae5fd099485f0ddf0",
+    "bundleSha256": "66975a57810290957c506d5c3906f8479d2e64f56ec65a5d1dc19dc81c224b3a",
+    "piAiModuleSha256": "fe657e357bdf1f32c686da1b7f06dc4dc91a2ad5e55d13a6850e63fb12b0d1fb",
+    "patches": [
+      {
+        "id": "strata-pi-ai-context-safety-v2",
+        "package": "@earendil-works/pi-ai",
+        "version": "1.1.0",
+        "file": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js",
+        "beforeSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2",
+        "afterSha256": "fe657e357bdf1f32c686da1b7f06dc4dc91a2ad5e55d13a6850e63fb12b0d1fb"
+      }
+    ],
+    "scope": "OpenRouter SCRIPT:echo effort fixture; no live provider, GPU inference or external model workload. The staged copy also includes the separate PR3684 budget patch; that patch is not submitted by either of these PRs."
+  },
+  "coverage": {
+    "component": "React server rendering of actual components with anonymous state fixtures",
+    "host": "Actual disposable Strata Host and loopback mock API; 20 effort/model combinations within one test",
+    "agent": "Actual staged Harness, scripted loopback model",
+    "nativeDesktop": false,
+    "gpuOrModelPreparation": false,
+    "liveModelOrCloudInference": false,
+    "installedSourceWrites": false
+  },
+  "setupAndCaptureNotes": [
+    "Initial copied dependencies were outside a node_modules-named parent; the scratch layout was corrected before valid UI results.",
+    "The original three-context-line PR3363 diff did not apply beside changed App0.2.2 context. The same implementation diff with one context line applied cleanly.",
+    "A wider UI check initially lacked two root source files; after restoring exact-base files, only that blocked test was rerun.",
+    "Raw logs stay in local operator evidence. Only hashes, relative input names, commands and counts are published. No request bodies, credentials or private paths are included.",
+    "Vite large-chunk and external-output-directory warnings did not fail the builds."
+  ],
+  "limits": [
+    "No native App window interaction or packaged installer execution was performed in this validation.",
+    "Component rendering, compilation and scripted protocol tests do not establish native desktop rendering, model quality or hardware compatibility.",
+    "The combined App0.2.2 source is not the individually submitted source of either PR. Its 68 unique passes are shared evidence, not an additional per-branch test total.",
+    "No runtime or test source changes, GPU workload, production configuration writes or installed application edits were needed."
+  ]
+}
