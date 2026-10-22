@@ -357,6 +357,18 @@ public:
     /// stage forwards to the stage that holds the head (same as window_logprobs).
     bool brow_row(const int32_t* tokens, int n, float* out, std::string& err);
 
+    /// jev systemone (M3.1, --jev-brow): row `t` of the LAST window's head logits - the distribution at
+    /// position pos0 + t, i.e. the token that follows the row's own token - copied device-to-host for `n`
+    /// token ids (their logits, in the order asked).  brow_row() is this with t = the final row; this lets a
+    /// caller read a row the window already computed, so N questions in ONE window are N reads, not N runs.
+    /// Fails closed (false + err) when no window has run, `t` is outside the last window, a token is out of
+    /// range, or the copy fails - the server never gets a partial or fabricated row.  A layer split's earlier
+    /// stage forwards to the stage that holds the head (same as window_logprobs).
+    bool brow_row_at(int t, const int32_t* tokens, int n, float* out, std::string& err);
+
+    /// The row count of the last window that ran (0 before any run): the `t` range brow_row_at() accepts.
+    int brow_rows() const { return next_ ? next_->brow_rows() : last_row_T_; }
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }

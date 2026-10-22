@@ -1036,7 +1036,8 @@ void usage() {
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
                  "  --jev-brow            opt-in: answer BROW <tokens> between requests with BROWD (jev systemone readout,\n"
-                 "                       M3.0); the engine is never asked unless the server sends BROW\n"
+                 "                       M3.0), and BROWAT <row> <tokens> with BROWATD (any row of the same window, M3.1);\n"
+                 "                       the engine is never asked unless the server sends BROW or BROWAT\n"
                  "  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
                  "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
                  "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
@@ -13658,6 +13659,43 @@ int main(int argc, char** argv) {
                     continue;
                 }
                 std::string ans = "BROWD " + std::to_string(toks.size());
+                char field[48];
+                for (size_t i = 0; i < toks.size(); ++i) {
+                    std::snprintf(field, sizeof(field), " %d:%.6g", (int) toks[i], (double) vals[i]);
+                    ans += field;
+                }
+                std::printf("%s\n", ans.c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            // jev systemone (M3.1, --jev-brow): BROWAT <row> <token...> - row <row> of the LAST verify
+            // window (0 <= row < its token count: row t is the position after the request's token t), the
+            // same read BROW does for the final row.  One window, many rows: a multi-field decision is N
+            // reads off one prefill instead of N prefills.  Answers BROWATD <n> <tok>:<logit>...; ERR (and
+            // the engine stays in step) when the flag is off, the row is outside the last window, or a
+            // token is out of range.
+            if (o.jev_brow && line.rfind("BROWAT ", 0) == 0) {
+                int64_t row = -1;
+                std::vector<int32_t> toks;
+                {
+                    std::istringstream is(line.substr(7));
+                    if (!(is >> row)) row = -1;
+                    int64_t v;
+                    while (is >> v) toks.push_back((int32_t) v);
+                    if (row < 0 || toks.empty() || toks.size() > 4096 || (is.eof() && !is.fail() ? false : !is.eof())) {
+                        std::printf("ERR BROWAT: bad row or token list\n");
+                        std::fflush(stdout);
+                        continue;
+                    }
+                }
+                std::vector<float> vals(toks.size());
+                std::string berr;
+                if (!ver.brow_row_at((int) row, toks.data(), (int) toks.size(), vals.data(), berr)) {
+                    std::printf("ERR BROWAT: %s\n", berr.c_str());
+                    std::fflush(stdout);
+                    continue;
+                }
+                std::string ans = "BROWATD " + std::to_string(toks.size());
                 char field[48];
                 for (size_t i = 0; i < toks.size(); ++i) {
                     std::snprintf(field, sizeof(field), " %d:%.6g", (int) toks[i], (double) vals[i]);
