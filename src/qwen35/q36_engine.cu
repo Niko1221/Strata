@@ -2870,7 +2870,9 @@ struct Engine {
                 const int G = H / HKV;
                 const float one = 1.0f, zero = 0.0f;
                 // a quantized cache is staged to compact f16 [kvh][P][HD] first (the f16 path reads the cache directly)
-                if (kv_type == KvType::Q8)
+                if (kv_type == KvType::F16) {
+                    // nothing to stage: the GEMMs below read the f16 cache at its ctx stride
+                } else if (kv_type == KvType::Q8)
                     k_kv_dequant_q8<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>(kq[li], vq[li], ksc[li], vsc[li], k16,
                                                                                       v16, ctx, P, HD, HKV);
                 else if (kv_type == KvType::FP8)
