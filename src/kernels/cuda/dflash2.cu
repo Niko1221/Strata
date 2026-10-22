@@ -391,7 +391,7 @@ __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_
     if (out) out[i] = sum;
     if (out_bf16) out_bf16[i] = bf16_from_f32(sum);
 }
-template<bool Canonical, bool Paired>
+template<bool Canonical, bool Paired, int PageShift = 6>
 __global__ void attention128_kernel(const float* q, const uint16_t* k, const uint16_t* v,
                                     const int32_t* table, const int32_t* steps, float* scratch,
                                     int rows, int heads, int kv_heads, int page_size, int chunks, int window) {
@@ -410,10 +410,10 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
         const bool visible = cell < end && (!window || abs(cell - position) < window);
         size_t poolrow = 0;
         if (visible) {
-            const int page = Canonical ? cell >> 6 : cell / page_size;
-            const int offset = Canonical ? cell & 63 : cell % page_size;
+            const int page = Canonical ? cell >> PageShift : cell / page_size;
+            const int offset = Canonical ? cell & ((1 << PageShift) - 1) : cell % page_size;
             poolrow = ((size_t)table[page] * (Canonical ? 8 : kv_heads) + kv_head) *
-                      (Canonical ? 64 : page_size) + offset;
+                      (Canonical ? (1 << PageShift) : page_size) + offset;
             for (int d = lane; d < 128; d += 32)
                 dot += q[(row * heads + head) * 128 + d] * __half2float(__ushort_as_half(k[poolrow * 128 + d]));
             for (int offset = 16; offset; offset >>= 1) dot += __shfl_xor_sync(0xffffffffu, dot, offset);
@@ -482,10 +482,19 @@ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, con
         (int64_t)rows * heads * ((active_cells + 63LL) / 64) * 130 > INT32_MAX)
         throw std::invalid_argument("dflash2_attention: invalid geometry or missing buffers");
     const int chunks = (active_cells + 63) / 64;
+    static const bool small_page = [] {
+        const char* value = std::getenv("STRATA_DFLASH2_SMALL_PAGE_ATTENTION");
+        return value && value[0] == '1';
+    }();
     // The official geometry uses power-of-two pages and four Q heads per KV
     // head. Its addresses need shifts, not runtime integer divisions. Other
     // geometries keep the general indexing path.
-    if (heads == 32 && kv_heads == 8 && page_size == 64) {
+    if (small_page && heads == 32 && kv_heads == 8 && page_size == 4) {
+        if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
+            attention128_kernel<true, true, 2><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+        else
+            attention128_kernel<true, false, 2><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+    } else if (heads == 32 && kv_heads == 8 && page_size == 64) {
         // Two adjacent values share their denominator and use one aligned
         // half2 load. Keep the original ordered sum for each component. Small
         // windows retain four warps; long windows benefit from smaller CTAs.

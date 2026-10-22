@@ -1,0 +1,66 @@
+{
+  "strata-prompt-tail": {
+    "bytes": 78736688,
+    "sha256": "1b828517ffed034c7a119f87134fe3a302140fb71c9ff730c80eca7213893227"
+  },
+  "code_long-taps.npy": {
+    "bytes": 129126528,
+    "sha256": "8d951cd5a6410f0f07f57a7a2c83adda4f3f6e04bf4370cae1ad9af8fa90e7e2"
+  },
+  "cache_long-taps.npy": {
+    "bytes": 129024128,
+    "sha256": "3a77f3b80c80a0f7790e0f720179eb86ccd69a2d0842aa0fd9d2b5c4391b20e1"
+  },
+  "taps.bin": {
+    "bytes": 258152332,
+    "sha256": "a1434bfd92cb59587f3949a856df77dc1b3b3f0aa046ec5779d9f56f7793774b"
+  },
+  "native-dense.json": {
+    "bytes": 14521,
+    "sha256": "97ec6290257683d30768b2bd9fc36e6b5279fc5cdf9921e37beef01115b94d26"
+  },
+  "strata-capture": {
+    "bytes": 78726320,
+    "sha256": "34cb31335a7d9ea4d3383a713d0079b7e1d6dd5e1b6a7803150b7e7c26099eff"
+  },
+  "strata-dense": {
+    "bytes": 78740856,
+    "sha256": "1ba83948e7b919e75e2804b8fad58a9989ace4f9ca94b7714262e764f1ad7a89"
+  },
+  "strata-small-page": {
+    "bytes": 78792016,
+    "sha256": "42a56c9a217ddb47c58fa6f42ad331c77ae2c296a532d84c53b3610fedb4a3f2"
+  },
+  "strata-joint-audit": {
+    "bytes": 78791752,
+    "sha256": "485b8e4b3081b7e7fb08842149021cd2b8c64d4ca36b362b46bddcb3e7c9127a"
+  },
+  "page4-before.bits": {
+    "bytes": 2293760,
+    "sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  "page4-default.bits": {
+    "bytes": 2293760,
+    "sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  "page4-on.bits": {
+    "bytes": 2293760,
+    "sha256": "6097e7954fc60f71230bd6cb9cdf96b470145d2eee80352bd91bbfd5e6579d7f"
+  },
+  "joint/code_short-taps.npy": {
+    "bytes": 6246528,
+    "sha256": "723b1577cf7df47937c822f2694144bcc2bacdcdb30c731ed8c2b795b55a9f5b"
+  },
+  "joint/code_long-taps.npy": {
+    "bytes": 129126528,
+    "sha256": "8d951cd5a6410f0f07f57a7a2c83adda4f3f6e04bf4370cae1ad9af8fa90e7e2"
+  },
+  "joint/cache_long-taps.npy": {
+    "bytes": 129024128,
+    "sha256": "3a77f3b80c80a0f7790e0f720179eb86ccd69a2d0842aa0fd9d2b5c4391b20e1"
+  },
+  "joint/taps.bin": {
+    "bytes": 264405256,
+    "sha256": "f3eb9203e5b3d14d21bccaeda240e290b28aaa4ce7be3eef719d9dcfa66aa520"
+  }
+}

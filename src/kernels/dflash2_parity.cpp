@@ -239,16 +239,19 @@ void target_features_and_attention() {
         }
     }
     const int hd=128;
-    for (int page : {64,96})
+    for (int page : {4,64,96})
     for (int heads : {4,32}) for (int rows : {2,4,8})
-    for (int end : {9,73,2053,4101}) for (int window : {0,2048,4096}) {
-        if ((end == 4101 || window == 4096) &&
+    for (int end : {9,73,2053,4101,8197}) for (int window : {0,2048,4096}) {
+        const bool ring = end == 8197;
+        if (ring && !(window == 2048 && (page == 4 || page == 64) && heads == 32 && rows == 8)) continue;
+        if (!ring && (end == 4101 || window == 4096) &&
             !(end == 4101 && window == 4096 && page == 64 && heads == 32 && rows == 4)) continue;
         const int kv = heads == 32 ? 8 : 2;
         const int pages=(end+page-1)/page;
+        const int slots=ring ? (window+rows+2*page-2)/page : pages;
         std::vector<int32_t> table(pages), steps(rows*4);
-        for(int p=0;p<pages;++p)table[p]=pages-1-p; // nonidentity page table
-        std::vector<uint16_t> k(pages*page*kv*hd),v(k.size());
+        for(int p=0;p<pages;++p)table[p]=slots-1-p%slots; // includes physical ring aliases
+        std::vector<uint16_t> k(slots*page*kv*hd),v(k.size());
         std::vector<float> q(rows*heads*hd);
         for(size_t i=0;i<k.size();++i) {
             k[i]=__half_as_ushort(__float2half(((int)(i%43)-21)*0.015f));
@@ -263,7 +266,7 @@ void target_features_and_attention() {
         dflash2_attention(dq.p,dk.p,dv.p,dt.p,ds.p,out.p,scratch.p,rows,heads,kv,page,
                           std::min(end,window?window+rows:end),window,nullptr);
         auto got=out.read(q.size());
-        if (heads == 32 && rows == 2 && end == 2053 && window == 2048 && page == 64) {
+        if (heads == 32 && rows == 2 && end == 2053 && window == 2048 && (page == 4 || page == 64)) {
             Device<uint16_t> shifted(v.size() + 1);
             checked(cudaMemcpy(shifted.p + 1, v.data(), v.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
             dflash2_attention(dq.p,dk.p,shifted.p+1,dt.p,ds.p,out.p,scratch.p,rows,heads,kv,page,
@@ -305,8 +308,8 @@ void attention_benchmark(const char* bits_path) {
         bits.open(bits_path, std::ios::binary | std::ios::trunc);
         if (!bits) throw std::runtime_error("cannot open attention output dump");
     }
-    for (int rows : {2, 4, 8}) for (int end : {32, 128, 512, 1024, 2053}) {
-        const int heads = 32, kv = 8, page = 64, hd = 128;
+    for (int page : {4,64}) for (int rows : {2, 4, 8}) for (int end : {32, 128, 512, 1024, 2053}) {
+        const int heads = 32, kv = 8, hd = 128;
         const int pages = (end + page - 1) / page;
         const int active = std::min(end, 2048 + rows);
         std::vector<int32_t> table(pages), steps(rows * 4);
@@ -350,8 +353,8 @@ void attention_benchmark(const char* bits_path) {
             std::memcpy(&bits, &value, sizeof bits);
             fingerprint = (fingerprint ^ bits) * 1099511628211ull;
         }
-        std::printf("attention rows=%d heads=32 end=%d: %.6f ms/pass bits=%016llx\n",
-                    rows, end, ms / 200, (unsigned long long)fingerprint);
+        std::printf("attention page=%d rows=%d heads=32 end=%d: %.6f ms/pass bits=%016llx\n",
+                    page, rows, end, ms / 200, (unsigned long long)fingerprint);
         checked(cudaEventDestroy(a)); checked(cudaEventDestroy(b));
         checked(cudaGraphExecDestroy(exec)); checked(cudaGraphDestroy(graph));
         checked(cudaStreamDestroy(stream));

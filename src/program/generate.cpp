@@ -12725,6 +12725,16 @@ int main(int argc, char** argv) {
             // Still maintain draft context for a later greedy continuation.
             const bool req_dflash = has_dflash && req_temperature <= 0.0f;
             if (has_dflash) dflash.set_reference_mode(req_df2_reference);
+            if (has_dflash) {
+                const char* tail = std::getenv("STRATA_DFLASH2_PROMPT_TAIL");
+                const auto& dg = dflash.artifact().geom();
+                // A prefix checkpoint may be resumed by a shorter request.
+                // Restrict omission to fresh prompts with no saved prefixes.
+                const bool omit = tail && tail[0] == '1' && o.prompt_cache == 0 &&
+                    dg.is_dflash2() && dg.sliding_window > 0 && !req_df2_reference &&
+                    !std::getenv("STRATA_DF_PARITY") && !std::getenv("STRATA_DF_DBG");
+                dflash.set_context_floor(omit ? std::max<int64_t>(0, n - dg.sliding_window) : 0);
+            }
             df_request = has_dflash;
             if (has_dflash && !req_dflash)
                 std::fprintf(stderr, "dflash: sampled request uses target-only decoding\n");

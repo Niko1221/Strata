@@ -83,11 +83,22 @@ checkpoint, target model or shared head:
   mode and section timing retain serial execution. Set it before starting the
   engine; it affects DFlash2 only and does not alter the shared head.
 - `STRATA_DFLASH2_REGISTER_TOPK=1` keeps vocabulary tiles in registers during top-k.
+- `STRATA_DFLASH2_SMALL_PAGE_ATTENTION=1` specializes the 32Q/8KV attention
+  kernel for four-cell K/V pages. It uses constant page addressing and paired
+  value loads for long windows, preserving the order of each component's sum.
+  Other page sizes and geometries keep their existing paths.
 - `STRATA_DFLASH2_FUSED_CONV=1` combines each convolution with its BF16 conversion
   or residual addition. Tensor-dump diagnostics retain the separate operations.
 - `STRATA_DFLASH2_LATTICE_SELECTOR=1` computes candidate transitions in parallel,
   then walks the resulting scores. It reuses idle top-k scratch space and falls
   back when that space is too small. Reference mode retains the serial selector.
+- `STRATA_DFLASH2_PROMPT_TAIL=1` skips context-encoder batches which the local
+  attention window can no longer read. It applies only to fresh native-protocol
+  requests with `--prompt-cache 0`. Saved-prefix, reference and tensor-dump paths
+  retain full processing. Remaining batches keep their original boundaries and
+  arithmetic. This reduces prompt work; it does not improve token acceptance.
+  The [context audit](../bench/results/2026-10-22-dflash2-context-audit/README.md)
+  records the measured limits.
 
 `STRATA_VERIFY_SPLIT_FIRST=1..7` changes the first group's size with `--spec-split`.
 Unset or zero retains the balanced split. This verifier option also affects MTP;

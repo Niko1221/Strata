@@ -1,0 +1,283 @@
+{
+  "code_short": {
+    "counts": {
+      "first_correct": 90,
+      "gold_in_candidates": 95,
+      "selector_corrected": 2,
+      "selector_spoiled": 2,
+      "missing_after_wrong_predecessor": 0
+    },
+    "errors": [
+      {
+        "output_index": 12,
+        "position": 39,
+        "gold": 264,
+        "unary": 264,
+        "pick": 39492,
+        "in_candidates": true
+      },
+      {
+        "output_index": 29,
+        "position": 56,
+        "gold": 26943,
+        "unary": 30177,
+        "pick": 30177,
+        "in_candidates": true
+      },
+      {
+        "output_index": 30,
+        "position": 57,
+        "gold": 364,
+        "unary": 364,
+        "pick": 64700,
+        "in_candidates": true
+      },
+      {
+        "output_index": 82,
+        "position": 109,
+        "gold": 279,
+        "unary": 424,
+        "pick": 424,
+        "in_candidates": true
+      },
+      {
+        "output_index": 88,
+        "position": 115,
+        "gold": 4202,
+        "unary": 25170,
+        "pick": 25170,
+        "in_candidates": true
+      }
+    ]
+  },
+  "code_long": {
+    "counts": {
+      "first_correct": 81,
+      "gold_in_candidates": 94,
+      "selector_corrected": 2,
+      "selector_spoiled": 2,
+      "missing_after_wrong_predecessor": 0
+    },
+    "errors": [
+      {
+        "output_index": 10,
+        "position": 2437,
+        "gold": 440,
+        "unary": 3055,
+        "pick": 3055,
+        "in_candidates": true
+      },
+      {
+        "output_index": 20,
+        "position": 2447,
+        "gold": 5604,
+        "unary": 328,
+        "pick": 328,
+        "in_candidates": true
+      },
+      {
+        "output_index": 34,
+        "position": 2461,
+        "gold": 291,
+        "unary": 291,
+        "pick": 579,
+        "in_candidates": true
+      },
+      {
+        "output_index": 38,
+        "position": 2465,
+        "gold": 26126,
+        "unary": 279,
+        "pick": 279,
+        "in_candidates": true
+      },
+      {
+        "output_index": 40,
+        "position": 2467,
+        "gold": 8427,
+        "unary": 84228,
+        "pick": 84228,
+        "in_candidates": true
+      },
+      {
+        "output_index": 43,
+        "position": 2470,
+        "gold": 4829,
+        "unary": 318,
+        "pick": 318,
+        "in_candidates": false
+      },
+      {
+        "output_index": 48,
+        "position": 2475,
+        "gold": 13,
+        "unary": 318,
+        "pick": 318,
+        "in_candidates": true
+      },
+      {
+        "output_index": 53,
+        "position": 2480,
+        "gold": 264,
+        "unary": 279,
+        "pick": 279,
+        "in_candidates": true
+      },
+      {
+        "output_index": 72,
+        "position": 2499,
+        "gold": 5215,
+        "unary": 5215,
+        "pick": 33793,
+        "in_candidates": true
+      },
+      {
+        "output_index": 73,
+        "position": 2500,
+        "gold": 471,
+        "unary": 8,
+        "pick": 8,
+        "in_candidates": true
+      },
+      {
+        "output_index": 74,
+        "position": 2501,
+        "gold": 6297,
+        "unary": 1603,
+        "pick": 1603,
+        "in_candidates": true
+      },
+      {
+        "output_index": 75,
+        "position": 2502,
+        "gold": 11321,
+        "unary": 21221,
+        "pick": 21221,
+        "in_candidates": true
+      },
+      {
+        "output_index": 86,
+        "position": 2513,
+        "gold": 948,
+        "unary": 48142,
+        "pick": 48142,
+        "in_candidates": true
+      },
+      {
+        "output_index": 87,
+        "position": 2514,
+        "gold": 26370,
+        "unary": 279,
+        "pick": 279,
+        "in_candidates": true
+      }
+    ]
+  },
+  "cache_long": {
+    "counts": {
+      "first_correct": 83,
+      "gold_in_candidates": 95,
+      "selector_corrected": 0,
+      "selector_spoiled": 0,
+      "missing_after_wrong_predecessor": 0
+    },
+    "errors": [
+      {
+        "output_index": 1,
+        "position": 2426,
+        "gold": 682,
+        "unary": 369,
+        "pick": 6587,
+        "in_candidates": true
+      },
+      {
+        "output_index": 3,
+        "position": 2428,
+        "gold": 279,
+        "unary": 264,
+        "pick": 264,
+        "in_candidates": true
+      },
+      {
+        "output_index": 5,
+        "position": 2430,
+        "gold": 5604,
+        "unary": 5020,
+        "pick": 5020,
+        "in_candidates": true
+      },
+      {
+        "output_index": 7,
+        "position": 2432,
+        "gold": 1599,
+        "unary": 220,
+        "pick": 220,
+        "in_candidates": true
+      },
+      {
+        "output_index": 49,
+        "position": 2474,
+        "gold": 11173,
+        "unary": 11782,
+        "pick": 11782,
+        "in_candidates": true
+      },
+      {
+        "output_index": 53,
+        "position": 2478,
+        "gold": 799,
+        "unary": 264,
+        "pick": 1066,
+        "in_candidates": true
+      },
+      {
+        "output_index": 54,
+        "position": 2479,
+        "gold": 7059,
+        "unary": 11316,
+        "pick": 11316,
+        "in_candidates": true
+      },
+      {
+        "output_index": 58,
+        "position": 2483,
+        "gold": 8495,
+        "unary": 31133,
+        "pick": 31133,
+        "in_candidates": true
+      },
+      {
+        "output_index": 63,
+        "position": 2488,
+        "gold": 4016,
+        "unary": 1521,
+        "pick": 1521,
+        "in_candidates": true
+      },
+      {
+        "output_index": 76,
+        "position": 2501,
+        "gold": 2708,
+        "unary": 14542,
+        "pick": 14542,
+        "in_candidates": true
+      },
+      {
+        "output_index": 81,
+        "position": 2506,
+        "gold": 5972,
+        "unary": 1287,
+        "pick": 1287,
+        "in_candidates": true
+      },
+      {
+        "output_index": 86,
+        "position": 2511,
+        "gold": 2528,
+        "unary": 1287,
+        "pick": 1287,
+        "in_candidates": true
+      }
+    ]
+  }
+}

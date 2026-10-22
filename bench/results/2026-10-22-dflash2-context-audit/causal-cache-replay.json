@@ -1,0 +1,50 @@
+{
+  "code_short": {
+    "baseline": {
+      "windows": 26,
+      "accepted": 70,
+      "offered": 85,
+      "verified_rows": 111,
+      "overrides": 0
+    },
+    "causal_cache": {
+      "windows": 26,
+      "accepted": 70,
+      "offered": 85,
+      "verified_rows": 111,
+      "overrides": 0
+    }
+  },
+  "code_long": {
+    "baseline": {
+      "windows": 38,
+      "accepted": 58,
+      "offered": 87,
+      "verified_rows": 125,
+      "overrides": 0
+    },
+    "causal_cache": {
+      "windows": 38,
+      "accepted": 58,
+      "offered": 87,
+      "verified_rows": 125,
+      "overrides": 0
+    }
+  },
+  "cache_long": {
+    "baseline": {
+      "windows": 30,
+      "accepted": 66,
+      "offered": 78,
+      "verified_rows": 108,
+      "overrides": 0
+    },
+    "causal_cache": {
+      "windows": 30,
+      "accepted": 66,
+      "offered": 78,
+      "verified_rows": 108,
+      "overrides": 0
+    }
+  }
+}

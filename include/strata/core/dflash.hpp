@@ -19,6 +19,7 @@
 #include "strata/core/session.hpp"
 #include "strata/core/vmm.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -157,6 +158,13 @@ public:
     /// Native-protocol diagnostic A/B; independent graphs keep switching from
     /// charging either mode for the other's graph capture. No effect on plain DFlash.
     void set_reference_mode(bool on) { reference_mode_ = on; }
+    /// Omit context batches strictly before this position. Only for a fresh
+    /// local-attention prompt whose future queries cannot read those cells;
+    /// callers using prefix snapshots must leave this at zero.
+    void set_context_floor(int64_t pos) {
+        const auto& g = artifact_.geom();
+        context_floor_ = g.is_dflash2() && g.sliding_window > 0 ? std::max<int64_t>(0, pos) : 0;
+    }
     /// Frees every resource this drafter holds (device buffers, the five K/V states' arenas and
     /// their pinned staging, the stream) and unbinds the device state. The parsed artifact is retained
     /// for a later upload or load. Safe on a partially-uploaded
@@ -223,6 +231,7 @@ private:
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
     bool reference_mode_ = false;
+    int64_t context_floor_ = 0;
     void clear_graphs();
 
     // the target's shared modules

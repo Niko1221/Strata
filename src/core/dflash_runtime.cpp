@@ -332,6 +332,7 @@ void DFlashDrafter::release() {
     cs_ = nullptr;
     vram_ = 0;
     device_ = -1;
+    context_floor_ = 0;
     emb_ref_ = nullptr;
     head_ = nullptr;
     window_ = cap_ = scratch_cap_ = attn_scratch_floats_ = 0;
@@ -707,6 +708,10 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     }
     for (int64_t r0 = 0; r0 < rows; r0 += 8) {
         const int nr = (int) std::min<int64_t>(8, rows - r0);
+        // Keep the original batch boundaries and projection arithmetic. The
+        // context encoder is row-independent; old local-attention cells cannot
+        // contribute to any proposal in this fresh request.
+        if (pos0 + r0 + nr <= context_floor_) continue;
         {
         DFlashSection section("prompt.tap_gather");
         strata::kernels::dflash_gather_taps(taps + r0 * N, tapin_, n_taps, (int) N, nr,
@@ -739,7 +744,9 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
                                cudaStreamSynchronize(cs_); return t; }());
         }
         parity_dump_u16_as_f32(parity_dir_, "pool_cells0", st_[0].k_pool,
-                                std::min<int64_t>(st_[0].max_cells, qsa_kv_elastic_cells()) * 2 * 256, cs_);
+            std::min<int64_t>(st_[0].n_slots * shapes_.page_size,
+                st_[0].kv_elastic >= 0 ? qsa_kv_elastic_cells() : st_[0].max_cells) *
+                dg.n_head_kv * dg.head_dim, cs_);
     }
     return true;
 }
@@ -757,6 +764,7 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     if (!taps || rows < 1 || stride_floats < rows * N || pos0 < 0 || rows > cap_ - pos0) {
         err = "dflash: invalid verify tap layout or context range"; return false;
     }
+    if (pos0 + rows <= context_floor_) return true;
     {
         DFlashSection s("ctx.tap_gather");
         strata::kernels::dflash_gather_taps(taps, tapin_, n_taps, (int) N, (int) rows, stride_floats, cs_);
@@ -919,7 +927,8 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                     const int64_t page = page_h;
                     const int64_t row = (page * dg.n_head_kv) * shapes_.page_size + (cell % shapes_.page_size);
                     parity_dump_u16_as_f32(parity_dir_, "pool_k0", stl.k_pool + row * dg.head_dim, dg.head_dim, cs_);
-                    parity_dump_u16_as_f32(parity_dir_, "pool_head", stl.k_pool, 163840, cs_);
+                    parity_dump_u16_as_f32(parity_dir_, "pool_head", stl.k_pool,
+                        std::min<int64_t>(163840, stl.n_slots * shapes_.page_size * dg.n_head_kv * dg.head_dim), cs_);
                     char path[600];
                     std::snprintf(path, sizeof path, "%s/pool_meta.bin", parity_dir_);
                     if (FILE* f = std::fopen(path, "wb")) {
@@ -963,6 +972,10 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     if (pos < 0 || pos > cap_ || K > cap_ - pos || pos > scratch_cap_ || K > scratch_cap_ - pos ||
         (st_[0].kv_elastic >= 0 && pos + K > qsa_kv_elastic_cells())) {
         err = "dflash: the context or mapped capacity cannot fit the proposed block";
+        return false;
+    }
+    if (context_floor_ > 0 && (pos < context_floor_ || pos - context_floor_ < dg.sliding_window - 1)) {
+        err = "dflash2: proposal would read omitted prompt context";
         return false;
     }
     const int vocab = head_ids_ ? head_rows_ : (int) dg.vocab;
@@ -1164,7 +1177,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 // pools are read-only for the kernel, so dumping before or after it is the same), the
                 // page table's entries for those pages, and the per-row steps the kernel is handed
                 const int64_t pages = (pos + K + shapes_.page_size - 1) / shapes_.page_size;
-                const int64_t prows = pages * shapes_.page_size * dg.n_head_kv;
+                const int64_t prows = std::min(pages, stl.n_slots) * shapes_.page_size * dg.n_head_kv;
                 char name[32];
                 std::snprintf(name, sizeof name, "kpool%d", (int) l);
                 parity_dump_u16_as_f32(parity_dir_, name, pools.k_pool, prows * dg.head_dim, cs_);

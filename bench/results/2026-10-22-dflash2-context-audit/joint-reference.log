@@ -1,0 +1,3 @@
+code_short {'positions': 95, 'first_native_correct': 90, 'first_reference_correct': 90, 'first_disagreements': 0, 'all_rows_disagreements': 19, 'first_gold_in_top16': 95}
+code_long {'positions': 95, 'first_native_correct': 81, 'first_reference_correct': 81, 'first_disagreements': 0, 'all_rows_disagreements': 36, 'first_gold_in_top16': 94}
+cache_long {'positions': 95, 'first_native_correct': 83, 'first_reference_correct': 83, 'first_disagreements': 0, 'all_rows_disagreements': 4, 'first_gold_in_top16': 95}

@@ -1,0 +1,44 @@
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -8571,1 +8571,6 @@
+         bool df_request = false;   // set before prefill; for both greedy and sampled requests
++        const char* audit_taps = std::getenv("STRATA_DFLASH2_AUDIT_TAPS");
++        if (audit_taps) {
++            g_tap_dump = std::fopen(audit_taps, "wb");
++            if (!g_tap_dump) return 1;
++        }
+@@ -8576,2 +8581,7 @@
+             sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
++                if (audit_taps && df_request) {
++                    g_tap_stride_bytes = (size_t) sp.tap_stride_rows() * (size_t) g.n_embd * 2;
++                    if (!tap_dump_record(0, pos, rows, count, data, g.n_embd, true, nullptr) ||
++                        std::fflush(g_tap_dump)) return false;
++                }
+                 return !df_request || dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+@@ -13461,2 +13471,7 @@
+                         return false;
++                    if (audit_taps && df_request) {
++                        g_tap_stride_bytes = (size_t) ver.tap_stride() * sizeof(float);
++                        if (!tap_dump_record(0, q, T, ver.n_taps(), ver.taps(), g.n_embd, false, ver.stream()) ||
++                            std::fflush(g_tap_dump)) return false;
++                    }
+                     q += T;
+@@ -15341,2 +15356,7 @@
+                 }
++                if (audit_taps && df_request) {
++                    g_tap_stride_bytes = (size_t) ver.tap_stride() * sizeof(float);
++                    if (!tap_dump_record(1, p, a + 1, ver.n_taps(), ver.taps(), g.n_embd, false, ver.stream()) ||
++                        std::fflush(g_tap_dump)) return 1;
++                }
+                 if (!dflash_target_probe(ver, p, a + 1, err)) {
+--- a/src/core/dflash_runtime.cpp
++++ b/src/core/dflash_runtime.cpp
+@@ -1435,2 +1435,8 @@
+     if (probabilities) std::memcpy(probabilities, h_out_ + max_rows_, (size_t) block * 4);
++    if (std::getenv("STRATA_DFLASH2_AUDIT_DENSE")) {
++        std::fprintf(stderr, "dflash2 audit: %lld %d %d", (long long) pos, block, x);
++        for (int i = 0; i < block; ++i) std::fprintf(stderr, " %d", out[i]);
++        std::fprintf(stderr, "\n");
++        if (probabilities) std::fill(probabilities, probabilities + block, 0.0f);
++    }
+     return true;

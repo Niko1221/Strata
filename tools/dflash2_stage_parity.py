@@ -81,8 +81,11 @@ def check(path, directory):
             expected_k=rope(rmsnorm(expected_k,W[pre+'attn_k_norm.weight']),np.arange(pos))
             expected_v=project(context,pre+'attn_v.weight').reshape(pos,nkv,D)
             pool_rows=pr[:pos,None]+np.arange(nkv)[None,:]*page
-            report.stage(f'context_k{l}',kp[pool_rows],expected_k.astype(np.float16).astype(np.float32))
-            report.stage(f'context_v{l}',vp[pool_rows],expected_v.astype(np.float16).astype(np.float32))
+            # A physical ring intentionally overwrites old logical positions.
+            # Only compare cells which this proposal can still attend to.
+            live=slice(max(0,pos-window+1) if window else 0,pos)
+            report.stage(f'context_k{l}',kp[pool_rows[live]],expected_k[live].astype(np.float16).astype(np.float32))
+            report.stage(f'context_v{l}',vp[pool_rows[live]],expected_v[live].astype(np.float16).astype(np.float32))
         attn=np.zeros((K,nq,D),np.float32)
         for r in range(K):
             visible=np.ones(pos+K,bool) if not window else np.abs(cells-(pos+r))<window
