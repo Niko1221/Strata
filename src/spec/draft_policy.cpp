@@ -81,7 +81,7 @@ DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const 
     }
     // a guessed cost can keep the policy from ever measuring a size: the first few times a confident lookup would
     // need a size not measured yet, it is tried (verification keeps the output; only the one round's speed is at stake)
-    if (t_full > p.t && (cost_n_[t_full] < kProbes || stale(t_full)) && q >= 0.85) {
+    if (t_full > p.t && (cost_n_[t_full] - delayed_n_[t_full] + tried_[t_full] < kProbes || stale(t_full)) && q >= 0.85) {
         p.lookup = true;
         p.t = t_full;
     }
@@ -105,6 +105,38 @@ void DraftPolicy::observe(bool lookup, int t, int accepted, int match, double ro
         mtp_tok_[t] = mtp_n_[t] > 0 ? (1.0 - kTokAlpha) * mtp_tok_[t] + kTokAlpha * got : got;
         mtp_n_[t] += 1.0;
     }
+}
+
+void DraftPolicy::observe_committed(bool lookup, int t, int accepted, int match) {
+    t = std::clamp(t, 1, kMaxT);
+    rounds_ += 1.0;
+    if (lookup) {
+        tried_[t] += 1.0;
+        last_[t] = rounds_;   // tried now: not stale within this generation
+        const int b = bucket(match);
+        ok_[b] = kDecay * ok_[b] + accepted;
+        bad_[b] = kDecay * bad_[b] + (accepted < t - 1 ? 1.0 : 0.0);
+    } else {
+        const double got = accepted + 1.0;
+        mtp_tok_[t] = mtp_n_[t] > 0 ? (1.0 - kTokAlpha) * mtp_tok_[t] + kTokAlpha * got : got;
+        mtp_n_[t] += 1.0;
+    }
+}
+
+void DraftPolicy::defer_cost(int64_t end, int t, double round_ms) {
+    if (round_ms > 0) held_.push_back({end, std::clamp(t, 1, kMaxT), round_ms});
+}
+
+void DraftPolicy::apply_costs(int64_t committed) {
+    size_t n = 0;
+    for (; n < held_.size() && held_[n].end < committed; ++n) {
+        const HeldCost& h = held_[n];
+        cost_[h.t] = cost_n_[h.t] > 0 ? (1.0 - kCostAlpha) * cost_[h.t] + kCostAlpha * h.ms : h.ms;
+        cost_n_[h.t] += 1.0;
+        delayed_n_[h.t] += 1.0;   // a round already counted by observe_committed
+        last_[h.t] = rounds_;
+    }
+    held_.erase(held_.begin(), held_.begin() + (std::ptrdiff_t) n);
 }
 
 double DraftPolicy::chain_rate(int match) const {

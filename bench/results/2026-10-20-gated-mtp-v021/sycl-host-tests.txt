@@ -1,0 +1,32 @@
+   WARNING: vars.sh does not set up dependencies when invoked directly. Please perform environment setup for UMF before running DPC++ applications.
+Test project <WORK>/build-sycl
+      Start  1: gated_proposal_test
+ 1/13 Test  #1: gated_proposal_test ...................   Passed    0.05 sec
+      Start  2: spec_admission_default
+ 2/13 Test  #2: spec_admission_default ................   Passed    0.03 sec
+      Start  3: spec_admission_pick
+ 3/13 Test  #3: spec_admission_pick ...................   Passed    0.03 sec
+      Start  4: spec_admission_top
+ 4/13 Test  #4: spec_admission_top ....................   Passed    0.03 sec
+      Start  5: spec_admission_exact_top_only
+ 5/13 Test  #5: spec_admission_exact_top_only .........   Passed    0.02 sec
+      Start  6: native_arithmetic_parity
+ 6/13 Test  #6: native_arithmetic_parity ..............   Passed    0.31 sec
+      Start  7: native_arithmetic_parity_avx
+ 7/13 Test  #7: native_arithmetic_parity_avx ..........   Passed    1.27 sec
+      Start  8: native_arithmetic_parity_kq256
+ 8/13 Test  #8: native_arithmetic_parity_kq256 ........   Passed    0.33 sec
+      Start  9: native_arithmetic_parity_mt1
+ 9/13 Test  #9: native_arithmetic_parity_mt1 ..........   Passed    0.29 sec
+      Start 10: native_arithmetic_parity_no512
+10/13 Test #10: native_arithmetic_parity_no512 ........   Passed    0.32 sec
+      Start 11: native_arithmetic_parity_ggml
+11/13 Test #11: native_arithmetic_parity_ggml .........   Passed    0.36 sec
+      Start 12: native_arithmetic_parity_nvfp4_avx2
+12/13 Test #12: native_arithmetic_parity_nvfp4_avx2 ...   Passed    0.32 sec
+      Start 13: native_arithmetic_parity_nvfp4_ggml
+13/13 Test #13: native_arithmetic_parity_nvfp4_ggml ...   Passed    0.32 sec
+
+100% tests passed out of 13
+
+Total Test time (real) =   3.69 sec

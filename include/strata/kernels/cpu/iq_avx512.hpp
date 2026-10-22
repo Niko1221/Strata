@@ -15,4 +15,8 @@ void iq512_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_
 void iq512_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
                 float* const* out, int r0, int r1);
 
+// Singleton-equivalent accumulation for types 18, 21 and 22; caller checks the linked ggml ISA.
+void iq512_reference_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                             const void* const* act, int nt, float* const* ff, int r0, int r1);
+
 }  // namespace strata::kernels::cpu

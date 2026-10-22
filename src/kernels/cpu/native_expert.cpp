@@ -1,6 +1,6 @@
-// src/kernels/cpu/native_expert.cpp - plan v0.3 P6: native (GGUF-form) experts on the CPU through ggml-cpu.
-// See the header.  Nothing here is Strata arithmetic: the activation quantizers and the row dot products are
-// ggml-cpu's, so an IQ expert computes what llama.cpp's CPU backend computes for it.
+// Native (GGUF-form) experts: ggml activation quantizers and format-specific CPU row kernels.
+// Default keeps the existing dispatch. WindowInvariant preserves that dispatch's single-token arithmetic
+// while retaining shared weight decoding where the grouped kernel gives the same result.
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/iq_avx512.hpp"
@@ -172,7 +172,8 @@ int native_gu_mt_min(int gu_type) {
     return iq3s_one && gu_type == 21 ? 1 : mt_min;
 }
 
-void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
+template <NativeArithmetic Arithmetic>
+void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1) {
     // the multi-token kernels decode the weights once for all tokens: 2.0-2.4x ggml-cpu at three tokens, no faster
     // at one (all are bound by the codebook lookups, ~5 GB/s per core), measured by native_expert_parity.  AVX-512
@@ -213,11 +214,14 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         return;
     }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
+    const bool singleton_iq = Arithmetic == NativeArithmetic::WindowInvariant && mt_min > 1;
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
     // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();
-    if (kq && f.gu_type == 12 && nt >= 2) {   // one token: ggml's own dot below (the same bits, less overhead)
+    // KQ matches the ggml AVX2/FMA dot; other builds keep their own singleton arithmetic.
+    if (kq && f.gu_type == 12 && nt >= 2 &&
+        (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // one token: ggml's own dot below (the same bits, less overhead)
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
@@ -232,16 +236,27 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // through an empty switch would leave ff unwritten instead of falling back to ggml-cpu.
     static const bool cpu512 = cpu_avx512_ok();
     if (nt >= mt_min && (iq512_supported(f.gu_type) || (!cpu512 && iq256_supported(f.gu_type)))) {
-        if (avx512 && iq512_supported(f.gu_type)) {
-            iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            return;
-        }
-        if (avx2 && iq256_supported(f.gu_type)) {
-            iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            return;
+        if (singleton_iq) {
+#if defined(__x86_64__) || defined(_M_X64)
+            if (avx512 && ggml_cpu_has_avx2() && ggml_cpu_has_fma() &&
+                (f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22)) {
+                iq512_reference_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+                return;
+            }
+#endif
+            // Otherwise use the singleton dot below, keeping its row-major weight reuse across tokens.
+        } else {
+            if (avx512 && iq512_supported(f.gu_type)) {
+                iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+                return;
+            }
+            if (avx2 && iq256_supported(f.gu_type)) {
+                iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+                return;
+            }
         }
     }
-    if (avx1 && nt >= mt_min && iq128_supported(f.gu_type)) {
+    if (!singleton_iq && avx1 && nt >= mt_min && iq128_supported(f.gu_type)) {
         iq128_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
@@ -284,7 +299,8 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     }
 }
 
-void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
+template <NativeArithmetic Arithmetic>
+void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
@@ -298,13 +314,22 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
         tq_rows(tq_isa(), f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
-    if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8)) {   // Q5_1 / Q8_0 down: bit-exact, any group size
+    if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8) &&
+        (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // Q5_1 / Q8_0 down: bit-exact, any group size
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
     if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
-        iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
-        return;
+        if (Arithmetic == NativeArithmetic::Default || mt_min <= 1) {
+            iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            return;
+        }
+#if defined(__x86_64__) || defined(_M_X64)
+        if (ggml_cpu_has_avx2() && ggml_cpu_has_fma()) {
+            iq4nl_reference_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            return;
+        }
+#endif
     }
     // the older-CPU tier: IQ4_NL and Q2_0 down rows in 128-bit (ggml-cpu's dots for both are scalar here)
     static const bool avx1 = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_IQ128") == nullptr;
@@ -334,6 +359,28 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
             out[t][r] = s * sd;
         }
     }
+}
+
+// Keep one dispatch implementation: only width-sensitive IQ kernels need a different arithmetic path.
+// Already invariant kernels (including NVFP4) retain their shared decoding and scale handling.
+void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
+                    float* const* ff, int r0, int r1) {
+    native_gu_rows_impl<NativeArithmetic::Default>(f, blob, act, nt, ff, r0, r1);
+}
+
+void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                      float* const* out, int r0, int r1) {
+    native_down_rows_impl<NativeArithmetic::Default>(f, blob, hq, nt, out, r0, r1);
+}
+
+void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
+                              float* const* ff, int r0, int r1) {
+    native_gu_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, act, nt, ff, r0, r1);
+}
+
+void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                                float* const* out, int r0, int r1) {
+    native_down_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, hq, nt, out, r0, r1);
 }
 
 }  // namespace strata::kernels::cpu

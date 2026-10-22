@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="420" viewBox="0 0 1080 420">
+<rect width="1080" height="420" rx="14" fill="#f8fafc"/>
+<g font-family="Arial, sans-serif" fill="#14263d">
+<text x="36" y="42" font-size="23" font-weight="700">Uninstrumented decode throughput on current main</text>
+<text x="36" y="69" font-size="14" fill="#51647b">Windows HIP · Coder IQ1_M · six paired blocks per cell · 256 tokens per request</text>
+<line x1="310.0" y1="100" x2="310.0" y2="326" stroke="#dee5ee"/>
+<text x="310.0" y="350" text-anchor="middle" font-size="13">-12%</text>
+<line x1="391.66666666666663" y1="100" x2="391.66666666666663" y2="326" stroke="#dee5ee"/>
+<text x="391.66666666666663" y="350" text-anchor="middle" font-size="13">-8%</text>
+<line x1="473.3333333333333" y1="100" x2="473.3333333333333" y2="326" stroke="#dee5ee"/>
+<text x="473.3333333333333" y="350" text-anchor="middle" font-size="13">-4%</text>
+<line x1="555.0" y1="100" x2="555.0" y2="326" stroke="#61748c" stroke-dasharray="4 4"/>
+<text x="555.0" y="350" text-anchor="middle" font-size="13">+0%</text>
+<line x1="636.6666666666666" y1="100" x2="636.6666666666666" y2="326" stroke="#dee5ee"/>
+<text x="636.6666666666666" y="350" text-anchor="middle" font-size="13">+4%</text>
+<line x1="718.3333333333334" y1="100" x2="718.3333333333334" y2="326" stroke="#dee5ee"/>
+<text x="718.3333333333334" y="350" text-anchor="middle" font-size="13">+8%</text>
+<line x1="800.0" y1="100" x2="800.0" y2="326" stroke="#dee5ee"/>
+<text x="800.0" y="350" text-anchor="middle" font-size="13">+12%</text>
+<text x="36" y="132" font-size="16">English  /  T=0.6</text>
+<line x1="423.67567074947294" y1="127" x2="676.5755345273197" y2="127" stroke="#116b9e" stroke-width="3"/>
+<line x1="423.67567074947294" y1="121" x2="423.67567074947294" y2="133" stroke="#116b9e" stroke-width="2"/>
+<line x1="676.5755345273197" y1="121" x2="676.5755345273197" y2="133" stroke="#116b9e" stroke-width="2"/>
+<circle cx="550.1256026383962" cy="127" r="6" fill="#116b9e"/>
+<text x="830" y="132" font-size="15">-0.24% [-6.43, +5.95]</text>
+<text x="36" y="189" font-size="16">English  /  T=1.0</text>
+<line x1="405.3468151274002" y1="184" x2="694.4877713531555" y2="184" stroke="#116b9e" stroke-width="3"/>
+<line x1="405.3468151274002" y1="178" x2="405.3468151274002" y2="190" stroke="#116b9e" stroke-width="2"/>
+<line x1="694.4877713531555" y1="178" x2="694.4877713531555" y2="190" stroke="#116b9e" stroke-width="2"/>
+<circle cx="549.9172932402778" cy="184" r="6" fill="#116b9e"/>
+<text x="830" y="189" font-size="15">-0.25% [-7.33, +6.83]</text>
+<text x="36" y="246" font-size="16">Repeated text  /  T=0.6</text>
+<line x1="510.32112196513356" y1="241" x2="707.5157752824346" y2="241" stroke="#116b9e" stroke-width="3"/>
+<line x1="510.32112196513356" y1="235" x2="510.32112196513356" y2="247" stroke="#116b9e" stroke-width="2"/>
+<line x1="707.5157752824346" y1="235" x2="707.5157752824346" y2="247" stroke="#116b9e" stroke-width="2"/>
+<circle cx="608.918448623784" cy="241" r="6" fill="#116b9e"/>
+<text x="830" y="246" font-size="15">+2.64% [-2.19, +7.47]</text>
+<text x="36" y="303" font-size="16">Repeated text  /  T=1.0</text>
+<line x1="474.64065899139706" y1="298" x2="557.9559667061876" y2="298" stroke="#116b9e" stroke-width="3"/>
+<line x1="474.64065899139706" y1="292" x2="474.64065899139706" y2="304" stroke="#116b9e" stroke-width="2"/>
+<line x1="557.9559667061876" y1="292" x2="557.9559667061876" y2="304" stroke="#116b9e" stroke-width="2"/>
+<circle cx="516.2983128487923" cy="298" r="6" fill="#116b9e"/>
+<text x="830" y="303" font-size="15">-1.90% [-3.94, +0.14]</text>
+<text x="555" y="381" text-anchor="middle" font-size="14">Paired change versus unmodified main; mean and 95% t interval</text>
+<text x="36" y="407" font-size="12" fill="#51647b">All 48 completed requests retained. Logging failed at the final save; two further planned blocks did not run.</text>
+</g></svg>

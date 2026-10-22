@@ -598,8 +598,10 @@ bool MtpDrafter::setup_coupled(std::string& err) {
     coupled_ok_ = true;
     if (spec_prob_env())
         std::fprintf(stderr, "strata mtp: probabilistic draft acceptance on (STRATA_SPEC_PROB): sampled requests draft by "
-                             "sampling the draft head's distribution over %lld tokens; the verifier accepts with "
-                             "min(1, p/q) and resamples the residual\n", (long long) nv);
+                             "sampling the draft head's distribution over %lld tokens; %s\n", (long long) nv,
+                     spec_gate_pick()
+                         ? "pick gate: masked mu offers, min(1, p/mu) acceptance and (p-mu)+ rejection/NULL residuals"
+                         : "top gate (compatibility): q offers, min(1, p/q) acceptance and (p-q)+ rejection residuals");
     else
         std::fprintf(stderr, "strata mtp: coupled draft sampling on (STRATA_SPEC_COUPLED): sampled requests draft with the "
                              "target's chain and Philox draw over %lld tokens\n", (long long) nv);
@@ -1552,7 +1554,8 @@ DraftTiming g_dt;
 }  // namespace
 
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
-                       float* probs, float min_p, int* n_drafts) {
+                       float* probs, float min_p, int* n_drafts, DraftResult* result) {
+    if (result) { *result = {}; if (n_drafts) *n_drafts = 0; }
 #if defined(STRATA_GPU_METAL)
     {
         if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
@@ -1562,6 +1565,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (!strata::metal_engine::mtp_draft(T, tokens, p, a, max_steps, drafts, probs, min_p, &n, err)) return false;
         for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
         if (n_drafts) *n_drafts = n;
+        if (result) *result = {n, max_steps};
         ms_draft += ms_since(t0);
         ++rounds;
         return true;
@@ -1732,6 +1736,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     }
     for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
     if (n_drafts) *n_drafts = n;
+    if (result) *result = {n, max_steps};
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
@@ -1851,12 +1856,13 @@ int MtpDrafter::chain_poll(std::string& err) {
 }
 
 bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
-                             float* probs, float min_p, int* n_drafts) {
+                             float* probs, float min_p, int* n_drafts, DraftResult* result) {
+    if (result) { *result = {}; if (n_drafts) *n_drafts = 0; }
 #if defined(STRATA_GPU_METAL)
     {   // the decode window's row 0 is the residual (the window that just ran)
         (void) R_row;
         std::vector<int32_t> toks((size_t) T, token);
-        return draft(1, toks.data(), cell, 0, drafts, err, probs, min_p, n_drafts);
+        return draft(1, toks.data(), cell, 0, drafts, err, probs, min_p, n_drafts, result);
     }
 #endif
     const OnDevice on_device(device_);
@@ -1869,7 +1875,7 @@ bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t c
             return false;
         }
     std::vector<int32_t> toks((size_t) T, token);
-    return draft(T, toks.data(), cell, 0, drafts, err, probs, min_p, n_drafts);
+    return draft(T, toks.data(), cell, 0, drafts, err, probs, min_p, n_drafts, result);
 }
 
 }  // namespace strata::core

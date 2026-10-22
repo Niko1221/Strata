@@ -1,0 +1,180 @@
+{
+  "completed": true,
+  "all_24_logit_rows_equal": true,
+  "outputs_equal": true,
+  "trace_transparency": {
+    "A": true
+  },
+  "checks": [
+    {
+      "variant": "trace",
+      "index": 0,
+      "same": true,
+      "sha256": "d2f067cc45ca81006f426de2ca5986918f4688746e64e813e2ec221319e501db"
+    },
+    {
+      "variant": "trace",
+      "index": 1,
+      "same": true,
+      "sha256": "5d82968d0cc924a7dcf9a82ce4cf773c525cdeab31ba2666aab0a901c47e2281"
+    },
+    {
+      "variant": "trace",
+      "index": 2,
+      "same": true,
+      "sha256": "f033ae37d60c9b818c768b7323fe8a8942f8dcca72d540c08c70d20a79a10f37"
+    },
+    {
+      "variant": "trace",
+      "index": 3,
+      "same": true,
+      "sha256": "5a0f99e4b94f714ba2e8031b52934a019842fd0489c0bfeca4069367ae62367f"
+    },
+    {
+      "variant": "trace",
+      "index": 4,
+      "same": true,
+      "sha256": "e85c581c6fa1a9851703fe759a3956b02ae231372a1449ecb02e254a3e4f394f"
+    },
+    {
+      "variant": "trace",
+      "index": 5,
+      "same": true,
+      "sha256": "c2ccbb1c2efb2117d23c0722981e97d2f75c96d4c667ff5e2cb1883b989212ba"
+    },
+    {
+      "variant": "trace",
+      "index": 6,
+      "same": true,
+      "sha256": "9f9f174c35e877b6ab07c52613dd5a7dfea98fac201f3a880fac72227d6b37f1"
+    },
+    {
+      "variant": "trace",
+      "index": 7,
+      "same": true,
+      "sha256": "88d45e864be6e27cd9170326d264d040a5f6bb826adc11840843014eb290f737"
+    },
+    {
+      "variant": "trace",
+      "index": 8,
+      "same": true,
+      "sha256": "e4ebc8e1e2664b8344c2a70e0ae8ad233b8fb4183de0b283b0adab9b149ce6b1"
+    },
+    {
+      "variant": "trace",
+      "index": 9,
+      "same": true,
+      "sha256": "31355df187ab6a4130095b171206d0849435987c311f653ad7fdf19ae307f063"
+    },
+    {
+      "variant": "trace",
+      "index": 10,
+      "same": true,
+      "sha256": "69e769bd96c17766d2eac6d01b54e635cc4870259ac9307f2c0f6b9e0a8e47dd"
+    },
+    {
+      "variant": "trace",
+      "index": 11,
+      "same": true,
+      "sha256": "646e057795bcaede6f9ad787009f92f4779c17f124c4777da7c47bf0f947fbc2"
+    },
+    {
+      "variant": "singleton",
+      "index": 0,
+      "same": true,
+      "sha256": "d2f067cc45ca81006f426de2ca5986918f4688746e64e813e2ec221319e501db"
+    },
+    {
+      "variant": "singleton",
+      "index": 1,
+      "same": true,
+      "sha256": "5d82968d0cc924a7dcf9a82ce4cf773c525cdeab31ba2666aab0a901c47e2281"
+    },
+    {
+      "variant": "singleton",
+      "index": 2,
+      "same": true,
+      "sha256": "f033ae37d60c9b818c768b7323fe8a8942f8dcca72d540c08c70d20a79a10f37"
+    },
+    {
+      "variant": "singleton",
+      "index": 3,
+      "same": true,
+      "sha256": "5a0f99e4b94f714ba2e8031b52934a019842fd0489c0bfeca4069367ae62367f"
+    },
+    {
+      "variant": "singleton",
+      "index": 4,
+      "same": true,
+      "sha256": "e85c581c6fa1a9851703fe759a3956b02ae231372a1449ecb02e254a3e4f394f"
+    },
+    {
+      "variant": "singleton",
+      "index": 5,
+      "same": true,
+      "sha256": "c2ccbb1c2efb2117d23c0722981e97d2f75c96d4c667ff5e2cb1883b989212ba"
+    },
+    {
+      "variant": "singleton",
+      "index": 6,
+      "same": true,
+      "sha256": "9f9f174c35e877b6ab07c52613dd5a7dfea98fac201f3a880fac72227d6b37f1"
+    },
+    {
+      "variant": "singleton",
+      "index": 7,
+      "same": true,
+      "sha256": "88d45e864be6e27cd9170326d264d040a5f6bb826adc11840843014eb290f737"
+    },
+    {
+      "variant": "singleton",
+      "index": 8,
+      "same": true,
+      "sha256": "e4ebc8e1e2664b8344c2a70e0ae8ad233b8fb4183de0b283b0adab9b149ce6b1"
+    },
+    {
+      "variant": "singleton",
+      "index": 9,
+      "same": true,
+      "sha256": "31355df187ab6a4130095b171206d0849435987c311f653ad7fdf19ae307f063"
+    },
+    {
+      "variant": "singleton",
+      "index": 10,
+      "same": true,
+      "sha256": "69e769bd96c17766d2eac6d01b54e635cc4870259ac9307f2c0f6b9e0a8e47dd"
+    },
+    {
+      "variant": "singleton",
+      "index": 11,
+      "same": true,
+      "sha256": "646e057795bcaede6f9ad787009f92f4779c17f124c4777da7c47bf0f947fbc2"
+    }
+  ],
+  "build": {
+    "completed": true,
+    "started": 1792493615.9465237,
+    "arms": {
+      "A": {
+        "binary_sha256": "b650d98603ff52c66c932f2cce3f50133277b30bb2c4ac58b09cc2fa820f895b",
+        "base_binary_sha256": "f7a418515b9de18914c2516e654eb8bbadc287459efd3490ff4ba695b7ea4dff",
+        "libraries": {
+          "strata_core.lib": "6547a29eec5963b00f6ea8a3da08cfae0e8dc0a2a356754fffafed893b1ce4ca",
+          "strata_engine.lib": "bb94d8052e7515dc05b081aadcf4a4d5e0b2996316e9f61837ff3daf767afd11",
+          "strata_kernels.lib": "7bc7d097412a3ca24667a3e8da5f29629159d0f68bc68a7529a75efb65b6505b",
+          "strata_kernels_cpu.lib": "926f915f3e76b3ec5c970492dc0ead9ffc693593d3b49a31c943a284299c208b",
+          "strata_prefill.lib": "2fab10a08596ceb807d5b3ac608b066f728b18a7339c6ee8fdacd3fe6aafbdaa",
+          "strata_qwen35.lib": "0d0a33e6c3ffbda18fa21fdb56214a091171e3880fe85d9ed141b41f651b4bab",
+          "strata_spec.lib": "ad13c254e618f8498795e5f328e78d6ba7ba8c14c74e59d6ec9cd60587e40257"
+        },
+        "source_sha256": "7d1f348876085fc87db818f551409bdce5987f2f7348cb595e51ee65489d2772",
+        "trace_sha256": "b309458117a2f0bfe64865cf4be7752cf9db712472d3ac379f57dfbc92e57d2f"
+      }
+    }
+  },
+  "elapsed_seconds": 56.167057275772095,
+  "recovery": {
+    "original_service": "absent",
+    "restored": true
+  }
+}

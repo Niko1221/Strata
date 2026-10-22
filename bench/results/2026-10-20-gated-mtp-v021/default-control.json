@@ -1,0 +1,26 @@
+{
+  "completed": true,
+  "outputs_equal": true,
+  "elapsed_seconds": 18.56500267982483,
+  "baseline": "3aba1a97f6b12bcfd8d1064d43e5648df2a396ab2f1a9d8cafdce110448081a5",
+  "final_binary": "f7a418515b9de18914c2516e654eb8bbadc287459efd3490ff4ba695b7ea4dff",
+  "output_ids": [
+    9764,
+    728,
+    944,
+    1472,
+    411,
+    3377,
+    2923,
+    539,
+    2923,
+    13,
+    271,
+    16
+  ],
+  "sampling": "same fixture, STRATA_SPEC_PROB=0",
+  "recovery": {
+    "original_service": "absent",
+    "restored": true
+  }
+}

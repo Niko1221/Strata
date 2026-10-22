@@ -1,0 +1,87 @@
+{
+  "runs": [
+    {
+      "name": "packet",
+      "exit": 0,
+      "environment": {}
+    },
+    {
+      "name": "pick-law",
+      "exit": 0,
+      "environment": {}
+    },
+    {
+      "name": "top-law",
+      "exit": 0,
+      "environment": {
+        "STRATA_SPEC_PROB_GATE": "top"
+      }
+    },
+    {
+      "name": "arithmetic-default",
+      "exit": 0,
+      "environment": {}
+    },
+    {
+      "name": "arithmetic-avx",
+      "exit": 0,
+      "environment": {
+        "STRATA_FORCE_ISA": "avx"
+      }
+    },
+    {
+      "name": "arithmetic-kq",
+      "exit": 0,
+      "environment": {
+        "STRATA_KQ256": "1"
+      }
+    },
+    {
+      "name": "arithmetic-mt1",
+      "exit": 0,
+      "environment": {
+        "STRATA_IQ_MT_MIN": "1"
+      }
+    },
+    {
+      "name": "arithmetic-no512",
+      "exit": 0,
+      "environment": {
+        "STRATA_NO_IQ512": "1"
+      }
+    },
+    {
+      "name": "arithmetic-ggml",
+      "exit": 0,
+      "environment": {
+        "STRATA_NO_IQ512": "1",
+        "STRATA_NO_IQ256": "1",
+        "STRATA_NO_IQ4NL": "1"
+      }
+    },
+    {
+      "name": "arithmetic-nvfp4-avx2",
+      "exit": 0,
+      "environment": {
+        "STRATA_NO_NVFP4_512": "1"
+      }
+    },
+    {
+      "name": "arithmetic-nvfp4-ggml",
+      "exit": 0,
+      "environment": {
+        "STRATA_NO_NVFP4_512": "1",
+        "STRATA_NO_NVFP4_256": "1"
+      }
+    },
+    {
+      "name": "HIP-proposal",
+      "exit": 0
+    }
+  ],
+  "completed": true,
+  "recovery": {
+    "original_service": "absent",
+    "restored": true
+  }
+}

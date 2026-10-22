@@ -1,0 +1,156 @@
+[
+  {
+    "round": "delay",
+    "comparator": "U",
+    "workload": "english",
+    "n": 16,
+    "mean_percent": 1.355297493852254,
+    "ci95": [
+      -7.412160065055016,
+      10.122755052759523
+    ]
+  },
+  {
+    "round": "delay",
+    "comparator": "U",
+    "workload": "repeat",
+    "n": 16,
+    "mean_percent": -0.46038596242913565,
+    "ci95": [
+      -1.926340730574453,
+      1.0055688057161816
+    ]
+  },
+  {
+    "round": "delay",
+    "comparator": "A",
+    "workload": "english",
+    "n": 16,
+    "mean_percent": 2.3127570002372373,
+    "ci95": [
+      -1.3663826130174535,
+      5.991896613491928
+    ]
+  },
+  {
+    "round": "delay",
+    "comparator": "A",
+    "workload": "repeat",
+    "n": 16,
+    "mean_percent": 1.7761227210093642,
+    "ci95": [
+      -1.4138762567225114,
+      4.96612169874124
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "U",
+    "workload": "english",
+    "n": 8,
+    "mean_percent": -0.8310400352140981,
+    "ci95": [
+      -8.281169570677545,
+      6.619089500249349
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "U",
+    "workload": "repeat",
+    "n": 8,
+    "mean_percent": 0.7407966430993923,
+    "ci95": [
+      -3.505400031011788,
+      4.9869933172105725
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "D",
+    "workload": "english",
+    "n": 8,
+    "mean_percent": 1.5635179259707934,
+    "ci95": [
+      -1.085352246258581,
+      4.212388098200168
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "D",
+    "workload": "repeat",
+    "n": 8,
+    "mean_percent": 1.544172712066598,
+    "ci95": [
+      -0.28751127281110866,
+      3.3758566969443047
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "T4",
+    "workload": "english",
+    "n": 8,
+    "mean_percent": 2.6719848099014314,
+    "ci95": [
+      -3.2906418157942223,
+      8.634611435597085
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "T4",
+    "workload": "repeat",
+    "n": 8,
+    "mean_percent": -1.6827679833652713,
+    "ci95": [
+      -4.315759298003973,
+      0.950223331273431
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "T5",
+    "workload": "english",
+    "n": 8,
+    "mean_percent": -1.370563420758708,
+    "ci95": [
+      -6.447722039549911,
+      3.706595198032494
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "T5",
+    "workload": "repeat",
+    "n": 8,
+    "mean_percent": -9.546247479848416,
+    "ci95": [
+      -12.581011121783973,
+      -6.511483837912858
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "T6",
+    "workload": "english",
+    "n": 8,
+    "mean_percent": 0.6460651710810783,
+    "ci95": [
+      -0.5499750631885347,
+      1.8421054053506913
+    ]
+  },
+  {
+    "round": "final",
+    "comparator": "T6",
+    "workload": "repeat",
+    "n": 8,
+    "mean_percent": 15.784551434079667,
+    "ci95": [
+      11.721022397751177,
+      19.848080470408156
+    ]
+  }
+]

@@ -1,0 +1,290 @@
+{
+  "base": "90767252f420e25223c739d604145ad15911d48b",
+  "release": "v0.2.1",
+  "engine": "0.1.46",
+  "hardware": {
+    "CPU": "AMD Ryzen 5 7600X",
+    "GPU": "AMD Radeon RX 7900 XTX 24 GiB",
+    "RAM": "32 GiB",
+    "OS": "Windows"
+  },
+  "model": "Qwen3.8-Flash-Next-GSQ-RCO IQ1_M",
+  "prompt": "<|im_start|>user\nAdrien's total salary was 30 percent higher than Lylah's. Four years later, his salary had increased, and he was earning 40% more than what he was making four years ago. If Adrien's and Lylah's salary increased simultaneously, and Adrien earned $40000 four years ago, calculate the total salary the two were receiving four years later?\nFinish with a final line: #### NUMBER<|im_end|>\n<|im_start|>assistant\n<think>\n",
+  "prompt_ids": [
+    248045,
+    846,
+    198,
+    2504,
+    33589,
+    579,
+    2702,
+    15633,
+    557,
+    220,
+    18,
+    15,
+    3161,
+    4918,
+    1056,
+    436,
+    3791,
+    1413,
+    579,
+    13,
+    12937,
+    1578,
+    2843,
+    11,
+    780,
+    15633,
+    995,
+    6946,
+    11,
+    321,
+    551,
+    557,
+    26747,
+    220,
+    19,
+    15,
+    4,
+    777,
+    1056,
+    1092,
+    551,
+    557,
+    3154,
+    2943,
+    1578,
+    3998,
+    13,
+    1368,
+    2331,
+    33589,
+    579,
+    321,
+    436,
+    3791,
+    1413,
+    579,
+    15633,
+    6946,
+    23540,
+    11,
+    321,
+    2331,
+    33589,
+    14857,
+    393,
+    19,
+    15,
+    15,
+    15,
+    15,
+    2943,
+    1578,
+    3998,
+    11,
+    10724,
+    279,
+    2702,
+    15633,
+    279,
+    1330,
+    998,
+    11955,
+    2943,
+    1578,
+    2843,
+    30,
+    198,
+    24846,
+    440,
+    264,
+    1534,
+    1500,
+    25,
+    25435,
+    35615,
+    248046,
+    198,
+    248045,
+    74455,
+    198,
+    248068,
+    198
+  ],
+  "seed": 1700592003735865847,
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95,
+    "min_p": 0.05
+  },
+  "elapsed_seconds": 115.47401404380798,
+  "trace_transparency": {
+    "U": true,
+    "A": true
+  },
+  "runs": [
+    {
+      "name": "U-original",
+      "binary_sha256": "3aba1a97f6b12bcfd8d1064d43e5648df2a396ab2f1a9d8cafdce110448081a5",
+      "output_ids": [
+        9764,
+        728,
+        944,
+        1472,
+        411,
+        3377,
+        2923,
+        539,
+        2923,
+        13,
+        271,
+        16
+      ],
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=4324 cvec=0 arena_mib=10239 pool_workers=5 pcie_frac=0.00 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=6144 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.46"
+      ]
+    },
+    {
+      "name": "A-original",
+      "binary_sha256": "35e5ea888a026493f04363669cbba9d9e334bec591cf1b73e530b261f1a76a8d",
+      "output_ids": [
+        9764,
+        728,
+        944,
+        1472,
+        411,
+        3377,
+        2923,
+        539,
+        2923,
+        13,
+        271,
+        9764
+      ],
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=4317 cvec=0 arena_mib=10239 pool_workers=5 pcie_frac=0.00 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=6144 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.46"
+      ]
+    },
+    {
+      "name": "U-trace",
+      "binary_sha256": "9537efaa22e7dd9e08cee99e6edbb0044cc1169f12ff013ae5cd3d0a495c432d",
+      "output_ids": [
+        9764,
+        728,
+        944,
+        1472,
+        411,
+        3377,
+        2923,
+        539,
+        2923,
+        13,
+        271,
+        16
+      ],
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=4324 cvec=0 arena_mib=10239 pool_workers=5 pcie_frac=0.00 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=6144 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.46"
+      ]
+    },
+    {
+      "name": "A-trace",
+      "binary_sha256": "748037a3b6ac54c939f1ff341409cab458d7156e6f427744778765f62ed27c3b",
+      "output_ids": [
+        9764,
+        728,
+        944,
+        1472,
+        411,
+        3377,
+        2923,
+        539,
+        2923,
+        13,
+        271,
+        9764
+      ],
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=3 vram_free_mib=4317 cvec=0 arena_mib=10239 pool_workers=5 pcie_frac=0.00 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=6144 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.46"
+      ]
+    },
+    {
+      "name": "U-singleton",
+      "binary_sha256": "9537efaa22e7dd9e08cee99e6edbb0044cc1169f12ff013ae5cd3d0a495c432d",
+      "output_ids": [
+        9764,
+        728,
+        944,
+        1472,
+        411,
+        3377,
+        2923,
+        539,
+        2923,
+        13,
+        271,
+        16
+      ],
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=0 vram_free_mib=5505 cvec=0 arena_mib=10239 pool_workers=5 pcie_frac=0.00 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=6144 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.46"
+      ]
+    },
+    {
+      "name": "A-singleton",
+      "binary_sha256": "748037a3b6ac54c939f1ff341409cab458d7156e6f427744778765f62ed27c3b",
+      "output_ids": [
+        9764,
+        728,
+        944,
+        1472,
+        411,
+        3377,
+        2923,
+        539,
+        2923,
+        13,
+        271,
+        16
+      ],
+      "info": [
+        "INFO logit_bias=1 context=131072 kv=int8 kv_resident=0 expert_slots=5759 expert_cache_mib=11211 expert_slots_primary=5759 expert_cache_primary_mib=11211 spec=6 mtp_max=4 lookup=0 vram_free_mib=5494 cvec=0 arena_mib=10239 pool_workers=5 pcie_frac=0.00 spec_min_p=0.50 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=6144 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.46"
+      ]
+    }
+  ],
+  "builds": {
+    "A": {
+      "binary_sha256": "748037a3b6ac54c939f1ff341409cab458d7156e6f427744778765f62ed27c3b",
+      "base_binary_sha256": "35e5ea888a026493f04363669cbba9d9e334bec591cf1b73e530b261f1a76a8d",
+      "libraries": {
+        "strata_core.lib": "6547a29eec5963b00f6ea8a3da08cfae0e8dc0a2a356754fffafed893b1ce4ca",
+        "strata_engine.lib": "2be6e420643ca7ab59652bff605ea4ba35a1869829a7e9e79bffabbd885dc3f3",
+        "strata_kernels.lib": "4993f17c0f11b593efc01cf1e9ccc6aad60460fdbc2bce20b8a99ced4ac3b163",
+        "strata_kernels_cpu.lib": "06f0c9cece2c96460c953032802dd0667ebd5ffeee14debe74e266b185356942",
+        "strata_prefill.lib": "dc6bb9f2ec101b9d0a781af897d736d89ee82f76597f78acad72a0e2a1595874",
+        "strata_qwen35.lib": "cddfb9726db3df8cfd0a9a339db2cefe7b80134fd4bdcc2153131039b52de6cc",
+        "strata_spec.lib": "ad13c254e618f8498795e5f328e78d6ba7ba8c14c74e59d6ec9cd60587e40257"
+      },
+      "source_sha256": "7d1f348876085fc87db818f551409bdce5987f2f7348cb595e51ee65489d2772",
+      "trace_sha256": "b309458117a2f0bfe64865cf4be7752cf9db712472d3ac379f57dfbc92e57d2f"
+    },
+    "U": {
+      "binary_sha256": "9537efaa22e7dd9e08cee99e6edbb0044cc1169f12ff013ae5cd3d0a495c432d",
+      "base_binary_sha256": "3aba1a97f6b12bcfd8d1064d43e5648df2a396ab2f1a9d8cafdce110448081a5",
+      "libraries": {
+        "strata_core.lib": "6547a29eec5963b00f6ea8a3da08cfae0e8dc0a2a356754fffafed893b1ce4ca",
+        "strata_engine.lib": "b896b3d676c69fa43619a1861c141acc34d791aeab31b48237acd9d3ec3bd316",
+        "strata_kernels.lib": "2a8de53eb6978f1308bd210ba93b4a386eca961c1b396e3b4c28bcd4d2afd524",
+        "strata_kernels_cpu.lib": "917afd77f8c8ad4b83e5297961e282d223e4e713fa650b867d0115227256f280",
+        "strata_prefill.lib": "2252bc262a0cbb459c797f408e2d288347e7ad22a9ef97a56c2e09324c8f5949",
+        "strata_qwen35.lib": "eb27e1b4169eaa253f3e311511ee2f243da2d84d7608ab21b217d408f55eaffc",
+        "strata_spec.lib": "ad13c254e618f8498795e5f328e78d6ba7ba8c14c74e59d6ec9cd60587e40257"
+      },
+      "source_sha256": "25ae5aa2f6e793d21d2d6f14a94edde41868507e37aa1b423262a95866ec49c4",
+      "trace_sha256": "494908120a8d8859e81dc823816fca3ac61803a4b7f2501ca8c1fa5c85689bc6"
+    }
+  },
+  "note": "Forced-prefix singleton controls override only the first 11 emitted IDs after recording each logit row. Last token is sampled. A and U link their own libraries. Not a throughput benchmark."
+}
