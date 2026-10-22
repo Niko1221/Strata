@@ -421,6 +421,17 @@ class TunerTest(unittest.TestCase):
         self.assertLessEqual(etas[-1], etas[0])
         self.assertEqual(seen[-1]["stage"], "done")
 
+    def test_startup_does_not_estimate_time_before_a_run_is_measured(self):
+        for mode, budget in (("quick", 1200), ("thorough", 1800 * 60)):
+            with self.subTest(mode=mode):
+                seen = []
+                run_tuner(speed_with({}), opts=autotune.Options(mode=mode, budget_s=budget), progress=seen.append)
+                startup = [p for p in seen if p["runs_done"] == 0]
+                self.assertTrue(startup)
+                self.assertTrue(all(p["eta_s"] is None for p in startup))
+                self.assertTrue(any(p["eta_s"] is not None for p in seen if p["runs_done"] > 0))
+                self.assertEqual(seen[-1]["eta_s"], 0)
+
     def test_progress_carries_the_speed_of_every_measurement_so_far(self):
         seen = []
         t, s, r = run_tuner(speed_with({("--spec", "6"): 1.2}), progress=seen.append)

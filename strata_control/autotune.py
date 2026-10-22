@@ -221,9 +221,11 @@ class Tuner:
 
     def _say(self, stage: str, message: str, **extra: Any) -> None:
         elapsed = self._elapsed()
-        avg = statistics.mean(self.run_times) if self.run_times else 150.0
         remaining = max(0, self.planned_runs - self.done_runs)
-        eta = min(max(0.0, self.o.budget_s - elapsed), remaining * avg) if self.planned_runs else None
+        # There is no measured run duration during startup. Do not present the
+        # scheduler's fallback duration as an estimate for this machine.
+        eta = (min(max(0.0, self.o.budget_s - elapsed), remaining * statistics.mean(self.run_times))
+               if self.planned_runs and self.run_times else None)
         if stage == "done":
             eta = 0.0
         self.progress({"stage": stage, "message": message, "elapsed_s": round(elapsed), "runs_done": self.done_runs,
