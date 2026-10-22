@@ -275,6 +275,7 @@ bool supported(int t) {
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
 #ifdef STRATA_MMQ_TQ
         case GGML_TYPE_TQ2_T: case GGML_TYPE_TQK6: case GGML_TYPE_TQK7:   // APR experts (agention fork's MMQ)
+        case GGML_TYPE_TQP5: case GGML_TYPE_TQP6: case GGML_TYPE_TQP7:     // Gyro-L pair trellis (types 147-149)
 #endif
             return true;
 #ifdef STRATA_MMQ_KQUANTS
@@ -461,6 +462,9 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_TQ2_T: mul_mat_q_case<GGML_TYPE_TQ2_T>(ctx, a, s); break;
         case GGML_TYPE_TQK6: mul_mat_q_case<GGML_TYPE_TQK6>(ctx, a, s); break;
         case GGML_TYPE_TQK7: mul_mat_q_case<GGML_TYPE_TQK7>(ctx, a, s); break;
+        case GGML_TYPE_TQP5: mul_mat_q_case<GGML_TYPE_TQP5>(ctx, a, s); break;
+        case GGML_TYPE_TQP6: mul_mat_q_case<GGML_TYPE_TQP6>(ctx, a, s); break;
+        case GGML_TYPE_TQP7: mul_mat_q_case<GGML_TYPE_TQP7>(ctx, a, s); break;
 #endif
 #if defined(STRATA_MMQ_KQUANTS) && defined(STRATA_KQ_DSO)
         case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_1: {

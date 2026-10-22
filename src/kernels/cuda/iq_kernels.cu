@@ -616,6 +616,10 @@ template<int TY> struct TqInfo;
 template<> struct TqInfo<144> { using block_t = block_tq2_t; };   // byte-aligned, no K
 template<> struct TqInfo<145> { using block_t = block_tqk6; static constexpr int K = 6; };
 template<> struct TqInfo<146> { using block_t = block_tqk7; static constexpr int K = 7; };
+// Gyro-L: pair trellis (64 steps x K bits, 2 weights per step), the TQ2_T codebook's first pair
+template<> struct TqInfo<147> { using block_t = block_tqp5; static constexpr int K = 5; };
+template<> struct TqInfo<148> { using block_t = block_tqp6; static constexpr int K = 6; };
+template<> struct TqInfo<149> { using block_t = block_tqp7; static constexpr int K = 7; };
 __device__ __forceinline__ float tq_h2f(uint32_t bits) { return __half2float(__ushort_as_half((unsigned short) bits)); }
 // the four unscaled weights of the step with state s: (a.x, a.y, b.x, b.y)
 __device__ __forceinline__ void tq_step(uint32_t s, float2& a, float2& b) {
@@ -716,6 +720,44 @@ __device__ __forceinline__ float vec_dot_tq_q8_1(const void* __restrict__ vbq, c
     return tq_apply(tq_load<TY>(vbq, kbx, iqs), bq8_1, iqs);
 }
 
+// ---- TQP (Gyro-L): 64 trellis steps of 2 weights; a lane is 8 steps (16 values).
+// State of step t: the 16 stream bits from bit (63 - t)*K, LSB-first, circular over 64*K bits
+// (tqp_state in the fork's ggml-common.h). The step's 2 weights are tq2t_lut_f16[2*hyb(2*s)+j],
+// i.e. the FIRST pair of TQ2_T state s = tq_lut_i8[x >> 21] (tq_lut_i8 holds the pair as two int8).
+template<int TY>
+__device__ __forceinline__ void tqp_states8(const uint8_t* __restrict__ qs, int lane, uint32_t s[8]) {
+    constexpr int K = TqInfo<TY>::K, NB = 8 * K;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        const uint32_t off = (uint32_t) (63 - (8 * lane + i)) * (uint32_t) K;
+        const uint32_t i0 = off >> 3;
+        const uint32_t i1 = (i0 + 1) % (uint32_t) NB;
+        const uint32_t i2 = (i0 + 2) % (uint32_t) NB;
+        const uint32_t w = (uint32_t) qs[i0] | ((uint32_t) qs[i1] << 8) | ((uint32_t) qs[i2] << 16);
+        s[i] = (w >> (off & 7)) & 0xFFFFu;
+    }
+}
+template<int TY>
+__device__ __forceinline__ TqLane tq_load_tqp(const void* __restrict__ vbq, int kbx, int iqs) {
+    const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
+    uint32_t s[8];
+    tqp_states8<TY>(b->qs, iqs / 4, s);
+    TqLane r;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {   // two steps (2+2 weights) per int
+        const uint32_t x0 = (s[2 * i] & TQ_STATE_MASK) * 0x9e3779b1u;
+        const uint32_t x1 = (s[2 * i + 1] & TQ_STATE_MASK) * 0x9e3779b1u;
+        r.q[i] = (int) ((uint32_t) tq_lut_i8[x0 >> 21] | ((uint32_t) tq_lut_i8[x1 >> 21] << 16));
+    }
+    r.d = tq_h2f(b->d);
+    return r;
+}
+template<int TY>
+__device__ __forceinline__ float vec_dot_tqp_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
+                                                  const int& kbx, const int& iqs) {
+    return tq_apply(tq_load_tqp<TY>(vbq, kbx, iqs), bq8_1, iqs);
+}
+
 // ---------------------------------------------------------------- the formats
 // qk = values per block, ipb = dot calls per block (qi / vdr), step = the iqs stride between calls.
 template<int TY> struct Fmt;
@@ -760,21 +802,28 @@ template<> struct Fmt<145> { static constexpr int qk = 128, ipb = 8, step = 4;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_tq_q8_1<145>(v, y, kbx, iqs); } };
 template<> struct Fmt<146> { static constexpr int qk = 128, ipb = 8, step = 4;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_tq_q8_1<146>(v, y, kbx, iqs); } };
+// Gyro-L pair trellis: 8 lanes of 8 steps (16 values) per 128-value block
+#define STRATA_TQP_FMT(T) template<> struct Fmt<T> { static constexpr int qk = 128, ipb = 8, step = 4; \
+    __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_tqp_q8_1<T>(v, y, kbx, iqs); } };
+STRATA_TQP_FMT(147)
+STRATA_TQP_FMT(148)
+STRATA_TQP_FMT(149)
+#undef STRATA_TQP_FMT
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
 #ifdef STRATA_Q6K_EXPERTS   // opt-in build (-DSTRATA_Q6K_EXPERTS=ON): one more instance per kernel, loaded at start
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(14) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
 #else
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145)
+#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(147) X(148) X(149)
 #endif
 // Q5_K / Q6_K downs: Qwen3.6-35B-A3B (FF 512, whole 256-blocks per row); Flash-Next's FF 640 never selects them
 #ifdef STRATA_Q6K_EXPERTS
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(14) X(40) X(144) X(146)
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(14) X(40) X(144) X(146) X(147) X(148) X(149)
 #else
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(40) X(144) X(146)
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(40) X(144) X(146) X(147) X(148) X(149)
 #endif
-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(146)
+#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(40) X(144) X(145) X(146) X(147) X(148) X(149)
 template<> struct Fmt<40> { static constexpr int qk = 64, ipb = 2, step = 4;     // NVFP4: 2 calls of 32 values
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_nvfp4_q8_1(v, y, kbx, iqs); } };
 
@@ -3170,6 +3219,31 @@ __device__ void dq_tq(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     }
 }
 
+// TQP (Gyro-L): pair trellis; the step's 2 weights are the first pair of TQ2_T state s.
+__device__ __forceinline__ float2 tqp_pair(uint32_t s) {
+    const uint32_t* lut = (const uint32_t*) tq_lut_f16;
+    const uint32_t x = (s & TQ_STATE_MASK) * 0x9e3779b1u;
+    const uint32_t pa = lut[x >> 21];
+    return make_float2(tq_h2f(pa & 0xFFFFu), tq_h2f(pa >> 16));
+}
+// one 256-value call = two 128-blocks; thread tid decodes block tid/16, lane (tid>>1)&7, steps
+// 8*l + 4*half .. +3 (8 values, 2 per step)
+template<int TY, typename dst_t>
+__device__ void dq_tqp(const void* vx, int64_t ibs, dst_t* yy, int tid) {
+    const int blk = tid >> 4, l = (tid >> 1) & 7, half = tid & 1;
+    const auto* b = (const typename TqInfo<TY>::block_t*) vx + 2 * ibs + blk;
+    const float d = tq_h2f(b->d);
+    uint32_t s[8];
+    tqp_states8<TY>(b->qs, l, s);
+    dst_t* y = yy + blk * 128 + 16 * l + 8 * half;
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const float2 a = tqp_pair(s[4 * half + i]);
+        y[2 * i + 0] = cvt<dst_t>(d * a.x);
+        y[2 * i + 1] = cvt<dst_t>(d * a.y);
+    }
+}
+
 // Every type below must also be in is_iq() (BF16: embed_type_supported): the host entry points refuse the others,
 // so the default is unreachable.
 template<typename dst_t>
@@ -3198,6 +3272,9 @@ __device__ __forceinline__ void dq_dispatch(int ty, const void* vx, int64_t ibs,
         case 144: dq_tq<144>(vx, ibs, y, tid); break;
         case 145: dq_tq<145>(vx, ibs, y, tid); break;
         case 146: dq_tq<146>(vx, ibs, y, tid); break;
+        case 147: dq_tqp<147>(vx, ibs, y, tid); break;
+        case 148: dq_tqp<148>(vx, ibs, y, tid); break;
+        case 149: dq_tqp<149>(vx, ibs, y, tid); break;
         default: break;
     }
 }
@@ -3239,9 +3316,9 @@ __global__ void dequant_gu_kernel(int ty, const void* __restrict__ gate, const v
 bool is_iq(int t) {
     return t == 16 || t == 17 || t == 18 || t == 20 || t == 21 || t == 22 || t == 23 || t == 29 || t == 42 || t == 11 ||
 #ifdef STRATA_Q6K_EXPERTS
-           t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146;
+           t == 12 || t == 13 || t == 14 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
 #else
-           t == 12 || t == 13 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146;
+           t == 12 || t == 13 || t == 7 || t == 6 || t == 2 || t == 3 || t == 8 || t == 40 || t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149;
 #endif
 }
 // values per block of the types the grouped expert kernels take (0 = none)
@@ -4202,6 +4279,9 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 144: return (size_t) (n / 128) * sizeof(block_tq2_t);   // APR trellis types
         case 145: return (size_t) (n / 128) * sizeof(block_tqk6);
         case 146: return (size_t) (n / 128) * sizeof(block_tqk7);
+        case 147: return (size_t) (n / 128) * sizeof(block_tqp5);
+        case 148: return (size_t) (n / 128) * sizeof(block_tqp6);
+        case 149: return (size_t) (n / 128) * sizeof(block_tqp7);
         default: return 0;
     }
 }

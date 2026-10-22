@@ -37,7 +37,12 @@ bool tq_supported(int ggml_type) noexcept;
 int tq_kbits(int ggml_type) noexcept;
 /// Values per block of the trellis types, and bytes per block (2 + 4 * bits: 34, 26, 30).
 constexpr int kTqBlock = 128;
-inline size_t tq_block_bytes(int ggml_type) noexcept { return (size_t) (2 + 4 * tq_kbits(ggml_type)); }
+// TQ2_T / TQK6 / TQK7: 4 weights per step (2 + 4K bytes per 128-value block).  TQP5/6/7 (147-149, Gyro-L) are the
+// pair layout: 2 weights per step, 8K bytes per block (2 + 8K).
+inline bool tq_pair_layout(int ggml_type) noexcept { return ggml_type >= 147 && ggml_type <= 149; }
+inline size_t tq_block_bytes(int ggml_type) noexcept {
+    return (size_t) (2 + (tq_pair_layout(ggml_type) ? 8 : 4) * tq_kbits(ggml_type));
+}
 /// The best ISA this CPU runs (capped by STRATA_TQ_ISA).
 TqIsa tq_isa();
 /// Whether this CPU can run `isa` at all (scalar: always).
