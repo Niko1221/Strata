@@ -6,6 +6,7 @@ bench/prompts/** -text
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
+*.command text eol=lf
 bin/strata text eol=lf
 
 # copies of real packs' native_experts.txt, parsed byte for byte by tests/core/expert_layout_test.cpp

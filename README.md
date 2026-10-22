@@ -26,6 +26,8 @@ normally needs a server, on a normal PC. It chats, writes code, reads pictures a
 agents. Your chats and files stay on your PC.
 
 **New here?** Check [what you need](#what-you-need), then [install the app](#option-a-the-strata-app).
+**On a Mac?** The app's `.dmg`, or [download the source](https://github.com/OakRoller/Strata_Metal/archive/refs/heads/main.zip)
+and double-click `START-HERE.command`: it builds the Mac engine, downloads the model and starts it ([Mac](docs/MAC.md)).
 
 - **Runs on a gaming PC.** 32 GB of RAM and graphics memory together is enough to start.
 - **Works with your tools.** It speaks the OpenAI and Anthropic APIs, so Claude Code, Codex CLI, OpenCode and other agents connect to it.
@@ -298,9 +300,12 @@ memory); the processor reader needs about 50 s per picture there, so it runs onl
 **Windows:** double-click `START-HERE.bat`. **Linux:** run `./setup.sh` in the Strata folder.
 
 **Mac (Apple Silicon, macOS 15 or newer):** install Apple's Command Line Tools once with `xcode-select --install`
-(Xcode itself is not needed). Open Terminal in the Strata folder and run `./setup.sh`. It builds the Mac engine on your
-Mac (about 7 minutes), asks the same questions, downloads the model and starts it. Next time, `./setup.sh` starts it
-right away. Which size fits your Mac: [docs/MAC.md](docs/MAC.md).
+(Xcode itself is not needed). Double-click `START-HERE.command` in the Strata folder (or run `./setup.sh` in Terminal).
+It builds the Mac engine on your Mac (about 7 minutes), asks the same questions, downloads the model and starts it.
+Next time, the same double-click starts it right away. `SETUP.command`, `UPDATE.command` and `BENCH.command` are the
+Mac's `SETUP.bat`, `UPDATE.bat` and `BENCH.bat`. If macOS says a `.command` file from the zip "cannot be opened because
+it is from an unidentified developer", right-click it and choose **Open** (once; a `git clone` has no such mark).
+Which size fits your Mac: [docs/MAC.md](docs/MAC.md).
 
 The installer finds your card and sets up the right engine. It asks which model and size, how much context (how much text
 the model keeps in mind) and whether it should read pictures. Press Enter for the recommended answer. Then it downloads the
