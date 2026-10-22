@@ -43,6 +43,7 @@ class Ctx:
     glyphs: Glyphs = field(default_factory=Glyphs)
     feed: str | None = None
     move_data: bool = False
+    retune: bool = False
     notes: list[str] = field(default_factory=list)
     start_own_files: bool = False
     picked_in_list: bool = False
@@ -173,7 +174,7 @@ class Ctx:
             from serve.server import engine_args
             import contextlib
             import io
-            d = derive_config(apply_choices(cfg, s), s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog))
+            d = derive_config(apply_choices(cfg, s), s, bool_flags=tune_knobs.BOOL_FLAGS, gpus=cards_for_launch(s, self.catalog, base=cfg))
             if s.parallel:
                 d["parallel"] = s.parallel
             with contextlib.redirect_stdout(io.StringIO()):
@@ -263,7 +264,7 @@ class LaunchApp(App):
         s = self.ctx.settings
         self.cancel = threading.Event()
         self.runner = Runner(s, catalog=self.ctx.catalog, emit=self._emit, cancel=self.cancel, feed=self.ctx.feed, confirm=self._ask_from_run,
-                             move_data=self.ctx.move_data)
+                             move_data=self.ctx.move_data, retune=self.ctx.retune)
         gb = getattr(self.runner, "download_gb", lambda: 0.0)() if not confirmed else 0.0
         if gb >= 1.0:
             free = self.ctx.catalog.disk_free(s.data_dir or self.ctx.catalog.data_dir())
@@ -404,7 +405,7 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
 
 
 def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None, feed: str | None = None, auto_run: bool = False,
-            save: bool = False, open_page: bool = False, move_data: bool = False) -> int:
+            save: bool = False, open_page: bool = False, move_data: bool = False, retune: bool = False) -> int:
     """Open the launch screens. `settings` given and `auto_run`: skip the questions and go straight to the run."""
     catalog = catalog or Catalog()
     print("Looking at this computer…", flush=True)
@@ -419,7 +420,7 @@ def run_tui(settings: S.LaunchSettings | None, *, catalog: Catalog | None = None
             s.name = f"{s.model or 'model'} {S.context_label(s.context)}"
         if save:
             store.save(s, s.name)
-    ctx = Ctx(catalog=catalog, computer=computer, rows=rows, settings=s, glyphs=Glyphs(), feed=feed, move_data=move_data)
+    ctx = Ctx(catalog=catalog, computer=computer, rows=rows, settings=s, glyphs=Glyphs(), feed=feed, move_data=move_data, retune=retune)
     app = LaunchApp(ctx, auto_run=auto_run)
     result = app.run()
     if getattr(app, "return_code", 0) not in (0, None) or getattr(app, "_exception", None) is not None:

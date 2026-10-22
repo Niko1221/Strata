@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
+from strata_control import user_args
+
 ANSWER_ORDER = ("exact", "placement", "nonrepeatable", "quality")
 
 #: What the Tune screen says about a preset's answer class (3.4), in plain words.
@@ -450,13 +452,25 @@ def _norm(value: Any) -> str | None:
 
 
 def _current(argv: Sequence[str], flag: str) -> str | None:
-    """The value a flag has in an argv list: '' for a bare flag, None when absent."""
+    """The value a flag has in an argv list: '' for a bare flag, None when absent (several values joined by a space)."""
     for i, a in enumerate(argv):
         if a == flag:
             if flag in BOOL_FLAGS or i + 1 >= len(argv) or str(argv[i + 1]).startswith("--"):
                 return ""
-            return str(argv[i + 1])
+            return " ".join(str(x) for x in argv[i + 1:i + 1 + _value_count(argv, i)])
     return None
+
+
+def _value_count(argv: Sequence[str], i: int) -> int:
+    """How many entries after the flag at ``argv[i]`` are its values: none for a bool flag, as many as the option takes
+    (``--control-vector-layer-range 4 44`` is two) up to the next ``--option``."""
+    flag = argv[i]
+    if flag in BOOL_FLAGS:
+        return 0
+    n = 0
+    while n < user_args.MULTI_VALUE_FLAGS.get(flag, 1) and i + 1 + n < len(argv) and not str(argv[i + 1 + n]).startswith("--"):
+        n += 1
+    return n
 
 
 def signature(args: dict[str, Any], env: dict[str, str | None] | None = None) -> str:
@@ -471,8 +485,7 @@ def apply_to_argv(argv: Sequence[str], args: dict[str, Any]) -> list[str]:
         i = 0
         while i < len(out):
             if out[i] == flag:
-                n = 1 if (flag in BOOL_FLAGS or i + 1 >= len(out) or str(out[i + 1]).startswith("--")) else 2
-                del out[i:i + n]
+                del out[i:i + 1 + _value_count(out, i)]
             else:
                 i += 1
         if value is None or value is False:
@@ -480,7 +493,7 @@ def apply_to_argv(argv: Sequence[str], args: dict[str, Any]) -> list[str]:
         if value is True or flag in BOOL_FLAGS:
             out.append(flag)
         else:
-            out.extend([flag, str(value)])
+            out.extend([flag, *user_args.value_tokens(flag, value)])
     return out
 
 

@@ -221,7 +221,7 @@ pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 
 Every card must be an RTX 20 series or newer with 8 GB or more. See [MULTI_GPU.md](MULTI_GPU.md).
 
 **Several AMD cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
-`--gpus 1,0` splits the model's layers across them, the first one the main card (numbers as setup lists them). A
+`--gpus 1,0` splits the model's layers across them, the faster card goes last and is the Main card (`--gpu-roles 1=main,0=helper` says it yourself; docs/MULTI_GPU.md; numbers as setup lists them). A
 split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)).
 
 ## Docker (Linux)
@@ -304,6 +304,28 @@ says so and starts the engine you had.
 - **Where github.com cannot be reached:** a build from source downloads llama.cpp's source (ggml, gguf-py) from
   GitHub at the commit `LLAMA_CPP_COMMIT` in `setup.py` names. Put that commit's tree in `third_party/llama.cpp`
   yourself (from a mirror or another PC) and setup uses it instead (#585).
+
+### Keeping the models on another disk
+
+The model files are the only big part (70 to 190 GB). Put them where there is room; the app and the Terminal use the same folder.
+
+- **In the app:** the first screen shows the model folder with a button to change it, and Settings > Storage changes it
+  later. Pick a folder you can save files in; a whole drive (`D:\`) becomes `D:\Strata`, which Strata makes and says so.
+  Change folder then asks what to do with your models: move them (copied file by file and checked before the old copies are removed; you can stop at any time),
+  keep them where they are and also use the new folder, or start empty (the old files are never deleted). From the Terminal the same move is
+  `strata models move NEW_FOLDER` (add `--plan` to see what it would do first).
+- **In the Terminal:** `strata launch --data-dir D:\Strata` once. The folder is remembered for the next `strata launch`
+  and `strata models list`. Until you give it one, the Terminal uses the folder the app chose; the app keeps its own setting
+  (Settings > Storage) and does not read the Terminal's. `--move-data` moves the models you already have into it; without it they stay where they
+  are and the new folder gets the new downloads. Use your own files in place with `strata launch --model-path FOLDER` (a
+  folder of shards, a folder above it, or one `.gguf` file); a folder that holds several sizes needs the one `.gguf` file.
+- **Drives that are not NTFS** (exFAT, FAT32, a network share) work: Strata writes straight into `<folder>\models` and makes no
+  link there.
+- **What stays on C:** the engine (`%LOCALAPPDATA%\Strata\components`, 1 to 2 GB per version; `STRATA_COMPONENTS_DIR` moves it),
+  the app itself (the installer asks), your settings, chat history, tuning results and logs (`%LOCALAPPDATA%\Strata`,
+  `%APPDATA%\Strata`; a few MB). Nothing else large: downloads, the prepared model data (`packs`) and the draft layer (`mtp`) are
+  written in the model folder, and so are the half-finished files of an interrupted download.
+- **Docker:** `-v /mnt/big/strata:/data` (a folder on the big disk) instead of the volume `strata-data`; everything above lives in it.
 
 ## Setup's questions
 

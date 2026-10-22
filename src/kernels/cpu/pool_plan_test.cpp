@@ -150,6 +150,126 @@ int main() {
     expect(cpu::pool_workers_warning(8, q, cpu::plan_pool_workers(q)).find("container") != std::string::npos,
            "8 workers under a 4-CPU quota: names the container limit");
 
+    // STRATA_NUMA_SPLIT (span_packages): the default spans every socket, the other bounds stay; off = the plan above
+    {
+        auto x = xeon;   // 2 x 20 cores: 39 but the host's, one kept free -> 38, then the cap
+        x.span_packages = true;
+        line("2-socket 40c/80t, NUMA split", x);
+        const cpu::PoolPlan px = cpu::plan_pool_workers(x);
+        expect(px.workers == cpu::kPoolWorkersCap, "2x20c split: both sockets, then the cap");
+        expect(px.cores_local == 40, "2x20c split: every socket counts as local");
+        auto b = cpu_of(48, {12, 12});   // the 2 x Xeon Gold 6226 box: 23 but the host's, one kept free
+        expect(cpu::plan_pool_workers(b).workers == 11, "2x12c no split: the host socket's 11 (unchanged)");
+        b.span_packages = true;
+        expect(cpu::plan_pool_workers(b).workers == 22, "2x12c split: 22 workers across both sockets");
+        auto one = cpu_of(16, {8});
+        one.span_packages = true;
+        expect(cpu::plan_pool_workers(one).workers == 7, "one socket: the split changes nothing");
+        // the socket warning is silenced while the split is on; the others stay
+        expect(cpu::pool_workers_warning(30, x, px).empty(), "30 workers on 2x20c under the split: no socket warning");
+        auto bx = cpu_of(80, {20, 20});
+        bx.span_packages = true;
+        const std::string w = cpu::pool_workers_warning(36, bx, cpu::plan_pool_workers(bx));
+        expect(!w.empty() && w.find("socket") == std::string::npos, "36 on 2x20c under the split: the cap warning, not the socket one");
+        expect(cpu::pool_workers_warning(60, bx, cpu::plan_pool_workers(bx)).find("physical cores") != std::string::npos,
+               "60 on 2x20c under the split: still more than the physical cores");
+    }
+    // interleave_packages: round-robin over the packages (host's first), stable inside each
+    {
+        const std::vector<size_t> o = cpu::interleave_packages({0, 0, 0, 1, 1, 1, 1});
+        const std::vector<size_t> want = {0, 3, 1, 4, 2, 5, 6};
+        expect(o == want, "interleave 3+4: 0 3 1 4 2 5 6");
+        expect(cpu::interleave_packages({}).empty(), "interleave of nothing");
+        const std::vector<size_t> same = cpu::interleave_packages({1, 1, 1});
+        expect(same == std::vector<size_t>({0, 1, 2}), "one package: the order is kept");
+    }
+    // a configured count under the split, on the 2 x 12-core box: the worker cores as fill_plan_fields orders them
+    // (the host's socket first: its 11 cores but the host's, then the other socket's 12), taken in interleave order;
+    // the host thread drains on socket 0
+    {
+        std::vector<int> pkg(11, 0);
+        pkg.insert(pkg.end(), 12, 1);
+        const std::vector<size_t> o = cpu::interleave_packages(pkg);
+        auto per = [&](int n, bool interleaved, int s) {
+            int c = 0;
+            for (int i = 0; i < n; ++i) c += pkg[interleaved ? o[(size_t) i] : (size_t) i] == s;
+            return c;
+        };
+        expect(per(12, true, 0) == 6 && per(12, true, 1) == 6, "--pool-workers 12 under the split: 6 + 6 workers");
+        expect(cpu::numa_slices_balanced(per(12, true, 0) + 1, per(12, true, 1)), "12: 7 / 6 threads, balanced");
+        expect(per(13, true, 0) == 7 && per(13, true, 1) == 6, "--pool-workers 13 under the split: 7 + 6 workers");
+        expect(cpu::numa_slices_balanced(per(13, true, 0) + 1, per(13, true, 1)), "13: 8 / 6 threads, balanced");
+        expect(!cpu::numa_slices_balanced(per(12, false, 0) + 1, per(12, false, 1)),
+               "12 in the host-first order would be 12 / 1 threads: refused (what the interleave avoids)");
+        expect(per(22, true, 0) == 11 && per(22, true, 1) == 11, "22 (the split default here): 11 + 11 workers");
+    }
+
+    // ---- --pool-cores and the start-up line (pure helpers) ----
+    {
+        std::vector<int> v;
+        std::string err;
+        expect(cpu::parse_pool_cores("0,2,4,6", v, err) && v == std::vector<int>({0, 2, 4, 6}), "list: 0,2,4,6");
+        expect(cpu::parse_pool_cores("2-14:2", v, err) && v == std::vector<int>({2, 4, 6, 8, 10, 12, 14}), "list: 2-14:2");
+        expect(cpu::parse_pool_cores("4-6", v, err) && v == std::vector<int>({4, 5, 6}), "list: 4-6");
+        expect(cpu::parse_pool_cores(" 6 , 2 ,2, 0-1 ", v, err) && v == std::vector<int>({6, 2, 0, 1}),
+               "list: spaces ok, the person's order kept, a repeated number once");
+        expect(!cpu::parse_pool_cores("", v, err) && v.empty() && !err.empty(), "list: empty is an error with a message");
+        expect(!cpu::parse_pool_cores("0,,2", v, err) && v.empty(), "list: an empty item");
+        expect(!cpu::parse_pool_cores("0,a", v, err), "list: letters");
+        expect(!cpu::parse_pool_cores("6-2", v, err), "list: a range that goes down");
+        expect(!cpu::parse_pool_cores("0-8:0", v, err), "list: a step of 0");
+        expect(!cpu::parse_pool_cores("-3", v, err), "list: a negative number");
+        expect(!cpu::parse_pool_cores("0-99999", v, err) && v.empty(), "list: a silly range is refused with a message, not expanded");
+        expect(cpu::parse_pool_cores("0-4095", v, err) && v.size() == 4096, "list: 4096 entries are fine");
+        expect(cpu::format_cpu_list({2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30}) == "2,4,...,30", "format: a stride");
+        expect(cpu::format_cpu_list({0, 1, 2, 3, 4}) == "0-4", "format: a run");
+        expect(cpu::format_cpu_list({2, 4, 7}) == "2,4,7", "format: short and irregular lists in full");
+        expect(cpu::format_cpu_list({1, 2, 4, 5, 9}) == "1,2,4,5,9", "format: irregular");
+        expect(cpu::format_cpu_list({}) == "none", "format: none");
+
+        // Windows-style numbering of 16 cores / 32 threads: core k = logical 2k and 2k+1
+        std::vector<cpu::LogicalCpuInfo> win;
+        for (int i = 0; i < 32; ++i) win.push_back({i, i / 2});
+        std::vector<int> w;
+        for (int c = 1; c < 16; ++c) w.push_back(2 * c);
+        const std::string line = cpu::describe_worker_placement(w, 0, win, false);
+        std::printf("  %s\n", line.c_str());
+        expect(line == "CPU workers on logical processors 2,4,...,30 (15 workers, one per physical core; host on 0)",
+               "the default line on 16c/32t");
+        // the mistake the person worried about: workers on logical 0..7 of an adjacent-numbering SMT PC
+        const std::string bad = cpu::describe_worker_placement({1, 2, 3, 4, 5, 6, 7}, 0, win, false);
+        std::printf("  %s\n", bad.c_str());
+        expect(bad.find("one per physical core") == std::string::npos && bad.find("carry more than one worker") != std::string::npos,
+               "workers on logical 1..7 of 16c/32t are reported as sharing cores");
+        expect(bad.find("shares the host's core") != std::string::npos, "... and the worker on the host's core is named");
+        const std::string unk = cpu::describe_worker_placement({1, 2, 3}, 0, {}, false);
+        expect(unk.find("did not say") != std::string::npos && unk.find("one per physical core") == std::string::npos,
+               "unknown layout: no claim");
+        expect(cpu::describe_worker_placement({2, 4}, -1, win, true).find("your --pool-cores list") != std::string::npos &&
+               cpu::describe_worker_placement({2, 4}, -1, win, true).find("host not pinned") != std::string::npos,
+               "a given list and an unpinned host are said");
+
+        // check_pool_cores: drop what cannot be used, warn about siblings and the host's processor, never refuse
+        cpu::PoolCoresCheck c = cpu::check_pool_cores({2, 4, 6, 8}, win, 0);
+        expect(c.cpus == std::vector<int>({2, 4, 6, 8}) && c.warnings.empty(), "check: one per core, no warning");
+        c = cpu::check_pool_cores({2, 3, 6}, win, 0);
+        expect(c.cpus == std::vector<int>({2, 3, 6}) && c.warnings.size() == 1 && c.warnings[0].find("two hardware threads") != std::string::npos,
+               "check: SMT siblings are kept with one warning");
+        c = cpu::check_pool_cores({0, 2}, win, 0);
+        expect(c.cpus == std::vector<int>({0, 2}) && c.warnings.size() == 1 && c.warnings[0].find("host thread's") != std::string::npos,
+               "check: the host's processor is kept with a warning");
+        c = cpu::check_pool_cores({1, 2}, win, 0);
+        expect(c.cpus == std::vector<int>({1, 2}) && c.warnings.size() == 1 && c.warnings[0].find("shares a core with the host") != std::string::npos,
+               "check: the host's SMT sibling is kept with a warning");
+        c = cpu::check_pool_cores({2, 40, 99}, win, 0);
+        expect(c.cpus == std::vector<int>({2}) && c.warnings.size() == 1 && c.warnings[0].find("40,99") != std::string::npos,
+               "check: processors this process may not use are left out and named");
+        c = cpu::check_pool_cores({40}, win, 0);
+        expect(c.cpus.empty() && c.warnings.size() == 1, "check: nothing usable");
+        c = cpu::check_pool_cores({2, 3}, {{2, -1}, {3, -1}}, 0);
+        expect(c.cpus.size() == 2 && c.warnings.empty(), "check: an unknown layout cannot tell siblings: no warning");
+    }
+
     if (g_fail) {
         std::fprintf(stderr, "pool_plan_test: %d failure(s)\n", g_fail);
         return 1;

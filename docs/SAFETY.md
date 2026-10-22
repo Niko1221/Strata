@@ -49,7 +49,7 @@ Like any download, each connection below shows the other side your IP address an
 | llama.cpp source code (a fixed commit) | github.com/ggml-org/llama.cpp | During a model install, if it is not on your PC yet. Strata uses only its model-preparation scripts |
 | Web search and web pages | DuckDuckGo, with Bing as the second source; or Exa, Perplexity or DeepSeek if you save a key for them. Any page the agent is asked to open goes to that page's site | When the agent uses its search or "open web pages" tool. In Manual mode it asks you first, once per chat |
 | Outside model services | The service you add (OpenAI, Anthropic, OpenRouter, a server on your network and others) | Only for chats with that model, and only after you add its key |
-| Cloudflare tunnel | Cloudflare, through the `cloudflared` program | Only while you have the tunnel on, and it will not start without an API key |
+| Cloudflare tunnel | Cloudflare, through the `cloudflared` program | Only while you have the tunnel on, and Strata makes an API key for it unless you pass `--no-api-key` (then it warns that anyone who finds the address can use your model) |
 | Tailscale, local network | Not Strata's traffic. Strata only reads Tailscale's status and shows the address | Only if you choose that access in `strata launch` |
 | An image link in an API request | The address in the link | Only when a program sends your server a request with an `http(s)` image link. `--offline` refuses it |
 | Remote tool servers (MCP) | The address you put in the run config | Only when you add one |

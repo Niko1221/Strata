@@ -41,6 +41,14 @@ bool strata_pf_hcdown_exact_bf16(const uint16_t* X, int64_t ldx, const uint16_t*
                                  int64_t K, void* stream = nullptr);
 bool strata_pf_gemm_f16_ld(const uint16_t* X, int64_t ldx, const uint16_t* W, int64_t ldw, float* Y, int64_t T,
                            int64_t N, int64_t K, int64_t ldy, float beta, void* stream = nullptr);
+/// True when the products above can run on the current device (the gfx11 matrix cores).  Host code that pads an
+/// activation's row stride for them (STRATA_PF_PAD, prefill.cpp) must ask this first: on another card no kernel takes
+/// a padded X, and Gemm::native would have to copy the rows unpadded.
+#if defined(STRATA_USE_HIP)
+bool strata_pf_padded_gemm_available();
+#else
+inline bool strata_pf_padded_gemm_available() { return false; }
+#endif
 
 bool strata_wmma_gemm_bf16(const uint16_t* X, const uint16_t* W, float* Y,
                            int64_t T, int64_t N, int64_t K, int64_t ldy, float beta,

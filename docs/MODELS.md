@@ -14,12 +14,12 @@ makers' compressions). It also runs a smaller model, [Qwen3.6-35B-A3B](#qwen36-3
 
 The tiers count RAM and VRAM (the graphics card's memory) together, the same as the [README](../README.md#the-other-sizes).
 `strata launch`, setup and the install tool of the MCP server pre-select by them; the desktop app does from 0.2.1. Every
-other size stays a choice. A PC with a card of 12 GB and 32 GB of RAM is in the 40 GB tier (32 + 12 = 44).
+other size stays a choice. Strata leaves 5 GB for Windows and the system, so the sum is RAM + VRAM minus 5 GB: a PC with a card of 12 GB and 32 GB of RAM is in the 40 GB tier (32 + 12 - 5 = 39), and a PC with a 16 GB card and 32 GB of RAM is too, not in the 48 GB tier (#3425).
 
 | Your memory (RAM + VRAM) | Pre-selected | Notes |
 | --- | --- | --- |
 | **32 GB** | **Gyro-S**, or the **Coder** for code | The Coder needs 32 GB of RAM and keeps half of the experts, so it is weaker outside code ([why](#coder)). Gyro-S has lower quality than the 2-3-bit sizes, and the 2-bit Q2_0 decodes faster |
-| **40 GB** | **Swift 1.5** IQ2_XS (39.2 GB) | Gyro-M (35 GB) is the other choice: close to IQ3_XXS in quality, but it writes answers 17-21% slower than Q2_0. Gyro runs on NVIDIA and AMD cards, not on Intel Arc or the Mac |
+| **40 GB** | **Swift 1.5** IQ2_XS (39.2 GB) | Gyro-M (35 GB) is the other choice: close to IQ3_XXS in quality, but it writes answers 16-21% slower than Q2_0. Gyro runs on NVIDIA, AMD and Intel Arc cards and, from 0.2.2, on Macs (Gyro-S measured on a 32 GB Mac mini) |
 | **48 GB** | **IQ3_XXS** (47.0 GB) | Slower, better |
 | **64 GB** | **IQ3_S** (54.8 GB), the original. Swift 1.5's IQ3_S is an equal choice | The slowest, the best: it matches the full model on the published tests |
 | **96 GB or more** | [Unsloth's UD-IQ4_XS to Q8_0](#unsloths-files-ud-iq4_xs-to-q8_0), 4 to 8 bit | UD-IQ4_XS keeps every expert in RAM from about 80 GB of RAM, Q8_0 from about 136 GB. Up to 192 GB, the 5-8-bit files fit in RAM. Setup still pre-selects IQ3_S here, except on a Strix Halo |
@@ -181,9 +181,9 @@ experts in a rotated basis. They are the smallest options and never setup's defa
 | Size | Download | Memory it needs (VRAM + RAM) | In plain words |
 | --- | ---: | ---: | --- |
 | **Gyro-S** | 58.5 GB | 27.6 GB | the smallest option, for PCs with little memory; lower quality |
-| **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory; decodes about 20% slower than Q2_0 on 12 GB cards |
+| **Gyro-M** | 92.0 GB | 35 GB | about IQ3_XXS quality with about 20% less GPU memory; decodes 16-21% slower than Q2_0 (RTX 3060 12 GB, R9700) |
 
-NVIDIA, and AMD (experimental); not Intel Arc or the Mac. Gyro reads pictures (the same rule as above). It needs
+Gyro runs on NVIDIA and AMD (experimental) cards and on Intel Arc cards on Linux (tested on an Arc A750; the Arc engine is built from this release's source, see [INTEL.md](INTEL.md)) and, from 0.2.2, on Apple Silicon Macs ([MAC.md](MAC.md#gyro-s-and-gyro-m-agentionais-trellis-experts): Gyro-S is measured on a 32 GB Mac mini, Gyro-M only tensor by tensor). Gyro reads pictures (the same rule as above). On NVIDIA and AMD it needs
 engine 0.1.45.1 or newer; if the engine is older, the app says "This model needs a newer engine" and offers Update
 engine. Gyro gives correct output on RTX 50 cards with engine 0.1.45.3. Details, measurements and credit:
 [GYRO.md](GYRO.md).

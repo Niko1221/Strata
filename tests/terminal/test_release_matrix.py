@@ -32,11 +32,13 @@ RELEASE = [
     pkg("windows-x86_64", "cuda", "cuda12", SM_OLD, "576.02"),
     pkg("windows-x86_64", "hip", "rx9070", ("gfx1200", "gfx1201")),
     pkg("windows-x86_64", "hip", "rdna3", ("gfx1100", "gfx1101", "gfx1102", "gfx1151")),
+    pkg("windows-x86_64", "hip", "rdna2", ("gfx1030", "gfx1031")),
     pkg("linux-x86_64", "cuda", "cuda13", SM_NEW, "580.65"),
     pkg("linux-x86_64", "cuda", "cuda12", SM_OLD, "575.51"),
     pkg("linux-x86_64", "hip", "rx9070", ("gfx1200", "gfx1201")),
     pkg("linux-x86_64", "hip", "rx7900", ("gfx1100", "gfx1101", "gfx1102")),
     pkg("linux-x86_64", "hip", "halo", ("gfx1151",)),
+    pkg("linux-x86_64", "hip", "rx6000", ("gfx1030", "gfx1031")),
     pkg("macos-arm64", "metal", "", ("apple-gpu",)),
 ]
 
@@ -56,11 +58,13 @@ class ReleaseSelection(unittest.TestCase):
             self.pick(pc("windows-x86_64", "cuda", "576.02", ["sm_61"]))[0],      # GTX 1080 on an older driver
             self.pick(pc("windows-x86_64", "hip", gfx=["gfx1201"]))[0],           # RX 9070
             self.pick(pc("windows-x86_64", "hip", gfx=["gfx1100"]))[0],           # RX 7900 XTX
+            self.pick(pc("windows-x86_64", "hip", gfx=["gfx1030"]))[0],           # RX 6800 XT
             self.pick(pc("linux-x86_64", "cuda", "615.71", ["sm_86"]))[0],        # RTX 3060
             self.pick(pc("linux-x86_64", "cuda", "575.51", ["sm_60"]))[0],        # Tesla P100
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1201"]))[0],             # Radeon AI PRO R9700
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1100"]))[0],             # RX 7900 XTX
             self.pick(pc("linux-x86_64", "hip", gfx=["gfx1151"]))[0],             # Ryzen AI Max (Strix Halo)
+            self.pick(pc("linux-x86_64", "hip", gfx=["gfx1031"]))[0],             # RX 6700 XT
             self.pick(pc("macos-arm64", "metal"))[0],
         }
         self.assertEqual(chosen, {(p["platform"], p["backend"], p["variant"]) for p in RELEASE})
@@ -111,7 +115,7 @@ class ReleaseSelection(unittest.TestCase):
     def test_other_unified_memory_radeons_get_no_engine_and_the_plain_family_line(self):
         from strata_control import engine_component as ec
         for platform in ("windows-x86_64", "linux-x86_64"):
-            for gfx in ("gfx1103", "gfx1150", "gfx1152", "gfx1030"):
+            for gfx in ("gfx1103", "gfx1150", "gfx1152", "gfx1032"):
                 got, why = self.pick(pc(platform, "hip", gfx=[gfx]))
                 self.assertIsNone(got, f"{gfx} on {platform}")
                 self.assertTrue(any(gfx in r for r in why))
@@ -120,21 +124,42 @@ class ReleaseSelection(unittest.TestCase):
         self.assertEqual(ec.arch_notice(("gfx1151",), ["gfx1201"]),
                          "This build of Strata is for AMD Ryzen AI Max cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
 
-    def test_rx6000_has_no_ready_made_package_and_the_notice_says_so_instead_of_naming_a_build_that_does_not_exist(self):
-        """#3203: an RX 6800 XT (gfx1030) is in none of the release's engine packages on either OS; the line must not say "Ask for the RX 6000 build"."""
+    def test_rx6000_has_its_own_package_and_only_gfx103x_cards_get_it(self):
+        """0.2.2: gfx1030 / gfx1031 are in the RX 6000 package (Linux rx6000, Windows rdna2) and in no other; no RX 7000 / 9000 card gets it."""
         from strata_control import engine_component as ec
+        want = {"windows-x86_64": "rdna2", "linux-x86_64": "rx6000"}
+        for platform, variant in want.items():
+            for gfx in ("gfx1030", "gfx1031"):
+                self.assertEqual(self.pick(pc(platform, "hip", gfx=[gfx]))[0], (platform, "hip", variant), (platform, gfx))
+            for gfx in ("gfx1100", "gfx1101", "gfx1102", "gfx1151", "gfx1200", "gfx1201"):
+                got = self.pick(pc(platform, "hip", gfx=[gfx]))[0]
+                self.assertNotEqual(got[2] if got else None, variant, (platform, gfx))
+        self.assertEqual(ec.NO_PACKAGE_HIP, {}, "every card family setup supports has a package; the table is for the next family without one")
         covered = {a for p in RELEASE if p["backend"] == "hip" for a in p["archs"]}
-        for gfx in ec.NO_PACKAGE_HIP:
-            self.assertNotIn(gfx, covered, f"{gfx} is in a package now: drop it from NO_PACKAGE_HIP")
+        self.assertTrue({"gfx1030", "gfx1031"} <= covered)
+        # the plain family line now names a build that exists
+        self.assertIn("Ask for the RX 6000 build.", ec.arch_notice(("gfx1200", "gfx1201"), ["gfx1030"]))
+        self.assertIsNone(ec.no_package_note(["gfx1030", "gfx1031"]))
+
+    def test_a_pc_with_an_rx7000_beside_an_rx6000_keeps_the_package_it_always_got(self):
+        """Before the RX 6000 package a PC with both cards got the RX 7000 one: the new package must not win that tie, in any feed order."""
+        for platform, old, new in (("windows-x86_64", "rdna3", "rdna2"), ("linux-x86_64", "rx7900", "rx6000")):
+            hardware = pc(platform, "hip", gfx=["gfx1030", "gfx1100"])
+            for order in (RELEASE, list(reversed(RELEASE))):
+                best, _ = feedmod.select_engine([feedmod._engine_package(p) for p in order], hardware)
+                self.assertEqual(best.variant, old, (platform, new))
+        # a Radeon AI PRO (gfx1201) beside an RX 6800 keeps rx9070 too
         for platform in ("windows-x86_64", "linux-x86_64"):
-            self.assertIsNone(self.pick(pc(platform, "hip", gfx=["gfx1030"]))[0])
-        text = ec.arch_notice(("gfx1200", "gfx1201"), ["gfx1030"])
-        self.assertIn("This computer has an AMD RX 6000 card (gfx1030).", text)
-        self.assertIn("no ready-made Strata engine for the AMD RX 6000 series", text)
-        self.assertNotIn("Ask for", text)
-        self.assertIsNone(ec.no_package_note(["gfx1201", "gfx1100"]))
-        # a PC with an RX 9000 card next to the RX 6000 one is told the ordinary way (a build exists for one of them)
-        self.assertIn("Ask for the", ec.arch_notice(("gfx1100",), ["gfx1201", "gfx1030"]))
+            for order in (RELEASE, list(reversed(RELEASE))):
+                best, _ = feedmod.select_engine([feedmod._engine_package(p) for p in order], pc(platform, "hip", gfx=["gfx1201", "gfx1030"]))
+                self.assertEqual(best.variant, "rx9070")
+
+    def test_installed_packages_are_chosen_the_same_way(self):
+        from strata_control import engine_component as ec
+        self.assertEqual(ec.hip_preference(("gfx1030", "gfx1031")), 0)
+        self.assertEqual(ec.hip_preference(("gfx1100", "gfx1101", "gfx1102")), 1)
+        self.assertEqual(ec.hip_preference(("gfx1030", "gfx1100")), 1)
+        self.assertEqual(ec.hip_preference(()), 1)
 
     def test_the_platform_decides_first(self):
         self.assertIsNone(self.pick(pc("macos-arm64", "cuda", "590.10", ["sm_86"]))[0])

@@ -159,6 +159,16 @@ def parser() -> argparse.ArgumentParser:
     models_import.add_argument("--plan", action="store_true", required=True,
                                help="inspect only; adoption requires a qualified model workflow")
     models_import.add_argument("--output", choices=("human", "json"), default="human")
+    models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
+    models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
+    models_move.add_argument("--resume", action="store_true", help="finish a move that was interrupted")
+    models_move.add_argument("--leave", action="store_true", help="give up an interrupted move: keep the old folder and remove the partial copies")
+    models_move.add_argument("--status", action="store_true", help="say whether a move was interrupted (changes nothing)")
+    models_move.add_argument("--from", dest="source", metavar="OLD_FOLDER", help="the folder the models are in now (default: the data folder in use)")
+    models_move.add_argument("--install-dir", help="absolute path to a Strata installation whose run configs should follow the files")
+    models_move.add_argument("--plan", action="store_true", help="say what would happen and change nothing")
+    models_move.add_argument("--cancel-file", metavar="PATH", help="stop (safely) when this file appears")
+    models_move.add_argument("--output", choices=("human", "json", "jsonl"), default="human")
     engine = sp.add_parser("engine", help="engine tuning and component actions")
     engine_sp = engine.add_subparsers(dest="engine_command", required=True)
     calibrate = engine_sp.add_parser("calibrate", help="measure, review and apply engine tuning")
@@ -495,13 +505,21 @@ def parser() -> argparse.ArgumentParser:
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
-                     components_verify, models_list, models_inspect, models_import, calibrate,
+                     components_verify, models_list, models_inspect, models_import, models_move, calibrate,
                      runtime_start, runtime_status, runtime_verify, runtime_stop, runtime_cleanup, runtime_restart,
                      *ops_items, bench_run, bench_report, bench_compare, code_sessions, *update_parsers):
         one_shot.add_argument("--json", action="store_true", help="alias for --output json")
         one_shot.add_argument("--quiet", action="store_true", default=argparse.SUPPRESS,
                               help="suppress human informational output")
     return ap
+
+
+def _file_words(exc: BaseException) -> str:
+    try:
+        from strata_control import longpath
+    except ImportError:
+        return f"local file operation failed ({type(exc).__name__})"
+    return longpath.file_words(exc)
 
 
 def _error(message: str, code: int, machine: bool = False) -> int:
@@ -539,6 +557,8 @@ def _models(a: argparse.Namespace) -> int:
                 print(_import_problem(result), file=sys.stderr)
             return 5
         return _success({"plan": result}, machine=a.output == "json", human=_import_words(result))
+    if a.models_command == "move":
+        return _models_move(a)
     if a.models_command == "list":
         if a.served:
             if a.install_dir:
@@ -583,19 +603,104 @@ def _models(a: argparse.Namespace) -> int:
 
 def _import_problem(plan: dict) -> str:
     """Why `models import --plan` refused, in plain words (the codes stay in --output json)."""
-    from strata_cli.launch.runner import plain_issue
-    issues = [str(x) for x in plan.get("issues") or []]
-    if "multiple_model_groups" in issues:                    # several models in one folder: "not a size Strata knows" would only confuse
-        issues = [x for x in issues if x != "unrecognized_or_unsupported_model_variant"]
-    words = "; ".join(dict.fromkeys(plain_issue(x) for x in issues))
+    from strata_control import models as own_models
+    words = own_models.problem_words(plan.get("issues") or [])
     text = f"These files cannot be used as they are: {words}."
-    holds = plan.get("folder_holds") or []
+    holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
     if holds:
-        known = [f"{h['family']} {h['model']} ({h['file']})" for h in holds if h.get("model")]
-        other = [h["file"] for h in holds if not h.get("model")]
-        text += " The folder holds " + str(len(holds)) + " models" + (": " + ", ".join(known + other) if known or other else "") + \
-            ". Point at the .gguf file of the one you want."
+        text += " " + holds
     return text
+
+
+def _models_move(a: argparse.Namespace) -> int:
+    from strata_control import discovery, models, models_move as mm
+    machine = a.output in ("json", "jsonl")
+    old = Path(a.source) if a.source else discovery.data_dir(Path.home() / "Strata")[0]
+    if a.status or a.resume or a.leave:
+        return _models_move_unfinished(a, old)
+    if not a.to:
+        print("strata: name the new folder, or use --resume / --leave / --status for an interrupted move.", file=sys.stderr)
+        return 2
+    new = Path(a.to).expanduser()
+    if a.plan:
+        result = mm.plan(old, new)
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": result["ok"], "plan": result}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(result["issue"]["message"] if result["issue"] else
+                  f"{len(result['models'])} model(s), {result['models_bytes'] / 1e9:.1f} GB; {result['free_bytes'] / 1e9:.1f} GB free in {new}.")
+        return 0 if result["ok"] else 5
+    try:
+        installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
+    except Exception:
+        installs = []
+    configs = [c for i in installs for c in mm.config_files(i)]
+    cancel = Path(a.cancel_file) if a.cancel_file else None
+
+    def show(event: dict) -> None:
+        if a.output == "jsonl":
+            print(json.dumps(event, ensure_ascii=False, allow_nan=False), flush=True)
+        elif not machine:
+            print(f"\r{event['done'] / 1e9:.1f} of {event['total'] / 1e9:.1f} GB  {event['file']}", end="", flush=True)
+    try:
+        summary = mm.move(old, new, on_progress=show, cancelled=(lambda: cancel.exists()) if cancel else None, configs=configs)
+    except mm.MoveError as e:
+        extra = getattr(e, "summary", {})
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": e.code, "message": str(e), "details": e.details}, **extra}, ensure_ascii=False))
+        else:
+            print(f"\nstrata: {e} {e.details}".rstrip(), file=sys.stderr)
+        return 5
+    if machine:
+        print(json.dumps({"schema_version": 1, "ok": True, "event": "result", **summary}, ensure_ascii=False))
+    else:
+        print("\n" + ("Your models are moved." if summary["done"] else "Moving stopped. Nothing was lost."))
+    return 0 if summary["done"] else 6
+
+
+def _interrupted_words(st: dict) -> str:
+    return (f"A move of your models was interrupted. They are in {st['from']} and {st['to']}. "
+            "Finish it: strata models move --resume. Leave it (keep the models in the first folder): strata models move --leave.")
+
+
+def _models_move_unfinished(a: argparse.Namespace, old: Path) -> int:
+    """`strata models move --status | --resume | --leave`: the move the last run left unfinished (A move was interrupted. Finish it or leave it)."""
+    from strata_control import models, models_move as mm
+    machine = a.output in ("json", "jsonl")
+    st = mm.interrupted(old)
+    if a.status:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "interrupted": st}, ensure_ascii=False, allow_nan=False))
+        else:
+            print(_interrupted_words(st) if st else "No move was interrupted.")
+        return 0
+    if not st:
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": "nothing", "message": "No move was interrupted.", "details": ""}}))
+        else:
+            print("strata: no move was interrupted.", file=sys.stderr)
+        return 5
+    try:
+        installs = [models.resolve_install(a.install_dir)[0]] if a.install_dir else [p for p, _s in models.all_installs()]
+    except Exception:
+        installs = []
+    configs = [c for i in installs for c in mm.config_files(i)]
+    if a.leave:
+        try:
+            result = mm.leave(Path(st["from"]), Path(st["to"]), configs=configs)
+        except mm.MoveError as e:
+            if machine:
+                print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": e.code, "message": str(e), "details": e.details}}, ensure_ascii=False))
+            else:
+                print(f"strata: {e} {e.details}".rstrip(), file=sys.stderr)
+            return 5
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": True, "event": "result", "left": True, **result}, ensure_ascii=False))
+        else:
+            print(f"Done. Your models stay in {st['from']}; the partial copies in {st['to']} were removed.")
+        return 0
+    a.to, a.source, a.resume, a.status, a.leave = st["to"], st["from"], False, False, False
+    return _models_move(a)
 
 
 def _import_words(plan: dict) -> str:
@@ -676,13 +781,14 @@ def _launch_plan(ref: str, cli: argparse.Namespace | None = None) -> tuple[dict,
     path, saved, revision, cfg = _source(ref)
     values, origins = _effective(cfg, saved, cli)
     host = values["host"]
-    from serve.server import api_key_of, key_list
-    try:
-        has_key = bool(key_list(api_key_of(os.environ.get("STRATA_API_KEY") or cfg.get("api_key", ""))))
-    except ValueError:
-        raise ProfileError("the inference API key is invalid", 5) from None
-    if host not in ("127.0.0.1", "localhost", "::1") and not has_key:
-        raise ProfileError("non-loopback serving requires an API key in the run config or STRATA_API_KEY")
+    from serve.server import api_key_of, explicit_no_key, key_list
+    raw_key = os.environ.get("STRATA_API_KEY") or cfg.get("api_key", "")
+    if not explicit_no_key(raw_key):
+        try:
+            key_list(api_key_of(raw_key))
+        except ValueError:
+            raise ProfileError("the inference API key is invalid", 5) from None
+    # A key is recommended on a network, never required: the server warns once at start (owner decision 2026-10-20).
     server_args = ["--engine", getattr(cli, "engine", "strata"), "--config", str(path), "--host", str(host),
                    "--port", str(values["port"])]
     if cli is not None:
@@ -1153,7 +1259,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
         host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
         authority = f"[{host}]" if ":" in host and not host.startswith("[") else host
         url = f"http://{authority}:{plan['effective']['port']}"
-        if not key and cfg.get("api_key"):
+        if not key and cfg.get("api_key") and str(cfg["api_key"]).strip().lower() != "none":
             from serve.server import api_key_of, key_list
             keys = key_list(api_key_of(cfg["api_key"]))
             key = keys[0] if keys else None
@@ -1175,7 +1281,7 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
     import shutil
     import tempfile
     lease = benchmark_lease(saved["id"], out) if saved else contextlib.nullcontext()
-    proc, scratch, engine_log = None, None, None
+    proc, scratch, engine_log, run_log, log_start = None, None, None, None, 0
     try:
         with lease, contextlib.redirect_stdout(sys.stderr):
             def log(message: str) -> None:
@@ -1185,11 +1291,14 @@ def _bench_standard(a: argparse.Namespace, machine: bool) -> int:
                     raise ProfileError("no server is answering at the profile's address and --no-start was given", 5)
                 scratch = Path(tempfile.mkdtemp(prefix="strata-bench-"))
                 engine_log = scratch / "engine.log"
+                run_log = Path(str(plan["config"]["log"])).expanduser() if isinstance(plan["config"].get("log"), str) else None
+                log_start = run_log.stat().st_size if run_log is not None and run_log.is_file() else 0
                 proc = bench_standard.start_engine(a.profile, target, engine_log, log, a.load_timeout)
             elif a.profile:
                 log("using the server that is already running at this profile's address; it will not be stopped")
             doc, out_dir = bench_standard.run(target, out, out_root=out_root, optional_concurrency=a.optional_concurrency,
                                               declared=declared, plan=plan, engine_log=engine_log, command=command, log=log,
+                                              engine_run_log=(run_log, log_start) if proc is not None else None,
                                               started_engine=proc is not None, hash_model=not a.skip_model_hash)
     finally:
         bench_standard.stop_engine(proc)
@@ -1970,10 +2079,15 @@ def _access_retry(a: argparse.Namespace, error: BaseException) -> int | None:
     if not (isinstance(error, PermissionError) or "PermissionError" in str(error)):
         return None
     as_json = bool(getattr(a, "json", False) or getattr(a, "output", None) in ("json", "jsonl"))
+    in_use = private_files.is_sharing_violation(error)
     if getattr(a, "_access_retried", False):
-        return _error(f"{private_files.ACCESS_MESSAGE} (details: {error})", 5, as_json)
+        message = private_files.IN_USE_MESSAGE if in_use else private_files.ACCESS_MESSAGE
+        return _error(f"{message} (details: {error})", 5, as_json)
     a._access_retried = True
-    private_files.repair_known_roots()
+    if in_use:
+        time.sleep(1.5)                                  # a scanner or a sync tool lets go of the file in a moment; repairing would not help
+    else:
+        private_files.repair_known_roots()
     return _run(a)
 
 
@@ -2048,8 +2162,8 @@ def _run(a: argparse.Namespace) -> int:
         if retried is not None:
             return retried
         if a.command == "serve" and a.output == "jsonl":
-            return _serve_error(a, f"local file operation failed ({type(e).__name__})", 6)
-        return _error(f"local file operation failed ({type(e).__name__})", 6,
+            return _serve_error(a, _file_words(e), 6)
+        return _error(_file_words(e), 6,
                       bool(getattr(a, "output", None) in ("json", "jsonl")))
     except ClientError as e:
         if a.command == "serve" and a.output == "jsonl":

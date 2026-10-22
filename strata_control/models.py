@@ -23,7 +23,7 @@ from pathlib import Path
 
 from strata_control import discovery
 from strata_control.doctor import inspect as inspect_components
-from strata_control.gguf_preflight import inspect_metadata
+from strata_control.gguf_preflight import inspect_metadata, real_model_file
 from strata_control.profiles import ProfileError
 
 
@@ -34,8 +34,9 @@ MAX_CONFIGS = 128
 MAX_IMPORT_SHARDS = 128
 SHARD = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf\Z", re.I)
 SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "qwen/IQ3_S",
-                                   "swift/IQ2_XS", "swift/IQ3_XXS", "coder/IQ1_M",
-                                   "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "gyro/Gyro-S", "gyro/Gyro-M"})
+                                   "swift/IQ2_XS", "swift/IQ3_XXS", "swift/IQ3_S", "coder/IQ1_M",
+                                   "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "unsloth/UD-Q5_K_XL", "unsloth/UD-Q6_K_XL",
+                                   "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M"})
 
 
 def settings_path() -> Path:
@@ -216,10 +217,10 @@ def inspect(model_id: str, override: str | None = None) -> dict:
 
 
 def _gguf_header(path: Path) -> dict:
+    """The first bytes of one model file (a link to it is followed: Hugging Face cache snapshots and Ollama blobs are links)."""
+    real = real_model_file(path)
     try:
-        if stat.S_ISLNK(path.lstat().st_mode):
-            raise ProfileError("GGUF shard is a symlink", 5)
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(real, os.O_RDONLY)
         with os.fdopen(descriptor, "rb") as stream:
             details = os.fstat(stream.fileno())
             if not stat.S_ISREG(details.st_mode) or details.st_size < 8:
@@ -293,6 +294,79 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
     return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}
 
 
+ISSUE_WORDS = {
+    "multiple_model_groups": "the folder holds more than one model",
+    "incomplete_or_invalid_shard_set": "some parts of the model are missing",
+    "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
+    "unsupported_or_missing_architecture": "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)",
+    "unsupported_or_incomplete_tokenizer_metadata": "the file has no usable tokenizer",
+    "missing_or_unexpected_expert_quantization": "its quantization is not one Strata knows",
+}
+# the checker's own sentences about one file, in words
+_REASON_WORDS = (
+    ("not a nonempty regular file", "the file is empty or is not a file"),
+    ("unreadable", "the file cannot be read (is it open in another program, or on a drive that is gone?)"),
+    ("could not be read", "the file cannot be read (is it open in another program, or on a drive that is gone?)"),
+    ("is missing", "the file is not there"),
+    ("link to a file that is not there", "this is a shortcut to a file that is not there any more"),
+    ("does not begin with a gguf header", "this is not a GGUF model file"),
+    ("header version", "this GGUF is from a format Strata does not read"),
+    ("requires gguf v3", "this GGUF is in an old format (version 2); Strata reads version 3"),
+    ("metadata is truncated", "the file is cut short (a download or copy that did not finish)"),
+    ("payload is shorter", "the file is shorter than its own header says (a download or copy that did not finish)"),
+    ("exceeds the bounded inspection limit", "its header is larger than Strata reads"),
+    ("too large to inspect", "its header is larger than Strata reads"),
+    ("unsupported encoding or shape", "it stores weights in a format Strata does not read"),
+    ("unsupported array type", "its header uses a type Strata does not read"),
+    ("unsupported value type", "its header uses a type Strata does not read"),
+    ("byte ranges overlap", "its header is damaged"),
+    ("unsupported_architecture", "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"),
+    ("symlink", "this is a shortcut (symbolic link) that cannot be followed"),
+)
+
+
+def plain_issue(code: str) -> str:
+    """One problem from the GGUF preview, in words, with the file's name when it is about one file
+    (`file.gguf: GGUF shard is not a nonempty regular file`)."""
+    code = str(code)
+    if code in ISSUE_WORDS:
+        return ISSUE_WORDS[code]
+    name, sep, reason = code.partition(": ")
+    if not (sep and name.lower().endswith(".gguf")):
+        name, reason = "", code
+    low = reason.lower()
+    words = next((w for key, w in _REASON_WORDS if key in low), reason.replace("_", " "))
+    return f"{name}: {words}" if name else words
+
+
+def problem_words(issues: list, limit: int = 3) -> str:
+    """The problems of a file set as ONE sentence part, each said once: the same reason for several files names the files together
+    ("a.gguf and b.gguf: the file is cut short"), a reason that was already given is not given again, and a long list is cut with a count.
+    A folder that holds several models does not also say "not a size Strata knows"."""
+    codes = [str(x) for x in issues or []]
+    if "multiple_model_groups" in codes:
+        codes = [x for x in codes if x != "unrecognized_or_unsupported_model_variant"]
+    by_reason: dict[str, list[str]] = {}
+    for code in codes:
+        words = plain_issue(code)
+        name, sep, reason = words.partition(": ")
+        if sep and name.lower().endswith(".gguf"):
+            by_reason.setdefault(reason, []).append(name)
+        else:
+            by_reason.setdefault(words, [])
+    parts = []
+    for reason, names in by_reason.items():
+        if not names:
+            parts.append(reason)
+        elif len(names) <= 2:
+            parts.append(f"{' and '.join(names)}: {reason}")
+        else:
+            parts.append(f"{names[0]}, {names[1]} and {len(names) - 2} more files: {reason}")
+    if len(parts) > limit:
+        parts = parts[:limit] + [f"and {len(parts) - limit} more problem" + ("s" if len(parts) - limit > 1 else "")]
+    return "; ".join(parts)
+
+
 UNSUPPORTED_MODEL_TYPE = ("This model type isn't supported by the Strata engine. "
                           "Add it as a Custom model API (llama-server) instead.")
 # The picture readers Strata ships a pinned copy of (setup downloads and checks one of these next to the model).
@@ -333,31 +407,185 @@ def _assess_projector(path: Path) -> dict:
     return row
 
 
+MAX_LISTED = 5000            # .gguf files looked at in one folder (the checker reads headers of the chosen set only)
+MAX_TREE_DIRS = 300          # folders looked into when the picked folder holds no GGUF itself
+TREE_DEPTH = 3
+SKIP_DIRS = frozenset({"packs", "mtp", "engine", "node_modules", "windows", "program files", "program files (x86)",
+                       "$recycle.bin", "system volume information", "appdata"})
+
+
+def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
+    """(model files, picture-reader file names, cut) of one folder. A link to a file counts (it is followed when read); a name that
+    only ends in .gguf but is a folder does not."""
+    shards: list[Path] = []
+    readers: list[str] = []
+    cut = False
+    try:
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                low = entry.name.lower()
+                if not low.endswith(".gguf"):
+                    continue
+                try:
+                    is_file = entry.is_file() or entry.is_symlink()
+                except OSError:
+                    is_file = False
+                if not is_file:
+                    continue
+                if low.startswith("mmproj"):
+                    readers.append(entry.name)
+                    continue
+                if len(shards) >= MAX_LISTED:
+                    cut = True
+                    break
+                shards.append(Path(entry.path))
+    except OSError:
+        raise ProfileError("cannot inspect GGUF directory", 5) from None
+    return shards, readers, cut
+
+
+def _folders_with_models(root: Path) -> list[Path]:
+    """The folders under `root` (a Strata data folder, a whole Hugging Face repository, a drive's model folder) that hold model files,
+    breadth first, `TREE_DEPTH` levels deep. A folder with models is not searched further."""
+    found: list[Path] = []
+    seen: set[str] = set()
+    queue = [(root, 0)]
+    while queue and len(seen) < MAX_TREE_DIRS:
+        folder, depth = queue.pop(0)
+        try:
+            key = os.path.normcase(os.path.realpath(folder))
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            with os.scandir(folder) as scan:
+                entries = sorted(scan, key=lambda e: e.name.lower())
+        except OSError:
+            continue
+        if any(e.name.lower().endswith(".gguf") and not e.name.lower().startswith("mmproj") for e in entries):
+            found.append(folder)
+            continue
+        if depth >= TREE_DEPTH:
+            continue
+        for e in entries:
+            try:
+                if e.is_dir() and not e.name.startswith(".") and e.name.lower() not in SKIP_DIRS:
+                    queue.append((Path(e.path), depth + 1))
+            except OSError:
+                continue
+    return found
+
+
+def _split_groups(shards: list[Path]) -> dict:
+    """Model files by set: (name before -0000i-of-0000N, N) -> files. A file with no shard number is a set of its own."""
+    groups: dict = {}
+    for item in shards:
+        match = SHARD.fullmatch(item.name)
+        key = (match.group(1), int(match.group(3))) if match else (item.name, 1)
+        groups.setdefault(key, []).append(item)
+    return groups
+
+
+def _known(members: list[Path]) -> dict | None:
+    try:
+        return _candidate_selection(sorted(members, key=lambda item: item.name))
+    except ProfileError:
+        return None
+
+
+def _holds(groups_by_place: list) -> list[dict]:
+    """What a folder (or several) holds, set by set, for the message that asks the person to point at one."""
+    rows = []
+    for place, members_by_key in groups_by_place:
+        for key in sorted(members_by_key):
+            members = sorted(members_by_key[key], key=lambda item: item.name)
+            sel = _known(members)
+            rows.append({"file": members[0].name, "files": len(members), "folder": str(place),
+                         "family": sel["family"] if sel else None, "model": sel["model"] if sel else None})
+    return rows
+
+
+def absolute(picked: str) -> str:
+    """The picked path as an absolute path, links left alone (a snapshot file in the Hugging Face cache keeps its model name)."""
+    return os.path.abspath(os.path.expanduser(str(picked)))
+
+
+def import_target(picked: str, plan: dict) -> str:
+    """What to hand on as the person's model files: the file when they picked a file (a folder of several sizes needs the name), else the
+    folder the model files are really in (they may have picked the folder above it)."""
+    picked = absolute(picked)
+    try:
+        if Path(picked).is_file():
+            return picked
+    except OSError:
+        pass
+    return plan.get("model_dir") or picked
+
+
+def own_path_problem(picked: str) -> tuple[str, str] | None:
+    """(what is wrong, what to do) when the path a person gave for their own model files is not there or holds no model file, in plain
+    words; None when there is something to look at. Said before anything is installed or downloaded, with the path the person typed."""
+    path = Path(absolute(picked))
+    kind = "file" if path.name.lower().endswith(".gguf") else "folder"
+    try:
+        if not path.exists():
+            if path.is_symlink():
+                return (f"This {kind} is a shortcut to something that is not there any more: {path}.",
+                        "Point it at the real folder, or at the .gguf file itself. Nothing was downloaded or changed.")
+            return (f"This {kind} does not exist: {path}.",
+                    "Check the spelling, and that the drive or folder is connected (in Docker or a virtual machine it has to be shared with it). "
+                    "Nothing was downloaded or changed.")
+        if path.is_dir():
+            has_files = any(entry.name.lower().endswith(".gguf") for entry in os.scandir(path))
+            if not has_files and not _folders_with_models(path):
+                return (f"There are no .gguf model files in {path}, nor in the folders inside it.",
+                        "Point it at the folder that holds the model's .gguf files (names like ...-00001-of-00002.gguf), or at one of the files. "
+                        "Nothing was downloaded or changed.")
+    except OSError:
+        return None
+    return None
+
+
 def plan_import(raw_path: str) -> dict:
-    """Inspect a local candidate without copying, parsing tensors or adopting it."""
+    """Inspect a local candidate without copying, parsing tensors or adopting it.
+
+    The picked path can be a .gguf file (any shard of a split set), the folder with the files, or a folder above it (a Strata data
+    folder, a whole Hugging Face repository): the folder with the model is looked for, and when a folder holds several models
+    the one Strata knows is used if it is the only one; with two it says which and asks for the file. The result's `model_dir`
+    is the folder to hand to setup (--gguf-dir). Links to files and folders are followed."""
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         raise ProfileError("model import path must be absolute")
     try:
-        details = path.lstat()
+        details = path.stat()
     except OSError:
-        raise ProfileError("model import path does not exist", 5) from None
-    if stat.S_ISLNK(details.st_mode):
-        raise ProfileError("model import path must not be a symlink", 5)
+        raise ProfileError("model import path does not exist (or is a link to something that is gone)", 5) from None
+    notes: list[str] = []
+    folder_holds: list[dict] = []
+    issues: list[str] = []
     if stat.S_ISDIR(details.st_mode):
-        try:
-            shards = []
-            ignored_auxiliary = []
-            for child in path.iterdir():
-                if child.name.lower().endswith(".gguf"):
-                    if child.name.lower().startswith("mmproj"):
-                        ignored_auxiliary.append(child.name)
-                        continue
-                    shards.append(child)
-                    if len(shards) > MAX_IMPORT_SHARDS:
-                        raise ProfileError("more than 128 GGUF candidates in the directory", 5)
-        except OSError:
-            raise ProfileError("cannot inspect GGUF directory", 5) from None
+        shards, ignored_auxiliary, cut = _list_gguf(path)
+        if cut:
+            notes.append(f"This folder holds more than {MAX_LISTED} GGUF files; only the first {MAX_LISTED} were looked at.")
+        if not shards:
+            places = _folders_with_models(path)
+            if not places:
+                raise ProfileError("no GGUF files found at the model import path (or in the folders inside it)", 5)
+            scanned = [(place, *_list_gguf(place)[:2]) for place in places]
+            usable = [(place, files, readers, members) for place, files, readers in scanned
+                      for _key, members in sorted(_split_groups(files).items(), key=lambda kv: kv[0]) if _known(members)]
+            if len(usable) == 1:
+                place, shards, ignored_auxiliary, members = usable[0]
+                notes.append(f"The model files are in {place}.")
+            else:
+                place, shards, ignored_auxiliary = scanned[0]
+                if len(usable) > 1 or len(scanned) > 1:
+                    issues.append("multiple_model_groups")
+                    folder_holds = _holds([(p, _split_groups(f)) for p, f, _r in scanned])
+                else:
+                    notes.append(f"The model files are in {place}.")
     elif stat.S_ISREG(details.st_mode) and path.name.lower().endswith(".gguf"):
         ignored_auxiliary = []
         try:                       # the picture reader that sits next to a chosen model file
@@ -382,31 +610,24 @@ def plan_import(raw_path: str) -> dict:
     if not shards:
         raise ProfileError("no GGUF files found at the model import path", 5)
     shards.sort(key=lambda item: item.name)
-    groups = {}
-    for item in shards:
-        match = SHARD.fullmatch(item.name)
-        if match:
-            key = (match.group(1), int(match.group(3)))
-            groups.setdefault(key, set()).add(int(match.group(2)))
+    groups = _split_groups(shards)
+    if len(groups) != 1 and "multiple_model_groups" not in issues:
+        known_sets = [key for key, members in groups.items() if _known(members)]
+        if len(known_sets) == 1:
+            # one set in the folder is a model Strata knows: use it and say what else is there
+            keep = known_sets[0]
+            others = sorted(sorted(m, key=lambda x: x.name)[0].name for k, m in groups.items() if k != keep)
+            shards = sorted(groups[keep], key=lambda item: item.name)
+            notes.append("The folder also holds " + ", ".join(others[:6]) + (" and more" if len(others) > 6 else "") +
+                         f"; Strata uses {shards[0].name} and leaves the others alone.")
+            groups = {keep: shards}
         else:
-            groups.setdefault((item.name, 1), set()).add(1)
-    issues = []
-    folder_holds = []
-    if len(groups) != 1:
-        issues.append("multiple_model_groups")
-        # a folder with several models: say which ones Strata knows, so the person can point at one of them
-        for key in sorted(groups):
-            members = [item for item in shards if (SHARD.fullmatch(item.name) and (SHARD.fullmatch(item.name).group(1),
-                       int(SHARD.fullmatch(item.name).group(3))) == key) or (not SHARD.fullmatch(item.name) and (item.name, 1) == key)]
-            try:
-                known = _candidate_selection(members)
-            except ProfileError:
-                known = None
-            folder_holds.append({"file": members[0].name if members else key[0], "files": len(members),
-                                 "family": known["family"] if known else None, "model": known["model"] if known else None})
-    if len(groups) == 1:
-        (_, total), indices = next(iter(groups.items()))
-        if total > MAX_IMPORT_SHARDS or indices != set(range(1, total + 1)):
+            issues.append("multiple_model_groups")
+            folder_holds = _holds([(shards[0].parent, groups)])
+    if len(groups) == 1 and "multiple_model_groups" not in issues:
+        (_, total), members = next(iter(groups.items()))
+        found = {int(m.group(2)) for m in (SHARD.fullmatch(item.name) for item in members) if m} or {1}
+        if total > MAX_IMPORT_SHARDS or found != set(range(1, total + 1)):
             issues.append("incomplete_or_invalid_shard_set")
     files = []
     for item in shards:
@@ -438,9 +659,15 @@ def plan_import(raw_path: str) -> dict:
         if metadata["tokenizer_model"] != "gpt2" or not metadata["tokenizer_tokens_present"] or \
                 not metadata["tokenizer_merges_present"]:
             issues.append("unsupported_or_incomplete_tokenizer_metadata")
-    projectors = [_assess_projector(path.parent / n if path.is_file() else path / n)
-                  for n in sorted(ignored_auxiliary)[:8]]
-    messages = []
+    model_dir = shards[0].parent
+    projectors = [_assess_projector(model_dir / n) for n in sorted(ignored_auxiliary)[:8]]
+    messages = list(notes)
+    if folder_holds:
+        several = len({h.get("folder") for h in folder_holds}) > 1
+        names = [(f"{h['family']} {h['model']}" if h.get("model") else h["file"]) + (f" in {h['folder']}" if several else f" ({h['file']})")
+                 for h in folder_holds[:8]]
+        messages.append(f"The folder holds {len(folder_holds)} models: " + "; ".join(names) + (" and more" if len(folder_holds) > 8 else "") +
+                        ". Choose the folder of the one you want, or type the path of its .gguf file.")
     if any(i.endswith("unsupported_architecture") or i == "unsupported_or_missing_architecture" for i in issues):
         messages.append(UNSUPPORTED_MODEL_TYPE)
     elif projectors:
@@ -448,15 +675,18 @@ def plan_import(raw_path: str) -> dict:
     candidate = _candidate_selection(shards)
     if candidate is None and metadata is not None and not issues:
         candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
-    if candidate is None:
+    if "multiple_model_groups" in issues:
+        candidate = None                                  # nothing is chosen for the person
+    if candidate is None and not {"multiple_model_groups", "incomplete_or_invalid_shard_set"} & set(issues):
         issues.append("unrecognized_or_unsupported_model_variant")
-    elif metadata is not None:
+    elif candidate is not None and metadata is not None:
         expected = set(candidate["expected_expert_types"])
         if not observed_experts or observed_experts - expected:
             issues.append("missing_or_unexpected_expert_quantization")
-    return {"source": str(path), "scope": "local_gguf_candidate", "files": files,
+    return {"source": str(path), "model_dir": str(model_dir), "scope": "local_gguf_candidate", "files": files,
             "file_count": len(files), "total_bytes": sum(item["bytes"] for item in files),
             "metadata": metadata, "candidate_selection": candidate,
+            "plain_issues": list(dict.fromkeys(plain_issue(i) for i in issues)),
             "observed_expert_types": sorted(observed_experts),
             "observed_tensor_count": observed_tensor_count,
             "ignored_auxiliary_files": sorted(ignored_auxiliary),

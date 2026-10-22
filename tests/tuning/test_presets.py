@@ -170,6 +170,13 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(presets.bad_signatures(hw_hash="h2", model_digest="m", engine_sha="e"), set())
         self.assertEqual(presets.bad_signatures(hw_hash="h", model_digest="m", engine_sha="e2"), set())
 
+    def test_a_command_that_passed_is_not_switched_off_by_a_later_failure(self):
+        # #3502: the plain base command passed four times, then a busy card wrote OOM rows
+        for status in ("PASS", "OOM"):
+            presets.record_trials([{"label": "base", "args": ["--x"], "env": {}, "status": status, "at": 1}],
+                                  hw_hash="h", model_digest="m", engine_sha="e")
+        self.assertEqual(presets.bad_signatures(hw_hash="h", model_digest="m", engine_sha="e"), set())
+
 
 if __name__ == "__main__":
     unittest.main()

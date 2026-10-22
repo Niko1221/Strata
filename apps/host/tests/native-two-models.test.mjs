@@ -18,8 +18,10 @@ test('a second model on a card another model uses still loads (recommend, never 
 
 test('the screens say which card a loaded model uses, prefer a free card for a second model, and show an unload refusal beside its button', async () => {
   const models = await readFile(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
-  assert.match(models, /tr\('Already used by \{0\}', \[usedBy\(o\.cards\)\.join\(', '\)\]\)/);
-  assert.match(models, /multiple \? cardOptions\.options\.find\(o => o\.recommended && !usedBy\(o\.cards\)\.length\)/);
+  assert.match(models, /usedBy=\{i => usedBy\(\[i\]\)\}/);
+  assert.match(models, /const busy = \(i: number\) => expert && multiple && usedBy\(\[i\]\)\.length > 0/);   // a card another loaded model uses starts Off
+  const roles = await readFile(new URL('../src/components/GpuRoles.tsx', import.meta.url), 'utf8');
+  assert.match(roles, /tr\('In use by \{0\}', \[other\.join\(', '\)\]\)/);
   assert.match(models, /loadedAction\(`instances\/\$\{i\.id\}\/unload`\)/);
   assert.match(models, /loadedError \? <ErrorNotice message=\{loadedError\}/);
   const control = await readFile(new URL('../server/native-control.mjs', import.meta.url), 'utf8');
@@ -28,7 +30,7 @@ test('the screens say which card a loaded model uses, prefer a free card for a s
 
 test('usedBy is declared before the card choice that calls it (a const used earlier broke the Models page when Run multiple models was on)', async () => {
   const models = await readFile(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
-  assert.ok(models.indexOf('const usedBy = ') > 0 && models.indexOf('const usedBy = ') < models.indexOf('const activeCards = '));
+  assert.ok(models.indexOf('const usedBy = ') > 0 && models.indexOf('const usedBy = ') < models.indexOf('const recommended = '));
 });
 
 test('a model that failed to start is not offered in the chat model picker', async () => {
@@ -54,8 +56,9 @@ test('a loaded model is named from the catalog (family and version), the file id
 
 test('card names use the GPU numbering of the other screens, and the fit figures subtract the models that stay loaded', async () => {
   const models = await readFile(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
-  assert.ok(models.includes('(GPU ${Number(n) + 1})') && models.includes('text.replace(/\\(card (\\d+)\\)/g'));
-  assert.match(models, /<strong>\{gpuNumbers\(o\.label\)\}<\/strong>/);
+  const roles = await readFile(new URL('../src/lib/gpu-roles.ts', import.meta.url), 'utf8');
+  assert.ok(roles.includes('`GPU ${c.index + 1}`'));    // GPU 1 is card 0, as on every other screen
+  assert.match(await readFile(new URL('../src/components/GpuRoles.tsx', import.meta.url), 'utf8'), /\{gpuLabel\(c\)\} · \{c\.name\}/);
   assert.match(models, /const keptModels = expert && multiple/);
   assert.match(models, /inUse=\{keptModels\.length \?/);
   const card = await readFile(new URL('../src/components/PcFitCard.tsx', import.meta.url), 'utf8');

@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from strata_control import user_args
+from strata_control import atomic as _atomic_mod
 
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
@@ -179,7 +180,7 @@ def save(path: str | Path, cfg: dict) -> Path:
     shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+    _atomic_mod.replace(tmp, path)
     return bak
 
 

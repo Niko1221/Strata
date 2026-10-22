@@ -113,6 +113,14 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _file_words(exc: BaseException) -> str:
+    try:
+        from strata_control import longpath
+    except ImportError:                                 # the standalone monitor bundle does not carry strata_control
+        return f"local file operation failed ({type(exc).__name__})"
+    return longpath.file_words(exc)
+
+
 def _error(message: str, code: int, machine: bool) -> int:
     if machine:
         print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": code, "message": message}}))
@@ -229,7 +237,7 @@ def run(a: argparse.Namespace) -> int:
     except BrokenPipeError:
         return 0
     except OSError as e:
-        return _error(f"local file operation failed ({type(e).__name__})", 6, machine)
+        return _error(_file_words(e), 6, machine)
     except KeyboardInterrupt:
         if a.command == "logs" and a.follow:
             return 0
