@@ -1,0 +1,362 @@
+{
+  "kind": "ascend-a2-s2-quantized-activation-projection",
+  "seed": 20261021,
+  "machine": "aarch64",
+  "device": "Ascend910_9362",
+  "torch": "2.7.1+cpu",
+  "torch_npu": "2.7.1.post4",
+  "matmul_allow_hf32": false,
+  "source_sha256": {
+    "probe.py": "f347bacbef3a5fed9f047cd73b24b8854794cd3088327debf7450304548839f4",
+    "projection.cpp": "a27539e0eadeba254077e3041ec09aa9d5e41bb86762736959329d32237ee5f2",
+    "CMakeLists.txt": "65125a580d54c27a8f73195bec92f45d2f7f2642b09ef1b2ffaf7e23e0b20b13"
+  },
+  "binary_sha256": {
+    "libstrata_s2_projection.so": "e49fd7ae0bf22b8cc80ffc1b76acbc42aa1a6f2eabd7220e897326fc3dcf86b9",
+    "libstrata_s2.so": "a1782aeaba9c0f1bdafcfcf39009073a1dad3526e6e58868c92cdb31ce1f6ec7",
+    "libstrata_s2_reference.so": "09d29b956c3e3efa8b8e952d024bea71110827ed4ff38b8e22ee23256cadde63"
+  },
+  "scope": "synthetic single projection; legacy activation fixture; block-order reduction differs from default AVX CPU",
+  "cases": [
+    {
+      "shape": [
+        0,
+        64,
+        1
+      ],
+      "max_abs_error": 0.0,
+      "rms_error": 0.0,
+      "max_error_over_bound": 0.0,
+      "bound_operations": 8,
+      "within_bound": true,
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        1,
+        64,
+        1
+      ],
+      "max_abs_error": 1.1641532182693481e-10,
+      "rms_error": 1.1641532182693481e-10,
+      "max_error_over_bound": 0.0021393410682184473,
+      "bound_operations": 8,
+      "within_bound": true,
+      "output_sha256": "4aa3a769e16e88fbde9a1484b0f6bcd32a25dab4fe4e28cba16af3c02355dc0a",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        7,
+        64,
+        2
+      ],
+      "max_abs_error": 2.7939677238464355e-09,
+      "rms_error": 1.0609951793406028e-09,
+      "max_error_over_bound": 0.07719952822661247,
+      "bound_operations": 8,
+      "within_bound": true,
+      "output_sha256": "52441aa4d3f9d5361d6c8e7ce87c2f5c4b4352bc99d420b5cc9362c58e2270b3",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        8,
+        640,
+        4
+      ],
+      "max_abs_error": 0.0997340886387974,
+      "rms_error": 0.028894001548055086,
+      "max_error_over_bound": 0.009555359530111652,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "4b345bdd88f021f91c17feefe296a8acc8675560aa3e9eb014a9535d9a0bf8b2",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        9,
+        2560,
+        8
+      ],
+      "max_abs_error": 0.528200949775055,
+      "rms_error": 0.13411521610092292,
+      "max_error_over_bound": 0.004054610256175048,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "0e84c69253ff452cc46c2edff828aecf6a1b943c7d51124a6ac9281ca9f288bd",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        31,
+        640,
+        1
+      ],
+      "max_abs_error": 0.0962568725226447,
+      "rms_error": 0.04232953692713991,
+      "max_error_over_bound": 0.018277940363289995,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "c01c575044d42f4e4d663cc772076245f55ae7fac7e45a342f3e8dbcad0e251e",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        32,
+        2560,
+        2
+      ],
+      "max_abs_error": 0.429086203686893,
+      "rms_error": 0.13638982394649707,
+      "max_error_over_bound": 0.0031842204635447917,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "e0259d8c9dff9ac0c1341268debd41fc340a04d642083fc1a2823ee6326fd9d1",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        33,
+        2560,
+        4
+      ],
+      "max_abs_error": 0.46772885601967573,
+      "rms_error": 0.12295562825711807,
+      "max_error_over_bound": 0.0031073183602668354,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "8870a4b1a4ab4a9e88c9c1d2c33e40bc12ea5ea2eddd3dbd4983143f11419521",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        257,
+        640,
+        8
+      ],
+      "max_abs_error": 0.14965230808593333,
+      "rms_error": 0.030993641947185718,
+      "max_error_over_bound": 0.019655995435184283,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "8dc4a442c02bdaa53ba5460dbff1cb50eafe8241296cf7c542437985d342e5a7",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        1
+      ],
+      "max_abs_error": 5.0618073146324605e-06,
+      "rms_error": 7.845979046777422e-07,
+      "max_error_over_bound": 0.0038459307590375785,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "51e95e02649e04ce575a20b075f706ec34b5aca89f85a77947e8c9e58976fb13",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        2
+      ],
+      "max_abs_error": 5.629362021863926e-06,
+      "rms_error": 7.758230807669272e-07,
+      "max_error_over_bound": 0.004129671923893301,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "0c34421a5a87ada05a7982b16e8f49ab94a318061b9b34d90bd0b7427d2bfdac",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        4
+      ],
+      "max_abs_error": 6.033475074218586e-06,
+      "rms_error": 8.232247025802063e-07,
+      "max_error_over_bound": 0.00440351983121025,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "46428414fe96975ad7db2885b1bd411d0a23bd88c7de9b3172e27bd71d857b1b",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        640,
+        2560,
+        8
+      ],
+      "max_abs_error": 4.784887096320745e-06,
+      "rms_error": 8.034105758038877e-07,
+      "max_error_over_bound": 0.004185524755603074,
+      "bound_operations": 164,
+      "within_bound": true,
+      "output_sha256": "3ec275dc09814d3318951188b447a21249738f83cb5230d6aa173751b2e2522c",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        1
+      ],
+      "max_abs_error": 1.256812538485974e-06,
+      "rms_error": 2.0660437742076283e-07,
+      "max_error_over_bound": 0.016720485802188045,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "3ca79ac50481a8fb735bafd3cd974a6e63bf359b11f8da7a48e3d908d5988596",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        2
+      ],
+      "max_abs_error": 1.4381503206095658e-06,
+      "rms_error": 2.0757637745014983e-07,
+      "max_error_over_bound": 0.0224375480032888,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "3437617ab1ba43324324d5a8a07486b50cb23ecb513cecb390652606b85b6dff",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        4
+      ],
+      "max_abs_error": 1.7027105059241876e-06,
+      "rms_error": 2.107045357671993e-07,
+      "max_error_over_bound": 0.018245542944541834,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "c07016d325b01d672e5539558aa86c5c0dfd0c26211f4d270aef41a6c682ccc1",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        2560,
+        640,
+        8
+      ],
+      "max_abs_error": 2.163593308068812e-06,
+      "rms_error": 2.1623264242771696e-07,
+      "max_error_over_bound": 0.025906776606885867,
+      "bound_operations": 44,
+      "within_bound": true,
+      "output_sha256": "2728f4010ce166449eccb66bfe78137c8f6005977b188660d60467a25561a25b",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        8,
+        64,
+        3
+      ],
+      "max_abs_error": 0.00011629797518253326,
+      "rms_error": 2.712820433092828e-05,
+      "max_error_over_bound": 0.00955037750610511,
+      "bound_operations": 8,
+      "within_bound": true,
+      "output_sha256": "de1b7c7b467de21f4a7605d7efe62f6fba51e5b0011b0a94edd5628940c71fb0",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        9,
+        128,
+        5
+      ],
+      "max_abs_error": 0.02542049321345985,
+      "rms_error": 0.006882319609860813,
+      "max_error_over_bound": 0.02261689913663746,
+      "bound_operations": 12,
+      "within_bound": true,
+      "output_sha256": "3f9536e4536be1d42278b37e2b52ee5080286b5abbfad4b2f98949582e8627ec",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        7,
+        192,
+        6
+      ],
+      "max_abs_error": 0.02856746269389987,
+      "rms_error": 0.0072886874238851825,
+      "max_error_over_bound": 0.022717829055799665,
+      "bound_operations": 16,
+      "within_bound": true,
+      "output_sha256": "b6fe78a53d1b56e726e5d48448a535ffac7459fd858a0780390c7ddadf041f4e",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    },
+    {
+      "shape": [
+        33,
+        320,
+        7
+      ],
+      "max_abs_error": 0.09607333457097411,
+      "rms_error": 0.019657745476125175,
+      "max_error_over_bound": 0.028101083764848545,
+      "bound_operations": 24,
+      "within_bound": true,
+      "output_sha256": "8613603ac882db5cbc590210803f786e55c3c36644b48c6d86f24acbf9336b53",
+      "guards_ok": true,
+      "padding_zero": true,
+      "inputs_unchanged": true
+    }
+  ],
+  "timings": [],
+  "activation_fixture_ties_passed": true,
+  "invalid_shapes_rejected": true,
+  "passed": true
+}

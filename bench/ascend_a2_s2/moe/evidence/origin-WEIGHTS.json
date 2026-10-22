@@ -1,0 +1,127 @@
+{
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "file": "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+  "url": "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+  "shard_bytes": 37623740192,
+  "layer": 0,
+  "header_prefix_sha256": "33d14b53355bc55ffb01a30ef88724bdfcb5617c35880cc1a17207771195ba2c",
+  "data_start": 11024672,
+  "tensors": [
+    {
+      "name": "blk.0.ffn_down_exps.weight",
+      "shape_gguf": [
+        640,
+        2560,
+        512
+      ],
+      "type_id": 42,
+      "type_name": "Q2_0",
+      "offset": 757141792,
+      "bytes": 235929600,
+      "file": "blk.0.ffn_down_exps.weight.bin",
+      "sha256": "0fbca3aabd5163ef5ba4aa167b4675e06dd9748911caa0f153e0727bdbc72ebc",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_down_shexp.weight",
+      "shape_gguf": [
+        640,
+        2560
+      ],
+      "type_id": 6,
+      "type_name": "Q5_0",
+      "offset": 993071392,
+      "bytes": 1126400,
+      "file": "blk.0.ffn_down_shexp.weight.bin",
+      "sha256": "fb37616538e1032ba8f188ef8a6ef41e33a4c325efbdb2913b7ddcbf89026adf",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_gate_exps.weight",
+      "shape_gguf": [
+        2560,
+        640,
+        512
+      ],
+      "type_id": 42,
+      "type_name": "Q2_0",
+      "offset": 994197792,
+      "bytes": 235929600,
+      "file": "blk.0.ffn_gate_exps.weight.bin",
+      "sha256": "f4fed05502fa91037f1c0ca91e48a43b22c5d17816fb1fbc1015e03e67ae2856",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_gate_inp.weight",
+      "shape_gguf": [
+        2560,
+        512
+      ],
+      "type_id": 30,
+      "type_name": "BF16",
+      "offset": 1230127392,
+      "bytes": 2621440,
+      "file": "blk.0.ffn_gate_inp.weight.bin",
+      "sha256": "966e4d1ca7c18994a9311e82f0074584fe09e65e81eb8ddefe0a4dceebfc6ac6",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_gate_inp_shexp.weight",
+      "shape_gguf": [
+        2560
+      ],
+      "type_id": 30,
+      "type_name": "BF16",
+      "offset": 1232748832,
+      "bytes": 5120,
+      "file": "blk.0.ffn_gate_inp_shexp.weight.bin",
+      "sha256": "a43a13457ded04d02a6ff9904c177b383e2d52ea34e3637c84e63dbb59d7dd45",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_gate_shexp.weight",
+      "shape_gguf": [
+        2560,
+        640
+      ],
+      "type_id": 23,
+      "type_name": "IQ4_XS",
+      "offset": 1232753952,
+      "bytes": 870400,
+      "file": "blk.0.ffn_gate_shexp.weight.bin",
+      "sha256": "7bda10bcb409eec3ed62e43542e65ee782609366e52d06c9d1bfe5df18f11b60",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_up_exps.weight",
+      "shape_gguf": [
+        2560,
+        640,
+        512
+      ],
+      "type_id": 42,
+      "type_name": "Q2_0",
+      "offset": 1233624352,
+      "bytes": 235929600,
+      "file": "blk.0.ffn_up_exps.weight.bin",
+      "sha256": "0b265e07394058abf444c1a7606b60d902b8ea23cf3a137a091c6affb2563fd3",
+      "boundary_reread_passed": true
+    },
+    {
+      "name": "blk.0.ffn_up_shexp.weight",
+      "shape_gguf": [
+        2560,
+        640
+      ],
+      "type_id": 11,
+      "type_name": "Q3_K",
+      "offset": 1469553952,
+      "bytes": 704000,
+      "file": "blk.0.ffn_up_shexp.weight.bin",
+      "sha256": "a0a44a42e3fec9579e2252b29855aa138bc55f2a24cc4ec8749de8a9233ae022",
+      "boundary_reread_passed": true
+    }
+  ],
+  "provenance_limit": "TLS range reads pinned to revision; per-tensor hashes and boundary re-reads. Whole-shard LFS hash not verified."
+}

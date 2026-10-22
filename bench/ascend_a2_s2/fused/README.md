@@ -101,6 +101,27 @@ report files are never overwritten.
 
 ## Limits
 
+The separate [real-weight MoE probe](../moe/README.md) tests composition,
+intermediate quantization, routing and all 512 experts on A3. It found a
+rounding-boundary failure in the original accumulation. For that experiment,
+`-DSTRATA_S2_COMPENSATED=ON` compensates product and sum rounding across the
+32-element chunk contributions. It also disables fast-math reassociation and FP contraction for this
+target. CANN's `ascendc_compile_*` functions pass those settings to the device
+compiler; ordinary `target_compile_*` settings on the final library did not.
+The option defaults to OFF. The original measurements in `RESULTS.md` describe OFF;
+the [MoE report](../moe/RESULTS.md) records the separate A3 comparison. The ON
+path has no A2 execution or performance measurements.
+
+The ON path expects FP16-derived weight scales, finite normal products and
+no overflow in the `4097*x` splitting steps. Multiplying a weight scale by
+the exact integer chunk dot is exact in FP32 (at most 11 + 13 significant
+bits). Dekker splitting retains the next product's low part; TwoSum retains
+the addition's low part. The accumulated correction is applied at the store.
+See [Ogita, Rump and Oishi, 2005](https://doi.org/10.1137/030601818) for the
+error-free transformations. This is not a correctly-rounded dot-product
+guarantee for arbitrary inputs. `compensated_regression.py` checks two known
+cancellation results, including one lost by product rounding alone.
+
 Synthetic weights and host activation quantization only. SwiGLU, intermediate
 requantization, down-after-gate/up composition, expert routing, cache transfers,
 and full-model generation are untested. NaN and infinity scales are untested.

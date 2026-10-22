@@ -1,0 +1,50 @@
+{
+  "measured_date": "2026-10-22",
+  "baseline_failed_experts": [
+    423
+  ],
+  "baseline_expert_423": {
+    "expert": 423,
+    "input_sha256": "09e7ea9cce123b56c46c3053a620d566f1fc2f255a13ca568459fd8f382fd8c2",
+    "output_sha256": "881478566bd22818941e56ea5c2f3441614ed0d3e0a8634b0673be4e29faa6a7",
+    "max_abs_error": 0.00023475709574150017,
+    "max_normalized_error": 0.000589519026816682,
+    "normalized_rms_error": 0.0007467130060547875,
+    "finite": true,
+    "passed": false
+  },
+  "compensated_expert_423": {
+    "expert": 423,
+    "input_sha256": "09e7ea9cce123b56c46c3053a620d566f1fc2f255a13ca568459fd8f382fd8c2",
+    "output_sha256": "a12a3369c1c8392df6a65cc08b4ba95bfd987ebef6b7807e1f74e000a9071b8c",
+    "max_abs_error": 3.3426438506012346e-08,
+    "max_normalized_error": 8.394004635204106e-08,
+    "normalized_rms_error": 7.509643315317866e-08,
+    "finite": true,
+    "passed": true
+  },
+  "compensated_expert_328": {
+    "expert": 328,
+    "input_sha256": "01d19aeefdf9587809dc70b479c7627c1c99d909d2c09ddfd94e7418d88f2ed4",
+    "output_sha256": "9492dd8789debc2847ffe5a691d90b3db5f258aadda24f6008b2aa10478e6d14",
+    "max_abs_error": 4.1524028659978285e-08,
+    "max_normalized_error": 1.2225512767524245e-07,
+    "normalized_rms_error": 8.782208201608306e-08,
+    "finite": true,
+    "passed": true
+  },
+  "all_input_hashes_match_baseline": true,
+  "weights_equal": true,
+  "budgets_equal": true,
+  "default_binary_byte_identical": true,
+  "projection_cases_each_mode": 21,
+  "cancellation_cases_each_mode": 2,
+  "cancellation_default_exit": 1,
+  "cancellation_compensated_exit": 0,
+  "baseline_exit": 1,
+  "compensated_exits": [
+    0,
+    0,
+    0
+  ]
+}

@@ -9,4 +9,12 @@ set(ASCEND_CANN_PACKAGE_PATH "$ENV{ASCEND_HOME_PATH}" CACHE PATH "CANN SDK")
 set(ASCENDC_CMAKE_DIR "${ASCEND_CANN_PACKAGE_PATH}/aarch64-linux/tikcpp/ascendc_kernel_cmake" CACHE PATH "Ascend C CMake directory")
 include("${ASCENDC_CMAKE_DIR}/ascendc.cmake")
 ascendc_library(strata_s2_projection SHARED projection.cpp)
+option(STRATA_S2_COMPENSATED "Compensate FP32 block accumulation (experimental)" OFF)
+if(STRATA_S2_COMPENSATED)
+    # Ascend C compiles device objects in external projects. Ordinary target_*
+    # options on the final shared library do not reach those compilers.
+    ascendc_compile_definitions(strata_s2_projection PRIVATE STRATA_S2_COMPENSATED=1)
+    # Reassociation would erase the compensation; keep its rounding steps.
+    ascendc_compile_options(strata_s2_projection PRIVATE -fno-fast-math -ffp-contract=off)
+endif()
 target_link_libraries(strata_s2_projection PRIVATE ascendcl)

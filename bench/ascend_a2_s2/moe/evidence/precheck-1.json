@@ -1,0 +1,22 @@
+{
+  "passed": false,
+  "quant": [
+    {
+      "shape": [
+        1,
+        640
+      ],
+      "codes_equal": true,
+      "scales_equal": true
+    },
+    {
+      "shape": [
+        1,
+        2560
+      ],
+      "codes_equal": true,
+      "scales_equal": false
+    }
+  ],
+  "error": "AssertionError({'shape': [1, 2560], 'codes_equal': True, 'scales_equal': False})"
+}

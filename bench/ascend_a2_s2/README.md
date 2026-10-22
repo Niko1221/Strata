@@ -1,5 +1,10 @@
 # Ascend A2 S2 correctness experiment
 
+The [real-weight MoE sublayer report](moe/RESULTS.md) extends the A3 checks to
+all 512 real experts, routing and the gated shared expert. It retains one
+reproducible strict FP64-chain error-budget failure at a quantization boundary,
+and tests an optional compensated accumulation path against the same limits.
+
 This standalone experiment implements Strata's canonical S2 weight decode on an
 Ascend NPU. It is not an inference backend. It does not change the engine build,
 installation, defaults, or model selection. Do not describe a passing result as

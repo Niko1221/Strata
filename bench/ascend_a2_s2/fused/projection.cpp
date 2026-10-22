@@ -2,6 +2,27 @@
 
 using namespace AscendC;
 
+#ifdef STRATA_S2_COMPENSATED
+// Error-free product splitting and TwoSum retain low parts until the store.
+// This experimental path assumes normal finite products and no overflow in
+// the 4097*x splits, as exercised by the synthetic and real-weight fixtures.
+__aicore__ inline void AccumulateProduct(float& sum, float& low, float a, float b) {
+    const float product = a * b;
+    const float splitA = 4097.0f * a;
+    const float highA = splitA - (splitA - a);
+    const float lowA = a - highA;
+    const float splitB = 4097.0f * b;
+    const float highB = splitB - (splitB - b);
+    const float lowB = b - highB;
+    const float productLow = ((highA * highB - product) + highA * lowB + lowA * highB) + lowA * lowB;
+    const float next = sum + product;
+    const float virtualProduct = next - sum;
+    const float sumLow = (sum - (next - virtualProduct)) + (product - virtualProduct);
+    low += sumLow + productLow;
+    sum = next;
+}
+#endif
+
 // Experimental projection only. Weight codes are unchanged Q2_0 code-1;
 // each 64-weight block consumes TWO independent 32-element activation scales.
 // Eight output rows form one aligned 32-byte store, including zero tail padding.
@@ -45,6 +66,9 @@ extern "C" __global__ __aicore__ void strata_s2_projection_kernel(
     const uint32_t blocks = columns / 64;
     for (uint32_t group = GetBlockIdx(); group < groups; group += GetBlockNum()) {
         float values[8][8] = {};
+#ifdef STRATA_S2_COMPENSATED
+        float compensation[8][8] = {};
+#endif
         for (uint32_t lane = 0; lane < 8; ++lane) {
             const uint32_t row = group * 8 + lane;
             if (row >= rows) continue;
@@ -69,14 +93,31 @@ extern "C" __global__ __aicore__ void strata_s2_projection_kernel(
                 for (uint32_t b = 0; b < blocks; ++b) {
                     const float d = weights.GetValue(row * blocks + b);
                     const uint32_t chunk = t * (columns / 32) + b * 2;
+#ifdef STRATA_S2_COMPENSATED
+                    // FP16-derived d has at most 11 significant bits, and
+                    // each integer dot is <=8128 (13 bits), so d*dot is exact.
+                    // Compensate BOTH product rounding and summation before
+                    // the next discontinuous activation quantizer.
+                    AccumulateProduct(values[t][lane], compensation[t][lane],
+                        d * sums.GetValue(2 * b), acts.GetValue(chunk));
+                    AccumulateProduct(values[t][lane], compensation[t][lane],
+                        d * sums.GetValue(2 * b + 1), acts.GetValue(chunk + 1));
+#else
                     float block = acts.GetValue(chunk) * sums.GetValue(2 * b);
                     block += acts.GetValue(chunk + 1) * sums.GetValue(2 * b + 1);
                     values[t][lane] += d * block;
+#endif
                 }
             }
         }
         for (uint32_t t = 0; t < tokens; ++t) {
-            for (uint32_t lane = 0; lane < 8; ++lane) tile.SetValue(lane, values[t][lane]);
+            for (uint32_t lane = 0; lane < 8; ++lane) {
+#ifdef STRATA_S2_COMPENSATED
+                tile.SetValue(lane, values[t][lane] + compensation[t][lane]);
+#else
+                tile.SetValue(lane, values[t][lane]);
+#endif
+            }
             PipeBarrier<PIPE_ALL>();
             DataCopy(out[t * groups * 8 + group * 8], tile, 8);
             PipeBarrier<PIPE_ALL>();
