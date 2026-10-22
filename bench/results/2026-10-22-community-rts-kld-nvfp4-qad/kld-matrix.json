@@ -1,0 +1,44 @@
+{
+ "identity": {
+  "build": "strata 0.1.46.1",
+  "model": "qwen3.8-flash-next-nvfp4-nvfp4-qad",
+  "context": "262144",
+  "corpus": "f553e2c3",
+  "topk": 64,
+  "prompt_cache": "cold",
+  "base_label": "A0",
+  "base_ppl": 6.570278290772755
+ },
+ "A0b": {
+  "positions": 46050,
+  "top1": 100.0,
+  "kl": 0.0,
+  "kl_p99": 0.0,
+  "ppl": 6.57,
+  "ppl_ref": 6.57
+ },
+ "A7": {
+  "positions": 46050,
+  "top1": 91.71,
+  "kl": 0.054316,
+  "kl_p99": 0.789323,
+  "ppl": 6.412,
+  "ppl_ref": 6.57
+ },
+ "A8": {
+  "positions": 46050,
+  "top1": 92.8,
+  "kl": 0.039486,
+  "kl_p99": 0.536055,
+  "ppl": 6.525,
+  "ppl_ref": 6.57
+ },
+ "A9": {
+  "positions": 46050,
+  "top1": 94.07,
+  "kl": 0.027325,
+  "kl_p99": 0.365541,
+  "ppl": 6.479,
+  "ppl_ref": 6.57
+ }
+}

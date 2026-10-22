@@ -1,0 +1,103 @@
+{
+ "tokenizer": "<pack>/tokenizer",
+ "seg_tokens": 1536,
+ "slices_per_file": 3,
+ "files": [
+  {
+   "file": "DLSS 4 Transforming Real-Time Graphics with AI.txt",
+   "bytes": 41650,
+   "sha256": "59af937bcf6367c1",
+   "tokens": 7716,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "DLSS-FG Programming Guide.txt",
+   "bytes": 185226,
+   "sha256": "b46ecfad8f306c17",
+   "tokens": 40798,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "dlss-prompt3.txt",
+   "bytes": 641298,
+   "sha256": "22a648461fdee58e",
+   "tokens": 153636,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "DLSS-RR Integration Guide.txt",
+   "bytes": 66782,
+   "sha256": "945558013d6c67ee",
+   "tokens": 16191,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "DLSS5_Report.txt",
+   "bytes": 65549,
+   "sha256": "ec0b3c9a07df6dd1",
+   "tokens": 15213,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "DLSS_Programming_Guide_Release.txt",
+   "bytes": 199334,
+   "sha256": "2e806ff5d9aba923",
+   "tokens": 44534,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "nvidia-ada-gpu-architecture.txt",
+   "bytes": 73051,
+   "sha256": "93c56d8a31fa44de",
+   "tokens": 17662,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "NVIDIA-ADA-GPU-PRO-Architecture-Whitepaper_1.1.txt",
+   "bytes": 56264,
+   "sha256": "5780fd141055cab6",
+   "tokens": 12603,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "nvidia-rtx-blackwell-gpu-architecture.txt",
+   "bytes": 98235,
+   "sha256": "789fb14a5a98a687",
+   "tokens": 23269,
+   "slices": 3,
+   "selected_tokens": 4608
+  },
+  {
+   "file": "NVIDIA-RTX-Blackwell-PRO-GPU-Architecture-v1.0.txt",
+   "bytes": 87367,
+   "sha256": "4f2a56d0b539569f",
+   "tokens": 19109,
+   "slices": 3,
+   "selected_tokens": 4608
+  }
+ ],
+ "total_tokens": 350731,
+ "entropy_dead99_pct": {
+  "DLSS-4-Transforming-Real-Time-Graphics-with-AI": 8.3,
+  "DLSS-FG-Programming-Guide": 13.59,
+  "DLSS-RR-Integration-Guide": 23.34,
+  "DLSS5_Report": 15.51,
+  "DLSS_Programming_Guide_Release": 14.83,
+  "NVIDIA-ADA-GPU-PRO-Architecture-Whitepaper_1.1": 11.05,
+  "NVIDIA-RTX-Blackwell-PRO-GPU-Architecture-v1.0": 12.92,
+  "dlss-prompt3": 13.83,
+  "nvidia-ada-gpu-architecture": 15.74,
+  "nvidia-rtx-blackwell-gpu-architecture": 24.37
+ },
+ "entropy_method": "teacher-forced baseline pass, same yardstick/engine, 46,050 positions (2026-10-21)",
+ "selected_tokens_total": 46080,
+ "scored_positions": 46050
+}
