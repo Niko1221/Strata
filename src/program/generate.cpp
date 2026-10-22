@@ -1036,8 +1036,9 @@ void usage() {
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
                  "  --jev-brow            opt-in: answer BROW <tokens> between requests with BROWD (jev systemone readout,\n"
-                 "                       M3.0), and BROWAT <row> <tokens> with BROWATD (any row of the same window, M3.1);\n"
-                 "                       the engine is never asked unless the server sends BROW or BROWAT\n"
+                 "                       M3.0), BROWAT <row> <tokens> with BROWATD (any row of the same window, M3.1),\n"
+                 "                       and BROWROWS with BROWROWSD <rows> (how many rows that window holds, M3.1);\n"
+                 "                       the engine is never asked unless the server sends one of them\n"
                  "  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
                  "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
                  "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
@@ -13702,6 +13703,17 @@ int main(int argc, char** argv) {
                     ans += field;
                 }
                 std::printf("%s\n", ans.c_str());
+                std::fflush(stdout);
+                continue;
+            }
+            // jev systemone (M3.1, --jev-brow): BROWROWS - how many rows the LAST verify window holds (0
+            // before any window has run).  A caller that wants to read several positions off one prefill
+            // asks this first: rows are numbered from the window's first token, and a prompt longer than
+            // the prefill chunk is read in more than one window, so only "rows == the token count I sent"
+            // means its own numbering is the engine's.  Answers BROWROWSD <n>; the engine is never asked
+            // unless a server sends BROWROWS.
+            if (o.jev_brow && line.rfind("BROWROWS", 0) == 0) {
+                std::printf("BROWROWSD %d\n", ver.brow_rows());
                 std::fflush(stdout);
                 continue;
             }

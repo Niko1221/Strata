@@ -2545,6 +2545,45 @@ class StrataEngine:
         closed: the engine is ended (EngineDied) - never a fabricated or neighbouring row."""
         return self._brow_reply("BROWAT ", "BROWATD", row, tokens)
 
+    def brow_rows(self) -> int:
+        """jev systemone (M3.1): how many rows the LAST verify window holds (0 before any window has run).
+        Wire: `BROWROWS` -> `BROWROWSD <n>`.  A caller reading several positions off one prefill needs this
+        first: rows are numbered from the window's first token, so a prompt the engine read in more than one
+        window makes the caller's own numbering name somebody else's rows.  Any malformed answer fails
+        closed: the engine is ended (EngineDied) - never a guessed count."""
+        try:
+            self.proc.stdin.write("BROWROWS\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + (float(self.silence_s) if self.silence_s else 30.0)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.ended = True
+                raise EngineSilent("the engine said nothing for a BROWROWS answer")
+            try:
+                line = self.lines.get(timeout=min(left, 0.5))
+            except queue.Empty:
+                continue
+            if line is None:
+                self.ended = True
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if not line.startswith("BROWROWSD "):
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"the engine answered a BROWROWS with {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                self.ended = True
+                raise EngineDied(f"a malformed BROWROWSD answer: {line.strip()[:200]!r}")
+            return int(parts[1])
+
     def _brow_reply(self, op: str, answer: str, row, tokens: list[int]) -> dict[int, float]:
         """The row read both BROW and BROWAT answer: `op` is the wire command ("BROW " / "BROWAT "), `answer`
         its reply ("BROWD" / "BROWATD"), `row` the window row asked for (None: the final row)."""
