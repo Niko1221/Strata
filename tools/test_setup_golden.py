@@ -38,8 +38,9 @@ PROFILES = {
     "96GB-1x16GB": (95.8, [card(0, "NVIDIA GeForce RTX 5080", 15.9, "120")]),
     "128GB-1x24GB": (127.8, [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89")]),
 }
-# (family, model): None = the recommended size
-MODELS = [("qwen", None), ("qwen", "Q2_0"), ("qwen", "IQ3_XXS"), ("qwen", "IQ3_S"), ("unsloth", "UD-Q4_K_XL")]
+# (family, model): None = the recommended size.  swift IQ3_S: 2026-10-07, the same size name as qwen's, its own files
+MODELS = [("qwen", None), ("qwen", "Q2_0"), ("qwen", "IQ3_XXS"), ("qwen", "IQ3_S"), ("swift", "IQ3_S"),
+          ("unsloth", "UD-Q4_K_XL")]
 
 
 class FakeGGUF:

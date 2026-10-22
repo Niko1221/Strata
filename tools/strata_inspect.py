@@ -39,6 +39,7 @@ KNOWN = [
     ("swift", "Q2_0", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0"),
     ("swift", "IQ2_XS", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS"),
     ("swift", "IQ3_XXS", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS"),
+    ("swift", "IQ3_S", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S"),
     ("coder", "IQ1_M", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "IQ1_M/"),
     ("unsloth", "UD-IQ4_XS", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-IQ4_XS/"),
     ("unsloth", "UD-Q4_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q4_K_XL/"),

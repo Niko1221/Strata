@@ -65,7 +65,7 @@ WIN = os.name == "nt"
 # day.  A revision the repository no longer has falls back to its current files, with a message (download()).
 HF_REVISIONS = {
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",        # 2026-09-29
-    "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
+    "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d",   # 2026-10-07
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
 }
@@ -94,12 +94,14 @@ def hf_unpinned(url: str) -> str:
 # sizes, and is reachable from mainland China where huggingface.co often is not.  It serves a repository's current
 # files (no pinned revision), so a file from it is checked against the SHA-256 ModelScope publishes for it, and the
 # MTP tensors against the pinned checkpoint's own hashes (tools/mtp_fetch.py).
-# --source / STRATA_SOURCE: huggingface (what auto means), or modelscope: only when asked for (a different host
-# serving current files, not our pinned revision: setup never switches to it by itself, it recommends it, #908).
+# --source / STRATA_SOURCE: auto (the default: probe both hosts and take the faster, probe_source; #908's "setup
+# never switches by itself" relaxed - the measured numbers are printed and the file is checked against ModelScope's
+# published SHA-256), huggingface, or modelscope (the host fixed, no probe, current files, same checks).
 MS_DEFAULT = "https://www.modelscope.cn"
 SOURCES = ("auto", "modelscope", "huggingface")
 HF_FILE = re.compile(r"^https?://[^/]+/(?P<repo>[^/]+/[^/]+)/resolve/[^/]+/(?P<path>.+)$")
 _sources = {}                                      # model_source()'s answer per (STRATA_SOURCE, HF_ENDPOINT, host)
+_probe = {}                                        # probe_source()'s answer per repository (a run probes each once)
 _ms_files = {}
 
 
@@ -117,15 +119,73 @@ def reachable(url: str, timeout: float = 5.0) -> bool:
         return False
 
 
-def model_source() -> str:
-    """"modelscope" or "huggingface".  ModelScope only when --source modelscope / STRATA_SOURCE=modelscope asks for it;
-    everything else (auto, a HF_ENDPOINT mirror chosen on purpose, #495) is Hugging Face.  Setup does not switch hosts
-    by itself (#908): ModelScope serves a repository's current files, not our pinned revision."""
+def source_choice() -> str:
+    """What --source / STRATA_SOURCE asks for: "auto" (the default: probe both hosts and take the faster,
+    #908's rule relaxed for the chosen file - see probe_source), "modelscope", or "huggingface"."""
     want = (os.environ.get("STRATA_SOURCE") or "auto").strip().lower()
-    key = (want, os.environ.get("HF_ENDPOINT") or "", ms_endpoint())
-    if key not in _sources:
-        _sources[key] = "modelscope" if want in ("ms", "modelscope") else "huggingface"
-    return _sources[key]
+    if want in ("ms", "modelscope"):
+        return "modelscope"
+    return "auto" if want not in ("hf", "huggingface") else "huggingface"
+
+
+def probe_speed(url: str, mb: int = 2) -> float:
+    """MB/s of a short read of `url`'s first `mb` MB (a Range request when the server answers one), 0.0 when the
+    host does not deliver a measurable chunk.  The bytes are dropped: this measures the pipe, it downloads nothing."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "strata-setup",
+                                                   "Range": f"bytes=0-{(mb << 20) - 1}"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            t0, got = time.time(), 0
+            while got < mb << 20:
+                b = r.read(min(1 << 20, (mb << 20) - got))
+                if not b:
+                    break
+                got += len(b)
+            dt = time.time() - t0
+            return got / 1e6 / dt if got and dt > 0 else 0.0
+    except (OSError, ValueError):
+        return 0.0
+
+
+def probe_source(url: str) -> str:
+    """--source auto: "modelscope" or "huggingface" for this file - the host that serves it faster, measured with a
+    2 MB read of each (printed once per repository).  ModelScope is a candidate only when it hosts the same
+    repository (the same name and paths); a host that cannot be measured is out, and a tie keeps Hugging Face,
+    whose pinned revision the file was pinned to.  Chosen for ModelScope, the file is the repository's current one,
+    checked against the SHA-256 ModelScope publishes (download()).  Explicit --source skips the probe (#908)."""
+    m = HF_FILE.match(url)
+    if m is None:
+        return "huggingface"
+    repo, path = m.group("repo"), m.group("path")
+    if repo in _probe:
+        return _probe[repo]
+    hf_ms, ms_ms = probe_speed(url), probe_speed(ms_url(repo, path))
+    src = "modelscope" if ms_ms > hf_ms else "huggingface"
+    _probe[repo] = src
+    if not hf_ms and not ms_ms:
+        say(f"  Source probe: neither host answered for {repo}; downloading from {url.split('/')[2]}")
+    else:
+        say(f"  Source probe: {url.split('/')[2]} {hf_ms:.1f} MB/s | ModelScope {ms_ms:.1f} MB/s -> "
+            + (f"ModelScope (the repository's current files, checked against ModelScope's published SHA-256)"
+               if src == "modelscope" else url.split("/")[2]))
+    return src
+
+
+def model_source(url: str | None = None) -> str:
+    """"modelscope" or "huggingface".  An explicit --source modelscope / STRATA_SOURCE=modelscope is that host;
+    --source huggingface (and a HF_ENDPOINT mirror chosen on purpose, #495) is Hugging Face; auto (the default)
+    probes both hosts for this file and takes the faster when `url` is given (#908 relaxed, probe_source prints the
+    measured numbers and the file is checked against ModelScope's published SHA-256); without a url it is the
+    plan's default, Hugging Face."""
+    choice = source_choice()
+    if choice != "auto":
+        key = (choice, os.environ.get("HF_ENDPOINT") or "", ms_endpoint())
+        if key not in _sources:
+            _sources[key] = "modelscope" if choice == "modelscope" else "huggingface"
+        return _sources[key]
+    if url is not None:
+        return probe_source(url)
+    return "huggingface"
 
 
 def source_hint(url: str) -> str:
@@ -206,10 +266,9 @@ MODELS = {
                "arena_gb": 35.5},
     "IQ3_XXS": {"about": "3-bit i-quant, better quality, slower (more CPU work per token)", "download_gb": 75.8,
                 "ram_gb": 60, "arena_gb": 42.9},
-    # the original model only (Swift 1.5 has no IQ3_S): matches the full BF16 model on the published benchmarks
+    # Swift 1.5's IQ3_S came with UkisAI's 2026-10-07 revision (both families, like IQ3_XXS)
     "IQ3_S": {"about": "3.5-bit i-quant, the best quality (matches the full model), the slowest; needs a 64 GB PC "
-                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3,
-              "families": ("qwen",)},
+                       "with little else running", "download_gb": 83.6, "ram_gb": 62, "arena_gb": 50.3},
     # the Coder release: 256 of the 512 experts kept (the ones code, tools and vision use), IQ2_S-IQ4_XS like IQ3_S
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
@@ -263,7 +322,7 @@ UNSLOTH_RAM_LEFT_GB = 24        # RAM beside the budget: the OS, the engine, and
 # 204800 (200K) sits between 128K and 256K: it is inside the trained 262144, so it needs no rope scaling and
 # costs ~2.8 GB of 8-bit KV with IQ3_S (vs ~3.6 GB at 256K) - a middle step for PCs that cannot hold 256K.
 CONTEXTS = [8192, 32768, 65536, 131072, 204800, 262144, 393216, 524288]
-# The model families: the same architecture, weights in the same three GSQ-RCO sizes, different files.
+# The model families: the same architecture, weights in the same GSQ-RCO sizes, different files.
 FAMILIES = {
     "qwen": {"title": "Qwen3.8-Flash-Next", "by": "Qwen; GSQ-RCO quants by ISTA-DASLab",
              "about": "the original model",
@@ -1325,7 +1384,7 @@ def download(url, dst: Path, what=None):
         mark(dst)
         ok(f"{what or dst.name} copied")
         return
-    ms = ms_file(url) if model_source() == "modelscope" else None
+    ms = ms_file(url) if model_source(url) == "modelscope" else None
     if ms is not None:
         if reachable(ms_url(*ms), timeout=30):
             url = ms_url(*ms)
@@ -4627,9 +4686,10 @@ def main() -> int:
                     help="put back the engine an update replaced (kept in engine/.previous), and keep the current one there")
     ap.add_argument("--build", action="store_true", help="compile the engine instead of using the ready-made one")
     ap.add_argument("--source", choices=SOURCES, default=None,
-                    help="where the model files come from: auto (default: Hugging Face), huggingface or modelscope "
-                         "(mainland China: the same files, checked against ModelScope's published SHA-256; "
-                         "STRATA_SOURCE)")
+                    help="where the model files come from: auto (default: probe Hugging Face and ModelScope, take "
+                         "the faster, print the MB/s), huggingface, or modelscope (mainland China: the same files, "
+                         "the repository's current ones, checked against ModelScope's published SHA-256; the two "
+                         "fixed hosts skip the probe; STRATA_SOURCE)")
     ap.add_argument("--inspect", nargs="+", metavar=("SOURCE", "VARIANT"),
                     help="what a GGUF is and whether Strata runs it, from its headers only (no download): a file, a "
                          "folder, a URL, ms:owner/repo (ModelScope) or hf:owner/repo, and optionally a variant name")
@@ -5259,6 +5319,13 @@ def main() -> int:
                 warn("ModelScope serves the repositories' current files, not the pinned revisions: each file is checked "
                      "against the SHA-256 ModelScope itself publishes (self-attested); the MTP tensors against the "
                      "pinned checkpoint's own hashes")
+            elif source_choice() == "auto":
+                if hf_endpoint() != HF_DEFAULT:
+                    say(f"  Downloading from {hf_endpoint()} (HF_ENDPOINT), probed against ModelScope")
+                say(f"  The source is picked per repository by a speed probe of {hf_endpoint()} and ModelScope "
+                    f"({ms_endpoint()}): the faster host serves the download and its measured MB/s is printed; a "
+                    "ModelScope file is the repository's current one, checked against ModelScope's published "
+                    "SHA-256. --source huggingface | modelscope fixes one host and skips the probe")
             elif hf_endpoint() != HF_DEFAULT:
                 say(f"  Downloading from {hf_endpoint()} (HF_ENDPOINT)")
         for s in shards:
@@ -5328,7 +5395,7 @@ def main() -> int:
         say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
         say("  only its ~5 GB of MTP tensors are downloaded.")
         run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
-            env={**env, "STRATA_SOURCE": model_source()})
+            env={**env, "STRATA_SOURCE": source_choice()})   # explicit modelscope only: the probe is per repository,
         run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
              "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
         run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],

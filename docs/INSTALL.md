@@ -282,13 +282,16 @@ pinned revisions and checks apply, and the MTP draft layer comes from there too.
 
 **From ModelScope (mainland China):** every repository setup downloads from (the GSQ-RCO models, Swift 1.5, the
 Coder, Unsloth's files, and the original checkpoint the MTP draft layer is taken from) is on
-[ModelScope](https://www.modelscope.cn) under the same name, with the same files. Setup never switches to it by
-itself (a download that fails says how): use `--source modelscope` (`STRATA_SOURCE=modelscope`). ModelScope serves a
-repository's current files (no pinned revision), so each file is checked against the SHA-256 ModelScope publishes for
-it (self-attested: a changed upstream repository would carry its own hash), and the MTP tensors against the
-pinned checkpoint's own hashes, as from Hugging Face; setup says so when you choose it. Measured on a PC in mainland
-China on 2026-10-05: 11-14 MB/s; the Q2_0 and IQ3_S files matched their published SHA-256, and Q2_0's shard 1 matched
-the copy from hf-mirror.com.
+[ModelScope](https://www.modelscope.cn) under the same name, with the same files. With the default `--source auto`
+setup probes both hosts per repository — a 2 MB read of the same file from each, its speed printed — and takes the
+faster; a tie keeps the pinned Hugging Face file, and a host that cannot be measured is out. Chosen for ModelScope,
+the file is the repository's current one (no pinned revision), checked against the SHA-256 ModelScope publishes for
+it (self-attested: a changed upstream repository would carry its own hash); the MTP tensors are always checked
+against the pinned checkpoint's own hashes. `--source huggingface` or `--source modelscope` (`STRATA_SOURCE=…`)
+fixes one host and skips the probe. Measured on a PC in mainland China: ModelScope 11-14 MB/s on 2026-10-05 (the
+Q2_0 and IQ3_S files matched their published SHA-256, and Q2_0's shard 1 matched the copy from hf-mirror.com); on
+2026-10-10 the probe measured hf-mirror.com 0.9 MB/s against ModelScope 13.9 MB/s on an IQ3_XXS shard and picked
+ModelScope.
 
 On Linux the same options go to `./setup.sh`. `START-HERE.bat --help` lists them all. The server's own settings
 (sharing the GPU with games, MCP tools, CORS, API keys, the API itself) are in the [details](DETAILS.md#using-it).

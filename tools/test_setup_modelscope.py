@@ -44,7 +44,9 @@ class Base(unittest.TestCase):
             os.environ.pop(k, None)
         setup._sources.clear()
         setup._ms_files.clear()
+        setup._probe.clear()
         self.addCleanup(setup._sources.clear)
+        self.addCleanup(setup._probe.clear)
 
 
 class Source(Base):
@@ -55,9 +57,9 @@ class Source(Base):
             os.environ["STRATA_SOURCE"] = value
             self.assertEqual(setup.model_source(), want, value)
 
-    def test_auto_is_huggingface_and_never_asks_the_network(self):
-        """#908: setup does not switch hosts by itself, whatever answers."""
-        with mock.patch.object(setup, "reachable", side_effect=AssertionError("no probe")):
+    def test_auto_without_a_file_never_asks_the_network(self):
+        """The plan's default (no file to probe) is Hugging Face; the probe happens per file (probe_source)."""
+        with mock.patch.object(setup, "probe_speed", side_effect=AssertionError("no probe")):
             self.assertEqual(setup.model_source(), "huggingface")
 
     def test_a_failed_download_recommends_modelscope(self):
@@ -105,6 +107,17 @@ class Download(Base):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"Data": {"Files": [{"Path": PATH, "Size": len(self.data), "Sha256": sha}]}}))
 
+    def test_auto_picks_modelscope_and_verifies(self):
+        """auto with the probe's answer (Hugging Face silent, ModelScope faster): the ModelScope path with its
+        published SHA-256, without --source modelscope."""
+        sha = hashlib.sha256(self.data).hexdigest()
+        self.api(sha)
+        os.environ.pop("STRATA_SOURCE")
+        with mock.patch.object(setup, "probe_speed", side_effect=[0.0, 5.0]):
+            setup.download(HF_URL, self.dst)
+        self.assertEqual(self.dst.read_bytes(), self.data)
+        self.assertIn("sha256 " + sha, self.dst.with_name(self.dst.name + ".done").read_text())
+
     def test_right_hash_is_kept(self):
         sha = hashlib.sha256(self.data).hexdigest()
         self.api(sha)
@@ -133,6 +146,67 @@ class Download(Base):
                 mock.patch.object(setup.time, "sleep"), self.assertRaises(SystemExit):
             setup.download(HF_URL, self.dst)
         self.assertTrue(calls and all(u == HF_URL for u in calls), calls[:2])
+
+
+class Probe(Base):
+    """--source auto: the host that serves the file faster wins (probe_source); the numbers go to the message,
+    a tie and a host that cannot be measured keep Hugging Face, and a repository is probed once per run."""
+
+    def test_the_faster_host_wins_and_is_printed(self):
+        said = []
+        with mock.patch.object(setup, "say", said.append), \
+                mock.patch.object(setup, "probe_speed", side_effect=[3.0, 12.0]):
+            self.assertEqual(setup.model_source(HF_URL), "modelscope")
+        self.assertTrue(any("ModelScope 12.0 MB/s" in s and "-> ModelScope" in s for s in said), said)
+
+    def test_a_tie_keeps_the_pinned_host(self):
+        with mock.patch.object(setup, "probe_speed", side_effect=[5.0, 5.0]):
+            self.assertEqual(setup.model_source(HF_URL), "huggingface")
+
+    def test_a_host_that_cannot_be_measured_is_out(self):
+        with mock.patch.object(setup, "probe_speed", side_effect=[0.0, 4.0]):
+            self.assertEqual(setup.model_source(HF_URL), "modelscope")
+        setup._probe.clear()
+        with mock.patch.object(setup, "probe_speed", side_effect=[4.0, 0.0]):
+            self.assertEqual(setup.model_source(HF_URL), "huggingface")
+
+    def test_neither_answered_keeps_huggingface(self):
+        said = []
+        with mock.patch.object(setup, "say", said.append), \
+                mock.patch.object(setup, "probe_speed", return_value=0.0):
+            self.assertEqual(setup.model_source(HF_URL), "huggingface")
+        self.assertTrue(any("neither host answered" in s for s in said), said)
+
+    def test_a_repository_is_probed_once_per_run(self):
+        with mock.patch.object(setup, "probe_speed", return_value=1.0) as p:
+            for _ in range(3):
+                self.assertEqual(setup.model_source(HF_URL), "huggingface")
+            self.assertEqual(p.call_count, 2)                      # the two hosts, once
+
+    def test_an_explicit_source_skips_the_probe(self):
+        for value in ("modelscope", "huggingface"):
+            setup._probe.clear()
+            os.environ["STRATA_SOURCE"] = value
+            with mock.patch.object(setup, "probe_speed", side_effect=AssertionError("no probe")):
+                self.assertEqual(setup.model_source(HF_URL), value, value)
+
+    def test_the_speed_read_is_real_and_drops_its_bytes(self):
+        """probe_speed against a local server: it reads the head of a real file, measures MB/s, downloads nothing."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        www = Path(tmp.name) / "www"
+        www.mkdir()
+        data = os.urandom(3 << 20)
+        (www / "x.bin").write_bytes(data)
+        server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), lambda *a, **k: Quiet(*a, directory=str(www), **k))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        mb_s = setup.probe_speed("http://127.0.0.1:%d/x.bin" % server.server_address[1])
+        self.assertGreater(mb_s, 0.0)
+        self.assertLess(mb_s, 1e6)                                 # a number, not a runaway timer
+        self.assertEqual(setup.probe_speed("http://127.0.0.1:1/x.bin"), 0.0)   # nothing listening
 
 
 if __name__ == "__main__":

@@ -300,7 +300,10 @@ class Validation(FakeRoot):
         self.assertRejected("strata_install", {"port": 80}, "between")
         self.assertRejected("strata_install", {"backend": "rocm"}, "backend must be one of")
         self.assertRejected("strata_install", {"command": "setup.py --build"}, "unknown argument")
-        self.assertRejected("strata_install", {"family": "swift", "model": "IQ3_S"}, "has no IQ3_S")
+        self.assertRejected("strata_install", {"family": "coder", "model": "IQ3_S"}, "has no IQ3_S")
+        res, err = self.call("strata_install", {"family": "swift", "model": "IQ3_S"})   # 2026-10-07: Swift 1.5 has it
+        self.assertFalse(err, res)
+        self.assertIn("--family swift --model IQ3_S", res["plan"]["setup_command"])
         res, err = self.call("strata_install", {"family": "unsloth", "model": "UD-Q4_K_XL", "vision": "yes"})
         self.assertFalse(err, res)                      # #967: images are allowed with UD-Q4_K_XL (setup warns)
         self.assertEqual(res["plan"]["images"], "yes")
@@ -578,6 +581,7 @@ class Helpers(unittest.TestCase):
             self.assertFalse(models["UD-IQ4_XS"].get("experimental"))
             self.assertTrue(models["UD-Q4_K_XL"].get("experimental"))
         self.assertEqual(s.sizes_of(M.FALLBACK_MODELS, "qwen"), ["Q2_0", "IQ2_XS", "IQ3_XXS", "IQ3_S"])
+        self.assertEqual(s.sizes_of(M.FALLBACK_MODELS, "swift"), ["IQ2_XS", "IQ3_XXS", "IQ3_S"])   # 2026-10-07: IQ3_S
         fam = next(f for f in s.model_table({"ram_gb": 63.7, "gpus": []}) if f["family"] == "unsloth")
         self.assertFalse(fam["experimental"])
         self.assertTrue(fam["images"])

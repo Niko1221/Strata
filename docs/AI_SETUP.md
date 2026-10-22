@@ -75,7 +75,7 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 | 64 GB | `--family qwen --model IQ2_XS` (recommended) | `IQ3_XXS` / `IQ3_S` are slower and a bit better |
 | 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-IQ4_XS` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `--model UD-Q4_K_XL` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
 
-`--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
+`--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes IQ2_XS, IQ3_XXS, IQ3_S) is the alternative to
 `qwen`. With `--yes` and no `--model`, setup picks the recommended size for the RAM itself. More: [MODELS.md](MODELS.md).
 
 ## 4. Run setup without questions
@@ -120,11 +120,18 @@ Notes:
   One card per model and no images on Windows for now. It is new: ask the user to report how it runs (docs/AMD_HIP.md).
 - **NVIDIA with no ready-made engine for the card:** setup offers to install build tools and compile (20-40 minutes);
   `--yes` accepts.
+- **Hugging Face unreachable:** with the default `--source auto` setup probes both hosts per repository (the measured
+  MB/s is printed) and takes the faster — in mainland China that is ModelScope, and nothing needs setting. To fix one
+  host: `--source modelscope`, or a mirror via `HF_ENDPOINT` in the same window before setup
+  (`set HF_ENDPOINT=https://hf-mirror.com` Windows, `export HF_ENDPOINT=https://hf-mirror.com` Linux).
+  The ready-made engine comes from GitHub releases instead; if that is blocked too, `--prebuilt <url>` points setup
+  at another copy. Downloads are checked afterwards (sizes, and hashes on the model tensors), so a mirror that sends
+  wrong bytes is caught, not installed.
 
 ## 5. While it downloads, tell the user
 
-- It downloads about 70 GB from Hugging Face; how long depends on their connection (at 100 Mbit/s roughly 1.5-2
-  hours). It can be stopped and continues where it left off.
+- It downloads about 70 GB from Hugging Face (or ModelScope, whichever the probe measured faster); how long depends on
+  their connection (at 100 Mbit/s roughly 1.5-2 hours). It can be stopped and continues where it left off.
 - Then it prepares the model for their PC (a few minutes) and, on AMD on Linux, compiles the engine.
 - **When the model starts, the PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
   loads 35-55 GB into RAM and locks part of it for the graphics card. That is normal; they should not close the window.
@@ -183,6 +190,7 @@ line when it is ready; the engine log is `strata-<model>.log` in the Strata fold
 | --- | --- |
 | `the NVIDIA driver is too old` | The user updates the driver (NVIDIA App or nvidia.com/drivers) and restarts; rerun setup. |
 | Download or install stopped | Rerun the same setup command; it continues. |
+| `cannot reach huggingface.co` | The probe (default `--source auto`) already switched to the faster host when it answered; if both were silent: the network blocks it (common in China) - `--source modelscope`, or a mirror - `set HF_ENDPOINT=https://hf-mirror.com` (Windows) / `export HF_ENDPOINT=https://hf-mirror.com` (Linux) - in the same window as setup, and rerun. |
 | `port 8080 is already in use` | Strata is already running (check `/health`), or use `--port 8081`. |
 | Very slow, disk busy, or "the engine stopped unexpectedly" | Not enough free RAM: close programs, or set up a smaller size (`--setup --model Q2_0` or IQ2_XS). |
 | `ExpertCache: cudaMalloc(...) failed: out of memory` with free VRAM (Windows) | The page file is off or tiny: set it to "System managed" and restart. |

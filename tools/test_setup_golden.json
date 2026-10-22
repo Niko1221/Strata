@@ -167,6 +167,48 @@
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
   }
  },
+ "128GB-1x24GB swift IQ3_S": {
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/swift-iq3_s",
+    "--native",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": 0,
+   "gpus_asked": true,
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-swift-iq3_s.log",
+   "model_name": "swift-1.5-iq3_s",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/swift-iq3_s/tokenizer"
+  }
+ },
  "128GB-1x24GB unsloth UD-Q4_K_XL": {
   "code": 0,
   "config": {
@@ -387,6 +429,51 @@
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
+ "32GB-2x24GB swift IQ3_S": {
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/swift-iq3_s",
+    "--native",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--resident-experts"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": [
+    0,
+    1
+   ],
+   "gpus_asked": true,
+   "layer_split": "auto",
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-swift-iq3_s.log",
+   "model_name": "swift-1.5-iq3_s",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/swift-iq3_s/tokenizer"
+  }
+ },
  "32GB-2x24GB unsloth UD-Q4_K_XL": {
   "code": 0,
   "config": {
@@ -605,6 +692,51 @@
    "tokenizer": "<T>/data/packs/q2_0/tokenizer"
   }
  },
+ "47GB-2x16GB swift IQ3_S": {
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/swift-iq3_s",
+    "--native",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "65536",
+    "--kv",
+    "int8",
+    "--resident-experts"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": [
+    0,
+    1
+   ],
+   "gpus_asked": true,
+   "layer_split": "auto",
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-swift-iq3_s.log",
+   "model_name": "swift-1.5-iq3_s",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/swift-iq3_s/tokenizer"
+  }
+ },
  "47GB-2x16GB unsloth UD-Q4_K_XL": {
   "code": 0,
   "config": {
@@ -809,6 +941,46 @@
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+  }
+ },
+ "64GB-1x32GB swift IQ3_S": {
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/swift-iq3_s",
+    "--native",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": 0,
+   "gpus_asked": true,
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-swift-iq3_s.log",
+   "model_name": "swift-1.5-iq3_s",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/swift-iq3_s/tokenizer"
   }
  },
  "64GB-1x32GB unsloth UD-Q4_K_XL": {
@@ -1017,6 +1189,48 @@
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
    "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+  }
+ },
+ "96GB-1x16GB swift IQ3_S": {
+  "code": 0,
+  "config": {
+   "args": [
+    "--pack",
+    "<T>/data/packs/swift-iq3_s",
+    "--native",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<T>/models/swift-IQ3_S/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "<T>/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<T>/data/mtp/rt",
+    "--max-context",
+    "65536",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768"
+   ],
+   "cwd": "<T>",
+   "exe": "<T>/engine/<EXE>",
+   "gpu": 0,
+   "gpus_asked": true,
+   "lib_dirs": [
+    "<cuda>"
+   ],
+   "log": "<T>/strata-swift-iq3_s.log",
+   "model_name": "swift-1.5-iq3_s",
+   "port": 8080,
+   "tokenizer": "<T>/data/packs/swift-iq3_s/tokenizer"
   }
  },
  "96GB-1x16GB unsloth UD-Q4_K_XL": {
