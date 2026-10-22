@@ -197,6 +197,8 @@ public:
     /// [rows][layers][n_embd] device, rows, first position, err) runs with the stream synchronized.  clear_taps frees the staging.
     void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) { tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows; }
     void clear_taps();
+    /// Allocate the staging now (serve: so a request never fails on it): `cap_rows` rows of `layers` x `n_embd` floats.  False: the card has no room.
+    bool reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int64_t n_embd, std::string& err);
     std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state

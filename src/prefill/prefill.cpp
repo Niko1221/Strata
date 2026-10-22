@@ -1210,6 +1210,25 @@ Prefill::~Prefill() {
     release();
 }
 
+bool Prefill::reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int64_t n_embd, std::string& err) {
+#if defined(STRATA_HAVE_DFLASH2)
+    tap_layers_ = layers;
+    tap_cap_ = cap_rows;
+    if (tap_dev_ != nullptr) return true;
+    if (cudaMalloc((void**) &tap_dev_, (size_t) cap_rows * layers.size() * (size_t) n_embd * 4) != cudaSuccess) {
+        (void) cudaGetLastError();
+        tap_dev_ = nullptr;
+        err = "the prompt staging of the DFlash2 taps does not fit in VRAM";
+        return false;
+    }
+    return true;
+#else
+    (void) layers; (void) cap_rows; (void) n_embd;
+    err = "no DFlash2 in this build";
+    return false;
+#endif
+}
+
 void Prefill::clear_taps() {
     if (tap_dev_ != nullptr) {
         cudaFree(tap_dev_);

@@ -45,7 +45,7 @@ Dflash2Drafter::~Dflash2Drafter() {
     for (cudaGraphExec_t& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     auto fr = [](void* p) { if (p) cudaFree(p); };
-    fr(blob_); fr(d_meta_); fr(xq_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rt_blk_);
+    fr(blob_); fr(tag_); fr(d_meta_); fr(xq_); fr(xqp_); fr(xdp_); fr(xqc_); fr(xdc_); fr(rt_ctx_); fr(rt_blk_);
     for (int l = 0; l < 8; ++l) { fr(kring_[l]); fr(vring_[l]); }
     fr(fcy_); fr(hctx_); fr(kc_); fr(vc_); fr(h_); fr(xn_); fr(xc_); fr(dyn_); fr(q_); fr(qn_); fr(k_); fr(v_); fr(kblk_); fr(ao_); fr(o_);
     fr(gate_); fr(up_); fr(mlp_); fr(part_); fr(fn_); fr(logits_); fr(topval_); fr(hsel_); fr(toptok_); fr(topscratch_);
@@ -250,6 +250,9 @@ bool Dflash2Drafter::alloc(std::string& err) {
     out_tok_ = (int32_t*) dd;            // the select kernel writes the 7 picks here (host-visible) ...
     out_prob_ = (float*) dd + 16;        // ... and their probabilities at +16 ints
     cudaMemset(rt_ctx_, 0, B * 128 * 4);
+    if (cudaMalloc((void**) &tag_, (size_t) kRing * 8) != cudaSuccess) { err = "dflash2: ring tags"; return false; }
+    vram_ += (uint64_t) kRing * 8;
+    cudaMemset(tag_, 0xff, (size_t) kRing * 8);   // -1: no slot holds a context row yet
     cudaMemset(xqp_, 0, (size_t) 5 * N_ * 8 + 4096);
     cudaMemset(xdp_, 0, ((size_t) 5 * N_ / 32 * 8 + 64) * 4);
     cudaMemset(xqc_, 0, (size_t) 5 * N_ * 8 + 4096);
@@ -361,7 +364,7 @@ bool Dflash2Drafter::record_context(const float* taps, int n, cudaStream_t cs, s
             const std::string kp = p + "self_attn.k_proj.weight", vp = p + "self_attn.v_proj.weight";
             gemm({kp.c_str(), vp.c_str()}, {kc_, vc_}, n, cs, xqc_, xdc_);
             stamp("gemm:kp");
-            df2_kv_ring(kc_, vc_, f32(p + "self_attn.k_norm.weight"), d_meta_ + 0, rt_ctx_, kring_[l], vring_[l], kRing, n, NKV_, eps_, cs);
+            df2_kv_ring(kc_, vc_, f32(p + "self_attn.k_norm.weight"), d_meta_ + 0, rt_ctx_, kring_[l], vring_[l], kRing, n, NKV_, eps_, cs, tag_, d_meta_ + 18);
             stamp("df2_kv_ring");
             if (fork_) cudaEventRecord(ev_ctx_[l], cs);   // layer l's keys and values are in the ring
         }
@@ -398,7 +401,7 @@ bool Dflash2Drafter::record_block(cudaStream_t cs, std::string& err) {
             if (!skip_part("small")) df2_norm_rope_qk(q_, k_, f32(p + "self_attn.q_norm.weight"), f32(p + "self_attn.k_norm.weight"), rt_blk_, qn_, kblk_, B, NH_, NKV_, eps_, cs);
             stamp("df2_norm_rope_qk");
             if (fork_) cudaStreamWaitEvent(cs, ev_ctx_[l], 0);   // the context update has written this layer's ring
-            if (!skip_part("attn")) df2_attention(qn_, kring_[l], vring_[l], kblk_, v_, d_meta_ + 17, kRing, window_, part_, xqp_, xdp_, cs);
+            if (!skip_part("attn")) df2_attention(qn_, kring_[l], vring_[l], kblk_, v_, d_meta_ + 17, kRing, window_, part_, xqp_, xdp_, cs, tag_, d_meta_ + 18);
             stamp("df2_attention");
             if (!skip_part("qkvo")) gemm({(p + "self_attn.o_proj.weight").c_str()}, {o_}, B, cs, xqp_, xdp_);
             stamp("gemm:o_proj");
@@ -486,18 +489,44 @@ bool Dflash2Drafter::prepare(const float* taps, std::string& err) {
     return true;
 }
 
+bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume, bool* cold) {
+    resume = std::max<int64_t>(0, std::min(resume, n));
+    // the longest common prefix of what the ring was last filled for and what this request keeps
+    int64_t lcp = 0;
+    const int64_t lim = std::min<int64_t>((int64_t) hist_.size(), resume);
+    while (lcp < lim && hist_[(size_t) lcp] == ids[lcp]) ++lcp;
+    // The session says positions [0, resume) are in the state.  When the history agrees with all of them the ring serves them as it is.  When the history
+    // holds other tokens below `resume` (a parked conversation restored, an edited turn) those slots belong to another lineage: a new epoch invalidates every
+    // older stamp (the drafts are poor for the first rounds, never wrong).  A history that only ends earlier leaves nothing stale; one that goes on past
+    // `resume` has its extra rows rewritten before the window reaches them.
+    const bool stale = ring_hi_ > lcp && lcp < resume;
+    if (stale) { ++epoch_; ring_hi_ = 0; }
+    if (cold) *cold = stale;
+    hist_.assign(ids, ids + resume);
+    return true;
+}
+
+void Dflash2Drafter::note_rows(const int32_t* toks, int64_t n, int64_t pos0) {
+    if (pos0 < 0) return;
+    if ((int64_t) hist_.size() > pos0) hist_.resize((size_t) pos0);
+    if ((int64_t) hist_.size() < pos0) return;   // a gap: the history stops being a prefix, so it stays where it is (the next begin_request starts over)
+    hist_.insert(hist_.end(), toks, toks + n);
+}
+
 bool Dflash2Drafter::context(const float* taps, int64_t n, int64_t pos0, std::string& err) {
     const OnDevice on_device(device_);
     const int tap_n = (int) taps_.size() * N_;
     for (int64_t r0 = 0; r0 < n; r0 += kRows) {
         const int m = (int) std::min<int64_t>(kRows, n - r0);
         for (int i = 0; i < m; ++i) h_meta_[i] = (int32_t) (pos0 + r0 + i);
+        h_meta_[18] = epoch_;
         std::atomic_thread_fence(std::memory_order_seq_cst);
         kernels::copy_i32_from_mapped(d_meta_, m_meta_, 32, cs_);
         if (!record_context(taps + (size_t) r0 * (size_t) tap_n, m, cs_, err)) return false;
         if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("dflash2: ") + cudaGetErrorString(cudaGetLastError()); return false; }
     }
     have_ctx_ = std::max<int64_t>(have_ctx_, pos0 + n);
+    ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n);
     return true;
 }
 
@@ -516,6 +545,7 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
     const int64_t s = pos0 + n_new;
     for (int i = 0; i < 8; ++i) { h_meta_[i] = (int32_t) (pos0 + std::min(i, n_new - 1)); h_meta_[8 + i] = (int32_t) (s + i); }
     h_meta_[16] = anchor;
+    h_meta_[18] = epoch_;
     h_meta_[17] = (int32_t) s;
     h_meta_[24] = anchor;
     for (int i = 1; i < 8; ++i) h_meta_[24 + i] = mask_token_;
@@ -545,6 +575,7 @@ bool Dflash2Drafter::draft(const float* taps, int n_new, int64_t pos0, int32_t a
         if (cudaEventElapsedTime(&ms, ev_a_, ev_b_) == cudaSuccess) ms_gpu += ms;
     }
     have_ctx_ = std::max<int64_t>(have_ctx_, s);
+    ring_hi_ = std::max<int64_t>(ring_hi_, pos0 + n_new);
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
