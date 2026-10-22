@@ -489,28 +489,34 @@ def run_real(base, key, items, image_mode):
 
 def suite_real(base, key, outdir, fit_n=None, test_n=None):
     rep, fits = {}, {}
-    D = "/cfg/strata-data/eval/real/data"
+    D = os.environ.get("STRATA_SUITE_REAL", "/cfg/strata-data/eval/real/data")
     for kind, ds in (("noul-pope", "POPE adversarial"), ("choice-cvb", "CV-Bench"),
                      ("score-countbench", "CountBenchQA")):
         dev = real_items(Path(D, kind), "dev")
         test = real_items(Path(D, kind), "test")
+        n0 = len(ITEM_LOG)
         dev_rows = run_real(base, key, dev, "direct")
         test_rows = run_real(base, key, test, "direct")
+        served = sorted({r.get("calib") for r in ITEM_LOG[n0:]})
+        if any(s not in (None, "identity") for s in served):
+            print(f"[real:{kind}] WARNING served probabilities are calibrated by {served}: the "
+                  f"'cal' column compounds that transform and the fitted params are NOT installable "
+                  f"as-is - rerun with the calibrators removed (jevport-arm.sh <arm> --calib identity)",
+                  flush=True)
         qtype = {"noul-pope": "noul", "choice-cvb": "choice", "score-countbench": "score"}[kind]
         if qtype == "noul":
             dl = [math.log(max(p[1], 1e-9) / max(1 - p[1], 1e-9)) for p, _ in dev_rows]
             cs = [1 if g == 1 else 0 for _, g in dev_rows]
-            a, c = fit_platt(dl, cs)
-            cal = ("platt", a, c)
-            fits[kind] = {"a": round(a, 4), "c": round(c, 4)}
+            fi = fit_platt_ex(dl, cs)
+            cal = ("platt", fi["a"], fi["c"])
         else:
-            T = fit_temp(dev_rows)
-            cal = ("T", T)
-            fits[kind] = {"T": round(T, 4)}
-        rep[kind] = {"dataset": ds, "mode": "direct", "raw": metrics(test_rows, None),
-                     "cal": metrics(test_rows, cal), "fit": fits[kind]}
+            fi = fit_temp_ex(dev_rows)
+            cal = ("T", fi["T"])
+        fits[kind] = fi
+        rep[kind] = {"dataset": ds, "mode": "direct", "served_calib": served,
+                     "raw": metrics(test_rows, None), "cal": metrics(test_rows, cal), "fit": fi}
         print(f"[real:{kind}] raw acc={rep[kind]['raw']['acc']} "
-              f"cal acc={rep[kind]['cal']['acc']} fit={fits[kind]}", flush=True)
+              f"cal acc={rep[kind]['cal']['acc']} fit={fi}", flush=True)
     return rep
 
 
