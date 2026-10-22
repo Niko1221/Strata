@@ -543,13 +543,21 @@ coherent different phrasing at a near tie (one at token 88 of a TCP-versus-QUIC 
 true; one at token 13 of a French history of pi, both fluent). No slot answered another slot's prompt, and the
 engine's per-slot state check - every GDN state, conv history, QSA cell, tail, dead and pooled row and PLE
 history of every region compared byte for byte against the window's - reported all match for all four regions.
-The four regions cost 15.4 GB of the arena (the engine prints it at start), and each row-count graph builds in
-90 to 95 ms.
+The captures (`STRATA_BATCH_VERIFY=1`, a 315-probe trajectory per step for every row) locate where the difference
+is born: every slot's first batched step is bit-exact against its solo run on all 315 probes, and on every later
+step the probes up to the fold entering the batched PLE block stay bit-exact while the fold leaving it already
+differs by fractions of a percent. The PLE block's rounding is therefore where a batch window's rows part company
+with solo, and the noise rides every downstream fold; a slot's tokens flip only where that noise crosses an
+argmax near tie (what exactly rounds differently inside the block is unconfirmed static analysis). A second run
+of the same four prompts with captures on diverged at exactly the same two tokens, so the drift is the batched
+block's deterministic arithmetic, not a race or corruption, and the captures themselves change nothing.
+The four regions cost 15.4 GB of the arena (the engine prints it at start); each row-count graph builds once
+(two-row windows in 56 to 60 ms, three-row in 73 to 81, four-row in 92 to 98).
 
-Getting the second row exact needed a binding fix found with the debug captures (`STRATA_BATCH_VERIFY=1` prints
-a 315-probe trajectory per step for every row): a batch row's GDN step binds the prepared activation at its own
-slice, and the per-16 sums it writes for the GEMVs must land in the fixed sums region of the whole buffer, not
-a slice-row's width past it. Rows after the first wrote sums no one ever read back, and the layers whose
+Getting the second row's sums right needed a binding fix also found with the captures: a batch row's GDN step
+binds the prepared activation at its own slice, and the per-16 sums it writes for the GEMVs must land in the
+fixed sums region of the whole buffer, not a slice-row's width past it. Rows after the first wrote sums no one
+ever read back, and the layers whose
 `ssm_out.weight` is Q2_0/Q3_K/Q4_K/Q5_K/Q6_K quantized (the IQ kinds read the plain float plane instead)
 dequantize from those sums, so their outputs were garbage on the second row onward while the first row stayed
 exact. The sums now have their own binding; the solo window and the first row address them bit-identically to
