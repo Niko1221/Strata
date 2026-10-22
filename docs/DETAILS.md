@@ -2079,6 +2079,28 @@ the pairs in which the switched arm won). They are here so you can try them on y
   option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
   profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
 
+## Conversation cache copies on a slow host link (CUDA, opt-in)
+
+Where the card sits behind a slow host link, the conversation cache's copies run on the critical path of the next
+request: a turn checkpoint copies the DeltaNet state (118 MB on Qwen3.8-Flash-Next) device to host, and parking a
+conversation copies its K/V and its checkpoints before the next prompt can start. These switches move the copies
+device to device or onto background threads. All are off unless set; on HIP, gfx906 and Metal `STRATA_CKPT_ASYNC`,
+`STRATA_CKPT_GATHER` and `STRATA_PARK_ASYNC` stay off (and with them the two slot switches). The answers and the
+parked images are the same bytes. Measured on one CMP 170HX (sm_80) on PCIe Gen2 x4; some park figures were taken
+with other opt-in switches set.
+
+| Switch | What | Measured |
+|---|---|---|
+| `STRATA_CKPT_ASYNC=1` | a turn checkpoint's state is copied device to device into a VRAM stage and moved to the host by a background thread; a reader waits only for the copy it needs | checkpoint 104-105 -> 34-35 ms (fresh vectors), 71.4 -> 0.9 ms (reused vectors) |
+| `STRATA_CKPT_VRAM_SLOTS=N` (0-16, with `STRATA_CKPT_ASYNC=1`) | the last N saved states also stay in VRAM (N x 118 MB, only while 1.5 GB stay free); a restore from one copies device to device | restore 114-126 -> 28-47 ms |
+| `STRATA_PARK_ASYNC=1` | a park copies the K/V device to device into a VRAM stage (only while 1.5 GB stay free) and moves it to the host in the background; the checkpoints the request drops move into the parked image instead of being copied | park of a 3.3K / 13K-token conversation 212-217 / 329-334 -> 64-75 / 68 ms |
+| `STRATA_CKPT_POOL=N` | the existing pool switch (a save reuses a dropped checkpoint's storage) now keeps N ready checkpoints (N >= 2, at most 16; 1 = 2), sized at start and topped up in the background, so a save never faults in a fresh vector. It holds N x 118 MB of host memory from start-up, also when `STRATA_SLOT_CKPT_MOVE=1` turns the pool on | with `STRATA_PARK_ASYNC=1` and `STRATA_CKPT_GATHER=1`: park 21.5-40.1 / 26.9 ms |
+| `STRATA_CKPT_GATHER=1` | a checkpoint's 37 small device-to-host copies are gathered into one buffer and fetched with one copy; not tested with a layer split across devices | (in the row above) |
+| `STRATA_PARK_VRAM_MIB=N` (with `STRATA_PARK_ASYNC=1`) | a park also keeps the K/V in VRAM slots (64 MiB granules, up to N MiB, only while 1.5 GB stay free); switching back restores it device to device | second and later restores of a run 33-51 -> 7-13 ms; the first is not faster |
+| `STRATA_PARK_TRACE=1` | diagnostic: the park's joins and timers on stderr | - |
+
+The serve loop's `strata trace:` lines (`STRATA_TRACE`) now end with `@<ms>`, a steady-clock timestamp.
+
 ## Which logical processors the CPU workers use, and `--pool-cores` (experimental, off by default)
 
 The CPU expert workers read the experts that are not in graphics memory, and their speed is set by how many physical cores
