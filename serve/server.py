@@ -2343,10 +2343,26 @@ class StrataEngine:
         service FIFO).  Wire: `BROW <tokens>` -> `BROWD <n> <tok>:<logit>...` (one line; the engine answers only
         for the ids asked, in that order).  Any malformed answer, a token not asked for, or a non-finite logit
         fails closed: the engine is ended (EngineDied) - never a fabricated row."""
+        return self._brow_reply("BROW ", "BROWD", None, tokens)
+
+    def row_logits_at(self, row: int, tokens: list[int]) -> dict[int, float]:
+        """jev systemone (M3.1): row `row` of the LAST verify window's head logits - the distribution at
+        position pos0 + row, i.e. the token that follows the row's own token - for `tokens`, between requests
+        (the caller holds the service FIFO).  Wire: `BROWAT <row> <tokens>` -> `BROWATD <n> <tok>:<logit>...`.
+        The row must belong to the last window the engine ran (0 <= row < its token count), which is the one
+        this caller's own request ran - so N questions in ONE window are N reads, not N prefills.  A row
+        outside the last window, any malformed answer, a token not asked for, or a non-finite logit fails
+        closed: the engine is ended (EngineDied) - never a fabricated or neighbouring row."""
+        return self._brow_reply("BROWAT ", "BROWATD", row, tokens)
+
+    def _brow_reply(self, op: str, answer: str, row, tokens: list[int]) -> dict[int, float]:
+        """The row read both BROW and BROWAT answer: `op` is the wire command ("BROW " / "BROWAT "), `answer`
+        its reply ("BROWD" / "BROWATD"), `row` the window row asked for (None: the final row)."""
         if not tokens:
             raise ValueError("no tokens to read")
+        cmd = op + ("" if row is None else f"{int(row)} ") + " ".join(str(int(t)) for t in tokens) + "\n"
         try:
-            self.proc.stdin.write("BROW " + " ".join(str(int(t)) for t in tokens) + "\n")
+            self.proc.stdin.write(cmd)
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
@@ -2356,7 +2372,7 @@ class StrataEngine:
             left = deadline - time.monotonic()
             if left <= 0:
                 self.ended = True
-                raise EngineSilent("the engine said nothing for a BROW answer")
+                raise EngineSilent(f"the engine said nothing for a {answer} answer")
             try:
                 line = self.lines.get(timeout=min(left, 0.5))
             except queue.Empty:
@@ -2364,37 +2380,38 @@ class StrataEngine:
             if line is None:
                 self.ended = True
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
-            if not line.startswith("BROWD "):
+            if not line.startswith(answer + " "):
                 self.ended = True
                 try:
                     self.proc.kill()
                     self.proc.wait(timeout=20)
                 except (OSError, AttributeError, subprocess.TimeoutExpired):
                     pass
-                raise EngineDied(f"the engine answered a BROW with {line.strip()[:200]!r}; the server ended the engine")
+                raise EngineDied(f"the engine answered a {op.split()[0]} with {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
             parts = line.split()
             if len(parts) < 2 or not parts[1].isdigit() or int(parts[1]) != len(tokens):
                 self.ended = True
-                raise EngineDied(f"a malformed BROWD answer: {line.strip()[:200]!r}")
-            row: dict[int, float] = {}
+                raise EngineDied(f"a malformed {answer} answer: {line.strip()[:200]!r}")
+            row_out: dict[int, float] = {}
             for p in parts[2: 2 + int(parts[1])]:
                 tok_s, _, val_s = p.partition(":")
                 try:
                     tok, val = int(tok_s), float(val_s)
                 except ValueError:
                     self.ended = True
-                    raise EngineDied(f"a malformed BROWD field {p!r}") from None
+                    raise EngineDied(f"a malformed {answer} field {p!r}") from None
                 if tok not in want:
                     self.ended = True
-                    raise EngineDied(f"BROWD answered token {tok} which was not asked for")
+                    raise EngineDied(f"{answer} answered token {tok} which was not asked for")
                 if not math.isfinite(val):
                     self.ended = True
-                    raise EngineDied(f"BROWD answered a non-finite logit for token {tok}")
-                row[tok] = val
-            if len(row) != len(tokens):
+                    raise EngineDied(f"{answer} answered a non-finite logit for token {tok}")
+                row_out[tok] = val
+            if len(row_out) != len(tokens):
                 self.ended = True
-                raise EngineDied(f"BROWD answered {len(row)} of {len(tokens)} tokens")
-            return row
+                raise EngineDied(f"{answer} answered {len(row_out)} of {len(tokens)} tokens")
+            return row_out
 
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).

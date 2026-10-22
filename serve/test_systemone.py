@@ -124,7 +124,7 @@ def post(base, path, body):
 
 
 from serve.server import StrataEngine  # noqa: E402
-from serve.test_slots import FakeEngine  # noqa: E402
+from serve.test_slots import FakeEngine, FakeProc  # noqa: E402
 
 
 class BrowWire(unittest.TestCase):
@@ -143,6 +143,15 @@ class BrowWire(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
+
+    def tearDown(self):
+        """A fail-closed case ends the engine, and FakeProc.kill() is permanent (killed stays True for the
+        life of that stand-in), so hand the next test a live one and an empty line queue - otherwise the
+        test that follows a kill waits for a reply the scripted player refuses to send."""
+        self.eng.proc = FakeProc(self.eng)
+        self.eng.ended = False
+        while not self.eng.lines.empty():
+            self.eng.lines.get_nowait()
 
     def test_brow_roundtrip(self):
         self.eng.script = ["BROWD 2 78:0.5 89:4.25\n"]      # earlier tests replaced it
@@ -165,6 +174,40 @@ class BrowWire(unittest.TestCase):
             self.fail("expected EngineDied")
         except Exception as e:
             self.assertIn("BROWD", str(e))
+
+    # ---- M3.1: BROWAT reads any row of the same window, not only the final one ----
+
+    def test_browat_roundtrip_names_the_row(self):
+        self.eng.script = ["BROWATD 2 78:0.5 89:4.25\n"]
+        row = self.eng.row_logits_at(37, [78, 89])
+        self.assertEqual(row, {78: 0.5, 89: 4.25})
+        self.assertEqual(self.eng.proc.sent[-1], "BROWAT 37 78 89\n")
+
+    def test_browat_row_zero_is_sent_verbatim(self):
+        # row 0 is a real row (the window's first position), not a sentinel: it must reach the engine
+        # as "BROWAT 0 ..." and never be confused with "the final row" (row 0 of a 1-token window is
+        # both, which is why the wire carries the number rather than a flag)
+        self.eng.script = ["BROWATD 1 78:1.0\n"]
+        self.assertEqual(self.eng.row_logits_at(0, [78]), {78: 1.0})
+        self.assertEqual(self.eng.proc.sent[-1], "BROWAT 0 78\n")
+
+    def test_browat_row_outside_the_window_fails_closed(self):
+        # the engine answers `ERR BROWAT: row 4000 is outside the last window (98 rows)`; the server
+        # must not silently take a neighbouring row - it ends the engine (EngineDied) instead
+        self.eng.script = ["ERR BROWAT: row 4000 is outside the last window (98 rows)\n"]
+        try:
+            self.eng.row_logits_at(4000, [78])
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWAT", str(e))
+
+    def test_browat_malformed_answer_fails_closed(self):
+        self.eng.script = ["BROWATD 2 78:0.5\n"]            # says 2, carries 1
+        try:
+            self.eng.row_logits_at(37, [78, 89])
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWATD", str(e))
 
 
 class SystemOneValidation(unittest.TestCase):
