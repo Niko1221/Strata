@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from strata_control.user_args import MULTI_VALUE_FLAGS
+
 _ENTRY = re.compile(r"^  (--[A-Za-z0-9][A-Za-z0-9-]*)( +)?(.*)$")
 _EXPERIMENTAL = re.compile(r"experimental|diagnostic|A/B arm|fault injection|oracle", re.I)
 _DEFAULT = re.compile(r"\(\s*default[: ]\s*([^)]*)\)", re.I)
@@ -40,6 +42,7 @@ PLAIN = {
     "--suffix-draft": "Guess the next words from text already in the conversation.",
     "--port": "The network port the server listens on.",
     "--gpu": "Which graphics card to use.",
+    "--gpu-roles": "A role for each graphics card: main, helper or off.",
     "--gpus": "Which graphics cards to use together.",
 }
 _CODE = re.compile(r"\b[RTS]\d{1,2}\b[:,)]?\s*")
@@ -131,8 +134,11 @@ def argv_to_dict(argv: list[Any]) -> dict[str, str]:
         tok = items[i]
         if tok.startswith("--"):
             if i + 1 < len(items) and not items[i + 1].startswith("--"):
-                out[tok] = items[i + 1]
-                i += 2
+                n = 1
+                while n < MULTI_VALUE_FLAGS.get(tok, 1) and i + 1 + n < len(items) and not items[i + 1 + n].startswith("--"):
+                    n += 1
+                out[tok] = " ".join(items[i + 1:i + 1 + n])
+                i += 1 + n
                 continue
             out[tok] = ""
         i += 1

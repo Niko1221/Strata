@@ -55,7 +55,7 @@ test('with an older engine installed the app refuses to download or load Gyro, w
 test('the screens use the existing "needs a newer engine" notice for a size, and the buttons are held back', async () => {
   const models = await readFile(new URL('../src/components/NativeModels.tsx', import.meta.url), 'utf8');
   assert.match(models, /selectedFamily && \(!selectedSize \|\| selectedSize\.needsNewerEngine\) \? <><h2 className="h3">\{tr\("This model needs a newer engine\."\)\}/);
-  assert.match(models, /!!selectedSize\.needsNewerEngine \|\| expert && deviceChoice === 'split'/);
+  assert.match(models, /!!selectedSize\.needsNewerEngine\}/);
   const guided = await readFile(new URL('../src/components/GuidedSetup.tsx', import.meta.url), 'utf8');
   assert.equal((guided.match(/needsNewerEngine/g) ?? []).length, 3);
 });

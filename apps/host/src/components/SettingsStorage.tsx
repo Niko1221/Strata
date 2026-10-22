@@ -6,6 +6,7 @@ import { pickerGroups, pickerVersionState } from '../lib/model-picker';
 import { sizeGb } from '../lib/format';
 import { useNative } from '../lib/native';
 import { NativeDeleteDialog } from './NativeDelete';
+import { ModelsFolderCard } from './ModelsFolderDialog';
 import { nativeShortName } from '../lib/native-names';
 export function SettingsStorage() {
     const state = useStore(s => s);
@@ -77,7 +78,9 @@ export function SettingsStorage() {
             setPending(false);
         }
     }
+    const downloading = !!native?.jobs.some(j => j.state === 'running' && j.kind !== 'models-move') || !!library?.downloads.active || !!state.imageModels?.variants.some(v => v.state === 'downloading');
     return <>
+    {native?.available && native.downloadDirectory ? <ModelsFolderCard blocked={downloading}/> : null}
     <section className="storage-directory" aria-labelledby="storage-directory-title">
       <div className="storage-directory__heading"><span><Icon name="folder" size={18}/><strong id="storage-directory-title">{tr("Model directory")}</strong></span><Btn size="sm" disabled={!currentDirectory || directoryPending || pending} onClick={() => { setDirectory(currentDirectory); setEditing(!editing); setDirectoryError(''); setNotice(''); }}>{tr(editing ? 'Cancel' : 'Change directory')}</Btn></div>
       <p className="small muted">{tr("Your models are saved here. Use an existing folder to reuse supported downloads.")}</p>
@@ -95,6 +98,7 @@ export function SettingsStorage() {
         <div className="row"><Btn variant="primary" type="submit" disabled={directoryPending || directoryBlocked || !directory.trim()}>{tr(directoryPending ? 'Checking files…' : changing && loadedCount > 0 ? 'Unload and change directory' : changing ? 'Use this directory' : 'Check folder')}</Btn></div>
       </form> : <Btn size="sm" icon="refresh" disabled={directoryPending || directoryBlocked || !currentDirectory} onClick={() => void saveDirectory(currentDirectory)}>{tr(directoryPending ? 'Checking files…' : 'Check folder')}</Btn>)}
       {tr(directoryBlocked && !directoryPending ? <p className="small muted">{tr(!lifecycle.allowed ? lifecycle.reason : 'Finish or cancel downloads and loading to change the directory.')}</p> : null)}
+      {tr(state.setup?.app.modelsDirNotice && !notice ? <p className="small storage-directory__notice" role="status"><Icon name="info" size={15}/>{tr(state.setup.app.modelsDirNotice)}</p> : null)}
       {tr(notice ? <p className="small storage-directory__notice" role="status"><Icon name="check" size={15}/>{tr(notice)}</p> : null)}
       {tr(directoryError ? <ErrorNotice message={directoryError}/> : null)}
     </section>

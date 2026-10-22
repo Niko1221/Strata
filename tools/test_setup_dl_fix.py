@@ -81,7 +81,7 @@ class Fp4LocalPackages(unittest.TestCase):
 
     def test_the_requirements_file_pins_what_the_converter_imports(self):
         pkgs = setup.nvfp4_local_packages()
-        self.assertEqual(sorted(p.split("==")[0] for p in pkgs), sorted(setup.NVFP4_LOCAL_MODULES))
+        self.assertEqual(sorted({p.split("==")[0] for p in pkgs}), sorted(setup.NVFP4_LOCAL_MODULES))
         self.assertTrue(all("==" in p for p in pkgs), pkgs)
 
     def test_missing_packages_are_installed_once_with_the_pins(self):

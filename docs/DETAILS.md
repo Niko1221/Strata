@@ -649,7 +649,7 @@ when the sockets wait for each other's counters. Prompt speed did not change in 
 with it translating every DMA (`cat /sys/kernel/iommu_groups/*/type | sort | uniq -c` shows `DMA-FQ`), pinned host-to-device copies ran at
 7.7 to 9.2 GB/s on PCIe 3.0 x16 and at 12.3 GB/s with `iommu=pt` on the kernel command line, which moved prompt speed by about 30% there.
 A NUMA-aware pool (one slice of workers per socket, each reading its own socket's copy of the CPU experts) gave +10 to +14% on
-the first box in a contributor's branch; it is not in this build. Do not wrap the server in `numactl --cpunodebind` when you test
+the first box in a contributor's branch; 0.2.2 has it (on by itself with 2 or more NUMA nodes, `STRATA_NUMA_POOL=0` turns it off: see "NUMA-split CPU expert pool" below). Do not wrap the server in `numactl --cpunodebind` when you test
 workers across sockets: it pins them to one node.
 
 ### Running it at startup (Task Scheduler)
@@ -943,7 +943,10 @@ print(r.choices[0].message.content)
   conversation and every idle slot (a slot still running finishes its reply and is not kept after it) and reads its
   prompt from token 0. The server retries a request that had sent nothing yet once, transparently; a reply that had
   started ends as `"length"` with a line in the server window; a second fire on the retry ends the request with an
-  error (503 before an answer, an error event in a stream). With replicas, the server forgets what that replica held.
+  error (503 before an answer, an error event in a stream). When the flagged window was one that reads the prompt's
+  last few tokens (the part after the last turn boundary, read through the verify windows, `--short-read`), the retry
+  reads its whole prompt through the batched path instead (#3465: a reporter's prompts failed in that tail every time and
+  passed with `--short-read 0`); the engine prints a line saying so. With replicas, the server forgets what that replica held.
   `repeat_stop_tokens` stays as the backstop. The kernel writes only its flags and the host only reads them, so an
   answer without a NaN is the one the engine gives with `STRATA_NAN_GUARD=0`, which records no kernel: on an RTX
   3080 with the RVN IQ3_S config at fixed expert sets (a chat replay of 8 turns on a 16K-token system prompt), the
@@ -991,6 +994,12 @@ print(r.choices[0].message.content)
   long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
   15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
   connection or pressing stop in your app really stops the model, so the next request starts at once.
+- **Which tool calls come back as calls.** A call counts only when it names a tool the request declared. A call for
+  another name, or any call in a Chat Completions or Anthropic request that declared no tools, is returned as the
+  text it was written as, so a client never runs a tool it did not offer (the Responses route keeps its own rule
+  for Codex's compaction requests). A call whose envelope drifted by a token, `<=NAME>`, `<function:NAME>` or `<NAME>`
+  instead of `<function=NAME>`, is read as the call when NAME is a declared tool. A `<tool_call>` block that still
+  does not read as a call is counted in the server window.
 - **Tool calls in other forms (opt-in).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
   tool the request declared also when the model writes it as `<parameter=NAME>` instead of `<function=NAME>`, as JSON
   (`{"name": ..., "arguments": ...}`) inside `<tool_call>`, as a `<function=NAME>` block at the start of a line
@@ -2070,6 +2079,66 @@ the pairs in which the switched arm won). They are here so you can try them on y
   option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
   profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
 
+## Which logical processors the CPU workers use, and `--pool-cores` (experimental, off by default)
+
+The CPU expert workers read the experts that are not in graphics memory, and their speed is set by how many physical cores
+read memory at the same time. So the engine starts one worker per physical core, never two workers on the two hardware
+threads (SMT siblings) of one core, and keeps the first core for the main thread (the one that waits for the graphics
+card). The start-up log says where everything sits:
+
+```
+strata generate: CPU workers on logical processors 2,4,...,30 (15 workers, one per physical core; host on 0)
+```
+
+The numbers depend on the system. Windows numbers the two threads of a core next to each other (core k is logical
+processors 2k and 2k+1), so the workers sit on the even numbers. Linux usually numbers the first thread of every core first
+and the siblings after them (a 6-core, 12-thread CPU: cores 0 to 5, their siblings 6 to 11), so the workers sit on the low
+numbers. The engine does not guess: it reads the pairing from the system (Windows `GetLogicalProcessorInformationEx`, Linux
+`/sys/devices/system/cpu/cpu*/topology`). Where the system does not say (some containers), the line says so
+("the OS did not say which logical processors share a core") and the default count is half of the logical processors. The
+line also says when two workers do share a core. `ps -L -o tid,psr,comm` on Linux, and Process Explorer or any tool that reads
+thread names on Windows, show the workers as `strata-pool-N` and the main thread as `strata-host`; the other helper threads
+carry names too (`strata-stage`, `strata-adapt`, `strata-io`, ...).
+
+Only the workers and the main thread are pinned. Every other thread (the prompt copy threads, the adaptive tier's job thread,
+the graphics driver's threads) is placed by the operating system, and the picture encoder is a separate process whose threads
+are not pinned either. So a task manager that shows only the first few logical processors busy does not mean the pool is
+misplaced: while the experts are in graphics memory the workers have nothing to do. On Linux the helper threads the engine
+starts after the main thread is pinned inherit its single CPU; `--aux-cpus` (next section) moves them.
+
+What that looks like on a Ryzen AI MAX+ 395 (16 cores, 32 threads, Windows 11, Balanced power plan), with every expert in
+graphics memory: snapshots of four runs of the engine showed the unpinned threads on logical processors 0 to 15 only (the first
+eight cores, both threads of each) and 16 to 31 idle. Windows listed 16 to 31 as parked ("Parking Status" 1) while nothing
+pinned ran there. The 15 workers sat on 2, 4, ..., 30 and did nothing. The CPU picture encoder (`strata-vision`, 16 threads
+there) did the same: 16 threads on logical processors 0 to 15, 10.1 s for a 1024x1024 picture. Pinning those 16 threads to one
+per core (2, 4, ..., 30) made it far slower (74 to 193 s), and 8 threads pinned to 8 real cores took 12.3 s, so the encoder
+stays where the operating system puts it (the cause was not looked into; the parked second chiplet is the obvious suspect).
+
+With the experts on the CPU, the workers of the same machine were each at 100% on exactly the even numbers (the CPU pool alone
+on random expert data, so only the placement and the memory traffic are real). Why the default is not "the first N logical
+processors": 8 workers on logical processors 1 to 8 (four cores, both threads) read 67 GB/s, 8 workers on real cores
+2, 4, ..., 16 read 94 GB/s, and the default 15 workers on 2, 4, ..., 30 read 146 GB/s (medians of three interleaved 10-second
+runs; 31 workers on 1 to 31 read 123 GB/s).
+
+**`--pool-cores LIST`** (or `STRATA_POOL_CORES=LIST`, or `"pool_cores": "2,4,6,8"` in the run config, or
+`strata launch --pool-cores 2,4,6,8`) pins the workers to exactly these logical processors, in this order. It is for people who
+want to choose the cores themselves (leave some for other programs, use one chiplet, test a layout); the default is what was
+measured. The list is numbers, ranges and `first-last:step`: `0,2,4,6`, `2-14:2`. The numbers are the ones Task Manager and
+`lscpu` show. The worker count is the length of the list; `--pool-workers N` takes the first N entries (more workers than
+entries: the extra ones run unpinned). Nothing is refused; the engine warns:
+
+```
+strata cpu pool: --pool-cores: logical processors 0 and 1 are the two hardware threads of one core: two workers on it share the core's memory bandwidth and slow each other down (one per physical core is the default)
+strata cpu pool: --pool-cores: logical processor 0 is also the host thread's: a worker there competes with the thread that waits for the graphics card
+strata cpu pool: --pool-cores: left out: 99 is not a logical processor this process may run on
+```
+
+Processors the process may not use (not there, or outside a `taskset` / affinity limit) are left out; if none is left the
+pool uses its default placement. A list that cannot be read (`two,four`) is said and ignored. The main thread keeps the first
+core (`--host-core` still decides that), so leave that processor out of the list. The option moves threads only and never
+changes a result. It applies to the main engine; the Qwen3.6 engine (`strata-q36`) keeps its own `--pool-workers` and the
+default placement.
+
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
 The CPU pool pins its workers (one logical CPU per physical core) and the host thread pins itself to the pool's reserved
@@ -2112,6 +2181,29 @@ never changes a result.
   restart noise. The mean and the p99 of the doorbell-to-flag time are not worse without the flag; what appears is rare
   stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
   loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
+
+**NUMA-split CPU expert pool (0.2.2: on by itself when the machine has 2 or more NUMA nodes; off with `STRATA_NUMA_POOL=0`):** on a 2-socket Linux box it splits the CPU expert pool into
+one slice per NUMA node, each with its own task counter and barrier, and at load it places each node's half of every
+CPU-side expert's rows in that node's memory (first touch by threads pinned to that node; the model file's page cache is
+released first), so a slice reads its own socket's memory. Under the split the default worker count is the physical cores
+of both sockets minus the host core, minus one more kept free from 16 workers on, capped at 32 (22 on 2x12 cores); an explicit `--pool-workers N` is spread alternately across the
+sockets. Measured on a dual Xeon Gold 6226 (2x12 cores, 64 GB, 4 of 6 memory channels per socket populated), RTX 3090,
+PCIe 3.0 with the kernel's IOMMU in passthrough (`iommu=pt`), `orcarouter-qwen3.8-flash-next-uncensored-iq4_xs` (the
+IQ4_XS pack) at 262K context, server decode median over 12 samples: 59.3 tok/s with the split against 54.05 for the 0.2.0
+default (11 workers, one socket), +9.7% (+14% and +11.5% in two earlier sessions with the IOMMU translating DMA). Without
+the split, 22 workers gave 43.25 tok/s, and the split at 12 workers gave 51.45; prompt speed is unchanged. It needs Linux, exactly 2
+NUMA nodes and enough free memory on each node for its half: otherwise the log warns `NUMA placement at risk`, and after
+the load it judges the placement from move_pages samples and prints FAILED when a node holds under 95% of its slice. Only
+native expert layers are split (`ArenaExpertSource` and the `cudaHostAlloc` path are not, and the engine says so at start-up
+for the arena path). The pool refuses the split with `STRATA_EXCHANGE_ROTATE=1` and when the two sockets' worker counts are
+lopsided, logs the reason (`NUMA split off: ...`) and runs as usual. `STRATA_NUMA_SPLIT=test` builds the same slices by
+alternating the threads between two slices on any machine, with no node lookup, no pinning requirement and no memory
+placement; it is for testing the per-slice scheduling, not for speed.
+
+*0.2.2: when it runs.* The split was a contributor's opt-in (`STRATA_NUMA_SPLIT=1`, issue #3201, measured on one dual Xeon Gold 6226 box). From 0.2.2 the pool counts the NUMA nodes that have CPUs (Linux: `/sys/devices/system/node/node*/cpulist`; Windows: `GetNumaHighestNodeNumber`) and, with 2 or more and neither `STRATA_NUMA_POOL` nor `STRATA_NUMA_SPLIT` set, tries the split by itself. **One node is exactly the pool as before: nothing is read, nothing is logged, no worker count changes.** On 2 or more nodes the split runs only when it can (Linux, exactly 2 nodes holding the pool's threads, balanced slices, pinned threads, no `STRATA_EXCHANGE_ROTATE=1`); otherwise the pool keeps its old worker count and cores and logs why: `strata cpu pool: NUMA pool off: <reason> (N NUMA nodes found), the pool runs as before` (a 4-node machine, a container that sees one node's CPUs, Windows). When it runs the log says `strata cpu pool: NUMA pool on: N NUMA nodes found, one slice of the pool per node (STRATA_NUMA_POOL=0 turns it off)`, then the `NUMA split on: slice 0 = node ...` line. **Off switch: `STRATA_NUMA_POOL=0`** (also `off`, `false`, `no`); it wins over `STRATA_NUMA_SPLIT=1`, and on a 2-node machine logs `NUMA pool off (STRATA_NUMA_POOL=0)`. `STRATA_NUMA_SPLIT=1` still asks for the split on any machine (and keeps the contributor's worker counts when it cannot run), `STRATA_NUMA_SPLIT=0` is off. On Windows the node count is read but the split itself is Linux-only for now: a Windows machine with 2 nodes logs the reason and runs as before. The 0.2.2 default was built from the report and tested on one-node machines only (identity gate and speed A/B unchanged there; the node logic runs in `numa_pool_test` on made-up topologies); it has not been run on a two-socket machine by us. Log: `strata cpu pool: NUMA split on: slice 0 = node 0 (N threads), slice 1 =
+node 1 (M threads)` at start, then `FileExpertSource: NUMA placement: node 0 <GiB> (xx.x % of its slices), node 1
+<GiB> (xx.x % of its slices); free before: ...; after the drop: ...; pages taken and page-locked in N s since the
+placement started`.
 
 ---
 

@@ -223,11 +223,11 @@ export interface ServeRequest {
   finishReason?: string | null;
 }
 
-export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
+export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; warning?: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
 
 export interface ServingState {
   tunnel?: TunnelState;
-  sharing?: { active: boolean; url: string | null };
+  sharing?: { active: boolean; url: string | null; warning?: string | null };
   revision?: number;
   running: boolean;
   baseUrl: string;
@@ -355,6 +355,7 @@ export interface ChatMessage {
   reasoningOpen?: boolean;
   tokens?: number;
   tps?: number;
+  promptTps?: number;
   durationMs?: number;
   error?: string;
   tools?: ToolCall[];
@@ -494,7 +495,7 @@ export interface SetupState {
   step: number;
   completedAt?: string;
   history: { step: number; at: string }[];
-  app: { version: string; modelsDir: string; dataDir: string };
+  app: { version: string; modelsDir: string; dataDir: string; modelsDirNotice?: string };
 }
 
 export interface EngineEvent {

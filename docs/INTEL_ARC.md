@@ -12,7 +12,7 @@ are still community reports. The NVIDIA and AMD engines are unchanged: the Intel
 
 **Where the engine comes from.** There is **no Intel engine in the release zips** (the ones `START-HERE.bat` and `setup.sh`
 use): you build it from source on Linux, as described below. The Docker route is a ready-made image,
-`ghcr.io/niko1221/strata:0.2.1-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build
+`ghcr.io/niko1221/strata:0.2.2-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build
 the image yourself](DOCKER.md#build-it-yourself) from the engine you built (the image needs prepared model files; see
 [Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
 

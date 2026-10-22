@@ -5,7 +5,7 @@
 # This is the quick speed check. The standard benchmark (docs/BENCHMARK_PROTOCOL.md), whose results other people can compare with, is `strata bench run`.
 cd "$(dirname "$0")" || exit 1
 if [ -x .venv/bin/python ]; then
-  echo "Quick speed check. For results other people can compare with (the standard benchmark, 20 to 30 minutes), run: .venv/bin/python strata.py bench run"
+  echo "Quick speed check. For results other people can compare with (the standard benchmark, a few minutes), run: .venv/bin/python strata.py bench run"
   echo
   exec .venv/bin/python tools/strata_bench.py "$@"
 fi

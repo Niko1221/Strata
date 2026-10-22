@@ -254,6 +254,22 @@ def _pid_exists(pid: int, started: int | None = None) -> bool:
     return True
 
 
+def _child_present(child: dict) -> bool:
+    """Whether the child recorded in an owner marker is still there. A marker without a creation time (Windows could not
+    read it when the child started) cannot tell the recorded server from a later process that reused the number, so
+    a live process that is not a Python or Strata executable is a reused number: the child is gone (#3488)."""
+    started = child.get("started") if type(child.get("started")) is int else None
+    if not _pid_exists(child["pid"], started):
+        return False
+    if WINDOWS and started is None:
+        image = winproc.process_image(child["pid"])
+        if image is not None:
+            name = os.path.basename(image).lower()
+            if "python" not in name and "strata" not in name:
+                return False
+    return True
+
+
 def _host_lease_active(name: str) -> bool:
     path, _, _ = _paths(name)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -291,10 +307,9 @@ def _recover_stale(name: str, *, wait: float) -> bool:
                 child.get("phase") != "owned" or type(child.get("pid")) is not int or child["pid"] <= 0:
             raise ProfileError("lost host child launch is unverified; inspect before recovery", 6)
         deadline = time.monotonic() + min(45.0, max(5.0, wait))
-        started = child.get("started") if type(child.get("started")) is int else None
-        while _pid_exists(child["pid"], started) and time.monotonic() < deadline:
+        while _child_present(child) and time.monotonic() < deadline:
             time.sleep(0.1)
-        if _pid_exists(child["pid"], started):
+        if _child_present(child):
             raise ProfileError("lost host child is still present; retry after it exits", 6)
         if not isinstance(child.get("ready"), str):
             raise ProfileError("lost host ready path is invalid; inspect before recovery", 6)
@@ -715,6 +730,9 @@ class Host:
             payload.update(pid=pid, ready=str(ready))
             if WINDOWS:
                 started = winproc.process_started(pid)
+                if started is None:
+                    time.sleep(0.05)
+                    started = winproc.process_started(pid)     # one more try: the child may not be queryable yet
                 if started is not None:
                     payload["started"] = started   # tells this process from a later one with the same number
         profiles._atomic(_child_marker(self.name, self.token), (json.dumps(payload) + "\n").encode())

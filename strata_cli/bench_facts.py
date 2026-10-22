@@ -166,7 +166,8 @@ def nvidia_gpus() -> tuple[list[dict], str | None, str | None]:
                       "memory_kind": "dedicated", "power_limit_w": watts, "driver": part[4]})
     cuda = None
     if cards:
-        match = re.search(r"CUDA Version:\s*([\d.]+)", run_cmd(["nvidia-smi"]))
+        # driver 615 prints "CUDA UMD Version: 13.4" where older drivers print "CUDA Version: 13.0"
+        match = re.search(r"CUDA (?:UMD )?Version:\s*([\d.]+)", run_cmd(["nvidia-smi"]))
         cuda = match.group(1) if match else None
     return cards, (cards[0]["driver"] if cards else None), cuda
 
@@ -200,6 +201,24 @@ def other_gpus() -> tuple[list[dict], str | None]:
     return cards, driver
 
 
+def lsblk_disk(data: dict) -> list[dict] | None:
+    """The first physical disk in `lsblk -J -s` output. `-s` lists the parents of a device as nested children: an LVM volume
+    is lvm -> partition -> disk, two levels down, so the walk goes all the way down."""
+    def disks(item):
+        if item.get("type") == "disk":
+            yield item
+        for child in item.get("children") or []:
+            yield from disks(child)
+
+    for device in data.get("blockdevices") or []:
+        for item in disks(device):
+            rotational = str(item.get("rota")).lower() in ("1", "true")
+            bus = str(item.get("tran") or "unknown").lower()
+            return [{"kind": "hdd" if rotational else ("nvme" if bus == "nvme" else "ssd"),
+                     "model": str(item.get("model") or "unknown").strip(), "bus": bus}]
+    return None
+
+
 def storage_of(path: Path | None) -> list[dict] | None:
     """The drive that holds `path`: [{kind, model, bus}], or None when it cannot be told."""
     if path is None:
@@ -229,14 +248,7 @@ def storage_of(path: Path | None) -> list[dict] | None:
             data = json.loads(run_cmd(["lsblk", "-J", "-s", "-o", "NAME,TYPE,ROTA,MODEL,TRAN", source]))
         except ValueError:
             return None
-        for device in data.get("blockdevices") or []:
-            chain = [device, *(device.get("children") or [])]
-            for item in chain:
-                if item.get("type") == "disk":
-                    rotational = str(item.get("rota")).lower() in ("1", "true")
-                    bus = str(item.get("tran") or "unknown").lower()
-                    return [{"kind": "hdd" if rotational else ("nvme" if bus == "nvme" else "ssd"),
-                             "model": str(item.get("model") or "unknown").strip(), "bus": bus}]
+        return lsblk_disk(data)
     return None
 
 
@@ -328,10 +340,29 @@ def git_commit(folder: Path = ROOT) -> str | None:
     return text if HEX40.match(text) else None
 
 
-def software(why: Why, machine: dict, *, engine_version: str | None, build_options: list[str] | None) -> dict:
+def engine_build_runtime(exe: str | None) -> dict | None:
+    """The GPU runtime a release engine was built with, from its engine-component.json (build_id "a7bdbfdabc9a+cuda12.9"):
+    {"name": "cuda", "version": "12.9"}. None for a source build or an engine without that file."""
+    if not exe:
+        return None
+    try:
+        record = json.loads((Path(exe).parent / "engine-component.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    match = re.search(r"\+(cuda|rocm|hip|sycl)([\d.]+)\Z", str(record.get("build_id") or "")) if isinstance(record, dict) else None
+    return {"name": "rocm" if match.group(1) == "hip" else match.group(1), "version": match.group(2)} if match else None
+
+
+def software(why: Why, machine: dict, *, engine_version: str | None, build_options: list[str] | None,
+             engine_build: dict | None = None) -> dict:
     commit = git_commit()
     runtime = []
-    if machine.get("cuda"):
+    if engine_build:
+        # the library the engine runs on; nvidia-smi's "CUDA Version" is only the newest one the driver supports
+        runtime.append(engine_build)
+        if machine.get("cuda") and engine_build["name"] == "cuda":
+            runtime.append({"name": "cuda-driver-supports", "version": machine["cuda"]})
+    elif machine.get("cuda"):
         runtime.append({"name": "cuda", "version": machine["cuda"]})
     if sys.platform == "darwin":
         runtime.append({"name": "metal", "version": platform.mac_ver()[0] or platform.release()})

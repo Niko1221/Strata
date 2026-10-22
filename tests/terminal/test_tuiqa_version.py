@@ -1,4 +1,4 @@
-"""The Terminal tells people the app's version (0.2.1), and its README no longer contradicts itself."""
+"""The Terminal tells people the app's version (0.2.2), and its README no longer contradicts itself."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class ProductVersion(unittest.TestCase):
 
 class Readme(unittest.TestCase):
     def readme(self, target: str) -> str:
-        return package_terminal._readme("0.2.1", target)
+        return package_terminal._readme("0.2.2", target)
 
     def test_it_does_not_say_nothing_downloads_and_then_that_launch_fetches(self):
         text = " ".join(self.readme("windows-x86_64").split())

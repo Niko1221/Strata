@@ -395,7 +395,7 @@ export class TurnProjector {
   }
 
   /** The terminal frames for a finished turn. */
-  finish({ model, contextMax } = {}) {
+  finish({ model, contextMax, engine = null } = {}) {
     const reason = this.ended ?? { kind: 'interrupted' };
     const durationMs = Date.now() - this.startedAt;
     const usage = this.usageSeen
@@ -403,8 +403,15 @@ export class TurnProjector {
       : { tokensIn: null, tokensOut: null, usageSource: 'unavailable' };
     const decoded = this.decode();
     const generated = this.usageSeen && this.tokensOut > 0 ? this.tokensOut : decoded.tokens;
-    const tps = decoded.seconds >= 0.3 && generated > 0 ? Number((generated / decoded.seconds).toFixed(1)) : null;
-    const base = { durationMs, ttftMs: this.firstTokenAt ? this.firstTokenAt - this.startedAt : null, model, contextMax, tps, contextTokens: this.contextTokens };
+    // Answer speed, one definition everywhere: all the tokens the model produced over its decode time. The engine's own figures (the ones the
+    // Monitor shows) when the bridge could read them; otherwise the stream's own span. A very short reply has almost no span, so its decode time
+    // is then the time from its first chunk to the end of the turn (only when no tool ran, so no tool time is in it): the number is still shown.
+    let tps = null;
+    if (engine?.tps > 0) tps = engine.tps;
+    else if (generated > 0 && decoded.seconds >= 0.3) tps = Number((generated / decoded.seconds).toFixed(1));
+    else if (generated > 0 && this.tools.size === 0 && this.firstTokenAt && Date.now() - this.firstTokenAt >= 50) tps = Number((generated / ((Date.now() - this.firstTokenAt) / 1000)).toFixed(1));
+    const promptTps = engine?.promptTps > 0 ? engine.promptTps : null;
+    const base = { durationMs, ttftMs: this.firstTokenAt ? this.firstTokenAt - this.startedAt : null, model, contextMax, tps, ...(promptTps ? { promptTps } : {}), contextTokens: this.contextTokens };
     switch (reason.kind) {
       case 'completed':
         return [{ type: 'done', ...base, ...usage, finishReason: 'stop' }];
