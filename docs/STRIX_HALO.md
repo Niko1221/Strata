@@ -140,6 +140,25 @@ It rounds differently from the int8 kernels. First-token KL against a run with n
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
 
+## 5b. The desktop, the RAM, and a discrete card beside the Strix Halo (Linux)
+
+The Strix Halo chip usually draws your desktop, and its graphics memory is your RAM. Two things follow, and the engine now takes both into account.
+
+- **One memory, counted once.** The expert cache of an integrated GPU lives in the same RAM as the expert arena. The automatic cache size is the smaller of
+  what the GPU reports free and what the OS reports available, less a reserve for the desktop (the larger of 8 GiB and 8% of the RAM; the start-up line says so
+  when it changes the size). `STRATA_UMA_RESERVE_GIB=N` sets the reserve (`0` = the old sizing, nothing kept back); `--expert-cache N` is never changed.
+- **A card of its own beside the chip** (for example a Radeon AI PRO R9700). A card of its own is the recommended Main card and the chip stays Off in the card roles.
+  If you name the chip in a layer split anyway (`--gpus 0,1`, or the config's `"gpu": [0, 1]`), the split runs as asked, the chip is placed on the first layers and
+  never on the last stage (the output head, the draft layer and the check of its guesses), the picture reader is started on the card of its own, and the
+  start prints one plain line about it. `"gpu_order": "as_given"` and a manual `layer_split` keep your order. `setup --gpus all` leaves the chip out
+  when two cards of their own are present; name it by number to use it.
+- **The CPU.** On Linux with built-in Radeon graphics the engine starts at nice +5, so the desktop keeps its share of the CPU while the engine's workers spin.
+  `STRATA_ENGINE_NICE=0` turns it off, `STRATA_ENGINE_NICE=N` sets another value.
+
+What is not known yet: how much of the screen freeze a long compute job on the same chip causes, and whether registering the whole expert arena with the driver
+(the Linux default on gfx1151; Windows uses the unregistered arena since 0.2.1.2) hurts when the GTT is small. `STRATA_ARENA_PIN_GIB=none` runs the unregistered
+arena on any OS; reports with `amdgpu_top` and `dmesg` are welcome.
+
 ## 6. Measured
 
 Ryzen AI Max+ 395 (128 GB, gfx1151), the maintainers' fast configuration of section 5 on top of the defaults of section 4, `--spec 4`,

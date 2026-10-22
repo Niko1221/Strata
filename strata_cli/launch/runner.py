@@ -206,38 +206,82 @@ def apply_choices(cfg: dict, s: S.LaunchSettings) -> dict:
     return cfg
 
 
-def apply_cards(cfg: dict, gpus: list[int] | None) -> None:
+def apply_cards(cfg: dict, gpus: "list[int] | dict | None") -> None:
     """The graphics cards of THIS launch go into its run config, whatever card the model was installed with (no reinstall): one card is a number,
-    several are a list with the automatic layer split. None: the installed config's own choice stays."""
+    several are a list with the automatic layer split. None: the installed config's own choice stays.  A dict is the roles of every card
+    (strata_control/gpu_roles.mirror: "gpu_roles" plus the legacy "gpu" with the Main card last)."""
+    if isinstance(gpus, dict):
+        for k in ("gpu", "gpu_order", "gpu_none", "gpu_roles", "gpu_cards"):
+            cfg.pop(k, None)
+        cfg.update(gpus)
+        cfg["gpus_asked"] = True
+        cfg.pop("hip_ordinal", None)
+        on = gpus.get("gpu")
+        if isinstance(on, list) and len(on) > 1:
+            cfg["layer_split"] = cfg.get("layer_split") or "auto"
+        else:
+            cfg.pop("layer_split", None)
+        return
     if not gpus:
         return
+    for k in ("gpu_roles", "gpu_cards", "gpu_none"):          # a plain card list replaces an earlier roles choice
+        cfg.pop(k, None)
     gpus = [int(g) for g in gpus]
     cfg["gpu"] = gpus[0] if len(gpus) == 1 else gpus
     cfg["gpus_asked"] = True
+    cfg.pop("hip_ordinal", None)                             # an old AMD config's ordinal of ITS card would win over the card named now
     if len(gpus) > 1:
         cfg["layer_split"] = cfg.get("layer_split") or "auto"
     else:
         cfg.pop("layer_split", None)
 
 
-def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None) -> list[int] | None:
-    """The cards this launch uses: the ones named (--gpu / --gpus, the Cards step), else the recommended ones by the shared fit rule
-    (strata_control/gpu_fit.py) when the computer has more than one card that counts, else None (one card: the installed config's own)."""
+def installed_cards(base: dict | None) -> list[int] | None:
+    """The cards the installed model's own config names after a choice (setup --gpu / --gpus, the app's card pick: "gpus_asked"), in its order;
+    None when it names none or was never asked."""
+    if not isinstance(base, dict) or not (base.get("gpus_asked") or base.get("gpu_roles")):
+        return None
+    g = base.get("gpu")
+    if g is None or g == "":
+        return None
+    try:
+        cards = [int(str(x).strip()) for x in (g if isinstance(g, (list, tuple)) else str(g).split(",")) if str(x).strip() != ""]
+    except ValueError:
+        return None
+    return cards or None
+
+
+def cards_for_launch(s: S.LaunchSettings, catalog, ram_gb: float | None = None, base: dict | None = None) -> "list[int] | dict | None":
+    """The cards this launch uses: the ones named (--gpu / --gpus, the Cards step), else the cards the installed config was set to (a person's
+    earlier choice, "gpu": 1 or [1, 0] - never replaced by the automatic pick, which would put the first of equal cards back), else the
+    recommended ones by the shared fit rule (strata_control/gpu_fit.py) when the computer has more than one card that counts, else None."""
+    if s.gpu_roles:
+        try:
+            from strata_control import gpu_roles
+            comp = catalog.computer()
+            cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+            named = {int(k): v for k, v in s.gpu_roles.items()}
+            roles = gpu_roles.normalize({int(c.get("index", 0)): named.get(int(c.get("index", 0)), "off") for c in cards}, cards)
+            return gpu_roles.mirror(roles, cards)
+        except Exception:                                    # noqa: BLE001 - never block a launch over the choice of cards
+            return None
     if s.gpus:
         return [int(g) for g in s.gpus]
+    if installed_cards(base) or (isinstance(base, dict) and base.get("gpu_roles")):
+        return None
     try:
-        from strata_control import gpu_fit
+        from strata_control import gpu_roles
         comp = catalog.computer()
         if len(comp.usable_gpus) < 2:
             return None
-        row = next((r for r in catalog.rows() if (r.family, r.model) == (s.family, s.model)), None)
-        mem = float(row.memory_gb) if row is not None and row.memory_gb else 44.0
-        return gpu_fit.recommended_cards(mem, comp.ram_gb, comp.gpus, comp.engine_vendor) or None
+        cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        rec = gpu_roles.recommend(cards, comp.engine_vendor)["roles"]
+        return gpu_roles.order(rec, cards) or None
     except Exception:                                        # noqa: BLE001 - never block a launch over the choice of cards
         return None
 
 
-def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str], log: str | None = None, gpus: list[int] | None = None) -> dict:
+def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str], log: str | None = None, gpus: "list[int] | dict | None" = None) -> dict:
     """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced)."""
     from strata_control import tune_knobs
     cfg = json.loads(json.dumps(base))
@@ -559,7 +603,9 @@ class Runner:
         if s.model_path:
             p = Path(s.model_path)
             args += ["--gguf-dir", str(p if p.is_dir() else p.parent)]
-        if s.gpus:
+        if s.gpu_roles:
+            args += ["--gpu-roles", ",".join(f"{k}={v}" for k, v in sorted(s.gpu_roles.items(), key=lambda kv: int(kv[0])))]
+        elif s.gpus:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
@@ -796,7 +842,8 @@ class Runner:
             backend = None
         cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
                                    context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
-                                   log=cat.root / f"strata-{tag}.log", backend=backend)
+                                   log=cat.root / f"strata-{tag}.log", backend=backend,
+                                   vram_gb=float(cat.computer().main_vram_gb or 0), notes=self.notices)
         if cfg is None:
             raise LaunchError("The installer cannot set up this graphics card yet, and the files Strata would need to write the settings itself are not all there: "
                               + "; ".join(problems) + ".",
@@ -854,7 +901,7 @@ class Runner:
         from strata_control import tune_knobs
         base = read_config(base_path)
         cfg = derive_config(base, self.s, bool_flags=tune_knobs.BOOL_FLAGS,
-                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog))
+                            log=str(launch_dir() / f"{self.name}.engine.log"), gpus=cards_for_launch(self.s, self.catalog, base=base))
         out = launch_dir() / f"{self.name}.json"
         write_private(out, cfg)
         self.config_path = out

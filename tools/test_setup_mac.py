@@ -346,6 +346,36 @@ class ControlMode(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_setup(argv=("--yes", "--no-start", "--model", "UD-Q4_K_XL"))
 
+    def test_gyro_is_offered_on_a_mac_as_one_file_with_a_compat_bf16_pack(self):
+        fam = setup.FAMILIES["gyro"]
+        g = self.models / setup.model_file(fam, "Gyro-S", 1)
+        g.write_bytes(b"x")
+        g.with_name(g.name + ".done").write_text("whole")
+        rc, ran = self.run_setup(argv=("--yes", "--no-start", "--family", "gyro", "--model", "Gyro-S", "--context", "8192"))
+        self.assertEqual(rc, 0)
+        cfg = self.config("gyro-gyro-s")
+        args = cfg["args"]
+        self.assertEqual(args[args.index("--native") + 1], str(g), "the one file is the model")
+        self.assertEqual(args[args.index("--ple-gguf") + 1], str(g), "... and holds its n-gram table")
+        self.assertEqual(cfg["backend"], "metal")
+        self.assertEqual(cfg["env"], {"STRATA_METAL_STREAM": "1"}, "29.7 GB of weights stream on a 32 GB Mac")
+        self.assertNotIn("--mtp", args)
+        self.assertTrue(ran[0][1].endswith("iq_pack.py"))
+        self.assertIn("--compat-bf16", ran[0], "Gyro's pack converts the small Q6_K / Q5_K tensors (docs/GYRO.md)")
+        self.assertEqual(cfg["tokenizer"], str(self.data / "packs" / "gyro-gyro-s" / "tokenizer"))
+
+    def test_gyro_m_on_a_small_mac_is_a_warning_not_a_refusal(self):
+        fam = setup.FAMILIES["gyro"]
+        g = self.models / setup.model_file(fam, "Gyro-M", 1)
+        g.write_bytes(b"x")
+        g.with_name(g.name + ".done").write_text("whole")
+        rc, _ = self.run_setup(argv=("--yes", "--no-start", "--family", "gyro", "--model", "Gyro-M", "--context", "8192"))
+        self.assertEqual(rc, 0)
+        said = " ".join(self.warnings)
+        self.assertIn("Gyro-M", said)
+        self.assertIn("stream from the SSD", said)
+        self.assertIn("not been measured on a Mac", said)
+
     def test_other_platforms_and_the_terminal_still_use_their_own_setup(self):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
         self.assertIn('if sys.platform == "darwin" and not CONTROL:', src)

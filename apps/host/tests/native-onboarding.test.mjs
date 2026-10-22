@@ -164,3 +164,12 @@ test('download-and-load prepares vision automatically while loading text only wh
   assert.deepEqual(JSON.parse(readFileSync(join(f.repo,'strata-iq2_xs.json'))).vision,{gpu:0});
  }finally{await f.cleanup();}
 });
+
+test('a card that shares the PC memory does not hold back a fifth of the shared pool as graphics memory (#3510)',()=>{
+ const original={gpu:0,args:['--max-context','131072','--pool-workers','10'],vision:{gpu:0}};
+ const shared={cpu:{cores:16},ram_gb:128,gpus:[{index:0,vram_gb:82,uma:true,name:'AMD Radeon 8060S'}]};
+ const apu=resourceSettings(original,shared,'work');
+ assert.equal(apu.vram_reserve_mib,2048,'the display floor with pictures, not 20% of 82 GB (16 GB)');
+ const discrete=resourceSettings(original,{cpu:{cores:16},ram_gb:128,gpus:[{index:0,vram_gb:82,name:'a card'}]},'work');
+ assert.equal(discrete.vram_reserve_mib,Math.floor(82*1024*.2),'a card with its own memory keeps its fifth');
+});

@@ -352,7 +352,7 @@ class Main(Base):
         """#967: images are allowed with UD-Q4_K_XL (tested end to end since MODEL-UPDATE)."""
         code, out, cfg = self.main(["--context", "8192", "--vision", "yes", "--low-ram", "on"], n_gpus=2)
         self.assertEqual(code, 0, out)
-        self.assertIn("(NVIDIA GeForce RTX 5070, 12 GB) only (--gpus 0,1 shares it across", out)
+        self.assertIn("(NVIDIA GeForce RTX 5070, 12 GB) only (--gpus 1,0 shares it across", out)
         self.assertNotIn("images are not available", out)
         self.assertIn("images: on", out)
         self.assertNotIn("are untested", out)                      # MODEL-UPDATE: run end to end (CUDA, HIP)
@@ -385,8 +385,7 @@ class Main(Base):
         self.assertAlmostEqual(need, setup.MODELS[M]["download_gb"] + setup.UNSLOTH_RAM_LEFT_GB)
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8)       # no --gpus: stays on one GPU
         self.assertEqual(code, 0, out)
-        self.assertNotIn("uses them together anyway", out)                      # one card + RAM is the default now: nothing to warn about
-        self.assertNotIn("layer_split", cfg)
+        self.assertNotIn("layer_split", cfg)                                    # the model cannot share its RAM budget: one card (the Main one)
         self.assertEqual(cfg["args"][cfg["args"].index("--resident-budget-gib") + 1], "71")   # all of them
         code, out, cfg = self.main(["--context", "8192", "--gpus", "0,1"], n_gpus=2, ram=127.8)   # asked for by name
         self.assertEqual(code, 0, out)
@@ -434,15 +433,14 @@ class Main(Base):
             self.assertIn("--resident-budget-gib", cfg["args"])
             code, out, cfg = self.main(["--context", "8192"], n_gpus=2, answers={"which GPUs?": "2"})
             self.assertEqual(code, 0, out)
-            self.assertEqual(cfg["gpu"], [0, 1])
+            self.assertEqual(cfg["gpu"], [1, 0])
             self.assertIn("--resident-budget-gib", cfg["args"])
 
     @budget_mode()
     def test_yes_alone_keeps_one_gpu(self):
         code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=165.0)
         self.assertEqual(code, 0, out)
-        self.assertIn("layer split", out)                                       # the second card is offered as a split
-        self.assertIn("(recommended)", out)
+        self.assertIn("Main: GPU 1", out)                                       # the roles are shown; the model keeps to one card
         self.assertNotIn("layer_split", cfg)
         self.assertIn("--resident-budget-gib", cfg["args"])
 
@@ -644,10 +642,10 @@ class LayerSplit(unittest.TestCase):
         argv = ["--family", "unsloth", "--model", M, "--context", "32768", "--no-start"]
         code, out, cfg, asked = install(165.0, self.found, argv, answers={"which GPUs?": "1", "Which GPUs?": "1"})
         self.assertEqual(code, 0, out)
-        self.assertTrue(any("Which GPUs? [1]" in q for q in asked), asked)     # the fit rule's question: the largest card + RAM is the default
+        self.assertTrue(any("Use these roles? [y]" in q for q in asked), asked)     # the roles question; the model's own question follows
         self.assertEqual(cfg["gpu"], 0)
         self.assertIn("--resident-budget-gib", cfg["args"])
-        code, out, cfg, asked = install(165.0, self.found, argv, answers={"Which GPUs?": "2", f"{M}: which GPUs?": "2"})
+        code, out, cfg, asked = install(165.0, self.found, argv, answers={f"{M}: which GPUs?": "2"})
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], [0, 1])
         self.assertEqual(cfg["layer_split"], "auto")
@@ -806,9 +804,9 @@ class Resident(Base):
 
     def test_two_gpus_split_with_every_expert_in_ram(self):
         """Where the experts fit, two cards are the GGUF models' layer split (no budget question, no #498 note)."""
-        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8, answers={"Which GPUs?": "2"})     # the split chosen
+        code, out, cfg = self.main(["--context", "8192"], n_gpus=2, ram=127.8, answers={"Use these roles?": "y"})     # the recommended roles
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["gpu"], [0, 1])
+        self.assertEqual(cfg["gpu"], [1, 0])
         self.assertEqual(cfg["layer_split"], "auto")
         self.assertNotIn("--resident-budget-gib", cfg["args"])
         self.assertNotIn("which GPUs?", out)

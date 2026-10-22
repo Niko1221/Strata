@@ -387,6 +387,11 @@ class Catalog:
                 rec = min(rec, int(mod.ram_ctx(model, hw["ram_gb"], False)))
             except Exception:                                  # noqa: BLE001
                 pass
+        if usable:                                             # 0.2.2: a model a few hundred MiB short on this card gets the next context down
+            from strata_control import vram_fit
+            best = max(usable, key=lambda g: float(g.get("vram_gb") or 0))
+            rec = vram_fit.fit_context(f"{family} {model}", float(best.get("vram_gb") or 0), rec, "int8", 300,
+                                       str(best.get("vendor") or ""))
         return rec
 
     # ---- pictures

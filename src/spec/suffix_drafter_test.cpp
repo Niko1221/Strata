@@ -128,6 +128,54 @@ void unit_tests() {
         check(d.propose(3, out) == 0, "propose after propose_after");
         check(d.propose_after(nullptr, 0, 3, out) == d.propose(3, out), "propose_after with no drafts == propose");
     }
+    {   // randomized soundness (run under ASan/UBSan in CI-like builds): small vocabularies repeat a lot, tiny tables fill up,
+        // propose_after is interleaved; every proposal must be a real earlier continuation of the matched suffix
+        uint64_t rng = 0x243F6A8885A308D3ull;
+        auto next = [&rng] { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; };
+        long proposals = 0, bad = 0;
+        for (int round = 0; round < 300; ++round) {
+            const int vocab = 2 + (int) (next() % 6), min_m = 3 + (int) (next() % 3);
+            const size_t cap = 8 + (size_t) (next() % 200);   // often far below the history: the table fills
+            SuffixDrafter d(min_m, 4 + (int) (next() % 40), cap);
+            std::vector<int32_t> hist;
+            for (int step = 0; step < 400; ++step) {
+                const int burst = 1 + (int) (next() % 3);
+                for (int b = 0; b < burst; ++b) {
+                    const int32_t t = hist.size() > 8 && (next() % 3) == 0 ? hist[hist.size() - 1 - (size_t) (next() % 8)]
+                                                                           : (int32_t) (next() % (uint64_t) vocab);
+                    hist.push_back(t);
+                    d.append(t);
+                }
+                const int max_k = 1 + (int) (next() % 8);
+                int32_t out[16] = {};
+                int32_t extra[3] = {};
+                const int n_extra = (int) (next() % 4);
+                for (int e = 0; e < n_extra; ++e) extra[e] = (int32_t) (next() % (uint64_t) vocab);
+                const int k = n_extra > 0 && (next() % 2) ? d.propose_after(extra, n_extra, max_k, out) : d.propose(max_k, out);
+                if (k < 0 || k > max_k) { ++bad; continue; }
+                if (d.size() != hist.size()) { ++bad; continue; }
+                if (k == 0) continue;
+                ++proposals;
+                const int m = d.last_match();
+                if (m < min_m) { ++bad; continue; }
+                // the same query through propose() on the history (no extra tokens) must agree with the invariant too
+                bool found = false;
+                for (size_t p = 0; p + 1 < hist.size() + (size_t) n_extra && !found; ++p) {
+                    // candidate continuation hist[p+1 ..] after a suffix of length m that ends at p
+                    bool match = true;
+                    for (int t = 0; t < k && match; ++t) {
+                        const size_t at = p + 1 + (size_t) t;
+                        const int32_t v = at < hist.size() ? hist[at] : (at - hist.size() < (size_t) n_extra ? extra[at - hist.size()] : -1);
+                        match = v == out[t];
+                    }
+                    found = match;
+                }
+                if (!found) ++bad;
+            }
+        }
+        check(bad == 0, "randomized proposals are real continuations within bounds");
+        check(proposals > 1000, "randomized test exercised proposals");
+    }
     std::printf("suffix_drafter unit tests: %s\n", g_fail ? "FAILED" : "OK");
 }
 }  // namespace

@@ -70,6 +70,7 @@ from strata_control import hipblaslt_tuning  # noqa: E402
 from strata_control import vision_reader  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
 from strata_control import user_args  # noqa: E402
+from strata_control import gpu_roles  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
@@ -1013,6 +1014,12 @@ class StrataEngine:
         pin = {}
         if cpus and hasattr(os, "sched_setaffinity"):    # replicas: this engine's own physical cores (serve/replicas.py)
             pin["preexec_fn"] = lambda: os.sched_setaffinity(0, cpus)
+        nice = engine_nice(env)                          # Linux with built-in Radeon graphics: the desktop keeps its share of the CPU
+        if nice:
+            say_nice = pin.get("preexec_fn")
+            pin["preexec_fn"] = lambda: (say_nice() if say_nice else None, os.nice(nice))[0]
+            print(f"[strata] engine priority: nice +{nice} (this PC has built-in Radeon graphics that usually draw the desktop; "
+                  "STRATA_ENGINE_NICE=0 turns it off)", flush=True)
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         spawned_at = time.monotonic()
         try:
@@ -2812,11 +2819,48 @@ class Vision:
 def gpu_list(cfg: dict) -> list[int]:
     """The config's "gpu": one card (2), or several for a layer split ([0, 2] or "0,2"), numbered as nvidia-smi
     numbers them; [] when it names none."""
-    g = cfg.get("gpu")
+    roles, _ = gpu_roles.saved_roles(cfg)       # "gpu_roles" (Main / Helper / Off per card) wins unless "gpu" was edited by hand
+    if roles is not None:
+        legacy = _gpu_numbers(cfg.get("gpu"))
+        return legacy if legacy else gpu_roles.engine_order(roles)     # Main LAST; Off cards left out; [] when every card is Off
+    return _gpu_numbers(cfg.get("gpu"))
+
+
+def _gpu_numbers(g) -> list[int]:
     if g is None or g == "":
         return []
     items = g if isinstance(g, (list, tuple)) else str(g).split(",")
     return [int(str(x).strip()) for x in items if str(x).strip() != ""]
+
+
+def gpu_roles_active(cfg: dict) -> bool:
+    """True when the run settings carry usable "gpu_roles": the card order is the person's (Main last), never re-sorted by speed."""
+    return gpu_roles.saved_roles(cfg)[0] is not None
+
+
+def gpu_all_off(cfg: dict) -> bool:
+    """Every card is set to Off ("gpu_roles" with no card on, or "gpu_none": true)."""
+    roles, _ = gpu_roles.saved_roles(cfg)
+    return roles is not None and not any(r != "off" for r in roles.values())
+
+
+def card_roles_lines(cfg: dict) -> list[str]:
+    """The plain lines printed at start: the roles (cards numbered as nvidia-smi numbers them), a hand-edited "gpu" that beat them, and the
+    all-Off case.  SystemExit when every card is Off and the engine cannot start without one (the CUDA, HIP and SYCL engines)."""
+    roles, problem = gpu_roles.saved_roles(cfg)
+    out = [f"[strata] {problem}"] if problem else []
+    if roles is None:
+        return out
+    if gpu_all_off(cfg):
+        if cfg.get("backend") in ("cpu", "metal") or sys.platform == "darwin":
+            out.append("[strata] every graphics card is Off: " + gpu_roles.CPU_ONLY_LINE)
+            return out
+        raise SystemExit("[strata] every graphics card is set to Off, and this engine cannot start without one. Turn a card on "
+                         "(Main or Helper) in the app or with strata launch --gpu-roles.")
+    word = {"main": "Main", "helper": "Helper", "off": "Off"}
+    out.append("[strata] card roles: " + ", ".join(f"{word[r]} GPU {i}" for r in ("main", "helper", "off")
+                                                    for i in sorted(roles) if roles[i] == r) + " (numbers as nvidia-smi gives them)")
+    return out
 
 
 def engine_binary(exe: str, cfg: dict | None = None) -> str:
@@ -2948,6 +2992,7 @@ def engine_args(cfg: dict) -> list[str]:
         if isinstance(seg, int) and not isinstance(seg, bool) and seg > 0 and "--vram-segment-mib" not in args:
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
+    args += pool_cores_args(cfg, args)
     return learned_profile_args(cfg, args)
 
 
@@ -2973,6 +3018,32 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
         print(f'[strata] "parallel": {n} - the engine runs at most {PARALLEL_MAX} requests together; it will use '
               f"{PARALLEL_MAX}", flush=True)
     return ["--batch", str(n)]
+
+
+_POOL_CORES_OK = re.compile(r"^[0-9]+(-[0-9]+(:[0-9]+)?)?(,[0-9]+(-[0-9]+(:[0-9]+)?)?)*$")
+
+
+def pool_cores_args(cfg: dict, args: list[str]) -> list[str]:
+    """Experimental, off by default: "pool_cores": "0,2,4,6" (or "2-14:2", or a list of numbers) in the config pins the CPU
+    expert workers to exactly those logical processors (--pool-cores; docs/DETAILS.md, "Which logical processors the CPU
+    workers use").  The engine warns about two entries on one core or the host's own and leaves out processors the process may
+    not use; a text this cannot read is said here and ignored (recommend, never force).  An engine option already in the args wins."""
+    value = cfg.get("pool_cores")
+    if value is None or value is False or value == "" or value == []:
+        return []
+    if "--pool-cores" in args:
+        return []
+    if isinstance(value, list) and value and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in value):
+        text = ",".join(str(v) for v in value)
+    elif isinstance(value, str):
+        text = value.replace(" ", "")
+    else:
+        text = ""
+    if not _POOL_CORES_OK.match(text):
+        print(f'[strata] "pool_cores" must be logical processor numbers like "0,2,4,6" or "2-14:2", not {value!r}: ignored '
+              "(the CPU workers keep their default placement)", flush=True)
+        return []
+    return ["--pool-cores", text]
 
 
 def profile_shape(path: str) -> tuple[int, int] | None:
@@ -3080,6 +3151,47 @@ def hip_speed_scores(indices: list[int], root: str = "/sys/class/kfd/kfd/topolog
     return got if all(i in got for i in indices) else None
 
 
+def engine_nice(env: dict | None = None, archs: dict[int, str] | None = None, platform: str | None = None) -> int:
+    """Linux only: the nice value the engine starts with.  The engine's CPU pool spins at 100% on every physical core but one and its host
+    thread on another; with the desktop drawn by a built-in Radeon (HIP_IGPU_ARCHS: Strix Halo and the other APUs) the compositor then
+    competes with them for the CPU, which reads as a frozen screen.  +5 gives the desktop its share and costs nothing when nothing else
+    runs.  STRATA_ENGINE_NICE=N sets it (0 = off, also for any PC without such a chip).  Not on Windows / macOS."""
+    if not (platform or sys.platform).startswith("linux"):
+        return 0
+    asked = (env or os.environ).get("STRATA_ENGINE_NICE")
+    if asked is not None and str(asked).strip() != "":
+        try:
+            return max(0, min(19, int(str(asked).strip())))
+        except ValueError:
+            return 0
+    ar = archs if archs is not None else hip_gpu_archs()
+    return 5 if ar and any(a in HIP_IGPU_ARCHS for a in ar.values()) else 0
+
+
+def hip_gpu_archs(root: str = "/sys/class/kfd/kfd/topology/nodes") -> dict[int, str] | None:
+    """AMD on Linux: {HIP ordinal: "gfx1151"} from the KFD topology (GPU nodes in node order, as hip_speed_scores and setup number them).
+    None when the files are not there (Windows, no ROCm driver)."""
+    try:
+        nodes = sorted(int(n) for n in os.listdir(root) if n.isdigit())
+    except OSError:
+        return None
+    out: dict[int, str] = {}
+    for n in nodes:
+        try:
+            props = dict(line.split() for line in open(os.path.join(root, str(n), "properties")) if len(line.split()) == 2)
+            ver, simd = int(props.get("gfx_target_version", 0)), int(props.get("simd_count", 0))
+        except (OSError, ValueError):
+            continue
+        if simd > 0 and ver > 0:
+            out[len(out)] = f"gfx{ver // 10000}{(ver // 100) % 100:x}{ver % 100:x}"
+    return out or None
+
+
+def igpu_cards(indices: list[int], archs: dict[int, str] | None) -> set[int]:
+    """The cards of `indices` that are integrated (their memory is the system RAM, and they usually draw the desktop)."""
+    return {i for i in indices if archs and archs.get(i) in HIP_IGPU_ARCHS}
+
+
 def gpu_vram_mib(indices: list[int], hip: bool = False) -> dict[int, int] | None:
     """Total VRAM of each card in MiB (NVML / amdgpu sysfs); None when any of them cannot be read."""
     try:
@@ -3098,7 +3210,7 @@ def gpu_vram_mib(indices: list[int], hip: bool = False) -> dict[int, int] | None
     return out
 
 
-def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
+def ordered_gpus(cfg: dict, scores=None, vrams=None, archs=None) -> list[int]:
     """#1352: the cards of a layer split in the order the engine stages them.  With "layer_split": "auto" (the
     default) the faster card goes LAST - the last stage runs the head, the draft layer and the verify, and a prompt
     chunk waits on it (the reporter's 4070 Ti SUPER + 5060 Ti: a 6K prompt took 50 s one way round and 15 s the
@@ -3109,12 +3221,30 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
     draft and verify have a floor the smaller card cannot afford.  scores/vrams: {index: value} (tests); None asks
     the driver - injected scores without injected vrams means no VRAM check (a test seam is a test seam)."""
     gl = gpu_list(cfg)
-    if len(gl) < 2 or cfg.get("gpu_order") == "as_given":
+    if len(gl) < 2 or cfg.get("gpu_order") == "as_given" or gpu_roles_active(cfg):
         return gl
     args = cfg.get("args") or []
     if "--peer-device" in args or "--layer-split" in args or layer_split_value(cfg) != "auto":
         return gl
     hip = cfg.get("backend") == "hip"
+    if hip:
+        # An integrated Radeon (Strix Halo beside an R9700) is never the LAST stage: that stage runs the head, the draft layer and the
+        # check of the guesses, and the iGPU usually draws the desktop.  Its "VRAM" is the BIOS carve-out (up to 96 GB), which made the
+        # #1576 memory guard below keep it last.  It goes first, the cards with memory of their own follow in speed order.
+        # archs: {index: "gfx1151"} (tests); None asks the KFD topology, unless scores were injected (a test seam).
+        ar = archs if archs is not None else (hip_gpu_archs() if scores is None else None)
+        ig = igpu_cards(gl, ar)
+        if ig and len(ig) < len(gl):
+            sc0 = scores if scores is not None else hip_speed_scores(gl)
+            rest = [i for i in gl if i not in ig]
+            if sc0 and all(i in sc0 for i in rest):
+                rest = sorted(rest, key=lambda i: sc0[i]) if max(sc0[i] for i in rest) >= 1.05 * min(sc0[i] for i in rest) else rest
+            out = [i for i in gl if i in ig] + rest
+            if out != gl:
+                print(f"[strata] layer split: card order {','.join(map(str, out))} (GPU {','.join(str(i) for i in sorted(ig))} is built-in "
+                      f"graphics: it takes the first layers, never the last stage; \"gpu_order\": \"as_given\" keeps {','.join(map(str, gl))})",
+                      flush=True)
+            return out
     sc = scores if scores is not None else (hip_speed_scores(gl) if hip else gpu_speed_scores(gl))
     if not sc or any(i not in sc for i in gl):
         return gl
@@ -3189,7 +3319,7 @@ def hip_auto_devices(cfg: dict, env: dict) -> list[int] | None:
     """HIP_VISIBLE_DEVICES for a start that names no card (see pick_hip_devices), asked of the engine package's own `strata-device`.
     None leaves everything as it was: a card the config or the environment names, no probe next to the engine, or a probe that fails.
     SystemExit with the plain line when no card of this computer can run."""
-    if cfg.get("backend") != "hip" or gpu_list(cfg) or str(cfg.get("hip_ordinal") if cfg.get("hip_ordinal") is not None else "").strip() \
+    if cfg.get("backend") != "hip" or gpu_list(cfg) or gpu_all_off(cfg) or str(cfg.get("hip_ordinal") if cfg.get("hip_ordinal") is not None else "").strip() \
             or env.get("HIP_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES"):
         return None
     exe = cfg.get("exe")
@@ -3220,7 +3350,10 @@ def child_env(cfg: dict, *, offline: bool = False) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
-    if hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (hip_visible)
+    if gpu_all_off(cfg):                             # every card Off: the engine sees none (a CPU engine runs; the others say so at start)
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        env["HIP_VISIBLE_DEVICES"] = ""
+    elif hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (hip_visible)
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"      # own default order (fastest first) can number the cards otherwise
@@ -3293,11 +3426,65 @@ def hip_env_guard(env: dict, cfg: dict) -> list[str]:
     return said
 
 
-def vision_env(cfg: dict, env: dict) -> dict:
+def igpu_split_warning(cfg: dict, archs: dict[int, str] | None = None) -> str | None:
+    """A plain line when the layers are split over built-in Radeon graphics AND a card with memory of its own.  A recommendation, not a
+    refusal: the split runs as asked.  The iGPU's memory is the RAM, it usually draws the desktop, and compute on it can freeze the screen."""
+    if cfg.get("backend") != "hip":
+        return None
+    gl = gpu_list(cfg)
+    if len(gl) < 2:
+        return None
+    ar = archs if archs is not None else hip_gpu_archs()
+    ig = igpu_cards(gl, ar)
+    if not ig or len(ig) == len(gl):
+        return None
+    return ("[strata] note: GPU " + ", ".join(str(i) for i in sorted(ig)) + " is built-in graphics (its memory is the system RAM, and it "
+            "usually draws the desktop). Running part of the model on it can freeze the screen and uses RAM twice; the cards with memory of "
+            "their own are faster alone (docs/STRIX_HALO.md). Turn it Off in the card roles, or name only the other card, to leave it out")
+
+
+def card_note(cfg: dict, env: dict) -> str | None:
+    """One plain line that ties the engine's own numbering to the person's: the engine counts the cards it is given from 0 ("GPU 0",
+    "CUDA0" in its log), so a person who chose GPU 1 would read "GPU 0" and think the choice was lost.  Said only when the two differ
+    (NVIDIA, numbered as nvidia-smi numbers them); None otherwise."""
+    if cfg.get("backend") == "hip" or not gpu_list(cfg):
+        return None
+    mine = [x.strip() for x in str((env or {}).get("CUDA_VISIBLE_DEVICES", "")).split(",") if x.strip() != ""]
+    if not mine or mine == [str(i) for i in range(len(mine))]:
+        return None
+    names = [f"CUDA{i}" for i in range(len(mine))]
+    if len(mine) == 1:
+        return f"[strata] running on GPU {mine[0]} (as nvidia-smi numbers it); the engine's log calls it GPU 0 / CUDA0"
+    return (f"[strata] cards in stage order: GPU {', then GPU '.join(mine)} (as nvidia-smi numbers them); the engine's log calls them "
+            f"{', '.join(names)} - the first runs the first layers and the picture reader, the last runs the head and the draft layer")
+
+
+def vision_card_off_igpu(env: dict, archs: dict[int, str] | None = None) -> int | None:
+    """AMD: the picture reader is a separate program that sees the engine's HIP_VISIBLE_DEVICES and runs on the FIRST visible card.  With a
+    layer split that starts on a built-in Radeon (Strix Halo beside an R9700) that is the iGPU: the card that draws the desktop and whose
+    memory is the RAM the experts live in.  Returns the HIP ordinal of the last visible card with memory of its own (the Main stage), or
+    None when nothing needs changing (one card, no integrated chip among them, or the topology is unknown)."""
+    vis = [x.strip() for x in str(env.get("HIP_VISIBLE_DEVICES") or "").split(",") if x.strip().isdigit()]
+    if len(vis) < 2:
+        return None
+    idx = [int(x) for x in vis]
+    ar = archs if archs is not None else hip_gpu_archs()
+    ig = igpu_cards(idx, ar)
+    own = [i for i in idx if i not in ig and ar and i in ar]
+    if not ig or not own:
+        return None
+    print(f"[strata] the picture reader runs on GPU {own[-1]}, not on the built-in graphics (GPU {','.join(str(i) for i in sorted(ig))}) "
+          "that draws the desktop; \"vision\": {\"cuda_device\": N} chooses another card", flush=True)
+    return own[-1]
+
+
+def vision_env(cfg: dict, env: dict, archs: dict[int, str] | None = None) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
     keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
     dev = (cfg.get("vision") or {}).get("cuda_device")
+    if dev is None and cfg.get("backend") == "hip":
+        dev = vision_card_off_igpu(env, archs)
     if dev is None:
         return env
     env = dict(env)
@@ -4671,7 +4858,7 @@ class Service:
             done = f"{pr[0]:,} of {pr[1]:,}" if pr and pr[1] else f"{s.get('prompt_tokens', 0):,}"   # as read (#29)
             print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
         else:
-            rate = s["generated"] / max(1e-6, now - s["first_token"])
+            rate = s["generated"] / max(RATE_MIN_SPAN_S, now - s["first_token"])
             # #984: while a thinking budget applies, the thinking line shows it, not the request's max_tokens
             limit = (f"budget {s['thinking_budget']} (max {s.get('max_tokens')})"
                      if s["phase"] == "thinking" and s.get("thinking_budget") else f"max {s.get('max_tokens')}")
@@ -4679,18 +4866,20 @@ class Service:
                   f"{el:.0f} s", flush=True)
         return now
 
-    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
+            declared_only=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only)
         finally:
             if ka is not None:
                 ka.release()
 
-    def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None) -> Iterator[tuple[str, object]]:
+    def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
+             declared_only=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
@@ -4718,7 +4907,8 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
+                              declared_only=declared_only)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -5147,11 +5337,12 @@ class Service:
                             now = time.time()
                             el = now - st.get("started", now)
                             ft = st.get("first_token")
-                            rate = n / max(1e-6, now - ft) if ft else 0.0
+                            rate = answer_speed(last, n, now - ft if ft else None)
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
-                            print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
+                            rate_txt = f"{rate:.1f} tok/s" if rate is not None else "no speed"
+                            print(f"[strata] done: {n} tokens in {el:.0f} s ({rate_txt}) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
@@ -5199,6 +5390,10 @@ class Service:
             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
                   f"reasoning (quoted, or the turn did not end on a stop)", flush=True)
+        if parser.unread:
+            print(f"[strata] {parser.unread} <tool_call> block(s) in the answer did not read as a call of a declared "
+                  "tool and went back as text (a name the request did not declare, or a form the template does "
+                  "not use)", flush=True)
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
@@ -5239,6 +5434,20 @@ def add_carry(carry: dict, last: dict) -> dict:
     if "prompt_read" in carry:
         out["prompt_read"] = carry["prompt_read"]
     return out
+
+
+def answer_speed(last: dict, generated: int, wall_s: float | None = None) -> float | None:
+    """The one definition of "answer speed": every token the model produced (thinking and answer, the tokens it kept - not
+    the MTP drafts it threw away) over the decode time, first generated token to last.  The engine's DONE line holds both
+    numbers; /metrics (`decode_tok_s`), the timings (`predicted_per_second`), the Terminal monitor and the app all use them.
+    Only an engine that sent no DONE falls back to the server's own clock from the first token, and a clock younger than
+    RATE_MIN_SPAN_S says nothing (it printed 1000000 tok/s for a one-token reply).  Prompt reading is never in it."""
+    produced, decode_ms = last.get("generated"), last.get("decode_ms")
+    if produced and decode_ms and decode_ms > 0:
+        return round(produced / (decode_ms / 1000), 1)
+    if generated and wall_s is not None and wall_s >= RATE_MIN_SPAN_S:
+        return round(generated / wall_s, 1)
+    return None
 
 
 def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | None:
@@ -5313,7 +5522,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     messages = list(messages)
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
-        for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
+        for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel, declared_only=True):
             if kind == "done":
                 done = x
                 continue
@@ -5434,7 +5643,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
-    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force):
+    for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         if kind == "ping":
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
@@ -5560,7 +5769,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
     streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
-    for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force):
+    for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
         if kind == "ping":
             yield None
             continue
@@ -7923,6 +8132,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             pretty = ", ".join(f"{k}={v}" for k, v in sampling_defaults.items())
             print(f"[strata] sampling defaults from the config: {pretty}", flush=True)
         lazy = a.lazy or cfg.get("lazy_load") is True
+        for line in card_roles_lines(cfg):             # the card roles: said first; every card Off stops here, before anything touches a card
+            print(line, flush=True)
         if cfg.get("vision"):
             elastic = cfg["vision"].get("elastic") is True and cfg.get("vram_elastic") is True
             print("the vision encoder starts with the first picture (elastic) ..." if elastic else
@@ -7943,6 +8154,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print("model unloaded; the first request loads it ..." if lazy else
               "loading the model (the first start takes a minute or two) ...", flush=True)
         warn_budget_over_ram(engine_args(cfg) if "args" in cfg else [])      # #1080
+        note = card_note(cfg, env)
+        if note:
+            print(note, flush=True)
+        igpu_line = igpu_split_warning(cfg)
+        if igpu_line:
+            print(igpu_line, flush=True)
         if layer_split_of(cfg):
             try:
                 split = layer_split_value(cfg)          # #644: before the (minutes-long) start

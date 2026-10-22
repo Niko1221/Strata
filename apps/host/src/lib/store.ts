@@ -1731,6 +1731,7 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             ...m,
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : m.tokens,
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
+            promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,
           }));
         } else if (type === 'error') {
           clearStatus(sessionId);
@@ -1752,7 +1753,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             inputTokens: typeof frame.tokensIn === 'number' ? frame.tokensIn : undefined,
             contextUsed: typeof frame.contextTokens === 'number' ? frame.contextTokens : undefined,
             usageSource: frame.usageSource === 'reported' || frame.usageSource === 'demo' ? frame.usageSource : 'unavailable',
-            tps: typeof frame.tps === 'number' ? frame.tps : undefined,
+            tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
+            promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,
           }));
         }
       },

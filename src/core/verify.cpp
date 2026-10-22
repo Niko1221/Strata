@@ -269,6 +269,26 @@ bool sh_stream_on() {
     return on;
 }
 
+// 0.2.2: the zero-doorbell window graph has one host wait, the PLE flag (layer 1's wait kernel spins until the host has read
+// the window's PLE rows).  Raised after the launch returns, it can deadlock HIP on the very first launch of a graph: the
+// stall report of a hung first window (gfx1151, 910-token prompt, about 1 run in 6) shows the host inside hipGraphLaunch
+// waiting for a runtime lock while the runtime's worker waits for the GPU, which is spinning on this flag; the raise that
+// would free it sits behind the launch.  So the first launch of each window graph reads the rows and raises the flag BEFORE
+// the launch (the wait then passes at once); later launches keep the order that overlaps the read with layer 0 (reading
+// first costs about 1.4% decode on gfx1151).  Mode 0: never, 1: every launch, 2: the first launch of each graph.  Default:
+// 2 on HIP, 0 elsewhere (the CUDA path is unchanged).  STRATA_VERIFY_EARLY_PLE_FLAG=0 / 1 / 2 forces a mode.
+int early_ple_flag_mode() {
+    static const int mode = [] {
+        if (const char* v = std::getenv("STRATA_VERIFY_EARLY_PLE_FLAG")) return std::atoi(v) < 0 ? 0 : std::min(2, std::atoi(v));
+#if defined(STRATA_USE_HIP)
+        return 2;
+#else
+        return 0;
+#endif
+    }();
+    return mode;
+}
+
 // A one-token window always keeps its token, so its graph advances the sequence state itself (the GDN conv history
 // and recurrence state) and Verifier::commit launches no commit graph after it (eddoursul's fork, F7).  CUDA only:
 // HIP keeps the commit graph after every window (STRATA_ONE_TOKEN_COMMIT=0 does too).
@@ -2732,6 +2752,20 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     std::optional<HostGraphLaunch> launch_o;   // (not set when the previous stage launched this window already)
 #endif
+    const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
+    bool flag_raised = false;   // the PLE flag went up before the launch (early_ple_flag_mode)
+    bool& graph_launched = ar_off_ ? launched_nr_[T] : launched_[T];
+    if (!pre && ar_on() && !test_stall && (early_ple_flag_mode() == 1 || (early_ple_flag_mode() == 2 && !graph_launched))) {
+        if (do_ple) {
+            const Clock::time_point tp = Clock::now();
+            if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            _mm_sfence();
+            ms_host += ms_since(tp);
+        }
+        *(volatile uint32_t*) h_flag_ = 1;
+        flag_raised = true;
+    }
     if (!pre) {
         if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -2756,6 +2790,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[T] : exec_[T], cs_);
 #endif
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
+        graph_launched = true;
         if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
         (void) launch_o->query();
@@ -2793,9 +2828,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const int G = groups_[T] > 0 ? groups_[T] : 1;
     const int gtb[2] = {0, (T + 1) / 2}, gte[2] = {G == 2 ? (T + 1) / 2 : T, T};
     const int64_t steps = (le_ - lb_) * G;
-    const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
     if (ar_on() && !test_stall) {
-        if (do_ple) {
+        if (flag_raised) {
+            // up before the launch (early_ple_flag_mode)
+        } else if (do_ple) {
             const Clock::time_point tp = Clock::now();
             if (!ss.ple.table->gather_batch(ple_rows, (size_t) T, h_ple_, err)) return false;
             std::atomic_thread_fence(std::memory_order_seq_cst);

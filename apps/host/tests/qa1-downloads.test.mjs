@@ -166,7 +166,7 @@ test('no recognised engine: the app still downloads, warns in the card, and load
 
 test('the draft layer download of setup step 6 is a stage of its own and counts in the one figure (#3257)', () => {
   lib.setTranslationLanguage('en');
-  const draft = { parts: [{ kind: 'model', name: 'Model files', state: 'done', done_gb: 60, total_gb: 60 }, { kind: 'draft', name: 'Speed-up layer', state: 'downloading', done_gb: 2, total_gb: 5 }] };
+  const draft = { parts: [{ kind: 'model', name: 'Model files', state: 'done', done_gb: 60, total_gb: 60 }, { kind: 'draft', name: 'Draft layer', state: 'downloading', done_gb: 2, total_gb: 5 }] };
   assert.deepEqual(lib.installStage(draft), { kind: 'draft' });
   assert.equal(lib.stageText(lib.installStage(draft)), 'Preparing your model…');
   const p = lib.installProgress(draft);

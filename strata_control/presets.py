@@ -508,14 +508,19 @@ def record_trials(trials: list[dict[str, Any]], *, hw_hash: str, model_digest: s
 
 
 def bad_signatures(*, hw_hash: str, model_digest: str | None, engine_sha: str | None) -> set[str]:
-    """Candidates that did not start on this PC with this engine and model before (UNSUPPORTED or OOM): never retried."""
+    """Candidates that did not start on this PC with this engine and model before (UNSUPPORTED or OOM): never retried.
+    A candidate that also has a PASS row for the same command here is not listed: one busy-card failure after it
+    worked must not switch it off for good (#3502)."""
     bad: set[str] = set()
+    passed: set[str] = set()
     try:
         for line in history_path().read_text(encoding="utf-8").splitlines():
             r = json.loads(line)
-            if r.get("hw") == hw_hash and r.get("model") == model_digest and r.get("engine") == engine_sha and \
-                    r.get("status") in ("UNSUPPORTED", "OOM"):
-                bad.add(r.get("label") or "")
+            if r.get("hw") == hw_hash and r.get("model") == model_digest and r.get("engine") == engine_sha:
+                if r.get("status") in ("UNSUPPORTED", "OOM"):
+                    bad.add(r.get("label") or "")
+                elif r.get("status") == "PASS":
+                    passed.add(r.get("label") or "")
     except (OSError, ValueError):
         pass
-    return bad
+    return bad - passed

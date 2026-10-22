@@ -53,7 +53,7 @@ def find_shards(folder: Path) -> list[Path]:
 
 
 def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path, context: int, kv: str | None, model_name: str, family_def: dict,
-         log: Path, backend: str | None) -> tuple[dict | None, list[str]]:
+         log: Path, backend: str | None, vram_gb: float = 0.0, notes: list | None = None) -> tuple[dict | None, list[str]]:
     """(config, problems): the config to write, or None with plain-words problems (what is missing)."""
     problems: list[str] = []
     if family not in FAMILIES:
@@ -89,6 +89,16 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
             # an Intel Arc, as sycl/setup_intel.py writes it: an A-series card on i915 loads the experts into a RAM arena and the CPU computes the misses
             # (--ple-io ram); every other Arc (xe: the B70) streams the experts from the GGUF into VRAM (--stream-experts); both keep a VRAM reserve
             reserve = "1024" if context <= 32768 else "2048"
+            if vram_gb:                                  # 0.2.2: a card a few hundred MiB short gets a smaller context / reserve (vram_fit)
+                from strata_control import vram_fit
+                fr = vram_fit.plan(model, vram_gb, context, kv or "int8", int(reserve), "auto", "intel", title=model, ctx_fixed=True)   # the context was settled by max_context or the person
+                if fr.changed:
+                    args[args.index("--max-context") + 1] = str(fr.ctx)
+                    reserve = str(fr.reserve_mib)
+                    if fr.prefill:
+                        args[args.index("--prefill") + 1] = fr.prefill
+                    if notes is not None:
+                        notes.append(fr.line)
             if intel_driver() == "i915":
                 args += ["--ple-io", "ram", "--vram-reserve-mib", reserve]
             else:

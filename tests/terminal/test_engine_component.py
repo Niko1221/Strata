@@ -323,6 +323,44 @@ class WrongCardFamily(unittest.TestCase):
             self.assertEqual(ec.resolve(self.root, backend="hip", runtime="1").backend, "hip")
 
 
+class Rx6000Package(unittest.TestCase):
+    """0.2.2: the RX 6000 package (gfx1030 / gfx1031) is the one an RX 6000 card finds, and no other card family finds it."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.dir.name)
+        self.addCleanup(self.dir.cleanup)
+
+    def kfd(self, *versions):
+        nodes = Path(self.dir.name) / "kfd"
+        for i, ver in enumerate(versions):
+            node = nodes / str(i)
+            node.mkdir(parents=True)
+            (node / "properties").write_text(f"cpu_cores_count 0{chr(10)}simd_count 80{chr(10)}gfx_target_version {ver}{chr(10)}", encoding="utf-8")
+        return str(nodes)
+
+    def test_the_kfd_topology_names_rdna2_cards(self):
+        self.assertEqual(ec.hip_archs_present(self.kfd(100300, 100301, 110000, 120001)), ["gfx1030", "gfx1031", "gfx1100", "gfx1201"])
+
+    def test_an_rx6000_card_finds_the_rx6000_package_and_an_rx7000_card_does_not(self):
+        make_package(self.root, backend="hip", archs=("gfx1030", "gfx1031"))
+        with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1030"]):
+            self.assertEqual(ec.resolve(self.root, backend="hip", runtime="1").hip_archs, ("gfx1030", "gfx1031"))
+            self.assertIsNone(ec.status(self.root, backend="hip")["notice"])
+        with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1100"]):
+            with self.assertRaises(ec.EngineMissing) as caught:
+                ec.resolve(self.root, backend="hip", runtime="1")
+        self.assertTrue(str(caught.exception).startswith("This build of Strata is for AMD RX 6000 cards."), str(caught.exception))
+        self.assertIn("Ask for the RX 7000 build.", str(caught.exception))
+
+    def test_the_rx9000_package_on_an_rx6000_card_names_a_build_that_exists(self):
+        make_package(self.root, backend="hip", archs=("gfx1200", "gfx1201"))
+        with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1030"]):
+            with self.assertRaises(ec.EngineMissing) as caught:
+                ec.resolve(self.root, backend="hip", runtime="1")
+        self.assertIn("Ask for the RX 6000 build.", str(caught.exception))
+
+
 class NeverAcquires(unittest.TestCase):
     """The lookup, the status report and the CLI work with the network and process creation unavailable."""
 
