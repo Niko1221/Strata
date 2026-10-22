@@ -267,6 +267,8 @@ void DFlashDrafter::release() {
     reference_mode_ = false;
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
+    // Also cover partial execution failures before the normal joins.
+    for (auto stream : projection_streams_) if (stream) cudaStreamSynchronize(stream);
     df_timing_drain();
     df_timing_dump();
     for (auto e : df_timing().ev) cudaEventDestroy(e);
@@ -301,6 +303,16 @@ void DFlashDrafter::release() {
     if (h_out_) cudaFreeHost(h_out_);
     if (h_tok_) cudaFreeHost(h_tok_);
     delete owned_head_; owned_head_ = nullptr;
+    for (auto& stream : projection_streams_) {
+        if (stream) cudaStreamDestroy(stream);
+        stream = nullptr;
+    }
+    for (auto& event : projection_done_) {
+        if (event) cudaEventDestroy(event);
+        event = nullptr;
+    }
+    if (projection_ready_) cudaEventDestroy(projection_ready_);
+    projection_ready_ = nullptr;
     if (cs_) cudaStreamDestroy(cs_);
     w_ = nullptr; wf_.clear(); wt_.clear(); quant_types_.clear();
     proj_float_ = nullptr; proj_q8_ = nullptr;
@@ -357,6 +369,19 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
 
     // any failure past this point leaves a partially-built drafter: release() takes it back
     auto bail = [&](const std::string& why) { release(); err = why; return false; };
+#ifdef STRATA_ENABLE_DFLASH2
+    const char* parallel = std::getenv("STRATA_DFLASH2_PARALLEL_PROJECTIONS");
+    if (dg.is_dflash2() && parallel && parallel[0] == '1') {
+        if (cudaEventCreateWithFlags(&projection_ready_, cudaEventDisableTiming) != cudaSuccess)
+            return bail("dflash2: cannot create projection fork event");
+        for (int i = 0; i < 2; ++i) {
+            if (cudaStreamCreateWithFlags(&projection_streams_[i], cudaStreamNonBlocking) != cudaSuccess ||
+                cudaEventCreateWithFlags(&projection_done_[i], cudaEventDisableTiming) != cudaSuccess)
+                return bail("dflash2: cannot create projection branch");
+        }
+    }
+#endif
+
 
     // ---- the weights: one aligned device block, the packed GGUF layout preserved.
     // Earlier phases may have left a sticky error in the per-thread state: start clean.
@@ -1028,6 +1053,30 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         cudaMemcpyAsync(input, conv_result_, (size_t) K * N * 4, cudaMemcpyDeviceToDevice, cs_);
     };
 #endif
+    // Reference, tensor dumps and section timing retain the serial path. The
+    // setting is fixed at upload, so captured graphs cannot change stream layout.
+    const bool parallel_projections = dg.is_dflash2() && projection_streams_[0] &&
+        !reference && !parity_dir_[0] && !std::getenv("STRATA_DF_DBG") && !df_timing().on;
+    auto projection_fork = [&](int branches) {
+        if (!parallel_projections) return true;
+        if (cudaEventRecord(projection_ready_, cs_) != cudaSuccess) {
+            err = "dflash2: projection fork failed"; return false;
+        }
+        for (int i = 0; i < branches; ++i)
+            if (cudaStreamWaitEvent(projection_streams_[i], projection_ready_, 0) != cudaSuccess) {
+                err = "dflash2: projection branch wait failed"; return false;
+            }
+        return true;
+    };
+    auto projection_join = [&](int branches) {
+        if (!parallel_projections) return true;
+        for (int i = 0; i < branches; ++i)
+            if (cudaEventRecord(projection_done_[i], projection_streams_[i]) != cudaSuccess ||
+                cudaStreamWaitEvent(cs_, projection_done_[i], 0) != cudaSuccess) {
+                err = "dflash2: projection join failed"; return false;
+            }
+        return true;
+    };
     auto forward = [&]() -> bool {
         for (int64_t l = 0; l < dg.layers; ++l) {
             const std::string pre = "layers." + std::to_string(l);
@@ -1047,6 +1096,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
             }
             prepare_projection(xn16_, (int) N, K, cs_);   // Q/K/V reuse one Q8_1 activation
+            if (!projection_fork(2)) return false;
             {
                 {
                     DFlashSection section("L*.q_proj");
@@ -1054,13 +1104,14 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 }
                 {
                     DFlashSection section("L*.k_proj");
-                    project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, cs_, true);
+                    project(xn16_, wp((pre + ".self_attn.k_proj").c_str()), kc_, N, KVW, K, parallel_projections ? projection_streams_[0] : cs_, true);
                 }
                 {
                     DFlashSection section("L*.v_proj");
-                    project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, cs_, true);
+                    project(xn16_, wp((pre + ".self_attn.v_proj").c_str()), vc_, N, KVW, K, parallel_projections ? projection_streams_[1] : cs_, true);
                 }
             }
+            if (!projection_join(2)) return false;
             // per-head q/k norms, then rope (q rows: NH heads at [pos..pos+K); append uses true cells)
             if (parity_want(cycle_)) {
                 char name[32];
@@ -1197,6 +1248,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 f32_to_bf16_bulk(xn_, xn16_, (int64_t) K * N, cs_);
             }
             prepare_projection(xn16_, (int) N, K, cs_);   // gate/up share one Q8_1 activation
+            if (!projection_fork(1)) return false;
             {
                 {
                     DFlashSection section("L*.gate_proj");
@@ -1204,10 +1256,11 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 }
                 {
                     DFlashSection section("L*.up_proj");
-                    project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, cs_, true);
+                    project(xn16_, wp((pre + ".mlp.up_proj").c_str()), up_, N, I, K, parallel_projections ? projection_streams_[0] : cs_, true);
                 }
             }
             {
+                if (!projection_join(1)) return false;
                 DFlashSection s("L*.swiglu");
                 swiglu_inplace(gate_, up_, K * I, cs_);
                 f32_to_bf16_bulk(gate_, xn16_, (int64_t) K * I, cs_);

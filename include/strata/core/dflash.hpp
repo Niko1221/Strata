@@ -214,6 +214,11 @@ public:
 
 private:
     cudaStream_t cs_ = nullptr;
+    // Optional DFlash2 projection branches. Shared activation scratch is read-only
+    // between the fork and join; every consumer/overwrite stays on cs_ after join.
+    std::array<cudaStream_t, 2> projection_streams_{};
+    cudaEvent_t projection_ready_ = nullptr;
+    std::array<cudaEvent_t, 2> projection_done_{};
     std::array<cudaGraphExec_t, 18> graph_exec_{};
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;

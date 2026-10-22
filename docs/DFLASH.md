@@ -75,6 +75,13 @@ vocabulary. The engine-only experiments are separate from setup's DFlash2 weight
 Experimental DFlash2 execution options are off by default. They do not change the
 checkpoint, target model or shared head:
 
+- `STRATA_DFLASH2_PARALLEL_PROJECTIONS=1` runs K/V alongside Q and up alongside
+  gate on two extra streams. It shares the prepared activation without copying
+  weights or allocating another activation buffer. Event dependencies join the
+  branches before their outputs are used or the activation is overwritten. Works
+  with query CUDA Graphs and direct launches. Reference mode, tensor dumps, debug
+  mode and section timing retain serial execution. Set it before starting the
+  engine; it affects DFlash2 only and does not alter the shared head.
 - `STRATA_DFLASH2_REGISTER_TOPK=1` keeps vocabulary tiles in registers during top-k.
 - `STRATA_DFLASH2_FUSED_CONV=1` combines each convolution with its BF16 conversion
   or residual addition. Tensor-dump diagnostics retain the separate operations.
