@@ -3459,6 +3459,36 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+#ifdef STRATA_EARLY_ARENA_BUILT
+    // Windows with CUDA, one GPU's plain arena (STRATA_EARLY_ARENA=0 turns it off): the expert arena is reserved,
+    // touched and registered on its own thread from here, and the experts are read into it while the dense weights, MTP
+    // and head load; open() below takes it.  Measured on an RTX 3090 with a PCIe 5 SSD reading 11.2 GiB/s: engine
+    // READY 11.10 -> 9.22 s (medians of 3 + 3), the same arena checksum.  The other loads share the drive with the
+    // expert read meanwhile (done at 6.5 s instead of 2.7 s here); the bytes read are the same, only their order
+    // changes.  It starts only with RAM for the arena plus the floor kept free (at least 8 GiB), else as before.
+    strata::core::ArenaExpertSource arena_src;
+    {
+        const char* ea = std::getenv("STRATA_EARLY_ARENA");
+        // (pin by need, the deferred registration and a multi-GPU run - a layer split or remote experts, capped at
+        // 8 GiB of pinned pages under WDDM below - make open() build another kind of arena: not started for them)
+        const char* pbn = std::getenv("STRATA_PIN_BY_NEED");
+        const char* dr = std::getenv("STRATA_DEFERRED_REGISTER");
+        if (!(ea && ea[0] == '0') && !o.mmap_experts && o.shared_expert_arena.empty() &&
+            strata::core::arena_pin_cap_gib() == -1 && o.expert_cache_remote[0] == 0 && !multi_gpu &&
+            !(pbn && pbn[0] != '\0' && pbn[0] != '0') && !(dr && dr[0] != '\0' && dr[0] != '0')) {
+            arena_src.set_gguf(o.native_preset);
+            const uint64_t headroom = (uint64_t) std::max<int64_t>(o.conversation_cache_min_free_mib, 8192) << 20;
+            // the pinned-memory headroom is taken before the arena pins, as open() takes it (a second take is a no-op)
+            strata::core::pin_reserve_take();
+            std::string why;
+            const bool started = arena_src.begin_early_load(o.pack, strata::kernels::cpu::expert_layout().n_layers,
+                                                            strata::kernels::cpu::expert_layout().n_expert,
+                                                            /*threads=*/6, why, headroom);
+            std::fprintf(stderr, "strata generate: STRATA_EARLY_ARENA: expert read %s%s\n",
+                         started ? "" : "not started: ", why.c_str());
+        }
+    }
+#endif
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
     // the arena are then today's, byte for byte)
     const int64_t slot_guard = native_pack ? (int64_t) strata::prefill::Prefill::slot_guard_bytes() : 0;
@@ -5605,7 +5635,11 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+#ifdef STRATA_EARLY_ARENA_BUILT
+    // (arena_src: declared before the dense weights' load, for STRATA_EARLY_ARENA)
+#else
     strata::core::ArenaExpertSource arena_src;
+#endif
     strata::core::ExpertSource* srcp = nullptr;
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
