@@ -23,6 +23,15 @@
 > 2. **This fork is also for the resource-light Terminal route**: anyone who only wants the lean serve/CLI on a headless
 >    server (no app, no chat UI) gets it from this same source, with the search built into the serve frontend.
 >
+> **Install via CLI** (this fork, branch `web-search`): clone and set up exactly as you would Strata from source, with
+> the search built in. The fork's own install guide (terminal / from source, and how to update) is in
+> [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md):
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
 > Bench results from an RTX 4080 SUPER / Ryzen 9 7950X3D are included in `bench/`.
 
 <p align="center">
