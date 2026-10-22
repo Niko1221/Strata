@@ -334,21 +334,27 @@ def orphans_of(engine_exe: str) -> list[Ident]:
     except psutil.Error:
         pass
     found = []
-    for p in psutil.process_iter(["pid", "ppid", "cmdline", "create_time"]):
+    # Only the command line while listing: on Windows psutil reads a process's parent and, when it may not open the
+    # process, its start time from a snapshot of the whole system, once per process - 6.2 s for 474 processes at every
+    # server start. Only a process that runs --serve from this executable is asked for them, below.
+    for p in psutil.process_iter(["cmdline"]):
         try:
             cmd = p.info.get("cmdline") or []
             if "--serve" not in cmd or p.pid in mine:
                 continue
             if not same_file(p.exe(), engine_exe):
                 continue
-            parent = p.info.get("ppid")
+            try:
+                parent = p.ppid()
+            except psutil.AccessDenied:
+                parent = None
             if parent in mine:
                 continue                              # started by this server (or by a process above it)
             if parent and parent != 1:
                 try:
                     q = psutil.Process(parent)
                     adopted = q.name().lower() in INIT_NAMES      # an init that adopts orphans did not start it
-                    if not adopted and q.create_time() <= p.info["create_time"] + 1.0                             and q.status() != psutil.STATUS_ZOMBIE:
+                    if not adopted and q.create_time() <= p.create_time() + 1.0                             and q.status() != psutil.STATUS_ZOMBIE:
                         continue                      # a live parent started it: not an orphan
                 except psutil.NoSuchProcess:
                     pass
