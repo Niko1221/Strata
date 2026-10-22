@@ -53,7 +53,7 @@
     "correctedStorageConnectedCards": 1,
     "nativeModelsFolderAndModelDirectoryPreserved": true,
     "nativeDownloadCount": "No downloaded models; 0.0 GB",
-    "exactPickerTitle": "Acceptance Local API · acceptance-local-model",
+    "exactPickerTitle": "Acceptance Local API \u00b7 acceptance-local-model",
     "currentModelUseInChatConfirmed": true,
     "manageModelsUseInChatConfirmed": true,
     "correctedStorageUseInChatConfirmed": true,
@@ -516,5 +516,115 @@
     300,
     600,
     1800
-  ]
+  ],
+  "followUp20261022": {
+    "date": "2026-10-22",
+    "traySource": "ff69390ecaeb6e130cbe1939d78c64d6fa60a81b",
+    "trayBinarySha256": "1d226b998942de822c5752caf74205266d0166da86a3b6dd40004f8fcb276e72",
+    "profile": "Acceptance Menu Model",
+    "physicalId": "acceptance-menu-model",
+    "apiPorts": [
+      18148,
+      18149
+    ],
+    "physicalMenu": {
+      "evidence": "User-supplied actual native menu screenshot; labels matched the owner snapshot",
+      "imageSha256": "92ac7026bf91b0e44db5bece90d9e750d7dead59059b0ba3ddc3eafd8518b817",
+      "humanAssisted": true,
+      "confirmedActions": {},
+      "ownerTransitions": [
+        {
+          "utc": "2026-10-22T04:17:08.279Z",
+          "sourceCaptured": "2026-10-22T04:17:07.506938+00:00",
+          "source": "owner-snapshot",
+          "phase": "ready",
+          "api": "available",
+          "model": "loaded",
+          "loaded": true,
+          "active": 0,
+          "busy": false,
+          "error": "",
+          "selected": {
+            "profile": "Acceptance Menu Model",
+            "context": 8192,
+            "idle": 0,
+            "auto": false
+          },
+          "effective": {
+            "profile": "Acceptance Menu Model",
+            "context": 8192,
+            "idle": 0,
+            "auto": false
+          },
+          "apiBaseUrl": "http://127.0.0.1:18148/v1"
+        }
+      ]
+    },
+    "openApp": {
+      "utc": "2026-10-22T04:22:48.4492562Z",
+      "appProcessId": 16504,
+      "appParentProcessId": 29212,
+      "hostProcessId": 2180,
+      "hostParentProcessId": 16504,
+      "officialExe": true,
+      "exeSha256": "b9da619d16885e4963fa56a6bd442d2890411db2d09d844c67f71e87af14bb05",
+      "version": "0.2.2",
+      "managedUrl": "http://127.0.0.1:18148/v1",
+      "context": 8192,
+      "modelId": "acceptance-menu-model",
+      "qaWebviewProcessCount": 6,
+      "healthy": true
+    },
+    "openAppScope": "Actual public Tray click, official App 0.2.2, clean isolated profile, no Extension preload; native picker remained empty",
+    "inheritedUrlOverride": "The Tray inherited an unused port19999; the child Host reported the managed18148 URL",
+    "defaultAgent": {
+      "pullRequest": "https://github.com/Niko1221/Strata/pull/3684",
+      "source": "2ee3fbe32aa3c27a0159fb837137231063b1a58b",
+      "path": "Independent shipped Host API/default Harness acceptance",
+      "variants": {
+        "baseline": {
+          "agent": true,
+          "demo": false,
+          "context": 8192,
+          "mode": "manual",
+          "thinking": {
+            "enable_thinking": true,
+            "reasoning_effort": "medium"
+          },
+          "wireMaxCompletionTokens": 1,
+          "messageCount": 5,
+          "toolCount": 26,
+          "messageChars": 3436,
+          "toolChars": 24071,
+          "promptTokens": 6540,
+          "completionTokens": 1,
+          "finishReason": "length",
+          "answer": "",
+          "emptyAnswerNotice": true
+        },
+        "candidate": {
+          "agent": true,
+          "demo": false,
+          "context": 8192,
+          "mode": "manual",
+          "thinking": {
+            "enable_thinking": true,
+            "reasoning_effort": "medium"
+          },
+          "wireMaxCompletionTokens": 104,
+          "messageCount": 5,
+          "toolCount": 26,
+          "messageChars": 3436,
+          "toolChars": 24071,
+          "promptTokens": 6540,
+          "completionTokens": 25,
+          "finishReason": "stop",
+          "answer": "OK",
+          "emptyAnswerNotice": false
+        }
+      },
+      "scope": "Staged candidate Harness copy only; installed components and portable runtime unchanged; short prompt only"
+    },
+    "cleanup": null
+  }
 }
