@@ -26,7 +26,7 @@ normally needs a server, on a normal PC. It chats, writes code, reads pictures a
 agents. Your chats and files stay on your PC.
 
 **New here?** Check [what you need](#what-you-need), then [install the app](#option-a-the-strata-app).
-**On a Mac?** The app's `.dmg`, or [download the source](https://github.com/OakRoller/Strata_Metal/archive/refs/heads/main.zip)
+**On a Mac?** The app's `.dmg`, or [download the source](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip)
 and double-click `START-HERE.command`: it builds the Mac engine, downloads the model and starts it ([Mac](docs/MAC.md)).
 
 - **Runs on a gaming PC.** 32 GB of RAM and graphics memory together is enough to start.

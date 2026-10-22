@@ -54,7 +54,7 @@ git clone https://github.com/Niko1221/Strata && cd Strata
 ./setup.sh                 # asks the size; --yes takes the recommended answers
 ```
 
-Without a terminal: [download the source](https://github.com/OakRoller/Strata_Metal/archive/refs/heads/main.zip), unzip it and
+Without a terminal: [download the source](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip), unzip it and
 double-click `START-HERE.command` in the folder. It opens a Terminal window and runs `./setup.sh` there; options go the same way
 (`SETUP.command` is `--setup`, `UPDATE.command` runs `./update.sh`, `BENCH.command` runs `./bench.sh`), and on an error the window
 stays open with the reason. The first time, macOS says a `.command` file from a downloaded zip "cannot be opened because it is

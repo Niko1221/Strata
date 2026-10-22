@@ -26,7 +26,7 @@ Strata 运行 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-N
 你的聊天记录和文件都留在你自己的电脑上。
 
 **第一次用？** 先看[硬件要求](#硬件要求)，再[安装应用](#方式-astrata-应用)。
-**用 Mac？** 装应用的 `.dmg`，或者[下载源码](https://github.com/OakRoller/Strata_Metal/archive/refs/heads/main.zip)后双击
+**用 Mac？** 装应用的 `.dmg`，或者[下载源码](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip)后双击
 `START-HERE.command`：它会在你的 Mac 上构建引擎、下载模型并启动（[Mac](docs/MAC.md)）。
 
 - **游戏电脑就能跑。** 内存和显存加起来有 32 GB 就可以开始。
