@@ -568,10 +568,18 @@ dequantize from those sums, so their outputs were garbage on the second row onwa
 exact. The sums now have their own binding; the solo window and the first row address them bit-identically to
 before, and `metal/tests/gdn_parity.cpp` checks the row-slice layout against the base-bound one.
 
-Still not measured here: the prompt-interleave steps of `tools/batch_interleave_test.py` on a Mac (it takes
-`--exe build-metal/strata --config <run config>` like the batch script). To try it on your own Mac:
-`tools/metal_batch_try.sh 2 2 128`; it refuses to run while another big server holds the memory (see the
-script's header).
+The prompt-interleave steps of `tools/batch_interleave_test.py` are measured on a Mac too (same machine,
+2026-10-23, `--exe build-metal/strata --config <run config>`): 126 slot tokens decoded while the 4888-token
+prompt C was being read in; the read that gave way at a chunk boundary (`YIELDED 2 1024`) went on in its slot
+identical to solo; a request stopped part-way in a slot came back identical on the solo path; a next turn
+read from its slot stayed identical; a prompt chunk cancelled mid-read re-read from its checkpoint
+(`1024 of 4890 read`, cancelled, then `1024 reused + 3866 read`). The harness's byte-identity gate missed
+three times - slots C, F and F2 at output tokens 32, 30 and 27, all slots that decoded part of their reply
+in the slot window (C while others still decoded, F and F2 alone in theirs) - the flips the drift above
+predicts; their texts are not yet shown to stay coherent, so the harness now prints both sides' decoded
+tokens at the first difference and a re-run settles it. To try it on your own Mac:
+`tools/metal_batch_try.sh 2 2 128` (add `--keys "temperature=0.7 seed=7"` for sampled rows); it refuses to
+run while another big server holds the memory (see the script's header).
 
 ## Testing
 
@@ -581,7 +589,7 @@ tests the server's side with a scripted engine (no GPU).
 | Script | What it checks |
 | --- | --- |
 | `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. On a Mac run it through `tools/metal_batch_try.sh` (which guards the box; it refuses while another big server holds the memory): its exit counts exact identity, which near-tie flips can miss on a quantized MoE without any wrongness in the answer (see the Metal section). |
-| `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. On a two-stage layer split with pipelined groups add `--batch 4 --batch-groups 2` to `--extra` (its 3 slots do not divide into two groups) and set `STRATA_PIPED_READ_PIECE`; run it without a conversation cache, or step 4 restores the prompt instead of reading it. |
+| `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens, and it prints both sides' decoded text at the first difference (on a Mac the identity gate can miss at near ties without any wrongness - see the Metal section). On a two-stage layer split with pipelined groups add `--batch 4 --batch-groups 2` to `--extra` (its 3 slots do not divide into two groups) and set `STRATA_PIPED_READ_PIECE`; run it without a conversation cache, or step 4 restores the prompt instead of reading it. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |
 
