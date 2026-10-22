@@ -12091,7 +12091,6 @@ int main(int argc, char** argv) {
             }
             const int64_t n = (int64_t) ids.size();
             req_imgs.clear();
-            req_allowed.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
                 // positions for every cell this request can reach; the identity again for a text request
