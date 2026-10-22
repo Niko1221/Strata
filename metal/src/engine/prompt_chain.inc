@@ -189,7 +189,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     int gi = 0, qi = 0;
     for (int l = 0; l < 48; ++l) {
         const std::string bl = "blk." + std::to_string(l) + ".";
-        hc_read(bl + "hc_attn", l > 0 && !(l == 1 && ple_on_));
+        hc_read(bl + "hc_attn", pend_write(l));
         if (l % 4 != 3) {
             dq(T(bl + "attn_qkv.weight"), b.Wqkv);
             dq(T(bl + "attn_gate.weight"), b.Wz);
@@ -340,6 +340,11 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
         const uint32_t oa[2] = {(uint32_t) nT, N};
         D(P_(b.lib, "moe_out"), {mtl::Arg::B(b.yr), mtl::Arg::B(b.ys), mtl::Arg::B(b.sgv), mtl::Arg::B(b.bo), mtl::Arg::V(oa)},
           (nT * N + 255) / 256, 1, 256);
+        if (cv_covers(l)) {
+            mtl::Dispatch d = cv_dispatch(b.R, b.bo, b.inj[cur_inj], l, nT);
+            mtl::require_fit(d, "prompt-chain dispatch");
+            ds.push_back(std::move(d));
+        }
         if (l == 0 && ple_on_) {
             // layer 0's FFN write applied to R, then the PLE block (as the window: msl/ple.metal over nT rows)
             GrArgs a{N, HC, LR, (uint32_t) nT, 1u, eps_};
@@ -367,7 +372,7 @@ bool Window::pc_chunk(const int64_t* tokens, int nT, int64_t pos0, std::string& 
     }
     // every row's final residual (the last write applied): the drafter's prompt rows
     {
-        GrArgs a{N, HC, LR, (uint32_t) nT, 1u, eps_};
+        GrArgs a{N, HC, LR, (uint32_t) nT, cv_covers(47) ? 0u : 1u, eps_};
         D(P_(b.lib, "gr_norm"), {mtl::Arg::B(b.R), mtl::Arg::B(b.bo), mtl::Arg::B(b.inj[cur_inj]),
                                 mtl::Arg::B(W_, T("output_hc_norm.weight").offset), mtl::Arg::B(b.xn), mtl::Arg::V(a)}, HC, nT, 256);
     }

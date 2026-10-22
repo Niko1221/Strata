@@ -608,9 +608,9 @@ class Runner:
         elif s.gpus:
             args += ["--gpus", ",".join(str(g) for g in s.gpus)] if len(s.gpus) > 1 else ["--gpu", str(s.gpus[0])]
         if sys.platform == "darwin":
-            # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
+            # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu)
             keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data",
-                    "--set-default-data-dir"}
+                    "--set-default-data-dir", "--experimental-speed-projection"}
             flags = ("--yes", "--no-start", "--move-data", "--set-default-data-dir")
             out, i = [], 0
             while i < len(args):

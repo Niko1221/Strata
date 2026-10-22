@@ -350,6 +350,9 @@ def main(argv=None) -> int:
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--update", action="store_true")
     ap.add_argument("--build", action="store_true", help="build the engine again even when it is current")
+    ap.add_argument("--experimental-speed-projection", metavar="on|off|GGUF",
+                    help="EXPERIMENTAL, off by default: the control vector in data/experimental-speed-projection "
+                         "(a refusal-direction projection; see its README), or another vector GGUF")
     ap.add_argument("--vision", choices=["yes", "no", "gpu", "cpu"],
                     help="let the model read images (the image encoder, built here; yes = gpu: it reads on the Mac's GPU, cpu is ~100x "
                          "slower; default: asked, yes)")
@@ -531,6 +534,9 @@ def main(argv=None) -> int:
     S.step(7, "writing the start script")
     port = a.port or 8080
     cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    esp = S.esp_choose(a.experimental_speed_projection, family, model, a.yes)   # asks when not given (default: off)
+    if esp is not None:
+        cfg["args"] += S.esp_engine_args(esp)
     cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
     if vision == "yes":
         cfg["args"] += ["--vision"]

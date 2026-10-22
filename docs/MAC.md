@@ -254,7 +254,15 @@ reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplie
   green triangle, the text "STRATA 42") was described correctly with both readers. Checked on one Mac only; the M5 Max is untested for pictures.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
-- **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
+- **Not ported:** the PC tuning (`--calibrate`).
+- **The control vector (`--control-vector-scaled`, the [experimental speed projection](DETAILS.md#experimental-speed-projection-experimental-off-by-default))**
+  runs on the Mac engine (`metal/src/engine/msl/cvec.metal`): after each steered layer's FFN write, in the decode window and both prompt
+  paths. `./setup.sh --experimental-speed-projection on` writes it (the app and `strata launch` take it as a hand-added option, kept
+  in `user_args`). `metal/tests/cvec_parity.cpp` checks the kernel against double (worst relative error 1.2e-7 on an M1 Max) and
+  that a request with the vector switched off writes bitwise what `gr_norm` writes. On an M1 Max, Q2_0: with the vector loaded and
+  switched off, 9 of 9 greedy answers (short, code, a 434-token and an 11,295-token prompt, five that the model refuses) were the
+  stock engine's, character for character; switched on, it answered all five it had refused. Decode and prompt speed were the same
+  within the run-to-run spread (27-33 tok/s decode, 190-280 tok/s on an 8.5K prompt, the vector on or off).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
 - **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
 - **The ready-made Mac engine is in the app and in the Terminal's engine component, not in the release zips.** The zips
