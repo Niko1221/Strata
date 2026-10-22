@@ -872,7 +872,7 @@ async function send() {
   for (const t of m.tools || []) if (t.state === "writing" || t.state === "running") { t.state = "skipped"; t.ms = null; }
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${ran} tool call${ran > 1 ? "s" : ""}`;
-  if (m.limit) m.meta = `${m.meta || ""} · stopped at the limit of ${m.limit} tool rounds (mcp.max_rounds)`;
+  if (m.limit) m.meta = `${m.meta || ""} · tool limit reached (${m.limit} rounds, mcp.max_rounds)`;
   busy = null;
   setBusy(false);
   if (frame) cancelAnimationFrame(frame);
