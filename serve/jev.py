@@ -481,6 +481,15 @@ def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
     return answers_from_calibrated(qdef["type"], pr, calib_id)
 
 
+def _hybrid_enabled() -> bool:
+    """M3.1 hybrid (pin + jevpos): per-field prompts (so nothing contaminates a later field and the readout
+    position stays M3.0's) with the shared prefix pinned (so the state is read once) AND the cue row captured
+    during that read (so no decode step is needed for the readout).  Off by default until the accuracy /
+    confidence comparison against C says the prompt-window row is as good.  STRATA_JEV_HYBRID=1 turns it on."""
+    import os
+    return os.environ.get("STRATA_JEV_HYBRID", "0") not in ("0", "false", "False", "off", "")
+
+
 def _pin_enabled() -> bool:
     """M3.1 fix C (state parking): tell the engine where the fields' shared prefix ends so it reads that
     prefix once, pins the checkpoint there, and every later field reads only its own turn.  The prompts
@@ -686,11 +695,23 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             if not ids:
                 return _err("state", "tokenization failed")
             variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
+            keys = _request_keys(l_pin)
+            # M3.1 hybrid: name this field's cue so the read keeps its row, and skip the decode step that
+            # exists only to make that row readable.  The first field keeps its checkpoint - the one the pin
+            # marks; the later ones resume from it and park nothing.
+            cue = None
+            if (_hybrid_enabled() and l_pin > 0 and not image_state
+                    and getattr(engine, "info", {}).get("jevpos") == 1 and hasattr(engine, "row_logits_at")):
+                cue = len(ids) - 1
+                keys["jevpos"] = [cue]
+                if l_seen > 0:
+                    keys["strata_checkpoint"] = False
             cancel = threading.Event()
-            for _ in engine.generate(ids, 1, _request_keys(l_pin), cancel):
+            for _ in engine.generate(ids, 1, keys, cancel):
                 pass                                     # the one decode step; its logits row is the readout
             tokens = sorted({t for v in variants for t in v})
-            row = engine.final_row_logits(ids, tokens)   # BROW: only the label tokens asked for
+            row = (engine.row_logits_at(cue, tokens) if cue is not None
+                   else engine.final_row_logits(ids, tokens))   # captured row, or BROW on the decode window
             try:
                 scores = readout_scores(row, variants)
             except ValueError as e:

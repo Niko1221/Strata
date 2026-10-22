@@ -97,11 +97,13 @@ class DecisionEngine(MockEngine):
         self.prompts: list[list[int]] = []
         self.pins: list[dict] = []           # the sampling dict of each generate (M3.1 pin)
         self.rows_read: list[int] = []       # the prompt positions BROWAT was asked for (fix B)
+        self.max_news: list[int] = []        # the max_new of each generate
         self.info = {"jevpos": 1}            # the engine build advertises row capture (fix B)
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
         self.pins.append(dict(sampling or {}))
+        self.max_news.append(int(max_new))
         yield from super().generate(ids, max_new, sampling, cancel, embeddings)
 
     def final_row_logits(self, ids, tokens):
@@ -409,6 +411,75 @@ class SamplingKeys(unittest.TestCase):
     def test_pin_key(self):
         self.assertEqual(StrataEngine.sampling_keys({"pin": 63}), " pin=63")
         self.assertEqual(StrataEngine.sampling_keys({"pin": 0}), "")
+
+
+class Hybrid(unittest.TestCase):
+    """M3.1 hybrid: per-field prompts + pinned prefix + the cue row captured during the read (no decode).
+
+    What the mock can prove: the keys ride together (pin and jevpos in one request), the row read is the
+    cue, and the answers are unchanged.  What it cannot prove is the readout itself - that is the live A/B
+    (latency, agreement, confidence).  Measured live: the cue row is produced by the request's first decode
+    window, so the hybrid cannot skip the decode and buys ~1 ms of wire round-trip - which is why C stays
+    the default and this stays opt-in.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine, cls.httpd, cls.base = start_server()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        self._old = _os.environ.get("STRATA_JEV_HYBRID")
+        _os.environ["STRATA_JEV_HYBRID"] = "1"
+        self.engine.prompts.clear()
+        self.engine.pins.clear()
+        self.engine.rows_read.clear()
+        self.engine.max_news.clear()
+
+    def tearDown(self):
+        if self._old is None:
+            _os.environ.pop("STRATA_JEV_HYBRID", None)
+        else:
+            _os.environ["STRATA_JEV_HYBRID"] = self._old
+
+    THREE = {"q1": {"type": "noul", "instructions": "Is it on?"},
+             "q2": {"type": "choice", "instructions": "Pick one.", "criteria": {"alpha": 1, "beta": 2}},
+             "q3": {"type": "score", "instructions": "Rate it.", "criteria": ["low", "mid", "high"]}}
+
+    def _post(self, questions):
+        return post(self.base, "/v1/systemone", {"state": {"hp": 7}, "questions": questions})
+
+    def test_pin_and_jevpos_ride_together_and_skip_the_decode(self):
+        st, _ = self._post(self.THREE)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 3, "per-field prompts: nothing contaminates the next field")
+        for ids, keys, mn, cue_read in zip(self.engine.prompts, self.engine.pins,
+                                           self.engine.max_news, self.engine.rows_read):
+            self.assertGreater(keys.get("pin", 0), 0, "the shared prefix is still pinned")
+            self.assertEqual(keys.get("jevpos"), [len(ids) - 1], "the cue is the prompt's last token")
+            self.assertEqual(cue_read, len(ids) - 1, "the row read is that cue")
+            self.assertEqual(mn, 1, "max_new stays 1: the cue row IS the first decode window's row "
+                                    "(max_new=0 is refused by the engine, and would compute no row)")
+        self.assertFalse(self.engine.pins[0].get("strata_checkpoint") is False,
+                         "the first field keeps the checkpoint the pin marks")
+        self.assertIs(self.engine.pins[1].get("strata_checkpoint"), False,
+                      "later fields resume from it and park nothing")
+
+    def test_answers_are_unchanged(self):
+        _, on = self._post(self.THREE)
+        _os.environ.pop("STRATA_JEV_HYBRID", None)
+        _, off = self._post(self.THREE)
+        self.assertEqual(on["answers"], off["answers"])
+
+    def test_env_off_decodes_as_before(self):
+        _os.environ.pop("STRATA_JEV_HYBRID", None)
+        self._post(self.THREE)
+        self.assertTrue(all(mn == 1 for mn in self.engine.max_news), self.engine.max_news)
+        self.assertFalse(any("jevpos" in p for p in self.engine.pins))
 
 
 class SystemOneValidation(unittest.TestCase):
