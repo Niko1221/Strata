@@ -20,6 +20,7 @@
 // needs come back.
 #include "q36_peer_prefill.cuh"
 
+#include "strata/artifact/gguf_reader.hpp"   // block_geometry: an expert step in whole blocks of each part's type
 #include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE): the device whose memory we copy from
 #include "strata/core/remote_experts.hpp"
 #include "strata/prefill/moe_mmq.hpp"
@@ -200,9 +201,11 @@ struct PeerPrefill36::Impl {
     };
     std::vector<Group> groups;
     int64_t n_pos = 0;
-    /// Whether the last prepared layer's resident experts are EQUIDISTANT, i.e. one product can address all of
-    /// them as `w + z * expert_bytes`.  A layer that is not equidistant is not served by the peer path at all
-    /// (the engine's peer_owned_layer() asks layer_uniform() first).
+    /// Whether the last prepared layer's resident experts are equidistant AT THE LAYOUT'S STEP, i.e. one product can
+    /// address them all as `w + z * stride`.  It is an assertion, not a switch: a layer that is not is a fatal error
+    /// in prepare() naming the layer, because by the time a layer is being prepared the engine has already routed its
+    /// entries here - there is no per-layer fallback to take.  open() checks the same property for every layer before
+    /// the first one runs, so a cache whose slot layout is not the engine's is a startup failure, not a wrong answer.
     bool uniform = true;
 
     int64_t prep_layer = -1;
@@ -306,6 +309,50 @@ bool PeerPrefill36::open(const strata::core::RemoteExperts& helper, int64_t n_la
     }
     m.owned_host.assign((size_t) n_expert, 0);
     m.pos_host.assign((size_t) n_expert, -1);
+    // THE SLOT GEOMETRY, CHECKED ONCE AT STARTUP RATHER THAN PER LAYER.  Every product below addresses a layer's
+    // experts as `w + z * step`, and MMQ divides the step by the type's block size to find expert z - so a hard
+    // requirement, not a tuning detail: consecutive experts of one layer must be exactly the layout's `stride`
+    // apart, and the stride must be a whole number of both parts' blocks.  RemoteExperts::open() declares the slots
+    // layer by layer precisely so this holds, and this asks the helper for three experts of a layer that holds at
+    // least three and refuses the helper outright if it does not - which reaches the engine as a startup message
+    // instead of NaN rows in the first answer.  A layer holding fewer than three resident experts is skipped: one
+    // or two cannot show a step, and they are addressed one Product each anyway.
+    for (int64_t l = 0; l < n_layers; ++l) {
+        if (m.layouts[(size_t) l].stride == 0) {
+            err = "q36 peer prefill: layer " + std::to_string((long long) l) + " has no expert stride";
+            close();
+            return false;
+        }
+        std::vector<const uint8_t*> at;
+        for (int64_t e = 0; e < n_expert && at.size() < 3; ++e)
+            if (const uint8_t* p = helper.slot_ptr(l, (int32_t) e)) at.push_back(p);
+        if (at.size() >= 2) {
+            const size_t step = m.layouts[(size_t) l].stride;
+            for (size_t i = 1; i < at.size(); ++i) {
+                const size_t gap = (size_t) (at[i] - at[0]);
+                if (gap != step * i) {
+                    err = "q36 peer prefill: layer " + std::to_string((long long) l) + ": " +
+                          std::to_string((long long) i) + " consecutive resident experts are " +
+                          std::to_string((long long) gap) + " bytes apart, but the expert step is " +
+                          std::to_string((long long) step) +
+                          " (the expert cache's slot layout is not the engine's; the MMQ prompt path cannot address it)";
+                    close();
+                    return false;
+                }
+            }
+            // and the step itself has to divide into blocks, or MMQ's own division truncates
+            int gu_el = 0, gu_b = 0, d_el = 0, d_b = 0;
+            if (!strata::block_geometry((uint32_t) m.layouts[(size_t) l].gu_type, gu_el, gu_b) ||
+                !strata::block_geometry((uint32_t) m.layouts[(size_t) l].d_type, d_el, d_b) ||
+                gu_b <= 0 || d_b <= 0 || step % (size_t) gu_b != 0 || step % (size_t) d_b != 0) {
+                err = "q36 peer prefill: layer " + std::to_string((long long) l) + ": an expert step of " +
+                      std::to_string((long long) step) + " bytes is not a whole number of the expert types' blocks (" +
+                      std::to_string(gu_b) + " and " + std::to_string(d_b) + ")";
+                close();
+                return false;
+            }
+        }
+    }
 
     On on(m.device);
     // THE ROUTE.  The peering link is tried FIRST, and on a box that has one it is the only route ever taken.  The
@@ -553,61 +600,37 @@ bool PeerPrefill36::prepare(int64_t layer, const float* h_primary, const int32_t
         if (i == 1) delta = d;
         else if (d != delta) { uniform = false; break; }
     }
+    // THE GAP MUST BE THE ENGINE'S STEP, not merely THE SAME GAP EVERYWHERE.  `delta` above is measured off the
+    // blobs' addresses, so a cache that laid a layer's experts out at some other (perfectly regular) spacing yields a
+    // uniform layer with the WRONG step: MMQ is then told to step `delta` while the layout's own step is `stride`,
+    // and every expert after the first is read from bytes that hold no expert of this layer - NaN rows, not an
+    // error.  That is exactly what a row-split helper used to do (two experts of one layer 40 slots apart, gap
+    // 76722000 where the step is 2041200).  Only `stride` may be handed to MMQ: it is a whole number of both parts'
+    // blocks, so MMQ's `expert_bytes / type_bytes` division is exact, while any other gap either truncates or points
+    // at bytes that are not this layer's.  RemoteExperts::open() now declares the slots layer by layer so a layer's
+    // experts really are one stride apart; this is the check that the premise still holds, and it refuses the layer
+    // LOUDLY rather than computing rows from bytes nothing wrote.
+    const size_t stride = m.layouts[(size_t) layer].stride;
+    if (stride == 0)
+        { err = "q36 peer prefill: layer " + std::to_string((long long) layer) + " has no expert stride"; return false; }
+    if (uniform && !m.ptrs.empty() && m.ptrs.size() > 1 && delta != stride) {
+        char buf[256];
+        std::snprintf(buf, sizeof buf,
+                      "q36 peer prefill: layer %lld's resident experts are %llu bytes apart but the expert step is "
+                      "%llu (the cache did not lay this layer's slots out with the engine's step)",
+                      (long long) layer, (unsigned long long) delta, (unsigned long long) stride);
+        err = buf;
+        return false;
+    }
     m.uniform = uniform;
     if (uniform && !m.ptrs.empty())
         m.groups.push_back(Impl::Group{(const uint8_t*) m.ptrs[0].first, delta, 0, (int) m.ptrs.size()});
     else
-        for (size_t i = 0; i < m.ptrs.size(); ++i) {
-            const uintptr_t p = m.ptrs[i].first;
-            if (i == 0) {
-                m.groups.push_back(Impl::Group{(const uint8_t*) p, 0, 0, 1});
-                continue;
-            }
-            const size_t d = p - m.ptrs[i - 1].first;
-            if (d != m.groups.back().delta) m.groups.push_back(Impl::Group{(const uint8_t*) p, d, (int) i, 1});
-            else m.groups.back().n += 1;
-        }
+        // Not equidistant: one single-expert group each.  `delta` is unused for n == 1, so this needs no step and is
+        // always correct - it is the slow shape (one Product per expert), not a wrong one.
+        for (size_t i = 0; i < m.ptrs.size(); ++i)
+            m.groups.push_back(Impl::Group{(const uint8_t*) m.ptrs[i].first, 0, (int) i, 1});
     m.n_pos = (int64_t) m.ptrs.size();
-    // DIAG: does `w + z * delta` really land on expert z's blob?  A mismatch here is the difference between the
-    // first expert's rows (which come out right) and every other expert's (which come out NaN).  Remove after the fix.
-    if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr && uniform && m.ptrs.size() > 1) {
-        int64_t bad = 0;
-        uintptr_t first_bad = 0;
-        int64_t first_bad_z = -1;
-        for (size_t z = 0; z < m.ptrs.size(); ++z) {
-            const uintptr_t want = m.ptrs[0].first + z * delta;
-            if (want != m.ptrs[z].first) {
-                if (bad == 0) { first_bad = want; first_bad_z = (int64_t) z; }
-                ++bad;
-            }
-        }
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld addr check: %lld of %zu experts mismatch "
-                             "(first: z=%lld want=%p have=%p delta=%llu)\n",
-                     m.device, (long long) layer, (long long) bad, m.ptrs.size(), (long long) first_bad_z,
-                     (void*) first_bad, (void*) (first_bad_z >= 0 ? m.ptrs[(size_t) first_bad_z].first : 0),
-                     (unsigned long long) delta);
-        // The first few of this layer's experts and the address step between them: the cache lays its slots out in
-        // the order it was offered the experts, so this says whether the experts of ONE layer are side by side in
-        // the arena (which is what MMQ's `w + z * step` needs) or spread across it.
-        {
-            std::fprintf(stderr, "DIAG helper dev=%d layer %lld addrs:", m.device, (long long) layer);
-            for (size_t z = 0; z < m.ptrs.size() && z < 5; ++z)
-                std::fprintf(stderr, " e%d@%p(+%llu)", m.ptrs[z].second, (void*) m.ptrs[z].first,
-                             (unsigned long long) (m.ptrs[z].first - m.ptrs[0].first));
-            std::fprintf(stderr, "\n");
-        }
-    }
-    // DIAG: the FIRST bytes of the helper's cached blob for this layer's first expert, and the bytes of the SAME
-    // expert in the host blob the primary reads.  Equal => the cache holds the model's own bytes; different => the
-    // cache holds something else and the MMQ would read a type it does not expect.  Remove after the fix.
-    if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr && !m.ptrs.empty()) {
-        const int32_t e0 = m.ptrs[0].second;
-        unsigned char hb[16] = {};
-        cudaMemcpy(hb, (const void*) m.ptrs[0].first, 16, cudaMemcpyDeviceToHost);
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld expert %d bytes:", m.device, (long long) layer, e0);
-        for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %d", hb[i]);
-        std::fprintf(stderr, "\n");
-    }
     m.prep_layer = layer;
     m.n_owned = 0;
     m.max_rows = 0;
@@ -715,59 +738,7 @@ bool PeerPrefill36::launch(int64_t layer, float* eparts_primary, int64_t eparts_
     //    the primary passes.
     float* const ys_gu = MMQ::fp4_activations(L.gu_type) ? m.d_ys : nullptr;
     float* const ys_d = MMQ::fp4_activations(L.d_type) ? m.d_ys : nullptr;
-    // DIAG: the helper's own inputs and outputs, so a NaN can be told apart from a bad upload.  Remove after the fix.
-    if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr) {
-        cudaStreamSynchronize(m.stream);
-        float x4[4] = {}, s4[4] = {};
-        int32_t src4[4] = {};
-        cudaMemcpy(x4, m.d_x, 4 * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(s4, m.d_x + (size_t) m.n_embd, 4 * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(src4, m.d_src, 4 * sizeof(int32_t), cudaMemcpyDeviceToHost);
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld n=%lld d_x[0..3]=%g %g %g %g d_x[1][0..3]=%g %g %g %g "
-                             "d_src[0..3]=%d %d %d %d\n",
-                     m.device, (long long) layer, (long long) n, x4[0], x4[1], x4[2], x4[3], s4[0], s4[1], s4[2],
-                     s4[3], src4[0], src4[1], src4[2], src4[3]);
-    }
     MMQ::quantize(m.d_x, m.d_src, m.d_xq, L.gu_type, m.n_embd, m.n_embd, n, m.stream, ys_gu);
-    // DIAG: the quantized activation and the weight rows the products read.  A NaN in d_xq means the gather or the
-    // quantizer is wrong; a clean d_xq with a NaN d_out means the weight rows or the product are.  Remove after the fix.
-    if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr) {
-        cudaStreamSynchronize(m.stream);
-        float xq4[4] = {};
-        unsigned char q4[4] = {};
-        cudaMemcpy(xq4, m.d_xq, 4 * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(q4, m.d_xq, 4, cudaMemcpyDeviceToHost);
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld d_xq as float[0..3]=%g %g %g %g as bytes=%d %d %d %d "
-                             "gu_type=%d d_type=%d groups=%zu\n",
-                     m.device, (long long) layer, xq4[0], xq4[1], xq4[2], xq4[3], q4[0], q4[1], q4[2], q4[3], L.gu_type,
-                     L.d_type, m.groups.size());
-        // the weight rows the products read: the first group's address, its step between experts, and the bytes at
-        // that address.  A wrong step (the address difference instead of the expert size) is the classic cause.
-        for (size_t gi = 0; gi < m.groups.size() && gi < 4; ++gi) {
-            const Impl::Group& g0 = m.groups[gi];
-            unsigned char wb[8] = {};
-            cudaMemcpy(wb, g0.w, 8, cudaMemcpyDeviceToHost);
-            std::fprintf(stderr, "DIAG helper dev=%d layer %lld group%zu w=%p delta=%llu n=%d bytes=%d %d %d %d\n",
-                         m.device, (long long) layer, gi, (const void*) g0.w, (unsigned long long) g0.delta, g0.n,
-                         wb[0], wb[1], wb[2], wb[3]);
-        }
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld n_pos=%lld ptrs=%zu n_owned=%lld expert_bytes=%llu\n",
-                     m.device, (long long) layer, (long long) m.n_pos, m.ptrs.size(), (long long) m.n_owned,
-                     (unsigned long long) m.layouts[(size_t) layer].bytes);
-        // the row plan the products read: the bounds (each expert's row interval), the output row map, and how
-        // many of the run's first rows are NaN.  Remove after the fix.
-        {
-            int32_t bd[4] = {}, mp[8] = {}, id4[4] = {};
-            cudaMemcpy(bd, m.d_bounds, 4 * sizeof(int32_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(bd + 2, m.d_bounds + (m.n_pos - 1), 2 * sizeof(int32_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(mp, m.d_map, 8 * sizeof(int32_t), cudaMemcpyDeviceToHost);
-            cudaMemcpy(id4, m.d_ident, 4 * sizeof(int32_t), cudaMemcpyDeviceToHost);
-            std::fprintf(stderr, "DIAG helper dev=%d layer %lld bounds[0..1]=%d %d bounds[n_pos-1..n_pos]=%d %d "
-                                 "map[0..7]=%d %d %d %d %d %d %d %d ident[0..3]=%d %d %d %d\n",
-                         m.device, (long long) layer, bd[0], bd[1], bd[2], bd[3], mp[0], mp[1], mp[2], mp[3], mp[4],
-                         mp[5], mp[6], mp[7], id4[0], id4[1], id4[2], id4[3]);
-        }
-    }
 
     // 2. gate+up as one [2 n_ff] product per arithmetic run of experts, the weights read in place from the cache.
     //    Output rows stay in the PLAN's expert order (the identity table), because that is the index space `bounds`
@@ -791,40 +762,8 @@ bool PeerPrefill36::launch(int64_t layer, float* eparts_primary, int64_t eparts_
         gu.y_scale = ys_gu;
         m.mctx->run(gu, m.stream);
     }
-    // DIAG: how much of d_gu the gate/up product actually wrote.  If only the first few floats are non-zero, the
-    // product's output layout does not match what swiglu() reads back.  Remove after the fix.
-    if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr) {
-        cudaStreamSynchronize(m.stream);
-        std::vector<float> g2(1024);
-        cudaMemcpy(g2.data(), m.d_gu, g2.size() * sizeof(float), cudaMemcpyDeviceToHost);
-        int64_t nz = 0, nan_cnt = 0;
-        int first_nz = -1, first_nan = -1;
-        for (size_t i = 0; i < g2.size(); ++i) {
-            if (g2[i] != g2[i]) { ++nan_cnt; if (first_nan < 0) first_nan = (int) i; }
-            else if (g2[i] != 0.f) { ++nz; if (first_nz < 0) first_nz = (int) i; }
-        }
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld d_gu[0..1023]: nonzero=%lld first_nz=%d nan=%lld first_nan=%d\n",
-                     m.device, (long long) layer, (long long) nz, first_nz, (long long) nan_cnt, first_nan);
-    }
     MMQ::swiglu(m.d_gu, m.d_h, n, m.n_ff, false, m.stream);
     MMQ::quantize(m.d_h, nullptr, m.d_hq, L.d_type, m.n_ff, m.n_ff, n, m.stream, ys_d);
-    // DIAG: the gate/up output, the SwiGLU output and its quantized image: which of the three stages first holds a
-    // NaN.  A NaN in d_gu means the gate/up product (weights or bounds); in d_h means the SwiGLU; in d_hq means the
-    // down product's input.  Remove after the fix.
-    if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr) {
-        cudaStreamSynchronize(m.stream);
-        const int64_t probe = n < 64 ? n : 64;
-        std::vector<float> gu((size_t) probe * m.n_ff), h((size_t) probe * m.n_ff);
-        cudaMemcpy(gu.data(), m.d_gu, gu.size() * sizeof(float), cudaMemcpyDeviceToHost);
-        cudaMemcpy(h.data(), m.d_h, h.size() * sizeof(float), cudaMemcpyDeviceToHost);
-        int64_t nan_gu = 0, nan_h = 0;
-        for (size_t i = 0; i < gu.size(); ++i) if (!(gu[i] == gu[i])) ++nan_gu;
-        for (size_t i = 0; i < h.size(); ++i) if (!(h[i] == h[i])) ++nan_h;
-        std::fprintf(stderr, "DIAG helper dev=%d layer %lld stage gu nan=%lld/%zu h nan=%lld/%zu gu[0..3]=%g %g %g %g "
-                             "h[0..3]=%g %g %g %g\n",
-                     m.device, (long long) layer, (long long) nan_gu, gu.size(), (long long) nan_h, h.size(), gu[0],
-                     gu[1], gu[2], gu[3], h[0], h[1], h[2], h[3]);
-    }
 
     // 3. down, from the same run's blobs at the layout's own down offset.  Here `ids` is NOT the identity: its row
     //    is the entry's RANK in this helper's run, so the product writes the final rows in the order the header's
@@ -860,29 +799,6 @@ bool PeerPrefill36::launch(int64_t layer, float* eparts_primary, int64_t eparts_
                                     (size_t) n * (size_t) m.n_embd * sizeof(float), m.stream), "copy the run", err))
             return false;
     } else {
-        // DIAG: the helper's result rows, before they go back to the primary.  Remove after the fix.
-        if (std::getenv("STRATA_Q36_PREFILL_DIAG") != nullptr) {
-            cudaStreamSynchronize(m.stream);
-            float o4[4] = {};
-            cudaMemcpy(o4, m.d_out, 4 * sizeof(float), cudaMemcpyDeviceToHost);
-            std::fprintf(stderr, "DIAG helper dev=%d layer %lld d_out[0..3]=%g %g %g %g\n", m.device, (long long) layer,
-                         o4[0], o4[1], o4[2], o4[3]);
-            // how many of the run's rows are NaN, and the first good one: a partial NaN names a row range, an
-            // all-NaN run names the arithmetic.
-            const int64_t probe = n < 64 ? n : 64;
-            std::vector<float> rows((size_t) probe * m.n_embd);
-            cudaMemcpy(rows.data(), m.d_out, rows.size() * sizeof(float), cudaMemcpyDeviceToHost);
-            int64_t nnan = 0, first_good = -1;
-            for (int64_t r = 0; r < probe; ++r) {
-                bool bad = false;
-                for (int64_t c = 0; c < m.n_embd; ++c)
-                    if (!(rows[(size_t) r * m.n_embd + c] == rows[(size_t) r * m.n_embd + c])) { bad = true; break; }
-                if (bad) ++nnan;
-                else if (first_good < 0) first_good = r;
-            }
-            std::fprintf(stderr, "DIAG helper dev=%d layer %lld rows[0..%lld): nan=%lld first_good=%lld\n", m.device,
-                         (long long) layer, (long long) probe, (long long) nnan, (long long) first_good);
-        }
         if (!ck(cudaMemcpyAsync(m.h_out, m.d_out, (size_t) n * (size_t) m.n_embd * sizeof(float),
                                 cudaMemcpyDeviceToHost, m.stream), "copy the run to host staging", err))
             return false;

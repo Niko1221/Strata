@@ -2743,25 +2743,6 @@ struct Engine {
     void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout,
                  int sgs = 1) {
         const int N = (int) m->g.n_embd, Kp = (int) m->top_k;
-        // DIAG: the combine's four inputs for row 0.  A NaN in the parts (eparts) row, the weights, the shared
-        // expert's output or the gate names the culprit.  Remove after the fix.
-        if (peer_prefill_on && T > 8) {
-            CK(cudaStreamSynchronize(st));   // DIAG: st is non-blocking, so a plain read would race the engine
-            float w4[8] = {}, sh4[4] = {}, sg1[1] = {}, p4[4] = {};
-            CK(cudaMemcpy(w4, ewts, 8 * 4, cudaMemcpyDeviceToHost));
-            CK(cudaMemcpy(sh4, shared, 4 * 4, cudaMemcpyDeviceToHost));
-            CK(cudaMemcpy(sg1, sgate, 4, cudaMemcpyDeviceToHost));
-            int32_t pr[8] = {};
-            CK(cudaMemcpy(pr, prow, 8 * 4, cudaMemcpyDeviceToHost));
-            for (int k = 0; k < 4; ++k) {
-                if (pr[k] < 0) continue;
-                CK(cudaMemcpy(p4 + k, eparts + (size_t) pr[k] * N, 4, cudaMemcpyDeviceToHost));
-            }
-            std::fprintf(stderr, "DIAG moe_end T=%d prow[0..3]=%d %d %d %d ewts[0..3]=%g %g %g %g parts=", T, pr[0],
-                         pr[1], pr[2], pr[3], w4[0], w4[1], w4[2], w4[3]);
-            for (int k = 0; k < 4; ++k) std::fprintf(stderr, " %g", p4[k]);
-            std::fprintf(stderr, " shared[0..3]=%g %g %g %g sgate=%g\n", sh4[0], sh4[1], sh4[2], sh4[3], sg1[0]);
-        }
         const bool small = fast_k && T <= 8 && N <= 2048 && N % 256 == 0 && Kp <= 15;
         if (small && verify_k) {
             if (!vx_) {
@@ -3049,16 +3030,6 @@ struct Engine {
             // the plan is the one place a peer bug can silently corrupt logits, and a wrong answer is worse than a
             // failed run.
             if (peer_here) peer_plan_or_exit(li, T, h, ids, eparts);
-            // DIAG: the primary's own copy of this layer's first expert blob (the hybrid mode's host arena) and the
-            // stride between experts.  The helper's cached copy of the same expert must be byte-identical, or the
-            // MMQ reads a different weight format than the layout says.  Remove after the fix.
-            if (peer_prefill_on && peer_here && li == 0) {
-                const uint8_t* hb = L.hblobs;
-                std::fprintf(stderr, "DIAG primary layer 0 expert 0 bytes:");
-                for (int i = 0; i < 16; ++i) std::fprintf(stderr, " %d", hb[i]);
-                std::fprintf(stderr, "\nDIAG primary stride=%lld bytes=%lld gu_type=%d d_type=%d\n",
-                             (long long) L.stride, (long long) L.L.bytes, L.L.gu_type, L.L.d_type);
-            }
             // The two numbers the local MMQ reads, each one exactly what the plain path used when the flag is off
             // (`n_local` is n_ent, `lid` the identity table) - so the six statements below are the six they were.
             const int64_t n_local = peer_here ? peer_n : n_ent;
@@ -3082,26 +3053,6 @@ struct Engine {
             dn.expert_bytes = L.stride; dn.n = ne; dn.xq = mq_hq; dn.bounds = rbounds; dn.ids = lid;
             dn.total_rows = n_local; dn.max_rows = maxr; dn.dst = eparts; dn.ld_dst = N;
             mctx->run(dn, st);
-            // DIAG: after each served layer, check the caller's first token.  A change means this layer's host
-            // copies overran into the caller's vector.  Remove with the other DIAG prints.
-            if (diag_toks != nullptr && peer_here && diag_toks[0] == 2147483647) {
-                std::fprintf(stderr, "DIAG corrupted after layer %zu\n", li);
-                diag_toks = nullptr;
-            }
-            // DIAG: where the NaN appears in this layer's MMQ.  mq_x is the quantized activation (h and ent_tok went
-            // into it), mq_h the SwiGLU output, mq_hq its quantized image, and wbase the weight rows the local MMQ
-            // reads.  Remove after the fix.
-            if (peer_prefill_on) {
-                CK(cudaStreamSynchronize(st));   // DIAG: st is non-blocking, so a plain read would race the engine
-                float q4[4] = {}, sh4[4] = {}, hq4[4] = {};
-                CK(cudaMemcpy(q4, mq_x, 4 * 4, cudaMemcpyDeviceToHost));
-                CK(cudaMemcpy(sh4, mq_h, 4 * 4, cudaMemcpyDeviceToHost));
-                CK(cudaMemcpy(hq4, mq_hq, 4 * 4, cudaMemcpyDeviceToHost));
-                std::fprintf(stderr, "DIAG mmq layer %zu n_local=%lld mq_x[0..3]=%g %g %g %g mq_h[0..3]=%g %g %g %g "
-                                     "mq_hq[0..3]=%g %g %g %g\n",
-                             li, (long long) n_local, q4[0], q4[1], q4[2], q4[3], sh4[0], sh4[1], sh4[2], sh4[3], hq4[0],
-                             hq4[1], hq4[2], hq4[3]);
-            }
             if (lhy(li)) stream_done();
             // With no helper `prow` stays `rinv`, the map it has always been; on a served layer peer_plan() set it
             // to the per-entry eparts row map the executor's contract defines.
@@ -3150,12 +3101,6 @@ struct Engine {
         // the combine, the shared expert's gate, the residual add and the next norm in one launch
         moe_end(T, prow, sy, ext ? logits_r + g.n_expert : sgate, wn, hout, ext ? (int) g.n_expert + 1 : 1);
         ev_mark(kSegComb);      // E7: this layer's tile is complete
-        // DIAG: after every layer, check the caller's first token.  A change means a host copy in this layer
-        // overran into the caller's vector.  Remove with the other DIAG prints.
-        if (diag_toks != nullptr && diag_toks[0] == 2147483647) {
-            std::fprintf(stderr, "DIAG corrupted after layer %zu peer_wait_n=%d\n", li, peer_wait_n);
-            diag_toks = nullptr;
-        }
         if (gpu_timing_open && !gpu_timing_hold) gseg_ring.push_back(Gseg{});
         gpu_timing_open = false;
     }
@@ -3190,15 +3135,6 @@ struct Engine {
             gpu_open_this_forward = last && T == 1;
             layer(m->layers[l], l, T, p0, pos0, graph_mode, verify, last ? m->out_norm : m->layers[l + 1].attn_norm,
                   last ? hmain : h);
-            // DIAG: the hidden state after every layer, to find the first one that goes bad.  Remove after the fix.
-            if (peer_prefill_on && T > 8) {
-                CK(cudaStreamSynchronize(st));
-                float hv[4] = {};
-                CK(cudaMemcpy(hv, last ? hmain : h, 4 * 4, cudaMemcpyDeviceToHost));
-                const bool bad = !(hv[0] == hv[0]) || !(hv[1] == hv[1]) || !(hv[2] == hv[2]) || !(hv[3] == hv[3]);
-                if (bad || l >= 2)
-                    std::fprintf(stderr, "DIAG layer %zu h[0..3]=%g %g %g %g\n", l, hv[0], hv[1], hv[2], hv[3]);
-            }
         }
         gpu_open_this_forward = false;
         if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
@@ -3675,7 +3611,6 @@ struct Engine {
     /// ahead of the layer whose MMQ branch consults it, so the number cannot be taken from the layer: it is the
     /// forward's window, and one window per forward is the only thing the chunk loop produces.
     int64_t peer_win_ent = 0;
-    const int32_t* diag_toks = nullptr;   // DIAG: points at the caller's token vector while a prompt runs
     /// Whether state index li's prompt chunk COULD be served at all: the flag is live, the layer is a main one (the
     /// MTP block stays local, exactly as helper_layer() keeps it), and some expert of it is a helper's.  Says nothing
     /// about the window's width - peer_layer() adds that, and it is this half the over-cap counter is about.
@@ -3843,17 +3778,6 @@ struct Engine {
     /// slow one.  (A STARTUP failure is different and falls back cleanly: peer_open() simply does not take the
     /// helper, and every layer then runs the plan-free path.)
     void peer_plan_or_exit(size_t li, int T, const float* hdev, const int32_t* idsdev, float* epartsd) {
-        // DIAG: the layer's input row and the eparts row the combine will read.  A NaN in hdev means the
-        // corruption is upstream of the peer split; a NaN in epartsd means this layer's combine is reading a row
-        // nobody wrote.  Remove after the fix.
-        if (peer_prefill_on) {
-            CK(cudaStreamSynchronize(st));   // DIAG: st is non-blocking, so a plain read would race the engine
-            float h4[4] = {}, e4[4] = {};
-            CK(cudaMemcpy(h4, hdev, 4 * 4, cudaMemcpyDeviceToHost));
-            CK(cudaMemcpy(e4, epartsd, 4 * 4, cudaMemcpyDeviceToHost));
-            std::fprintf(stderr, "DIAG plan layer %zu h[0..3]=%g %g %g %g eparts[0..3]=%g %g %g %g\n", li, h4[0],
-                         h4[1], h4[2], h4[3], e4[0], e4[1], e4[2], e4[3]);
-        }
         std::string perr;
         if (peer_plan(li, T, hdev, idsdev, epartsd, perr)) return;
         std::fprintf(stderr, "strata-q36: STRATA_Q36_PREFILL_PEERS, layer %zu: %s\n", li, perr.c_str());
@@ -3978,15 +3902,6 @@ struct Engine {
         const int64_t li = peer_wait_li;
         peer_wait_n = 0;
         std::string err;
-        // DIAG: the helper's rows have landed in eparts by now.  A NaN here is the helper's own arithmetic.
-        // Remove after the fix.
-        if (peer_prefill_on) {
-            CK(cudaStreamSynchronize(st));   // DIAG: st is non-blocking, so a plain read would race the engine
-            float e4[4] = {};
-            CK(cudaMemcpy(e4, eparts, 4 * 4, cudaMemcpyDeviceToHost));
-            std::fprintf(stderr, "DIAG wait layer %lld eparts[0..3]=%g %g %g %g\n", (long long) li, e4[0], e4[1],
-                         e4[2], e4[3]);
-        }
         for (int i = 0; i < n; ++i) {
             const int r = hi[i];
             if (peers[(size_t) r] != nullptr && peers[(size_t) r]->wait(st, err)) continue;
@@ -4246,16 +4161,6 @@ struct Engine {
         };
         if (n == 1) {
             CK(cudaStreamSynchronize(st));   // the pinned staging is free again
-            // DIAG: the decode step's first kernel (iq_embed_rows) reads tok[0]; print the value that will be copied
-            // in, so a crash there can be told apart from a bad token id.  Remove after the peer-route crash is fixed.
-            if (peer_prefill_on) {
-                std::fprintf(stderr, "DIAG decode in=%d pos=%lld vocab=%lld\n", toks[0], (long long) pos,
-                             (long long) m->g.n_vocab);
-                // the first 8 of the caller's buffer: if these are garbage the prompt corrupted the host vector
-                std::fprintf(stderr, "DIAG caller[0..7]=");
-                for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %d", toks[i]);
-                std::fprintf(stderr, "\n");
-            }
             hpin[0] = toks[0];
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, hpin, 4, cudaMemcpyHostToDevice, st));
@@ -4281,9 +4186,7 @@ struct Engine {
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
             chunk_pictures(pos, T);
-            diag_toks = toks + i;   // DIAG: watch the caller's tokens while this chunk runs
             forward(T, pos, i + T == n ? 1 : 0, false, false);
-            diag_toks = nullptr;
             if (m->has_mtp && mtp_d > 0) {
                 // seeds: h_{q-1} for each row q: hlast, then this chunk's rows 0 .. T - 2 (in `y`, free here)
                 CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
@@ -4748,19 +4651,6 @@ struct Engine {
     int greedy() {
         CK(cudaMemcpyAsync(hpin + 2, pick, 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
-        // DIAG: when the peer route is on, print the first logits and the hidden row that produced them.  A prompt
-        // whose logits are all -inf shows up as a pick of 0x7fffffff, which then crashes the next decode step's
-        // embedding lookup.  Remove with the other DIAG prints.
-        if (peer_prefill_on) {
-            CK(cudaStreamSynchronize(st));   // DIAG: st is non-blocking, so a plain read would race the engine
-            std::vector<float> lg(8);
-            CK(cudaMemcpy(lg.data(), logits, 8 * 4, cudaMemcpyDeviceToHost));
-            float hl[4] = {};
-            CK(cudaMemcpy(hl, hlast, 4 * 4, cudaMemcpyDeviceToHost));
-            std::fprintf(stderr, "DIAG greedy=%d logits[0..7]=", hpin[2]);
-            for (int i = 0; i < 8; ++i) std::fprintf(stderr, " %g", lg[(size_t) i]);
-            std::fprintf(stderr, " hlast[0..3]=%g %g %g %g\n", hl[0], hl[1], hl[2], hl[3]);
-        }
         return hpin[2];
     }
     void host_logits(std::vector<float>& out) {

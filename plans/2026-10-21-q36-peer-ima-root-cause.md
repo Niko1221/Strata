@@ -1,7 +1,7 @@
 # q36 peer host 路由的非法显存访问：根因
 
-- 状态：**根因已定（专家步长不一致），修复已写完并编译通过，等机器恢复后验证**
-- 日期：2026-10-21
+- 状态：**修复已在真机验证通过（stripe 模式全绿）；但发现第二个独立缺陷（row-split 模式）**
+- 日期：2026-10-21（根因）／2026-10-22（真机验证 + 第二个缺陷）
 - 机器：192.168.1.98，P100 主卡 + 3×P104 helper，无 P2P
 
 ## 0. 结论
@@ -180,3 +180,194 @@ helper 的流也是（`q36_peer_prefill.cu:359`）。非阻塞流与 legacy 默�
 | helper 的分组把第一个专家硬拆（`delta=0, n=1` + `delta=1900544, n=255`） | 改成等距单组后 NaN 仍在 |
 | `dn.ids` 用 identity 能修 | 让部分行恢复有限值，但前 64 行仍有 54 行 NaN。identity 只是定位手段，不是修法 |
 | helper 缓存的权重字节是错的 | 主卡和 helper 的专家 0 前 16 字节完全一致 |
+
+## 8. 2026-10-22 真机验证：修复有效，但有第二个独立缺陷
+
+机器 2026-10-22 08:29 重启过（`uptime` 11h13m @ 19:42），四张卡都回来了。
+**CUDA 序号没变**：CUDA 运行时默认 `FASTEST_FIRST`，P100 仍是 CUDA0、三个 P104 是 CUDA1/2/3；
+`nvidia-smi` 按 PCI 总线号排（所以它把 P100 显示成 GPU3），两者不是一回事，别按 `nvidia-smi` 的下标推理。
+
+当日基线（推荐配置，`--bench-pp 512 --bench-tg 128`）：**pp512 158.1 / tg128 52.2**，与 10-20 的历史值一致。
+
+### 8.1 结论
+
+1. **步长修复有效（MEASURED）。** stripe 模式（`HELPER_PARALLEL` 不设）跑崩溃命令：**RC=0，无 IMA，
+   120 个 (layer, helper) 对全部 `rows[0..64): nan=0 first_good=0`**。layer 34 的 delta 现在是 **2041200**
+   （修前是 2041344），`2041200/210 = 9720` 整除 ✓。
+2. **但 row-split 模式（`STRATA_Q36_HELPER_PARALLEL=1`，也就是推荐配置）仍然从 layer 0 就 NaN。**
+   这**不是**步长修复失效，是**第二个、独立的缺陷**。
+
+### 8.2 第二个缺陷的根因（MEASURED，逐字节对上）
+
+row-split 时每个 helper 持有**每一层**的一部分专家（`expert % 3 == k`），缓存按
+`(expert 递增, layer 递增)` 的顺序放槽，于是**同一层的两个相邻专家在地址上隔着全部 40 层**：
+
+```
+observed delta = 76722000
+= 34×1900800 + 2041200(layer 34) + 3×1900800 + 2041200(layer 38) + 2310000(layer 39)
+= 76722000          ← 逐字节相同
+```
+
+peer 路径把这个地址差当作 MMQ 的专家步长（`q36_peer_prefill.cu:782` 的 `gu.expert_bytes = g.delta`），
+而 MMQ 按 `w + z * (expert_bytes / type_bytes(t))` 寻址（`src/prefill/moe_mmq.cu:423`），**这个除法会截断**：
+
+```
+76722000 / 144 = 532791.67 → 截断成 532791
+→ 第一个专家之后的每一个，都提前 96 字节读 → NaN
+```
+
+stripe 模式下没有这个问题，因为一个 helper 持有**连续的若干层**，同层专家在地址上紧挨着，
+delta 就是引擎自己的 stride。
+
+**为什么现有的检查没抓到：** `STRATA_Q36_PREFILL_DIAG` 的 addr check 在 row-split 下报
+`0 of 86 experts mismatch`——**它只验"间距自洽"，不验"间距等于引擎的 stride"**。
+自洽的间距照样是错的间距。
+
+**修法（两个方向，第二个是正路）：**
+
+- **正路**：peer 路径不该从地址差推断步长。`PeerPrefill36::open()` 已经拿到了
+  `NativeExpertLayout` 表（每层的 `stride` 和 `gu_type`/`d_type`），可以直接用引擎的 stride，
+  并在**步长与 block 大小不能整除**时拒绝服务这一层（fallback 到本地路径）。
+- **退路**：row-split 与 peer 路径互斥（`HELPER_PARALLEL=1` 时不启用 peer），代价是丢掉 +45%。
+
+### 8.3 还有一个只在诊断块里出现的崩溃（不是产品缺陷）
+
+`STRATA_Q36_PREFILL_PEERS=1` + `--tokens 64` 会以
+`cudaMemcpy(pr, prow, 8 * 4, ...) failed: invalid argument (q36_engine.cu:2755)` 结束。
+`prow` 在**该层没有被 peer 服务**时是 null，而 DIAG 块（`q36_engine.cu:2748`）只判
+`peer_prefill_on && T > 8` 就无条件解引用它。**这是诊断代码的 bug，不是引擎的**——
+清掉 DIAG 块（§4 的第一项）即可。
+
+### 8.4 今日实测汇总（全部在 192.168.1.98，同一台机，同一模型）
+
+| 配置 | 结果 | 数字 |
+|---|---|---|
+| 基线（推荐配置，peers 关） | ✓ | pp512 158.1 / tg128 52.2 |
+| stripe + peers 关 | ✓ | pp512 158.4–158.6（纯 prompt） |
+| **stripe + peers ON + HOST** | **✓ RC=0 无 IMA 无 NaN** | pp512 154.1 / 159.2 / 173.3 |
+| row-split + peers 关 | ✓ | pp512 158.2–158.4 |
+| row-split + peers ON + HOST | ✗ layer 0 起 NaN | pp512 220–227（**但结果是 NaN，不算数**） |
+| A5 flag-off parity ×3 | ✓ | 三次都是 `gen: 220` |
+| A6 `--mtp 2` 三 helper | ✓ | pp512 154.3–154.5 / tg128 52.1–53.0（没掉速） |
+| A7 一 helper | ✓ | pp512 158.5–158.6 / tg128 17.1–17.3 |
+| A2 纯 prompt（peers 关） | ✓ | pp160 49.6–49.7（与 §3 第 2 项的 99.8 不同：那条是 peers ON） |
+
+### 8.5 验收清单（§3）逐条对照
+
+| # | 要求 | 结论 |
+|---|---|---|
+| 1 | 崩溃命令 RC=0，无 IMA | **stripe ✓**；row-split ✗（第二个缺陷） |
+| 2 | 纯 prompt RC=0，pp160 在 99.8 附近 | ✓（stripe + peers ON + HOST） |
+| 3 | layer 34 的 delta = 2041200 | ✓ **MEASURED 2041200** |
+| 4 | 每层 `nan=0 first_good=0` | ✓ **120/120 全绿** |
+| 5 | flag 关连续 3 次 `gen: 220` | ✓ **三次一致** |
+| 6 | `--mtp 2` 三 helper，tg128 在 52.5 附近 | ✓ **52.1–53.0** |
+| 7 | 一 helper / 三 helper 各跑一次 | ✓（一 helper tg128 17.1 是正常的，helper 少就是慢） |
+
+## 9. 第二个缺陷的修复：槽位按层排列（2026-10-22 晚，MEASURED）
+
+### 9.1 根因（MEASURED，逐字节对上）
+
+缺陷 2 的根因不是"peer 路径从地址差推断步长"这么笼统，而是**一个更靠下的事实**：
+
+> **缓存的槽位编号是按"专家被提交的顺序"发放的，而这个顺序就是调用方的 `ranked` 偏好列表。**
+
+`RemoteExperts::open()`（`src/core/remote_experts.cpp`）先按 `ranked` 顺序挑出 `selected`，
+再依次 `admit()`（发槽位号 0,1,2,…）并 `open_sized(sizes)`（按同一顺序算字节偏移）。
+row-split 的 `ranked` 是**专家外层、层内层**（`q36_engine.cu:5950`），于是同一层的两个相邻专家
+在缓存里隔着整整 40 层：
+
+```
+observed delta = 76722000 = 40 层步长之和      ← §8.2 的原始观测
+修正后         = 1900800  = 该层自己的 stride  ← 本次实测
+```
+
+所以 **§8.2 的"正路"（把 `lay.stride` 直接喂给 MMQ）是不成立的**：在 row-split 的几何里，
+同一层的专家本来就不是 `stride`  apart，硬喂 stride 会让 MMQ 去读**根本不属于该层**的字节——
+错的字节，不是截断的假象。**必须先改缓存的排布，让 stride 成为真的。**
+
+### 9.2 修法：槽位按层排序（`src/core/remote_experts.cpp`）
+
+在 `sizes` 构建**之前**把 `selected` 按层号做 `stable_sort`：
+
+- 一层的专家于是拿到**连续的槽位号**，字节偏移也连续 → 真实间距 = 该层的 `stride`。
+- **是 no-op**：stripe 模式的 `ranked` 本来就是层外层内，排序后完全一样。
+- **只改槽位编号**：哪些专家被选中、每个占多少字节，在排序前就已定死；所有消费方都通过
+  `slot_of()` / `device_slot()` 解析槽位，没有一处按编号做算术。
+- **排序必须在 `sizes` 之前**：row-split 下各层的 stride 确实不同
+  （实测 1900800 / 2041200 / 2310000），否则宽度和专家会对不上。
+
+### 9.3 配套：把"步长不对"从静默变响亮（`src/qwen35/q36_peer_prefill.cu`）
+
+原来的 `m.uniform` 只验"间距处处相等"，自洽的**错误**间距照样放行（§8.2 的最后一句）。
+现在有**两道**检查：
+
+1. `PeerPrefill36::open()`：**启动时**逐层核对 helper 缓存里该层连续专家的真实间距是否
+   等于布局的 `stride`，且 `stride` 是否是两种 block 大小的整数倍。不符 → **helper 直接不开**，
+   引擎拿到一条启动错误，而不是第一个答案里的 NaN。
+2. `prepare()`：**每层**再验一次实测间距 == `stride`，不符 → 报错并指名该层。
+   （引擎的 `peer_any` 只由 `owns()`（槽位是否存在）决定，所以这一层一旦被路由到这里就没有
+   "退回本地"的选项——只能硬失败。§8.2 说的"拒绝服务这一层、fallback 本地"在当前架构下
+   **没有钩子可用**。）
+
+另外：`prepare()` 里"非等距就每专家一个 Group"的旧分支被改成**总是**每专家一个 Group。
+等距时走单个 Group（快），不等距时走单专家 Group（慢但永远正确）——不再存在
+"用错间距去寻址"这条路径。
+
+### 9.4 实测（192.168.1.98，同一台机，模型 `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`）
+
+**row-split + peers ON + HOST**（此前 layer 0 起 NaN 的那个配置）：
+
+```
+DIAG helper dev=1 layer 0 addr check: 0 of 86 experts mismatch ... delta=1900800
+DIAG helper dev=1 layer 0 addrs: e0@0x...(+0) e3@0x...(+1900800) e6@0x...(+3801600) ...
+DIAG helper dev=1 layer 0 stage gu nan=0/32768 h nan=0/32768
+DIAG helper dev=1 layer 0 rows[0..64): nan=0 first_good=0
+```
+
+- **delta 从 76722000 变成 1900800**（= 该层的 stride）✓
+- addr check **0 of 86 mismatch** ✓
+- **40 层全部干净**：每层 `h[0..3]` 都是有限数，无 NaN ✓
+
+### 9.5 未决
+
+- §4 其余项：`peer_window_fits()` 下界、`--max-context 512` 的 IMA（**未确认**与本缺陷同源，
+  不能合并断言）、R1（`peer_owner` 一次性建好但 `prepare()` 每层重读 `slot_ptr`）。
+- 全部 DIAG 代码已清除（§4 第一项）。清除后 `STRATA_Q36_PREFILL_DIAG` 这个开关已不存在。
+
+## 10. 事故记录：构建产物装错位置，导致"修复无效"的假象（2026-10-22 晚）
+
+**这是本次最容易误判的一处，记下来。**
+
+远程构建写的是 `/home/Strata/build/strata-q36`，但**运行的是 `/home/Strata/bin/strata-q36`**。
+`/home/Strata/bin/` 里那个是 **12 小时前**的旧二进制（10:08 22:46 的时间戳差异），
+而 `cmake --build` 只更新 `build/` 目录。旧的 `.run/vbuild.sh` **没有拷贝步骤**。
+
+后果：第一次"修复"之后的验证全部跑在旧二进制上，于是出现
+
+```
+改完源码 → 重新编译（RC=0，无 error）→ 运行 → delta 仍是 76722000 → "修复无效"
+```
+
+**这个"修复无效"的结论是错的**，而且错得很自然：日志看起来完全合理，
+只有 `strings /home/Strata/bin/strata-q36 | grep 'DIAG slots'` 返回 0 才暴露了真相。
+
+**教训（写进 §6 的坑）：**
+
+1. **构建后必须确认二进制是新的**：`ls -la --time-style=full-iso` 比对 `build/` 和 `bin/` 的时间戳，
+   或 `strings <binary> | grep <刚加的诊断串>`。`BUILD_RC=0` 只说明**编译**成功，
+   不说明**运行的**那个文件是新的。
+2. **诊断字符串是验证二进制身份的好探针**：往源码里加一句唯一的 `fprintf`，
+   `strings` 一下就能确认运行的到底是不是这份源码。
+3. `.run/vbuild.sh` 现在会 `cp -f build/strata-q36 bin/strata-q36` 并打印 `INSTALL_RC`。
+
+**教训二（关于推理）：** 在"改了 A，结果没变"和"改了 A，结果应该变"之间，
+我反复在**推理**上花时间（读 `admit()`、读 `layer_slot_range()`、猜 `per_layer_`），
+而**一次 `strings` + 一次时间戳比对**就能立刻定位。**先确认你在测的东西是你刚改的东西。**
+
+## 11. 模型路径变了（记录）
+
+`/home/models/Ornith-1.5-35B-A3B-IQ4_XS.gguf` **已不在**远程机器上；
+现在只有 `/home/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`（22.8 GB）。
+§8 的数字是在旧模型上测的，§9.4 是在新模型上测的——**两组的量化不同**（IQ4_XS vs Q4_K_XL），
+跨组比较要当心。

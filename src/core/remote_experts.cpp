@@ -278,6 +278,23 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     }
     std::vector<int64_t> sizes;
     if (lay.native) {
+        // A LAYER'S EXPERTS GO IN CONSECUTIVELY.  When the caller gave the layouts' step, the sizes below are that
+        // step and the cache lays the slots out with it verbatim, so consecutive slot numbers belonging to one layer
+        // are exactly one step apart - which is the addressing the MMQ prompt path needs (`w + z * expert_bytes`).
+        // But `admit()` hands slot numbers out in the order the pairs were SELECTED, and that order is the caller's
+        // `ranked` preference list.  A caller whose list walks experts in the outer loop and layers in the inner one
+        // (q36's row split, where a helper takes `expert % n == k` of every layer) therefore put two experts of the
+        // same layer ~40 slots apart; the step MMQ was given then addressed neither of them, which is NaN rows
+        // rather than an error.  Sorting by layer makes a layer's slots consecutive for every caller, and is a no-op
+        // for one whose list is already layer-outer (q36's layer stripes).  It changes only the slot NUMBERING:
+        // which experts this helper holds, and the bytes each takes, are both fixed by this point, and every
+        // consumer reads a slot through slot_of()/device_slot() rather than by arithmetic on its index.  The sort
+        // MUST come before `sizes` is built, or the widths and the experts would be in different orders - and under
+        // the row split the layers genuinely differ in step (2041200 / 1900800 / 2310000 on the measured model).
+        std::stable_sort(selected.begin(), selected.end(),
+                         [](const std::pair<int32_t, int32_t>& a, const std::pair<int32_t, int32_t>& b) {
+                             return a.first < b.first;
+                         });
         sizes.reserve(selected.size());
         for (const auto& pair : selected) sizes.push_back((int64_t) slot_bytes_at(pair.first));
         // The slots are laid out with that step VERBATIM when the caller gave one: the cache's own 256-byte
