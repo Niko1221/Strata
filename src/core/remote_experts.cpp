@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +20,7 @@ namespace {
 // The window's entry count.  It follows the model's routing width k (Flash-Next's 10, Qwen3.6's 8);
 // allocate the arrays for the widest k the engine admits - MAXT * 10 = 80 entries - so both fit.
 constexpr int64_t kMaxCap = strata::kernels::cpu::MAXT * 10;
+constexpr int kMaxRings = 3;
 
 // Small enough to copy as one pinned buffer per layer, whatever the model's shape. The kernels read
 // the individual arrays through pointers into the same device allocation.
@@ -50,6 +52,10 @@ struct DeviceScope {
         ok = true;
     }
     ~DeviceScope() { if (previous >= 0) cudaSetDevice(previous); }
+    /// Destruct the scope NOW instead of at the end of its enclosing block, running the restoring
+    /// cudaSetDevice(previous) at this exact point.  STRATA_Q36_HELPER_TIMING=1 measures that call as part of a
+    /// drain's host overhead, and that window must not also enclose the blocking sync that follows.
+    void release() { if (previous >= 0) { cudaSetDevice(previous); previous = -1; } }
     std::string error(int device) const {
         return std::string("CUDA") + std::to_string(device) + " experts: " +
                (failed_step ? failed_step : "device switch") +
@@ -62,6 +68,16 @@ bool check(cudaError_t result, const char* what, std::string& err, int device) {
     if (result == cudaSuccess) return true;
     err = "CUDA" + std::to_string(device) + " experts: " + what + ": " + cudaGetErrorString(result);
     return false;
+}
+
+/// STRATA_Q36_HELPER_RING=<K>: integer-parsed; unset or 0 => off (legacy K=1). Cap at kMaxRings.
+int parse_helper_ring() {
+    const char* r = std::getenv("STRATA_Q36_HELPER_RING");
+    if (!r || !r[0]) return 1;
+    char* end = nullptr;
+    const long v = std::strtol(r, &end, 10);
+    if (end == r || v <= 0) return 1;   // =0 must DISABLE (not presence-based)
+    return (int) std::min<long>(v, kMaxRings);
 }
 } // namespace
 
@@ -96,39 +112,87 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     return true;
 }
 
+bool RemoteExperts::alloc_win(Win& w, size_t meta_bytes, size_t scratch, std::string& err) {
+    const bool allocated =
+        check(cudaHostAlloc((void**) &w.h_x_, (size_t) cap_ * n_embd_ * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device_) &&
+        check(cudaHostAlloc((void**) &w.h_out_, (size_t) cap_ * n_embd_ * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err, device_) &&
+        check(cudaHostAlloc(&w.h_meta_, meta_bytes, cudaHostAllocPortable), "metadata staging", err, device_) &&
+        check(cudaMalloc((void**) &w.d_x_, (size_t) cap_ * n_embd_ * sizeof(float)), "input", err, device_) &&
+        check(cudaMalloc((void**) &w.d_out_, (size_t) cap_ * n_embd_ * sizeof(float)), "result", err, device_) &&
+        check(cudaMalloc((void**) &w.d_q8_, (size_t) cap_ * (n_embd_ / 32) * 36), "activation", err, device_) &&
+        check(cudaMalloc((void**) &w.d_scales_, (size_t) cap_ * (n_embd_ / 32) * sizeof(float)), "activation scales", err, device_) &&
+        check(cudaMalloc(&w.d_scratch_, scratch), "scratch", err, device_) &&
+        check(cudaMalloc(&w.d_meta_, meta_bytes), "group metadata", err, device_);
+    if (!allocated) return false;
+    if (rings_ > 1) {
+        if (!check(cudaMalloc((void**) &w.d_src_row_, (size_t) cap_ * sizeof(int32_t)), "src_row", err, device_))
+            return false;
+        if (!check(cudaEventCreateWithFlags(&w.ev_done_, cudaEventDisableTiming), "ring event", err, device_))
+            return false;
+    }
+    if (zero_copy_) {
+        if (cudaHostGetDevicePointer((void**) &w.z_x_, w.h_x_, 0) != cudaSuccess ||
+            cudaHostGetDevicePointer((void**) &w.z_out_, w.h_out_, 0) != cudaSuccess) {
+            zero_copy_ = false;
+            w.z_x_ = w.z_out_ = nullptr;
+            cudaGetLastError();
+        }
+    }
+    auto* meta = (RemoteMeta*) w.d_meta_;
+    w.d_ptr_ = meta->ptr;
+    w.d_start_ = meta->start;
+    w.d_dst_ = meta->dst;
+    w.d_tok_ = meta->tok;
+    w.d_count_ = &meta->count;
+    w.owned_.resize(cap_);
+    w.group_of_.resize(cap_);
+    w.group_id_.reserve(cap_);
+    w.ptr_.reserve(cap_);
+    w.start_.reserve(cap_ + 1);
+    w.dst_.reserve(cap_);
+    w.tok_.reserve(cap_);
+    w.original_row_.reserve(cap_);
+    w.src_row_.assign((size_t) cap_, -1);
+    return true;
+}
+
+void RemoteExperts::free_win(Win& w) {
+    if (w.ev_done_) { cudaEventDestroy(w.ev_done_); w.ev_done_ = nullptr; }
+    if (w.d_src_row_) cudaFree(w.d_src_row_);
+    if (w.d_x_) cudaFree(w.d_x_);
+    if (w.d_out_) cudaFree(w.d_out_);
+    if (w.d_q8_) cudaFree(w.d_q8_);
+    if (w.d_scales_) cudaFree(w.d_scales_);
+    if (w.d_scratch_) cudaFree(w.d_scratch_);
+    if (w.d_meta_) cudaFree(w.d_meta_);
+    if (w.h_x_) cudaFreeHost(w.h_x_);
+    if (w.h_out_) cudaFreeHost(w.h_out_);
+    if (w.h_meta_) cudaFreeHost(w.h_meta_);
+    w = Win{};
+}
+
 void RemoteExperts::close() {
     if (device_ < 0) return;
     DeviceScope scope(device_);
     if (scope.ok) {
+        drain_all();
         if (stream_) cudaStreamSynchronize(stream_);
         if (read_stream_) cudaStreamSynchronize(read_stream_);
         cache_.close();
-        if (d_x_) cudaFree(d_x_);
-        if (d_out_) cudaFree(d_out_);
-        if (d_q8_) cudaFree(d_q8_);
-        if (d_scales_) cudaFree(d_scales_);
-        if (d_xr_) cudaFree(d_xr_);
-        if (d_scratch_) cudaFree(d_scratch_);
-        if (d_meta_) cudaFree(d_meta_);
-        if (h_x_) cudaFreeHost(h_x_);
-        if (h_out_) cudaFreeHost(h_out_);
-        if (h_meta_) cudaFreeHost(h_meta_);
+        for (Win& w : win_) free_win(w);
+        win_.clear();
+        if (d_xr_) cudaFree(d_xr_);   // APR: the rotated-input staging is shared by the rings, so it is not in free_win
         if (stream_) cudaStreamDestroy(stream_);
         if (read_stream_) cudaStreamDestroy(read_stream_);
     }
     device_ = -1;
+    rings_ = 1;
+    rr_ = 0;
     stream_ = nullptr;
     read_stream_ = nullptr;
-    h_x_ = h_out_ = d_x_ = d_out_ = nullptr;
-    h_meta_ = d_meta_ = nullptr;
-    d_q8_ = nullptr;
-    d_scales_ = nullptr;
+    zero_copy_ = false;
     d_xr_ = nullptr;
     d_sx_ = d_sh_ = nullptr;
-    d_scratch_ = nullptr;
-    d_start_ = d_dst_ = d_tok_ = d_count_ = nullptr;
-    d_ptr_ = nullptr;
-    original_row_.clear();
     layers_present_.clear();
 }
 
@@ -149,6 +213,14 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     cap_ = strata::kernels::cpu::MAXT * k_;
     layer_layouts_.clear();
     if (layer_layouts) layer_layouts_ = *layer_layouts;
+    rings_ = parse_helper_ring();
+    rr_ = 0;
+    if (rings_ > 1 && remote_opt_ != nullptr) {
+        err = "CUDA" + std::to_string(device) +
+              " experts: STRATA_Q36_HELPER_RING>1 cannot be used with remote_opt reduce (single-window)";
+        rings_ = 1;
+        return false;
+    }
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
     if (device < 0 || device >= count || slots <= 0 || ranked.empty() ||
@@ -245,24 +317,14 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     const size_t scratch = std::max<size_t>(
         (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(cap_, n_embd_, n_ff_),
         strata::kernels::native_expert_scratch_bytes(cap_, n_ff_));
-    const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ ? remote_opt_->metadata_bytes() : 0);
-    const bool allocated =
-        check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err, device) &&
-        check(cudaHostAlloc((void**) &h_x_, (size_t) cap_ * n_embd_ * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "input staging", err, device) &&
-        check(cudaHostAlloc((void**) &h_out_, (size_t) cap_ * n_embd_ * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "result staging", err, device) &&
-        check(cudaHostAlloc(&h_meta_, meta_bytes, cudaHostAllocPortable), "metadata staging", err, device) &&
-        check(cudaMalloc((void**) &d_x_, (size_t) cap_ * n_embd_ * sizeof(float)), "input", err, device) &&
-        check(cudaMalloc((void**) &d_out_, (size_t) cap_ * n_embd_ * sizeof(float)), "result", err, device) &&
-        check(cudaMalloc((void**) &d_q8_, (size_t) cap_ * (n_embd_ / 32) * 36), "activation", err, device) &&
-        check(cudaMalloc((void**) &d_scales_, (size_t) cap_ * (n_embd_ / 32) * sizeof(float)), "activation scales", err, device) &&
-        check(cudaMalloc(&d_scratch_, scratch), "scratch", err, device) &&
-        check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device) &&
-        (!strata::kernels::cpu::hadamard_spec().any() ||
-         check(cudaMalloc((void**) &d_xr_, (size_t) kMaxCap * n_embd_ * sizeof(float)), "rotated input", err, device));
-    if (!allocated) { close(); return false; }
-    if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
-        close();
-        return false;
+    // remote_opt metadata only when rings==1 (reduce assumes a single window).
+    const size_t meta_bytes = sizeof(RemoteMeta) + (remote_opt_ && rings_ == 1 ? remote_opt_->metadata_bytes() : 0);
+    if (!check(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking), "stream", err, device)) {
+        close(); return false;
+    }
+    if (strata::kernels::cpu::hadamard_spec().any() &&
+        !check(cudaMalloc((void**) &d_xr_, (size_t) kMaxCap * n_embd_ * sizeof(float)), "rotated input", err, device)) {
+        close(); return false;   // APR: the rotated-input staging is shared by the rings, allocated once here
     }
     if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
         d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) n_embd_), (int) n_embd_);
@@ -270,26 +332,25 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     }
     // Zero-copy: the helper reads its input from, and writes its compact rows into, the pinned host buffers
     // directly - two copies fewer per layer, each of which is a PCIe round trip.  STRATA_REMOTE_ZEROCOPY=0 copies.
+    // Mapping is attempted per-slot in alloc_win; any failure clears zero_copy_ below.
     const char* zc = std::getenv("STRATA_REMOTE_ZEROCOPY");
-    zero_copy_ = !(zc && zc[0] == '0') &&
-                 cudaHostGetDevicePointer((void**) &z_x_, h_x_, 0) == cudaSuccess &&
-                 cudaHostGetDevicePointer((void**) &z_out_, h_out_, 0) == cudaSuccess;
-    cudaGetLastError();
-    auto* meta = (RemoteMeta*) d_meta_;
-    d_ptr_ = meta->ptr;
-    d_start_ = meta->start;
-    d_dst_ = meta->dst;
-    d_tok_ = meta->tok;
-    d_count_ = &meta->count;
-    owned_.resize(cap_);
+    zero_copy_ = !(zc && zc[0] == '0');
+    win_.assign((size_t) rings_, Win{});
+    for (Win& w : win_) {
+        if (!alloc_win(w, meta_bytes, scratch, err)) { close(); return false; }
+    }
+    // If any slot failed to map, fall back every slot to the copy path.
+    if (zero_copy_) {
+        for (Win& w : win_)
+            if (!w.z_x_ || !w.z_out_) { zero_copy_ = false; break; }
+        if (!zero_copy_)
+            for (Win& w : win_) w.z_x_ = w.z_out_ = nullptr;
+    }
+    if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
+        close();
+        return false;
+    }
     layers_present_.assign((size_t) layers, 0);
-    group_of_.resize(cap_);
-    group_id_.reserve(cap_);
-    ptr_.reserve(cap_);
-    start_.reserve(cap_ + 1);
-    dst_.reserve(cap_);
-    tok_.reserve(cap_);
-    original_row_.reserve(cap_);
     computed_ = 0;
     launched_layers_ = 0;
     returned_bytes_ = full_row_bytes_ = 0;
@@ -300,72 +361,136 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
     return true;
 }
 
+bool RemoteExperts::owns(int slot, int64_t index) const {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) return false;
+    const Win& w = win_[(size_t) slot];
+    if (index < 0 || index >= w.n_ || (size_t) index >= w.owned_.size()) return false;
+    return w.owned_[(size_t) index] != 0;
+}
+
+cudaEvent_t RemoteExperts::ev_done(int slot) const {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) return nullptr;
+    return win_[(size_t) slot].ev_done_;
+}
+
+float* RemoteExperts::h_out(int slot) const {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) return nullptr;
+    return win_[(size_t) slot].h_out_;
+}
+
+const int32_t* RemoteExperts::src_row(int slot) const {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) return nullptr;
+    return win_[(size_t) slot].src_row_.data();
+}
+
+int64_t RemoteExperts::compact_n(int slot) const {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) return 0;
+    return (int64_t) win_[(size_t) slot].original_row_.size();
+}
+
+int64_t RemoteExperts::window_n(int slot) const {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) return 0;
+    return win_[(size_t) slot].n_;
+}
+
+int RemoteExperts::begin_win(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
+                             int64_t k, const int32_t* kind, const int32_t* primary_res,
+                             std::string& err) {
+    // Ping-pong: next slot; if still busy, drain it (rings==1 always slot 0, never creates events).
+    const int slot = rr_;
+    rr_ = (rr_ + 1) % rings_;
+    return begin_slot(slot, layer, x, ids, n_tok, k, kind, primary_res, err);
+}
+
 bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                           int64_t k, const int32_t* kind, const int32_t* primary_res,
                           std::string& err) {
+    // Flash-Next / legacy: always slot 0 so finish()/owns() stay single-window.
+    const int s = begin_slot(0, layer, x, ids, n_tok, k, kind, primary_res, err);
+    if (s == -1) return true;
+    if (s < 0) return false;
+    return true;
+}
+
+int RemoteExperts::begin_slot(int slot, int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
+                              int64_t k, const int32_t* kind, const int32_t* primary_res,
+                              std::string& err) {
     // cumulative host time in here (staging and launches), reported per request by the driver
     struct Timer { double& acc; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         ~Timer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); } } timer{ms_begin_};
     const int64_t n = n_tok * k;
-    if (n <= 0 || n > cap_ || n_tok > strata::kernels::cpu::MAXT || k != k_ || layer < 0 ||
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size() || n <= 0 || n > cap_ ||
+        n_tok > strata::kernels::cpu::MAXT || k != k_ || layer < 0 ||
         (size_t) layer >= layers_present_.size() || device_ < 0) {
         err = "CUDA" + std::to_string(device_) + " experts: invalid layer, routing width or window size";
-        return false;
+        return -2;
     }
-    std::fill(owned_.begin(), owned_.begin() + n, 0);
-    group_id_.clear(); ptr_.clear(); start_.clear(); dst_.clear(); tok_.clear(); original_row_.clear();
-    if (!layers_present_[(size_t) layer]) return true;
-    std::fill(group_of_.begin(), group_of_.begin() + n, -1);
+    if (win_[(size_t) slot].busy_) {
+        if (!drain(slot, err)) return -2;
+    }
+    Win& w = win_[(size_t) slot];
+    w.n_ = n;
+    std::fill(w.owned_.begin(), w.owned_.begin() + n, 0);
+    w.group_id_.clear(); w.ptr_.clear(); w.start_.clear(); w.dst_.clear(); w.tok_.clear(); w.original_row_.clear();
+    std::fill(w.src_row_.begin(), w.src_row_.begin() + n, -1);
+    if (!layers_present_[(size_t) layer]) return -1;
+    std::fill(w.group_of_.begin(), w.group_of_.begin() + n, -1);
     for (int64_t i = 0; i < n; ++i) {
         const int32_t e = ids[i];
         if ((kind && kind[i] != -1) || e < 0 || e >= n_expert_ ||
             (primary_res && primary_res[(size_t) layer * (size_t) n_expert_ + (size_t) e] >= 0)) continue;
-        const int32_t slot = cache_.slot_of(layer, e);
-        if (slot < 0) continue;
-        owned_[(size_t) i] = 1;
+        const int32_t cache_slot = cache_.slot_of(layer, e);
+        if (cache_slot < 0) continue;
+        w.owned_[(size_t) i] = 1;
         int32_t group = -1;
-        for (size_t g = 0; g < group_id_.size(); ++g)
-            if (group_id_[g] == e) { group = (int32_t) g; break; }
+        for (size_t g = 0; g < w.group_id_.size(); ++g)
+            if (w.group_id_[g] == e) { group = (int32_t) g; break; }
         if (group < 0) {
-            group = (int32_t) group_id_.size();
-            group_id_.push_back(e);
-            ptr_.push_back((unsigned long long) cache_.device_slot(slot));
+            group = (int32_t) w.group_id_.size();
+            w.group_id_.push_back(e);
+            w.ptr_.push_back((unsigned long long) cache_.device_slot(cache_slot));
         }
-        group_of_[(size_t) i] = group;
+        w.group_of_[(size_t) i] = group;
         ++computed_;
     }
-    if (group_id_.empty()) return true;
-    for (size_t g = 0; g < group_id_.size(); ++g) {
-        start_.push_back((int32_t) dst_.size());
-        for (int64_t i = 0; i < n; ++i) if (group_of_[(size_t) i] == (int32_t) g) {
+    if (w.group_id_.empty()) return -1;
+    for (size_t g = 0; g < w.group_id_.size(); ++g) {
+        w.start_.push_back((int32_t) w.dst_.size());
+        for (int64_t i = 0; i < n; ++i) if (w.group_of_[(size_t) i] == (int32_t) g) {
             // The grouped kernels read the activation from `tok`, so their
             // output row can instead be packed densely for the USB4 return.
-            original_row_.push_back((int32_t) i);
-            dst_.push_back((int32_t) dst_.size());
-            tok_.push_back((int32_t) (i / k));
+            const int32_t compact = (int32_t) w.dst_.size();
+            w.original_row_.push_back((int32_t) i);
+            w.src_row_[(size_t) i] = compact;
+            w.dst_.push_back(compact);
+            w.tok_.push_back((int32_t) (i / k));
         }
     }
-    start_.push_back((int32_t) dst_.size());
+    w.start_.push_back((int32_t) w.dst_.size());
     // Private pinned buffers survive until this GPU has consumed them. The CPU
     // pool can write other output rows without a cross-device race.
-    std::memcpy(h_x_, x, (size_t) n_tok * n_embd_ * sizeof(float));
-    auto* meta = (RemoteMeta*) h_meta_;
-    std::memcpy(meta->ptr, ptr_.data(), ptr_.size() * sizeof(ptr_[0]));
-    std::memcpy(meta->start, start_.data(), start_.size() * sizeof(start_[0]));
-    std::memcpy(meta->dst, dst_.data(), dst_.size() * sizeof(dst_[0]));
-    std::memcpy(meta->tok, tok_.data(), tok_.size() * sizeof(tok_[0]));
-    meta->count = (int32_t) group_id_.size();
-    const bool reduce = remote_opt_ && remote_opt_->active();
+    std::memcpy(w.h_x_, x, (size_t) n_tok * n_embd_ * sizeof(float));
+    auto* meta = (RemoteMeta*) w.h_meta_;
+    std::memcpy(meta->ptr, w.ptr_.data(), w.ptr_.size() * sizeof(w.ptr_[0]));
+    std::memcpy(meta->start, w.start_.data(), w.start_.size() * sizeof(w.start_[0]));
+    std::memcpy(meta->dst, w.dst_.data(), w.dst_.size() * sizeof(w.dst_[0]));
+    std::memcpy(meta->tok, w.tok_.data(), w.tok_.size() * sizeof(w.tok_[0]));
+    meta->count = (int32_t) w.group_id_.size();
+    const bool reduce = remote_opt_ && remote_opt_->active() && rings_ == 1;
     if (reduce) remote_opt_->prepare(*this, meta + 1);
     DeviceScope scope(device_);
-    if (!scope.ok) { err = scope.error(device_); return false; }
-    groups_ = (int32_t) group_id_.size();
+    if (!scope.ok) { err = scope.error(device_); return -2; }
+    w.groups_ = (int32_t) w.group_id_.size();
     const cudaStream_t s = stream_;
-    const bool staged =
-        (zero_copy_ || check(cudaMemcpyAsync(d_x_, h_x_, (size_t) n_tok * n_embd_ * sizeof(float), cudaMemcpyHostToDevice, s), "copy input", err, device_)) &&
-        check(cudaMemcpyAsync(d_meta_, h_meta_, sizeof(RemoteMeta) + (reduce ? remote_opt_->metadata_bytes() : 0),
+    bool staged =
+        (zero_copy_ || check(cudaMemcpyAsync(w.d_x_, w.h_x_, (size_t) n_tok * n_embd_ * sizeof(float), cudaMemcpyHostToDevice, s), "copy input", err, device_)) &&
+        check(cudaMemcpyAsync(w.d_meta_, w.h_meta_, sizeof(RemoteMeta) + (reduce ? remote_opt_->metadata_bytes() : 0),
                               cudaMemcpyHostToDevice, s), "copy group metadata", err, device_);
-    if (!staged) return false;
+    // Ring device-merge needs helper-side src_row; rings==1 finish uses host scatter only.
+    if (staged && rings_ > 1)
+        staged = check(cudaMemcpyAsync(w.d_src_row_, w.src_row_.data(), (size_t) n * sizeof(int32_t),
+                                       cudaMemcpyHostToDevice, s), "copy src_row", err, device_);
+    if (!staged) return -2;
     const auto& lay = strata::kernels::cpu::expert_layout();
     // Per-layer layouts (given to open() by an engine that never loads the global expert_layout table,
     // e.g. qwen35moe, whose own load() already computed one per layer) win over that table.  A layer past the
@@ -378,7 +503,7 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
             err = "CUDA" + std::to_string(device_) + " experts: no per-layer layout for layer " +
                   std::to_string(layer) + " (open() was given " + std::to_string(layer_layouts_.size()) +
                   ")";
-            return false;
+            return -2;
         }
         L = layer_layouts_[(size_t) layer];
         use_native = true;
@@ -386,7 +511,7 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
         if ((size_t) layer >= lay.fmt.size()) {
             err = "CUDA" + std::to_string(device_) + " experts: the expert layout has no entry for layer " +
                   std::to_string(layer) + " (it has " + std::to_string(lay.fmt.size()) + ")";
-            return false;
+            return -2;
         }
         const auto& fmt = lay.fmt[(size_t) layer];
         L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
@@ -398,64 +523,119 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
         // expert_layout_set_native leaves had_gu/had_d false) and the branch costs one compare.
         const bool have_fmt = (size_t) layer < lay.fmt.size();
         const auto& fmt = have_fmt ? lay.fmt[(size_t) layer] : strata::kernels::cpu::NativeFmt{};
-        const float* xe = zero_copy_ ? z_x_ : d_x_;
+        const float* xe = zero_copy_ ? w.z_x_ : w.d_x_;
         if (fmt.had_gu) {   // APR: Hadamard-folded gate/up take the full row width (s * x)
             strata::kernels::hadamard_rows(xe, d_xr_, n_tok, n_embd_, fmt.had_block, d_sx_, s);
             xe = d_xr_;
         }
-        strata::kernels::quantize_q8_1_rows(xe, n_tok, n_embd_, d_q8_, s);
+        strata::kernels::quantize_q8_1_rows(xe, n_tok, n_embd_, w.d_q8_, s);
         // The down weights are folded, so native_expert_grouped rotates h itself (iq_kernels.hpp:56-59).
         // Upstream set this only on its own path; on the layer_layouts_ path the flags come from the global
         // table too, or the kernel would decode a folded down matrix as if it were unfolded.
         if (have_fmt && fmt.had_d) { L.had_block = fmt.had_block; L.d_signs = d_sh_; }
-        strata::kernels::native_expert_grouped(L, d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
-                                               groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
+        strata::kernels::native_expert_grouped(L, w.d_ptr_, w.d_start_, w.d_count_, w.d_dst_, w.d_tok_,
+                                               w.groups_, (int64_t) w.dst_.size(), w.d_q8_, w.d_scratch_,
+                                               zero_copy_ && !reduce ? w.z_out_ : w.d_out_, s);
     } else {
-        strata::kernels::quantize_q8_0_scaled(zero_copy_ ? z_x_ : d_x_, d_q8_, d_scales_, n_tok * n_embd_, s);
-        strata::kernels::moe_grouped_s2(d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
-                                        groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
+        strata::kernels::quantize_q8_0_scaled(zero_copy_ ? w.z_x_ : w.d_x_, w.d_q8_, w.d_scales_, n_tok * n_embd_, s);
+        strata::kernels::moe_grouped_s2(w.d_ptr_, w.d_start_, w.d_count_, w.d_dst_, w.d_tok_,
+                                        w.groups_, (int64_t) w.dst_.size(), w.d_q8_, w.d_scales_, w.d_scratch_,
+                                        zero_copy_ && !reduce ? w.z_out_ : w.d_out_, s);
     }
-    const uint64_t compact_bytes = (uint64_t) (reduce ? n_tok : dst_.size()) * n_embd_ * sizeof(float);
+    const uint64_t compact_bytes = (uint64_t) (reduce ? n_tok : w.dst_.size()) * n_embd_ * sizeof(float);
     if (reduce) {
-        if (!remote_opt_->reduce(*this, (RemoteMeta*) d_meta_ + 1, err)) return false;
-    } else if (!zero_copy_ && !check(cudaMemcpyAsync(h_out_, d_out_, (size_t) compact_bytes, cudaMemcpyDeviceToHost, s),
-               "copy results", err, device_)) return false;
+        if (!remote_opt_->reduce(*this, (RemoteMeta*) w.d_meta_ + 1, err)) return -2;
+    } else if (!zero_copy_ && !check(cudaMemcpyAsync(w.h_out_, w.d_out_, (size_t) compact_bytes, cudaMemcpyDeviceToHost, s),
+               "copy results", err, device_)) return -2;
+    // rings>1: record completion after the last kernel (+ optional D2H). rings==1: no events (byte-identical).
+    if (rings_ > 1) {
+        if (!check(cudaEventRecord(w.ev_done_, s), "ring event record", err, device_)) return -2;
+    }
+    w.busy_ = true;
     ++launched_layers_;
     returned_bytes_ += compact_bytes;
     full_row_bytes_ += (uint64_t) n * n_embd_ * sizeof(float);
+    return slot;
+}
+
+bool RemoteExperts::drain(int slot, std::string& err) {
+    if (slot < 0 || slot >= rings_ || (size_t) slot >= win_.size()) {
+        err = "CUDA" + std::to_string(device_) + " experts: drain slot out of range";
+        return false;
+    }
+    Win& w = win_[(size_t) slot];
+    if (!w.busy_) return true;
+    if (w.group_id_.empty()) { w.busy_ = false; return true; }
+    // STRATA_Q36_HELPER_TIMING=1 only: the host-side prologue+epilogue drain spends around the blocking wait -
+    // DeviceScope's three runtime calls (cudaGetDevice + 2x cudaSetDevice), the branches above and the two
+    // steady_clock reads.  ms_wait_ times the blocking call alone and cannot see this, so the two together say
+    // how much of a drain is driver overhead and how much is really GPU wait.  The gate is exactly "1", the same
+    // test Engine::helper_timing() applies (this file cannot call it: it is private and in another
+    // translation unit), so the two counters arm together.  A flag-off run keeps a nullopt and pays no clock read
+    // beyond the one ms_wait_ already took.
+    const char* ht = std::getenv("STRATA_Q36_HELPER_TIMING");
+    const bool hton = ht && ht[0] == '1' && ht[1] == '\0';
+    std::optional<std::chrono::steady_clock::time_point> oh0;
+    if (hton) oh0 = std::chrono::steady_clock::now();
+    // The overhead window closes BEFORE the blocking sync (so it times host cost only) and its destructor -
+    // the epilogue's cudaSetDevice(previous), the third of DeviceScope's three runtime calls - runs inside it.
+    // A scope brace alone cannot do this: it would also enclose the blocking call below, making the two counters
+    // equal by construction.  Hence the explicit release(): DeviceScope is destructed here, and nothing that
+    // follows is inside the window.
+    DeviceScope scope(device_);
+    if (!scope.ok) { err = scope.error(device_); return false; }
+    scope.release();
+    if (hton) {
+        ms_sync_overhead_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - *oh0).count();
+        ++drains_timed_;
+    }
+    {
+    const auto w0 = std::chrono::steady_clock::now();
+    if (rings_ > 1) {
+        if (!check(cudaEventSynchronize(w.ev_done_), "drain", err, device_)) return false;
+    } else {
+        // Spin on the stream like PeerExperts::finish instead of the blocking sync: the layer waits for this helper
+        // on the CPU pool's critical path, and a blocking sync's wake-up costs more than the helper's small batch
+        // takes - on HIP especially, where the CUDA branch's cudaInitDevice(ScheduleSpin) does not exist and the
+        // device keeps its default policy.  STRATA_REMOTE_SPIN=0 keeps the blocking sync (the same switch the CUDA
+        // branch reads).
+#if defined(STRATA_USE_HIP)   // HIP only: the CUDA branch's cudaInitDevice(ScheduleSpin) already makes the sync spin
+        static const bool spin = [] {
+            const char* v = std::getenv("STRATA_REMOTE_SPIN");
+            return !(v != nullptr && v[0] == '0');
+        }();
+        if (spin) {
+            cudaError_t e;
+            while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
+            }
+            if (!check(e, "finish", err, device_)) return false;
+        } else if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) {
+            return false;
+        }
+#else
+        if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) return false;
+#endif
+    }
+    ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
+    w.busy_ = false;
+    }
     return true;
 }
 
+void RemoteExperts::drain_all() {
+    if (device_ < 0 || win_.empty()) return;
+    std::string err;
+    for (int s = 0; s < rings_; ++s) (void) drain(s, err);
+}
+
 bool RemoteExperts::finish(float* out, std::string& err) {
-    if (group_id_.empty()) return true;
-    DeviceScope scope(device_);
-    if (!scope.ok) { err = scope.error(device_); return false; }
-    const auto w0 = std::chrono::steady_clock::now();
-    // Spin on the stream like PeerExperts::finish instead of the blocking sync: the layer waits for this helper
-    // on the CPU pool's critical path, and a blocking sync's wake-up costs more than the helper's small batch
-    // takes - on HIP especially, where the CUDA branch's cudaInitDevice(ScheduleSpin) does not exist and the
-    // device keeps its default policy.  STRATA_REMOTE_SPIN=0 keeps the blocking sync (the same switch the CUDA
-    // branch reads).
-#if defined(STRATA_USE_HIP)   // HIP only: the CUDA branch's cudaInitDevice(ScheduleSpin) already makes the sync spin
-    static const bool spin = [] {
-        const char* v = std::getenv("STRATA_REMOTE_SPIN");
-        return !(v != nullptr && v[0] == '0');
-    }();
-    if (spin) {
-        cudaError_t e;
-        while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
-        }
-        if (!check(e, "finish", err, device_)) return false;
-    } else if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) {
-        return false;
-    }
-#else
-    if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) return false;
-#endif
-    ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
+    // Legacy wrapper: drain slot 0, then host-scatter / remote_opt accumulate (rings==1 order identical).
+    if (win_.empty() || win_[0].group_id_.empty()) return true;
+    if (!drain(0, err)) return false;
+    Win& w = win_[0];
     if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
-    for (size_t i = 0; i < original_row_.size(); ++i)
-        std::memcpy(out + (size_t) original_row_[i] * n_embd_, h_out_ + i * n_embd_, (size_t) n_embd_ * sizeof(float));
+    for (size_t i = 0; i < w.original_row_.size(); ++i)
+        std::memcpy(out + (size_t) w.original_row_[i] * n_embd_, w.h_out_ + i * n_embd_, (size_t) n_embd_ * sizeof(float));
     return true;
 }
 

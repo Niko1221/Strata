@@ -63,6 +63,8 @@ __global__ void copy_cpu_rows(float4* dst, const volatile float4* src, const int
 } // namespace
 
 void RemoteExpertOpt::attach(RemoteExperts& remote) {
+    // attach() runs before open(); RING is parsed in open(). open() refuses remote_opt_ when
+    // rings>1, and init() double-checks after open.
     remote.remote_opt_ = this;
     peers_.push_back({&remote});
 }
@@ -71,6 +73,11 @@ bool RemoteExpertOpt::init(std::string& err) {
     // The helpers' open() ran before this; every peer serves one model, so their geometry agrees.
     // (attach() is too early: open() has not set n_embd_ / k_ / cap_ yet.)
     if (!peers_.empty()) {
+        for (auto& p : peers_)
+            if (p.remote->rings() > 1) {
+                err = "remote expert decode optimization: STRATA_Q36_HELPER_RING>1 is incompatible with reduce mode";
+                return false;
+            }
         n_embd_ = peers_[0].remote->n_embd_;
         k_ = peers_[0].remote->k_;
         cap_ = peers_[0].remote->cap_;
@@ -123,8 +130,10 @@ void RemoteExpertOpt::prepare(const RemoteExperts& remote, void* metadata) const
     auto* row = (int32_t*) metadata;
     auto* weight = row + cap_;
     std::fill(row, row + tokens_ * k_, -1);
-    for (size_t i = 0; i < remote.original_row_.size(); ++i)
-        row[remote.original_row_[i]] = (int32_t) i;
+    // Reduce is single-window only (rings==1): slot 0 holds the staging.
+    const auto& ow = remote.win_[0].original_row_;
+    for (size_t i = 0; i < ow.size(); ++i)
+        row[ow[i]] = (int32_t) i;
     std::memcpy(weight, weights_, (size_t) tokens_ * k_ * sizeof(float));
 }
 
@@ -135,20 +144,22 @@ bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::s
     // The row index, the routing width and the row count come from the helper this peer was opened for
     // (n_embd_ / k_ / cap_), not from Flash-Next's constants: Qwen3.6's helper tier is 2048 wide with
     // top-8, and the metadata block prepare() filled is sized for that cap.
-    float* sum = remote.zero_copy_ ? remote.z_out_ : p.sum;
+    auto& w = remote.win_[0];
+    float* sum = remote.zero_copy_ ? w.z_out_ : p.sum;
     reduce_experts<<<dim3((n_embd_ + 255) / 256, tokens_), 256, 0, remote.stream_>>>(
-        remote.d_out_, (const int32_t*) metadata, (const float*) metadata + cap_, sum,
+        w.d_out_, (const int32_t*) metadata, (const float*) metadata + cap_, sum,
         (int) n_embd_, (int) k_);
     if (remote.zero_copy_) return check(cudaGetLastError(), err);
-    return check(cudaMemcpyAsync(remote.h_out_, p.sum, (size_t) tokens_ * n_embd_ * sizeof(float),
+    return check(cudaMemcpyAsync(w.h_out_, p.sum, (size_t) tokens_ * n_embd_ * sizeof(float),
                                   cudaMemcpyDeviceToHost, remote.stream_), err);
 }
 
 void RemoteExpertOpt::accumulate(const RemoteExperts& remote) {
+    const auto& w = remote.win_[0];
     for (int64_t i = 0; i < tokens_ * n_embd_; ++i)
-        h_sum_[(size_t) token_begin_ * n_embd_ + i] += remote.h_out_[i];
+        h_sum_[(size_t) token_begin_ * n_embd_ + i] += w.h_out_[i];
     for (int i = 0; i < (int) (tokens_ * k_); ++i)
-        h_mask_[(size_t) token_begin_ * k_ + i] |= remote.owned_[(size_t) i] != 0;
+        h_mask_[(size_t) token_begin_ * k_ + i] |= w.owned_[(size_t) i] != 0;
 }
 
 void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
@@ -219,6 +230,8 @@ bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<i
         std::sort(swaps.begin(), swaps.end(), [](auto& a, auto& b) { return a.gain > b.gain; });
         if ((int) swaps.size() > max_swaps) swaps.resize((size_t) max_swaps);
         if (swaps.empty()) continue;
+        // d_meta_ of an in-flight ring window bakes device_slot pointers; drain before moving blobs.
+        r.drain_all();
         const OnDevice on(r.device_);
         for (const auto& s : swaps) {
             const uint8_t* in_blob = source.blob(s.layer, s.in);

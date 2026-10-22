@@ -402,4 +402,22 @@ __global__ void __launch_bounds__(256) k_route_group(const float* __restrict__ l
     }
 }
 
+/// STRATA_Q36_MTP_MAPPED: one chained MTP draft step's hand-off to the next one, in a single launch (upstream's
+/// mtp_select_kernel + the mapped report it writes, verify_kernels.cu:668-671).
+///
+/// The GPU owns the whole chain: the token the next step embeds is read from `pick` and stored into `tok_next` HERE,
+/// on the device, so step d+1 no longer waits for the host to bring drafts[d] back; and the same value is published
+/// into host-mapped memory (`out_host[d]`) as the REPORT the host spins on.  The store must be volatile and follow
+/// __threadfence_system(): that fence is what orders the token store (a device input read by the NEXT launch) before
+/// the mapped store (a host-visible byte), so the host's spin can never see a draft whose token has not landed.
+/// One thread: the draft step is one row.
+__global__ void k_chain_publish(int32_t* __restrict__ tok_next, const int32_t* __restrict__ pick,
+                                volatile int32_t* out_host, int d) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    const int32_t v = *pick;
+    *tok_next = v;
+    __threadfence_system();
+    out_host[d] = v;
+}
+
 }  // namespace q36k
