@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 #include <fcntl.h>
@@ -16,6 +18,18 @@ namespace strata::core {
 
 namespace {
 constexpr size_t kRing = 512;   // blobs alive at once: the prompt path holds a layer's worth of streamed experts
+#if !defined(_WIN32)
+double mem_free_gib() {   // MemFree, not MemAvailable: the page cache is what the mirror's chunks would be carved from
+    unsigned long long kb = 0;
+    if (std::FILE* f = std::fopen("/proc/meminfo", "r")) {
+        char key[64]; unsigned long long v = 0;
+        while (std::fscanf(f, "%63s %llu kB", key, &v) == 2)
+            if (std::strcmp(key, "MemFree:") == 0) { kb = v; break; }
+        std::fclose(f);
+    }
+    return (double) kb / (1024.0 * 1024.0);
+}
+#endif
 }
 
 GgufExpertSource::~GgufExpertSource() { close(); }
@@ -132,6 +146,19 @@ int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>&
     // is built from chunks under that. Battlemage and the CUDA/HIP builds never hit the limit, but chunking is neutral
     // for them. One chunk per (up to) 2 GiB of experts.
     constexpr uint64_t kChunk = 2ull << 30;
+#if !defined(_WIN32)
+    // STRATA_MIRROR_DROP_CACHE=before (#3681): drop the GGUF files' page cache before the pinned chunks are allocated,
+    // so they come out of free memory rather than reclaim. The start-up reads before this point leave the files cached;
+    // chunks the xe driver hands out while the kernel reclaims that cache were read by an Arc Pro B70 at 55-85% of the
+    // bandwidth of chunks from free memory (CPU reads of the same chunks were unaffected). The mirror's own reads below
+    // then come from the disk (+1.4 s for 25.7 GiB on NVMe).
+    if (const char* v = std::getenv("STRATA_MIRROR_DROP_CACHE"); v != nullptr && std::strcmp(v, "before") == 0) {
+        const double free0 = mem_free_gib();
+        for (int fd : fds_) if (fd >= 0) (void) posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+        std::fprintf(stderr, "strata generate: mirror: STRATA_MIRROR_DROP_CACHE=before: MemFree %.1f -> %.1f GiB "
+                             "(the mirror needs %.1f GiB)\n", free0, mem_free_gib(), (double) total / 1073741824.0);
+    }
+#endif
     std::vector<uint8_t*> chunks;
     // Free every chunk unless the mirror is handed over to the object: covers an allocation failure, a failed read and
     // any exception (a container allocation, a std::thread that cannot be created) on the way out.
