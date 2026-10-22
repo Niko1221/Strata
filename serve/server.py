@@ -4883,11 +4883,13 @@ class Service:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
         `force` (forced_call): the opening of the call the reply must make - see prepare()."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
-        # apps; the request's own fields win over all of them
+        # apps; the request's own fields win over all of them.  Under greedy the penalty defaults are not merged: a
+        # penalty makes the engine score the last penalty_last_n logits and its speculation (MTP) then drafts nothing.
         defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
-        if defaults:                   # the request's own fields win (explicit 0 stays greedy)
-            req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
-            sampling = {**defaults, **req_values}
+        if defaults:
+            sampling, note = merge_sampling(defaults, sampling)
+            if note:
+                print(note, flush=True)
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         if thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
@@ -7850,6 +7852,49 @@ def model_card_sampling(arch, thinking) -> dict:
     """The model card's sampling for the family `arch` and the thinking state ({} for an unknown or unset family)."""
     sets = MODEL_CARD_SAMPLING.get(arch) if arch else None
     return dict(sets["thinking" if thinking else "instruct"]) if sets else {}
+
+
+# A penalty (presence, frequency, repetition) makes the engine score the last penalty_last_n logits, and its
+# speculation (MTP) is off for a request that needs them.  At temperature 0 a penalty cannot change which token
+# wins, so the defaults are not merged there unless the request asks for one.
+GREEDY_PENALTIES = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+PENALTY_NEUTRAL = {"presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
+
+
+def _sampling_number(value) -> float | None:
+    """`value` as a float when it is a JSON number (never a bool), else None - the values sampling_keys reads."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def merge_sampling(defaults: dict, request: dict | None) -> tuple[dict, str]:
+    """The request's sampling over the defaults (model card, config `sampling`, Chat settings); the request's own
+    fields win and a field set to null falls back to the default.  Under greedy (temperature <= 0) the three
+    penalties stay at the engine's neutral values unless the request itself asks for one: a penalty makes the engine
+    score the last penalty_last_n logits and its speculation (MTP) is then off, while at temperature 0 it cannot
+    change which token wins.  -> (the merged sampling, a one-line note for the server window or "")."""
+    req = {k: v for k, v in (request or {}).items() if v is not None}
+    merged = {**defaults, **req}
+    t = _sampling_number(merged.get("temperature"))
+    if t is None or t > 0.0:
+        return merged, ""
+    explicit = {}
+    for k in GREEDY_PENALTIES:
+        v = _sampling_number(req.get(k))
+        if v is not None and v != PENALTY_NEUTRAL[k]:
+            explicit[k] = v
+    if explicit:
+        kept = " ".join(f"{k}={v!r}" for k, v in explicit.items())
+        return merged, f"[strata] greedy: {kept} kept (MTP off for this request)"
+    dropped = {}
+    for k in GREEDY_PENALTIES:
+        v = _sampling_number(merged.get(k))
+        if k in merged and v is not None and v != PENALTY_NEUTRAL[k]:
+            dropped[k] = v
+    if not dropped:
+        return merged, ""
+    merged.update(PENALTY_NEUTRAL)
+    lost = " ".join(f"{k} {v:g} -> {PENALTY_NEUTRAL[k]:g}" for k, v in dropped.items())
+    return merged, f"[strata] greedy: penalty defaults not merged (MTP stays on): {lost}"
 
 
 def default_model_name(cfg: dict) -> str:
