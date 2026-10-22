@@ -4,7 +4,7 @@ import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 export const HARNESS_BUDGET_PATCH = Object.freeze({
-  id: 'strata-pi-ai-context-safety-v1',
+  id: 'strata-pi-ai-context-safety-v2',
   package: '@earendil-works/pi-ai',
   version: '1.1.0',
   file: 'node_modules/@earendil-works/pi-ai/dist/api/simple-options.js',
@@ -12,8 +12,13 @@ export const HARNESS_BUDGET_PATCH = Object.freeze({
 });
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const oldClamp = 'model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;';
-const newClamp = 'model.contextWindow - estimateContextTokens(context).tokens - Math.min(CONTEXT_SAFETY_TOKENS, Math.floor(model.contextWindow / 16));';
+const oldClamp = 'const available = model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;';
+// Small windows also need room after tool results; a fixed margin must not
+// consume all remaining estimated space. Keep the old 64K+ calculation.
+const newClamp = `const remaining = model.contextWindow - estimateContextTokens(context).tokens;
+    const safety = model.contextWindow >= 65536 ? CONTEXT_SAFETY_TOKENS
+        : Math.min(CONTEXT_SAFETY_TOKENS, Math.floor(model.contextWindow / 16), Math.max(0, Math.floor(remaining / 2)));
+    const available = remaining - safety;`;
 
 /**
  * Patch only a flattened, disposable staged Harness. Returns the BUNDLE.json

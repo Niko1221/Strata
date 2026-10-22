@@ -36,10 +36,17 @@ test('staged pi-ai leaves output room at 8K Context', t => {
   assert.equal(clamp({ contextWindow: 8192 }, { tokens: 6545 }, 4096), 1135);
 });
 
+test('small-window safety leaves answer room after a tool result', t => {
+  const { clamp } = patched(t);
+  assert.equal(clamp({ contextWindow: 8192 }, { tokens: 7750 }, 4096), 221);
+  assert.equal(clamp({ contextWindow: 8192 }, { tokens: 8000 }, 4096), 96);
+  assert.equal(clamp({ contextWindow: 8192 }, { tokens: 8000 }, 32), 32);
+});
+
 test('the staged correction retains caller caps and the no-room floor', t => {
   const { clamp } = patched(t);
   for (const cap of [1, 128]) assert.equal(clamp({ contextWindow: 8192 }, { tokens: 6545 }, cap), cap);
-  for (const tokens of [7680, 8192, 9000]) assert.equal(clamp({ contextWindow: 8192 }, { tokens }, 4096), 1);
+  for (const tokens of [8191, 8192, 9000]) assert.equal(clamp({ contextWindow: 8192 }, { tokens }, 4096), 1);
 });
 
 test('32K scales safety to 2048; 64K and larger keep the original calculation', t => {
@@ -66,12 +73,15 @@ test('unknown and nonpositive context paths retain their previous behavior', t =
 test('patch provenance records its identity, exact dependency and before/after hashes', t => {
   const { file, packageFile, provenance } = patched(t);
   assert.equal(sha256(original), HARNESS_BUDGET_PATCH.beforeSha256);
-  assert.deepEqual(provenance, { id: 'strata-pi-ai-context-safety-v1', package: '@earendil-works/pi-ai', version: '1.1.0',
+  assert.deepEqual(provenance, { id: 'strata-pi-ai-context-safety-v2', package: '@earendil-works/pi-ai', version: '1.1.0',
     file: HARNESS_BUDGET_PATCH.file, beforeSha256: sha256(original), afterSha256: sha256(readFileSync(file)) });
   assert.notEqual(provenance.beforeSha256, provenance.afterSha256);
   assert.deepEqual(JSON.parse(readFileSync(packageFile, 'utf8')), { name: '@earendil-works/pi-ai', version: '1.1.0' });
-  const changed = original.replace('model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;',
-    'model.contextWindow - estimateContextTokens(context).tokens - Math.min(CONTEXT_SAFETY_TOKENS, Math.floor(model.contextWindow / 16));');
+  const changed = original.replace('const available = model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;',
+    `const remaining = model.contextWindow - estimateContextTokens(context).tokens;
+    const safety = model.contextWindow >= 65536 ? CONTEXT_SAFETY_TOKENS
+        : Math.min(CONTEXT_SAFETY_TOKENS, Math.floor(model.contextWindow / 16), Math.max(0, Math.floor(remaining / 2)));
+    const available = remaining - safety;`);
   assert.equal(readFileSync(file, 'utf8'), changed, 'Only The Known Clamp Changes');
 });
 

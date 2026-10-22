@@ -1,6 +1,42 @@
 {
+  "schemaVersion": 2,
   "date": "2026-10-22",
   "sourceBase": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+  "priorDraftRevision": "2ee3fbe32aa3c27a0159fb837137231063b1a58b",
+  "testedSourceFiles": [
+    {
+      "path": "apps/desktop/scripts/stage-harness.mjs",
+      "sha256": "ee8c79eed3ee4a79a4d574c4f6c1f5bbe8268d54d47167d8da54641ee6f9e3e6"
+    },
+    {
+      "path": "apps/desktop/scripts/harness-budget.mjs",
+      "sha256": "1672a5f5be60399d6358db323a3ecac4e8b7c4a93abd94e90169e13801272ec0"
+    },
+    {
+      "path": "apps/desktop/scripts/flatten-pnpm.mjs",
+      "sha256": "a2b50bb1cf953b252f47dc26c60e2eb49e7ae56ce9d139f8a329dc662484b0b1"
+    },
+    {
+      "path": "apps/desktop/scripts/harness-prune.mjs",
+      "sha256": "5e6e0c9020fdad6eec75aeece5663c7970dc03e8af7e3882167176e5f5520d78"
+    },
+    {
+      "path": "apps/host/tests/agent-compaction.test.mjs",
+      "sha256": "7abfd3cc8963fcb949d6884daf8c1bf9ff6a53b96f5df391f62c016616024656"
+    },
+    {
+      "path": "apps/host/tests/agent-shape.test.mjs",
+      "sha256": "4c2276f35c11a7afacf622b17c57c24a42ecf62f533fa0ee48adbccf4a43a519"
+    },
+    {
+      "path": "apps/host/tests/harness-staging.test.mjs",
+      "sha256": "92a80cb3688593986b5a413cc0b343b6b4033cd3b3b967543c53778682dda0d3"
+    },
+    {
+      "path": "apps/host/tests/harness-budget.test.mjs",
+      "sha256": "0b9f06c9334d076cd4817aac5e9982b7e9ebac78752240318e35b765441e1033"
+    }
+  ],
   "environment": {
     "os": "Windows",
     "node": "v24.12.0",
@@ -9,90 +45,415 @@
     "ramGiB": 61,
     "app": "0.2.2",
     "harness": "0.2.1-alpha.3",
+    "harnessCommit": "571902028a75c64c1d767f4ae5fd099485f0ddf0",
     "piAi": "1.1.0",
     "engine": "0.1.47",
     "model": "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS"
   },
-  "path": "Shipped Host API plus real default Harness; no native UI rendering claim",
-  "prompt": "Reply with exactly OK.",
-  "history": [],
-  "savedModel": {
-    "contextMax": 8192,
-    "maxOutput": null,
-    "vision": null,
-    "reasoning": null
-  },
-  "variants": {
-    "baseline": {
-      "agent": true,
-      "demo": false,
-      "context": 8192,
-      "mode": "manual",
-      "thinking": {
-        "enable_thinking": true,
-        "reasoning_effort": "medium"
-      },
-      "wireMaxCompletionTokens": 1,
-      "messageCount": 5,
-      "toolCount": 26,
-      "messageChars": 3436,
-      "toolChars": 24071,
-      "promptTokens": 6540,
-      "completionTokens": 1,
-      "finishReason": "length",
-      "answer": "",
-      "emptyAnswerNotice": true
+  "settings": {
+    "context": 8192,
+    "mode": "manual",
+    "thinking": "Medium",
+    "thinkingEnabled": true,
+    "toolCount": 26,
+    "remoteModel": {
+      "connectionId": "ready-local",
+      "modelId": "acceptance-menu-model"
     },
-    "candidate": {
-      "agent": true,
-      "demo": false,
-      "context": 8192,
-      "mode": "manual",
-      "thinking": {
-        "enable_thinking": true,
-        "reasoning_effort": "medium"
-      },
-      "wireMaxCompletionTokens": 104,
-      "messageCount": 5,
-      "toolCount": 26,
-      "messageChars": 3436,
-      "toolChars": 24071,
-      "promptTokens": 6540,
-      "completionTokens": 25,
-      "finishReason": "stop",
-      "answer": "OK",
-      "emptyAnswerNotice": false
+    "savedModel": {
+      "contextMax": 8192,
+      "maxOutput": null,
+      "vision": null,
+      "reasoning": null
     }
   },
   "patch": {
-    "id": "strata-pi-ai-context-safety-v1",
+    "id": "strata-pi-ai-context-safety-v2",
     "package": "@earendil-works/pi-ai",
     "version": "1.1.0",
     "file": "node_modules/@earendil-works/pi-ai/dist/api/simple-options.js",
     "beforeSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2",
-    "afterSha256": "1cf2c37a3d99e6339ad2c9ddae530462f6eb6dde9a870910edee0c4bd19d4611"
+    "afterSha256": "fe657e357bdf1f32c686da1b7f06dc4dc91a2ad5e55d13a6850e63fb12b0d1fb"
   },
-  "installedOriginalClampUnchanged": true,
+  "bundle": {
+    "sha256": "66975a57810290957c506d5c3906f8479d2e64f56ec65a5d1dc19dc81c224b3a",
+    "treeManifestSha256": "b3cb192de7072a8012acbf4144b05bbda59b105ab1289315c5bab1a4c9b84819",
+    "files": 23414,
+    "bytes": 240267005
+  },
+  "priorDraftReproduction": {
+    "result": {
+      "prompt": "Read acceptance.txt in the current workspace using a file-reading tool. Reply with only the Marker value.",
+      "answer": "",
+      "agent": true,
+      "toolsDone": [
+        "read"
+      ],
+      "contextTokens": 6723,
+      "tokensIn": 13277,
+      "tokensOut": 74,
+      "finishReason": "length",
+      "errors": []
+    },
+    "wire": [
+      {
+        "utc": "2026-10-22T05:06:37.364Z",
+        "event": "request",
+        "id": 2,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 84,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 5,
+        "toolCount": 26,
+        "messageChars": 3504,
+        "toolChars": 24071,
+        "bodySha256": "16429e3ea9fe4b5ae62d3ab6f878d1614231e5009b3ccf4dbbfe18625f3f6437"
+      },
+      {
+        "utc": "2026-10-22T05:07:06.114Z",
+        "event": "request",
+        "id": 3,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 1,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 7,
+        "toolCount": 26,
+        "messageChars": 4164,
+        "toolChars": 24071,
+        "bodySha256": "e5e18471298fc1b531008f04c69a55022f6f5b0e5a7875a169057037e24eee7b"
+      }
+    ],
+    "nativePromptTokens": [
+      6555,
+      6722
+    ],
+    "firstCompletionTokens": 73,
+    "lastCompletionTokens": 1
+  },
+  "nativeApp": {
+    "start": {
+      "type": "start",
+      "model": "Acceptance Model",
+      "contextMax": 8192,
+      "demo": false,
+      "remoteModel": true,
+      "agent": true,
+      "mode": "manual",
+      "sessionId": "session-0fe907a7-ae37-444f-9634-55c0aea1748e",
+      "requestId": "req-c8d35c3d-16a4-43eb-83e6-4785bcae053f",
+      "skills": []
+    },
+    "result": {
+      "prompt": "Read acceptance.txt in the current workspace using a file-reading tool. Reply with only the Marker value.",
+      "answer": "READY-3684",
+      "agent": true,
+      "toolsDone": [
+        "read"
+      ],
+      "contextTokens": 6740,
+      "tokensIn": 13277,
+      "tokensOut": 91,
+      "finishReason": "stop",
+      "errors": []
+    },
+    "wire": [
+      {
+        "utc": "2026-10-22T05:16:37.140Z",
+        "event": "request",
+        "id": 17,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 298,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 5,
+        "toolCount": 26,
+        "messageChars": 3504,
+        "toolChars": 24071,
+        "bodySha256": "b43086d3382259358bbecac63bf53aa4d87f2b424d2bf2fec11aaa7118532067"
+      },
+      {
+        "utc": "2026-10-22T05:16:40.381Z",
+        "event": "request",
+        "id": 18,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 242,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 7,
+        "toolCount": 26,
+        "messageChars": 4164,
+        "toolChars": 24071,
+        "bodySha256": "e23813b8392ac06c9706ea7f117b0da8e483680d038a379a92ac524e74cf3f93"
+      }
+    ],
+    "nativePromptTokens": [
+      6555,
+      6722
+    ],
+    "firstCompletionTokens": 73,
+    "lastCompletionTokens": 18,
+    "process": {
+      "appVersion": "0.2.2",
+      "appPid": 13220,
+      "appExeSha256": "b9da619d16885e4963fa56a6bd442d2890411db2d09d844c67f71e87af14bb05",
+      "hostPid": 13276,
+      "hostParentIsApp": true,
+      "harnessPid": 20708,
+      "harnessParentIsHost": true,
+      "harnessCommandUsesFullStage": true
+    },
+    "capture": {
+      "utc": "2026-10-22T05:17:26.692Z",
+      "method": "Page.captureScreenshot on the official App native WebView2",
+      "sha256": "9f6e8ca9f0166460d3ba8397780fbb74f505a4cfc0b1ae4e7894403b2d35412b",
+      "bytes": 109203,
+      "width": 2160,
+      "height": 1380
+    },
+    "captureFile": "output-budget-native-webview.png",
+    "automation": "Official native WebView2 over loopback CDP; native window/accessibility inspected separately"
+  },
+  "fourTurnConversation": {
+    "turns": [
+      {
+        "prompt": "Read acceptance.txt in the current workspace using a file-reading tool. Reply with only the Marker value.",
+        "answer": "READY-3684",
+        "agent": true,
+        "toolsDone": [
+          "read"
+        ],
+        "contextTokens": 6741,
+        "tokensIn": 13277,
+        "tokensOut": 92,
+        "finishReason": "stop",
+        "errors": []
+      },
+      {
+        "prompt": "Remember that Marker. Reply with exactly ACK.",
+        "answer": "ACK",
+        "agent": true,
+        "toolsDone": [],
+        "contextTokens": 6790,
+        "tokensIn": 6761,
+        "tokensOut": 29,
+        "finishReason": "stop",
+        "errors": []
+      },
+      {
+        "prompt": "Read acceptance.txt again using a file-reading tool. Reply with only its Marker value.",
+        "answer": "READY-3684",
+        "agent": true,
+        "toolsDone": [
+          "read"
+        ],
+        "contextTokens": 7035,
+        "tokensIn": 13825,
+        "tokensOut": 122,
+        "finishReason": "stop",
+        "errors": []
+      },
+      {
+        "prompt": "What Marker did you read? Reply with that value only.",
+        "answer": "READY-3684",
+        "agent": true,
+        "toolsDone": [],
+        "contextTokens": 7106,
+        "tokensIn": 7058,
+        "tokensOut": 48,
+        "finishReason": "stop",
+        "errors": []
+      }
+    ],
+    "wire": [
+      {
+        "utc": "2026-10-22T05:18:19.494Z",
+        "event": "request",
+        "id": 19,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 298,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 5,
+        "toolCount": 26,
+        "messageChars": 3504,
+        "toolChars": 24071,
+        "bodySha256": "99b5596926435c9221f47e346274d403230cf7441e911e1461a4599f85d3c719"
+      },
+      {
+        "utc": "2026-10-22T05:18:22.551Z",
+        "event": "request",
+        "id": 20,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 242,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 7,
+        "toolCount": 26,
+        "messageChars": 4164,
+        "toolChars": 24071,
+        "bodySha256": "987de082e8eea69c69002cdc418bfb8797c69b830bd3726c10d52878904d3678"
+      },
+      {
+        "utc": "2026-10-22T05:18:23.585Z",
+        "event": "request",
+        "id": 21,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 228,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 9,
+        "toolCount": 26,
+        "messageChars": 4346,
+        "toolChars": 24071,
+        "bodySha256": "c8caf4b5de862f81ee0789695a0841cb0a247fd42c0ddb4d364d294c566eb772"
+      },
+      {
+        "utc": "2026-10-22T05:18:24.241Z",
+        "event": "request",
+        "id": 22,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 203,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 11,
+        "toolCount": 26,
+        "messageChars": 4611,
+        "toolChars": 24071,
+        "bodySha256": "ec3a21e75e9a3639f2ac381a4b387c2d2d6dbb9bffdb3c8a85c3b4653b0cdd68"
+      },
+      {
+        "utc": "2026-10-22T05:18:25.879Z",
+        "event": "request",
+        "id": 23,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 259,
+        "thinking": {
+          "enable_thinking": false
+        },
+        "messageCount": 4,
+        "toolCount": 26,
+        "messageChars": 3773,
+        "toolChars": 24071,
+        "bodySha256": "3ea757745b73618820ef3806e679e79667cc353013f186367f4da54ecf061fa1"
+      },
+      {
+        "utc": "2026-10-22T05:18:27.848Z",
+        "event": "request",
+        "id": 24,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 134,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 13,
+        "toolCount": 26,
+        "messageChars": 5357,
+        "toolChars": 24071,
+        "bodySha256": "9f2f68adb97e80124535b6769337aa1540c0d01dfb5391500426127cf147e04f"
+      },
+      {
+        "utc": "2026-10-22T05:18:30.268Z",
+        "event": "request",
+        "id": 25,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 259,
+        "thinking": {
+          "enable_thinking": false
+        },
+        "messageCount": 4,
+        "toolCount": 26,
+        "messageChars": 3773,
+        "toolChars": 24071,
+        "bodySha256": "3ea757745b73618820ef3806e679e79667cc353013f186367f4da54ecf061fa1"
+      },
+      {
+        "utc": "2026-10-22T05:18:32.123Z",
+        "event": "request",
+        "id": 26,
+        "model": "acceptance-menu-model",
+        "max_completion_tokens": 110,
+        "thinking": {
+          "enable_thinking": true,
+          "reasoning_effort": "medium"
+        },
+        "messageCount": 15,
+        "toolCount": 26,
+        "messageChars": 5606,
+        "toolChars": 24071,
+        "bodySha256": "75d18acba28c97a7ed8c350ab568104dd693d0b7719a103578de0c4af5e51e29"
+      }
+    ],
+    "finalContextTokens": 7106,
+    "toolsDone": 2
+  },
   "validation": {
     "focused": {
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "receiptSha256": "8f9673e52004af3ae8ddcb23cfd98646561b4d9677878a8a0929eb54078b156f"
+    },
+    "staged": {
+      "passed": 12,
+      "failed": 0,
+      "skipped": 0,
+      "receiptSha256": "a876979ba3d05ff358dce2f02e3baf39c1e140a9b6031606a0e37eed65c09b77"
+    },
+    "harnessBuildGates": {
       "passed": 9,
       "failed": 0,
       "skipped": 0
     },
-    "affected": {
-      "passed": 24,
-      "failed": 0,
-      "skipped": 3
+    "fullDeployAndStaging": true,
+    "authenticatedWebProfileBoot": true,
+    "preFixRegression": "Expected failure: 1 instead of 221",
+    "realCompactionFixture": {
+      "context": 16384,
+      "turns": 6,
+      "model": "scripted worker, real Harness"
     },
-    "preFixRegression": "Expected failure: 1 instead of 1135",
     "syntax": "passed",
     "diffCheck": "passed"
   },
+  "preservation": {
+    "protectedFiles": 189,
+    "changedFiles": 0,
+    "installedClampSha256": "9b3cc0ae6daa86fdc050bc0cb0f3f986401e64ccddbde6757183c9f8ad411be2",
+    "harnessSourceOriginalUnchanged": true
+  },
+  "cleanup": {
+    "listenersRemaining": 0,
+    "testProcessesRemaining": 0,
+    "appWrapperExit": 0,
+    "serverWrapperExit": 0,
+    "recorderWrapperExit": 0,
+    "harnessChildAtNormalAppShutdown": 1,
+    "productionTrayStillRunning": true
+  },
   "limits": [
-    "Live candidate output cap is 104; the synthetic 6545-estimate fixture yields 1135",
-    "Candidate reused 6110 cached prompt tokens; no performance comparison",
-    "Full pnpm deploy/staging pipeline and signed installer build not run",
-    "Native candidate rendering, other OS/providers, long thinking/tool conversations not run",
-    "Existing installed components unchanged; no startup patching"
+    "Real model coverage is the local OpenAI chat route on Windows; other OS/providers are untested",
+    "Real 8K acceptance covers one native UI tool turn and four additional bounded turns, not unbounded long-form/tool stress",
+    "Signed release installer was not built; no Rust or engine source changed",
+    "Cached prompt tokens were reused; no performance comparison",
+    "Existing installed Harness is unchanged; the correction ships only in a newly staged component"
   ]
 }
