@@ -32,6 +32,7 @@
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
 #include "q36_attn.cuh"
+#include "q36_pattn.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -1256,6 +1257,11 @@ struct Engine {
     __half* att_p16 = nullptr;         // the probabilities in FP16 (kAttScoreFloats halves)
     __half *k16 = nullptr, *v16 = nullptr, *q16 = nullptr;   // the prompt attention's FP16 operands
     size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
+    // --fused-prompt-attn (opt-in, the int8 cache): the prompt attention in one kernel straight from the cache cells
+    // (q36_pattn.cuh), so k16 / v16 / att_s / att_p16 are not allocated; pa_* hold the split partials of a small chunk
+    bool fused_pattn = false;
+    float *pa_acc = nullptr, *pa_m = nullptr, *pa_l = nullptr;
+    int n_sm = 0;
     // the prompt's MMQ experts
     bool use_mmq = false;
     std::unique_ptr<MMQ::Context> mctx;
@@ -1480,10 +1486,38 @@ struct Engine {
             std::fprintf(stderr, "strata-q36: cuBLAS handle failed\n");
             std::exit(1);
         }
-        att_s = dalloc(kAttScoreFloats);
+        if (fused_pattn && (!kv8 || kv_v4 || kv_f16)) {
+            std::fprintf(stderr, "strata-q36: --fused-prompt-attn needs --kv int8: ignored\n");
+            fused_pattn = false;
+        }
+        if (fused_pattn) {   // mma.sync on FP16 needs sm_80; the kernel is built for 8 query heads of 256 per KV head
+            int dev = 0, major = 0;
+            CK(cudaGetDevice(&dev));
+#if !defined(__HIPCC__)
+            CK(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev));
+#endif
+            if (!q36pattn::supported(major, (int) g.n_head, (int) g.n_head_kv, (int) g.head_dim)) {
+                std::fprintf(stderr, "strata-q36: --fused-prompt-attn needs an sm_80+ NVIDIA GPU and 8 query heads of 256 "
+                             "per KV head: ignored\n");
+                fused_pattn = false;
+            }
+        }
+        if (!fused_pattn) att_s = dalloc(kAttScoreFloats);
         sk_part = dalloc((size_t) kSplitK * T * (g.n_expert + 1));
-        att_p16 = dalloc_t<__half>(kAttScoreFloats);
-        if (!kv_f16) {   // --kv f16: the prompt attention reads the cache itself
+        if (!fused_pattn) att_p16 = dalloc_t<__half>(kAttScoreFloats);
+        if (fused_pattn) {
+            int dev = 0;
+            CK(cudaGetDevice(&dev));
+            CK(cudaDeviceGetAttribute(&n_sm, cudaDevAttrMultiProcessorCount, dev));
+            pa_acc = dalloc(q36pattn::partial_acc_floats());
+            pa_m = dalloc(q36pattn::kPartialRows);
+            pa_l = dalloc(q36pattn::kPartialRows);
+            std::fprintf(stderr, "strata-q36: fused prompt attention: no FP16 K / V copies or score buffers (%.0f MiB not "
+                         "allocated, %.0f MiB of split partials)\n",
+                         (double) ((size_t) g.n_head_kv * ctx * g.head_dim * 4 + kAttScoreFloats * 6) / (1 << 20),
+                         (double) ((q36pattn::partial_acc_floats() + 2 * q36pattn::kPartialRows) * 4) / (1 << 20));
+        }
+        if (!kv_f16 && !fused_pattn) {   // --kv f16: the prompt attention reads the cache itself
             k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
             v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
         }
@@ -2073,7 +2107,13 @@ struct Engine {
                     <<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, rows_mode ? nullptr : kc[li],
                                                               rows_mode ? nullptr : vc[li], H, HKV, HD, m->n_rot, dpos, ctx,
                                                               m->rope_base, m->eps, d_delta, mtab_now, rs);
-            if (T > kGemmT) {
+            if (T > kGemmT && fused_pattn) {   // (never set under HIP: init clears it)
+                // --fused-prompt-attn: the whole attention of the chunk in one kernel from the int8 cells (q36_pattn.cuh)
+                CK(q36pattn::launch(q, reinterpret_cast<const q36attn::q8_cell*>(kc[li]),
+                                    reinterpret_cast<const q36attn::q8_cell*>(vc[li]), ctx, H, HKV, T, (int) p0, att,
+                                    pa_acc, pa_m, pa_l, n_sm, st));
+                k_gate_mul<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(att, gate, (int64_t) T * H * HD);
+            } else if (T > kGemmT) {
                 // a prompt chunk: scores = Q K^T and out = P V as FP16 GEMMs (FP32 accumulation, FP32 scores) per KV
                 // head (its query heads one strided batch over the shared K / V), the causal softmax in between writing
                 // FP16 probabilities; the queries in slices whose scores fit
@@ -2530,6 +2570,7 @@ struct Engine {
     }
 
     void shrink_att(size_t floats) {
+        if (fused_pattn) return;   // (no score buffers)
         CK(cudaDeviceSynchronize());
         CK(cudaFree(att_s));
         CK(cudaFree(att_p16));
@@ -3004,7 +3045,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (const auto& pk : m.packed) packed_bytes += std::get<2>(pk);
     size_t main_need = 0;   // the main layers' experts (the MTP block's can go to the CPU, see below)
     for (Layer& L : m.layers) main_need += L.stride * (size_t) ne + kMmqTail;
-    const size_t slack = ((size_t) 512 << 20) + (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // reserve + scores
+    const size_t att_bufs = E.fused_pattn ? 0 : (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // (--fused-prompt-attn: none)
+    const size_t slack = ((size_t) 512 << 20) + att_bufs;   // reserve + scores
     const bool mtp_cpu_ok = m.has_mtp && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr;
     if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 &&
         (total <= budget + packed_bytes || (mtp_cpu_ok && main_need <= budget + packed_bytes + slack)) &&
@@ -3031,7 +3073,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (Layer& L : m.layers) total_main += L.stride * (size_t) ne + kMmqTail;
     bool mtp_only = false;
     if (slots <= 0 && vram_gib < 0 && m.has_mtp && total > budget2 && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr) {
-        const size_t att_save = (E.kAttScoreFloats - ((size_t) 16 << 20)) * 6;   // att_s (4 B) + att_p16 (2 B)
+        const size_t att_save = att_bufs;   // att_s (4 B) + att_p16 (2 B)
         const size_t small_reserve = (size_t) 256 << 20;
         const size_t room = fr + att_save > small_reserve ? fr + att_save - small_reserve : 0;
         if (total_main + ((size_t) 64 << 20) <= budget2) {
@@ -3926,7 +3968,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
     std::string kv = "fp32", tokens_file;
-    bool gqa_attn = false, attn_mma = false;
+    bool gqa_attn = false, attn_mma = false, fused_pattn = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -3971,6 +4013,7 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--kv") kv = next();   // strata's names (checked below): fp16, int8, k8v4; fp32 this path's default
         else if (a == "--gqa-attn") gqa_attn = true;               // the grouped-query decode attention (fp32 / int8 cache)
         else if (a == "--attn-mma") attn_mma = true;               // with --kv int8: its tensor-core kernel (sm_80+, not bit-identical)
+        else if (a == "--fused-prompt-attn") fused_pattn = true;   // the prompt attention in one kernel (int8 cache)
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -3983,7 +4026,7 @@ int strata::qwen35::run(int argc, char** argv) {
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
                          "       (--serve | --tokens IDS | --tokens-file F [--n 64] [--force IDS] [--dump-full-logits F] | "
                          "--bench-pp N --bench-tg N)\n"
-                         "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma]\n");
+                         "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn]\n");
             return 2;
         }
     }
@@ -4046,6 +4089,7 @@ int strata::qwen35::run(int argc, char** argv) {
             q36attn::mma_enabled() = false;
         }
     }
+    E.fused_pattn = fused_pattn;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)

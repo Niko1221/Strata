@@ -210,6 +210,24 @@ on the `strata-q36` command line.
   Sage, RTX 5080): mean 5.7e-3, median 1.1e-3, p99 0.033, max 0.36 (the `--prefill 1024` floor: 8.9e-3, 1.3e-3, 0.09, 0.51).
   Microbench of the partial kernel for one layer (int8, 16 / 2 heads, L2 flushed): 262K cells 1 row 331 us (the int8 kernel above: 361),
   a 3-row window 425 us (925), 4 rows 461 us (1,200); 32K cells, 3 rows 76 us (157).
+- **`--fused-prompt-attn`** (the int8 cache, NVIDIA sm_80+, 8 query heads of 256 per KV head; ignored with a message otherwise): a
+  prompt chunk of more than 8 rows runs its attention in one kernel straight from the int8 cells (`q36_pattn.cuh`): a block takes
+  one KV head and 8 tokens x 8 query heads, dequantises 32 cells at a time into shared memory, multiplies on the FP16 tensor cores
+  (`mma.sync`, FP32 sums), keeps the softmax online in registers and splits the cells over blocks when the chunk is small
+  (flash-decoding). The default path converts the whole cache to FP16 for every chunk and layer and writes the FP32 scores and FP16
+  probabilities of each slice to memory and back (at 262K cells a slice holds 16 query rows). With the flag the FP16 K / V copies
+  and the score buffers (896 MiB = 0.875 GiB at 262K cells, less 16 MiB of split partials) are not allocated: the experts get 12
+  more slots per layer (78 -> 90). The sums run in another order, so it is not bit-equal to the default path (not bit-identical).
+  Measured on an RTX 5080 (Sage-A1.5 Q4_K_M, 262K context reserved, int8 KV, `--mtp 0`): one layer's attention, 52 new rows at 262K
+  cells 23.2 -> 2.7 ms, 300 rows 108 -> 20 ms, 2,048 rows 723 -> 125 ms (kernel microbenchmark, `q36_pattn_parity`); fresh prompt
+  read 40K 4,570 -> 5,420 tok/s, 16K 5,768 -> 5,870, 4K unchanged; decode (forced text) +3.5% / +3.6% / +2.1% at 4K / 16K / 40K
+  from the extra slots. Against a double-precision oracle the kernel's error is at or below the default path's on every row of
+  the 14K prompt's last chunk (10 attention layers, 32,768 rows each). KL of the logits against the default path (fixed 56 slots,
+  chunk 2048, 65 forced steps per prompt): 195 steps over the 14K and 57K corpus prompts and the 76K agent prompt: mean 2.06e-2,
+  median 1.63e-3, p99 0.094, **max 2.67** (one step of the 14K prompt, where the top two logits swap; the other 194 steps stay
+  under 0.2); the 4K and 32K prompts have mean 8.3e-3 / 9.7e-3, max 0.048 / 0.063; two more 14K agent prompts: mean 3.0e-3 and
+  1.7e-5, max 0.026 and 6.5e-4. For comparison `--prefill 1024` gives mean 8.9e-3, max 0.51 and the accepted prefetch opt-ins mean
+  2.2e-2, max 1.95.
 
 Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
 `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
