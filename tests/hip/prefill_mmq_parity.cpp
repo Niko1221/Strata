@@ -328,6 +328,14 @@ int main(int argc, char ** argv) {
             // activations)
             for (const ggml_type t : {(ggml_type) 145, (ggml_type) 146, (ggml_type) 144}) {
                 if (!supported((int) t)) { std::cout << "type " << (int) t << ": no MMQ instance in this build\n"; continue; }
+                // The TQ overlay compiles the trellis MMQ instances, but the host quantizer for
+                // these ids only exists in a ggml that has the trellis types (the agention fork;
+                // the pinned upstream ggml does not): #3358's null-name condition, which is the
+                // same "this ggml has no trellis types" fact the quantizer's absence follows from.
+                if (!ggml_get_type_traits(t)->from_float_ref) {
+                    std::cout << "type " << (int) t << ": no host quantizer in this ggml (trellis types are not in it) - skipped\n";
+                    continue;
+                }
                 const std::vector<int> counts{2, 3};
                 const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
                 const char* known = ggml_type_name(t);   // null when this ggml has no name for the id (no trellis types in it): #3358
