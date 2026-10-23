@@ -1,4 +1,4 @@
-# Adaptive public candidate: v0.2.2 qualification
+# Adaptive public candidate: v0.2.2 and v0.2.3.1 qualification
 
 This report concerns the public-only adaptive branch for PR #1493. It excludes the separate local checkpoint bank, startup-budget integration and Windows default-token DACL correction. Private combined-runtime results do not qualify this source.
 
@@ -37,6 +37,39 @@ serve.test_lifeline.Lifeline.test_a_server_that_exits_normally_leaves_nothing_be
 | v0.2.2 with only token-default `FA` changed to `GA`, after adoption | 3 passed |
 
 The relevant `serve/lifeline.py`, `serve/test_lifeline.py` and unpatched `strata_control/private_files.py` were byte-identical between the base and candidate. The failed cases lose readable child identity and the associated ownership record. All four isolated jobs emptied. This is the independent Windows issue addressed in [PR #3399](https://github.com/Niko1221/Strata/pull/3399); its correction is not folded into this adaptive branch. The result does not establish broader Windows ACL behavior or a complete-suite pass with that correction.
+
+## Upstream v0.2.3.1 merge
+
+Merge `e124281321603ce4b37dcf2337b49b82b898e037` incorporates upstream `7ddc17a38fe7f31637e895ecfba58c2cd43d65ec` into published candidate `8f99733c628b53e2ba8d0639baddacea46479b42`, preserving both histories. Its resolved source tree is `b37e52d25927fda75f8e8fc606553afc888a05dd`.
+
+The two conflict files were `serve/server.py` and `serve/web/app.js`. The resolution keeps upstream's richer vision startup diagnostics, tool-picture handling, drafting configuration and in-memory API key, while retaining adaptive admission, confirmed child shutdown and resource-control refresh. Focused regressions check that failed admission or uncertain vision shutdown cannot silently become an omitted picture, and that a changed API key refreshes resource controls even when browser storage fails. The native adaptive contributions in `CMakeLists.txt`, `include/strata/prefill/prefill.hpp`, `src/prefill/prefill.cpp` and `src/program/generate.cpp` merged automatically; a source comparison found no lost added/deleted contribution lines. This comparison is not native build evidence.
+
+**Passed:** The resolved source completed the following server/web modules, each in a fresh interpreter, using `python -B -m unittest <module> -v`:
+
+| Module | Tests collected |
+| --- | ---: |
+| `serve.test_adaptive_0142_integration` | 25 |
+| `serve.test_adaptive_0144_integration` | 10 |
+| `serve.test_adaptive_0145_integration` | 10 |
+| `serve.test_adaptive_upstream` | 3 |
+| `serve.test_idle_parking_service` | 42 |
+| `serve.test_vision_tool_image` | 4 |
+| `serve.test_vision_start_error` | 7 |
+| `serve.test_vision_token_limit` | 8 |
+| `serve.test_tool_call_envelope` | 11 |
+| `serve.test_tool_call_unclosed` | 6 |
+| `serve.test_native_tool_parser` | 8 |
+| `serve.test_responses` | 41 |
+| `serve.test_web_api_key` | 9 |
+| `serve.test_draft_layer` | 4 |
+
+Total: 188 collected, 187 passed and one optional `jsonschema` check skipped, in 39.078 seconds including wrapper and interpreter overhead. Every module exited zero. The owned job emptied and all 54 retained child handles signaled exit.
+
+**Passed separately:** `python -B -m unittest tests.terminal.test_drafting -v` ran 40 tests in 7.746 seconds. Its launcher exited zero and its owned job emptied. This CPU-only check does not claim retained handles for every descendant: the CLI adopts the upstream token defaults described above, which deny the observer's required child-query rights.
+
+**Harness failures, preserved separately:** Two preliminary runs stopped at child-handle observation, before a complete final result. A controlled comparison on this source confirmed that opening a child with synchronization, limited-query and termination rights succeeds before `adopt_user_defaults()` and fails with Windows access-denied error 5 after adoption. Both controlled cases exited and their job emptied. Module isolation prevents a startup test's token mutation from contaminating later web tests; the terminal check uses the narrower cleanup evidence stated above. Neither preliminary run is counted as passing, and no token-default correction was added to this branch.
+
+These focused checks do not replace the earlier failed complete server run or qualify a model workload. The public branch still excludes the private checkpoint bank and startup-budget changes; upstream's new in-memory conversation-cache sizing is separate from that private implementation.
 
 ## Remaining validation
 
