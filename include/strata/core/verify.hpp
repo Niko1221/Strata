@@ -305,7 +305,14 @@ public:
     bool pl_finish(int32_t* out, std::string& err);
     /// The commit without a host sync; `ss.ple_prev` advances now (host side).  A second call for the same window
     /// (after its state was restored) replays it with another count.
-    bool pl_commit_async(int n_keep, std::string& err);
+    bool pl_commit_async(int n_keep, std::string& err, int ring_src = 0, int ring_dst = 0);
+    /// STRATA_PIPELINE_SNAP_RING (opt-in): this verifier's windows read the stage's GDN state at `*cur` (a device word
+    /// holding the base of one of the buffers in `tab`, the session's own at tab[0]), and its commit reads buffer
+    /// tab[ring_src] and writes tab[ring_dst] (pl_commit_async; every other commit 0, 0: in place in the session's
+    /// state, as without the ring), then sets *cur.  Before any graph is captured (false: one is, nothing changed).
+    bool set_gdn_ring(float* const* tab, float** cur);
+    /// The switches the ring needs (its kernels' paths: no STRATA_QFUSE, the batched commit, gdn_ring_supported)
+    static bool gdn_ring_ok(std::string& why);
     /// Fold another verifier's counters and GPU profile into this one's (the two verifiers of one stage report once).
     void absorb_stats(Verifier& o);
     /// The watchdog's line for a pipelined verifier: in flight, layers served, the GPU's ring and flags, its events.
@@ -555,6 +562,8 @@ private:
     cudaStream_t side2_ = nullptr;
     cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;
     cudaGraphExec_t commit_exec_ = nullptr;
+    float* const* gdn_ring_tab_ = nullptr;   ///< set_gdn_ring (STRATA_PIPELINE_SNAP_RING): the stage's buffers
+    float** gdn_ring_cur_ = nullptr;         ///< set_gdn_ring: the device word the windows read
 
     // mapped staging (host pointer, device alias)
     int32_t* h_tok_ = nullptr;   int32_t* m_tok_ = nullptr;     // T

@@ -863,7 +863,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // ---- the device arena: the same sequence counted, then carved
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * strata::kernels::kStepCount);
-        pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
+        pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(4 + T);   // + the ring's two words (same 256 B)
         ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
@@ -1481,6 +1481,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                       (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
                                       (int) HV, cs);
                 else
+#if !defined(STRATA_GPU_METAL)   // (the ring's kernels are CUDA / HIP only; set_gdn_ring is never called on Metal)
+                if (gdn_ring_cur_ != nullptr && !self_commit)   // STRATA_PIPELINE_SNAP_RING: the stage's current buffer
+                    gdn_conv_l2_multi_ind(gdn_ring_cur_, (int64_t) (conv - ss.gdn_state), qkv, (const float*) wc->data, hb,
+                                          (int) C, (int) (2 * HK), EPS, n, cs, tb);
+                else
+#endif
                 gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb,
                                   self_commit);
                 stamp(l, 3, grp);
@@ -1535,6 +1541,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                             (int) HK, (int) HV, t - first, keep_rows ? one_ : nullptr, cs, 0);
                     }
                 } else
+#if !defined(STRATA_GPU_METAL)
+                if (gdn_ring_cur_ != nullptr && !self_commit && !g_qfuse())   // STRATA_PIPELINE_SNAP_RING
+                    gdn_step_norm_multi_ind(gdn_ring_cur_, (int64_t) (state - ss.gdn_state), hb, (int) C, gate, beta, z_,
+                                            (const float*) wnm->data, EPS, y_, (int) HK, (int) HV, te, cs, tb);
+                else
+#endif
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
                                     (int) HV, te, self_commit ? one_ : nullptr, cs, tb, g_qfuse() ? (void*) xq_ : nullptr);
                 stamp(l, 6, grp);
@@ -2602,7 +2614,8 @@ bool Verifier::capture_commit(std::string& err) {
     }
     bool ok = true;
     try {
-        copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
+        // STRATA_PIPELINE_SNAP_RING: two more words, the buffers the GDN commit reads and writes (commit_[2 + MT], [3 + MT])
+        copy_i32_from_mapped(commit_, m_commit_, gdn_ring_tab_ != nullptr ? 4 + MT : 2 + MT, cs_);
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < lb_; ++l) (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
         // engine-latency (STRATA_COMMIT_BATCH, default on; =0 keeps the per-layer loop): every GDN layer's conv history and
@@ -2623,6 +2636,20 @@ bool Verifier::capture_commit(std::string& err) {
                     norms_ok = need(LayerView(*wt_, l), "ssm_norm.weight", err) != nullptr;
                 }
             if (!norms_ok) ok = false;
+#if !defined(STRATA_GPU_METAL)
+            else if (n_gdn > 0 && gdn_ring_tab_ != nullptr) {   // STRATA_PIPELINE_SNAP_RING: buffer to buffer
+                gdn_batched = gdn_commit_layers_ring(
+                    gdn_ring_tab_, commit_ + 2 + MT, gdn_ring_cur_, (int64_t) (gdn_index - ss.gdn_ord0) * (int64_t) gdn_floats,
+                    (int64_t) gdn_floats, (int64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size,
+                    qkv_L_ + (size_t) gdn_index * MT * C, MT * C, h_L_ + (size_t) gdn_index * MT * C, MT * C,
+                    gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV, MT * HV, (int) C,
+                    (int) g.ssm_k_heads, (int) HV, (int) MT, (int) n_gdn, commit_, cs_);
+                if (!gdn_batched) {
+                    err = "verify commit: the GDN snapshot ring needs the batched commit (STRATA_PIPELINE_SNAP_RING)";
+                    ok = false;
+                }
+            }
+#endif
             else if (n_gdn > 0)
                 gdn_batched = gdn_commit_layers(
                     ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats, (int64_t) gdn_floats,
@@ -2665,6 +2692,11 @@ bool Verifier::capture_commit(std::string& err) {
             } else if (!is_qsa_layer(g, l) && gdn_batched) {
                 ++gdn_index;
             } else if (!is_qsa_layer(g, l)) {
+                if (gdn_ring_tab_ != nullptr) {   // the per-layer commit writes the session's state in place
+                    err = "verify commit: the GDN snapshot ring needs the batched commit (STRATA_PIPELINE_SNAP_RING)";
+                    ok = false;
+                    break;
+                }
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
@@ -3389,6 +3421,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
+    if (gdn_ring_tab_ != nullptr) h_commit_[2 + max_t_] = h_commit_[3 + max_t_] = 0;   // the ring: in place, buffer 0
     if (last_t_ == 1 && !always_publish_ && one_token_self_commit()) {
         // a one-token window has advanced the state itself (record_window): no commit graph
     } else {
@@ -4405,10 +4438,14 @@ bool Verifier::pl_finish(int32_t* out, std::string& err) {
     return true;
 }
 
-bool Verifier::pl_commit_async(int n_keep, std::string& err) {
+bool Verifier::pl_commit_async(int n_keep, std::string& err, int ring_src, int ring_dst) {
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
     if (commit_exec_ == nullptr || ev_commit_ == nullptr) { err = "verify: pipelined commit not prepared"; return false; }
+    if ((ring_src != 0 || ring_dst != 0) && gdn_ring_tab_ == nullptr) {
+        err = "verify: a GDN ring commit on a verifier without the ring";
+        return false;
+    }
     const Clock::time_point t0 = Clock::now();
     if (commit_live_) {   // its graph reads the words below when it starts: the previous one has (a window ago)
         cudaError_t q;
@@ -4418,6 +4455,10 @@ bool Verifier::pl_commit_async(int n_keep, std::string& err) {
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;
     for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
+    if (gdn_ring_tab_ != nullptr) {   // STRATA_PIPELINE_SNAP_RING: the buffers this commit reads and writes
+        h_commit_[2 + max_t_] = ring_src;
+        h_commit_[3 + max_t_] = ring_dst;
+    }
     std::atomic_thread_fence(std::memory_order_seq_cst);
     const cudaError_t le = cudaGraphLaunch(commit_exec_, cs_);
     if (le != cudaSuccess) { err = std::string("verify: commit launch: ") + cudaGetErrorString(le); return false; }
@@ -4430,6 +4471,34 @@ bool Verifier::pl_commit_async(int n_keep, std::string& err) {
             ss_->ple_prev[1] = last_tokens_[t];
         }
     ms_commit += ms_since(t0);
+    return true;
+}
+
+bool Verifier::gdn_ring_ok(std::string& why) {
+#if defined(STRATA_GPU_METAL)
+    why = "the Metal engine has no ring kernels";
+    return false;
+#else
+    if (g_qfuse()) { why = "STRATA_QFUSE is on (the window's recurrence then writes the q8_1 outputs)"; return false; }
+    if (fuse_convab_on()) { why = "STRATA_FUSE_CONVAB is on"; return false; }
+    if (const char* e = std::getenv("STRATA_COMMIT_BATCH"); e != nullptr && e[0] == '0') {
+        why = "STRATA_COMMIT_BATCH=0 (the per-layer commit writes in place)";
+        return false;
+    }
+    if (!strata::kernels::gdn_ring_supported()) {
+        why = "STRATA_GDN_SPLIT=1, STRATA_GDN_COMMIT_SPLIT=0 or STRATA_DBG_GDN=1";
+        return false;
+    }
+    return true;
+#endif
+}
+
+bool Verifier::set_gdn_ring(float* const* tab, float** cur) {
+    if (commit_exec_ != nullptr) return false;
+    for (int T = 0; T < 9; ++T)
+        if (exec_[T] != nullptr || exec_nr_[T] != nullptr) return false;
+    gdn_ring_tab_ = tab;
+    gdn_ring_cur_ = cur;
     return true;
 }
 

@@ -73,6 +73,15 @@ __global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const
     gdn_conv_l2_body(blockIdx.x, blockIdx.y, hist, qkv, w, h, C, qk_heads, eps, t_begin, commit);
 }
 
+// STRATA_PIPELINE_SNAP_RING: gdn_conv_l2_multi_kernel's verify path (no commit) on the history at *cur + off
+__global__ void __launch_bounds__(S) gdn_conv_l2_multi_ind_kernel(float* const* __restrict__ cur, long long off,
+                                                                  const float* __restrict__ qkv,
+                                                                  const float* __restrict__ w, float* __restrict__ h,
+                                                                  int C, int qk_heads, float eps, int t_begin) {
+    float* hist = *cur + off;
+    gdn_conv_l2_body(blockIdx.x, blockIdx.y, hist, qkv, w, h, C, qk_heads, eps, t_begin, false);
+}
+
 __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __restrict__ qkv, int C,
                                        const int32_t* __restrict__ n_keep) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -264,6 +273,97 @@ __device__ __forceinline__ void gdn_step_commit_body(float* __restrict__ state, 
     for (int r = 0; r < RPG; ++r) base[r * row_stride] = s[r];
 }
 
+// STRATA_PIPELINE_SNAP_RING: gdn_step_commit_body reading the state at `src` and writing it at `dst` (the same
+// buffer: in place, as gdn_step_commit_body).  Every statement is gdn_step_commit_body's, only the load and the store
+// take their own base.
+__device__ __forceinline__ void gdn_step_commit_body_oop(const float* src, float* dst, const float* __restrict__ hbuf,
+                                                         int C, const float* __restrict__ gate,
+                                                         const float* __restrict__ beta, int h_k, int h_v, int n) {
+    __shared__ float sk[S];
+    __shared__ float red[RG][32];
+    const int head = blockIdx.x;
+    const int col_local = threadIdx.x;
+    const int col = blockIdx.y * 32 + col_local;
+    const int rg = threadIdx.y;
+    const int tid = rg * 32 + col_local;    // 0 .. 127
+    const int qh = head % h_k;
+    const int qk = S * h_k;
+    float s[RPG];
+    const size_t at = ((size_t) (rg * RPG) * h_v + head) * S + col;
+    const float* base_in = src + at;
+    float* base_out = dst + at;
+    const size_t row_stride = (size_t) h_v * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) s[r] = base_in[r * row_stride];
+    for (int t = 0; t < n; ++t) {
+        const float* ht = hbuf + (size_t) t * C;
+        __syncthreads();
+        sk[tid] = ht[qk + qh * S + tid];
+        __syncthreads();
+        const float g = __expf(gate[(size_t) t * h_v + head]);
+        float kv = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
+        red[rg][col_local] = kv;
+        __syncthreads();
+        const float kv_col = red[0][col_local] + red[1][col_local] + red[2][col_local] + red[3][col_local];
+        const float delta = (ht[2 * qk + head * S + col] - g * kv_col) * beta[(size_t) t * h_v + head];
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) s[r] = fmaf(g, s[r], sk[rg * RPG + r] * delta);
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base_out[r * row_stride] = s[r];
+}
+
+// STRATA_PIPELINE_SNAP_RING: gdn_step_commit_layers_kernel from buffer tab[sel[0]] into tab[sel[1]]; one thread sets
+// *cur = tab[sel[1]] (the buffer the next window on the stream reads), whatever n_keep says
+__global__ void __launch_bounds__(32 * RG) gdn_step_commit_layers_ring_kernel(float* const* __restrict__ tab,
+                                                                              const int32_t* __restrict__ sel,
+                                                                              float** __restrict__ cur, long long off0,
+                                                                              long long state_stride,
+                                                                              const float* __restrict__ hbuf,
+                                                                              long long h_stride, int C,
+                                                                              const float* __restrict__ gate,
+                                                                              const float* __restrict__ beta,
+                                                                              long long gb_stride, int h_k, int h_v,
+                                                                              const int32_t* __restrict__ n_keep) {
+    float* const in_base = tab[sel[0]];
+    float* const out_base = tab[sel[1]];
+    if (cur != nullptr && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && threadIdx.x == 0 && threadIdx.y == 0)
+        *cur = out_base;
+    const int n = *n_keep;
+    if (n <= 0) return;
+    const long long z = blockIdx.z;
+    const long long o = off0 + z * state_stride;
+    gdn_step_commit_body_oop(in_base + o, out_base + o, hbuf + z * h_stride, C, gate + z * gb_stride,
+                             beta + z * gb_stride, h_k, h_v, n);
+}
+
+// STRATA_PIPELINE_SNAP_RING: gdn_conv_commit_layers_kernel from buffer tab[sel[0]] into tab[sel[1]] (`off0` already
+// at the first layer's conv history)
+__global__ void gdn_conv_commit_layers_ring_kernel(float* const* __restrict__ tab, const int32_t* __restrict__ sel,
+                                                   long long off0, long long hist_stride,
+                                                   const float* __restrict__ qkv0, long long qkv_stride, int C,
+                                                   const int32_t* __restrict__ n_keep) {
+    const int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= C) return;
+    const int n = *n_keep;
+    if (n <= 0) return;
+    const long long o = off0 + (long long) blockIdx.y * hist_stride;
+    const float* hist = tab[sel[0]] + o;
+    float* out = tab[sel[1]] + o;
+    const float* qkv = qkv0 + (long long) blockIdx.y * qkv_stride;
+    float seq[3];
+#pragma unroll
+    for (int j = 0; j < 3; ++j) {
+        const int src = n + j;          // the last three of [hist(3) | x_0..x_{n-1}]
+        seq[j] = src < 3 ? hist[c * 3 + src] : qkv[(size_t) (src - 3) * C + c];
+    }
+    out[c * 3] = seq[0];
+    out[c * 3 + 1] = seq[1];
+    out[c * 3 + 2] = seq[2];
+}
+
 // S26 (STRATA_QFUSE=1): the q8_1 image of a 32-column block, written by the warp that holds those columns with
 // native_quantize_q8_1_kernel's quantizer (the same XOR-tree max and sum, d = amax / 127, roundf(x / d), ds = (d, sum)).
 struct GdnQ81 { half2 ds; int8_t qs[32]; };
@@ -282,7 +382,9 @@ __device__ __forceinline__ void gdn_q8_1_store(GdnQ81* __restrict__ xq, size_t i
     if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);   // #606: clamped (the QFUSE path bypassed the finite helper)
 }
 
-template <bool ALL_OUT, bool Q>
+// IND (STRATA_PIPELINE_SNAP_RING): the state is *ind + ind_off, read here (the stage's current GDN buffer);
+// nothing else differs
+template <bool ALL_OUT, bool Q, bool IND = false>
 __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __restrict__ state,
                                                                      const float* __restrict__ hbuf, int C,
                                                                      const float* __restrict__ gate,
@@ -291,7 +393,10 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
                                                                      const float* __restrict__ gamma, float eps,
                                                                      float* __restrict__ y, int h_k, int h_v, int T,
                                                                      const int32_t* __restrict__ n_keep, int t_out_begin,
-                                                                     GdnQ81* __restrict__ xq, GdnGroups grp = {}) {
+                                                                     GdnQ81* __restrict__ xq, GdnGroups grp = {},
+                                                                     float* const* __restrict__ ind = nullptr,
+                                                                     long long ind_off = 0) {
+    if constexpr (IND) state = *ind + ind_off;
     if (grp.n > 0) {   // group blockIdx.y - its slot's state and its rows of the window's buffers
         const int gi = blockIdx.y, f = grp.first[gi];
         state = grp.state[gi];
@@ -1084,6 +1189,68 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
         state, (long long) state_stride, h, (long long) h_stride, conv_channels, gate, beta, (long long) gb_stride, h_k, h_v,
         n_keep);
     check("gdn_commit_layers");
+    return true;
+}
+
+bool gdn_ring_supported() {
+    // the window's recurrence must take gdn_step_norm_multi_kernel (not the S25 split) and the commit gdn_commit_layers'
+    // state-only kernel: the switches gdn_step_norm_multi / gdn_commit_layers read
+    static const bool ok = [] {
+        const char* sp = std::getenv("STRATA_GDN_SPLIT");
+        const char* cs = std::getenv("STRATA_GDN_COMMIT_SPLIT");
+        const char* dbg = std::getenv("STRATA_DBG_GDN");
+        return !((sp && sp[0] == '1') || (cs && cs[0] == '0') || (dbg && dbg[0] == '1'));
+    }();
+    return ok;
+}
+
+void gdn_conv_l2_multi_ind(float* const* cur, int64_t off, const float* qkv, const float* conv_w, float* h, int channels,
+                           int qk_heads, float eps, int n_tok, void* stream, int t_begin) {
+    if (!cur || !qkv || !conv_w || !h || channels % S != 0 || n_tok < 1 || n_tok > kVerifyMaxT) {
+        std::fprintf(stderr, "gdn_conv_l2_multi_ind: invalid arguments\n");
+        std::exit(1);
+    }
+    gdn_conv_l2_multi_ind_kernel<<<dim3((unsigned) (channels / S), (unsigned) n_tok), S, 0, (cudaStream_t) stream>>>(
+        cur, (long long) off, qkv, conv_w, h, channels, qk_heads, eps, t_begin);
+    check("gdn_conv_l2_multi_ind");
+}
+
+void gdn_step_norm_multi_ind(float* const* cur, int64_t off, const float* h, int conv_channels, const float* gate,
+                             const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
+                             int n_tok, void* stream, int t_out_begin) {
+    if (!cur || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k || n_tok < 1 || n_tok > kVerifyMaxT ||
+        !gdn_ring_supported()) {
+        std::fprintf(stderr, "gdn_step_norm_multi_ind: invalid arguments\n");
+        std::exit(1);
+    }
+    // gdn_step_norm_multi's verify path (n_keep null, no q8_1 outputs, not the S25 split): the same kernel
+    const dim3 g1((unsigned) h_v), b1(S, RG);
+    const bool all_out = t_out_begin <= 0;
+    if (all_out)
+        gdn_step_norm_multi_kernel<true, false, true><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, n_tok, nullptr, 0, nullptr, GdnGroups{}, cur,
+            (long long) off);
+    else
+        gdn_step_norm_multi_kernel<false, false, true><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, n_tok, nullptr, t_out_begin, nullptr,
+            GdnGroups{}, cur, (long long) off);
+    check("gdn_step_norm_multi_ind");
+}
+
+bool gdn_commit_layers_ring(float* const* tab, const int32_t* sel, float** cur, int64_t off0, int64_t state_stride,
+                            int64_t conv_off, const float* qkv, int64_t qkv_stride, const float* h, int64_t h_stride,
+                            const float* gate, const float* beta, int64_t gb_stride, int conv_channels, int h_k, int h_v,
+                            int n_max, int n_layers, const int32_t* n_keep, void* stream) {
+    if (!gdn_ring_supported() || tab == nullptr || sel == nullptr || n_layers <= 0 || n_layers > 65535 || n_max < 1 ||
+        n_max > kVerifyMaxT || n_keep == nullptr || h_v <= 0 || h_k <= 0 || h_v % h_k != 0)
+        return false;
+    cudaStream_t st = (cudaStream_t) stream;
+    gdn_conv_commit_layers_ring_kernel<<<dim3((unsigned) ((conv_channels + 255) / 256), (unsigned) n_layers), 256, 0, st>>>(
+        tab, sel, (long long) (off0 + conv_off), (long long) state_stride, qkv, (long long) qkv_stride, conv_channels, n_keep);
+    gdn_step_commit_layers_ring_kernel<<<dim3((unsigned) h_v, 4u, (unsigned) n_layers), dim3(32, RG), 0, st>>>(
+        tab, sel, cur, (long long) off0, (long long) state_stride, h, (long long) h_stride, conv_channels, gate, beta,
+        (long long) gb_stride, h_k, h_v, n_keep);
+    check("gdn_commit_layers_ring");
     return true;
 }
 
