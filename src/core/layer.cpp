@@ -1117,13 +1117,17 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
         cudaMemsetAsync(st.v_pool, 0, rows * s.head_dim * 2, cs);
     }
     // WP-2a window side pools (fp16, row derived from the cell): zeroed like the rest, so a fresh sequence
-    // matches the reference's own zeros() for the cells a windowed reader names too. The tags go to 0 with them:
-    // no ring row names a cell a fresh sequence has not written, so a windowed reader falls back to the blocks.
+    // matches the reference's own zeros() for the cells a windowed reader names too. The tags are left at the
+    // empty sentinel (0xFF, see below) so no ring row names a cell a fresh sequence has not written: a
+    // windowed reader then falls back to the blocks.
     if (st.k_win != nullptr && st.v_win != nullptr) {
         const size_t wb = (size_t) qsa_win_tensor_bytes(s);
         cudaMemsetAsync(st.k_win, 0, wb, cs);
         cudaMemsetAsync(st.v_win, 0, wb, cs);
-        cudaMemsetAsync(st.win_tag, 0, (size_t) qsa_win_ring() * sizeof(int32_t), cs);
+        // Tags are the empty sentinel (0xFF = -1 as int32): no cell index is ever -1, so a row that has not
+        // been written (or whose tag went stale) never names a real cell and the reader falls back to the
+        // quantized block. 0 (the old init) could not be distinguished from a real cell 0.
+        cudaMemsetAsync(st.win_tag, 0xFF, (size_t) qsa_win_ring() * sizeof(int32_t), cs);
     }
     // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
     // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
