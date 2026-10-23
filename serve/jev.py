@@ -221,7 +221,9 @@ def _label_token_problem(svc, qdefs):
     takes `[:1]`, which silently scored a truncated multi-token label - the failure this refuses.
     """
     for q in qdefs:
-        if q["type"] != "choice":
+        # score labels are rendered as "0".."9" and read the same way (encode, then [:1]), so they need
+        # the same guarantee: a label that is not one token used to be scored on its first token here too
+        if q["type"] not in ("choice", "score"):
             continue
         for lbl in q["render_labels"]:
             n = len(svc.tok.encode(lbl, parse_special=True))
@@ -627,6 +629,10 @@ def _captured(engine, want: int) -> bool:
     BROWAT addresses captured rows by absolute position but falls back to addressing the last window when
     nothing was captured - and a window index read from a prompt position is a neighbouring row, answered
     silently.  Naming N positions and verifying N were kept is the only thing that keeps that impossible.
+
+    A COUNT is also an IDENTITY check here: the engine only ever captures positions it was asked for
+    (`capture_window_rows` iterates the named list), so captured ⊆ named and |captured| == |named| implies
+    captured == named.  If that subset property ever weakens, this must become a set comparison.
     """
     return _captured_count(engine) == want
 

@@ -96,7 +96,10 @@ def _strict_problem(j: dict) -> str:
                 t = float(j[f])
             except (TypeError, ValueError):
                 return f"{f} is not a number"
-            if t <= 0.05 or t >= 10.0:
+            # isfinite FIRST: every comparison against NaN is False, so a NaN temperature used to slip
+            # through the range test below and put NaN probabilities straight into the answer body
+            # (json accepts bare NaN/Infinity, so such a file parses). Found by the MiniMax review.
+            if not math.isfinite(t) or t <= 0.05 or t >= 10.0:
                 return (f"{f}={t:g} is at/over the degenerate edge (apply() only rejects <=0.01; "
                         f"a 1/{t:g} exponent makes the readout near one-hot or near-uniform)")
     return ""
