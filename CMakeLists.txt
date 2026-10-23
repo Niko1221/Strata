@@ -1506,6 +1506,12 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(draft_cap_test src/core/draft_cap_test.cpp)
   target_include_directories(draft_cap_test PRIVATE include)
   add_test(NAME draft_cap_test COMMAND draft_cap_test)
+  # the q36 engine's --mtp-sampled judge: seed-for-seed text equal to the plain sampler (match) and the joint of four
+  # tokens against the exact chain (match, q; also gated and over a --draft-vocab row) on a toy model, three wrong
+  # rules as controls (header-only, CPU)
+  add_executable(q36_sampling_test src/qwen35/q36_sampling_test.cpp)
+  target_include_directories(q36_sampling_test PRIVATE include)
+  add_test(NAME q36_sampling_test COMMAND q36_sampling_test)
   # the f32 -> bf16 rounding against ggml's, NaN included, over every f32 bit pattern (header-only, CPU)
   add_executable(bf16_bits_test src/kernels/bf16_bits_test.cpp)
   target_include_directories(bf16_bits_test PRIVATE include)

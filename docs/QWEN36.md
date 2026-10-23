@@ -293,6 +293,14 @@ on the `strata-q36` command line.
   the new expert enters the tables only once its copy has landed (checked at the start of the next forward), so no slot is read before its
   bytes arrived. `--async-swaps` takes the decode ones, `--async-after-prompt` the after-prompt ones too (see "Slot swaps" below). They need
   the pinned expert copy.
+- **`--mtp-sampled match | q`** (with `--mtp N`): sampled requests draft with the MTP block too (without it only greedy ones do).
+  `match` drafts the block's greedy pick and keeps each window row's token as a plain decode step samples it, so a fixed seed gives the
+  same text as without drafts (until a near tie falls the other way in the last bits); `q` samples the drafts from the block's own
+  distribution and keeps them by the speculative-sampling rule, so the text is a sample of the same distribution but not the same
+  text. **`--spec-min-p P`** (the main path's name) ends a step's drafts at the first one the block is less sure of than P (for `q`:
+  the block's top probability, which keeps the rule exact). `q` needs `top_k` <= 64 and a temperature above 0 and at least
+  `STRATA_SPEC_MIN_TEMP`; other sampled requests use `match`. With `--draft-vocab N` the drafts come from the first N ids, and the
+  penalties apply to the ids the draft row has.
 - **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
   hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
   end the experts in the slots then, ranked by the routing counted since the warm-up, are saved to F (a `.tmp` beside it renamed over
@@ -393,4 +401,7 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
 - `q36_par_bench.py`: the aggregate-throughput A/B against `llama-server -np N`.
 - `q36_attn_parity` (built with the tests or `-DSTRATA_PARITY_Q36_ATTN=ON`, GPU, no model): the grouped-query attention kernels (fp32,
   fp16, int8 and k8v4 cells) against a double-precision reference.
+- `q36_sampling_test` (CPU): `--mtp-sampled`'s rules on a toy model: `match` gives the plain sampler's text seed for seed, `match` and
+  `q` give the exact joint of four tokens (with `--spec-min-p` and a `--draft-vocab` row too), and three wrong rules fail.
+- `q36_spec_sampled.py`: `--mtp-sampled` on the real model (the distribution of short continuations against `off`, and the speed).
 - `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.

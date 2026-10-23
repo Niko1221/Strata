@@ -16,7 +16,7 @@
 //
 // Modes: --serve (serve/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface; --tokens-file F reads IDS from a
-// file), --bench-pp N / --bench-tg N.  The opt-ins (--kv, --gqa-attn, ...): docs/QWEN36.md.
+// file), --bench-pp N / --bench-tg N.  The opt-ins (--kv, --gqa-attn, --mtp-sampled, ...): docs/QWEN36.md.
 #include <fstream>
 #include <iterator>
 
@@ -35,6 +35,7 @@
 #include "q36_attn.cuh"
 #include "q36_pattn.cuh"
 #include "q36_gdn.cuh"
+#include "q36_sampling.hpp"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -681,6 +682,20 @@ __global__ void k_argmax(const float* x, int n, int32_t* out, float* pv, int32_t
     }
 }
 constexpr int kArgBlocks = 128;   // (the row stride of k_argmax's partials)
+/// --spec-min-p: the softmax probability of the row's pick (`pick`, k_argmax's), one block: how sure the draft head is
+__global__ void k_pick_prob(const float* x, int n, const int32_t* pick, float* out) {
+    __shared__ float bs[1024];
+    const float mx = x[*pick];
+    float s = 0.f;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) s += __expf(x[i] - mx);
+    bs[threadIdx.x] = s;
+    __syncthreads();
+    for (int k = blockDim.x / 2; k > 0; k >>= 1) {
+        if ((int) threadIdx.x < k) bs[threadIdx.x] += bs[threadIdx.x + k];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *out = 1.f / bs[0];
+}
 
 unsigned grid1(int64_t n, int b = kThreads) { return (unsigned) ((n + b - 1) / b); }
 
@@ -1342,6 +1357,7 @@ struct Engine {
     // the MTP block (when loaded)
     float *mtp_cat = nullptr, *hmtp = nullptr, *logits_m = nullptr;
     int32_t *tok_m = nullptr, *pos0_m = nullptr, *pick_m = nullptr;
+    float* prob_m = nullptr;   // --spec-min-p: the probability of pick_m under the draft head's softmax
     // graphs: [0] the decode step, [T] a verify window of T rows, mtp1 the MTP draft step
     // (the graphs hold the current session's state pointers as kernel arguments: one set per session)
     struct GSet {
@@ -1382,7 +1398,10 @@ struct Engine {
     int cache_swaps = 1024;  // the history window: copy at most this many experts per 32 rows
     int decode_swaps = 8;    // slot replacements per kRebalanceEvery decode rows over all layers (--decode-swaps)
     int gqa_from = 8192;     // the grouped-query kernel from this many cells (graph mode: a context at least this big)
-    int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
+    int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only, unless --mtp-sampled)
+    int mtp_sampled = 0;   // --mtp-sampled: sampled requests draft too (1: match, 2: q; SpecRule)
+    float spec_min_p = 0.f;   // --spec-min-p: a draft the block is less sure of ends the step's drafts (0: always mtp_d)
+    int last_d = 0;           // the drafts the last spec_step verified (mtp_d, or fewer: the gate, the rebalance boundary)
 
     // ---- sessions: the conversation states.  One for a single-request engine; --batch N keeps N, each with its own
     // recurrent state and KV cache, so N requests run at once: their rows share one decode window (forward_rows).  The
@@ -1838,6 +1857,7 @@ struct Engine {
             tok_m = dalloc_t<int32_t>(T);
             pos0_m = dalloc_t<int32_t>(1);
             pick_m = dalloc_t<int32_t>(1);
+            prob_m = dalloc(1);
         }
         sess.resize((size_t) n_sess);
         gsets.resize((size_t) n_sess);
@@ -2642,8 +2662,9 @@ struct Engine {
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         const Mat& hd = m->head;
-        if (!fast_k || draft_n <= 0 || draft_n >= g.n_vocab || draft_n % 8 != 0 || hd.type != 8 || hd.n_in != N || N / 32 != 64) {
+        if (draft_cols() == (int) g.n_vocab) {
             head_rows(hn, 1, logits_m, pick_m);
+            if (spec_min_p > 0.f) k_pick_prob<<<1, 1024, 0, st>>>(logits_m, (int) g.n_vocab, pick_m, prob_m);
             return;
         }
         quant(hn, N, 1, q8);
@@ -2658,6 +2679,7 @@ struct Engine {
         }
         k_argmax<<<dim3(kArgBlocks, 1), kThreads, 0, st>>>(logits_m, draft_n, pick_m, amv, ami, false);
         k_argmax<<<dim3(1, 1), kThreads, 0, st>>>(logits_m, kArgBlocks, pick_m, amv, ami, true);
+        if (spec_min_p > 0.f) k_pick_prob<<<1, 1024, 0, st>>>(logits_m, draft_n, pick_m, prob_m);
     }
 
     /// The MTP block over T rows: row t reads token tok_m[t] at position p0 + t (also at *pos0_m) and the seed hidden
@@ -3638,8 +3660,39 @@ struct Engine {
     /// `cancel`: a stop asked for before the state moves keeps only x (the caller then emits no draft), so that a request
     /// stopped mid-answer leaves the state at the tokens it has shown: a conversation that continues from them (the server's
     /// hand-over of a stopped request to a batch slot) reuses it instead of reading them again.
+    /// `sp` (--mtp-sampled, a sampled request): `draft` replaces the block's greedy pick of draft d by its own choice from
+    /// the block's logits (host, the first n token ids; null keeps the greedy pick), `judge` replaces the compare with the
+    /// window's greedy picks: it reads the window's rows (host_logits_row) and returns a, writing picks[0 .. a].
+    /// `draft` also gives the probability of its choice (what --spec-min-p gates on, as the main path's sampled drafts).
+    struct SpecSampled {
+        std::function<int32_t(int d, const int32_t* prev, const float* lg, int n, float* prob)> draft;
+        std::function<int(int D, const std::vector<int32_t>& drafts, int32_t* picks)> judge;
+    };
+    std::vector<float> lg_draft;   // (the block's logits row on the host, for SpecSampled::draft)
+    /// the token ids the draft head scores (head_draft's subset, or the whole vocabulary)
+    int draft_cols() const {
+        const auto& g = m->g;
+        const Mat& hd = m->head;
+        const bool sub = fast_k && draft_n > 0 && draft_n < g.n_vocab && draft_n % 8 == 0 && hd.type == 8 &&
+                         hd.n_in == g.n_embd && g.n_embd / 32 == 64;
+        return sub ? draft_n : (int) g.n_vocab;
+    }
+    /// draft d after its MTP call (pick_m and, with --spec-min-p, prob_m on the device): the block's pick, or sp's
+    /// choice; *prob its probability (1 without the gate)
+    int32_t take_draft(const SpecSampled* sp, int d, const std::vector<int32_t>& drafts, float* prob) {
+        CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
+        if (spec_min_p > 0.f) CK(cudaMemcpyAsync(hpin + 12, prob_m, 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        *prob = 1.f;
+        if (spec_min_p > 0.f) std::memcpy(prob, hpin + 12, 4);
+        if (sp == nullptr || !sp->draft) return hpin[2];
+        lg_draft.resize((size_t) draft_cols());
+        CK(cudaMemcpyAsync(lg_draft.data(), logits_m, lg_draft.size() * 4, cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        return sp->draft(d, drafts.data(), lg_draft.data(), (int) lg_draft.size(), prob);
+    }
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks,
-                  const std::atomic<bool>* cancel = nullptr) {
+                  const std::atomic<bool>* cancel = nullptr, const SpecSampled* sp = nullptr) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
@@ -3657,10 +3710,12 @@ struct Engine {
         CK(cudaMemcpyAsync(seeds + fix.size() * (size_t) N, hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         forward_mtp(T0, pos - (int64_t) fix.size(), seeds, D > 0, false);
         drafts.assign((size_t) D, 0);
+        // --spec-min-p (the main path's rule, src/program/generate.cpp): draft d joins the window only if the block gave it
+        // at least spec_min_p, and the first one below ends the drafting - a step of fewer rows (0 drafts: a decode step)
+        float pr = 1.f;
         if (D > 0) {
-            CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
-            CK(cudaStreamSynchronize(st));
-            drafts[0] = hpin[2];
+            drafts[0] = take_draft(sp, 0, drafts, &pr);
+            if (pr < spec_min_p) D = 0;
         }
         int last_row = T0 - 1;   // the row of the previous MTP call whose output seeds the next draft
         for (int d = 1; d < D; ++d) {   // chained: (the block's own output, the last draft) at the next position
@@ -3672,10 +3727,11 @@ struct Engine {
             last_row = 0;
             if (mtp_graph) graph_run(gs().gm1, [&] { forward_mtp(1, pos + d, seeds, true, use_graph); });
             else forward_mtp(1, pos + d, seeds, true, false);
-            CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
-            CK(cudaStreamSynchronize(st));
-            drafts[(size_t) d] = hpin[2];
+            drafts[(size_t) d] = take_draft(sp, d, drafts, &pr);
+            if (pr < spec_min_p) D = d;   // (ends the loop)
         }
+        drafts.resize((size_t) D);
+        last_d = D;
         // the verify window
         const int T = D + 1;
         hpin[16] = x_tok;
@@ -3689,9 +3745,13 @@ struct Engine {
         CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         int a = 0;
-        while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+        if (sp != nullptr && sp->judge) {
+            a = sp->judge(D, drafts, picks);
+        } else {
+            while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
+            for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
+        }
         if (cancel != nullptr && cancel->load()) a = 0;
-        for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
         commit(a + 1);
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         pos += a + 1;
@@ -4138,52 +4198,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
 }
 
 // ------------------------------------------------------------------------------------------------ sampling
-struct Sampling {
-    float temperature = 0.f, top_p = 1.f, min_p = 0.f, repeat = 1.f, freq = 0.f, present = 0.f;
-    int top_k = 20, last_n = 0;
-    unsigned long long seed = 0;
-    bool needs_logits() const { return temperature > 0.f || repeat != 1.f || freq != 0.f || present != 0.f; }
-};
-
-int sample(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
-    if (s.last_n != 0 && (s.repeat != 1.f || s.freq != 0.f || s.present != 0.f)) {
-        std::map<int, int> cnt;
-        const size_t from = s.last_n < 0 || (size_t) s.last_n >= hist.size() ? 0 : hist.size() - (size_t) s.last_n;
-        for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
-        for (const auto& [id, c] : cnt) {
-            if (id < 0 || (size_t) id >= lg.size()) continue;   // (a history token past a --draft-vocab row is not in it)
-            float& v = lg[(size_t) id];
-            if (s.repeat != 1.f) v = v > 0 ? v / s.repeat : v * s.repeat;
-            v -= (float) c * s.freq + s.present;
-        }
-    }
-    if (s.temperature <= 0.f) return (int) (std::max_element(lg.begin(), lg.end()) - lg.begin());
-    const int kk = std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, (int) lg.size()));
-    std::vector<int> idx(lg.size());
-    for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int) i;
-    std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(), [&](int a, int b) { return lg[a] > lg[b]; });
-    idx.resize((size_t) kk);
-    std::vector<double> p(idx.size());
-    const double mx = lg[(size_t) idx[0]];
-    double sum = 0;
-    for (size_t i = 0; i < idx.size(); ++i) sum += (p[i] = std::exp((lg[(size_t) idx[i]] - mx) / s.temperature));
-    size_t keep = idx.size();
-    double cum = 0;
-    for (size_t i = 0; i < idx.size(); ++i) {
-        if (p[i] / sum < s.min_p * (p[0] / sum)) { keep = i; break; }
-        cum += p[i] / sum;
-        if (cum >= s.top_p) { keep = i + 1; break; }
-    }
-    keep = std::max<size_t>(1, keep);
-    double tot = 0;
-    for (size_t i = 0; i < keep; ++i) tot += p[i];
-    std::uniform_real_distribution<double> u(0.0, tot);
-    double r = u(rng);
-    for (size_t i = 0; i < keep; ++i) {
-        if ((r -= p[i]) <= 0) return idx[i];
-    }
-    return idx[keep - 1];
-}
+// (q36_sampling.hpp: Sampling, sample(), and --mtp-sampled's SpecJudge)
+using namespace strata::qwen35::sampling;
 
 std::vector<int32_t> parse_ids(const char* s) {
     std::vector<int32_t> v;
@@ -4713,11 +4729,30 @@ struct Serve {
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
         // greedy requests alone with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
-        // text); sampled ones, and requests beside others, one token at a time
-        const bool spec = E.mtp_d > 0 && !smp.needs_logits() && !adm;
+        // text); sampled ones too with --mtp-sampled (SpecJudge: the text is a sample of the target chain); other sampled
+        // ones, and requests beside others, one token at a time
+        SpecRule rule = SpecRule::off;
+        if (smp.needs_logits() && E.mtp_sampled > 0) {
+            // q needs a temperature, and spec_prob.hpp's lists hold 64 ids (the server's top_k is 1 .. 64);
+            // STRATA_SPEC_MIN_TEMP (Flash-Next's gate): below it the block's greedy drafts (match)
+            const bool q_ok = smp.temperature > 0.f && smp.top_k <= 64 && smp.temperature >= strata::core::spec_min_temp();
+            rule = E.mtp_sampled == 2 && q_ok ? SpecRule::q : SpecRule::match;
+        }
+        const bool spec = E.mtp_d > 0 && (!smp.needs_logits() || rule != SpecRule::off) && !adm;
         std::vector<int32_t> fix, drafts;
         int32_t picks[16];
         int nx = smp.needs_logits() ? -1 : E.greedy();
+        SpecJudge sj{rule, smp, hist, rng};
+        Engine::SpecSampled ssp;
+        if (rule == SpecRule::q)
+            ssp.draft = [&](int d, const int32_t* prev, const float* row, int n, float* prob) {
+                return sj.draft(d, prev, row, n, prob);
+            };
+        if (rule != SpecRule::off)
+            ssp.judge = [&](int D, const std::vector<int32_t>& dr, int32_t* pk) {
+                return sj.judge([&](int r, std::vector<float>& row) { E.host_logits_row(r, row); }, D, dr, pk);
+            };
+        bool decided = false;   // nx is a sampled speculative step's pick (the logits on the device are not its row's)
         if (adm) {
             if (smp.needs_logits()) {
                 E.host_logits(lg);
@@ -4753,10 +4788,11 @@ struct Serve {
             return;
         }
         for (;;) {
-            if (smp.needs_logits()) {
+            if (smp.needs_logits() && !decided) {
                 E.host_logits(lg);
                 nx = sample(lg, smp, hist, rng);
             }
+            decided = false;
             auto emit = [&](int t) {   // false: the answer ends here
                 std::printf("T %d\n", t);
                 std::fflush(stdout);
@@ -4770,8 +4806,8 @@ struct Serve {
             if (!emit(nx)) break;
             if (n_active > 0) window();
             if (spec && n_active == 0 && E.pos + E.mtp_d + 1 <= E.ctx) {
-                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, &stop);
-                offered += E.mtp_d;
+                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks, &stop, rule != SpecRule::off ? &ssp : nullptr);
+                offered += E.spec_min_p > 0.f ? E.last_d : E.mtp_d;   // (the gate's windows vary: the drafts verified)
                 accepted += a;
                 // the state now holds x and every accepted draft, whether or not the answer ends inside them (an end of
                 // answer, max_new): the held tokens say so, so a later request that continues this conversation matches them
@@ -4785,6 +4821,7 @@ struct Serve {
                     if (!emit(drafts[(size_t) i])) ended = true;
                 if (ended) break;
                 nx = picks[a];
+                decided = rule != SpecRule::off;
                 continue;
             }
             if (E.pos + 1 > E.ctx) break;
@@ -4867,7 +4904,8 @@ int strata::qwen35::run(int argc, char** argv) {
     int ctx = 32768, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     double expert_vram = -1.0;
     bool warm = true;
-    int expert_slots = 0, batch = 0, draft_vocab = -1;
+    int expert_slots = 0, batch = 0, draft_vocab = -1, mtp_sampled = 0;
+    float spec_min_p = 0.f;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
     std::string kv = "fp32", tokens_file, expert_profile, expert_profile_save;
@@ -4907,6 +4945,12 @@ int strata::qwen35::run(int argc, char** argv) {
             else std::fprintf(stderr, "strata-q36: ignoring --mtp %s (this family's MTP is the GGUF's own block: --mtp N "
                                       "drafts)\n", v.c_str());
         }
+        else if (a == "--mtp-sampled") {   // sampled requests draft too: match (the block's greedy drafts) or q (sampled drafts)
+            const std::string v = next();
+            mtp_sampled = v == "match" ? 1 : v == "q" ? 2 : v == "off" ? 0 : -1;
+            if (mtp_sampled < 0) { std::fprintf(stderr, "strata-q36: --mtp-sampled takes off, match or q\n"); return 2; }
+        }
+        else if (a == "--spec-min-p") spec_min_p = (float) std::atof(next().c_str());   // the main path's name: the gate
         else if (a == "--draft-vocab") draft_vocab = std::atoi(next().c_str());   // the MTP drafts pick among the first N token ids
         else if (a == "--vision") vision = true;                                  // pictures (GENI): the encoder is strata-vision's
         else if (a == "--batch" || a == "--slots") batch = std::atoi(next().c_str());   // sessions decoding together
@@ -4953,8 +4997,8 @@ int strata::qwen35::run(int argc, char** argv) {
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
                          "       (--serve | --tokens IDS | --tokens-file F [--n 64] [--force IDS] [--dump-full-logits F] | "
                          "--bench-pp N --bench-tg N)\n"
-                         "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
-                         "       [--side-stream] [--split-stage-copy] [--async-swaps] [--async-after-prompt] [--lend-staging] [--expert-profile F] [--expert-profile-save F]\n"
+                         "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--mtp-sampled off|match|q] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
+                         "       [--side-stream] [--split-stage-copy] [--async-swaps] [--async-after-prompt] [--lend-staging] [--expert-profile F] [--expert-profile-save F] [--spec-min-p P]\n"
                          "       [--expert-prefetch P] [--prefetch-copies 0|1] [--pool-warm K] [--hybrid-zero-copy] [--decode-swaps N]\n");
             return 2;
         }
@@ -5174,6 +5218,8 @@ int strata::qwen35::run(int argc, char** argv) {
     } report{E, expert_profile_save};
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
+    E.mtp_sampled = mtp_sampled;
+    E.spec_min_p = std::clamp(spec_min_p, 0.f, 1.f);   // (before the warm-up: the draft step's graph holds the gate's kernel)
     if (draft_vocab < 0 && std::getenv("STRATA_Q36_DRAFT_VOCAB") != nullptr) draft_vocab = std::atoi(std::getenv("STRATA_Q36_DRAFT_VOCAB"));
     E.draft_n = std::max(0, draft_vocab);
     E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
@@ -5246,7 +5292,7 @@ int strata::qwen35::run(int argc, char** argv) {
             gen.push_back(nx);
             if ((int) gen.size() >= n_gen) break;
             const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
-            offered += E.mtp_d;
+            offered += E.spec_min_p > 0.f ? E.last_d : E.mtp_d;
             accepted += a;
             fix.assign(drafts.begin(), drafts.begin() + a);
             for (int i = 0; i < a && (int) gen.size() < n_gen; ++i) gen.push_back(drafts[(size_t) i]);
