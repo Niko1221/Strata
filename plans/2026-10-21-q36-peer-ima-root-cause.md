@@ -1,6 +1,6 @@
 # q36 peer host 路由的非法显存访问：根因
 
-- 状态：**修复已在真机验证通过（stripe 模式全绿）；但发现第二个独立缺陷（row-split 模式）**
+- 状态：**缺陷 1（stripe）与缺陷 2（row-split 槽位跨层）均已在真机验证修复（2026-10-23，§13）**
 - 日期：2026-10-21（根因）／2026-10-22（真机验证 + 第二个缺陷）
 - 机器：192.168.1.98，P100 主卡 + 3×P104 helper，无 P2P
 
@@ -144,11 +144,23 @@ q36 之外的调用方（`generate.cpp`、`verify.cpp`、`peer_experts.cpp`）�
 - **清理所有临时诊断**：`q36_engine.cu` 里的 `DIAG`/`diag_toks`/逐层同步读，
   `q36_peer_prefill.cu` 里的 `STRATA_Q36_PREFILL_DIAG` 诊断块、`m.uniform` 实验、
   `dn.ids = m.d_ident` 实验（已恢复成 `m.d_map`）。
-- **`peer_window_fits()` 的下限改动**：已证明不是本次根因。留着还是撤掉，等机器恢复后
-  用「peers off 默认路径」和「`--max-context 512`」两个 case 单独判定。
-- **R1 未修**：`peer_owner` 建一次、每层 `prepare` 重读 `slot_ptr`；运行中 rebalance 换槽后
-  可能静默算错行。改法：flag 开启时禁止 rebalance 换槽，或每层对账。
-- **`--max-context 512` 的 IMA** 是否同根因：未验证，不要合并断言。
+- **`peer_window_fits()` 的下限改动**：定案**保留**（2026-10-23，静态推理）。下限 `n_ent > hybrid_t * top_k`
+  不是可调参数，是 MMQ 分支的进入条件本身：route kernel 的 skip、stream_kick 的 upload skip 和 plan 三个读者
+  共用这一个谓词（`q36_engine.cu:3624-3637`）。拆掉它，解码的窄窗（T=1）会让 route 跳过 peer 持有的条目而
+  plan 不跑，`stage[b]` 留下洞——撤掉才会引入缺陷，留着才是正确的。§7 已证明它不是本次崩溃的根因。
+- **R1（`peer_owner` 建一次、每层 `prepare` 重读 `slot_ptr`）**：**已解决**（2026-10-23，读码确认）。
+  当前 `peer_plan`（`q36_engine.cu:3682-3696`）每服务一层前，都对全部专家重读 live cache
+  （`peers[r]->owns(li, e)`）并与启动时建好的 `peer_owner` 表逐格对账，两边不一致就指名该层该专家结束运行。
+  `rebalance()` 只动主卡的 staging 槽（`q36_engine.cu:4017-4018` 的 `STRATA_Q36_FIXED_SLOTS` / `!m->hybrid`
+  guard，且 q36 从不 attach `RemoteExpertOpt`），所以 helper 槽启动后不会换。这是 §4 列的「每层对账」那条路，
+  已经在代码里，不再挂账。
+- **`--max-context 512` 的 IMA** 是否同根因：**已判定为独立缺陷**（2026-10-22 晚，MEASURED）。
+  `--max-context 512` 在 **peers 关闭**时同样 IMA（`cudaStreamSynchronize(st) failed: an illegal
+  memory access`，`q36_engine.cu:3413`），所以与本文件的两个缺陷都无关。
+  诱因看得很清楚：日志是 `context 512 cells, prompt chunk 2048`——**prompt chunk 比 context 还大**。
+  `chunk` 由空闲显存决定（`q36_engine.cu:6120-6122`：`fr_gib >= 7.5 ? 2048 : ...`），**与 ctx 无关**，
+  所以 `--max-context 512` 反而拿到 2048 的 chunk。**单独的缺陷，另开一条**（见 §12）。
+
 
 ## 5. 事故记录：P104 掉卡
 
@@ -371,3 +383,137 @@ DIAG helper dev=1 layer 0 rows[0..64): nan=0 first_good=0
 现在只有 `/home/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`（22.8 GB）。
 §8 的数字是在旧模型上测的，§9.4 是在新模型上测的——**两组的量化不同**（IQ4_XS vs Q4_K_XL），
 跨组比较要当心。
+
+## 12. 独立缺陷：`--max-context 512` 的 IMA（2026-10-22 晚，MEASURED）
+
+**与 §9 的两个缺陷无关**：peers **关闭**时同样崩。
+
+| 配置 | 结果 |
+|---|---|
+| `--max-context 512`，peers 关 | ✗ `cudaStreamSynchronize(st) failed: an illegal memory access`（`q36_engine.cu:3413`） |
+| `--max-context 512`，peers ON | ✗ 同上 |
+
+日志：`context 512 cells, prompt chunk 2048`。
+
+**根因（已证实，2026-10-22 晚，MEASURED）**：这是**两条独立的问题**撞在了一起。
+
+1. **prompt 比 context 长**（用户配置问题）：`--bench-pp 512` 生成 512 个 token 的 prompt，
+   而 `--max-context 512` 只有 512 格 KV（`q36_engine.cu:2114` 的 `g.n_head_kv * ctx * head_dim`）。
+   512 个 token 的 prompt 正好占满，**没有余量给 MTP 块自己的 KV 和 decode**。
+   - `--bench-pp 256 --max-context 512`：✓ EXIT=0，pp256 79.4 tok/s（实测）
+   - `--bench-pp 512 --max-context 512`：✗ IMA（实测）
+   差别就在 prompt 是否放得下。
+
+2. **chunk 没有 clamp 到 ctx**（产品缺陷）：`chunk`（prompt 分块）由**空闲显存**决定，
+   `q36_engine.cu:6120-6122`：`chunk = fr_gib >= 7.5 ? 2048 : fr_gib >= 5.5 ? 1024 : 512;`
+   ——**与 ctx 无关**。日志 `context 512 cells, prompt chunk 2048` 就是这条：512 格的 context
+   拿到了 2048 的 chunk。引擎照 2048 发 kernel，KV 越界写 → IMA。
+   **这是真正的缺陷**：本该是"prompt 装不下 context"的干净拒绝，被放大成 GPU 非法访存。
+
+**候选修法**（按用户友好度排序，都要实测）：
+1. **prompt 长度 vs context 的校验前置**：在 `E.init` / bench 生成前，`bench_pp > ctx` 时报一条
+   清楚的话（"--bench-pp 512 需要一个至少 512 格的 context，现在是 512，但 MTP 与 decode 还要占几格；
+   要么 `--max-context` 调大，要么 prompt 调小"），**不是**让 GPU 访存错误。
+2. **chunk 不许超过 ctx**：`chunk = min(chunk, ctx)`。兜底，防第 2 条。
+3. 1 + 2 都做。
+
+**这条独立于 §9**，可以单独开 PR（`[Engine]`，opt-in 路径不受影响，默认 ctx 32768 远大于任何
+bench_pp，行为逐字节不变）。
+
+**状态（2026-10-23）**：候选修法的 1 + 2 已写进 `q36_engine.cu`（工作区，未提交）：`chunk = min(chunk, ctx)`
+与 prompt-vs-context 的校验（bench 路径与 `--tokens` 路径各一处，装不下时报一条清楚的话并 `return 2`）。
+§13 验证了缺陷 2；本条的实机验证待做。
+
+### 12.1 实机验证：全绿（2026-10-23，MEASURED）
+
+机器 192.168.1.98，同一二进制 b7d53f977（§12 的代码在 10-22 23:32 那次编译里已经进去：
+`strings bin/strata-q36 | grep 'does not fit --max-context'` 命中 2 处，源文件 md5 与本机一致——
+没有重编）。脚本 `.run/R-s12-20261023.sh`，输出在 `/home/Strata/.run/R-s12-20261023/`。
+
+| 用例 | 命令 | 结果 |
+|---|---|---|
+| S1 原 IMA 命令 | `--bench-pp 512 --max-context 512` | ✓ **RC=2，干净拒绝**，无 IMA。stderr：`--bench-pp 512 does not fit --max-context 512 (the KV cache holds one cell per token; 1 more cell is needed for the answer and the decode steps)` |
+| S1b chunk 钳位 | 同上，看启动日志 | ✓ `context 512 cells, prompt chunk 512`（修前是 2048） |
+| S2 放得下的 prompt | `--bench-pp 256 --max-context 512` | ✓ RC=0，pp256 79.4 tok/s（与 10-22 基线 79.4 相同） |
+| S3 宽 context | `--bench-pp 512 --max-context 2048` | ✓ RC=0，pp512 158.5 tok/s |
+| S4 默认路径 | `--tokens 32 --n 1`（ctx 2048） | ✓ `gen: 220`，与 §8.4 A5 基线一致 |
+
+跑完机器干净（0 进程，四卡显存 0 MiB）。§12 的三条候选修法 1 + 2 至此闭环，可以单独开 PR。
+
+## 13. 缺陷 2（row-split）真机验证：全绿（2026-10-23，MEASURED）
+
+机器 192.168.1.98，模型 `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf`，二进制 b7d53f977（bin/ 与 build/ 同 md5，
+三个关键源文件 md5 与本机逐一相同——§10 的坑先绕开）。脚本 `.run/R-rowsplit-20261022b.sh`，
+输出在机器的 `/home/Strata/.run/R-rowsplit-20261022b/`。
+
+| 配置 | 结果 | 数字 |
+|---|---|---|
+| T1 崩溃命令，row split + peers ON + HOST（pp160/tg8） | ✓ rc=0，无 IMA，无 NaN | pp160 127.7–142.1 / tg8 46.9–52.8 |
+| T2 纯 prompt，row split（pp160/tg0） | ✓ rc=0 | pp160 108.1–141.9 |
+| T3 宽窗，row split（pp512/tg128） | ✓ rc=0 | pp512 203.6–213.4 / tg128 53.1–53.8 |
+| T4 row split + peers 关，`--tokens 32 --n 1` | ✓ rc=0 | `gen: 220`（与 A5 基线一致） |
+| T5 stripe + peers ON + HOST（回归，pp512/tg128） | ✓ rc=0 | pp512 169.2–171.4 / tg128 48.3–48.8 |
+| T6 一 helper，row split（pp512/tg0） | ✓ rc=0 | pp512 209.8–214.2 |
+
+- **缺陷 2 已修**：§8.4 里 row-split + peers ON + HOST 是「layer 0 起 NaN（pp512 220–227 但结果不算数）」；
+  现在同一配置 rc=0、输出无 nan。§9.4 只测了崩溃命令；本次把 pp512 宽窗、peers 关的 parity（T4）与
+  一 helper（T6）也补齐了。
+- **没有回退**：T5 stripe 模式仍然全绿（§8.4 的 154–173 → 本次 169–171），T4 的 `gen: 220` 与
+  10-22 的三次 A5 一致。
+- **速度**：row split + peers ON 的 pp512 是 203.6–213.4（§9.4 报 246–254；本次 `--kv int8` +
+  `STRATA_Q36_FIXED_SLOTS=1`，§8.4 的对照行没有这两个旗标，跨组只取方向：host 路由的收益仍在，
+  明显高于 peers 关的 158 左右）。**这个差距已由 §13.2 的同旗标控制组定案：是旗标，不是修复。**
+- **T6 一 helper**：pp512 209.8–214.2，rc=0，与三 helper 同档（row split 下 helper 少一倍，
+  但每层的专家数也少一倍，所以 prompt 速度相近）。
+
+全部六个 case rc=0，输出里 `illegal memory access` 与 `nan` 都是 0 行。
+
+### 13.1 MTP 回归：修复后二进制上重测（2026-10-23，MEASURED）
+
+§8.4 的 A6（`--mtp 2` 三 helper，tg128 52.1–53.0）是在**槽位修复前**的旧二进制上测的。槽位重编号
+（a749100a）不碰 MTP 路径的数值，但 MTP 的 draft 步路由也走 helper 缓存，所以在本二进制上重测。
+脚本 `.run/R-mtp2-20261023.sh`，输出在 `/home/Strata/.run/R-mtp2-20261023/`。
+
+| 用例 | 配置 | 结果 |
+|---|---|---|
+| M1 A6 原形，三 helper，`--mtp 2` | pp512/tg128 | ✓ rc=0，无 IMA。pp512 154.4–154.5 / **tg128 51.5–52.8**（A6 是 154.3–154.5 / 52.1–53.0，重合） |
+| M3 一 helper，`--mtp 2` | pp512/tg128 | ✓ rc=0。pp512 154.4–154.6 / tg128 17.2–18.2（单 helper 慢正常，同 §8.4 A7 的 17.1–17.3） |
+| M2 + `STRATA_Q36_MTP_MAPPED=1` | pp512/tg128 | ✓ rc=0。pp512 154.1–154.5 / tg128 52.0–53.0，**但 stderr 报 INERT** |
+
+**M1 的 tg128 落在 51.5–52.8，与 A6 的 52.1–53.0 基本重合，MTP 路径没被槽位重编号踩坏。**
+M3 的单 helper tg128（17.2–18.2）也和 §8.4 A7（17.1–17.3）同向。**这两条就是 MTP 回归的有效门：
+MTP 的 draft 步路由走 helper 缓存，槽位重编号后接受率与速度都不掉。**
+
+**M2 是 INERT，数字不算对 mapped chain 的测量。** stderr：
+`STRATA_Q36_MTP_MAPPED=1: INERT - the MTP block's layer is hybrid (its CPU expert pool spins on the
+route event ...)`（`q36_engine.cu:1652` 那条 inert 消息）。原因：推荐配置 `--kv int8` 的 hybrid
+专家让 MTP 块那一层也是 hybrid，mapped chain 在这个形状下本来就不可达（引擎启动时就把它判为
+inert，chain 一次提交但每步照样等，等价于普通 `--mtp`）。所以 M2 和 M1 的数字相同是**预期**的，
+不是「修复后 mapped chain 掉了速」。要真测 mapped chain，得换掉 hybrid 的形状（比如 `--kv fp16`
+或让 MTP 块那层非 hybrid），那和 A6 的基线就不可比了——**这条不作为缺陷 2 的验收门，单独记一笔。**
+
+（脚本第一次 M2 因 env 前缀写错 rc=127 没跑成；已用 `env VAR=... cmd` 重写为
+`.run/R-mtp2-M2-20261023.sh` 补跑，上面的 INERT 结果是那次。）
+
+### 13.2 速度控制组：246→203 的差是旗标，不是修复（2026-10-23，MEASURED）
+
+§13 的 T3（row split + peers ON）报 pp512 203–213，而 a749100a 提交信息里同配置（同机同模型）报
+246–254。两组旗标不同：T3 带了「推荐 1p3h 配置」的 `--kv int8` + `STRATA_Q36_FIXED_SLOTS=1`，
+a749100a 没带。为分清是**修复掉了速**还是**旗标掉了速**，补一组同形状（无 `--kv int8`、无
+`FIXED_SLOTS`、其余同 C1）的对照。脚本 `.run/R-ctrl-20261023.sh`，输出在 `/home/Strata/.run/R-ctrl-20261023/`。
+
+| 用例 | 形状 | pp512 / tg128 |
+|---|---|---|
+| C1 row split + peers ON + HOST，**无** `--kv int8`、**无** `FIXED_SLOTS` | a749100a 的形状 | 176.3–262.3 / 48.0–48.5 |
+| C2 同上但 **peers 关**（helper 只算不预取） | 无旗标的 peers-off 基线 | 139.0–157.3 / 45.1–48.0 |
+
+- **定案：是旗标，不是修复。** C1（无旗标）的 pp512 均值 ~240，落在 a749100a 的 246–254 档位；
+  T3（带 `--kv int8` + `FIXED_SLOTS`）是 203–213。同一修复二进制、同一模型，唯一差异就是这两个旗标，
+  所以 246→203 的差由 `--kv int8` 的 KV 量化 + 固定槽的 rebalance 关闭贡献，**层序修复本身没有掉速**。
+- **host 路由收益仍在**：C1（peers ON，~240）显著高于 C2（peers off，~154），与 a749100a 的
+  「246 vs 156」同一方向。C2 的 157 也落在 10-22 §8.4 各 peers-off 行的 154–158 区间。
+- 全程 rc=0、无 IMA。
+
+至此 §13 的速度疑问闭环：修复无回退、无掉速，pp512 的组间差全部可归因到旗标组合。
+
+
