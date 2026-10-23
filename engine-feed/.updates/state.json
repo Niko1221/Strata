@@ -1,0 +1,29 @@
+{
+ "engine": {
+  "failed": {
+   "0.1.48": {
+    "at": "2026-10-23T14:23:14.002356+00:00",
+    "manifest_sha256": "1767034593452895ad32d9aaa66c611ee7bec0fe09194b0ae154df2de96e1a6f",
+    "reason": "it did not answer a one-token probe (startup_wait_expired) | strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); ST"
+   }
+  }
+ },
+ "feed": {
+  "channel": "stable",
+  "checked_at": "2026-10-23T10:54:49.125382+00:00",
+  "key_id": "5d1bc23abbeffd0d",
+  "sequence": 108,
+  "source": "https://github.com/Niko1221/Strata/releases/latest/download/strata-feed.json"
+ },
+ "history": [
+  {
+   "action": "update-engine",
+   "at": "2026-10-23T14:23:14.002356+00:00",
+   "detail": "test start failed: it did not answer a one-token probe (startup_wait_expired) | strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is sk",
+   "from": null,
+   "ok": false,
+   "to": "0.1.48"
+  }
+ ],
+ "schema_version": 1
+}
