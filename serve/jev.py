@@ -24,7 +24,37 @@ from serve import jev_calib
 SYSTEM_V1 = ("You are a precise decision engine. Read the state, then answer the question "
              "with a single label and nothing else.")
 
-LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"           # legacy render: "upper" (the default, byte-identical)
+DIGIT_LOWER = "0123456789abcdefghijklmnopqrstuvwxyz"   # leonardomurillo's scheme on #3643
+
+
+def _label_scheme() -> str:
+    """How `choice` options are rendered and read.
+
+    "upper" (default) - A..Z, what every calibrator on disk was fitted against.
+    "digit-lower"     - 0-9 up to ten options, then a-z to twenty-six (the maintainer's shared
+                        scheme, so a text multi-field path can route to his token-path scorer).
+    Unknown values fail closed at import, like STRATA_JEV_MODES.
+    """
+    import os
+    raw = os.environ.get("STRATA_JEV_LABELS", "upper").strip().lower()
+    if raw in ("upper", "a-z", "az"):
+        return "upper"
+    if raw in ("digit-lower", "digit_lower", "digitlower", "0-9a-z"):
+        return "digit-lower"
+    raise ValueError(f"STRATA_JEV_LABELS: unknown scheme {raw!r}; valid: upper, digit-lower")
+
+
+LABEL_SCHEME = _label_scheme()
+
+
+def choice_labels(n: int) -> list:
+    """The rendered labels for an n-option choice (the tokens the readout compares)."""
+    if n < 2 or n > 26:
+        raise ValueError(f"choice needs 2..26 options, got {n}")
+    if LABEL_SCHEME == "upper":
+        return [LETTERS[i] for i in range(n)]
+    return list(DIGIT_LOWER[:n])
 
 
 # ---- the jev readout math (a line-for-line port of jevref/jmath.py, M1 identity) ----
@@ -158,7 +188,7 @@ def parse_questions(questions) -> tuple[list | None, dict]:
             if len(labels) > 26:
                 return None, _err(f"questions.{qid}.criteria",
                                             ">26 options need the numeric-label trie (not in this build)")
-            render_labels = [LETTERS[i] for i in range(len(labels))]
+            render_labels = choice_labels(len(labels))
         elif qtype == "score":
             if not isinstance(criteria, list) or len(criteria) < 2 or len(criteria) > 10:
                 return None, _err(f"questions.{qid}.criteria", "must be an array of 2..10 levels")
@@ -183,6 +213,23 @@ def parse_questions(questions) -> tuple[list | None, dict]:
     return qdefs, (200, {})
 
 
+def _label_token_problem(svc, qdefs):
+    """-> (qid, label, ntokens) for the first rendered label that is NOT exactly one token, else None.
+
+    leonardomurillo (#3643): every label must be a single token in the vocabulary, and a request whose
+    labels are not is REFUSED rather than scored on a longer path.  The readout encodes each label and
+    takes `[:1]`, which silently scored a truncated multi-token label - the failure this refuses.
+    """
+    for q in qdefs:
+        if q["type"] != "choice":
+            continue
+        for lbl in q["render_labels"]:
+            n = len(svc.tok.encode(lbl, parse_special=True))
+            if n != 1:
+                return q["id"], lbl, n
+    return None
+
+
 def render_state(state) -> str:
     """The state's serialized text - the DONOR'S render (server.cpp:266-268):
     string states pass through verbatim; objects pretty-print as sorted JSON."""
@@ -197,7 +244,7 @@ def question_block(qdef) -> str:
     q = f"Question: {qdef['instructions']}\n"
     if qdef["type"] == "choice":
         q += "Options:\n"
-        for letter, label, desc in zip(LETTERS, qdef["labels"], qdef["descriptions"]):
+        for letter, label, desc in zip(qdef["render_labels"], qdef["labels"], qdef["descriptions"]):
             q += f"{letter}. {label}{desc}\n"
         q += "Reply with the label of the best option.\n"
     elif qdef["type"] == "score":
@@ -315,6 +362,12 @@ def handle_image(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     qdefs, err_body = parse_questions(req["questions"])
     if qdefs is None:
         return err_body
+    bad = _label_token_problem(svc, qdefs)
+    if bad:
+        qid, lbl, ntok = bad
+        return _err(f"questions.{qid}.criteria",
+                    f"label {lbl!r} encodes to {ntok} tokens; every label must be one token "
+                    f"(refused rather than scored on a truncated path)")
     vprompt = req.get("vision_prompt") or VISION_PROMPT_DEFAULT
     image_mode = req.get("image_mode", "summary")
     if image_mode not in ("summary", "direct"):
@@ -590,6 +643,12 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     qdefs, err_body = parse_questions(req["questions"])
     if qdefs is None:
         return err_body                            # already (422, {...})
+    bad = _label_token_problem(svc, qdefs)
+    if bad:
+        qid, lbl, ntok = bad
+        return _err(f"questions.{qid}.criteria",
+                    f"label {lbl!r} encodes to {ntok} tokens; every label must be one token "
+                    f"(refused rather than scored on a truncated path)")
 
     engine = svc.engine
     if not hasattr(engine, "final_row_logits"):
