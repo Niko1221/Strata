@@ -1,5 +1,7 @@
 # Notes from the submitter (not part of the runner's output)
 
+Five more runs of the same protocol on this box (default track on one and two cards, custom track on one card and with the release package) are in the sibling folders `2026-10-23-standard-{1x,2x}-rx-6900xt-*`; `MATRIX.md` here puts the six side by side.
+
 Draft-protocol pilot data, `strata-qwen38-thinking-v1-draft.1`, track **custom**. `README.md`, `results.json`, `outputs.jsonl`, `config.json` and `provenance/` are exactly what `strata bench run` wrote; nothing in them was edited (the artifact hashes in `results.json` match). This file adds what the runner could not know and one measurement that explains the decode column.
 
 ## How the run was made
