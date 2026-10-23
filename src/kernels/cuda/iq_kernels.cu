@@ -5987,13 +5987,16 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         check("native_expert_grouped/gu fused");
     }
 #endif
+    // The CUDA / mode-0 layout is the one the gfx12 fast paths (expdec V2, the fused SwiGLU launches) were built for;
+    // the AMD LDS layouts keep their own launches.  STRATA_EXP_LAYOUTS now builds everywhere, so this is a runtime choice.
+#if STRATA_EXP_LAYOUTS
+    const bool layout0 = em0 == 0;
+#else
+    const bool layout0 = true;
+#endif
     // 147-verify STRATA_GU_SWIGLU=1: gate/up + SwiGLU + q8_1 in one launch where the CUDA layout's 16-lane kernel would run
     bool gs_done = false;
-#if STRATA_EXP_LAYOUTS
-    const bool gs_layout = !fused_gu && em0 == 0;
-#else
-    const bool gs_layout = true;
-#endif
+    const bool gs_layout = layout0 && !fused_gu;
     if (gs_layout && g_exp_phase == 0 && !v1 && gu_swiglu_on() && !(expdec_mode() && !g_old_kernels && expdec_gu_ok(L))) {
         switch (L.gu_type) {
 #define STRATA_GS(T) case T: gs_done = launch_gu_swiglu<T>(L, gy, s, grp_ptr, grp_start, n_groups, ent_tok, X, hq); break;
@@ -6006,26 +6009,18 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     // STRATA_FUSE_SWIGLU_DOWN: the down launch below makes h's q8_1 blocks itself (where it is expdec_down_kernel, or
     // native_down_multi_kernel's IQ4_NL 8-lane rows at n_ff 640), so the SwiGLU + q8_1 launch is left out (not with the
     // separate passes of v1, gfx906 or a Hadamard-folded down)
-#if STRATA_EXP_LAYOUTS
-    const bool sw_down = false;
-#else
     // Only in a call launched for a few groups (grid_groups 1..4: the verify window's PCIe call): every down block
     // makes the h of its group's entries again, and over a VRAM call's groups that costs more than the launch saves
     // (native_grouped_parity --bench, R9700, 28 groups / 40 entries: IQ4_NL down 138 -> 167 us, Q2_0 117 -> 123 us;
     // no group: 8.0 -> 5.7 us, one group of 2: 18.8 -> 17.7 us).
-    const bool sw_down = !gs_done && !v1 && L.had_block == 0 && g_exp_phase == 0 && fuse_sw_down_on() &&
+    const bool sw_down = layout0 && !gs_done && !v1 && L.had_block == 0 && g_exp_phase == 0 && fuse_sw_down_on() &&
                          grid_groups > 0 && grid_groups <= 4 &&
                          (expdec_down_takes(L) ||
                           (L.d_type == 20 && L.n_ff == 640 && !g_old_kernels && !split_off<20>() && !g_no_sub16_gu));
-#endif
     // STRATA_FUSE_SWIGLU_GU: elsewhere (a VRAM call) the expdec gate/up kernel's last block of each group makes its h
     // q8_1 blocks (sw_counters: cap_groups words, zero between calls), so the SwiGLU + q8_1 launch is left out
-#if STRATA_EXP_LAYOUTS || defined(STRATA_HIP_GFX906)
-    const bool sw_gu = false;
-#else
-    const bool sw_gu = !sw_down && sw_counters != nullptr && cap_groups * (L.n_ff / 32) <= 4096 && !gs_done && !v1 && L.had_block == 0 &&
-                       g_exp_phase == 0 && fuse_sw_gu_on() && expdec_gu_takes(L);
-#endif
+    const bool sw_gu = layout0 && !sw_down && sw_counters != nullptr && cap_groups * (L.n_ff / 32) <= 4096 && !gs_done && !v1 &&
+                       L.had_block == 0 && g_exp_phase == 0 && fuse_sw_gu_on() && expdec_gu_takes(L);
 #if STRATA_EXP_LAYOUTS
     if (g_exp_phase != 2 && !fused_gu && !gs_done) {
 #else
