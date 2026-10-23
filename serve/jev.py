@@ -530,7 +530,7 @@ def _finish_answer(qdef, scores: list, image_state: bool, mode_letter: str | Non
 def _hybrid_enabled() -> bool:
     """M3.1 hybrid (pin + jevpos): per-field prompts (so nothing contaminates a later field and the readout
     position stays M3.0's) with the shared prefix pinned (so the state is read once) AND the cue row captured
-    during that read (so no decode step is needed for the readout).  It is INERT unless pinning is also
+    during that read (so the readout is the decode step's own row, read back by position).  It is INERT unless pinning is also
     on (it needs a pinned shared prefix to capture from), so STRATA_JEV_HYBRID=1 with STRATA_JEV_PIN=0 does
     nothing - the condition is explicit below rather than left to be discovered.  Off by default until the accuracy /
     confidence comparison against C says the prompt-window row is as good.  STRATA_JEV_HYBRID=1 turns it on."""
@@ -595,7 +595,8 @@ def _row_readout_enabled() -> bool:
     return os.environ.get("STRATA_JEV_ROWS", "0") not in ("0", "false", "False", "off", "")
 
 
-MAX_NAMED_ROWS = 32          # the engine's own cap (req_jevpos.size() < 32); a longer list is DROPPED
+MAX_NAMED_ROWS = 32          # the engine's cap: a list longer than this is refused WHOLE, so the request
+                             # must not use the row path at all (>32 fields => one prompt per field)
 
 
 def _row_capture(engine) -> bool:
@@ -801,8 +802,9 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 return _err("state", "tokenization failed")
             variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
             keys = _request_keys(l_pin)
-            # M3.1 hybrid: name this field's cue so the read keeps its row, and skip the decode step that
-            # exists only to make that row readable.  The first field keeps its checkpoint - the one the pin
+            # M3.1 hybrid: name this field's cue so the ONE decode step this field already runs is the read
+            # (the decode is not skipped - max_new stays 1; the row it computes is simply read back by
+            # position instead of being the implicit readout).  The first field keeps its checkpoint - the one the pin
             # marks; the later ones resume from it and park nothing.
             cue = None
             if (_hybrid_enabled() and l_pin > 0 and not image_state
