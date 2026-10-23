@@ -22,6 +22,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import jev  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
@@ -597,6 +598,68 @@ class SystemOneAnswers(unittest.TestCase):
                 break
             common += 1
         self.assertGreater(common, 4, "same-state questions must share a rendered prefix")
+
+
+
+class ChoiceLabelScheme(unittest.TestCase):
+    """#3643 label scheme (leonardomurillo): 0-9 up to ten options, a-z to twenty-six, refuse >26,
+    and every label must be ONE token or the request is refused (never scored on a truncated path).
+
+    "upper" (A-Z) stays the default so the default path is byte-identical to the last release and the
+    calibrators on disk - all fitted against A-Z - stay valid.  STRATA_JEV_LABELS=digit-lower opts in.
+    """
+
+    def setUp(self):
+        self._scheme = jev.LABEL_SCHEME
+
+    def tearDown(self):
+        jev.LABEL_SCHEME = self._scheme
+
+    def test_default_scheme_is_unchanged(self):
+        jev.LABEL_SCHEME = "upper"
+        self.assertEqual(jev.choice_labels(4), ["A", "B", "C", "D"])
+
+    def test_digit_lower_scheme(self):
+        jev.LABEL_SCHEME = "digit-lower"
+        self.assertEqual(jev.choice_labels(4), ["0", "1", "2", "3"])
+        self.assertEqual(jev.choice_labels(10)[-1], "9")
+        self.assertEqual(jev.choice_labels(11)[-1], "a")
+        # 26 options = ten digits + sixteen letters, so the range ends at "p" (his scheme caps at 26)
+        self.assertEqual(jev.choice_labels(26)[-1], "p")
+        self.assertEqual(len(jev.choice_labels(26)), 26)
+        self.assertEqual(len(set(jev.choice_labels(26))), 26)
+
+    def test_range_is_2_to_26(self):
+        for bad in (1, 27):
+            with self.assertRaises(ValueError):
+                jev.choice_labels(bad)
+
+    def test_question_block_renders_the_scheme(self):
+        jev.LABEL_SCHEME = "digit-lower"
+        qdefs, _ = jev.parse_questions({"q": {"type": "choice", "instructions": "pick one",
+                                             "criteria": ["red", "green", "blue"]}})
+        block = jev.question_block(qdefs[0])
+        self.assertIn("0. red", block)
+        self.assertIn("2. blue", block)
+        self.assertNotIn("A. red", block)
+
+    def test_multi_token_label_is_refused(self):
+        """ByteTokenizer maps one byte to one token, so a two-character label is two tokens."""
+        class _Svc:
+            tok = ByteTokenizer()
+        qdefs, _ = jev.parse_questions({"q": {"type": "choice", "instructions": "pick",
+                                             "criteria": ["x", "y"]}})
+        self.assertIsNone(jev._label_token_problem(_Svc(), qdefs))
+        qdefs[0]["render_labels"] = ["ab", "c"]          # force a multi-token label
+        self.assertEqual(jev._label_token_problem(_Svc(), qdefs), ("q", "ab", 2))
+
+    def test_noul_and_score_are_unaffected(self):
+        jev.LABEL_SCHEME = "digit-lower"
+        qdefs, _ = jev.parse_questions({"q": {"type": "noul", "instructions": "yes or no?"},
+                                        "s": {"type": "score", "instructions": "how many?",
+                                              "criteria": ["zero", "one", "two"]}})
+        self.assertEqual(qdefs[0]["render_labels"], ["No", "Yes"])
+        self.assertEqual(qdefs[1]["render_labels"], ["0", "1", "2"])
 
 
 if __name__ == "__main__":
