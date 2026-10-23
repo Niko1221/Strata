@@ -387,6 +387,12 @@ if(STRATA_BUILD_TESTS)
   add_executable(stage_reserve_test tests/program/stage_reserve_test.cpp)
   target_include_directories(stage_reserve_test PRIVATE include)
   add_test(NAME stage_reserve_test COMMAND stage_reserve_test)
+  # the jevpos request key's parser (jev fix B): header-only rule, no model, no GPU.  The cap counts ENTRIES, not
+  # digits, and a malformed list is refused whole - the round-2 review (2026-10-23) found this had no test on
+  # either side of the wire, which is how a dangling else survived three reviews.
+  add_executable(jevpos_test tests/program/jevpos_test.cpp)
+  target_include_directories(jevpos_test PRIVATE include)
+  add_test(NAME jevpos_test COMMAND jevpos_test)
 
   # the layer split's spill walk (header-only arithmetic: who is short, which step comes next)
   add_executable(split_walk_test tests/program/split_walk_test.cpp)

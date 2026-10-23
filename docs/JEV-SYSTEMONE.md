@@ -88,9 +88,18 @@ The engine ops behind these are `BROWAT <row> <tokens>` → `BROWATD <n> <tok>:<
   that window's first token. `BROWROWS` reports how many rows it holds, so a caller can tell whether
   its own numbering is the engine's (it only is when the count equals the tokens it sent).
 
+A `jevpos=` list names at most **32** positions, and every entry must be all digits. A longer list, a
+malformed one, or an entry that is not a position (`12x`) is refused **whole** — never truncated, never
+a guessed position — and the request then falls back to one prompt per field. The cap counts
+*positions*, not characters: 32 three-digit positions are accepted.
+
 The capability is advertised in the engine's `INFO` line as `jevpos=1`; an engine that does not
 advertise it (older build, or started without `--jev-brow`) is never sent the row path at all. Both
-ops are under `--jev-brow`, and the engine is never asked unless the server sends one.
+ops are under `--jev-brow`, and the engine is never asked unless the server sends one. One limit of
+that guarantee, measured on this build: the *per-field* readout still calls `BROW` (it is the same
+readout M3.0 shipped), so an engine built without `--jev-brow` answers `ERR BROW:` and the server ends
+and restarts it rather than serving a 503 — start the serve process with `--jev-brow` for any decision
+workload.
 
 ## Label alphabet (`choice`)
 
