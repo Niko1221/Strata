@@ -1037,7 +1037,9 @@ void usage() {
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
                  "  --jev-brow            opt-in: answer BROW <tokens> between requests with BROWD (jev systemone readout,\n"
                  "                       M3.0), BROWAT <row> <tokens> with BROWATD (any row of the same window, M3.1),\n"
-                 "                       and BROWROWS with BROWROWSD <rows> (how many rows that window holds, M3.1);\n"
+                 "                       BROWROWS with BROWROWSD <rows> (diagnostic: how many rows that window holds),\n"
+                 "                       and BROWCAP with BROWCAPD <rows> (how many rows the last request kept for the\n"
+                 "                       positions it named); STRATA_JEVROWS_TRACE=1 logs one capture line per request\n"
                  "                       the engine is never asked unless the server sends one of them\n"
                  "  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
                  "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
@@ -14044,13 +14046,14 @@ int main(int argc, char** argv) {
                         const std::string list = tok.substr(eq + 1);
                         size_t at = 0;
                         bool bad = false;
-                        while (at <= list.size() && req_jevpos.size() < 32 && !bad) {
+                        while (at <= list.size() && !bad) {
                             const size_t comma = list.find(',', at);
                             const std::string one = list.substr(at, comma == std::string::npos ? std::string::npos
                                                                                               : comma - at);
                             if (!one.empty()) {
                                 if (one.front() < '0' || one.front() > '9') bad = true;
-                                else req_jevpos.push_back((int64_t) std::atoll(one.c_str()));
+                                else if (req_jevpos.size() >= 32) bad = true;   // more than the cap: refuse the
+                                else req_jevpos.push_back((int64_t) std::atoll(one.c_str()));   // list, never truncate
                             }
                             if (comma == std::string::npos) break;
                             at = comma + 1;

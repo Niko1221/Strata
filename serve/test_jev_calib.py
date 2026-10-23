@@ -15,9 +15,11 @@ from __future__ import annotations
 import json
 import math
 import sys
+import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 # JEV_TEST_MODES_BOOTSTRAP: the suite exercises a deployment that has OPTED IN
 # to decisions (chat-only is the default posture since the flip); set before
 # any serve.jev_calib import resolves MODES at module load.
@@ -333,6 +335,19 @@ class StrictCalibLoad(unittest.TestCase):
         p = self._write("calib-S.json", {"tuple": "a|b|none|v1|S|x", "a": 0.4892, "c": 0.8313})
         c = jev_calib.load(p)
         self.assertFalse(c.loaded)
+
+    def test_strict_refuses_a_nan_temperature(self):
+        """NaN passes every <=/>= comparison, so a NaN T_choice used to load under STRICT and put NaN
+        probabilities straight into the answer body (json accepts the bare NaN literal)."""
+        p = Path(self.tmp.name if hasattr(self, "tmp") else "/tmp") / "calib-nan-temp.json"
+        p = Path(tempfile.mkdtemp()) / "calib-nan-temp.json"
+        p.write_text('{"tuple": "qfn-iq3_xxs|jev-port|none|v1|L|text", "a_noul": 1.0, "c_noul": 0.0, "T_choice": NaN}')
+        with mock.patch.dict(os.environ, {"STRATA_JEV_CALIB_STRICT": "1"}):
+            import importlib
+            importlib.reload(jev_calib)
+            c = jev_calib.load(p)
+        importlib.reload(jev_calib)
+        self.assertFalse(c.loaded, "a NaN temperature must not load under strict mode")
 
     def test_strict_refuses_degenerate_temperature(self):
         jev_calib.STRICT = True

@@ -484,6 +484,23 @@ class RowReadout(unittest.TestCase):
         self.assertEqual(body["error"]["field"], "questions.q.criteria")
         self.assertIn("one token", body["error"]["message"])
 
+    def test_a_score_label_that_is_not_one_token_is_refused_too(self):
+        """score labels are rendered "0".."9" and read the same way (encode, [:1]), so they need the same
+        single-token guarantee as choice; the refusal used to skip them."""
+        from unittest import mock
+        real = ByteTokenizer.encode
+
+        def two_tokens(self, text, parse_special=True):
+            ids = real(self, text, parse_special)
+            return ids * 2 if text == "0" else ids
+
+        with mock.patch.object(ByteTokenizer, "encode", two_tokens):
+            st, body = self._post({"q": {"type": "score", "instructions": "Rate it.",
+                                         "criteria": ["low", "mid", "high"]}})
+        self.assertEqual(st, 422)
+        self.assertEqual(body["error"]["field"], "questions.q.criteria")
+        self.assertIn("one token", body["error"]["message"])
+
     def test_more_than_32_fields_never_take_the_row_path(self):
         """The engine drops a jevpos list longer than 32, and a dropped list means no capture: the path must
         not run at all rather than answer from window rows."""
