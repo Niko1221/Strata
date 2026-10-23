@@ -113,11 +113,17 @@
 #if !defined(__APPLE__)   // major() / minor(): <sys/types.h> on macOS
 #include <sys/sysmacros.h>
 #endif
+#if defined(__APPLE__)
+#include <mach/mach.h>   // the watchdog's memory readings: macOS has no /proc (file_tier_activity, mem_sample)
+#endif
 #endif
 
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
 namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+// STRATA_BATCH_VERIFY: a restored slot region's bytes vs the main window's (metal/src/engine/window.cpp)
+namespace strata::metal_engine { bool window_check_region(const strata::core::SessionState* ss, int64_t upto,
+                                                          std::string& rep); }
 #endif
 
 #include <array>
@@ -729,10 +735,15 @@ struct Options {
     int64_t conversation_cache_mib = -1; // host RAM for independent conversations; -1: not given, --serve sizes it from the free RAM (#3493), 0: off
     int conversation_cache_slots = 4;
     int64_t conversation_cache_min_free_mib = 2560;
-    /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
-    /// conversation_cache_slots whatever its length, so without it a client that interleaves short side requests
-    /// with one long conversation evicts the long one (oldest first).  0 = park every conversation.
+    /// --serve: park only conversations of at least this many tokens (the flag's WRITE value).  Every parked
+    /// conversation costs one of conversation_cache_slots whatever its length, so without it a client that
+    /// interleaves short side requests with one long conversation evicts the long one (oldest first).  0 = park every
+    /// conversation.
     int64_t conversation_cache_min_tokens = 0;
+    /// --serve: search the parked conversations only for a complete prompt of at least this many tokens, cached
+    /// history included (the flag's READ value).  Below it the engine keeps to the active session, its checkpoints and
+    /// the batch slots.  0 = search every prompt, as before.
+    int64_t conversation_cache_min_read_tokens = 0;
     /// --serve: park only after the conversation has advanced this many tokens past the copy it would supersede.
     /// A conversation that moved a few hundred tokens writes a full snapshot again, and the turn after that drops it
     /// (drop_superseded) after writing the same bytes once more, so on a long single conversation every turn pays a
@@ -897,8 +908,10 @@ void usage() {
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
                  "                       the container cannot see its real limit (also STRATA_MEMORY_LIMIT_MIB; the flag\n"
                  "                       wins; 0 = none). Parking and session save/restore keep their floor under it\n"
-                 "  --conversation-cache-min-tokens N  --serve: park only conversations of at least N tokens, so\n"
-                 "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
+                 "  --conversation-cache-min-tokens WRITE[,READ]  --serve: park only conversations of at least WRITE\n"
+                 "                       tokens, so short side requests do not take the slots a long one needs, and search\n"
+                 "                       the parked ones only for a complete prompt of at least READ tokens (cached history\n"
+                 "                       included).  A single value is WRITE,0 (default 0,0 = park any, search every prompt)\n"
                  "  --conversation-cache-park-gain N  --serve: park only after the conversation advanced N tokens past\n"
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
@@ -1236,6 +1249,21 @@ static std::string ram_note(const std::optional<strata::core::HostMemoryReading>
     return std::to_string(mem->available >> 20) + " MiB available, source " + strata::core::memory_source_name(mem->source);
 }
 
+// STRATA_PARK_DEBUG only: ask libmalloc whether its zones are intact.  A park writes a fresh
+// snapshot's worth of vectors; if a later request dies in operator new, this says whether the
+// damage predates the park or happened inside it (a corrupt zone prints its own line too).
+#if defined(__APPLE__)
+extern "C" int malloc_zone_check(void*);
+#endif
+static void park_canary(const char* where) {
+#if defined(__APPLE__)
+    if (!std::getenv("STRATA_PARK_DEBUG")) return;
+    std::fprintf(stderr, "strata metal park: malloc integrity check %d (%s)\n", malloc_zone_check(nullptr), where);
+#else
+    (void) where;
+#endif
+}
+
 // ---- issue #31: what the watchdog prints before it stops a stalled engine
 struct MemSample {
     unsigned long long faults = 0, rss_mib = 0, avail_mib = 0, commit_mib = 0;   // faults: hard (Linux) / all (Windows)
@@ -1252,6 +1280,29 @@ MemSample mem_sample() {
     MEMORYSTATUSEX ms{};
     ms.dwLength = sizeof ms;
     if (GlobalMemoryStatusEx(&ms)) m.avail_mib = ms.ullAvailPhys >> 20;
+#elif defined(__APPLE__)
+    // macOS has no /proc: task_info gives the process's faults, footprint and compressed pages (the same reading
+    // the Metal stream's proc_mem uses, window.cpp), and vm_statistics64 the RAM macOS can hand over without
+    // paging anything out - arena_avail's rule (metal/src/engine/arena_budget.h): free + purgeable + min(inactive
+    // + speculative, the pages macOS keeps outside its anonymous set).
+    task_vm_info_data_t tvi;
+    mach_msg_type_number_t tn = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &tvi, &tn) == KERN_SUCCESS) {
+        m.rss_mib = tvi.phys_footprint >> 20;
+        m.commit_mib = tvi.compressed >> 20;   // the bytes macOS parked out of RAM for this process
+    }
+    task_events_info_data_t tei;
+    mach_msg_type_number_t en = TASK_EVENTS_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t) &tei, &en) == KERN_SUCCESS)
+        m.faults = tei.faults;   // counts soft faults too, like Windows: the page-ins drive it
+    vm_statistics64_data_t vs;
+    mach_msg_type_number_t vn = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &vn) == KERN_SUCCESS) {
+        const double pg = (double) vm_page_size;
+        m.avail_mib = (unsigned long long) ((vs.free_count + vs.purgeable_count) * pg +
+                                            std::min((vs.inactive_count + vs.speculative_count) * pg,
+                                                     vs.external_page_count * pg)) >> 20;
+    }
 #else
     if (std::FILE* f = std::fopen("/proc/self/stat", "r")) {
         char buf[4096];
@@ -1318,8 +1369,17 @@ static uint64_t file_tier_activity() {
     // thread waiting on one page at a time), which at >> 6 is 3 a second and never counted as busy
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) total += pmc.PageFaultCount >> 3;
     return total;
+#elif defined(__APPLE__)
+    // the gap #1984 closed for Windows, on macOS too: the process fault counter is the signal - a host paging the
+    // 47 GB expert file back in under memory pressure drives it at hundreds a second, and >> 3 (like Windows, where
+    // 200 faults/s read at 3/s on the /8 scale) clears the busy test; a truly stuck engine makes almost none.
+    task_events_info_data_t tei;
+    mach_msg_type_number_t en = TASK_EVENTS_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_EVENTS_INFO, (task_info_t) &tei, &en) != KERN_SUCCESS) return 0;
+    // pageins (the hard, storage-backed faults) plus soft-fault churn /8: the Windows #1984 formula's Mac form
+    return (uint64_t) (unsigned) tei.pageins + ((uint64_t) (unsigned) tei.faults >> 3);
 #else
-    return 0;
+    return 0;   // no /proc, no Win32 counters, no Mach: the watchdog keeps the plain 60 s limit
 #endif
 }
 
@@ -1473,6 +1533,8 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
                      m.commit_mib,
 #if defined(_WIN32)
                      "committed", m.avail_mib, m.faults, "page faults so far"
+#elif defined(__APPLE__)
+                     "in swap", m.avail_mib, m.faults, "page faults so far"   // task_info counts soft faults too
 #else
                      "in swap", m.avail_mib, m.faults, "major page faults so far"
 #endif
@@ -1550,7 +1612,14 @@ bool adapt_overlap() {
         // decode on an A4000, +4.4% on a P100) until an RTX 5090 Laptop (WSL2, Core Ultra 9 275HX, native IQ3_XXS pack,
         // --expert-cache-per-layer) decoded 21% slower with it: 84.6 vs 106.6 tok/s medians of 5 generations of 256
         // tokens from one build, the slowest of the fast run above the fastest of the slow one.
-        return e && e[0] == '1';
+        // This fork: on by default on Metal.  An M1 Max decoded 24..28% faster with it (tg128, IQ3_XXS pack, t357
+        // prompt, medians of paired runs; same tokens - only when the copies land changes).  CUDA stays opt-in (#2010).
+#if defined(STRATA_GPU_METAL)
+        const bool dflt = true;
+#else
+        const bool dflt = false;
+#endif
+        return e ? e[0] == '1' : dflt;
     }();
     return v;
 }
@@ -2638,15 +2707,25 @@ int main(int argc, char** argv) {
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
+        else if (a == "--conversation-cache-min-tokens") {
+            // WRITE[,READ]: a single value is WRITE,0, the meaning the flag has always had
+            const std::string value = next(a.c_str());
+            strata::core::ConversationCacheTokenLimits limits;
+            if (!strata::core::parse_conversation_cache_min_tokens(value, limits)) {
+                std::fprintf(stderr, "%s needs N or WRITE,READ, two nonnegative integers within range\n", a.c_str());
+                return 2;
+            }
+            o.conversation_cache_min_tokens = limits.write_min_tokens;
+            o.conversation_cache_min_read_tokens = limits.read_min_tokens;
+        }
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
-                 a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
+                 a == "--conversation-cache-min-free-mib" ||
                  a == "--conversation-cache-park-gain" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
-            const int64_t limit = (a == "--conversation-cache-slots" || a == "--conversation-cache-min-tokens" ||
-                                   a == "--conversation-cache-park-gain")
+            const int64_t limit = (a == "--conversation-cache-slots" || a == "--conversation-cache-park-gain")
                                       ? INT32_MAX : INT64_MAX / (1024 * 1024);
             if (result.ec != std::errc{} || result.ptr != value.data() + value.size() || number < 0 || number > limit) {
                 std::fprintf(stderr, "%s needs a nonnegative integer within range\n", a.c_str());
@@ -2654,7 +2733,6 @@ int main(int argc, char** argv) {
             }
             if (a == "--conversation-cache-mib") o.conversation_cache_mib = number;
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
-            else if (a == "--conversation-cache-min-tokens") o.conversation_cache_min_tokens = number;
             else if (a == "--conversation-cache-park-gain") o.conversation_cache_park_gain = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
@@ -3190,6 +3268,12 @@ int main(int argc, char** argv) {
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
     strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+#if defined(STRATA_GPU_METAL)
+    // the Metal window's kernels store int8 codes with an fp16 scale per 64 whatever --kv says (qsa.metal), so
+    // the default fp16 mode's session states must describe those bytes: the conversation snapshot's layout
+    // arithmetic and the window's cells then agree, and park repacks them without inventing fp16 zeros.
+    if (o.kv == "fp16") strata::core::qsa_set_kv_int8(true);
+#endif
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
@@ -5409,6 +5493,12 @@ int main(int argc, char** argv) {
                     break;
                 }
                 strata::core::session_zero(*u, g, nullptr, nullptr);
+                // The PLE ngram hash constants are the artifact's (the same values the main session gets at
+                // the wiring above), and anything that computes a slot's PLE rows from the slot's own state -
+                // the Metal batch window, the drafter's session - reads them from here.  The rest of the PLE
+                // block (the table, the in-flight token's pointers) stays the main session's: a slot stays
+                // not `ready()` so the async gather never runs two sessions into one host scratch.
+                u->ple.consts = (k == 0 ? ss : stages[k - 1]->ss).ple.consts;
                 bslot_ss[k].push_back(std::move(u));
             }
             cudaDeviceSynchronize();
@@ -9198,16 +9288,27 @@ int main(int argc, char** argv) {
         }
         // each stage's verifier gets its stage's slot sessions
         if (o.batch > 0) {
-            for (size_t k = 0; k < bslot_ss.size(); ++k) {
+            bool slots_ok = true;
+            for (size_t k = 0; k < bslot_ss.size() && slots_ok; ++k) {
                 std::vector<strata::core::SessionState*> ptrs;
                 for (auto& u : bslot_ss[k]) ptrs.push_back(u.get());
                 strata::core::Verifier& vk = k == 0 ? ver : stages[k - 1]->ver;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
                 if (!vk.init_slots(ptrs, err)) {
+#if defined(STRATA_GPU_METAL)
+                    // the Mac engine: the regions come from the window's arena; when they do not fit, --batch turns
+                    // off and every client queues through the solo window, as it did before batch was ported
+                    std::fprintf(stderr, "strata serve: --batch is off: the window's slot regions do not fit (%s)\n",
+                                 err.c_str());
+                    slots_ok = false;
+                    break;
+#else
                     std::fprintf(stderr, "strata serve: --batch, stage %zu: %s\n", k + 1, err.c_str());
                     return 1;
+#endif
                 }
             }
+            if (!slots_ok) { bslot_ss.clear(); o.batch = 0; }
         }
         for (int st = 0; st < n_stages && n_stages > 1; ++st) {
             split_drive.plan[st] = stage_ver(st).plan_sink();
@@ -9599,8 +9700,10 @@ int main(int argc, char** argv) {
                                  (long long) o.conversation_cache_min_free_mib);
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
+                park_canary("before park");
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
                         std::move(reuse), &reused_bytes)) return false;
+                park_canary("after park");
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
@@ -9612,6 +9715,7 @@ int main(int argc, char** argv) {
                         return false;
                     image.stage_images.push_back(std::move(part));
                 }
+                park_canary("after stage images");
                 const auto mem_after = strata::core::sample_host_memory();
                 if (!strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
@@ -11075,11 +11179,16 @@ int main(int argc, char** argv) {
                     slots_all += remote_experts[(size_t) r].resident();
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
+            // READ=0 is the default and stays out of the line, so a startup without it is byte-identical
+            std::string min_read;
+            if (o.conversation_cache_min_read_tokens > 0)
+                min_read = " conversation_cache_min_read_tokens=" +
+                           std::to_string((long long) o.conversation_cache_min_read_tokens);
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
+                        "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld%s "
                         "tail_role_token=%lld vram_elastic=%d "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
@@ -11093,6 +11202,7 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
+                        min_read.c_str(),
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
                         // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe
@@ -11436,19 +11546,37 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
                 strata::core::ConversationCheckpoint ck;
                 ck.ids = ids;
-                if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
-                    !strata::core::conversation_checkpoint_restore(ck, to, g, e))
-                    return false;
+                if (!strata::core::conversation_checkpoint_save(ck, from, g, e)) {
+                    e = "checkpoint save: " + e; return false;
+                }
+                if (!strata::core::conversation_checkpoint_restore(ck, to, g, e)) {
+                    e = "checkpoint restore: " + e; return false;
+                }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
                     strata::core::ConversationKv img;
-                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
-                        return false;
+                    if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e)) {
+                        e = "K/V save layer " + std::to_string(j) + ": " + e; return false;
+                    }
                     if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
-                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e))
-                        return false;
+                    if (!strata::core::conversation_kv_restore(img, to.qsa_states[to.qsa_ord0 + j], g, upto, true, e)) {
+                        e = "K/V restore layer " + std::to_string(j) + ": " + e; return false;
+                    }
                 }
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
+#if defined(STRATA_GPU_METAL)
+                if (std::getenv("STRATA_BATCH_VERIFY") != nullptr) {   // the admission's transport, byte for byte
+                    std::string rep;
+                    strata::metal_engine::window_check_region(&to, upto, rep);
+                    std::fprintf(stderr, "%s", rep.c_str());
+                    std::fflush(stderr);
+                }
+#endif
             }
+#if defined(STRATA_GPU_METAL)
+            // no drafter copy on Metal: the batch window drafts (when it drafts) from the slot region's own
+            // state, and the drafter session's ring is not window-backed, so a snapshot copy of it would
+            // refuse the admission.  A slot's drafter warms up on its own drafts from the first decode step.
+#else
             if (batch_mtp) {
                 // Admission first builds the solo draft KV; copy it into the slot before drafting.  Both drafters' K/V
                 // are on the drafter's device (the last stage's GPU with a layer split): the copy's ring refill is a
@@ -11463,6 +11591,7 @@ int main(int argc, char** argv) {
                     return false;
                 slot_mtp[(size_t) b]->set_prompt_len(upto);
             }
+#endif
             return true;
         };
         // slot b's sessions -> the main ones (the reverse of copy_to_slot): a request that continues the
@@ -12680,7 +12809,12 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // --conversation-cache-min-tokens WRITE,READ: below READ the complete prompt (n: cached history
+            // included) is not worth searching the parked conversations for.  The active session's prefix, its
+            // checkpoints and the batch slots were chosen above and are unaffected; READ=0 searches every prompt.
+            strata::core::ConversationCache::Match parked;
+            if (strata::core::conversation_cache_should_read_parked(n, o.conversation_cache_min_read_tokens))
+                parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
@@ -13390,6 +13524,7 @@ int main(int argc, char** argv) {
                         if (!p.sp->relayout(want_p, p.cache->device_slot(first), part_bytes(p, first), e)) return false;
                         p.first_now = first;
                     }
+#if !defined(STRATA_GPU_METAL)
                     for (int64_t l = p.lb; l < p.le; ++l)              // THIS participant's layers only
                         for (int64_t ex = 0; ex < g.n_expert; ++ex) {
                             const size_t i = (size_t) (l * g.n_expert + ex);
@@ -13399,6 +13534,11 @@ int main(int argc, char** argv) {
                                 any = true;
                             }
                         }
+#else
+                    // Metal: the window's prompt buffers live in the Metal arena, the Metal window reads no host
+                    // residency table, and the Metal engine gave these device slots back for its arena - the loan
+                    // takes no slots, so nothing is marked, and the read leaves nothing to refill after it.
+#endif
                     p.lent_chunk = want_p;
                 }
                 for (const PfPart& p : pf_parts)
@@ -15260,6 +15400,14 @@ int main(int argc, char** argv) {
                 bool hash_ok = true;
                 std::array<uint8_t, 65536> hash_buffer;
                 auto hash_dev = [&](const void* p, size_t bytes, uint64_t h) {
+#if defined(STRATA_GPU_METAL)
+                    // 2026-10-21: the stream window gives back the CUDA-shaped weight/session copies of >= 32 MB
+                    // to the expert arena at startup; nothing on Metal writes them, so the fingerprint would read
+                    // dead memory - and the runtime's abort tripwire stopped a serving engine on its first cached
+                    // request (STRATA_STATE_HASH + the startup purge together).  Skipping keeps the hash stable for
+                    // the OFF/ON arms, which run in the same server.
+                    if (bytes && strata::gpu::is_purged(p)) return h;
+#endif
                     for (size_t offset = 0; hash_ok && offset < bytes;) {
                         const size_t n = std::min(hash_buffer.size(), bytes - offset);
                         // VRAM or a streamed host copy, with fixed diagnostic workspace.

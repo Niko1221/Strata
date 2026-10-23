@@ -1,0 +1,22 @@
+# round 21: PROVEN-regime A/B of the read-ahead depth, the only knob worth keeping so far.
+# Round 20 settled everything else: kprof in stream mode prints busy sum 48.6 ms = the STREAM=0 window span
+# exactly (arena kernels are NOT slow; all of the 82-110 vs 49 is GPU idle at the 48 per-layer cuts), and the
+# mid-run collapse (anchors 82 -> 110 ms) was the arena, not drift: vm.vm_page_filecache_min rises under
+# back-to-back 43 GB-file processes, the engine's big-Mac cap = RAM - (floor + 12 GB) drops 44.7 -> 35.2,
+# arena 33 -> 23.7 GB, misses DOUBLE (15.5 -> 32.2/window), windows +20 ms. Within that second regime
+# PREFETCH=12 was decisive: 99.0/101.2 vs anchors 107.2/109.7/110.1 at identical arena (miss 17.8 vs 32.2),
+# and READ_SPLIT=4 is now measured dead (P12 alone 99.0 beats PS2 101.2 at the same misses).
+# gap.sh now pins STRATA_METAL_ARENA_GB=33 for every arm (fill ignores the cap when the size is explicit;
+# 33 GB is what arms 1-2 of every round held anyway) and logs the floor at each arm start.
+# Five D / four P12 tight sandwich. If P12 holds >= -4 ms vs local anchors again, this is a default change.
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round21.txt 2>&1 | tee /tmp/round21.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p5|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

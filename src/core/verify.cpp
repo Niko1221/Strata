@@ -86,6 +86,16 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
 bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err);
 bool window_commit(void* w, int n_keep, std::string& err);
 bool window_copy_logits(void* w, int t, float* host);
+// the head logits of row t of the last window, host memory (unified); null past the window
+const float* window_logits(void* w, int t);
+// the request's sampling over one row of them, on the CPU (metal/src/engine/host_sampler.h: the CUDA sampler's chain)
+int sample_row(const float* logits, int n_vocab, const int32_t* history, int history_len,
+               const strata::kernels::SamplerParams& p, const float* logit_bias, uint64_t counter);
+// the batch windows (issue #3284, stage 1): the slot regions, the S-row window and its host-side commit
+bool window_init_slots(void* w, int S, strata::core::SessionState* const* slots, std::string& err);
+bool window_run_batch(void* w, int S, const int* rows, const int32_t* tokens, const int64_t* pos, int32_t* out,
+                      std::string& err);
+bool window_commit_batch(void* w, int S, const int* rows, std::string& err);
 }  // namespace strata::metal_engine
 #endif
 
@@ -675,7 +685,7 @@ void Verifier::tap_write(int T, const int32_t* tokens, int64_t pos0) {
 
 bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) {
     if (next_ && !next_->set_logit_bias(bias, err)) return false;
-    if (le_ < g_->n_layers) return true;
+    if (le_ >= 0 && le_ < g_->n_layers) return true;   // an earlier stage (-1: the whole model, as the Metal init leaves it)
     const OnDevice on_device(device_);
     if (!bias.empty() && bias.size() != (size_t) n_vocab_) {
         err = "logit_bias vocabulary size mismatch"; return false;
@@ -2867,7 +2877,24 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #if defined(STRATA_GPU_METAL)
     (void) pool;
     (void) user;
-    return strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err);
+    if (!strata::metal_engine::window_run(metal_, T, tokens, pos0, head_sampling_, out, err)) return false;
+    {   // a sampled or penalized request (or one with a logit_bias): the CUDA path's host-side sampling below, on the
+        // CPU over the window's logits (unified memory).  Row t draws Philox(seed, pos0 + t) with its own penalty row.
+        // Greedy without either keeps the window's argmax: the tokens are the ones it always gave.
+        const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
+        if (head_sampling_ && (sampled || hist_d_ != nullptr || !logit_bias_host_.empty())) {
+            const int32_t* hist = hist_d_ != nullptr ? (const int32_t*) strata::gpu::host_view(hist_d_) : nullptr;
+            for (int t = 0; t < T; ++t) {
+                const float* row = strata::metal_engine::window_logits(metal_, t);
+                if (row == nullptr) { err = "verify: the window's head logits are missing"; return false; }
+                out[t] = strata::metal_engine::sample_row(row, (int) n_vocab_, hist ? hist + (size_t) t * hist_len_ : nullptr,
+                                                          hist ? hist_len_ : 0, sampling_,
+                                                          logit_bias_host_.empty() ? nullptr : logit_bias_host_.data(),
+                                                          (uint64_t) (pos0 + t));
+            }
+        }
+    }
+    return true;
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
@@ -3197,7 +3224,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
     if (tap_file_ != nullptr && !batch_rec_) tap_write(T, tokens, pos0);
-    note_nonfinite(T, nullptr);
+    note_nonfinite(T, nullptr, out);
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {
@@ -3469,6 +3496,17 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
             return false;
         }
     }
+
+#if defined(STRATA_GPU_METAL)
+    // the Mac engine: the window carves each slot's state region out of its arena and keeps the rows' state
+    // there (metal/src/engine/window.cpp's init_slots); the CUDA staging buffers below are never allocated.
+    slots_ = slots;
+    slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    if (!strata::metal_engine::window_init_slots(metal_, (int) slots.size(), slots.data(), err)) return false;
+    std::fprintf(stderr, "strata verify: Metal batch windows of up to %lld sequences (layers [%lld, %lld))\n",
+                 (long long) slots.size(), (long long) lb_, (long long) le_);
+    return true;
+#endif
     const strata::kernels::QsaShapes s = shapes_of(*g_);
     const int64_t S = (int64_t) slots.size(), CB = 2 + max_t_;
     const int64_t TS = (s.idx_block - 1) * g_->idx_key_dim, nQ = g_->n_qsa_layers();
@@ -3780,6 +3818,45 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                              void* user, int32_t* out, std::string& err) {
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+#if defined(STRATA_GPU_METAL)
+    // the Mac engine: the window runs the rows itself (window_run_batch): no graph capture, no staging, no
+    // doorbells.  The bookkeeping the commit reads (last_rows_, last_tokens_, last_pos_b_) is set here; the
+    // rows' picks come back in `out`, greedy like the solo window's.
+    (void) pool;
+    (void) user;
+    if (metal_ == nullptr) { err = "verify: the Metal window is not up"; return false; }
+    if (S < 1 || S > 8) { err = "verify: batch window out of range"; return false; }
+    for (int t = 0; t < S; ++t)
+        if (pos[t] < 0 || pos[t] + 1 > slots_[(size_t) rows[t]]->max_cells) {
+            err = "verify: slot " + std::to_string(rows[t]) + " runs past its context";
+            return false;
+        }
+    if (!strata::metal_engine::window_run_batch(metal_, S, rows, tokens, pos, out, err)) return false;
+    {   // a sampled row (its request's own temperature): the host sampler over the window's logits, the solo
+        // run()'s pattern with each slot's parameters (the CUDA batch path drops penalties the same way)
+        bool any = false;
+        for (int t = 0; t < S; ++t)
+            if (!slot_sp_[(size_t) rows[t]].greedy && slot_sp_[(size_t) rows[t]].temperature > 0.0f) { any = true; break; }
+        if (any)
+            for (int t = 0; t < S; ++t) {
+                strata::kernels::SamplerParams sp = slot_sp_[(size_t) rows[t]];
+                if (sp.greedy || sp.temperature <= 0.0f) continue;
+                const float* row = strata::metal_engine::window_logits(metal_, t);
+                if (row == nullptr) { err = "verify: the window's batch logits are missing"; return false; }
+                out[t] = strata::metal_engine::sample_row(row, (int) n_vocab_, nullptr, 0, sp, nullptr,
+                                                          (uint64_t) pos[t]);
+            }
+    }
+    last_t_ = S;
+    row_base_ = 0;
+    last_batch_ = true;
+    for (int t = 0; t < S; ++t) { last_rows_[t] = rows[t]; last_tokens_[t] = tokens[t]; last_pos_b_[t] = pos[t]; }
+    note_nonfinite(S, last_pos_b_, out);
+    ++windows;
+    progress_at("decode");
+    progress_beat();
+    return true;
+#endif
     const ModelGeometry& g = *g_;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
@@ -3811,7 +3888,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
         if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
         if (!sample_rows(S, err)) return false;
         for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-        note_nonfinite(S, last_pos_b_);
+        note_nonfinite(S, last_pos_b_, out);
         progress_at("decode");
         progress_beat();
         return true;
@@ -3875,7 +3952,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
     if (!sample_rows(S, err)) return false;
     for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-    note_nonfinite(S, last_pos_b_);
+    note_nonfinite(S, last_pos_b_, out);
     progress_at("decode");
     progress_beat();
     return true;
@@ -3891,6 +3968,25 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
     const OnDevice on_device(device_);
     if (!last_batch_ || last_t_ < 1) { err = "verify: commit_slots without a batch window"; return false; }
     const int S = last_t_;
+#if defined(STRATA_GPU_METAL)
+    const Clock::time_point tc0 = Clock::now();   // (the CUDA body below keeps its own `t0`: both compile here)
+    // the Mac engine: the rows committed inside the window (each region's parity flipped when its row ran);
+    // window_commit_batch lands the host-side PLE conv history and each slot's ple_prev chain.  Stage 1 carries
+    // one row per slot: a draft group has nowhere to fold to.
+    for (int t = 0; t < S;) {
+        const int first = t;
+        while (t < S && last_rows_[t] == last_rows_[first]) ++t;
+        const int n = keep[last_rows_[first]];
+        if (t - first > 1) { err = "verify: Metal batch windows carry one row per slot"; return false; }
+        if (n < 1 || n > t - first) {
+            err = "verify: accepted prefix is outside its slot group";
+            return false;
+        }
+    }
+    if (!strata::metal_engine::window_commit_batch(metal_, S, last_rows_, err)) return false;
+    ms_commit += ms_since(tc0);
+    return next_ == nullptr || next_->commit_slot_prefixes(keep, err);
+#endif
     const Clock::time_point t0 = Clock::now();
     const int64_t CB = 2 + max_t_;
     // One prefix per slot: rejected draft rows must not enter recurrent state.
@@ -4078,7 +4174,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (last_stage()) {
         if (!sample_rows(S, err)) { b_running_ = false; return -1; }
         for (int t = 0; t < S; ++t) b_out_[t] = ((volatile int32_t*) h_out_)[t];
-        note_nonfinite(S, last_pos_b_);
+        note_nonfinite(S, last_pos_b_, b_out_);
     }
     ++windows;
     b_running_ = false;
@@ -4115,15 +4211,22 @@ const std::vector<long long>& nan_inject_list() {
 std::atomic<long long> g_nf_windows{0};
 }  // namespace
 
-void Verifier::note_nonfinite(int T, const int64_t* pos_b) {
+void Verifier::note_nonfinite(int T, const int64_t* pos_b, const int32_t* picks) {
     nf_row_ = -1;
     nf_pos_ = -1;
     nf_mask_ = 0;
-    if (!nan_guard_on() || h_nf_ == nullptr || !last_stage()) return;   // (a stage without the head checks nothing)
-    const volatile uint32_t* f = h_nf_;
-    for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
-        for (int b = 0; b < strata::kernels::kNonfiniteBlocks; ++b)
-            if (f[t * strata::kernels::kNonfiniteBlocks + b] != 0) { nf_mask_ |= 1u << t; break; }
+    if (nan_guard_on() && h_nf_ != nullptr && last_stage()) {   // (a stage without the head checks nothing)
+        const volatile uint32_t* f = h_nf_;
+        for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
+            for (int b = 0; b < strata::kernels::kNonfiniteBlocks; ++b)
+                if (f[t * strata::kernels::kNonfiniteBlocks + b] != 0) { nf_mask_ |= 1u << t; break; }
+    }
+    // The Metal window graphs carry no device row check (the port has no logits_nonfinite_rows): there an
+    // all-non-finite logits row leaves the sampler's argmax sentinel in the pick.  INT32_MAX is past every
+    // vocabulary, so a pick that holds it is the same fact #879 records, read from host memory any platform has.
+    if (picks != nullptr)
+        for (int t = 0; t < T && t < strata::kernels::kVerifyMaxT; ++t)
+            if (picks[t] == INT32_MAX) nf_mask_ |= 1u << t;
     const std::vector<long long>& inject = nan_inject_list();
     if (!inject.empty()) {
         const long long k = g_nf_windows.fetch_add(1) + 1;
@@ -4400,7 +4503,7 @@ bool Verifier::pl_finish(int32_t* out, std::string& err) {
     }
     if (out != nullptr)
         for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-    note_nonfinite(T, nullptr);
+    note_nonfinite(T, nullptr, out);
     progress_beat();
     return true;
 }
