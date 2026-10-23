@@ -71,8 +71,36 @@ Total: 188 collected, 187 passed and one optional `jsonschema` check skipped, in
 
 These focused checks do not replace the earlier failed complete server run or qualify a model workload. The public branch still excludes the private checkpoint bank and startup-budget changes; upstream's new in-memory conversation-cache sizing is separate from that private implementation.
 
+## Exact-source CUDA build and native checks
+
+**Passed:** Source `a69684f1f2609da46c82f9719d5159f5f9b307dc` completed a fresh Windows CUDA Release build and 13 native utility, protocol and parity test programs. The build used MSVC 14.44.35207, Windows SDK 10.0.26100.0, CUDA 13.4, Ninja, portable CPU code, CUDA architecture 89 and the pinned llama.cpp dependency `3cf03257`. Configuration took 17.765 seconds and the 183 build steps took 961.907 seconds with one build worker.
+
+The CMake configuration enabled `STRATA_ENABLE_CUDA`, `STRATA_NATIVE_EXPERTS`, `STRATA_PORTABLE`, `STRATA_BUILD_TESTS` and `STRATA_BUILD_CONVERSATION_TESTS`; it disabled HIP, SYCL, `STRATA_MMQ_KQUANTS` and `STRATA_Q6K_EXPERTS`. Dependencies were already present and `FETCHCONTENT_FULLY_DISCONNECTED` was on. The build targets were `strata` and the 13 test names below. Each test ran from that new build directory:
+
+| Native test | Invocation | Result |
+| --- | --- | --- |
+| `live_memory_test` | `live_memory_test.exe --protocol-only` | passed |
+| `live_prefill_policy_test` | `live_prefill_policy_test.exe` | passed |
+| `background_control_test` | `background_control_test.exe` | passed |
+| `request_stop_test` | `request_stop_test.exe` | passed |
+| `pool_background_test` | `pool_background_test.exe` | passed |
+| `pool_tasks_test` | `pool_tasks_test.exe` | passed |
+| `platform_memory_test` | `platform_memory_test.exe` | passed |
+| `file_expert_source_test` | `file_expert_source_test.exe` | passed |
+| `conversation_validation_test` | `conversation_validation_test.exe` | passed |
+| `iq_avx2_parity` | `iq_avx2_parity.exe` | passed |
+| `router_dot_parity` | `router_dot_parity.exe` | passed |
+| `pool_cores_test` | `pool_cores_test.exe` | passed |
+| `numa_pool_test` | `numa_pool_test.exe` | passed |
+
+Configuration, build, every test and the outer worker exited zero. The run checked 661 source/test file hashes, 1,407 dependency file identities and 11 runner/tool pins against its sealed plan. The resulting `strata.exe` SHA-256 is `744205e4e024b5cbba19e4b560678ffe21e6899e59050929f7af51557f3c6198`. Plan SHA-256: `e3a02024d75c78c18642d8f9e03ef04ca4286192cdbc64f2c2236d76c813c378`. Independent read-only verification rechecked these identities after the run.
+
+The bounded wrapper retained process creation identities and handles. All 1,638 retained handles signaled exit, the owned job emptied, and cleanup was confirmed. Two compiler helpers (`vctip.exe` and `mspdbsrv.exe`) were stopped only through their owned retained identities after the build; their exit was verified. RAM and commit guards sampled throughout the steps; the build minima were 43.436 GiB available RAM and 72.666 GiB commit headroom. These are observations on this host, not operating-system reservations or a general capacity guarantee.
+
+No model was started. In particular, `live_memory_test --protocol-only` does not qualify GPU cache resizing under a real model. This run does not cover the separate, later Python scheduling experiment or the private checkpoint implementation. A compact result receipt is included as [native-validation.json](native-validation.json); full local build logs remain separate from this public report.
+
 ## Remaining validation
 
-**Not run:** Exact-source CUDA native build/test qualification for this candidate; HIP, SYCL and Metal builds or hardware execution; a public-only real-model lease/compiler/reload workflow; visible Desktop, long-history compression and media acceptance. A prepared command or a successful private prototype run is not evidence for these checks. Native results will be added only after an actual bounded run and cleanup verification.
+**Not run:** HIP, SYCL and Metal builds or hardware execution; a public-only real-model lease/compiler/reload workflow; visible Desktop, long-history compression and media acceptance. The CUDA compile and native checks above do not replace these checks. A prepared command or a successful private prototype run is not evidence for them.
 
 There is no performance comparison or universal memory-safety/progress claim. Capacity observations are not operating-system reservations. The branch remains a draft. The tracker-reset `/reopen` format check is distinct from the all-touched-backend build requirement before requesting review.
