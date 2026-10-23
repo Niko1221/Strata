@@ -249,6 +249,8 @@ class WordsMatchTheApp(unittest.TestCase):
         # and what the engine's log makes of them
         self.assertEqual(drafting.fallback_note("--draft dflash2: out of memory"), drafting.mtp_line(drafting.DIDNT_FIT))
         self.assertEqual(drafting.fallback_note("--draft dflash2 is off: it is for one card and the CLI run"), drafting.mtp_line(drafting.NOT_HERE))
+        self.assertEqual(drafting.fallback_note("--draft dflash2 is off: it is not available with --batch, a layer split on one GPU, or a CLI run on a layer split (serve it) in this build"),
+                         drafting.mtp_line(drafting.NOT_HERE))
 
 
 class TerminalFlag(unittest.TestCase):
