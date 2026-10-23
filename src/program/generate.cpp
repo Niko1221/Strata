@@ -16060,6 +16060,11 @@ int main(int argc, char** argv) {
             int64_t merge_at = -1;
             auto merge_from = [&](int64_t a0, int64_t to) -> int64_t {
                 if (!admit_merge_first_env() || admit_slot < 0 || max_new != 1 || batch_mtp || pipe) return -1;
+                // jev fix B: a request that named head rows needs every named position to run in ONE window the
+                // capture sees.  This path merges the last tokens into a different first window, so the rows it
+                // covers may never be offered to capture_window_rows - the server would then fall back (correct,
+                // but slower) or, worse, a position would be missing.  Never merge when rows were named.
+                if (!req_jevpos.empty()) return -1;
                 if (to != n - 1 || to == turn_at || to == root_at || to == message_at || to == pin_at) return -1;
                 if (!req_imgs.empty() || kvg.on || peer.valid() || remote_caches || remote_opt || fs_swap) return -1;
                 if (std::getenv("STRATA_LOGPOS") != nullptr) return -1;
