@@ -20,6 +20,9 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-23: RTX 5090 32 GiB, Ryzen 9 5950X, 121.5 GiB RAM](../bench/results/2026-10-23-community-rtx-5090-qwen3-8-flash-next-nvfp4-nvfp4-bf16/README.md):
+  Linux, NVFP4/NVFP4 with BF16 embeddings, 131072-token context; four saved speed-suite runs covering 0.1.44 and the updated source checkout reporting 0.1.48.1.
+  Same-day 4K/16K prompt throughput is 5.2-6.7% lower after updating; chat decode is similar. Includes raw requests, startup excerpts and automatic-cache differences; no correctness check or controlled regression attribution.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
