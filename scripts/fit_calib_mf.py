@@ -12,9 +12,15 @@ be g(f_old(raw)) at fit time but g(raw) live - a silent mismatch.  We invert f_o
                   --out calib-L-new.json [--folds 5]
 
 Reported, per field type, before (old calibrator) and after (new fit) on the TEST file:
-accuracy (must be identical - both maps are monotone and argmax-preserving), mean
-confidence, Brier, NLL, and 15-bin ECE.  Train ECE is also cross-validated so an
+accuracy, mean confidence, Brier, NLL, and 15-bin ECE.  Train ECE is also cross-validated so an
 overfit (n=600, 2 parameters) cannot hide.
+
+WARNING, measured 2026-10-23: the temperature maps are argmax-preserving, but Platt for `noul` is
+NOT accuracy-neutral - a non-zero offset c is a decision threshold, and a fitted (a, c) moved
+held-out banking77 from .670 to .800.  So "accuracy must be identical" is right for choice/score
+and WRONG for noul; report the accuracy delta per type and treat a |delta| that comes mostly from
+c as a threshold/prior decision that has to be justified on representative data, never as
+calibration quality.  A fit whose accuracy moves on a balanced set will not survive a skewed one.
 """
 import argparse
 import json

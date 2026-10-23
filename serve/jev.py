@@ -600,6 +600,23 @@ def _row_readout_enabled() -> bool:
     return os.environ.get("STRATA_JEV_ROWS", "0") not in ("0", "false", "False", "off", "")
 
 
+def _row_capture(engine) -> bool:
+    """Can the engine keep head rows at named ABSOLUTE prompt positions?
+
+    fix B sends ONE prompt for N fields and then reads each field's cue row by its absolute position.
+    That only works because the same request also names those positions (`jevpos=`), and the engine
+    copies each named row out of whichever verify window happens to cover it while the prompt is read
+    (`Verifier::capture_window_rows`).  BROWAT then addresses the kept rows by absolute position and
+    REFUSES a position the request never ran, by name - it never falls back to the last window, whose
+    rows are numbered from that window's first token and would answer a different question.
+
+    The capability is advertised in the engine's INFO line (`jevpos=1`); an engine that does not
+    advertise it (an older build, or one started without --jev-brow) is never sent this path at all,
+    so an absolute position can never reach a window-relative read.
+    """
+    return getattr(engine, "info", {}).get("jevpos") == 1
+
+
 def consolidated_rows(svc, state_text: str, qdefs: list):
     """Render ONE prompt for all the questions and return (ids, rows) - the absolute prompt position of each
     field's cue - or None when the prefix cannot be kept exact.
@@ -671,14 +688,16 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
         # kept per field, instead of one prompt per field.  Falls back to the per-question path whenever the
         # engine cannot serve it (no jevpos, a template whose seam moves, a tokenizer that merges).
         if (_row_readout_enabled() and len(qdefs) > 1 and not v_mode and not image_state
-                and getattr(engine, "info", {}).get("jevpos") == 1 and hasattr(engine, "row_logits_at")):
+                and _row_capture(engine) and hasattr(engine, "row_logits_at")):
             plan = consolidated_rows(svc, state_text, qdefs)
+            rows = None
             if plan is not None:
                 ids, rows = plan
                 cancel = threading.Event()
                 # one read, and the rows named in the same request; nothing extends this turn, so no checkpoint
                 for _ in engine.generate(ids, 1, {"jevpos": rows, "strata_checkpoint": False}, cancel):
                     pass
+            if plan is not None and rows is not None:
                 for qdef, row_at in zip(qdefs, rows):
                     variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
                     tokens = sorted({t for v in variants for t in v})
@@ -760,7 +779,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             # marks; the later ones resume from it and park nothing.
             cue = None
             if (_hybrid_enabled() and l_pin > 0 and not image_state
-                    and getattr(engine, "info", {}).get("jevpos") == 1 and hasattr(engine, "row_logits_at")):
+                    and _row_capture(engine) and hasattr(engine, "row_logits_at")):
                 cue = len(ids) - 1
                 keys["jevpos"] = [cue]
                 if l_seen > 0:
@@ -769,7 +788,11 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             for _ in engine.generate(ids, 1, keys, cancel):
                 pass                                     # the one decode step; its logits row is the readout
             tokens = sorted({t for v in variants for t in v})
-            row = (engine.row_logits_at(cue, tokens) if cue is not None
+            # The cue is the prompt's last token, named to the same request that reads the prompt, so the
+            # engine keeps that row (`jevpos=`) and BROWAT reads it back by absolute position.  If the
+            # engine cannot capture (`_row_capture` false) this branch is not taken at all.
+            use_cue = cue is not None
+            row = (engine.row_logits_at(cue, tokens) if use_cue
                    else engine.final_row_logits(ids, tokens))   # captured row, or BROW on the decode window
             try:
                 scores = readout_scores(row, variants)

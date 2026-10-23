@@ -56,7 +56,7 @@ QFN = Qwen3.8-Flash-Next IQ3_XXS MoE (RTX 3090, Strata engine v0.1.43-lineage, 3
 | Core decision endpoint | `POST /v1/systemone` `{state, questions}` — noul (yes/no), choice (letters), score (0-10 levels) | ✅ live |
 | Frozen D3 prompt | byte-frozen question block (donor render, `enable_thinking=false`, verbatim string states) | ✅ golden-tested |
 | BROW readout | `--jev-brow` engine flag; final-row logits, fail-closed | ✅ engine commit |
-| Calibration (M3.2) | post-hoc, argmax-preserving: Platt (a,c) for noul, temperature for choice/score; per-tuple (L/V/D/S) files `calib-<mode>.json`; `POST /admin/calib` hot-swap; donor-schema log rows for `fit.py` | ✅ live |
+| Calibration (M3.2) | post-hoc, per-tuple: Platt (a,c) for noul, temperature for choice/score (temperature is argmax-preserving; a non-zero Platt `c` is a decision threshold and can change a yes/no answer — see 4a-bis); per-tuple (L/V/D/S) files `calib-<mode>.json`; `POST /admin/calib` hot-swap; donor-schema log rows for `fit.py` | ✅ live |
 | V-mode (M3.1) | header `X-Jev-Mode: V` — per-option yes/no branches, `p = softmax(s_yes − s_no)`, name-keyed | ✅ live |
 | Image → decision (M3.8) | `image_b64` + `image_mode`: `summary` (vision → 160-tok summary → decide) or **`direct`** (raw image embeddings + question, ONE readout) | ✅ live |
 | Decide-then-generate (M3.9) | `"then": {"generate": {...}}` — answers folded into the last user turn, one wire request | ✅ live |
@@ -85,8 +85,11 @@ curl -s $URL/v1/systemone -d '{
   "then": {"generate": {"messages": [{"role": "user", "content": "Narrate."}],
                         "max_tokens": 128}}}'
 
-# MULTIPLE questions, mixed types, ONE state (each question = its own readout;
-# cost scales ~linearly until prefix reuse lands)
+# MULTIPLE questions, mixed types, ONE state (each question = its own readout).
+# Prefix reuse has landed (M3.1, state parking): the state is read once and pinned, so
+# field N costs its own turn, not another prefill of the state -- 3 fields 1185 ms,
+# 5 fields 1667 ms on a 3090. An opt-in one-prompt/N-row path is faster at 2 fields only;
+# see docs/JEV-SYSTEMONE.md, 'Multi-field reads'.)
 curl -s $URL/v1/systemone -d '{
   "state": "Reactor at 84%. Coolant loop A nominal, loop B pressure rising slowly.",
   "questions": {
@@ -199,6 +202,59 @@ PR gate.
 Tc=1.0557 Ts=2.263 · D a=1.0571 c=−.172 Tc=1.5456 Ts=.6555.
 Also shown in `calib-prepost-ab.json`: the OLD single global calibrator made image
 tuples WORSE than raw (CountBench ECE .091→.451!) — the per-tuple fix is the story.
+
+### 4a-bis. Re-measured 2026-10-23, and what it corrects
+
+Same box, same binary, identical items; everything below is paired on the same items unless said
+otherwise. Two of the earlier readings do not survive contact with a held-out re-run.
+
+**The 4a gains were measured on the dev split they were fitted on.** Re-running those three
+suites now: BoolQ .910 → .910 (raw ECE .049), ARC 1.000 → 1.000 (ECE .007), SST-5 .520 → .520 with
+the refit *hurting* test ECE (.127 → .140, both arms). The calibrator has not regressed — the
+readout improved underneath it. Fits now come back near identity (BoolQ `a=1.009 c=.0037` for the
+opt-in arm, `a=1.032 c=.062` for the default arm), which is the signature of a tuple with no
+headroom left. The same is true of the image tuples: refitting on top of the shipped calibrator
+asks for `T=.985`/`T=.984` and `a=1.066, c=−.003`.
+
+**Per-task calibration is real; portable calibration is not.** Platt fitted on banking77 (2-field,
+600 items, held out 200):
+
+| fit → eval | acc | Brier | ECE15 |
+|---|---|---|---|
+| banking77 raw | .670 | .2208 | .259 |
+| banking77 ← own fit | **.800** | **.1385** | **.099** |
+| POPE raw | .883 | .0785 | .074 |
+| POPE ← banking77 fit | .850 | .1114 | .145 |
+| GQA raw | .803 | .1470 | .054 |
+| GQA ← banking77 fit | .720 | .2173 | .243 |
+
+And the decomposition that explains it: keeping the fitted slope but forcing `c = 0` restores
+POPE (.883 / .0794 / .0882) and GQA (.803 / .1451 / .0790). **The offset is a decision threshold;
+the slope is the only part that is even approximately portable.** The banking77 fit puts that
+threshold at raw p ≈ .94 on a balanced 50/50 set — which is why its +13 points is threshold tuning
+on a prior, not a better probability, and must not be quoted as an accuracy result.
+
+**Multi-field arms (N questions, one state), ref = default:**
+
+| N | C (default) | H (opt-in) | B (opt-in) | B field-N max abs Δp |
+|---|---|---|---|---|
+| 1 | 918 ms | 831 (1.10×) | 841 (1.09×) | .007 |
+| 2 | 1232 ms | 1076 (1.15×) | **981 (1.33×)** | .187 |
+| 3 | 1185 ms | 1508 (0.79×) | 1258 (0.94×) | .307 |
+| 4 | 1406 ms | 1899 (0.74×) | 1382 (1.02×) | .288 |
+| 5 | 1667 ms | 2321 (0.72×) | 1582 (1.05×) | **.507** |
+
+Accuracy, where the arms were compared with the same calibrator discipline: banking77 2-field
+.670 vs .675 (McNemar p = 1.000, then .800 vs .805 once both were refitted — no arm claim), GQA
+600 items raw .812 vs .793 in favour of the default (14:3 discordant, p = .013), field order
+reversed 199/200 agreement for the default vs 167/200 for the one-prompt arm. So the one-prompt
+path buys 1.33× at exactly two fields and costs readout fidelity everywhere; it ships opt-in.
+
+**Label alphabet** (`STRATA_JEV_LABELS`, the #3643 scheme): same 160 ARC items, `A`-`Z` vs
+`0`-`9`/`a`-`z` — 160/160 identical decisions, mean |Δp| .0034 per option, prompt tokens
+identical, and the two alphabets' own optimal temperatures 8% apart (1.00 vs .92) against a shipped
+1.0557. No refit is owed for the scheme; the caveat is that ARC is 99% accurate and therefore the
+weakest available detector of a temperature change.
 
 ### 4b. Benchmark vs jevcpp's own benchmark (donor m2_baseline, same 3 tasks)
 

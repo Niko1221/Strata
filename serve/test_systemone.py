@@ -100,6 +100,8 @@ class DecisionEngine(MockEngine):
         self.rows_read: list[int] = []       # the prompt positions BROWAT was asked for (fix B)
         self.max_news: list[int] = []        # the max_new of each generate
         self.info = {"jevpos": 1}            # the engine build advertises row capture (fix B)
+        self.window_rows = None              # None: the last prompt was read in ONE window
+        self.final_reads = 0                 # how often the final-row (BROW) read was used
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
@@ -109,7 +111,15 @@ class DecisionEngine(MockEngine):
 
     def final_row_logits(self, ids, tokens):
         # the real engine answers only the asked tokens (BROW); the mock mirrors that
+        self.final_reads += 1
         return {t: self.ROW[t] for t in tokens if t in self.ROW}
+
+    def brow_rows(self):
+        """BROWROWS: the row count of the LAST window.  A prompt the engine chunked is read in more
+        than one window, so this is NOT the prompt length then - tests set `window_rows` to say so."""
+        if self.window_rows is not None:
+            return int(self.window_rows)
+        return len(self.prompts[-1]) if self.prompts else 0
 
     def row_logits_at(self, row, tokens):
         # fix B (jevpos): the row captured at that prompt position.  This table is row-independent, so the
@@ -342,6 +352,9 @@ class RowReadout(unittest.TestCase):
         self.engine.prompts.clear()
         self.engine.pins.clear()
         self.engine.rows_read.clear()
+        self.engine.window_rows = None
+        self.engine.final_reads = 0
+        self.engine.__dict__.pop("brow_rows", None)   # a test may shadow the method; unshadow it
 
     def tearDown(self):
         if self._old is None:
@@ -393,6 +406,8 @@ class RowReadout(unittest.TestCase):
         self.assertEqual(len(self.engine.prompts), 2, "no capability, no one-prompt path")
         self.assertFalse(any("jevpos" in p for p in self.engine.pins))
 
+
+
     def test_one_field_never_takes_the_one_prompt_path(self):
         st, _ = self._post({"q1": {"type": "noul", "instructions": "Is it on?"}})
         self.assertEqual(st, 200)
@@ -439,6 +454,9 @@ class Hybrid(unittest.TestCase):
         self.engine.prompts.clear()
         self.engine.pins.clear()
         self.engine.rows_read.clear()
+        self.engine.window_rows = None
+        self.engine.final_reads = 0
+        self.engine.__dict__.pop("brow_rows", None)   # a test may shadow the method; unshadow it
         self.engine.max_news.clear()
 
     def tearDown(self):
@@ -469,6 +487,7 @@ class Hybrid(unittest.TestCase):
                          "the first field keeps the checkpoint the pin marks")
         self.assertIs(self.engine.pins[1].get("strata_checkpoint"), False,
                       "later fields resume from it and park nothing")
+
 
     def test_answers_are_unchanged(self):
         _, on = self._post(self.THREE)

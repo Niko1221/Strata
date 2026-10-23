@@ -2,8 +2,16 @@
 
 Post-hoc, monotone calibration of the jev readout: identity until a calib.json is
 loaded; Platt (a, c) on the noul logit-difference; temperature T on choice/score
-label log-probs (log-sum-exp form).  Argmax is always preserved - calibration only
-reshapes probabilities, never picks a different label.
+label log-probs (log-sum-exp form).
+
+Argmax is preserved by the TEMPERATURE form (a monotone rescale of one softmax, so
+choice/score can never change which label wins).  Platt on noul is monotone in the
+yes-logit but its OFFSET c is a decision threshold: with c != 0 the probability that
+crosses 0.5 is no longer the raw one, so a fitted noul calibrator CAN change the
+yes/no answer, and with it accuracy (measured 2026-10-23: a 0.4856/c -1.6384 fit
+moved held-out banking77 from .670 to .800).  Treat a non-zero c as a per-task
+threshold decision that must be fitted on representative data of the right prior and
+never carried across tasks - transferring it cost POPE 3.3 points and GQA 8.3 points.
 
 The module is self-contained (stdlib only) and thread-safe: one lock guards the
 active Calib, one guards the async log queue; the writer flushes every 200 ms.
