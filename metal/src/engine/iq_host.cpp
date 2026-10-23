@@ -65,9 +65,9 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
         case 144: return (size_t) (n / 128) * sizeof(block_tq2_t);
         case 145: return (size_t) (n / 128) * sizeof(block_tqk6);
         case 146: return (size_t) (n / 128) * sizeof(block_tqk7);
-        case 147: return (size_t) (n / 128) * (2 + 8 * 5);   // TQP5 / 6 / 7: fp16 d + 64 steps of K bits
-        case 148: return (size_t) (n / 128) * (2 + 8 * 6);
-        case 149: return (size_t) (n / 128) * (2 + 8 * 7);
+        case 147: return (size_t) (n / 128) * sizeof(block_tqp5);
+        case 148: return (size_t) (n / 128) * sizeof(block_tqp6);
+        case 149: return (size_t) (n / 128) * sizeof(block_tqp7);
         case 30: return (size_t) n * 2;
         default: return 0;
     }

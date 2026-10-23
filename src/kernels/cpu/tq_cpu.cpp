@@ -54,6 +54,42 @@ int env_isa_cap() {
     return 2;
 }
 
+// The pair trellis (TQP5 / TQP6 / TQP7, `kb` = 5 / 6 / 7): a 128-weight block is 64 steps of 2 weights, the
+// state's hash gives ONE codebook point (the first pair), so the arithmetic is the same chain as rows_scalar_t
+// with 8 steps per Q8_0 sub-block instead of 4 and two table entries per step instead of four.
+template <int KB>
+void tqp_rows_scalar_t(const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
+                       float* const* out, int r0, int r1) {
+    const int nb = n / 128;
+    constexpr size_t bsz = 2 + 8 * KB;
+    const int16_t* tab = tq_state_table();
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* x = w + (size_t) r * row_bytes;
+        float acc[kTqMaxTokens][4] = {};
+        for (int i = 0; i < nb; ++i) {
+            const uint8_t* blk = x + (size_t) i * bsz;
+            const float dx = tq_detail::tq_half_to_float(tq_detail::tq_ld16(blk));
+            uint32_t st[64];
+            tq_detail::tqp_states<KB>(blk + 2, st);
+            for (int t = 0; t < nt; ++t) {
+                const int16_t* q = a[t]->q + 128 * i;
+                for (int k = 0; k < 4; ++k) {
+                    int32_t s = 0;
+                    for (int j = 0; j < 8; ++j) {
+                        const int16_t* wv = tab + 4 * st[8 * k + j];   // the first pair of the state
+                        const int16_t* qv = q + 32 * k + 2 * j;
+                        s += wv[0] * qv[0] + wv[1] * qv[1];
+                    }
+                    const float sc = dx * a[t]->d[4 * i + k];
+                    acc[t][k] = std::fma((float) s, sc, acc[t][k]);
+                }
+            }
+        }
+        for (int t = 0; t < nt; ++t)
+            out[t][r] = ((acc[t][0] + acc[t][1]) + (acc[t][2] + acc[t][3])) * (1.0f / 8192.0f);
+    }
+}
+
 template <int KB>
 void rows_scalar_t(const int16_t* tab, const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
                    float* const* out, int r0, int r1) {
@@ -103,11 +139,15 @@ const int16_t* tq_state_table_computed() {
 const int16_t* tq_state_table_for(int t) { return (t == kTqTypeK5X || t == kTqTypeK4X) ? tq_state_table_computed() : tq_state_table(); }
 
 bool tq_supported(int t) noexcept {
-    return t == 144 || t == 145 || t == 146 || t == kTqTypeK5X || t == kTqTypeK4X || t == kTqTypeK5T || t == kTqTypeK4T;
+    return t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149 || t == kTqTypeK5X || t == kTqTypeK4X ||
+           t == kTqTypeK5T || t == kTqTypeK4T;
 }
 
+// bits per step: 8 / 6 / 7 for TQ2_T / TQK6 / TQK7, 5 / 6 / 7 for the pair trellis TQP5 / TQP6 / TQP7
+// (the pair types are negative below: the row kernels take the bits and the step count together)
 int tq_kbits(int t) noexcept {
-    return t == 144 ? 8 : t == 145 ? 6 : t == 146 ? 7 : (t == kTqTypeK5X || t == kTqTypeK5T) ? 5 : (t == kTqTypeK4X || t == kTqTypeK4T) ? 4 : 0;
+    return t == 144 ? 8 : t == 145 ? 6 : t == 146 ? 7 : t == 147 ? -5 : t == 148 ? -6 : t == 149 ? -7 :
+           (t == kTqTypeK5X || t == kTqTypeK5T) ? 5 : (t == kTqTypeK4X || t == kTqTypeK4T) ? 4 : 0;
 }
 
 bool tq_isa_ok(TqIsa isa) {
@@ -159,6 +199,12 @@ void unpack_act(const void* q8_0, int n, TqAct& a) {
 
 void tq_rows_scalar(int kb, const int16_t* tab, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
                     float* const* out, int r0, int r1) {
+    if (kb < 0) {   // the pair trellis (TQP: kb = -5 / -6 / -7)
+        if (kb == -5) tqp_rows_scalar_t<5>(w, row_bytes, n, a, nt, out, r0, r1);
+        else if (kb == -6) tqp_rows_scalar_t<6>(w, row_bytes, n, a, nt, out, r0, r1);
+        else tqp_rows_scalar_t<7>(w, row_bytes, n, a, nt, out, r0, r1);
+        return;
+    }
     if (kb == 8) rows_scalar_t<8>(tab, w, row_bytes, n, a, nt, out, r0, r1);
     else if (kb == 6) rows_scalar_t<6>(tab, w, row_bytes, n, a, nt, out, r0, r1);
     else if (kb == 5) rows_scalar_t<5>(tab, w, row_bytes, n, a, nt, out, r0, r1);   // experimental TQK5X / TQK5T
@@ -188,6 +234,10 @@ ActSet& unpack_all(const void* const* act, int n, int nt) {
 
 void rows_on(TqIsa isa, int kb, const int16_t* tab, const uint8_t* w, size_t row_bytes, int n,
              const tq_detail::TqAct* const* a, int nt, float* const* out, int r0, int r1) {
+    if (kb < 0) {   // the pair trellis has the scalar kernel only (the AVX units are x86, the Metal build is arm64)
+        tq_detail::tq_rows_scalar(kb, tab, w, row_bytes, n, a, nt, out, r0, r1);
+        return;
+    }
     switch (isa) {
 #if defined(STRATA_TQ_X86)
         case TqIsa::avx512: tq_detail::tq_rows_avx512(kb, tab, w, row_bytes, n, a, nt, out, r0, r1); break;

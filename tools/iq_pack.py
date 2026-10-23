@@ -101,6 +101,59 @@ def needs_bf16(name: str, type_name: str) -> bool:
     return form_of(name) == "BF16"
 
 
+def tq2t_lut() -> np.ndarray:
+    """The trellis codebook (2048 points of two fp16 values) from third_party/ggml/ggml-common-tq.h -
+    the same table the engine's kernels and the fork's tq2t_lut_f16 use."""
+    import re
+    src = (HERE.parent / "third_party" / "ggml" / "ggml-common-tq.h").read_text()
+    m = re.search(r"tq_lut_f16\[4096\]\s*=\s*\{(.*?)\};", src, re.S)
+    vals = np.array([int(v, 16) for v in re.findall(r"0x[0-9a-fA-F]+", m.group(1))], dtype=np.uint16)
+    assert vals.size == 4096
+    # view, not astype: the table holds fp16 bit patterns, astype(float16) would convert the integers
+    return vals.view(np.float16).astype(np.float32)
+
+
+def dequantize_tqp(raw: np.ndarray, k: int) -> np.ndarray:
+    """TQP5 / TQP6 / TQP7 (the fork's pair trellis, ggml-common.h block_tqp5/6/7, dequantize_row_tqp_impl):
+    a 128-weight block is {fp16 d; a circular 64*K-bit stream of 8*K bytes}; step t's state is the 16 stream
+    bits from bit (63 - t)*K, LSB-first, circular modulo 64*K, masked to 15 bits; weights 2t, 2t+1 are the
+    FIRST codebook pair of that state (x = state * 0x9e3779b1, point x >> 21) times d."""
+    lut = tq2t_lut()
+    bb = 2 + 8 * k
+    b = np.frombuffer(raw.tobytes()[:raw.size - raw.size % bb], dtype=np.uint8).reshape(-1, bb)
+    d = b[:, :2].view(np.float16).astype(np.float32)
+    qs = np.ascontiguousarray(b[:, 2:])
+    nb = b.shape[0]
+    # the stream as bits, LSB-first: bit i of byte i // 8
+    bits = ((qs[:, :, None] >> np.arange(8, dtype=np.uint8)[None, None, :]) & 1).reshape(nb, 64 * k)
+    # step t's 16-bit window at stream bit (63 - t) * K, circular modulo 64*K; the state is the window's
+    # low 15 bits.  Read as bytes where it fits (off & 7 <= 1), else assemble the bits directly - the
+    # wrap cases are few (t = 0 and 1) and the direct path is the definition itself.
+    state = np.zeros((nb, 64), dtype=np.uint32)
+    for t in range(64):
+        off = ((63 - t) * k) % (64 * k)
+        byte, bit = off // 8, off % 8
+        if bit <= 1 and byte + 3 <= qs.shape[1]:   # 16 bits need bytes byte..byte+2 at offset bit
+            w = (qs[:, byte].astype(np.uint32) | (qs[:, byte + 1].astype(np.uint32) << 8) |
+                 (qs[:, byte + 2].astype(np.uint32) << 16)) >> bit
+        else:
+            w = np.zeros(nb, dtype=np.uint32)
+            for j in range(16):
+                p = (off + j) % (64 * k)
+                w |= (bits[:, p].astype(np.uint32) << j)
+        state[:, t] = w & 0x7FFF
+    x = (state * np.uint32(0x9E3779B1)).astype(np.uint32)   # the wrapping multiply
+    pt = (x >> np.uint32(21)).astype(np.int64)   # (nb, 64) codebook points, one per step
+    out = np.empty((nb, 128), dtype=np.float32)
+    # float64 product, rounded back to float32: the same bits as the C reference's float * float
+    df = d.astype(np.float64)
+    # the scale as a Python float: a float64 array operand broadcasts (nb, 1) against (1, 64) here
+    # instead of multiplying elementwise (same values, the wrong shape)
+    out[:, 0::2] = lut[2 * pt] * df.tolist()
+    out[:, 1::2] = lut[2 * pt + 1] * df.tolist()
+    return out.reshape(-1)
+
+
 def dequantize(raw: np.ndarray, type_name: str) -> np.ndarray:
     """The tensor's values as float32 (float types exactly, quantized ones through gguf-py's dequantizer)."""
     if type_name == "F32":
@@ -109,6 +162,9 @@ def dequantize(raw: np.ndarray, type_name: str) -> np.ndarray:
         return raw.view(np.float16).astype(np.float32)
     if type_name == "BF16":
         return (raw.view(np.uint16).astype(np.uint32) << 16).view(np.float32)
+    if type_name in ("TQP5", "TQP6", "TQP7"):
+        # gguf-py has no member for the fork's pair trellis types (as with Q2_0 before it): decoded here
+        return dequantize_tqp(raw, {"TQP5": 5, "TQP6": 6, "TQP7": 7}[type_name])
     from _paths import add_gguf_py
     add_gguf_py()
     from gguf import GGMLQuantizationType as Q, quants

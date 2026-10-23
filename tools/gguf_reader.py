@@ -27,6 +27,8 @@ GGML_TYPES: dict[int, str] = {
     39: "MXFP4", 40: "NVFP4", 41: "Q4_0_8_8", 42: "Q2_0",
     # Agention's llama.cpp fork (agentionai/llama.cpp): the APR trellis expert types (128-value blocks)
     143: "PTQ1_0", 144: "TQ2_T", 145: "TQK6", 146: "TQK7",
+    # the pair trellis (V=2): 64 steps of 2 weights, K = 5 / 6 / 7 new bits per step (Gyro-L)
+    147: "TQP5", 148: "TQP6", 149: "TQP7",
 }
 
 # GGUF metadata value type ids
@@ -49,6 +51,9 @@ BLOCK_GEOMETRY: dict[str, tuple[int, int]] = {
     "IQ1_M": (256, 56), "Q2_0": (64, 18), "MXFP4": (32, 17), "NVFP4": (64, 36),
     # fp16 scale + trellis stream (32 steps x 8 / 6 / 7 bits); PTQ1_0: 26 B of trits + fp16 scale
     "TQ2_T": (128, 34), "TQK6": (128, 26), "TQK7": (128, 30), "PTQ1_0": (128, 28),
+    # pair trellis (block_tqp5/6/7, ggml-common.h): 128 weights = 64 steps of 2; fp16 scale (2 B) +
+    # a circular 64*K-bit stream = 8*K bytes (K = 5 / 6 / 7): 2 + 40 / 48 / 56 = 42 / 50 / 58 B
+    "TQP5": (128, 42), "TQP6": (128, 50), "TQP7": (128, 58),
 }
 
 

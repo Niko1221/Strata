@@ -32,6 +32,27 @@ typedef struct {
 } block_tqk7;
 static_assert(sizeof(block_tqk7) == 30, "wrong tqk7 block size/padding");
 
+// TQP5 / TQP6 / TQP7 (ggml types 147-149, the fork's pair trellis, V=2): 128 weights = 64 steps of 2.
+// qs is a circular 64*K-bit stream (8*K bytes, LSB-first); step t's state is the 16 bits from bit
+// (63 - t)*K, circular modulo 64*K, and its pair is the FIRST codebook pair of TQ2_T state s
+// (x = (s & 0x7fff) * 0x9e3779b1, point x >> 21), times d.  See tqp_states in src/kernels/cpu/tq_states.hpp.
+#define QK_TQP 128
+typedef struct {
+    uint16_t d;               // fp16 scale
+    uint8_t  qs[8*5];         // 64 steps x 5 bits
+} block_tqp5;
+static_assert(sizeof(block_tqp5) == 42, "wrong tqp5 block size/padding");
+typedef struct {
+    uint16_t d;
+    uint8_t  qs[8*6];         // 64 steps x 6 bits
+} block_tqp6;
+static_assert(sizeof(block_tqp6) == 50, "wrong tqp6 block size/padding");
+typedef struct {
+    uint16_t d;
+    uint8_t  qs[8*7];         // 64 steps x 7 bits
+} block_tqp7;
+static_assert(sizeof(block_tqp7) == 58, "wrong tqp7 block size/padding");
+
 // device memory in a CUDA / HIP translation unit, ordinary host data everywhere else
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_TQ_LUT_SPACE __device__
