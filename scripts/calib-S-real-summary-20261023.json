@@ -1,0 +1,8 @@
+{
+ "tuple": "qfn-iq3_xxs|jev-port|none|v1|S|image-summary",
+ "a_noul": 0.435457,
+ "c_noul": 0.818939,
+ "T_choice": 5.027682,
+ "T_score": 1.0,
+ "provenance": "fit real-item-log.jsonl (image-summary, identity-served, dev = first half of each block), noul:fit, choice:fit, score:fit; T_score REJECTED -> identity: dev fit T=1.846 improved dev NLL 28% but the TEST split got worse (NLL 0.3695->0.4067, ECE 0.081->0.156, n=20+20) - the acceptance rule (NLL_post <= NLL_raw) fails, so the tuple stays uncalibrated on score until a larger dev split exists"
+}

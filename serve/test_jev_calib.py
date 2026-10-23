@@ -295,6 +295,67 @@ class PerTupleCalib(unittest.TestCase):
             self.assertGreater(pr[1], 0.1 / 0.9 * 0.5)  # T=4 flattens toward uniform
 
 
+class StrictCalibLoad(unittest.TestCase):
+    """STRATA_JEV_CALIB_STRICT: refuse half-fitted / degenerate calibrator files.
+
+    The defect (2026-10-23): calib-S.json declared "a"/"c" but the loader reads
+    "a_noul"/"c_noul", so its Platt was silently dropped (identity) while T_choice=0.05 was
+    honoured - exponent 20 on choice, i.e. near one-hot confidence.  Default behaviour stays
+    as it was (the flags are opt-in); strict mode refuses the file and logs why.
+    """
+
+    def setUp(self):
+        self._old = jev_calib.STRICT
+        self.td = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        jev_calib.STRICT = self._old
+        self.td.cleanup()
+
+    def _write(self, name, doc):
+        p = Path(self.td.name, name)
+        p.write_text(json.dumps(doc))
+        return p
+
+    def test_default_mode_still_loads_miskeyed_file(self):
+        """Byte-identical default: the file loads, the dead keys are simply ignored."""
+        jev_calib.STRICT = False
+        p = self._write("calib-S.json", {"tuple": "a|b|none|v1|S|x", "a": 0.4892, "c": 0.8313,
+                                         "T_choice": 1.5})
+        c = jev_calib.load(p)
+        self.assertTrue(c.loaded)
+        self.assertEqual(c.a_noul, 1.0)          # "a" ignored
+        self.assertEqual(c.c_noul, 0.0)          # "c" ignored
+        self.assertEqual(c.T_choice, 1.5)        # T honoured -> the half-fit trap
+
+    def test_strict_refuses_miskeyed_file(self):
+        jev_calib.STRICT = True
+        p = self._write("calib-S.json", {"tuple": "a|b|none|v1|S|x", "a": 0.4892, "c": 0.8313})
+        c = jev_calib.load(p)
+        self.assertFalse(c.loaded)
+
+    def test_strict_refuses_degenerate_temperature(self):
+        jev_calib.STRICT = True
+        p = self._write("calib-D.json", {"tuple": "a|b|none|v1|D|x", "T_choice": 0.05})
+        self.assertFalse(jev_calib.load(p).loaded)
+        p2 = self._write("calib-D.json", {"tuple": "a|b|none|v1|D|x", "T_score": 12.0})
+        self.assertFalse(jev_calib.load(p2).loaded)
+
+    def test_strict_still_accepts_a_clean_file(self):
+        jev_calib.STRICT = True
+        p = self._write("calib-D.json", {"tuple": "a|b|none|v1|D|x", "a_noul": 1.0571,
+                                         "c_noul": -0.172, "T_choice": 1.5456, "T_score": 0.6555})
+        c = jev_calib.load(p)
+        self.assertTrue(c.loaded)
+        self.assertAlmostEqual(c.a_noul, 1.0571)
+        self.assertAlmostEqual(c.T_score, 0.6555)
+
+    def test_strict_does_not_change_the_tuple_letter_refusal(self):
+        jev_calib.STRICT = True
+        p = self._write("calib-S.json", {"tuple": "a|b|none|v1|D|x", "T_choice": 1.5})
+        self.assertFalse(jev_calib.load(p).loaded)
+
+
 class OpusPrereviewFixes(unittest.TestCase):
     """R1/G3/G13 from /opt/data/reviews/jevport-prereview-opus.md (2026-10-15)."""
 
