@@ -307,6 +307,14 @@ on the `strata-q36` command line.
   host memory the GPU reads and writes in place instead of four copies per layer (each costs the stream 2-3 us). The same bytes.
 - **`--decode-swaps N`** (hybrid mode): how many experts move into VRAM slots every 32 decode tokens, over all layers (8 by
   default; the main path's `--adapt-swaps` counts another round, so the name differs).
+- **`--pool-warm K`** (hybrid mode with `--expert-prefetch P`; off by default; env alias `STRATA_Q36_POOL_WARM=K`) and **`--prefetch-copies 0|1`** (0 keeps the lookahead and drops the PCIe copies; env alias `STRATA_Q36_PREFETCH_COPIES`): the router lookahead that feeds the prefetch also names the next layer's
+  likely experts. The K best that have no VRAM slot and no copy are posted to the CPU pool: its parked workers load, into their own caches, the rows they will compute
+  (the same row split by worker id), and when the layer's real call comes a warmed expert's rows go to the worker that loaded them. A warm call of one expert takes about
+  9 us instead of 24. The dots are the same, so the logits are bitwise identical (`--dump-full-logits` at 4K and 14K, a pool unit test with 400 random calls). The workers
+  load only while idle (a published batch stops them), but the loads read the same RAM as the prefetch copies: with copies on, the two cancel each other. `--prefetch-copies 0` keeps the lookahead and drops the copies. Use them together: `--expert-prefetch 2 --prefetch-copies 0 --pool-warm 3`.  The flag beats the env alias; `--pool-warm 0` is off. The warm-up needs the lookahead (`--expert-prefetch P`, P >= 1) and, to pay, the copies off: with the copies on K=2 or 4 changes nothing, and the two are alternatives on this machine (both read the RAM the pool already nearly fills). Copies off without the warm-up is a loss (-3.6% at 4K, -4% at 16K, -2% at 40K against the default: its two prefetch slots per layer are dead VRAM), and K=4 is slower than K=3 (K=6 and 8 more so: the load no longer fits the idle window). Measured as in the numbers above.
+  RTX 5080, Core Ultra 9 285K, DDR5-6800, Sage-A1.5 Q4_K_M, `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64` with an expert profile and `--snapshots 2`, `--mtp 0`, forced text, 256 tokens (two runs each, +-1%): copies off, K=3: 4K 203.7 / 204.4 tok/s,
+  16K 182.1 / 181.1, 40K 189.5 / 188.5, against the same flags with the copies on and no warm-up 193.4, 169.7, 183.1 (+5%, +7%, +3%).
+  With `--mtp 2` (greedy, free text, 4K / 40K): 250.8 / 251.3 and 218.3 / 218.7 against 243.3 / 235.7 and 210.7 / 201.4 (+5%, +6%). With the copies on, K=2 or 4 changes nothing (193.9 / 169.9 / 183.2).
 **Lent staging.** A prompt chunk longer than `--hybrid-rows` streams each layer's experts through two staging buffers of a whole layer each
 (0.97 GiB in all, 2 x 498 MiB), which decode never touches. `--lend-staging` puts 13 more expert slots per layer in that memory while decoding
 (a third slot class after the cache and prefetch slots, numbered from `L.n_reg`; the grouping kernels take a second base pointer). When the
@@ -349,7 +357,7 @@ with or without `--async-swaps`.
 In the hybrid mode the engine's exit report has a second line, `strata-q36: pool: ...`. For each layer call that had CPU experts it gives the host plan, the
 gate/up rows, the h quantization and the down rows in us, the expert bytes read, and GB/s over the row phases (overall, and gate/up and down on their own).
 It also gives, per phase, the wait for the workers to park before and after and the drain.
-Measured on an RTX 5080, Core Ultra 9 285K, DDR5-6800 (2 channels), Sage-A1.5 Q4_K_M, the production flags with `--mtp 0`, forced text, 256 tokens:
+Measured on an RTX 5080, Core Ultra 9 285K, DDR5-6800 (2 channels), Sage-A1.5 Q4_K_M, `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64` with an expert profile and `--snapshots 2`, `--mtp 0`, forced text, 256 tokens:
 at a 4K prompt a call takes 50 us for 4.0 MB (82-83 GB/s); the park waits are 0.02 and 0.07 us per phase; at 16K and 40K the rate is the same (83 and 82 GB/s).
 The pool unit tests `pool_test` and `expert_multi_test` skip on CPUs without AVX-512 VNNI (this one); the other pool tests run.
 

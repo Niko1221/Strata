@@ -1465,6 +1465,7 @@ struct Engine {
 #if defined(STRATA_Q36_CPU_POOL)
     std::unique_ptr<strata::kernels::cpu::ExpertPool> pool;
     std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
+    int pool_warm_k = 0;   // STRATA_Q36_POOL_WARM: predicted non-resident experts per layer posted to the pool's workers (0: off)
 #endif
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
@@ -1536,6 +1537,8 @@ struct Engine {
     float *d_pflog = nullptr, *h_pflog = nullptr;   // mapped: the next layer's predicted router logits ([2][kPfRows][ne])
     int pf_for = -1;              // the layer the pending prediction is for
     long long pf_fwd = 0;         // main forwards so far (the slots' reuse rule: never one a running forward's plan read)
+    bool pf_no_copy = false;   // --prefetch-copies 0 (STRATA_Q36_PREFETCH_COPIES=0): predictions run, no copy is issued
+    int pool_warm_want = -1, pf_copies_want = -1;   // --pool-warm K / --prefetch-copies 0|1 (-1: not given; the envs are aliases)
     int pf_budget = 64, pf_used = 0;   // copies per forward, used this forward
     int32_t pf_gen = 0;           // the prefetch copies' numbers (1 .. INT32_MAX, then 1 again; STRATA_Q36_PF_GEN_START for tests)
     long long pf_copies = 0, pf_hits = 0, pf_preds = 0, pf_late = 0;
@@ -2910,6 +2913,18 @@ struct Engine {
             const int p = pf_free(H);
             if (p < 0 || !pf_copy(H, L, p, x)) break;
         }
+#if defined(STRATA_Q36_CPU_POOL)
+        if (pool_warm_k > 0) {   // the next candidates (no slot, no copy): the CPU computes them, so its workers load their rows now
+            const uint8_t* wb[strata::kernels::cpu::ExpertPool::kMaxWarm];
+            int nw = 0;
+            for (int k = 0; k < ncand && nw < pool_warm_k; ++k) {
+                const int x = pf_order[(size_t) k];
+                if (H.slot_of[(size_t) x] >= 0 || pf_holds(H, x)) continue;
+                wb[nw++] = L.hblobs + (size_t) x * L.stride;
+            }
+            if (nw > 0) pool->warm_post(H.fmt, wb, nw);
+        }
+#endif
     }
     /// a prefetch slot of H holds x or is loading it
     static bool pf_holds(const Hy& H, int x) {
@@ -2934,7 +2949,7 @@ struct Engine {
     /// Expert x's blob into prefetch slot p of H (on pfst); its old expert leaves the table (pending patch).  False when
     /// the forward's copy budget is spent.
     bool pf_copy(Hy& H, const Layer& L, int p, int x) {
-        if (pf_budget > 0 && pf_used >= pf_budget) return false;
+        if (pf_no_copy || (pf_budget > 0 && pf_used >= pf_budget)) return false;
         const int S = L.n_slots;
         Hy::PfSlot& q = H.pf[(size_t) p];
         if (q.state == 2 && H.slot_of[(size_t) q.x] == S + p) {
@@ -4082,6 +4097,18 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         CK(cudaEventCreateWithFlags(&E.ev_swfence, cudaEventDisableTiming));
     }
     E.pool = std::make_unique<C::ExpertPool>(threads);
+    {   // --prefetch-copies, else the env alias, else the PCIe copies on
+        const char* pc = std::getenv("STRATA_Q36_PREFETCH_COPIES");
+        const int copies = E.pf_copies_want >= 0 ? E.pf_copies_want : pc ? std::atoi(pc) : 1;
+        E.pf_no_copy = copies == 0;
+    }
+    const char* wk = std::getenv("STRATA_Q36_POOL_WARM");
+    const int warm_k = E.pool_warm_want >= 0 ? E.pool_warm_want : wk ? std::atoi(wk) : 0;   // --pool-warm, else the env alias, else off
+    if (warm_k > 0) {   // experts per layer the parked pool workers pre-load (needs the lookahead of --expert-prefetch)
+        E.pool_warm_k = std::max(0, std::min(C::ExpertPool::kMaxWarm, warm_k));
+        if (E.pool_warm_k > 0) E.pool->enable_warm(true);
+        if (E.pool_warm_k > 0 && !E.pool->warm_enabled()) E.pool_warm_k = 0;
+    }
     if (P > 0) {   // --expert-prefetch
         E.pf_slots = P;
         E.pf_topk = std::min<int>(E.pf_topk, (int) ne);   // (prefetch_issue's partial_sort)
@@ -4844,7 +4871,7 @@ int strata::qwen35::run(int argc, char** argv) {
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
     std::string kv = "fp32", tokens_file, expert_profile, expert_profile_save;
     bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false, split_stage_copy = false, zero_copy = false, async_swaps = false, async_after = false;
-    int expert_prefetch = 0, decode_swaps = -1;
+    int expert_prefetch = 0, decode_swaps = -1, pool_warm = -1, prefetch_copies = -1;
     bool lend_staging = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -4898,6 +4925,17 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--expert-prefetch") expert_prefetch = std::atoi(next().c_str());   // P prefetch slots per layer
         else if (a == "--expert-profile") expert_profile = next();             // the main path's names: the initial slots
         else if (a == "--expert-profile-save") expert_profile_save = next();   // ... and what this run learned, at exit
+        else if (a == "--pool-warm" || a == "--prefetch-copies") {   // K predicted experts per layer warmed in the pool workers; 0|1: the PCIe copies
+            const std::string v = next();
+            char* end = nullptr;
+            const long x = std::strtol(v.c_str(), &end, 10);
+            const long hi = a == "--pool-warm" ? 8 : 1;
+            if (v.empty() || *end != 0 || x < 0 || x > hi) {
+                std::fprintf(stderr, "strata-q36: %s takes a whole number from 0 to %ld, not \"%s\"\n", a.c_str(), hi, v.c_str());
+                return 2;
+            }
+            (a == "--pool-warm" ? pool_warm : prefetch_copies) = (int) x;
+        }
         else if (a == "--decode-swaps") decode_swaps = std::atoi(next().c_str());   // the hybrid slots' swaps per 32 tokens
         else if (a == "--async-swaps") async_swaps = true;   // the decode slot swaps' copies off the engine stream
         else if (a == "--lend-staging") lend_staging = true;   // the prompt staging buffers as extra expert slots in decode
@@ -4916,7 +4954,7 @@ int strata::qwen35::run(int argc, char** argv) {
                          "--bench-pp N --bench-tg N)\n"
                          "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
                          "       [--side-stream] [--split-stage-copy] [--async-swaps] [--async-after-prompt] [--lend-staging] [--expert-profile F] [--expert-profile-save F]\n"
-                         "       [--expert-prefetch P] [--hybrid-zero-copy] [--decode-swaps N]\n");
+                         "       [--expert-prefetch P] [--prefetch-copies 0|1] [--pool-warm K] [--hybrid-zero-copy] [--decode-swaps N]\n");
             return 2;
         }
     }
@@ -4986,6 +5024,8 @@ int strata::qwen35::run(int argc, char** argv) {
     if (decode_swaps >= 0) E.decode_swaps = decode_swaps;
     E.zc = zero_copy;
     E.pf_want = expert_prefetch;
+    E.pool_warm_want = pool_warm;
+    E.pf_copies_want = prefetch_copies;
     E.expert_profile = expert_profile;
     E.count_heat = !expert_profile_save.empty();
     // --async-swaps: the decode rebalance's copies; --async-after-prompt: the after-prompt rebalance's too;
@@ -5111,6 +5151,19 @@ int strata::qwen35::run(int argc, char** argv) {
                              P.ph_calls ? 1e3 * P.ms_ph_pre / (double) P.ph_calls : 0.0,
                              P.ph_calls ? 1e3 * P.ms_ph_drain / (double) P.ph_calls : 0.0,
                              P.ph_calls ? 1e3 * P.ms_ph_post / (double) P.ph_calls : 0.0);
+            }
+#endif
+#if defined(STRATA_Q36_CPU_POOL)
+            if (E.pool && E.pool->warm_enabled()) {
+                const auto& P = *E.pool;
+                std::fprintf(stderr, "strata-q36: pool warm (%d per layer): %lld sets posted, %lld complete when the call came\n",
+                             E.pool_warm_k, (long long) P.warm_posts, (long long) P.warm_full);
+                static const char* const nm[3] = {"no expert warmed", "some warmed", "all warmed"};
+                for (int k = 0; k < 3; ++k)
+                    if (P.wc_calls[k])
+                        std::fprintf(stderr, "strata-q36: pool calls with %s: %lld calls, %.1f experts, %.1f us each, %.1f GB/s\n", nm[k],
+                                     (long long) P.wc_calls[k], (double) P.wc_jobs[k] / P.wc_calls[k], 1e3 * P.wc_ms[k] / P.wc_calls[k],
+                                     (double) P.wc_bytes[k] / 1e6 / std::max(1e-9, P.wc_ms[k]));
             }
 #endif
             if (E.pf_slots)

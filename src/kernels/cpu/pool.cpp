@@ -978,6 +978,7 @@ void ExpertPool::worker(int id) {
     // `run()` - which waits for `parked_ == n_` before publishing - then deadlocks.  It deadlocks on the very
     // first call, which is the good case; a version that deadlocked on the second would be far worse.
     parked_of(id).fetch_add(1, std::memory_order_acq_rel);
+    uint32_t warm_seen = warm_seq_.load(std::memory_order_acquire);
     for (;;) {
         // Park: wait for work.  `_mm_pause` rather than a bare spin because it yields the pipeline to the
         // sibling hyperthread; `epoch_` is bumped once per LAYER, not once per expert, so most of these
@@ -999,6 +1000,14 @@ void ExpertPool::worker(int id) {
 #endif
         while (epoch_.load(std::memory_order_acquire) == seen) {
             if (stop_.load(std::memory_order_relaxed)) return;
+            if (warm_on_ && warm_seq_.load(std::memory_order_relaxed) != warm_seen) {   // Load the predicted rows
+                const uint32_t ws = warm_seq_.load(std::memory_order_acquire);
+                if ((ws & 1u) == 0) {   // (odd: the host is writing the set; the even value that follows is a new one)
+                    warm_seen = ws;
+                    warm_run(id, seen, ws);   // (this set, not a newer one posted since: that one is next, once)
+                }
+                continue;
+            }
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)   // MSVC proper: clang-cl (the Windows HIP build) has no WAITPKG intrinsics by default
             if (um != 0) {   // STRATA_POOL_UMWAIT: wake on the publish's write to epoch_, or after `um` cycles
                 _umonitor((void*) &epoch_);
@@ -1173,8 +1182,118 @@ void ExpertPool::wait_done(int n) {
     }
 }
 
+void ExpertPool::enable_warm(bool on) {
+    if (on && (!pinned_ || numa_n_ != 0 || n_ < 2)) {
+        std::fprintf(stderr, "strata: pool warm-up needs pinned workers and no NUMA split: off\n");
+        on = false;
+    }
+    warm_on_ = on;
+    if (on && !static_epoch_) {
+        static_epoch_.reset(new std::atomic<uint32_t>[(size_t) n_]);
+        for (int i = 0; i < n_; ++i) static_epoch_[(size_t) i].store(0, std::memory_order_relaxed);
+    }
+}
+
+void ExpertPool::warm_post(const NativeFmt& f, const uint8_t* const* blobs, int n) {
+    if (!warm_on_ || n <= 0) return;
+    n = (std::min)(n, kMaxWarm);
+    const uint32_t s0 = warm_seq_.load(std::memory_order_relaxed);   // even: only the host moves it
+    warm_seq_.store(s0 + 1, std::memory_order_seq_cst);             // odd: the set is being written
+    warm_fmt_.store(&f, std::memory_order_relaxed);
+    for (int i = 0; i < n; ++i) warm_blob_[i].store(blobs[i], std::memory_order_relaxed);
+    warm_n_.store(n, std::memory_order_relaxed);
+    warm_done_.store((uint64_t) (s0 + 2) << 32, std::memory_order_relaxed);
+    warm_seq_.store(s0 + 2, std::memory_order_release);
+    ++warm_posts;
+}
+
+// A parked worker loads (16 B loads: the dots read them next) its slice of each warm job's gate/up and down rows, the slice
+// native_rows gives it in the phase, in 8 KB chunks; a published batch or a newer warm set stops it.  A finished load counts in
+// warm_done_; only a set every worker finished is used as static.
+void ExpertPool::warm_run(int id, uint32_t epoch, uint32_t seq) {
+    const NativeFmt* const f = warm_fmt_.load(std::memory_order_relaxed);
+    const int n = (std::min)(warm_n_.load(std::memory_order_relaxed), kMaxWarm);
+    const uint8_t* blobs[kMaxWarm];
+    for (int i = 0; i < n; ++i) blobs[i] = warm_blob_[i].load(std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (f == nullptr || warm_seq_.load(std::memory_order_relaxed) != seq) return;   // rewritten while read: the next set is the one
+    __m128i acc = _mm_setzero_si128();
+    auto touch = [&](const uint8_t* p, size_t bytes) -> bool {
+        for (size_t o = 0; o < bytes; o += 8192) {
+            const size_t m = (std::min<size_t>)(8192, bytes - o);
+            for (size_t i = 0; i + 16 <= m; i += 16) acc = _mm_xor_si128(acc, _mm_loadu_si128((const __m128i*) (p + o + i)));
+            if (epoch_.load(std::memory_order_relaxed) != epoch || warm_seq_.load(std::memory_order_relaxed) != seq) return false;
+        }
+        return true;
+    };
+    const int64_t W = n_;
+    const int g0 = (int) (f->n_ff * id / W), g1 = (int) (f->n_ff * (id + 1) / W);
+    const int d0 = (int) (f->n_embd * id / W), d1 = (int) (f->n_embd * (id + 1) / W);
+    bool ok = true;
+    for (int i = 0; ok && i < n; ++i) {
+        const uint8_t* b = blobs[i];
+        ok = touch(b + (size_t) g0 * f->gu_row, (size_t) (g1 - g0) * f->gu_row) &&
+             touch(b + f->up_off + (size_t) g0 * f->gu_row, (size_t) (g1 - g0) * f->gu_row) &&
+             touch(b + f->down_off + (size_t) d0 * f->d_row, (size_t) (d1 - d0) * f->d_row);
+    }
+    volatile int sink = _mm_cvtsi128_si32(acc);
+    (void) sink;
+    if (ok) {   // count only into this set's own tag
+        uint64_t d = warm_done_.load(std::memory_order_relaxed);
+        while ((uint32_t) (d >> 32) == seq &&
+               !warm_done_.compare_exchange_weak(d, d + 1, std::memory_order_release, std::memory_order_relaxed)) {
+        }
+    }
+}
+
+// One row range [r0, r1) of job `e` in the current mode-5 (gate/up) or mode-6 (down) phase: the dynamic tasks' and the warmed experts'
+// static slices' shared body.
+void ExpertPool::native_rows(int e, int r0, int r1) {
+    SplitBufMulti& sb = split_multi_[(size_t) e];
+    const NativeFmt* const nfmt = mjobs_[e].fmt != nullptr ? mjobs_[e].fmt : nfmt_;   // 149-cold: same types and rows
+    if (mode_ == 5 && q2_native_kernels(nfmt->gu_type)) {
+        // a native Q2_0 pack: gate and up rows on the Q2_0 kernels, then SwiGLU
+        thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
+        float* gp[MAXT];
+        float* up[MAXT];
+        for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
+        const int nbk = (int) (nfmt->n_embd / 64);
+        q2_rows_any(mjobs_[e].blob, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
+        q2_rows_any(mjobs_[e].blob + nfmt->up_off, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+        for (int t = 0; t < mjobs_[e].nt; ++t)
+            for (int r = r0; r < r1; ++r)
+                sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
+    } else if (mode_ == 5) {
+        float* ff[MAXT];
+        for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+        native_gu_rows(*nfmt, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
+    } else if (q2_native_kernels(nfmt->d_type)) {
+        // Q2_0 down (most IQ layers): the AVX-512 kernel, ggml-cpu has only a scalar one on x86
+        const ActQ* a2[MAXT];
+        for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
+        q2_rows_any(mjobs_[e].blob + nfmt->down_off, nfmt->d_row, (int) (nfmt->n_ff / 64), a2,
+                    mjobs_[e].nt, mjobs_[e].out, r0, r1);
+    } else {
+        const void* hq[MAXT];
+        for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+        native_down_rows(*nfmt, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
+    }
+}
+
 void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     const int s = numa_n_ == 0 ? 0 : id >= 0 ? wslice_[(size_t) id] : hslice_;
+    // This worker's row slice of every warmed job of the phase (the rows it loaded), before the shared claims.  The host
+    // cannot publish the next batch while a worker is out of the park, and the batch counts one `done` per worker for this.
+    if (id >= 0 && static_n_ > 0 && static_epoch_[(size_t) id].load(std::memory_order_relaxed) != epoch &&
+        epoch_.load(std::memory_order_acquire) == epoch) {
+        static_epoch_[(size_t) id].store(epoch, std::memory_order_relaxed);
+        for (int k = static_first_; k < static_first_ + static_n_; ++k) {
+            const NativeFmt& f = mjobs_[k].fmt != nullptr ? *mjobs_[k].fmt : *nfmt_;
+            const int per = mode_ == 5 ? (int) f.n_ff : (int) f.n_embd;
+            native_rows(k, (int) ((int64_t) per * id / n_), (int) ((int64_t) per * (id + 1) / n_));
+        }
+        done_.fetch_add(1, std::memory_order_release);
+    }
     for (;;) {
         // STRATA_NUMA_SPLIT: a mode-5/6 batch lives on the slice heads, any other on `head_`; the epoch tag makes the
         // other family's claim fail, so `mode_` is never read before a claim has succeeded (pool.hpp)
@@ -1214,35 +1333,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 const int e = (int) (g / h), l0 = (int) (g % h);
                 const int l1 = (int) std::min<int64_t>(h, l0 + (g1 - g));
                 const int r0 = row0 + l0, r1 = row0 + l1;
-                SplitBufMulti& sb = split_multi_[(size_t) e];
-                const NativeFmt* const nfmt = mjobs_[e].fmt != nullptr ? mjobs_[e].fmt : nfmt_;   // 149-cold: same types and rows
-                if (mode_ == 5 && q2_native_kernels(nfmt->gu_type)) {
-                    // a native Q2_0 pack: gate and up rows on the Q2_0 kernels, then SwiGLU
-                    thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
-                    float* gp[MAXT];
-                    float* up[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
-                    const int nbk = (int) (nfmt->n_embd / 64);
-                    q2_rows_any(mjobs_[e].blob, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
-                    q2_rows_any(mjobs_[e].blob + nfmt->up_off, nfmt->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
-                    for (int t = 0; t < mjobs_[e].nt; ++t)
-                        for (int r = r0; r < r1; ++r)
-                            sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
-                } else if (mode_ == 5) {
-                    float* ff[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
-                    native_gu_rows(*nfmt, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
-                } else if (q2_native_kernels(nfmt->d_type)) {
-                    // Q2_0 down (most IQ layers): the AVX-512 kernel, ggml-cpu has only a scalar one on x86
-                    const ActQ* a2[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
-                    q2_rows_any(mjobs_[e].blob + nfmt->down_off, nfmt->d_row, (int) (nfmt->n_ff / 64), a2,
-                                mjobs_[e].nt, mjobs_[e].out, r0, r1);
-                } else {
-                    const void* hq[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
-                    native_down_rows(*nfmt, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
-                }
+                native_rows(e, r0, r1);
                 g += l1 - l0;
             }
         } else {
@@ -1277,7 +1368,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     }
 }
 
-void ExpertPool::run_phase(int mode, int n_tasks) {
+void ExpertPool::run_phase(int mode, int n_tasks, int n_extra) {
     const auto p0 = std::chrono::steady_clock::now();
     wait_parked("before a phase");
     const auto p1 = std::chrono::steady_clock::now();
@@ -1285,7 +1376,7 @@ void ExpertPool::run_phase(int mode, int n_tasks) {
     njobs_ = n_tasks;
     const uint32_t e = begin_batch(n_tasks);
     if (host_works_) drain(-1, host_scratch_, e);
-    wait_done(n_tasks);
+    wait_done(n_tasks + n_extra);
     const auto p2 = std::chrono::steady_clock::now();
     wait_parked("after a phase");
     const auto p3 = std::chrono::steady_clock::now();
@@ -1368,25 +1459,47 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n) {
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
+    // The jobs whose experts every worker has loaded (warm_post) go last, and each worker computes its own rows of them
+    // (the rows it loaded); the others are split over the shared claims as before.  Only for jobs in this format.
+    const bool warm_set = warm_on_ && numa_n_ == 0 && warm_n_.load(std::memory_order_relaxed) > 0 && warm_fmt_.load(std::memory_order_relaxed) == &f &&
+                          warm_done_.load(std::memory_order_acquire) == (((uint64_t) warm_seq_.load(std::memory_order_acquire) << 32) | (uint32_t) n_) &&
+                          !q2_native_kernels(f.gu_type) && !q2_native_kernels(f.d_type);
+    int n_warm_all = 0;
     // more distinct experts than buffers: run them in batches
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
         const int nb = (std::min)(kMaxSplitMulti, n - b0);
+        int nc = nb;   // cold jobs first: [0, nc)
+        if (warm_set) {
+            auto is_warm = [&](const ExpertJobMulti& j) {
+                if (j.fmt != nullptr) return false;
+                const int nw = warm_n_.load(std::memory_order_relaxed);
+                for (int i = 0; i < nw; ++i)
+                    if (warm_blob_[i].load(std::memory_order_relaxed) == j.blob) return true;
+                return false;
+            };
+            ExpertJobMulti* const p = std::partition(jobs + b0, jobs + b0 + nb, [&](const ExpertJobMulti& j) { return !is_warm(j); });
+            nc = (int) (p - (jobs + b0));
+        }
+        n_warm_all += nb - nc;
         mjobs_ = jobs + b0;
         nfmt_ = &f;
-        mrows_ = (int64_t) nb * f.n_ff;
-        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_ff, nb) : phase_tasks(mrows_);
+        static_first_ = nc;
+        static_n_ = nb - nc;
+        mrows_ = (int64_t) nc * f.n_ff;
+        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_ff, nb) : nc > 0 ? phase_tasks(mrows_) : 0;
         const auto a = std::chrono::steady_clock::now();
-        run_phase(5, mtasks_);
+        run_phase(5, mtasks_, static_n_ > 0 ? n_ : 0);
         const auto b = std::chrono::steady_clock::now();
         for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)
                 if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
                 else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
         const auto c = std::chrono::steady_clock::now();
-        mrows_ = (int64_t) nb * f.n_embd;
-        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_embd, nb) : phase_tasks(mrows_);
-        run_phase(6, mtasks_);
+        mrows_ = (int64_t) nc * f.n_embd;
+        mtasks_ = numa_n_ > 0 ? numa_plan_phase((int) f.n_embd, nb) : nc > 0 ? phase_tasks(mrows_) : 0;
+        run_phase(6, mtasks_, static_n_ > 0 ? n_ : 0);
         const auto d = std::chrono::steady_clock::now();
+        static_n_ = 0;
         ms_multi_gu += std::chrono::duration<double, std::milli>(b - a).count();
         ms_multi_q += std::chrono::duration<double, std::milli>(c - b).count();
         ms_multi_down += std::chrono::duration<double, std::milli>(d - c).count();
@@ -1394,6 +1507,15 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
     multi_bytes += (int64_t) n * (int64_t) f.bytes;
     bytes_gu += (int64_t) n * (int64_t) (2 * f.up_off);
     bytes_down += (int64_t) n * (int64_t) (f.d_row * (size_t) f.n_embd);
+    if (warm_on_) {
+        const int k = n_warm_all == 0 ? 0 : n_warm_all == n ? 2 : 1;
+        ++wc_calls[k];
+        wc_jobs[k] += n;
+        wc_bytes[k] += (int64_t) n * (int64_t) f.bytes;
+        wc_ms[k] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (warm_set) ++warm_full;
+        warm_n_.store(0, std::memory_order_relaxed);   // (not a new set: the seq stays; the set belonged to the layer it was posted for)
+    }
     mode_ = 0;
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
