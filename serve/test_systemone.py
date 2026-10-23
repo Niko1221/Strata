@@ -389,8 +389,8 @@ class StatePin(unittest.TestCase):
 
     def test_later_fields_do_not_park_a_checkpoint(self):
         """A field that resumes from the pinned checkpoint has nothing to park, and parking costs real work:
-        measured 2026-10-23 on the 3090, five fields took 1527 ms with the park and 1232 ms without it, on
-        byte-identical prompts and identical answers.  The FIRST field must still park - it is the one the
+        measured 2026-10-23 on the 3090, three reps, medians, five fields took 1527 ms with the park and
+        1214 ms without it, on byte-identical prompts.  The FIRST field must still park - it is the one the
         pin marks, so suppressing it there would leave nothing for the later fields to resume from."""
         self._post(self.THREE)
         keys = self.engine.pins

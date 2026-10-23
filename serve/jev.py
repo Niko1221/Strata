@@ -810,9 +810,11 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             keys = _request_keys(l_pin)
             # STATE PARKING, fields 2..N: a field that resumes from the checkpoint the pin marks has nothing
             # to park, and parking one is real work (~75 ms per field on the 3090: measured 2026-10-23,
-            # five fields 1527 ms with the park against 1232 ms without, on byte-identical prompts and
-            # identical answers).  Field 1 must keep parking - it is the one the pin marks, so suppressing it
-            # there would leave nothing for the later fields to resume from.
+            # three reps, medians, five fields 1527 ms with the park against 1214 ms without, on
+            # byte-identical prompts).  Answers move by one item in 200 (is_card 199/200 agreement against
+            # the fully unpinned read, mean |dp_yes| .0104) - the band the pin itself was accepted on, so
+            # this is a caching change and not a readout change.  Field 1 must keep parking - it is the one
+            # the pin marks, so suppressing it there would leave nothing for the later fields to resume from.
             if l_pin > 0 and l_seen > 0:
                 keys["strata_checkpoint"] = False
             # M3.1 hybrid: name this field's cue so the ONE decode step this field already runs is the read
