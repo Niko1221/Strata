@@ -195,6 +195,11 @@ the slots are filled.
   `STRATA_EXPERT_V2=1`, `STRATA_EXP_MODE` other than 0 or 8, a loan, or a prompt chunk other than the one the run
   without the switch reads. The adaptive tier is off with it (it swaps GGUF blobs into slots).
   `STRATA_EXPERT_NIBBLE_RECHECK=1` (debug) hashes every 4-bit slot again after each request.
+- **Opt-in `STRATA_NIB_GU_PROTO=1`** (with `STRATA_EXPERT_NIBBLE=1`): the 4-bit gate/up runs `nibx_gu_kernel`
+  (`nib_gu_proto.cuh`), the same row dot with the group's activations staged once per two row blocks by 16-byte
+  loads. Bit for bit the same gate and up rows (`iq_nibble_parity`, `native_expert_bench --nibble ... --vs 31`); on
+  one GP100 die a layer's gate/up takes 54-57 us instead of 67-72 us at one token (x1.24-1.27) and x1.22-1.39 at
+  two to four tokens.
 - Measured on a PH402 SKU 200 (two boards, four GP100 dies of 48 SMs and 32 GB each, clocks locked at 715 / 1050 MHz),
   Windows 11, CUDA 12.9, engine 0.1.45.3 (main e88ee39d) plus this change, Swift 1.5 IQ3_S (abliterated) pack, layer
   split 12,24,36, `--trim-stage-weights`, MTP with `--spec-min-p 0.85`, `--pipeline-windows 2`, 1M context, every
