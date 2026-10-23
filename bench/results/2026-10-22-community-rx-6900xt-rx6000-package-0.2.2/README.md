@@ -56,7 +56,7 @@ Telemetry (`monitor_amd.py`, one sample per second, not included; peaks over the
 
 ## Correctness and limitations
 
-- No needle test and no answer-quality check in this run; the prompts are synthetic. The 256-token answers were produced in every request (`finish_reason: length`), draft acceptance 80-85% with spec 3/0.7 and about 65% with spec 4/0.5, as on the source builds.
+- Needle recall (`tools/needle_bench.py --lengths 32k,128k --depths 10,50,90`, added 2026-10-23 against the package on the split with spec 3/0.7, `--pipeline-windows 2` and `presence_penalty 0`, the `split-pkg-pw2-pp0` arm's configuration): **6 of 6 found** (31,643-31,644 and 125,551-125,553 prompt tokens; 42 s per 32K read, 143-144 s per 128K read, the last 128K case reused the prefix of the one before it: 77 s). Raw: `needle/needle.out`, `needle/needles.json`. No other answer-quality check; the speed prompts are synthetic. The 256-token answers were produced in every request (`finish_reason: length`), draft acceptance 80-85% with spec 3/0.7 and about 65% with spec 4/0.5, as on the source builds.
 - Two runs per prompt length and the arms not interleaved; the differences this report rests on (20% on decode, the `draft` term of the timing line, the log line) are far outside the 2-5% decode spread between runs, the 1-2% ones (package against source) are not conclusions, only "no difference seen".
 - One card was measured with the package only at spec 4/0.5; the Windows `rdna2` package was not tried; gfx1031 was not tried.
 - The box's -81 mV offset and 245 W cap are its production setting and were not changed between arms; they do not affect decode on this hardware (measured separately) but a stock box will read slightly lower prompt speeds (2-3%).
