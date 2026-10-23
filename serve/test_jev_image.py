@@ -174,6 +174,27 @@ class ImageTwoCall(unittest.TestCase):
         self.assertIn("Is there water?", prompt)
         self.assertIn("Answer:", prompt)
 
+    def test_direct_mode_uses_the_D_tuple_calibrator(self):
+        """The direct readout is the D tuple (image, direct).  It shares _finish_answer with the text
+        paths now, so pin that the D calibrator is the one applied AND that the numbers are the
+        transform of the raw label softmax - a refactor that dropped or reordered it would still
+        return 200."""
+        from serve import jev_calib
+        ROW = DecisionEngine.ROW          # {78: 0.0, 89: 4.0} for No/Yes
+        d = jev_calib.Calib()
+        d.a_noul, d.c_noul, d.loaded = 1.0, -2.0, True    # a shift big enough to see
+        jev_calib._set_for_test(d, "D")
+        try:
+            st, body = self.post({**REQ, "image_mode": "direct"})
+        finally:
+            jev_calib._set_for_test(None, "D")
+        self.assertEqual(st, 200)
+        ans = body["answers"]["q1"]
+        self.assertEqual(ans["calib"], "platt_v1", "the D tuple's Platt is applied, not identity")
+        raw = 1.0 / (1.0 + 2.718281828459045 ** -ROW[89])          # softmax over the two label logits
+        want = 1.0 / (1.0 + 2.718281828459045 ** -(1.0 * __import__("math").log(raw / (1 - raw)) - 2.0))
+        self.assertAlmostEqual(ans["noul"], round(want, 4), places=3)
+
     def test_bad_image_mode_422(self):
         st, body = self.post({**REQ, "image_mode": "pixel-magic"})
         self.assertEqual(st, 422)
