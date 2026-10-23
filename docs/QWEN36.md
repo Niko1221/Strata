@@ -203,6 +203,16 @@ may gain less or lose, which is why it is a flag. At 16K one off-run read 166.1 
 expert prefetch's timing moved that run, not the side stream; the table above is the other runs. `STRATA_Q36_SIDE_SKEW=<us>` /
 `STRATA_Q36_SIDE_SKEW_JOIN=<us>` (tests) add a spin kernel before the side stream's first kernel / before the join wait.
 
+**Hybrid mode: expert slots down to a 256 MiB headroom.** The hybrid placement used to leave 768 MiB free (0.60 GiB after the buffers, the
+free VRAM nvtop shows). The engine's own growth after placement is small (`STRATA_Q36_VRAM_WATCH=1` polls the device's free VRAM and says each
+new low-water mark and the lowest at exit): over a 245K prompt read plus MTP 2 decode, a 198K read with +300 / +2,000 follow-ups, lend-staging's
+evict and refill around 4K / 16K / 40K prompts and the first request, the low-water mark was 21 MiB under the free VRAM after placement, all of it in
+the warm-up. So the hybrid placement now keeps 256 MiB free at the low-water mark (+ 48 MiB for that growth, + the ~95 MiB `place_experts` itself
+allocates after reading the free VRAM) and gives the rest to cache slots; the all-in-VRAM decision and `--expert-vram` / `--expert-slots` are
+unchanged. `STRATA_Q36_HEADROOM_MIB=768` gives the old 768 MiB reserve back (for a desktop that runs short of VRAM). RTX 5080 16 GB, Sage-A1.5 Q4_K_M, 262K context, `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64`, an expert profile and `--snapshots 2`: 93 -> 97 slots per layer, low-water mark 0.579 -> 0.297 GiB free
+(304 MiB) in every case, no OOM; decode (forced text, `--mtp 0`, two ABAB pairs) 4K 232.8 / 232.3 -> 235.2 / 235.1 tok/s (+1.0%, +1.2%), 16K 198.2 / 199.6 -> 201.5 / 202.8
+(+1.7%, +1.6%), 40K 215.3 / 217.6 -> 212.8 / 219.1 (-1.2%, +0.7%: the CPU-entry counts differ between runs there).
+
 **Prompt chunk (the default changed).** The MoE prompt kernels read every expert once per chunk, so a bigger chunk feeds them more rows per
 expert: R9700 pp4096 at chunk 512 / 1024 / 2048 / 4096 = 3,453 / 4,786 / 5,766 / 6,223 tok/s. With every expert in VRAM the engine now takes the
 largest of 4096 / 2048 / 1024 that fits beside the experts, the 0.77 GiB reserve and the sessions' caches without giving the packed decode
