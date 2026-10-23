@@ -105,6 +105,31 @@ class Lifeline(unittest.TestCase):
     def test_the_portable_watcher_ends_the_child_when_the_server_is_killed(self):
         self.assertEqual(self._killed_parent_takes_the_child(STRATA_LIFELINE="watcher"), "watcher")
 
+    @unittest.skipUnless(POSIX, "the portable watcher is the POSIX path")
+    def test_the_watcher_token_does_not_change_with_the_child_state(self):
+        """The watcher's token has to be the child's START TIME, and nothing that moves while it runs.
+
+        The token used to come from `ps -o lstart=,stat=`, so it carried the state character as well.  A child
+        is R (running) for the first milliseconds of its life and then settles to S (sleeping); the token is
+        taken right after `popen`, so the watcher then compared 'S' against its 'R' token, decided the child
+        was not the one it had been told about, and exited WITHOUT signalling it.  That is the "child outlived
+        a killed server" failure, and it appeared or vanished depending on which state the spawn was sampled
+        in - which is why it read as a flake.  Sampled while the child spins (R) and again while it sleeps
+        (S), the token must be the same either way.
+        """
+        from serve import lifeline
+        child = lifeline.popen([sys.executable, "-c",
+                                "import time\nend = time.time() + 1.5\nwhile time.time() < end:\n    pass\n"
+                                "time.sleep(30)"], "engine")
+        self.spawned.append(child.pid)
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        while_spinning = lifeline._start_token(child.pid)
+        time.sleep(2.0)                                        # asleep by now
+        while_sleeping = lifeline._start_token(child.pid)
+        self.assertTrue(while_spinning and while_sleeping, (while_spinning, while_sleeping))
+        self.assertEqual(while_spinning, while_sleeping,
+                         "the token moved with the child's state, so the watcher would skip the kill")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux")
     def test_a_child_started_on_a_request_thread_outlives_that_thread_but_not_the_server(self):
         proc, info = self.launch("thread")
