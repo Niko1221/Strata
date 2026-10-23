@@ -87,7 +87,13 @@ Every slot's tokens equal the tokens of the same request alone (the base engine'
 decoding slots, with slots reused for later requests, with pictures and with sampling (same seed). Through the server: four concurrent chat
 requests give the texts of the same four one after the other.
 
-**MTP drafts.** A request that has the engine to itself keeps its MTP drafts (the server sends it alone while nothing else runs). With
+**MTP drafts.** A request that has the engine to itself keeps its MTP drafts (the server sends it alone while nothing else runs). A
+sampled request (a temperature above 0, or a repeat / frequency / presence penalty) decodes without drafts unless
+`STRATA_Q36_MTP_SAMPLED=1` is in the config's `env` (opt-in): each verify row is then drawn with the request's sampler and a draft
+is kept when the draw equals it, so the text follows the sampled distribution. One draw per token: with the slot tables fixed
+(`STRATA_Q36_FIXED_SLOTS=1`) the same seed gives the same text as without drafts; with the default slots the verify rows move the
+experts and the text drifts as rounding does. It pays with an attention that reads the cache once per KV head (`--kv int8`): with
+one block per query head (the fp16 cache) the verify rows re-read the cache, and at 60K a request decodes 21% slower than without. With
 several requests the batch window has no drafts unless `--batch-mtp` is in the config's `args` (opt-in): every slot's window then also
 carries the proposal its MTP block made (one per slot, up to the rows to spare in the 8-row window) and a confirmed proposal moves two
 tokens in the window. Same prompts, 5 interleaved pairs, R9700:
