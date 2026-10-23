@@ -161,7 +161,8 @@ the choice.
 
 **Low-RAM mode, resident (engine 0.1.30):** when the experts the GPU does not hold fit the RAM (with the same ~10 GB
 beside them), setup picks the resident variant instead (`--resident-experts`): at start the engine copies exactly those
-experts from `experts.bin` into RAM (page-locked when the driver allows, else locked in RAM), so while it answers
+experts from `experts.bin` into RAM (page-locked when the driver allows, else locked in RAM; on AMD/Linux page-locked
+memory is not pinned against swap, so the HIP engine also mlocks it), so while it answers
 nothing is read from the SSD, however little RAM the OS leaves for its file cache. Examples with setup's context: a
 32 GB PC with a 24 GB GPU runs Q2_0, IQ2_XS and the Coder this way (~16-18 GB of experts in RAM, the GPU holds the
 other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC stays mapped. The details:
