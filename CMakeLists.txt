@@ -272,6 +272,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(logit_bias_test src/core/logit_bias_test.cpp)
   target_include_directories(logit_bias_test PRIVATE include)
   add_test(NAME logit_bias_test COMMAND logit_bias_test)
+  # the ported GBNF parser goldens + accept smoke tests (no model, no GPU)
+  add_executable(grammar_test src/grammar/grammar_test.cpp)
+  target_link_libraries(grammar_test PRIVATE strata_grammar)
+  add_test(NAME grammar_test COMMAND grammar_test)
   # the reader refuses a duplicate tensor name at open, naming it (a synthetic GGUF: no model, no GPU)
   add_executable(gguf_reader_test src/artifact/gguf_reader_test.cpp)
   target_link_libraries(gguf_reader_test PRIVATE strata_artifact)
@@ -329,6 +333,11 @@ target_link_libraries(strata_plan INTERFACE strata_warnings)
 
 add_executable(strata-plan src/plan/plan_main.cpp)
 target_link_libraries(strata-plan PRIVATE strata_plan)
+
+# ---- strata_grammar (host-only GBNF core, GPU-independent) -----------------
+# The ported llama.cpp grammar (src/grammar/): the parser, the stacks, the accept chain.
+add_library(strata_grammar STATIC src/grammar/grammar.cpp)
+target_include_directories(strata_grammar PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
@@ -735,7 +744,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
+  target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec strata_grammar ${_strata_gpu_runtime_target})
   if(WIN32 AND STRATA_ENABLE_HIP)
     # 0.2.1.2: the ROCm math libraries live in <package>\rocm\bin, which is on PATH only when the launcher starts the engine; load them on first
     # use (main() adds that folder to the DLL search first) so `strata.exe --version` works from the package folder.  amdhip64_7.dll and the
