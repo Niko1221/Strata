@@ -867,6 +867,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             std::fprintf(stderr, "strata: STRATA_TAP_FILE %s: %zu taps of %lld floats per row\n", tap_path, nt, (long long) N);
         }
         tap_on_ = true;
+        if (defer_) {   // (before the start-up lines below, which then say nothing of a deferral; defer_ok says no too)
+            std::fprintf(stderr, "strata verify: STRATA_VERIFY_DEFER_CPU is not taken with the DFlash2 taps (a tap copies "
+                                 "layer l's output before a deferred layer's CPU rows join it): no deferral\n");
+            defer_ = false;
+            defer_check_ = false;
+            defer_heavy_ = 0.0f;
+        }
     }
     if (bal_ != nullptr) {   // set_pcie_balance: four stamp words per (layer, group)
         if (!mapped((size_t) g.n_layers * 2 * 4 * 8, (void**) &h_bal_, (void**) &m_bal_)) {
