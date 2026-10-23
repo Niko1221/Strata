@@ -513,7 +513,7 @@ class ModelScreen(Base):
             self.menu().select((sel["family"], sel["model"]))
             self.paint()
         else:
-            why = models.problem_words(plan.get("issues") or []) or "they are not a model Strata knows"
+            why = models.problem_words(plan.get("issues") or [], missing=plan.get("missing_shards")) or "they are not a model Strata knows"
             holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
             self.say(f"These files cannot be used as they are ({why}). " + (holds + " " if holds else "") +
                      "Check that every shard is in the folder, or pick a model from the list.", True)
@@ -761,8 +761,8 @@ class FolderScreen(Base):
             out.append("The free space of that folder could not be read.", style=MUTE)
         moving = self.models_that_would_move(value)
         if moving:
-            out.append(f"\nModel files Strata already keeps in {moving} are moved into this folder when you start "
-                       "(quick on the same drive; on another drive they stay where they are and are used from there).", style=WARN)
+            out.append(f"\nModel files Strata already keeps in {moving} stay there and keep working. This folder is used for new downloads. "
+                       "To move them here, use: strata models move.", style=MUTE)
         self.query_one("#folderinfo", Static).update(out)
 
     def models_that_would_move(self, value: str) -> str | None:
@@ -787,8 +787,20 @@ class FolderScreen(Base):
                     "Press Enter to keep it, or type another folder (it is created if it does not exist). Models you already have stay where "
                     "they are and stay usable; the new folder is for new downloads.", style=MUTE)
 
+    def typed(self) -> str:
+        return self.query_one("#folderpath", Input).value.strip().strip('"')
+
+    def action_next(self) -> None:
+        """The folder is checked before going on (B05): a path that cannot hold the models is said here, in plain words, and not saved."""
+        from strata_control import folders
+        found = folders.problem(self.typed())
+        if found:
+            self.say(folders.words(found), True)
+            return
+        super().action_next()
+
     def commit(self) -> None:
-        value = self.query_one("#folderpath", Input).value.strip().strip('"')
+        value = self.typed()
         default = str(self.ctx.default_folder())
         self.ctx.settings.data_dir = None if (not value or value == default) else value
 
@@ -1340,7 +1352,7 @@ class AccessScreen(Base):
         s = self.ctx.settings
         s.access = kind
         if kind != "local" and not s.api_key and not s.no_key:
-            s.api_key = acc.new_key()
+            s.api_key = acc.kept_key() or acc.new_key()
             self.say("An API key was made for you (recommended beyond this computer). Press t if you want no key.")
         elif kind != "local" and s.no_key:
             self.say(S.NO_KEY_PUBLIC if kind == "cloudflare" else S.NO_KEY_NETWORK, True)
@@ -1389,7 +1401,7 @@ class AccessScreen(Base):
         s = self.ctx.settings
         s.access = self.menu().current.key
         if s.access != "local" and not s.api_key and not s.no_key:
-            s.api_key = acc.new_key()
+            s.api_key = acc.kept_key() or acc.new_key()
 
     def action_back(self) -> None:
         if self.input_open():
@@ -1439,7 +1451,7 @@ class SaveScreen(Base):
                  ("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({S.fit_parallel(self.ctx.computer.main_vram_gb)})"),
                  ("Tuning", {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"}[s.tune]),
                  ("Access", f"{S.ACCESS_WORDS[s.access]}, port {s.port}" + (", API key on" if s.api_key else ", no API key")),
-                 ("Storage", s.data_dir or "Strata's data folder")]
+                 ("Storage", s.data_dir or str(self.ctx.default_folder()))]
         if s.extra:
             lines.append(("Advanced", ", ".join(f"{k}={v}" for k, v in s.extra.items())))
         return lines
@@ -1513,10 +1525,15 @@ class SaveScreen(Base):
         s.name = name
         if choice in ("save", "save_launch"):
             try:
-                store.save(s, name)
+                if choice == "save":
+                    store.save(s, name)
+                else:
+                    store.check_name(name)                   # saved by the run once the restart question (if any) is answered "Restart"
             except store.PresetError as e:
                 self.say(str(e), True)
                 return
+            if choice == "save_launch":
+                self.ctx.pending_save = name
         if choice == "save":
             self.app.exit(None)
             self.app.stopped_after_save = True       # type: ignore[attr-defined]

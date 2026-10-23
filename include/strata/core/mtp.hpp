@@ -27,6 +27,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -105,6 +106,10 @@ public:
                float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
 
     /// The first round: one cell (`cell`) from `R_row` (device) and `token` -> T-1 drafts.
+    /// STRATA_SPEC_COST: called after each draft step with (index, probability) instead of the `min_p` test; false ends the chain.
+    /// Also called once for the last step of a chain that reached its length (so the rule sees every draft). Empty: min_p decides.
+    void set_chain_rule(std::function<bool(int, float)> f) { chain_rule_ = std::move(f); }
+
     bool draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                      float* probs = nullptr, float min_p = 0.0f, int* n_drafts = nullptr);
 
@@ -117,6 +122,7 @@ public:
     /// window's commit (`tail`) and the window's pick at its last accepted row (`next`, the next window's row 0).
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
     void set_ple_session(SessionState* s) { ple_ss_ = s; }
+    std::function<bool(int, float)> chain_rule_;
     bool coupled() const { return coupled_active_; }
     /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): this request's drafts are SAMPLED from
     /// q and each draft j's distribution is in spec_q() + j * kSpecQStride (ids, -1 terminated; then float bits),

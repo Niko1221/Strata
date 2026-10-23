@@ -63,20 +63,20 @@ the kernel's amdgpu driver (no ROCm install needed):
 
 The rest of setup is the same as on NVIDIA: the model download, the start script, the server.
 
-## Ready-made packages (0.2.2)
+## Ready-made packages (0.2.3)
 
-The 0.2.2 release carries one AMD engine package per card family. The Terminal one-liner and `strata update` pick the package whose
+The 0.2.3 release carries one AMD engine package per card family. The Terminal one-liner and `strata update` pick the package whose
 GPU code covers the card; the full installers carry one package each. Any app installer also works: install it, press **Update engine**
 in Settings (or run `strata update`) and the matching package downloads.
 
 | Package (variant) | OS | GPU code inside | ROCm | Installer |
 | --- | --- | --- | --- | --- |
-| `rx9070` | Windows | gfx1200, gfx1201 | 10.2.0a20260930 (TheRock) | `Strata-0.2.2-windows-hip.exe` |
-| `rdna3` | Windows | gfx1100, gfx1101, gfx1102, gfx1151 | 10.2.0a20260930 | `Strata-0.2.2-windows-hip-rdna3.exe` |
+| `rx9070` | Windows | gfx1200, gfx1201 | 10.2.0a20260930 (TheRock) | `Strata-0.2.3-windows-hip.exe` |
+| `rdna3` | Windows | gfx1100, gfx1101, gfx1102, gfx1151 | 10.2.0a20260930 | `Strata-0.2.3-windows-hip-rdna3.exe` |
 | `rdna2` (0.2.2) | Windows | gfx1030, gfx1031 | 10.2.0a20260930 | no installer of its own: any app installer, then Update engine |
-| `rx9070` | Linux | gfx1200, gfx1201 | 7.10.0a20251120 (`gfx120X-all` wheels) | `Strata-0.2.2-linux-amd-rx9070.AppImage` |
-| `rx7900` | Linux | gfx1100, gfx1101, gfx1102 | 7.10.0a20251120 (`gfx110X-dgpu` wheels) | `Strata-0.2.2-linux-amd-rx7900.AppImage` |
-| `halo` | Linux | gfx1151 | 7.14.1 (TheRock) | `Strata-0.2.2-linux-amd-strixhalo.AppImage` |
+| `rx9070` | Linux | gfx1200, gfx1201 | 7.10.0a20251120 (`gfx120X-all` wheels) | `Strata-0.2.3-linux-amd-rx9070.AppImage` |
+| `rx7900` | Linux | gfx1100, gfx1101, gfx1102 | 7.10.0a20251120 (`gfx110X-dgpu` wheels) | `Strata-0.2.3-linux-amd-rx7900.AppImage` |
+| `halo` | Linux | gfx1151 | 7.14.1 (TheRock) | `Strata-0.2.3-linux-amd-strixhalo.AppImage` |
 | `rx6000` (0.2.2) | Linux | gfx1030, gfx1031 | 7.13.0a20260515 (`gfx103X-all` wheels) | no installer of its own: any app installer, then Update engine |
 
 `rdna3` and `halo` were added to the release after the first upload (feed sequence 101). Why the split: on Windows one ROCm 10.2 library
@@ -1104,3 +1104,27 @@ Set `STRATA_GRID_PAD=1` before starting the engine to add empty workgroups to se
 decode matvecs on gfx12 near full-die wave-slot boundaries. Padding is off by default; `=0` also disables it.
 T>1 launches, CUDA and other AMD architectures keep their original grid sizes, even with `=1`.
 Historic R9700 timings from #2492 are archival; they do not establish a speedup on a later revision or another card.
+
+## Strix Halo: 8-bit hyper-connection weights (default on gfx1151)
+
+On a Strix Halo (gfx1151) the hyper-connection down / up projections are read as Q8_0 by default (quantized at load from the pack, or the GGUF's own Q8_0),
+which halves the 13.3 MB each read moves. Decode is about 9% faster (5 interleaved pairs per prompt on IQ3_S, MTP 4 drafts / min-p 0.5; json / code / tool
+call / chat / agent between +7.9% and +10.7%). `STRATA_HC_Q8=0` restores the bf16 read. Other cards are unchanged (gfx12 has had it on since 0.1.4x).
+Not bit-identical to the bf16 read: a greedy answer can pick another token at a near tie and then go its own way.
+
+How far it moves the model, measured with the quant-quality yardstick (teacher forced, 5 texts of 1,000 tokens, reference = bf16 read; RTX A4000, IQ3_XXS,
+2026-10-22 — the Q8_0 weights are the same bytes on every card):
+
+| text | top-1 same | KL |
+| --- | ---: | ---: |
+| code | 97.9% | 0.0077 |
+| documents | 93.5% | 0.0229 |
+| English | 94.7% | 0.0107 |
+| other languages | 98.0% | 0.0060 |
+| agent transcript | 93.0% | 0.0779 |
+| all 4,995 positions | 95.4% | 0.0251 |
+
+For scale, the same yardstick with the bf16 read on both sides and only the experts computed on the CPU instead of the GPU (a rounding-only difference the
+engine takes whenever an expert is not resident) gives code 0.0062, documents 0.0195, English 0.0088, other languages 0.0048, agent 0.0745, all 0.0228
+(top-1 95.4%). The 8-bit read is at that level. The agent text's number rests on a few near-tie positions (the top 20 of 999 carry half of it); finer blocks
+(16 or 8 values) did not lower it, and 8-bit hyper-connection weights in the first six layers alone give the full figure, in the last 24 layers a third of it.

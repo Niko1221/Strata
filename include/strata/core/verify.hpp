@@ -323,6 +323,12 @@ public:
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
+    /// DFlash2 (before init): keep the completed outputs of these layers (zero-based; the mean of the hc streams) for every row of
+    /// each window in a device buffer, tap_dev() = [max_t][n_taps][n_embd] floats, valid until the next window.  Single-stage
+    /// verifiers only; STRATA_TAP_FILE (research dump) turns the same buffer on without this call.
+    void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
+    const float* tap_dev() const { return tap_dev_; }
+    bool tapping() const { return tap_on_; }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
@@ -357,6 +363,10 @@ public:
     /// STRATA_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.
     std::string profile_report();
+    /// STRATA_VERIFY_PROFILE: the same stage split, one line per window size T (bench: with STRATA_SPEC_T_CYCLE). Resets.
+    std::string profile_by_t_report();
+    /// STRATA_ROUTE_STATS=1: per window size, the routed experts per layer: distinct, and new per row (not in the rows before it). Resets.
+    std::string route_stats_report();
 
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
@@ -415,7 +425,8 @@ private:
     bool instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, const std::vector<int>& key, const char* what,
                               std::string& err);
     void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
-    void accumulate_profile(const unsigned long long* stamps);   ///< one window's stamps (host copy) into prof_sum_
+    void accumulate_profile(const unsigned long long* stamps);
+    void accumulate_profile_inner(const unsigned long long* stamps);   ///< one window's stamps (host copy) into prof_sum_
     // pipelined windows (pl_launch ...)
     cudaStream_t ext_stream_ = nullptr;   ///< set_stream: the stage's shared stream (not destroyed here)
     bool always_publish_ = false;
@@ -506,6 +517,11 @@ private:
     std::vector<unsigned long long> prof_h_;
     double prof_sum_[2][kProfPer] = {};   // [GDN / QSA layers][stage]
     int64_t prof_windows_ = 0;
+    double prof_t_sum_[9][2][kProfPer] = {};   // the same per window size T (1..8), for profile_by_t_report
+    int64_t prof_t_win_[9] = {};
+    bool rs_on_ = false;                      // STRATA_ROUTE_STATS
+    unsigned long long* rs_dev_ = nullptr;    // [9 T][n_layers][8 rows]: experts of row r that no earlier row of the window routed to
+    int64_t rs_win_[9] = {};
 
     const WeightTable* wt_ = nullptr;
     const ModelGeometry* g_ = nullptr;
@@ -547,6 +563,19 @@ private:
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
+    // STRATA_TAP_FILE (off by default; nothing is allocated or captured without it): the DFlash2 experiment's hook.
+    // After each layer in STRATA_TAP_LAYERS (default 5,15,25,35,45) the window copies the layer's completed output
+    // (the residual with its pending FFN write applied, the mean of the hc streams) per row; run() appends
+    // (pos, token, taps) records to the file.
+    bool tap_on_ = false;
+    std::vector<int> tap_req_;                    ///< set_taps
+    std::vector<int> tap_layers_;                 ///< the tapped layer ids (zero-based, completed outputs)
+    std::vector<int> tap_slot_;                   ///< layer -> slot in tap_layers_, or -1
+    float* tap_dev_ = nullptr;                    ///< [max_t][n_taps][n_embd]
+    float* tap_scratch_ = nullptr;                ///< one row's streams, [hc][n_embd]
+    float* h_tap_ = nullptr;     float* m_tap_ = nullptr;       ///< the mapped copy of tap_dev_
+    std::FILE* tap_file_ = nullptr;
+    void tap_write(int T, const int32_t* tokens, int64_t pos0);
     uint32_t* h_nf_ = nullptr;   uint32_t* m_nf_ = nullptr;     // #879: kVerifyMaxT * kNonfiniteBlocks flags
     int nf_row_ = -1;                     ///< nonfinite_row()
     int64_t nf_pos_ = -1;                 ///< nonfinite_pos()

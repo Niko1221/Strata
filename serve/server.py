@@ -66,9 +66,13 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import runconfig  # noqa: E402
 from strata_control import engine_component  # noqa: E402
+from strata_control import tls  # noqa: E402
+
+tls.install()       # #3722: image URLs and tool servers over HTTPS are checked against the operating system's certificates
 from strata_control import hipblaslt_tuning  # noqa: E402
 from strata_control import vision_reader  # noqa: E402
 from strata_control import draft_layer  # noqa: E402
+from strata_control import drafting  # noqa: E402
 from strata_control import user_args  # noqa: E402
 from strata_control import gpu_roles  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
@@ -491,6 +495,18 @@ def start_failure_hint(log: str | None, offset: int) -> str:
     said = [x.strip()[len("strata mtp: "):] for x in text.splitlines()
             if x.strip().startswith("strata mtp: ") and ("draft head over" in x or "hint:" in x)]
     return ". mtp: " + DRAFT_HEAD_FAIL + ". " + (" ".join(said) if said else "Hint: " + DRAFT_HEAD_HINT)
+
+
+def start_log_text(log: str | None, offset: int, limit: int = 1 << 20) -> str:
+    """Everything this engine start has written to the log so far (at most `limit` bytes), "" when there is no log."""
+    if not log:
+        return ""
+    try:
+        with open(log, "rb") as f:
+            f.seek(max(0, offset))
+            return f.read(limit).decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
 
 
 def start_log_tail(log: str | None, offset: int, n: int = 20) -> str:
@@ -1106,6 +1122,10 @@ class StrataEngine:
         if self.info.get("engine"):
             self.info["version"] = str(self.info["engine"])
         self.terminal_stages = read_engine_stage_log(log, log_start) if log else []
+        try:                                            # which drafter runs, and in plain words why not the one that was asked for
+            self.info.update(drafting.engine_info(args, start_log_text(log, log_start), drafting.take_note()))
+        except Exception:                               # noqa: BLE001 - a note must never stop a start
+            pass
         self.ended = False                              # READY: alive from here (restart() set it True, #344)
         # the engine's stdout on a thread, so a request can wait with a timeout (heartbeats, cancel checks)
         self.lines: queue.Queue = queue.Queue()
@@ -2489,29 +2509,67 @@ def network_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("\\??\\")
 
 
-def vision_start_error(line: str, log=None) -> str:
-    """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
-    compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
-    cause is named instead of leaving the user the first line of a traceback.  `log` is the encoder's stderr file, whose
-    tail is searched too (the CUDA error is printed there)."""
-    text = line.strip()
-    tail = ""
+def vision_log_tail(log=None, limit: int = 16384) -> str:
+    """The last `limit` bytes of the encoder's stderr file (`log` is the file object it was started with; "" when there
+    is none or it cannot be read)."""
     try:
         name = getattr(log, "name", None)
         if name:
             with open(name, "rb") as f:
                 f.seek(0, 2)
-                f.seek(max(0, f.tell() - 16384))
-                tail = f.read().decode("utf-8", "replace")
+                f.seek(max(0, f.tell() - limit))
+                return f.read().decode("utf-8", "replace")
     except (OSError, ValueError):
         pass
-    if "busy or unavailable" in (text + tail).lower():
+    return ""
+
+
+# What the CUDA / HIP runtimes print when the reader has no code for the card it runs on (a binary built without that
+# architecture: #3669, the Windows cuda12 package's reader on a Pascal card).
+_VISION_ARCH_SIGNS = ("device kernel image is invalid", "no kernel image is available", "im2col failed",
+                      "unsupported gpu architecture", "invalid device function", "unknown gpu architecture")
+
+
+def vision_start_error(line: str, log=None, code: int | None = None, waited: float | None = None) -> str:
+    """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
+    compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
+    cause is named instead of leaving the user the first line of a traceback.  `log` is the encoder's stderr file, whose
+    tail is searched too (the CUDA error is printed there).  An encoder that dies before it prints anything (#3645, #3444,
+    #3669, #3697) used to give a blank sentence: now the last lines of its stderr, its exit status (`code`) and, for a
+    kernel-image error, the card/architecture hint come with it.  `waited`: it said nothing for that many seconds."""
+    text = line.strip()
+    tail = vision_log_tail(log)
+    both = (text + chr(10) + tail).lower()
+    if "busy or unavailable" in both:
         return ("the vision encoder did not start: the GPU refused a second CUDA context (\"CUDA-capable device(s) "
                 "is/are busy or unavailable\"). This is usually the compute mode Exclusive_Process: only one process "
                 "may use the card, and the engine already holds it. Check with: nvidia-smi --query-gpu=compute_mode "
                 "--format=csv; set it back with: sudo nvidia-smi -c DEFAULT (or run the encoder on another card). "
                 "First line from the encoder: " + (text or "(none)"))
-    return "the vision encoder did not start: " + text
+    lines = [x.strip() for x in tail.splitlines() if x.strip()]
+    if any(sign in both for sign in _VISION_ARCH_SIGNS):
+        evidence = next((x for x in reversed(lines) if any(sign in x.lower() for sign in _VISION_ARCH_SIGNS)), text)
+        return ("the vision encoder did not start: it has no code for this graphics card (a kernel-image error: the "
+                "picture reader in this engine package was built for other card generations than yours). Update the "
+                "engine, or read pictures on the CPU (Models, Read pictures, Image encoder device: CPU; or run setup "
+                "again with --vision cpu). From the encoder: " + evidence[:300])
+    if text:
+        msg = "the vision encoder did not start: " + text
+    elif waited is not None:
+        msg = f"the vision encoder did not start: it said nothing for {waited:g} s (it never reported READY)"
+    else:
+        msg = "the vision encoder did not start: it ended without saying anything"
+    extra = []
+    if code is not None:
+        words = engine_exit_words(code)
+        if words:
+            extra.append(words)
+    shown = [x for x in lines[-3:] if x != text]
+    if shown:
+        extra.append("last lines of its log: " + " | ".join(x[:200] for x in shown))
+    if extra:
+        msg += " (" + "; ".join(extra) + ")"
+    return msg
 
 
 class Vision:
@@ -2554,11 +2612,27 @@ class Vision:
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
+        self.max_tokens = self.token_limit(cfg)
         self.elastic = cfg.get("elastic") is True
         self.elastic_mib = int(cfg.get("elastic_mib") or 2048)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
             self._start()
+
+    # What a picture may become when the config does not say (setup writes the same numbers, setup.VISION): an old, hand-edited or migrated
+    # config without vision.max_tokens left the reader unclamped, and #3690 saw one picture become 93,700 image tokens (I7).  A key that is
+    # there is the person's: 0 means no limit, as before.
+    DEFAULT_MAX_TOKENS = {"gpu": 1024, "cpu": 300}
+
+    @staticmethod
+    def token_limit(cfg: dict) -> int:
+        """The --max-tokens of a reader config: its max_tokens, else the default of its kind (GPU 1024, CPU 300)."""
+        if cfg.get("max_tokens") is not None:
+            try:
+                return max(0, int(cfg["max_tokens"]))
+            except (TypeError, ValueError):
+                pass
+        return Vision.DEFAULT_MAX_TOKENS["gpu" if cfg.get("gpu") else "cpu"]
 
     @staticmethod
     def reader_args(cfg: dict) -> list:
@@ -2568,8 +2642,9 @@ class Vision:
             args.append("--gpu")
         if cfg.get("threads"):
             args += ["--threads", str(cfg["threads"])]
-        if cfg.get("max_tokens"):
-            args += ["--max-tokens", str(cfg["max_tokens"])]
+        limit = Vision.token_limit(cfg)
+        if limit:
+            args += ["--max-tokens", str(limit)]
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
         return args
@@ -2607,16 +2682,21 @@ class Vision:
             line = self._readline(VISION_READY_S, "the vision encoder did not start")
         except RuntimeError as e:                       # silent for VISION_READY_S: it was ended, and it is not left half-started
             self.proc, self.stopped = None, True
+            if VISION_READY_S:
+                raise RuntimeError(vision_start_error("", log, waited=VISION_READY_S)) from None
             raise RuntimeError(str(e)) from None
         if not line.startswith("READY"):
             proc, self.proc = self.proc, None
             self.stopped = True
+            code = proc.poll() if hasattr(proc, "poll") else None   # an encoder that died by itself has its status already
             try:
                 proc.kill()
                 proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            raise RuntimeError(vision_start_error(line, self.spawn[1]))
+            if code is None:
+                code = getattr(proc, "returncode", None)
+            raise RuntimeError(vision_start_error(line, log, code))
         self.stopped = False
 
     def _readline(self, timeout: float, what: str) -> str:
@@ -2765,6 +2845,8 @@ class Vision:
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
+            if self.proc is None or self.proc.stdin is None:           # an elastic encoder not started yet, or one that was unloaded
+                raise ValueError("the picture reader is not running")
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
             try:
@@ -2781,6 +2863,7 @@ class Vision:
                 raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
                                                                      "the vision encoder stopped"))
             self.cache[key] = (out, int(line.split()[1]))
+            self.warn_if_over_limit(self.cache[key][1])
             held = {str(p) for p in keep} | {str(out)}
             for old in list(self.cache):                               # oldest first, but never one still in use
                 if len(self.cache) <= 64:
@@ -2788,6 +2871,15 @@ class Vision:
                 if str(self.cache[old][0]) not in held:
                     self.cache.pop(old)[0].unlink(missing_ok=True)
             return self.cache[key]
+
+    def warn_if_over_limit(self, tokens: int) -> None:
+        """I7: one picture that became more than 4 times the limit is logged with the numbers, so the next report has them (the reader's own
+        stderr has the warm-up line).  A reader built before the limit was enforced inside it (strata-vision refuses these now) still lets them by."""
+        limit = getattr(self, "max_tokens", 0)
+        if limit and tokens > 4 * limit:
+            print(f"[strata] images: one picture became {tokens} image tokens, more than 4 times the limit of {limit} (vision.max_tokens); "
+                  "the picture reader is not applying its limit. Update the engine, and send the line 'strata-vision: warmed up at N image "
+                  "tokens' from the reader's log with the report", flush=True)
 
     def close(self):
         proc, self.proc = self.proc, None
@@ -2952,6 +3044,22 @@ def layer_split_of(cfg: dict) -> bool:
     return len(gpu_list(cfg)) > 1 and "--peer-device" not in cfg["args"]
 
 
+_CARD_CLASS: list = []
+
+
+def drafting_card_class() -> str:
+    """The class of this computer's graphics card for the drafter table (strata_control/drafting.py), looked up once."""
+    if not _CARD_CLASS:
+        archs: list[str] = []
+        try:
+            from strata_control import engine_component
+            archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
+        except Exception:                                    # noqa: BLE001 - an unknown card is the "other" class, never an error
+            pass
+        _CARD_CLASS.append(drafting.card_class(archs))
+    return _CARD_CLASS[0]
+
+
 def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
@@ -2961,6 +3069,17 @@ def engine_args(cfg: dict) -> list[str]:
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
     if cfg.get("user_args"):
         args = user_args.merge(args, cfg["user_args"])
+    # "drafting": auto | mtp | dflash2 | off (strata_control/drafting.py; the Models screen and `strata launch --drafting` write it): which drafter
+    # guesses ahead. A choice that cannot be applied starts the MTP and says why in the engine's /metrics ("drafting_note").
+    if cfg.get("drafting") is not None or drafting.suggest(drafting_card_class()) != "mtp":
+        shaped = {**cfg, "args": args}
+        decision = drafting.apply(shaped, klass=drafting_card_class(), data_dir=drafting.data_dir_of(args))
+        args = shaped["args"]
+        drafting.remember_note(decision.note)
+        if decision.note:
+            print(f"[strata] drafting: {decision.note}", flush=True)
+        elif decision.flags:
+            print(f"[strata] drafting: DFlash2 ({' '.join(decision.flags[:2])})", flush=True)
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
     # that writes --mtp back into the args cannot undo it, because this is applied at every start.
     if draft_layer.is_off(cfg):
@@ -4628,8 +4747,9 @@ class Service:
                         if src.startswith(("http://", "https://")):
                             src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
                         with self._turn(cancel):  # the encoder takes its turn with the requests (see below)
+                            self._vision_up()         # an elastic encoder is not running until a picture needs it
                             self.vision.encode(src)
-                    except (ValueError, OSError) as e:
+                    except (ValueError, OSError, RuntimeError) as e:    # RuntimeError: the encoder did not start
                         why = str(e)
                 if why is not None:
                     print(f"[strata] a picture a tool returned was left out of the prompt: {why}", flush=True)
@@ -5391,9 +5511,10 @@ class Service:
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
                   f"reasoning (quoted, or the turn did not end on a stop)", flush=True)
         if parser.unread:
+            named = getattr(parser, "unread_names", None)
             print(f"[strata] {parser.unread} <tool_call> block(s) in the answer did not read as a call of a declared "
                   "tool and went back as text (a name the request did not declare, or a form the template does "
-                  "not use)", flush=True)
+                  "not use)" + (f"; the names the model wrote: {', '.join(named)}" if named else ""), flush=True)
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),

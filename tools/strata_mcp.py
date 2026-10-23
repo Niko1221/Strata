@@ -922,6 +922,16 @@ class Strata:
             amd = []
         if not WIN and not amd and shutil.which("rocm-smi"):
             amd = rocm_smi_gpus()
+        # A PC whose only NVIDIA cards are Pascal / Volta (two GTX 1080s) and that has no AMD card Strata can use: setup runs them with the
+        # CUDA 12 engine (old_gpus_opt_in), so the app must not call it "no supported graphics card" and start both cards Off (#3655).
+        # A PC with a newer card keeps recommending that one; naming an old card is still the opt-in.
+        try:
+            if S and nv and S.old_gpus_opt_in(nv, (), None, any(g.get("usable") for g in amd)):
+                for g in nv:
+                    if S.sm60_card(g["arch"]) and g.get("problem") and "older than the RTX 20" in str(g["problem"]):
+                        g["problem"], g["usable"], g["engine_variant"] = None, True, "cuda12"
+        except Exception:                               # noqa: BLE001 - the hardware page never breaks over this
+            pass
         if any(g.get("usable") for g in nv):
             for g in amd:                             # a Ryzen's integrated graphics beside an NVIDIA card: the engine runs on the NVIDIA card
                 if g.get("uma") and g.get("usable"):

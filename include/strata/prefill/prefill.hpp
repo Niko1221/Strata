@@ -184,6 +184,13 @@ public:
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+    /// DFlash2 prompt taps (CUDA / HIP, single stage): before `run`, ask for the completed output of each layer in `layers` (zero-based; the
+    /// mean of the hc streams) for the prompt rows at positions >= `first_pos`, at most `cap_rows` rows per chunk (a staging buffer of
+    /// cap_rows x layers x n_embd floats is allocated at the first chunk).  After each chunk that has such rows, on_taps(taps
+    /// [rows][layers][n_embd] device, rows, first position, err) runs with the stream synchronized.  clear_taps frees the staging.
+    void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) { tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows; }
+    void clear_taps();
+    std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
@@ -256,6 +263,9 @@ private:
     bool drain_pipeline(std::string& err);
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
+    std::vector<int> tap_layers_;
+    int64_t tap_first_ = 0, tap_cap_ = 0;
+    float* tap_dev_ = nullptr;
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)

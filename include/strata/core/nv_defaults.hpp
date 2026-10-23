@@ -28,3 +28,13 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
 std::vector<std::string> apply_nv_defaults(int major, int minor);
 
 }  // namespace strata::core
+
+namespace strata::core {
+
+/// dflash2-kern: the speculative runs' faster start-up adaptation of the expert tier (opt-in on sm_86 with STRATA_SPEC_ADAPT_SM86=1 since owner round 9; STRATA_SPEC_ADAPT_EVERY / _WARM, read by
+/// generate.cpp): sm_86 only (z440 A4000 Q2_0; the P100 is opt-in through the two variables, notes-dflash2-kern.md).  Not part of
+/// the exact table above: the residency it changes decides which experts the GPU rounds, as the adaptive tier always does.  The user's
+/// own settings and the cards' off switches (STRATA_SM86_PERF=0) is kept.
+void apply_spec_adapt_default(int major, int minor);
+
+}  // namespace strata::core
