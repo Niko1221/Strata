@@ -650,6 +650,11 @@ class IdleHTTPTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(results[0][0], 200)
         self.assertEqual(svc.engine.unloads, 0)
+        # The client can receive the body before do_POST's finally releases
+        # the preparation reservation. Wait for that server-side cleanup.
+        deadline = time.monotonic() + 3
+        while svc.preparing_requests and time.monotonic() < deadline:
+            time.sleep(.01)
         self.assertEqual(svc.preparing_requests, 0)
 
     def test_image_readmission_after_download_keeps_http_heartbeat_and_disconnect(self):
