@@ -1177,6 +1177,10 @@ window and ignored, and a malformed field is a 400. One pinned prefix at a time 
 it needs `--prompt-cache 3` or more. `tools/research_run.py` runs a document and a question list against a server with and
 without it. The engine's own key is `pin=N` on the `GEN` line.
 
+Images before the boundary count with the image tokens already encoded for the request; marking the prefix does
+not run the image encoder again. The engine still checks image identity before reusing a checkpoint. An explicit
+`{"tokens": N}` boundary that splits an image's expanded token rows is logged and ignored.
+
 **Multiple conversations (opt-in).** Add `--conversation-cache-mib 8192
 --conversation-cache-slots 4` to the engine arguments to park up to four conversations
 in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories when
