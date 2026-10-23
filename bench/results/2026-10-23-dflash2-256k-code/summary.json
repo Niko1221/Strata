@@ -1,0 +1,61 @@
+{
+  "title": "DFlash2 vs MTP: 256K code prompt",
+  "hardware": "NVIDIA GeForce RTX 4070 Ti SUPER 16 GiB; Linux; Strata engine 0.1.47",
+  "engine_sha256": "42a56c9a217ddb47c58fa6f42ad331c77ae2c296a532d84c53b3610fedb4a3f2",
+  "prompt_sha256": "90c337eefd41eda2767f8c8f72d76f47161495420659d187106de579bd7c98ce",
+  "prompt_tokens": 261747,
+  "context_tokens": 262144,
+  "completion_tokens": 96,
+  "prompt_method": "Qwen shipped tokenizer over 90 non-repeating source files. src/core/dflash_runtime.cpp and src/core/mtp.cpp plus spec headers are first; remaining code files from src/, include/, serve/, tools/ fill the prompt. Last file truncated at token boundary.",
+  "settings": {
+    "kv": "int8",
+    "kv_resident": 32768,
+    "prefill": 512,
+    "short_read": 64,
+    "expert_slots": 2700,
+    "vram_reserve_mib": 480,
+    "spec_capacity": 8,
+    "pool_workers": 11,
+    "pcie_frac": 0,
+    "prompt_cache": 0,
+    "adapt_every": 0,
+    "count": 96,
+    "seed": 1234
+  },
+  "arms": {
+    "dflash2": {
+      "tok_s": 40.08016032064128,
+      "decode_ms": 2395.2,
+      "request_wall_ms": 1017077.3401590001,
+      "accepted": 53,
+      "offered": 62,
+      "acceptance_rate_pct": 85.48387096774194,
+      "draft": "official Q8_0",
+      "block": 7,
+      "spec_min_p": 0.7,
+      "free_vram_after_load_mib": 948
+    },
+    "mtp": {
+      "tok_s": 34.90020721998037,
+      "decode_ms": 2750.7,
+      "request_wall_ms": 1009441.793039,
+      "accepted": 50,
+      "offered": 88,
+      "acceptance_rate_pct": 56.81818181818182,
+      "max_t": 4,
+      "spec_min_p": 0.5,
+      "free_vram_after_load_mib": 632
+    }
+  },
+  "dflash2_decode_advantage_pct": 14.842184368737454,
+  "dflash2_target_tok_s_for_plus_32_23_pct": 46.148544006980046,
+  "request_total_ms": {
+    "dflash2": 1019472.5401590001,
+    "mtp": 1012192.493039
+  },
+  "request_total_change_pct": 0.7192354389176092,
+  "output_token_ids_equal": true,
+  "output_token_ids_equal_count": 96,
+  "samples_per_arm": 1,
+  "caveat": "One full prompt per method due ~17 minute prompt processing. Decode TPS is a single sample; no statistical interval. Both arms use the same prompt, model binary, expert profile, 2700 expert slots, context, resident KV, prefill, and seed. Per-method established proposal settings differ (DFlash block7 / threshold0.7; MTP maxT4 / threshold0.5)."
+}
