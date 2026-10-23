@@ -9553,6 +9553,12 @@ int main(int argc, char** argv) {
         if (!conv_disk) conversations = strata::core::ConversationCache(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+        if (conv_disk)
+            std::fprintf(stderr, "strata serve: conversation cache: disk mode parks whenever it can write to disk: a "
+                                 "park keeps %lld MiB free (the snapshot the write needs is a few hundred MiB), a "
+                                 "restore keeps %lld MiB free (--conversation-cache-min-free-mib)\n",
+                         (long long) strata::core::disk_park_floor_mib(o.conversation_cache_min_free_mib),
+                         (long long) o.conversation_cache_min_free_mib);
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current_body = [&](size_t held) -> bool {
@@ -9606,7 +9612,9 @@ int main(int argc, char** argv) {
                 }
                 // The RAM this write needs at its peak: the live running state copied off the device, the one
                 // checkpoint copy, the source directory and the 16 MiB write buffer - the SAVE preflight's shape.
-                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+                // The floor is the disk-park margin, not the full --conversation-cache-min-free-mib: a disk park holds
+                // only the transient snapshot, so it must park on a nearly-full box rather than refuse (see disk_park_floor_mib).
+                const uint64_t floor = (uint64_t) strata::core::disk_park_floor_mib(o.conversation_cache_min_free_mib) << 20;
                 strata::core::SessionSaveLive sl;
                 {
                     strata::core::ConversationStateSizes z;
@@ -9629,8 +9637,8 @@ int main(int argc, char** argv) {
                         strata::core::session_deepest_checkpoint(deep), sl);
                     if (!strata::core::conversation_memory_admit(avail, need, floor)) {
                         std::fprintf(stderr, "strata serve: conversation cache: skip disk parking (RAM admission: %zu MiB "
-                                     "plus a floor of %lld MiB, %s)\n", (size_t)(need >> 20),
-                                     (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str());
+                                     "plus the %lld MiB park floor, %s)\n", (size_t)(need >> 20),
+                                     (long long) (floor >> 20), ram_note(mem).c_str());
                         return true;
                     }
                 }
@@ -9669,7 +9677,13 @@ int main(int argc, char** argv) {
                 };
                 size_t file_bytes = 0;
                 std::string werr;
-                const bool wrote = strata::core::session_file_write(path, meta, sources, sid, file_bytes, werr, wo);
+                bool wrote = false;
+                try {   // #752: the write allocates the snapshot - a host OOM skips this park, it does not end the server
+                    wrote = strata::core::session_file_write(path, meta, sources, sid, file_bytes, werr, wo);
+                } catch (const std::bad_alloc&) {
+                    wrote = false;
+                    werr = "not enough RAM to write it (allocation failed)";
+                }
                 strata::core::progress_allow(0);   // the blocking steps are over: the watchdog's ordinary limit again
                 if (!wrote) {
                     std::error_code ec;
