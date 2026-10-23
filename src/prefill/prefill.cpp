@@ -512,7 +512,8 @@ inline bool pf_pad() {
         if (!(p && p[0] == '1' && g && g[0] == '1')) return false;
         // The padded stride pays only for strata_pf_gemm_f16_ld, which is built for the gfx11 matrix cores.  On another
         // card nothing takes a padded X (it used to end the engine: "a padded X ... needs STRATA_PF_PAD's path", #1237):
-        // do not pad, and say so once.
+        // do not pad, and say so once.  In a hybrid build the host copy only ever sees the CUDA half - the padded product is compiled
+        // into the HIP half - so the padding stays pure-HIP.
         if (!strata_pf_padded_gemm_available()) {
             std::fprintf(stderr, "prefill gemm: STRATA_PF_PAD needs the padded gfx11 product, which this card does not run; "
                                  "not padding\n");

@@ -2732,7 +2732,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
     return el > 0 ? (double) done / el : -1.0;
 }
 
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(STRATA_HIP_GFX906)
 // The R9700 / RX 9000 "bimodal prompt speed" (0.2.0 known limit).  The runtime opens the process's hardware queues
 // lazily, as the first stream of each kind is used, and the kernel's scheduler (MES) puts a queue on one of the
 // card's compute pipes when the queue first gets work.  The loader threads reach their streams in a different order
@@ -2745,23 +2745,36 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 //   decode 2 to 3.6% and two expert slots, four normal ones did not even fix the starts.
 //   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn" (not when GPU_MAX_HW_QUEUES is 1 or 2, #3480); "0": off; any other string is a spec
 //   ('n' = a stream at the default priority, 'h' = at the highest) for experiments on other cards.
+//   Hybrid (the opt-in CUDA+HIP build): the AMD scheduler's rule, so it primes only when the primary device is a HIP ordinal.
 static void prime_hw_queues() {
     const char* env = std::getenv("STRATA_HIP_QUEUE_PRIME");
     if (env != nullptr && std::strcmp(env, "0") == 0) return;
     const char* pv = std::getenv("STRATA_PRIMARY_DEVICE");
     const int dev = pv != nullptr && std::atoi(pv) > 0 ? std::atoi(pv) : 0;
+#if defined(STRATA_HYBRID)
+    // An NVIDIA primary keeps its CUDA path (the priming is the AMD MES scheduler's), and the ordinal space here is the
+    // combined one --gpu names: the wrapped cudaGetDeviceCount reports the CUDA cards only.
+    if (strata_hybrid_is_hip_device(dev) == 0) return;
+    if (dev >= strata_hybrid_device_count()) return;
+#else
     int n_dev = 0;
     if (cudaGetDeviceCount(&n_dev) != cudaSuccess || dev >= n_dev) { (void) cudaGetLastError(); return; }
+#endif
     const char* spec = env != nullptr && env[0] != 0 ? env : nullptr;
     if (spec == nullptr) {
 #if defined(_WIN32)
         return;
+#else
+#if defined(STRATA_HYBRID)
+        // The CUDA-side properties of a HIP ordinal carry no gcnArchName; read the name the HIP runtime reported.
+        if (!strata::kernels::gfx_arch_is_gfx12(strata_hybrid_arch(dev))) return;
 #else
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, dev) != cudaSuccess || !strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName)) {
             (void) cudaGetLastError();
             return;
         }
+#endif
         // #3480: with the runtime capped to two hardware queues (GPU_MAX_HW_QUEUES=1 or 2, the user's own setting) the two
         // primed queues are all of them: the high-priority draft stream and the side stream share them and a 4K prompt
         // reads 39% slower (RX 9060 XT, 681-753 against 1188-1238 tok/s).  Not primed then; a spec in
@@ -2775,16 +2788,30 @@ static void prime_hw_queues() {
         spec = "nn";
 #endif
     }
+#if defined(STRATA_HYBRID)
+    // Always set the device in a hybrid build: the wrapped calls below then reach the HIP runtime for this HIP ordinal.
+    if (cudaSetDevice(dev) != cudaSuccess) { (void) cudaGetLastError(); return; }
+#else
     if (dev != 0 && cudaSetDevice(dev) != cudaSuccess) { (void) cudaGetLastError(); return; }
+#endif
     void* buf = nullptr;
     if (cudaMalloc(&buf, 256) != cudaSuccess) { (void) cudaGetLastError(); return; }
     int lo = 0, hi = 0;
+#if defined(STRATA_HYBRID)
+    const bool have_prio = cudaDeviceGetStreamPriorityRange(&lo, &hi) == cudaSuccess;   // wrapped: reaches the HIP runtime
+#else
     const bool have_prio = hipDeviceGetStreamPriorityRange(&lo, &hi) == hipSuccess;
+#endif
     std::vector<cudaStream_t> ss;
     for (const char* c = spec; *c != 0; ++c) {
         cudaStream_t s = nullptr;
+#if defined(STRATA_HYBRID)
+        const bool ok = (*c == 'h' && have_prio) ? cudaStreamCreateWithPriority(&s, cudaStreamNonBlocking, hi) == cudaSuccess
+                                                  : cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess;
+#else
         const bool ok = (*c == 'h' && have_prio) ? hipStreamCreateWithPriority(&s, hipStreamNonBlocking, hi) == hipSuccess
-                                                 : cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess;
+                                                  : cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) == cudaSuccess;
+#endif
         if (!ok) continue;
         cudaMemsetAsync(buf, 0, 256, s);
         cudaStreamSynchronize(s);
@@ -2988,8 +3015,8 @@ int main(int argc, char** argv) {
         break;
     }
 #endif
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
-    prime_hw_queues();
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(STRATA_HIP_GFX906)
+    prime_hw_queues();   // the function itself stands aside unless a hybrid primary is a HIP ordinal
 #endif
     Options o;
     bool have_tokens = false;
@@ -6959,7 +6986,7 @@ int main(int argc, char** argv) {
             (void) cudaGetLastError();
             free_b = strata::core::device_free_bytes();
         }
-#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(_WIN32)
         {   // An integrated GPU's "free VRAM" is system RAM (the BIOS carve-out plus the GTT pool, nearly all of the RAM when the kernel was told
             // ttm.pages_limit), and the cache copies experts into that same RAM on top of the arena: sized from the pool alone it can ask for
             // more than the OS has left, and the OOM killer takes the engine or the desktop.  So the AUTO size counts that RAM once: the
@@ -7056,7 +7083,7 @@ int main(int argc, char** argv) {
                              "draft head%s) -> %d slots\n",
                      (double) free_b / 1073741824.0, o.vram_reserve_mib, (long long) (mtp_bind >> 20),
                      auto_slots.late_priced ? ", +256 MiB for what is allocated after the cache" : "", o.expert_cache);
-#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+#if (defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)) && !defined(_WIN32)
         // An APU's "VRAM" is system RAM: the device-free figure above counts the whole GPU-addressable pool and does not
         // subtract ordinary CPU allocations (the host expert arena), so a cache sized from it alone can ask the OOM killer
         // for nearly all RAM (PR #895). A warning, not a cap: the cache stays as asked, and --expert-cache N chooses.
