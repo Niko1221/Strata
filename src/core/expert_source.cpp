@@ -309,6 +309,15 @@ bool exchange_cache_complement(std::vector<uint64_t>& offsets, size_t in, size_t
 namespace {
 
 #if defined(__linux__)
+/// True when `path` is a cgroup v2 group whose cgroup.controllers is readable and does not list "memory".
+bool cgroup_lacks_memory_controller(const std::filesystem::path& path) {
+    std::ifstream input(path / "cgroup.controllers");
+    if (!input) return false;
+    for (std::string name; input >> name;)
+        if (name == "memory") return false;
+    return input.eof();
+}
+
 bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current,
                              detail::CgroupMemoryStat& stat) {
     std::ifstream input(path / "memory.stat");
@@ -402,9 +411,12 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
             std::string limit;
             uint64_t current = 0;
             const bool readable = bool(limit_file >> limit) && bool(current_file >> current);
-            // The host's root cgroup has no memory.max; ordinary child groups must expose their limits.
-            if (!readable && !(path == root && !std::filesystem::exists(path / "memory.max") &&
-                               std::filesystem::exists(path / "cgroup.controllers"))) return false;
+            // The host's root cgroup has no memory.max; ordinary child groups must expose their limits - unless the
+            // parent leaves the memory controller off, so the group's cgroup.controllers does not list it (elogind
+            // sessions on sysvinit hosts, such as Devuan): no limit at that level.
+            if (!readable && !(!std::filesystem::exists(path / "memory.max") &&
+                               (path == root ? std::filesystem::exists(path / "cgroup.controllers")
+                                             : cgroup_lacks_memory_controller(path)))) return false;
             if (readable && limit != "max") {
                 try {
                     size_t consumed = 0;
