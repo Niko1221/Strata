@@ -464,6 +464,30 @@ class RowReadout(unittest.TestCase):
         self.assertEqual(on["answers"], off["answers"],
                          "the same row must produce the same answer on either path")
 
+    def test_field_order_is_canonical(self):
+        """The caller's key order must not change the prompt.
+
+        One consolidated prompt lets each later field see the earlier ones, so a caller who sent q2 first used to
+        get different answers for the same set: measured live on 200 banking77 items, reversing the two fields
+        flipped 52 one way against 1 the other (McNemar p=0.0008).  The fix renders the fields in a fixed order,
+        so this pins that the same questions make the same prompt and name the same rows either way.
+        """
+        _, forward = self._post(self.TWO)
+        forward_prompt = list(self.engine.prompts[0])
+        forward_rows = list(self.engine.pins[0].get("jevpos") or [])
+        self.engine.prompts.clear()
+        self.engine.pins.clear()
+        self.engine.rows_read.clear()
+
+        _, reversed_body = self._post({"q2": self.TWO["q2"], "q1": self.TWO["q1"]})
+        self.assertEqual(self.engine.prompts[0], forward_prompt,
+                         "the same questions must render the same prompt whoever asks them in either order")
+        self.assertEqual(self.engine.pins[0].get("jevpos"), forward_rows,
+                         "and name the same cue rows, so the same rows are read")
+        self.assertEqual(set(forward["answers"]), {"q1", "q2"})
+        self.assertEqual(set(reversed_body["answers"]), {"q1", "q2"},
+                         "answers stay keyed by qid, so the reordering is invisible to the caller")
+
     def test_env_off_keeps_the_per_question_path(self):
         _os.environ.pop("STRATA_JEV_ROWS", None)
         st, _ = self._post(self.TWO)

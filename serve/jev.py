@@ -711,7 +711,13 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
         if (_row_readout_enabled() and 1 < len(qdefs) <= MAX_NAMED_ROWS and not v_mode and not image_state
                 and _row_capture(engine) and hasattr(engine, "row_logits_at")
                 and hasattr(engine, "captured_rows")):
-            plan = consolidated_rows(svc, state_text, qdefs)
+            # CANONICAL FIELD ORDER.  One consolidated prompt lets each later field see the earlier ones, so the
+            # caller's key order would otherwise change the answers for the same set of questions (measured live
+            # 2026-10-23 on 200 banking77 items: reversing the two fields flipped 52 one way against 1 the other,
+            # McNemar p=0.0008).  Rendering in a fixed order makes the same set render the same prompt and answer
+            # the same whoever asks.  The answers are keyed by qid, so nothing about the response changes.
+            ordered = sorted(qdefs, key=lambda q: q["id"])
+            plan = consolidated_rows(svc, state_text, ordered)
             rows = None
             if plan is not None:
                 ids, rows = plan
@@ -726,7 +732,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                           f"{_captured_count(engine)} rows for {len(rows)} named positions", flush=True)
                     rows = None
             if plan is not None and rows is not None:
-                for qdef, row_at in zip(qdefs, rows):
+                for qdef, row_at in zip(ordered, rows):
                     variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
                     tokens = sorted({t for v in variants for t in v})
                     try:
