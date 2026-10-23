@@ -6659,7 +6659,23 @@ int main(int argc, char** argv) {
         // releases it: without the release, two blocks are pure overhead.
         {
             const char* ar = std::getenv("STRATA_ARENA_RELEASE_BLOCK");
-            if (multi_gpu && !split_at.empty() && !o.mmap_experts && ar != nullptr && ar[0] != '\0' && ar[0] != '0')
+            const bool ar_on = ar != nullptr && ar[0] != '\0' && ar[0] != '0';
+            // Modes that can move residency at run time: the block is not created for them at all, because "these
+            // layers can never be read" would stop being true after the release (a shrunk cache evicts, a peer or
+            // an adaptive tier swaps).  Same list as ruibeikaa's STRATA_ARENA_FREE guards on #3185 - minus the
+            // router look-ahead, which warms CUDA0's arena in this tree while the block is a later stage.
+            const char* fs_slots = std::getenv("STRATA_FS_SLOTS");
+            const char* ram_adapt = std::getenv("STRATA_RAM_ADAPT");
+            const char* ram_adapt2 = std::getenv("STRATA_RAM_ADAPT2");
+            const bool res_moves = o.vram_elastic || o.peer_device >= 0 || o.adapt_async != 0 ||
+                                   (fs_slots != nullptr && std::atoi(fs_slots) > 0) ||
+                                   (ram_adapt != nullptr && std::atoi(ram_adapt) > 0) ||
+                                   (ram_adapt2 != nullptr && std::atoi(ram_adapt2) != 0);
+            if (ar_on && res_moves)
+                std::fprintf(stderr, "strata generate: arena-skip: one block - the residency can move at run time "
+                                     "(--vram-elastic, a peer expert cache, --adapt-async, the Foresight swap space "
+                                     "or STRATA_RAM_ADAPT), so a released layer could still be read\n");
+            else if (multi_gpu && !split_at.empty() && !o.mmap_experts && ar_on)
                 arena_src.set_split_layer(split_at.front());
         }
         // The arena pins until the OS refuses; on Windows that leaves no page-locked memory for the small buffers the
