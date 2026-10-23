@@ -29,8 +29,11 @@ FIELDS = {
               "criteria": {"bridge": None, "tunnel": None, "ferry": None}},
     "urgency": {"type": "score", "instructions": "How urgent is this?",
                 "criteria": ["low", "normal", "high", "critical"]},
+    "risk": {"type": "noul", "instructions": "Is this risky to run now?"},
+    "tier": {"type": "choice", "instructions": "Which tier?",
+             "criteria": {"gold": None, "silver": None, "bronze": None}},
 }
-ORDER = ["throttle", "route", "urgency"]
+ORDER = ["throttle", "route", "urgency", "risk", "tier"]
 
 
 def post(base, key, body, timeout=900):
@@ -55,13 +58,16 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--label", default="run")
     ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--field-counts", default="1,2,3,4,5",
+                    help="comma-separated field counts to measure (max %d)" % len(ORDER))
     ap.add_argument("--unique", action="store_true",
                     help="change the state on every repetition, so no two requests share a prompt "
                          "(without it, reps 2..N are cache hits of rep 1 and every number is optimistic)")
     args = ap.parse_args()
 
     out = {"label": args.label, "base": args.base, "cases": []}
-    for n in (1, 2, 3):
+    counts = [int(x) for x in args.field_counts.split(",") if x.strip()]
+    for n in counts:
         qids = ORDER[:n]
         runs = []
         for i in range(args.reps + 1):                       # first one is the load/warmup
