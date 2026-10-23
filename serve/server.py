@@ -2562,7 +2562,11 @@ class StrataEngine:
 
     def brow_rows(self) -> int:
         """jev systemone (M3.1): how many rows the LAST verify window holds (0 before any window has run).
-        Wire: `BROWROWS` -> `BROWROWSD <n>`.  A caller reading several positions off one prefill needs this
+        Wire: `BROWROWS` -> `BROWROWSD <n>`.
+
+        DIAGNOSTIC, not a guard: this counts the last window (<= the verify T), not the tokens a request
+        sent, so it cannot validate absolute prompt positions - that is what captured_rows() is for.  The
+        row path never calls this; probes and tests do.  A caller reading several positions off one prefill needs this
         first: rows are numbered from the window's first token, so a prompt the engine read in more than one
         window makes the caller's own numbering name somebody else's rows.  Any malformed answer fails
         closed: the engine is ended (EngineDied) - never a guessed count."""
@@ -2603,6 +2607,52 @@ class StrataEngine:
                     pass
                 raise EngineDied(f"a malformed BROWROWSD answer: {line.strip()[:200]!r}; "
                                  f"the server ended the engine")
+            return int(parts[1])
+
+    def captured_rows(self) -> int:
+        """jev systemone (M3.1 fix B): how many head rows the LAST request kept for the positions it named
+        with `jevpos=` (0 = no capture).  Wire: `BROWCAP` -> `BROWCAPD <n>`.
+
+        A caller that named N positions must see N here before reading them.  BROWAT falls back to
+        addressing the last verify window when nothing was captured, and a prompt position is then read as a
+        window index - a neighbouring row, silently.  This count is what makes that impossible to miss.
+        Any malformed answer fails closed and ends the engine, like every other wire read."""
+        try:
+            self.proc.stdin.write("BROWCAP\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + (float(self.silence_s) if self.silence_s else 30.0)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.ended = True
+                raise EngineSilent("the engine said nothing for a BROWCAP answer")
+            try:
+                line = self.lines.get(timeout=min(left, 0.5))
+            except queue.Empty:
+                continue
+            if line is None:
+                self.ended = True
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if not line.startswith("BROWCAPD "):
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"the engine answered a BROWCAP with {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"a malformed BROWCAPD answer: {line.strip()[:200]!r}")
             return int(parts[1])
 
     def _brow_reply(self, op: str, answer: str, row, tokens: list[int]) -> dict[int, float]:

@@ -71,7 +71,10 @@ The engine ops behind these are `BROWAT <row> <tokens>` → `BROWATD <n> <tok>:<
 
 - **captured** — if the same request carried `jevpos=`, the named rows were kept during that read, and
   `BROWAT <absolute prompt position>` reads one of them. A position the request never ran is refused
-  **by name**; it never falls back to a neighbouring row.
+  **by name**; it never falls back to a neighbouring row. `BROWCAP` → `BROWCAPD <n>` reports how many
+  rows were kept, so the server verifies the count equals what it named **before** reading; if it does
+  not (a dropped list, a position no window ran), the request falls back to one prompt per field rather
+  than let an absolute position be read as a window index.
 - **window** — with no capture, `BROWAT <row>` indexes the LAST verify window, whose rows start at
   that window's first token. `BROWROWS` reports how many rows it holds, so a caller can tell whether
   its own numbering is the engine's (it only is when the count equals the tokens it sent).
@@ -90,7 +93,10 @@ read from. The option list and the readout always use the same alphabet.
   multi-field path can share a token-path scorer). Unknown values fail closed at import.
 
 Every rendered label must be **exactly one token**; a request whose label encodes to more than one
-is refused with `422` on `questions.<qid>.criteria` rather than scored on a truncated path.
+is refused with `422` on `questions.<qid>.criteria` rather than scored on a truncated path. This check
+runs on **every** request, including the default `upper` scheme — it is the one behaviour change on the
+default path (a label that is not one token used to score on its first token). With `A`-`Z` and
+`0`-`9`/`a`-`z` every label is one token in the shipped tokenizer, so no valid request changes status.
 
 Changing the alphabet moves the readout slightly (`mean |Δp| = .0034` per option on ARC, 0/160
 identical vectors) but it did not change any decision on 160 items and the two alphabets' own
