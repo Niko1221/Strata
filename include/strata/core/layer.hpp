@@ -312,6 +312,11 @@ void qsa_set_kv_int8(bool enabled);
 /// INT8 K/V through the Hadamard rotation (off by default: STRATA_KV_ROT=1)
 void qsa_set_kv_int8_rotate(bool enabled);
 bool qsa_kv_int8();
+/// Companion to qsa_kv_int8(): the int8-Hadamard domain is a different K storage
+/// (codes-then-rotation; kv_q8.cu:47-67's writer does NOT include the Hadamard pass
+/// when this is off).  The splice needs this to refuse --kv int8 + STRATA_KV_ROT=1
+/// explicitly (Phase 3 follow-up: dequant -> invH -> rotate -> H -> requant).
+bool qsa_kv_int8_rotate();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.
 void qsa_set_kv_q4(bool enabled);
 bool qsa_kv_q4();
