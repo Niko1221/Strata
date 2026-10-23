@@ -2302,11 +2302,41 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 
 ---
 
+## KV cache quantization (above 8K context)
+
+The KV cache is the model's memory of the conversation. Above 8K context it is stored as:
+
+- **int8** (default, 8.0 bit/cell) — what every published number was measured with.
+- **q4_0** — about 4.0 bit, half the memory, ~4% faster at 128K, but measurably less precise
+  on long documents; long-context lookups (needles) still pass.
+- **k8v4** — hybrid, INT8 K + 4-bit V, 816 B/cell.
+- **q4lm8v** (opt-in, NVIDIA/AMD only) — 4-bit Lloyd K and V plus an **exact-cell window**
+  (256 recent + 64 sink cells kept as fp16 in a resident side pool): 5.29 bit/cell at 128K,
+  1,016 MiB against 1,584 MiB for int8. About as fast as int8, more expert slots; accuracy at
+  4K between 8- and 4-bit, at the 8-bit level in the answer region; needles 6/6 at 32K and 128K.
+
+The window is opt-in (`--kv q4lm8v` or choice 3 in setup's KV menu, from 32K up). Its ring is
+sized for the prompt chunk (`STRATA_KV_WINDOW_BATCH`, default follows the chunk, capped at 6,144
+cells so setup's 152 MiB figure stays honest); the cap comes from the free ring's 6,144-cell scan
+limit. The exact-cell overlay is orthogonal to the level table: `--kv q4lm32w` turns it on for
+kLloyd, and `STRATA_KV_WINDOW=1` turns it on for any other q4 mode.
+
+**The window and KV streaming do not combine.** Streaming (`--kv-resident`) keeps the KV cache in
+RAM and only the attention's window in VRAM; the window's exact cells need an always-resident side
+pool that a streamed KV does not have. Setup never writes the pair: a `q4lm8v` config's KV cache
+stays in VRAM and nothing streams beside it. A hand-edited config that sets both is refused loudly
+by the engine (exit 2, before anything loads). To stream instead, drop the window (`--kv int8`,
+`q4_0` or `k8v4`); to keep the window on a PC that would otherwise stream, run with
+`--kv-streaming off`.
+
+Measured on the author's PC (Ryzen 9 3900XT, 64 GB DDR4-3000, RX 9060 XT 16 GB, Windows, ROCm 7.1,
+Qwen3.8-Flash-Next, 128K context, `--prefill auto`): 5.29 bit/cell, 1,016 MiB of KV against 1,584 MiB
+for int8. The default path (`--kv int8`, no window) is byte-identical to the last release (dump-logits
+SHA `A014F504...BA052`).
+
 ## How it works
 
 <p align="center"><img src="paper/tiers.svg" width="760" alt="memory tiers"></p>
-
-- **GPU (VRAM):** attention and DeltaNet mixers, the gated-residual weights, routers, shared experts, output head, the MTP
   draft layer, the KV cache (from 64K: only its most-read part, the rest streams from RAM), and an **expert cache** that fills the rest of VRAM with the most-used experts (it adapts to
   the conversation while you chat).
 - **RAM:** all 24,576 experts, pinned. The CPU computes the experts that are not on the GPU **in place**, at the same time

@@ -6252,6 +6252,71 @@ def choices_from_config(cfg_path: Path) -> dict:
                 vis is None or int(val("--vram-reserve-mib")) != VISION["gpu"]["reserve_mib"]) else None}
 
 
+def kv_check_config(cfg_path: Path) -> None:
+    """--kv-check: read a Strata config and report its KV cache settings: mode, window env, streaming pair,
+    effective bits per cell, and whether the engine would start (the window + --kv-resident pair is refused)."""
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+    args = cfg.get("args", []) or []
+    env = cfg.get("env", {}) or {}
+    def val(flag):
+        return args[args.index(flag) + 1] if flag in args and args.index(flag) + 1 < len(args) else None
+    kv = val("--kv") or "int8"
+    ctx_raw = val("--max-context")
+    ctx = int(ctx_raw) if (ctx_raw or "").isdigit() else None
+    resident = "--kv-resident" in args
+    window = env.get("STRATA_KV_WINDOW") == "1"
+    s = env.get("STRATA_KV_WINDOW_S"); r = env.get("STRATA_KV_WINDOW_R"); b = env.get("STRATA_KV_WINDOW_BATCH")
+    print(f"\n  {cfg_path.name}")
+    print(f"    KV mode:        {kv}")
+    print(f"    context:        {ctx if ctx else '(not set)'}")
+    print(f"    window env:     STRATA_KV_WINDOW={env.get('STRATA_KV_WINDOW', '(unset)')}"
+          + (f"  S={s} R={r}" + (f" B={b}" if b else "") if window else ""))
+    print(f"    streaming:      {'on (--kv-resident)' if resident else 'off'}")
+    # effective bits per cell
+    if kv == "q4lm8v" and window:
+        bits = 5.29
+        note = "measured 5.29 bit/cell at 128K, 1,016 MiB against 1,584 MiB for int8"
+    elif kv == "q4lm8v":
+        bits = 4.5
+        note = "4-bit base only: the window is not active (STRATA_KV_WINDOW != 1)"
+    elif kv == "int8":
+        bits = 8.0
+        note = "the default, what every published number was measured with"
+    elif kv == "q4_0":
+        bits = 4.0
+        note = "half the memory, ~4% faster at 128K, less precise on long documents"
+    elif kv == "k8v4":
+        bits = 6.0
+        note = "hybrid: INT8 K + 4-bit V, 816 B/cell"
+    else:
+        bits = None
+        note = "unknown mode"
+    print(f"    effective bits: {bits:.2f}/cell  ({note})")
+    # checks
+    problems = []
+    if kv == "q4lm8v" and resident:
+        problems.append("DEAD PAIR: q4lm8v + --kv-resident. The engine refuses this (exit 2) - the streamed "
+                        "cells have no resident side pool for the window's exact cells. Drop --kv-resident "
+                        "(keep the window) or switch --kv to int8/q4_0/k8v4.")
+    if kv == "q4lm8v" and not window:
+        problems.append("q4lm8v without STRATA_KV_WINDOW=1: the window is off, so only the 4-bit base runs "
+                        "(no exact cells). Set STRATA_KV_WINDOW=1 (setup writes it for --kv q4lm8v).")
+    if kv != "q4lm8v" and window:
+        problems.append("STRATA_KV_WINDOW=1 is set but --kv is not q4lm8v: the window env is ignored.")
+    if kv == "q4lm8v" and window and ctx is not None and ctx < 32768:
+        problems.append(f"context {ctx} is below ~28K: the window's 152 MiB ring costs more than the 4-bit base "
+                        "saves; setup warns but keeps the choice.")
+    if kv == "q4lm8v" and window and not resident:
+        problems.append("OK: window active, KV stays in VRAM (no streaming). --kv-streaming on is ignored beside "
+                        "the window; use --kv-streaming off to say so explicitly.")
+    if problems:
+        for msg in problems:
+            tag = "FAIL" if msg.startswith("DEAD PAIR") or msg.startswith("q4lm8v without") or msg.startswith("STRATA_KV_WINDOW=1 is set") else "note"
+            print(f"    [{tag}] {msg}")
+    startable = not (kv == "q4lm8v" and resident)
+    print(f"    engine starts:  {'yes' if startable else 'NO - refused (exit 2)'}")
+
+
 def calibration_targets(have: list, model: str | None, family: str | None) -> list:
     """#2036: the installed configs `--calibrate --model X` (and/or --family) means; every config with neither."""
     if not (model or family):
@@ -7911,6 +7976,10 @@ def main() -> int:
     ap.add_argument("--prebuilt", default=os.environ.get("STRATA_PREBUILT_URL", PREBUILT_URL),
                     help="where the ready-made engine is (a URL folder or a local folder)")
     ap.add_argument("--check", action="store_true", help="only check this PC and exit")
+    ap.add_argument("--kv-check", metavar="CONFIG", nargs="?", const="auto", default=None,
+                    help="check a Strata config's KV cache settings: --kv mode, STRATA_KV_WINDOW env and the "
+                         "--kv-resident pair, the effective bits per cell, and whether the engine would start. "
+                         "With a path: that config; without one: every strata-*.json in this folder")
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 15-30 minutes, longer on a slow card), then start the model")
     ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
@@ -7952,6 +8021,15 @@ def main() -> int:
     if a.kv == "q4lm8v" and not WINDOW_KV:
         ap.error("--kv q4lm8v is the exact-cell window, which the Intel Arc (SYCL) engine does not have; "
                  "use --kv int8 or --kv q4_0")
+    if a.kv_check is not None:
+        targets = sorted(Path(".").glob("strata-*.json")) if a.kv_check == "auto" else [Path(a.kv_check)]
+        if not targets:
+            fail("no strata-*.json found here; pass a config path, e.g. --kv-check strata-q2_0.json")
+        for p in targets:
+            if not p.exists():
+                fail(f"{p} does not exist")
+            kv_check_config(p)
+        return 0
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in PREVIEW_FAMILIES.items()
                                                               if a.model in d["models"]))
