@@ -1245,7 +1245,8 @@ reported separately from Linux/CUDA evidence.
 on this box (M1 Max, an omp agent loop): 417-889-token auxiliary calls land between the main turns, and without
 parking each main turn re-read the whole transcript - 22 reused out of 46 requests, 30k-47k-token prompts, 84-132 s
 of prefill each (`strata-iq3_xxs.log`, 2026-10-18). `metal/tools/parking_check.py` drives the same conversation
-through both arms and writes `gap/results/<stamp>/parking_check.md`; 2026-10-19, M1 Max, 64 GB, engine 0.1.45-metal,
+through both arms and writes `gap/results/<stamp>/parking_check.md` (`--quick` runs the ON arm alone);
+2026-10-19, M1 Max, 64 GB, engine 0.1.45-metal,
 IQ3_XXS pack, 4,504 to 8,516-token turns with a 600-to-800-token side request between them: with parking ON every
 turn after a side request reused its prefix (4,499 of 6,520 and 6,515 of 8,516 tokens) and prefilled in 6.5 s
 against 17.6/23.6 s for the same prompts with parking OFF (28-37%); parks took 37-39 ms, a restore with its
@@ -1258,6 +1259,17 @@ at startup so a park had to repack the window's own cells (`window_kv_pools`/`wi
 restore run opposite directions), and the default `--kv fp16` did not set the int8 flag the window kernels always
 use, so the snapshot math did not describe the stored bytes. `STRATA_PARK_DEBUG=1` logs every park copy and a
 malloc integrity check around the park.
+
+Parking then regressed on this box and was re-measured after the fix. Upstream `8311d8af` (in this tree since the
+2026-10-22 rebase) lets the Metal session's QSA states carry no K/V pools and no pooled indexer keys - the decode
+window keeps its own - but `checkpoint_targets()` (`src/core/conversation_state.cpp`), consulted on every park and
+restore, still required the pooled indexer, so every conversation at least as long as the minimum was skipped with
+`invalid indexer running-state target` and each tool-call turn read the whole transcript again
+(`strata-iq3_xxs.log`, 2026-10-22; the pre-rebase binary had reused up to 33,871 tokens a turn). From 0.1.47-metal
+(local `1f4372a6`) the check under Metal drops the bytes a window park never touches; the window's own copy side and
+`window_checkpoint_restore` keep validating what is actually moved. Re-run 2026-10-23 on the same harness: parked
+4,508 tokens in 79.7 ms holding 418 MB and 6,524 in 61.6 ms holding 566 MB, restores of 4,499 and 6,515 tokens in
+16.4 and 14.0 ms, prefill 15.1 s cold and 6.6 s on the two reused turns, no evictions.
 
 The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the parked conversations against the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's
