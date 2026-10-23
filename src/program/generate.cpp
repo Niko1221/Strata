@@ -827,6 +827,13 @@ struct Options {
     int64_t prompt_cache_every = 16384;
     bool prompt_cache_tail = false;   // optional extra checkpoint at an existing near-tail chunk boundary
     bool prompt_cache_spread = false;   ///< --prompt-cache-spread: keep checkpoints spread back from the end, not the latest
+    /// --prompt-cache-uniform (opt-in; STRATA_CKPT_UNIFORM=N: the same with --prompt-cache N): keep the checkpoints evenly
+    /// spaced over the whole conversation (conv_cache::uniform_victim) - a request that branches anywhere in it, such as a
+    /// client's summary of its first turns, resumes within about one spacing - with the root, the newest and the
+    /// `prompt_cache_recent` before it kept as well.  Every checkpoint is ~118 MB of host RAM and parks with its
+    /// conversation.
+    bool prompt_cache_uniform = false;
+    int64_t prompt_cache_recent = 4;   ///< --prompt-cache-recent N (STRATA_CKPT_RECENT): with --prompt-cache-uniform
     /// --serve: a prompt read from token 0 is also checkpointed at its first turn boundary - the end of the system
     /// prompt, which every chat of the same client shares - when that is at least N tokens (0 = never)
     int64_t prompt_cache_root = 2048;
@@ -1004,6 +1011,11 @@ void usage() {
                  "  --prompt-cache-spread  --serve: keep the checkpoints spread back from the conversation's end (dense\n"
                  "                       near it, thinner further back) instead of the most recently used: a client that\n"
                  "                       rewrites its history N tokens back reads about N again, not the whole conversation\n"
+                 "  --prompt-cache-uniform  --serve (opt-in; STRATA_CKPT_UNIFORM=N = this with --prompt-cache N): keep the\n"
+                 "                       checkpoints evenly spaced over the whole conversation (root and newest kept), so a\n"
+                 "                       request that branches anywhere in it reads about conversation / N again; ~118 MB of\n"
+                 "                       RAM per checkpoint, parked with its conversation\n"
+                 "  --prompt-cache-recent N  --prompt-cache-uniform: also keep the N checkpoints before the newest (default 4)\n"
                  "  --turn-token ID      --serve: the token that opens a chat turn (default 248045, <|im_start|>)\n"
                  "  --tail-role-token ID --serve: a turn of this role right before the last turn is left out of\n"
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
@@ -3204,6 +3216,8 @@ int main(int argc, char** argv) {
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
+        else if (a == "--prompt-cache-uniform") o.prompt_cache_uniform = true;
+        else if (a == "--prompt-cache-recent") o.prompt_cache_recent = std::max(0LL, std::atoll(next("--prompt-cache-recent")));
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
         else if (a == "--prompt-cache-root") o.prompt_cache_root = std::max(0LL, std::atoll(next("--prompt-cache-root")));
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
@@ -3498,6 +3512,21 @@ int main(int argc, char** argv) {
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
+    // --prompt-cache-uniform for launchers that pass only the environment: STRATA_CKPT_UNIFORM=N is the flag with
+    // --prompt-cache N (N >= 2), STRATA_CKPT_RECENT=K is --prompt-cache-recent K
+    if (const char* v = std::getenv("STRATA_CKPT_UNIFORM"); v != nullptr && std::atoi(v) >= 2) {
+        o.prompt_cache = std::atoi(v);
+        o.prompt_cache_uniform = true;
+    }
+    if (const char* v = std::getenv("STRATA_CKPT_RECENT"); v != nullptr && v[0] != '\0') o.prompt_cache_recent = std::max(0, std::atoi(v));
+    if (o.prompt_cache_uniform && o.prompt_cache_spread) {
+        std::fprintf(stderr, "--prompt-cache-uniform and --prompt-cache-spread are two retention policies: give one\n");
+        return 2;
+    }
+    if (o.serve && o.prompt_cache_uniform && o.prompt_cache >= 2)
+        std::fprintf(stderr, "strata serve: --prompt-cache-uniform: %d checkpoints kept evenly spaced over the conversation "
+                             "(the root, the newest and the %lld before it kept as well), ~118 MB of host RAM each\n",
+                     o.prompt_cache, (long long) o.prompt_cache_recent);
     // STRATA_PRIMARY_DEVICE: which VISIBLE device the engine's own session runs on.  The Windows HIP runtime
     // enumerates the cards in a fixed order no HIP_VISIBLE_DEVICES list can change (it only filters), so with a
     // slower card first a run could only put the model on it (RX 6600 before RX 6800).  0 (unset) is upstream's
@@ -9320,7 +9349,9 @@ int main(int argc, char** argv) {
             cs.dwLength = sizeof cs;
             if (GlobalMemoryStatusEx(&cs)) {
                 const uint64_t planned = (o.prompt_cache > 0 ? (uint64_t) std::max<int64_t>(o.conversation_cache_mib, 0) << 20 : 0) +
-                                         (2ull << 30);   // checkpoints and prompt staging
+                                         (2ull << 30) +   // checkpoints and prompt staging
+                                         // --prompt-cache-uniform: the live chain's checkpoints past the default six
+                                         (o.prompt_cache_uniform ? (uint64_t) std::max(o.prompt_cache - 6, 0) * (118ull << 20) : 0);
                 const auto cv = strata::platform::host_limits::commit_verdict((uint64_t) cs.ullAvailPageFile,
                                                                               (uint64_t) cs.ullTotalPageFile, planned, 4ull << 30);
                 std::fprintf(stderr, "strata serve: Windows commit: %.1f GiB left of a %.1f GiB limit (RAM + page file)\n",
@@ -10909,7 +10940,11 @@ int main(int argc, char** argv) {
                     }
                 std::vector<int64_t> lens;
                 for (const ConvCheckpoint& k : checks) lens.push_back((int64_t) k.ids.size());
-                const size_t victim = o.prompt_cache_spread
+                const size_t victim = o.prompt_cache_uniform
+                    ? strata::program::conv_cache::uniform_victim(lens.data(), stamps.data(), stamps.size(),
+                                                                  o.prompt_cache, o.prompt_cache_recent,
+                                                                  tail_flags.get(), pin_flags.get())
+                    : o.prompt_cache_spread
                     ? strata::program::conv_cache::spread_victim(lens.data(), stamps.data(), stamps.size(),
                                                                  o.prompt_cache, tail_flags.get(), pin_flags.get())
                     : strata::program::conv_cache::eviction_victim(stamps.data(), stamps.size(), o.prompt_cache,
