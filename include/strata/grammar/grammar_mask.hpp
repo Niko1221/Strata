@@ -37,12 +37,19 @@ public:
     // the mask for this stack state; shared_ptr-sized rows, LRU-bounded (cap entries)
     const std::vector<uint32_t>& mask_for(const std::vector<grammar_stack>& stacks);
 
+    // The stacks' elements are POINTERS INTO THE GRAMMAR'S OWN rules vector, and `grammar_clone` copies that
+    // vector, so a clone's stacks point into the CLONE, not the proto. The key is (rule, offset) of every
+    // stack's top element, located by range-scan over `rules`: pass the rules that OWN the stacks
+    // (grammar_get_rules of the grammar the stacks came from). With the proto's rules every clone pointer
+    // misses the range scan, all elements key to (NONE, NONE), and every state collapses to one key.
+    const std::vector<uint32_t>& mask_for(const std::vector<grammar_stack>& stacks, const grammar_rules& rules);
+
     size_t size() const { return index_.size(); }
 
 private:
     using key_t = std::vector<std::pair<uint32_t, uint32_t>>; // per stack: (rule, element offset)
 
-    key_t make_key(const std::vector<grammar_stack>& stacks) const;
+    key_t make_key(const std::vector<grammar_stack>& stacks, const grammar_rules& rules) const;
 
     const GrammarVocab& vocab_;
     const grammar_rules& rules_;

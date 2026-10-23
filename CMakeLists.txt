@@ -276,6 +276,10 @@ if(STRATA_BUILD_TESTS)
   add_executable(grammar_test src/grammar/grammar_test.cpp)
   target_link_libraries(grammar_test PRIVATE strata_grammar)
   add_test(NAME grammar_test COMMAND grammar_test)
+  # the registry: cache hits, parse errors, the LRU cap with pinned entries (no model, no GPU)
+  add_executable(grammar_registry_test src/grammar/grammar_registry_test.cpp)
+  target_link_libraries(grammar_registry_test PRIVATE strata_grammar)
+  add_test(NAME grammar_registry_test COMMAND grammar_registry_test)
   # the reader refuses a duplicate tensor name at open, naming it (a synthetic GGUF: no model, no GPU)
   add_executable(gguf_reader_test src/artifact/gguf_reader_test.cpp)
   target_link_libraries(gguf_reader_test PRIVATE strata_artifact)
@@ -336,7 +340,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 
 # ---- strata_grammar (host-only GBNF core, GPU-independent) -----------------
 # The ported llama.cpp grammar (src/grammar/): the parser, the stacks, the accept chain.
-add_library(strata_grammar STATIC src/grammar/grammar.cpp src/grammar/grammar_vocab.cpp src/grammar/grammar_mask.cpp)
+add_library(strata_grammar STATIC src/grammar/grammar.cpp src/grammar/grammar_vocab.cpp src/grammar/grammar_mask.cpp src/grammar/grammar_registry.cpp)
 target_include_directories(strata_grammar PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
@@ -1150,6 +1154,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set_tests_properties(sampler_parity_one_block PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=0;STRATA_SAMPLER_ONE_BLOCK=1")
   add_test(NAME sampler_parity_old COMMAND sampler_parity --selftest)
   set_tests_properties(sampler_parity_old PROPERTIES ENVIRONMENT "STRATA_OLD_SAMPLER=1;STRATA_SAMPLER_ONE_BLOCK=0")
+  # Task 6's closed loop: accept -> mask -> sample, 100x200 random walks through an alternating grammar
+  # (GPU memory only, no model; skips with 77 on a box without CUDA)
+  add_executable(grammar_decode_test tests/program/grammar_decode_test.cpp)
+  target_include_directories(grammar_decode_test PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(grammar_decode_test PRIVATE strata_grammar strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME grammar_decode_test COMMAND grammar_decode_test)
+  set_tests_properties(grammar_decode_test PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
   # S19: the decode QSA top-k and the greedy argmax on thread-block clusters (sm_90+) vs the one-CTA kernels, bitwise,
   # captured in a graph too (GPU, synthetic, no model; skips below sm_90); --bench: per-call times
   if(STRATA_ENABLE_CUDA)

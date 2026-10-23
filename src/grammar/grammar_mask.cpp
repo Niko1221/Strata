@@ -65,7 +65,8 @@ void grammar_build_mask(const GrammarVocab& vocab, const grammar_rules& rules,
 GrammarMaskCache::GrammarMaskCache(const GrammarVocab& vocab, const grammar_rules& rules, size_t cap)
     : vocab_(vocab), rules_(rules), words_(grammar_mask_words((int64_t)vocab.pieces.size())), cap_(cap) {}
 
-GrammarMaskCache::key_t GrammarMaskCache::make_key(const std::vector<grammar_stack>& stacks) const {
+GrammarMaskCache::key_t GrammarMaskCache::make_key(const std::vector<grammar_stack>& stacks,
+                                                   const grammar_rules& rules) const {
     key_t key;
     key.reserve(stacks.size() + 1);
     key.emplace_back(0xFFFFFFFFu, (uint32_t)stacks.size()); // (rules identity is the cache's own)
@@ -76,8 +77,8 @@ GrammarMaskCache::key_t GrammarMaskCache::make_key(const std::vector<grammar_sta
         }
         const grammar_element* top = stack.back();
         uint32_t rule = 0xFFFFFFFFu, offset = 0xFFFFFFFFu;
-        for (size_t r = 0; r < rules_.size(); ++r) {
-            const grammar_rule& rule_vec = rules_[r];
+        for (size_t r = 0; r < rules.size(); ++r) {
+            const grammar_rule& rule_vec = rules[r];
             if (!rule_vec.empty() && top >= rule_vec.data() && top < rule_vec.data() + rule_vec.size()) {
                 rule = (uint32_t)r;
                 offset = (uint32_t)(top - rule_vec.data());
@@ -90,14 +91,19 @@ GrammarMaskCache::key_t GrammarMaskCache::make_key(const std::vector<grammar_sta
 }
 
 const std::vector<uint32_t>& GrammarMaskCache::mask_for(const std::vector<grammar_stack>& stacks) {
-    const key_t key = make_key(stacks);
+    return mask_for(stacks, rules_);
+}
+
+const std::vector<uint32_t>& GrammarMaskCache::mask_for(const std::vector<grammar_stack>& stacks,
+                                                         const grammar_rules& rules) {
+    const key_t key = make_key(stacks, rules);
     auto it = index_.find(key);
     if (it != index_.end()) {
         lru_.splice(lru_.begin(), lru_, it->second); // hit: mark most-recent
         return *it->second->second;
     }
     auto row = std::make_shared<std::vector<uint32_t>>((size_t)words_);
-    grammar_build_mask(vocab_, rules_, stacks, row->data());
+    grammar_build_mask(vocab_, rules, stacks, row->data());
     lru_.emplace_front(key, row);
     index_[key] = lru_.begin();
     while (lru_.size() > cap_) {
