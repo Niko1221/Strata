@@ -6,6 +6,7 @@
 #   jevport-arm.sh h            # pin + capture hybrid (STRATA_JEV_HYBRID=1)
 #   jevport-arm.sh c --calib none            # revert calib-L.json to the .prev backup
 #   jevport-arm.sh b --calib calib-L-mf.json # install a fitted calibrator (hot-applied at next start)
+#   jevport-arm.sh c --labels digit-lower    # #3643 label alphabet 0-9/a-z (default is upper A-Z)
 #
 # Why a script: every arm is an env var on the llama-swap preset, and the preset only restarts when
 # config.yaml changes - so hand-editing the env list and "just retrying" silently measures the OLD arm.
@@ -22,9 +23,11 @@ DOCKER=$HOME/.local/bin/docker
 ARM=${1:-c}
 shift || true
 CALIB=""
+LABELS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --calib) CALIB=$2; shift 2 ;;
+    --labels) LABELS=$2; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -34,6 +37,11 @@ case "$ARM" in
   b) EXTRA=("STRATA_JEV_ROWS=1") ;;
   h) EXTRA=("STRATA_JEV_HYBRID=1") ;;
   *) echo "arm must be c|b|h (got '$ARM')" >&2; exit 2 ;;
+esac
+case "${LABELS:-upper}" in
+  upper) : ;;                      # the default - keep the env byte-identical to the release
+  digit-lower) EXTRA+=("STRATA_JEV_LABELS=digit-lower") ;;
+  *) echo "labels must be upper|digit-lower (got '$LABELS')" >&2; exit 2 ;;
 esac
 
 python3 - "$CONFIG" "$ARM" "${EXTRA[@]:-}" <<'PY'
@@ -120,14 +128,19 @@ KEY="$KEY" python3 eval_mf_set.py run --base "$BASE/upstream/$PRESET" --key "$KE
   --set /tmp/arm-smoke.jsonl --out /tmp/arm-smoke.json --label "arm=$ARM" 2>&1 | tail -1
 
 echo "--- live env on the serve process:"
-LIVE=$($DOCKER exec llama-swap sh -c 'for p in /proc/[0-9]*; do
+LIVE_ALL=$($DOCKER exec llama-swap sh -c 'for p in /proc/[0-9]*; do
   e=$(tr "\0" "\n" < $p/environ 2>/dev/null || true)
-  case "$e" in *STRATA_JEV_MODES*) echo "$e" | grep -E "^STRATA_JEV_(ROWS|HYBRID)=" ;; esac
+  case "$e" in *STRATA_JEV_MODES*) echo "$e" | grep -E "^STRATA_JEV_(ROWS|HYBRID|LABELS)=" ;; esac
 done' 2>/dev/null || true)
-echo "  ${LIVE:-<no arm flags>}"
+LIVE=$(echo "$LIVE_ALL" | grep -E "^STRATA_JEV_(ROWS|HYBRID)=" || true)   # arm flags only
+echo "  ${LIVE_ALL:-<no arm/label flags>}"
 case "$ARM" in
   c) [ -z "$LIVE" ] || { echo "MISMATCH: asked for arm c, live has: $LIVE" >&2; exit 1; } ;;
   b) echo "$LIVE" | grep -q 'ROWS=1' || { echo "MISMATCH: asked for arm b, live has: $LIVE" >&2; exit 1; } ;;
   h) echo "$LIVE" | grep -q 'HYBRID=1' || { echo "MISMATCH: asked for arm h, live has: $LIVE" >&2; exit 1; } ;;
 esac
-echo "arm $ARM confirmed live"
+case "${LABELS:-upper}" in
+  digit-lower) echo "$LIVE" | grep -q 'LABELS=digit-lower' || { echo "MISMATCH: asked for digit-lower labels, live has: $LIVE" >&2; exit 1; } ;;
+  upper) echo "$LIVE" | grep -q 'LABELS' && { echo "MISMATCH: asked for upper labels, live has: $LIVE" >&2; exit 1; } ;;
+esac
+echo "arm $ARM labels=${LABELS:-upper} confirmed live"
