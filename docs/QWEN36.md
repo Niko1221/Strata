@@ -225,9 +225,24 @@ on the `strata-q36` command line.
   the 14K prompt's last chunk (10 attention layers, 32,768 rows each). KL of the logits against the default path (fixed 56 slots,
   chunk 2048, 65 forced steps per prompt): 195 steps over the 14K and 57K corpus prompts and the 76K agent prompt: mean 2.06e-2,
   median 1.63e-3, p99 0.094, **max 2.67** (one step of the 14K prompt, where the top two logits swap; the other 194 steps stay
-  under 0.2); the 4K and 32K prompts have mean 8.3e-3 / 9.7e-3, max 0.048 / 0.063; two more 14K agent prompts: mean 3.0e-3 and
+  at 0.21 or less); the 4K and 32K prompts have mean 8.3e-3 / 9.7e-3, max 0.048 / 0.063; two more 14K agent prompts: mean 3.0e-3 and
   1.7e-5, max 0.026 and 6.5e-4. For comparison `--prefill 1024` gives mean 8.9e-3, max 0.51 and the accepted prefetch opt-ins mean
   2.2e-2, max 1.95.
+- **`--chunked-gdn`** (NVIDIA, any arch): the prompt's gated delta rule in pieces of 16 tokens instead of one token after another
+  (`q36_gdn.cuh`). The recurrence `S_t = g_t S_{t-1} + k_t delta_t^T` is unrolled over a piece: a kernel computes every piece's
+  triangular system `(I + L) delta = b` matrix `L` and the output matrix `P` (they do not depend on the state), then one block per
+  (V head, 32 state columns) walks the pieces: `U = K W`, `Q W` and the state update `W <- e^c W + K^T delta` as FP32 products
+  from shared memory, `delta` by forward substitution (one column per lane, no barrier). The default kernel (`k_gdn_seq_cols`)
+  has two barriers per token for 2,048 tokens in series. The state is left in the engine's layout, so decode and verify steps read
+  it as before. FP32 sums in another order: not bit-identical. Measured on an RTX 5080 (Sage-A1.5 Q4_K_M): one layer of a 2,048-token chunk
+  1.82 -> 0.87 ms (kernel microbenchmark, `q36_gdn_parity`: error against a double-precision recurrence in the outputs 1e-8 .. 1.3e-7 (the default kernel: 5e-9 ..
+  2e-8) and in the state 7e-8 .. 9e-7 (default: 3e-8 .. 2e-7), a few times the default kernel's, far below FP16 rounding); 28 ms less GPU kernel time per chunk (nsys, 16K prompt).
+  The prompt read of this card is bound by the expert copies (PCIe), so the end-to-end gain shows only where kernels are the
+  limit: fresh read 16K 5,760 -> 5,816 tok/s, 40K 4,560 -> 4,705, 4K unchanged (with `--fused-prompt-attn` 16K 5,876, 40K
+  5,424 -> 5,582). Decode is unchanged. KL against the default path (195 steps, 14K and 57K corpus + 76K agent prompt): mean
+  1.20e-2, median 2.0e-3, p99 0.078, max 0.97 (the 14K prompt: mean 2.3e-2, max 0.97, top-1 58 of 65 steps; the controls are
+  `--prefill 1024` with mean 8.9e-3 and max 0.51, and the accepted prefetch opt-ins with mean 2.2e-2 and max 1.95). Chunks of 9-33
+  rows are a few microseconds per layer slower than the default kernel. Measured on a Core Ultra 9 285K with 61 GB DDR5-6800.
 
 Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
 `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
