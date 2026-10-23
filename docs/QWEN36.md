@@ -195,6 +195,25 @@ file (4.2e-3), not a quality loss. Greedy 64 tokens after those six documents: t
 `--prefill 512` for 6 of 6. A prompt shorter than the chunk (every chat turn after the first) is one chunk either way: unchanged.
 The maintainers keep the new default's reference outputs (six documents, greedy 64) and check later changes against them.
 
+**Experts streamed to the prompt (hybrid mode).** A prompt chunk of more than `--hybrid-rows` rows reads each layer's experts from a GPU staging
+buffer, two layers ahead. By default a layer is copied whole from host memory when fewer than half of its experts are resident, and otherwise
+the resident experts are copied from their VRAM slots and only the others cross PCIe (runs of consecutive experts in one copy each).
+`STRATA_Q36_STREAM_ALL=1` always copies the whole layer.
+
+- **`--split-stage-copy`**: take the runs from 1/8 of the experts resident (instead of 1/2) and run the slot copies on a high-priority
+  stream of their own. A device-to-device copy is a kernel: queued behind the PCIe copies on the copy stream it waited for the compute
+  kernels' SMs and held the PCIe copies up. RTX 5080, 78 of 256 experts resident, Sage-A1.5 Q4_K_M, int8 KV, `--max-context 262144`, fresh 16K
+  prompt: 4,570 tok/s with both kinds of copy on one stream, 5,760 whole-layer copies, 6,090 with the slot copies on their own stream;
+  38 of 256 resident: 5,930 against 5,780. Fresh prompt reads (CLI, repeat runs within 0.6%) went from 5,603 / 5,769 / 4,575 to
+  6,583 / 6,145 / 4,681 tok/s at 4K / 16K / 40K; decode is unchanged (193.5 / 169.8 / 182.6 against 193.8 / 169.8 / 183.0 tok/s). The
+  bytes in staging are the same (the logits are bit-identical). It is a flag, not the default, because the old rule came from one RTX 3060
+  measurement (37 of 256 resident, both kinds of copy on one stream: 1,970 whole against 1,540 in runs) that has not been re-run with
+  the slot copies on their own stream: a card with few experts resident may prefer the whole-layer copy, and only one card has been
+  measured with the flag.
+
+Two steps are always on, with the same bytes in the same order: each token's MoE input is quantized once and scattered to its sorted rows,
+and the per-layer wait for the routing counts is an event wait with the shared expert enqueued first. (`STRATA_QUANT_GATHER=1`, the upstream switch, turns the quantization back to one per entry.)
+
 **Tried and dropped.** The MTP drafts' head over a subset of the vocabulary (`--draft-vocab N`, kept as an opt-in; the answer never
 changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% on Chinese / Russian / Arabic / Hindi (70% of a Chinese
 prompt's token ids are above 65,536), and a candidate list built from the tokens seen so far loses on both. The shared expert on a second

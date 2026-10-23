@@ -1380,8 +1380,9 @@ struct Engine {
     uint8_t* acts = nullptr;   // per token: its quantized activation (kNativeActBytes)
     cudaEvent_t ev_route = nullptr;
     uint8_t* stage[2] = {};
-    cudaStream_t cst = nullptr;
-    cudaEvent_t ev_copy[2] = {}, ev_used[2] = {};
+    cudaStream_t cst = nullptr, dst2 = nullptr;
+    cudaEvent_t ev_copy[2] = {}, ev_used[2] = {}, ev_d2d[2] = {};
+    bool split_copy = false;   // --split-stage-copy: the resident experts' runs from 1/8 resident, on their own stream (else from 1/2)
     std::vector<int> stream_seq;   // the state indices a streamed forward visits, in order
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
@@ -2512,10 +2513,16 @@ struct Engine {
         const int ne = (int) m->g.n_expert;
         const Hy& H = hy[(size_t) stream_seq[(size_t) i]];
         // fewer than half the experts resident (a 12 GB card): the one whole-layer copy is faster than many small ones
-        // (RTX 3060, UD-Q4_K_XL at 37 of 256: pp2048 1970 whole vs 1540 in runs)
-        if (all || 2 * L.n_slots < ne) {
+        // (RTX 3060, UD-Q4_K_XL at 37 of 256: pp2048 1970 whole vs 1540 in runs).  --split-stage-copy takes the runs from 1/8 of
+        // the experts resident: a device-to-device copy is a kernel, queued on the copy stream it waits for the compute kernels'
+        // SMs and holds up the PCIe copies behind it, so the resident runs go on a high-priority stream of their own (RTX 5080,
+        // 78 of 256 resident, 16K: pp 4570 t/s in runs on one stream, 5760 whole, 6090 with the stream of their own)
+        if (all || (split_copy ? 8 : 2) * L.n_slots < ne) {
             CK(cudaMemcpyAsync(stage[b], L.hblobs, L.stride * (size_t) ne, cudaMemcpyHostToDevice, cst));
         } else {
+            // the resident experts' runs: on cst, in order with the PCIe copies, unless --split-stage-copy gave them a stream
+            cudaStream_t ds = split_copy ? dst2 : cst;
+            if (split_copy) CK(cudaStreamWaitEvent(dst2, ev_used[b], 0));
             for (int x = 0; x < ne;) {
                 const bool dev = H.slot_of[(size_t) x] >= 0;
                 int y = x + 1;
@@ -2526,11 +2533,15 @@ struct Engine {
                 const size_t n = (size_t) (y - x) * L.stride;
                 if (dev)
                     CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) H.slot_of[(size_t) x] * L.stride,
-                                       n, cudaMemcpyDeviceToDevice, cst));
+                                       n, cudaMemcpyDeviceToDevice, ds));
                 else
                     CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n,
                                        cudaMemcpyHostToDevice, cst));
                 x = y;
+            }
+            if (split_copy) {
+                CK(cudaEventRecord(ev_d2d[b], dst2));
+                CK(cudaStreamWaitEvent(cst, ev_d2d[b], 0));
             }
         }
         CK(cudaEventRecord(ev_copy[b], cst));
@@ -3330,6 +3341,16 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (staging) {
         CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
+        if (E.split_copy) {   // --split-stage-copy: the resident experts' copies (kernels, see stream_kick) on a stream of their own
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(__HIPCC__)   // (HIP: the default priority, as mtp.cpp)
+            int prio_lo = 0, prio_hi = 0;   // at the highest priority
+            if (cudaDeviceGetStreamPriorityRange(&prio_lo, &prio_hi) != cudaSuccess) { cudaGetLastError(); prio_hi = 0; }   // (no priorities: a plain stream)
+            CK(cudaStreamCreateWithPriority(&E.dst2, cudaStreamNonBlocking, prio_hi));
+#else
+            CK(cudaStreamCreateWithFlags(&E.dst2, cudaStreamNonBlocking));
+#endif
+            for (int b = 0; b < 2; ++b) CK(cudaEventCreateWithFlags(&E.ev_d2d[b], cudaEventDisableTiming));
+        }
         for (int b = 0; b < 2; ++b) {
             CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
             CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
@@ -4087,7 +4108,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
     std::string kv = "fp32", tokens_file;
-    bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false;
+    bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false, split_stage_copy = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -4134,6 +4155,7 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--attn-mma") attn_mma = true;               // with --kv int8: its tensor-core kernel (sm_80+, not bit-identical)
         else if (a == "--chunked-gdn") chunked_gdn = true;        // the prompt's gated delta rule in pieces of 16 tokens
         else if (a == "--side-stream") side_stream = true;         // z, alpha / beta, k, v of a decode layer on a second stream
+        else if (a == "--split-stage-copy") split_stage_copy = true;   // the prompt's staging copy: resident experts from 1/8, own stream
         else if (a == "--fused-prompt-attn") fused_pattn = true;   // the prompt attention in one kernel (int8 cache)
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
@@ -4148,7 +4170,7 @@ int strata::qwen35::run(int argc, char** argv) {
                          "       (--serve | --tokens IDS | --tokens-file F [--n 64] [--force IDS] [--dump-full-logits F] | "
                          "--bench-pp N --bench-tg N)\n"
                          "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
-                         "       [--side-stream]\n");
+                         "       [--side-stream] [--split-stage-copy]\n");
             return 2;
         }
     }
@@ -4214,6 +4236,7 @@ int strata::qwen35::run(int argc, char** argv) {
     E.fused_pattn = fused_pattn;
     E.chunked_gdn = chunked_gdn;
     E.side_on = side_stream;
+    E.split_copy = split_stage_copy;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
