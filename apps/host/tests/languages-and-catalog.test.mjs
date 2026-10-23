@@ -8,6 +8,25 @@ const english=catalogs.en;
 const slots=text=>[...text.matchAll(/\{\d+\}/g)].map(match=>match[0]).sort();
 const compiled=await build({stdin:{contents:"export * from './src/lib/i18n'; export * from './src/lib/native-catalog'; export * from './src/lib/session-title';",resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm'});
 const {tr,setTranslationLanguage,currentLanguage,localeTag,nativeCatalogModels,catalogVersionLabel,sessionTitle}=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+test('four navigation slash-command hints translate their labels without translating user titles',()=>{
+ const labels=['Model settings','Serving','Models','Skills'];
+ const chinese=['打开模型设置','打开 API 服务','打开模型','打开技能'];
+ try{
+  for(const language of languages){
+   setTranslationLanguage(language);
+   const expected=language==='zh'?chinese:labels.map(label=>{
+    const id=Object.keys(english).find(id=>english[id]===label);
+    return catalogs[language].s1242.replace('{0}',catalogs[language][id]);
+   });
+   assert.deepEqual(labels.map(label=>tr(`Open ${label}`)),expected,language);
+   for(const command of ['/tune','/serve','/model','/skills'])assert.equal(tr(command),command);
+   for(const title of ['Ready','Models notes','私のメモ']){
+    assert.equal(tr(`Open ${title}`),catalogs[language].s1242.replace('{0}',title));
+   }
+   assert.equal(tr('Open {0}',['Models']),catalogs[language].s1242.replace('{0}','Models'));
+  }
+ }finally{setTranslationLanguage('en');}
+});
 test('every language covers every interface key and preserves interpolation slots',()=>{
  for(const language of languages){
   assert.deepEqual(Object.keys(catalogs[language]),Object.keys(english),language);

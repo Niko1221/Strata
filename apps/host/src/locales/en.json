@@ -3526,5 +3526,9 @@
   "s9034": "Loading the model…",
   "s9035": "These model files are missing: {0}.",
   "s9036": "Press Download & load again to fetch them. Files that are already there are kept. If the same files are listed again, open Details and share them when you ask for help.",
-  "s9037": "This update was cut short when the app restarted. A later update finished, so nothing needs doing."
+  "s9037": "This update was cut short when the app restarted. A later update finished, so nothing needs doing.",
+  "s9038": "Open Model settings",
+  "s9039": "Open Serving",
+  "s9040": "Open Models",
+  "s9041": "Open Skills"
 }

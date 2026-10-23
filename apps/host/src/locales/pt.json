@@ -3526,5 +3526,9 @@
   "s9034": "Carregando o modelo…",
   "s9035": "Estes arquivos do modelo estão faltando: {0}.",
   "s9036": "Pressione Baixar e carregar de novo para buscá-los. Os arquivos que já estão aí são mantidos. Se os mesmos arquivos aparecerem de novo, abra os Detalhes e compartilhe-os ao pedir ajuda.",
-  "s9037": "Esta atualização foi interrompida quando o aplicativo reiniciou. Uma atualização posterior terminou, então não há nada a fazer."
+  "s9037": "Esta atualização foi interrompida quando o aplicativo reiniciou. Uma atualização posterior terminou, então não há nada a fazer.",
+  "s9038": "Abrir Configurações do modelo",
+  "s9039": "Abrir API",
+  "s9040": "Abrir Modelos",
+  "s9041": "Abrir Habilidades"
 }
