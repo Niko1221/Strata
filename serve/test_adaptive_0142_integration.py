@@ -38,6 +38,61 @@ class TopologyCleanupTests(unittest.TestCase):
 
 
 class AdaptiveStartupTests(unittest.TestCase):
+    def test_user_args_peer_and_helpers_cannot_bypass_ownership_guard(self):
+        for flag in ("--peer-device", "--expert-cache-remote", "--expert-cache-device1",
+                     "--expert-cache-device2", "--expert-cache-device3", "--remote-expert-opt",
+                     "--devices", "--layer-split"):
+            cfg = {"args": [], "gpu": 0, "coadaptive": {"tool_leases": {"enabled": True}},
+                   "user_args": [flag, "1"]}
+            with self.subTest(flag=flag):
+                for check in (server.validate_adaptive_startup, server.engine_args):
+                    with self.assertRaisesRegex(ValueError, "peer or helper"):
+                        check(cfg)
+
+    def test_user_args_only_live_memory_enables_early_ownership_guard(self):
+        cfg = {"args": [], "gpu": 0, "user_args": ["--live-memory"]}
+        self.assertTrue(server.adaptive_ownership_enabled(cfg))
+        self.assertEqual(server.engine_args(cfg), ["--live-memory"])
+        for extra in ({"gpu": [0, 1], "replicas": 2},
+                      {"user_args": ["--live-memory", "--peer-device", "1"]}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                server.validate_adaptive_startup({**cfg, **extra})
+
+    def test_valid_user_overrides_are_preserved_without_mutating_config(self):
+        cfg = {"args": ["--resident-budget-gib", "20", "--vram-reserve-mib", "448", "--spec", "2"],
+               "user_args": ["--vram-reserve-mib", "0", "--spec", "0"],
+               "gpu": 0, "coadaptive": {"tool_leases": {"enabled": True}}}
+        before = json.dumps(cfg, sort_keys=True)
+        self.assertEqual(server.engine_args(cfg),
+                         ["--resident-budget-gib", "20", "--vram-reserve-mib", "0", "--spec", "0"])
+        self.assertEqual(json.dumps(cfg, sort_keys=True), before)
+        ordinary = {"args": [], "user_args": ["--peer-device", "1"]}
+        self.assertFalse(server.adaptive_ownership_enabled(ordinary))
+        self.assertEqual(server.engine_args(ordinary), ["--peer-device", "1"])
+
+    def test_main_rejects_user_topology_before_native_or_vision_constructor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename, content in (("vocab.json", "{}"), ("merges.txt", ""), ("token_type.json", "[]")):
+                (root / filename).write_text(content)
+            for ownership in ({"coadaptive": {"tool_leases": {"enabled": True}}},
+                              {"user_args": ["--live-memory", "--peer-device", "1"]}):
+                cfg = {"args": [], "exe": "unused", "gpu": 0, "vision": {"exe": "unused"},
+                       "user_args": ["--peer-device", "1"], **ownership}
+                path = root / "run.json"
+                path.write_text(json.dumps(cfg))
+                with mock.patch.object(sys, "argv", ["server", "--engine", "strata", "--port", "0",
+                        "--config", str(path), "--tokenizer", directory]), \
+                        mock.patch.dict(sys.modules, {"strata_tokenizer": SimpleNamespace(
+                            Tokenizer=lambda *args: server.ByteTokenizer())}), \
+                        mock.patch.object(server, "hub_from_config", return_value=None), \
+                        mock.patch.object(server, "StrataEngine") as native, \
+                        mock.patch.object(server, "Vision") as vision:
+                    with self.assertRaisesRegex(SystemExit, "peer or helper"):
+                        server.main()
+                    native.assert_not_called()
+                    vision.assert_not_called()
+
     def test_replicas_rejected_before_any_constructor(self):
         options = ({"memory_policy": {"enabled": True, "mode": "reload"}},
                    {"memory_policy": {"enabled": True, "mode": "live"}},

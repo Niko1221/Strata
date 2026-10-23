@@ -3210,6 +3210,12 @@ _ADAPTIVE_OTHER_GPU_ARGS = ("--devices", "--peer-device", "--layer-split", "--ex
                             "--remote-expert-opt")
 
 
+def configured_engine_args(cfg: dict) -> list[str]:
+    """Apply explicit user options before both startup validation and construction."""
+    args = list(cfg.get("args", []))
+    return user_args.merge(args, cfg["user_args"]) if cfg.get("user_args") else args
+
+
 def adaptive_ownership_enabled(cfg: dict) -> bool:
     """Configuration-only check, before any native or vision process is constructed."""
     for key in ("memory_policy", "resource_presets", "coadaptive"):
@@ -3220,7 +3226,7 @@ def adaptive_ownership_enabled(cfg: dict) -> bool:
     if isinstance(coadaptive, dict) and any(isinstance(coadaptive.get(key), dict)
             and coadaptive[key].get("enabled") is True for key in ("request_parking", "idle_parking", "tool_leases")):
         return True
-    return "--live-memory" in cfg.get("args", [])
+    return "--live-memory" in configured_engine_args(cfg)
 
 
 def validate_adaptive_startup(cfg: dict, groups=None) -> None:
@@ -3232,7 +3238,7 @@ def validate_adaptive_startup(cfg: dict, groups=None) -> None:
         groups = gpu_groups(cfg)
     if groups:
         raise ValueError("adaptive memory and tool leases currently require one engine; replicas are not supported")
-    if len(gpu_list(cfg)) > 1 or any(flag in cfg.get("args", []) for flag in _ADAPTIVE_OTHER_GPU_ARGS):
+    if len(gpu_list(cfg)) > 1 or any(flag in configured_engine_args(cfg) for flag in _ADAPTIVE_OTHER_GPU_ARGS):
         raise ValueError("adaptive memory currently supports one GPU without peer or helper expert caches")
 
 
@@ -3241,11 +3247,9 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     validate_adaptive_startup(cfg)
-    args = list(cfg["args"])
     # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
-    if cfg.get("user_args"):
-        args = user_args.merge(args, cfg["user_args"])
+    args = configured_engine_args(cfg)
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
     # that writes --mtp back into the args cannot undo it, because this is applied at every start.
     if draft_layer.is_off(cfg):
