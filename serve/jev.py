@@ -323,18 +323,8 @@ def _handle_image_direct(svc, req: dict, mode: str, qdefs: list, b64: str) -> tu
             scores = readout_scores(row, variants)
         except ValueError as e:
             return _err("image_b64", f"logits readout failed: {e}")
-        pr_raw = softmax(scores)
-        pr = [round(x * 10000.0) / 10000.0 for x in pr_raw]
-        t = sum(pr)
-        if t > 0:
-            pr = [x / t for x in pr]
-        pr, calib_id = jev_calib.apply(qdef["type"], pr, "D")   # P0-1: per-tuple apply
-        answers[qdef["id"]] = answers_from_calibrated(qdef["type"], pr, calib_id)
-        jev_calib.log_enqueue({
-            "ts": int(time.time()),
-            "tuple": jev_calib.tuple_of("D", qdef["type"]),   # D = direct image readout
-            "qid": qdef["id"], "type": qdef["type"],
-            "raw_p": pr_raw})
+        # the direct image readout is the D tuple: same order as every other path, one implementation
+        answers[qdef["id"]] = _finish_answer(qdef, scores, image_state=True, mode_letter="D")
         in_tokens += len(ids)
         readouts += 1
     return 200, {"answers": answers,
@@ -513,7 +503,7 @@ def handle_then(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
     return 200, dec
 
 
-def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
+def _finish_answer(qdef, scores: list, image_state: bool, mode_letter: str | None = None) -> dict:
     """The donor order once the logits are in hand (server.cpp:1134-1142): unrounded softmax for the
     the calib log, round 4dp, renormalise, THEN the per-tuple calibrator.  One place, so the text and the
     image paths cannot drift apart in the order they apply it."""
@@ -522,11 +512,12 @@ def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
     t = sum(pr)
     if t > 0:
         pr = [x / t for x in pr]
-    pr, calib_id = jev_calib.apply(qdef["type"], pr, "S" if image_state else "L")
+    letter = mode_letter or ("S" if image_state else "L")
+    pr, calib_id = jev_calib.apply(qdef["type"], pr, letter)
     # M2 B1.1 log row (unrounded raw_p; donor schema minus label_mass, BROW is sparse)
     jev_calib.log_enqueue({
         "ts": int(time.time()),
-        "tuple": jev_calib.tuple_of("S" if image_state else "L", qdef["type"]),
+        "tuple": jev_calib.tuple_of(letter, qdef["type"]),
         "qid": qdef["id"],
         "type": qdef["type"],
         "raw_p": pr_raw,
@@ -537,7 +528,9 @@ def _finish_answer(qdef, scores: list, image_state: bool) -> dict:
 def _hybrid_enabled() -> bool:
     """M3.1 hybrid (pin + jevpos): per-field prompts (so nothing contaminates a later field and the readout
     position stays M3.0's) with the shared prefix pinned (so the state is read once) AND the cue row captured
-    during that read (so no decode step is needed for the readout).  Off by default until the accuracy /
+    during that read (so no decode step is needed for the readout).  It is INERT unless pinning is also
+    on (it needs a pinned shared prefix to capture from), so STRATA_JEV_HYBRID=1 with STRATA_JEV_PIN=0 does
+    nothing - the condition is explicit below rather than left to be discovered.  Off by default until the accuracy /
     confidence comparison against C says the prompt-window row is as good.  STRATA_JEV_HYBRID=1 turns it on."""
     import os
     return os.environ.get("STRATA_JEV_HYBRID", "0") not in ("0", "false", "False", "off", "")
@@ -600,6 +593,9 @@ def _row_readout_enabled() -> bool:
     return os.environ.get("STRATA_JEV_ROWS", "0") not in ("0", "false", "False", "off", "")
 
 
+MAX_NAMED_ROWS = 32          # the engine's own cap (req_jevpos.size() < 32); a longer list is DROPPED
+
+
 def _row_capture(engine) -> bool:
     """Can the engine keep head rows at named ABSOLUTE prompt positions?
 
@@ -615,6 +611,24 @@ def _row_capture(engine) -> bool:
     so an absolute position can never reach a window-relative read.
     """
     return getattr(engine, "info", {}).get("jevpos") == 1
+
+
+def _captured_count(engine):
+    """How many head rows the last request actually kept, or None when the engine cannot say."""
+    fn = getattr(engine, "captured_rows", None)
+    if not callable(fn):
+        return None
+    return int(fn())
+
+
+def _captured(engine, want: int) -> bool:
+    """True only when the engine kept EXACTLY the rows this request named.
+
+    BROWAT addresses captured rows by absolute position but falls back to addressing the last window when
+    nothing was captured - and a window index read from a prompt position is a neighbouring row, answered
+    silently.  Naming N positions and verifying N were kept is the only thing that keeps that impossible.
+    """
+    return _captured_count(engine) == want
 
 
 def consolidated_rows(svc, state_text: str, qdefs: list):
@@ -687,8 +701,9 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
         # M3.1 fix B (jevpos, opt-in): text L-mode with more than one field - ONE prompt read, one head row
         # kept per field, instead of one prompt per field.  Falls back to the per-question path whenever the
         # engine cannot serve it (no jevpos, a template whose seam moves, a tokenizer that merges).
-        if (_row_readout_enabled() and len(qdefs) > 1 and not v_mode and not image_state
-                and _row_capture(engine) and hasattr(engine, "row_logits_at")):
+        if (_row_readout_enabled() and 1 < len(qdefs) <= MAX_NAMED_ROWS and not v_mode and not image_state
+                and _row_capture(engine) and hasattr(engine, "row_logits_at")
+                and hasattr(engine, "captured_rows")):
             plan = consolidated_rows(svc, state_text, qdefs)
             rows = None
             if plan is not None:
@@ -697,6 +712,12 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 # one read, and the rows named in the same request; nothing extends this turn, so no checkpoint
                 for _ in engine.generate(ids, 1, {"jevpos": rows, "strata_checkpoint": False}, cancel):
                     pass
+                if not _captured(engine, len(rows)):
+                    # the named rows were NOT kept (a dropped list, or a position no window ran): BROWAT
+                    # would address the last window instead and answer a neighbouring row, so do not read
+                    print(f"[jev-rows] falling back to one prompt per field: the engine kept "
+                          f"{_captured_count(engine)} rows for {len(rows)} named positions", flush=True)
+                    rows = None
             if plan is not None and rows is not None:
                 for qdef, row_at in zip(qdefs, rows):
                     variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
@@ -791,7 +812,7 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
             # The cue is the prompt's last token, named to the same request that reads the prompt, so the
             # engine keeps that row (`jevpos=`) and BROWAT reads it back by absolute position.  If the
             # engine cannot capture (`_row_capture` false) this branch is not taken at all.
-            use_cue = cue is not None
+            use_cue = cue is not None and _captured(engine, 1)
             row = (engine.row_logits_at(cue, tokens) if use_cue
                    else engine.final_row_logits(ids, tokens))   # captured row, or BROW on the decode window
             try:

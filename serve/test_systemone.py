@@ -101,6 +101,7 @@ class DecisionEngine(MockEngine):
         self.max_news: list[int] = []        # the max_new of each generate
         self.info = {"jevpos": 1}            # the engine build advertises row capture (fix B)
         self.window_rows = None              # None: the last prompt was read in ONE window
+        self.capture_ok = True               # False: the engine kept no rows (a dropped jevpos list)
         self.final_reads = 0                 # how often the final-row (BROW) read was used
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
@@ -114,6 +115,11 @@ class DecisionEngine(MockEngine):
         self.final_reads += 1
         return {t: self.ROW[t] for t in tokens if t in self.ROW}
 
+    def captured_rows(self):
+        """BROWCAP: how many head rows the last request kept for the positions it named."""
+        named = (self.pins[-1].get("jevpos") or []) if self.pins else []
+        return len(named) if self.capture_ok else 0
+
     def brow_rows(self):
         """BROWROWS: the row count of the LAST window.  A prompt the engine chunked is read in more
         than one window, so this is NOT the prompt length then - tests set `window_rows` to say so."""
@@ -126,6 +132,26 @@ class DecisionEngine(MockEngine):
         # mock proves the WIRING (one read, one row per field, same math) - the row's real value is live.
         self.rows_read.append(int(row))
         return {t: self.ROW[t] for t in tokens if t in self.ROW}
+
+
+class _SeamTok:
+    def encode(self, text, parse_special=True):
+        return [ord(c) for c in text]
+
+
+class _BreakingTemplate:
+    """Renders a prompt whose FIRST bytes change once the conversation grows - exactly the seam move the
+    prefix check exists to catch (a BPE merge or a template quirk shifts every later position by a token)."""
+
+    def render(self, messages, add_generation_prompt=True, enable_thinking=False):
+        body = "".join(m["role"] + ":" + m["content"] + "|" for m in messages)
+        return ("<<" if len(messages) > 3 else "") + body
+
+
+class _FakeSvc:
+    def __init__(self, template):
+        self.tok = _SeamTok()
+        self.template = template
 
 
 def start_server():
@@ -246,6 +272,25 @@ class BrowWire(unittest.TestCase):
             self.assertIn("BROWROWSD", str(e))
 
 
+class ConsolidatedSeam(unittest.TestCase):
+    """consolidated_rows() must refuse to hand back row numbers when the later prompt does not extend the
+    earlier one byte-for-byte: a row read one token off answers the wrong question while looking fine."""
+
+    Q = [{"id": "q1", "type": "noul", "instructions": "Is it on?", "labels": ["No", "Yes"],
+          "descriptions": ["", ""], "render_labels": []},
+         {"id": "q2", "type": "noul", "instructions": "Is it off?", "labels": ["No", "Yes"],
+          "descriptions": ["", ""], "render_labels": []}]
+
+    def test_a_stable_seam_yields_one_row_per_field(self):
+        ids, rows = jev.consolidated_rows(_FakeSvc(_BreakingTemplate()), "STATE", self.Q[:1])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0], len(ids) - 1)
+
+    def test_a_moving_seam_returns_none(self):
+        self.assertIsNone(jev.consolidated_rows(_FakeSvc(_BreakingTemplate()), "STATE", self.Q),
+                          "a seam that moves must not produce row numbers")
+
+
 class StatePin(unittest.TestCase):
     """M3.1 fix C (state parking): N fields on one state send pin=<shared prefix>, so the engine reads the
     state once and every later field reads only its own question turn.
@@ -354,6 +399,7 @@ class RowReadout(unittest.TestCase):
         self.engine.rows_read.clear()
         self.engine.window_rows = None
         self.engine.final_reads = 0
+        self.engine.capture_ok = True
         self.engine.__dict__.pop("brow_rows", None)   # a test may shadow the method; unshadow it
 
     def tearDown(self):
@@ -408,6 +454,46 @@ class RowReadout(unittest.TestCase):
 
 
 
+    def test_rows_path_falls_back_when_the_engine_kept_no_rows(self):
+        """BROWAT addresses the last WINDOW when nothing was captured, so a prompt position would be read
+        as a window index - a neighbouring row, silently.  A request whose rows were not kept must fall
+        back instead of reading them."""
+        self.engine.capture_ok = False
+        st, body = self._post(self.TWO)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 3, "one consolidated read + one per field")
+        self.assertEqual(self.engine.rows_read, [], "no absolute position was read off window addressing")
+        self.assertEqual(self.engine.final_reads, 2)
+        self.assertEqual(len(body["answers"]), 2)
+
+    def test_a_label_that_is_not_one_token_is_refused_at_the_http_surface(self):
+        """#3643's contract: a multi-token label must be a 422 on the question, not a score read off a
+        truncated encoding.  The readout encodes each label and takes [:1], so a two-token label would
+        otherwise be scored on its first token and look fine."""
+        from unittest import mock
+        real = ByteTokenizer.encode
+
+        def two_tokens(self, text, parse_special=True):
+            ids = real(self, text, parse_special)
+            return ids * 2 if text == "A" else ids
+
+        with mock.patch.object(ByteTokenizer, "encode", two_tokens):
+            st, body = self._post({"q": {"type": "choice", "instructions": "Pick one.",
+                                         "criteria": {"alpha": 1, "beta": 2}}})
+        self.assertEqual(st, 422)
+        self.assertEqual(body["error"]["field"], "questions.q.criteria")
+        self.assertIn("one token", body["error"]["message"])
+
+    def test_more_than_32_fields_never_take_the_row_path(self):
+        """The engine drops a jevpos list longer than 32, and a dropped list means no capture: the path must
+        not run at all rather than answer from window rows."""
+        many = {f"q{i}": {"type": "noul", "instructions": f"Is {i} set?"} for i in range(33)}
+        st, body = self._post(many)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self.engine.prompts), 33, "one prompt per field, not one consolidated read")
+        self.assertFalse(any("jevpos" in p for p in self.engine.pins))
+        self.assertEqual(len(body["answers"]), 33)
+
     def test_one_field_never_takes_the_one_prompt_path(self):
         st, _ = self._post({"q1": {"type": "noul", "instructions": "Is it on?"}})
         self.assertEqual(st, 200)
@@ -456,6 +542,7 @@ class Hybrid(unittest.TestCase):
         self.engine.rows_read.clear()
         self.engine.window_rows = None
         self.engine.final_reads = 0
+        self.engine.capture_ok = True
         self.engine.__dict__.pop("brow_rows", None)   # a test may shadow the method; unshadow it
         self.engine.max_news.clear()
 
@@ -488,6 +575,16 @@ class Hybrid(unittest.TestCase):
         self.assertIs(self.engine.pins[1].get("strata_checkpoint"), False,
                       "later fields resume from it and park nothing")
 
+
+    def test_a_dropped_capture_reads_the_final_row(self):
+        """The cue only exists if the engine kept it.  No capture -> BROWAT would address the last window,
+        whose rows start at that window's first token; read the final row instead."""
+        self.engine.capture_ok = False
+        st, body = self._post(self.THREE)
+        self.assertEqual(st, 200)
+        self.assertEqual(self.engine.rows_read, [])
+        self.assertEqual(self.engine.final_reads, 3)
+        self.assertEqual(len(body["answers"]), 3)
 
     def test_answers_are_unchanged(self):
         _, on = self._post(self.THREE)

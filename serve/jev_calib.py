@@ -82,6 +82,14 @@ def _strict_problem(j: dict) -> str:
     if unknown:
         return (f"keys {sorted(unknown)} are not read by the loader (expected "
                 f"a_noul/c_noul/T_choice/T_score) - those values would be silently dropped")
+    for f in ("a_noul", "c_noul"):            # json accepts NaN/Infinity literals: a NaN slope makes every
+        if f in j:                             # noul answer NaN while the file still "loads clean"
+            try:
+                v = float(j[f])
+            except (TypeError, ValueError):
+                return f"{f} is not a number"
+            if not math.isfinite(v) or abs(v) > 50.0:
+                return f"{f}={v!r} is not a usable Platt parameter"
     for f in ("T_choice", "T_score"):
         if f in j:
             try:
