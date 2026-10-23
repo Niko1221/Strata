@@ -105,7 +105,8 @@ def start_of(p):
     # sleeps), so including it made this token disagree with the one taken at start and the watcher
     # spared the child it was meant to end.
     try:
-        raw = open("/proc/%d/stat" % p, "rb").read().decode("utf-8", "replace")
+        with open("/proc/%d/stat" % p, "rb") as f:   # closed explicitly: start_of runs up to 42 times per child
+            raw = f.read().decode("utf-8", "replace")
         fields = raw[raw.rindex(")") + 2:].split()
         if fields[0] == "Z":                       # exited; only its parent has not collected it
             return None
@@ -163,7 +164,12 @@ def _start_token(pid: int) -> str:
             rest = fields[fields.rindex(")") + 2:].split()
             return "" if rest[0] == "Z" else "l:" + rest[19]      # starttime, clock ticks since boot
         except (OSError, ValueError, IndexError):
-            return ""                                             # no such process (or no /proc)
+            # procfs IS there and the entry is not readable: the process is gone (or is not ours), and there is
+            # nothing to fall back to. Without procfs at all, fall through to `ps` - otherwise this side would
+            # return "" while the watcher's start_of() returns "p:...", the two can never match, and the child
+            # outlives the server: exactly the failure this change removes, restored for that environment.
+            if os.path.exists("/proc/self/stat"):
+                return ""
     try:
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
                              timeout=5).stdout.strip()

@@ -75,7 +75,7 @@ def start_token(pid: int) -> str | None:
                              timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
-    return None if not out or out.endswith("Z") else "s:" + out
+    return None if not out or out.endswith("Z") else "s:" + out.rsplit(None, 1)[0]
 
 
 def started_epoch(pid: int) -> float | None:

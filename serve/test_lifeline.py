@@ -118,14 +118,28 @@ class Lifeline(unittest.TestCase):
         (S), the token must be the same either way.
         """
         from serve import lifeline
-        child = lifeline.popen([sys.executable, "-c",
-                                "import time\nend = time.time() + 1.5\nwhile time.time() < end:\n    pass\n"
-                                "time.sleep(30)"], "engine")
+        from unittest import mock
+        # in-process popen() means procs.write_record() would use the REAL per-user state dir; setUp's env only
+        # reaches subprocesses. Keep this test's launch record in the temp dir like the other cases.
+        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": self.temp.name, "LOCALAPPDATA": self.temp.name}):
+            child = lifeline.popen([sys.executable, "-c",
+                                    "import time\nend = time.time() + 1.5\nwhile time.time() < end:\n    pass\n"
+                                    "time.sleep(30)"], "engine")
         self.spawned.append(child.pid)
         self.addCleanup(lambda: child.poll() is None and child.kill())
+
+        def state():
+            """The child's state character, read independently of the code under test ('R' running, 'S' asleep)."""
+            out = subprocess.run(["ps", "-o", "stat=", "-p", str(child.pid)], capture_output=True, text=True).stdout
+            return out.strip()[:1]
+
         while_spinning = lifeline._start_token(child.pid)
+        spinning_state = state()
         time.sleep(2.0)                                        # asleep by now
         while_sleeping = lifeline._start_token(child.pid)
+        sleeping_state = state()
+        self.assertEqual((spinning_state, sleeping_state), ("R", "S"),
+                         "the child did not go from running to sleeping, so this proves nothing about the token")
         self.assertTrue(while_spinning and while_sleeping, (while_spinning, while_sleeping))
         self.assertEqual(while_spinning, while_sleeping,
                          "the token moved with the child's state, so the watcher would skip the kill")
