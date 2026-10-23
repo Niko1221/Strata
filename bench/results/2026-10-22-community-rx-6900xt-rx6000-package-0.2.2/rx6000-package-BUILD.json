@@ -1,0 +1,18 @@
+{
+ "version": "0.1.47",
+ "source": "f-amd-vision 76f90e58436d",
+ "variant": "rx6000",
+ "archs": [
+  "gfx1030",
+  "gfx1031"
+ ],
+ "portable": true,
+ "vision": "gpu",
+ "vision_cpu": "strata-vision",
+ "vision_gpu": "strata-vision-hip",
+ "vision_archs": [
+  "gfx1030",
+  "gfx1031"
+ ],
+ "hipblaslt_version": 100400
+}
