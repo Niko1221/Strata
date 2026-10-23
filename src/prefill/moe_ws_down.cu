@@ -434,6 +434,177 @@ __global__ void __launch_bounds__(NT, 1) dn_kernel(const Chunk* __restrict__ chu
             if (t < nt) dst[(size_t) (trow0 + t) * DN_ROWS + r0 + threadIdx.x] = acc[t];
     }
 }
+
+// ---- STRATA_WS_FAST=1 (ws::fast(), moe_ws.hpp): the 256 x 32 tier (2-block steps, pairs of tokens) with fewer
+// instructions per pass, the same Dm rows bit for bit: every token's operations and their order are dn_kernel's.
+// (Prototyped as a bench variant on one GP100 die: memcmp-equal to dn_kernel on real IQ4_NL layers at T 1024 and
+// 1536, lognormal sigma 0.5 / 1.0 and a flat-32 control; 4.7-9.2% faster, 122 -> 102 registers, still two CTAs per
+// SM.  moe_ws_down_bench checks and times it against dn_kernel.)
+//   DUFF  a switch on the number of token pairs falls through the 16 unrolled pairs (a jump table) instead of a guard
+//         per pair and block
+//   DYT   dy as [block][token]: a pair's two dy in one LDS.64
+template <int NT, int TPP, int SB, int G, int PAR>
+__device__ __forceinline__ void blk_compute_fast(const int* __restrict__ cw, const int p, const uint32_t (&tab)[4],
+                                                 const int (*act_s)[SB][16], const float* __restrict__ dyb, const int nt,
+                                                 float (&acc)[TPP]) {
+    static_assert(TPP / G == 16 && G == 2, "the switch below: 16 token pairs");
+    const int b = 2 * p + PAR;   // block within the step
+    int wv[16];
+    float dx;
+    {
+        int q[4];
+        dx = load_blk<PAR>(cw, p, q);
+        dec(q, tab, wv);
+    }
+    // pairs past nt's run on stale shared memory and are not written, as dn_kernel's
+    auto grp = [&](auto K) {
+        constexpr int t0 = decltype(K)::value * G;
+        const float2 d2 = *(const float2*) &dyb[b * TPP + t0];
+#pragma unroll
+        for (int t = t0; t < t0 + G; ++t) {
+            const int4* a4 = (const int4*) act_s[t][b];
+            const int4 a0 = a4[0], a1 = a4[1], a2 = a4[2], a3 = a4[3];
+            int s0 = 0;
+            s0 = mad2(wv[0], a0.x, s0); s0 = mad2(wv[1], a0.y, s0); s0 = mad2(wv[2], a0.z, s0); s0 = mad2(wv[3], a0.w, s0);
+            s0 = mad2(wv[4], a1.x, s0); s0 = mad2(wv[5], a1.y, s0); s0 = mad2(wv[6], a1.z, s0); s0 = mad2(wv[7], a1.w, s0);
+            s0 = mad2(wv[8], a2.x, s0); s0 = mad2(wv[9], a2.y, s0); s0 = mad2(wv[10], a2.z, s0); s0 = mad2(wv[11], a2.w, s0);
+            s0 = mad2(wv[12], a3.x, s0); s0 = mad2(wv[13], a3.y, s0); s0 = mad2(wv[14], a3.z, s0); s0 = mad2(wv[15], a3.w, s0);
+            acc[t] = __fmaf_rn(__fmul_rn(dx, t == t0 ? d2.x : d2.y), __int2float_rn(s0), acc[t]);
+        }
+    };
+    using std::integral_constant;
+    switch ((nt + G - 1) / G) {
+        case 16: grp(integral_constant<int, 15>{}); [[fallthrough]];
+        case 15: grp(integral_constant<int, 14>{}); [[fallthrough]];
+        case 14: grp(integral_constant<int, 13>{}); [[fallthrough]];
+        case 13: grp(integral_constant<int, 12>{}); [[fallthrough]];
+        case 12: grp(integral_constant<int, 11>{}); [[fallthrough]];
+        case 11: grp(integral_constant<int, 10>{}); [[fallthrough]];
+        case 10: grp(integral_constant<int, 9>{}); [[fallthrough]];
+        case 9: grp(integral_constant<int, 8>{}); [[fallthrough]];
+        case 8: grp(integral_constant<int, 7>{}); [[fallthrough]];
+        case 7: grp(integral_constant<int, 6>{}); [[fallthrough]];
+        case 6: grp(integral_constant<int, 5>{}); [[fallthrough]];
+        case 5: grp(integral_constant<int, 4>{}); [[fallthrough]];
+        case 4: grp(integral_constant<int, 3>{}); [[fallthrough]];
+        case 3: grp(integral_constant<int, 2>{}); [[fallthrough]];
+        case 2: grp(integral_constant<int, 1>{}); [[fallthrough]];
+        case 1: grp(integral_constant<int, 0>{}); [[fallthrough]];
+        default: break;
+    }
+}
+
+// dn_kernel with blk_compute_fast and dy_s as [SB][TPP]; everything else is dn_kernel's
+template <int NT, int TPP, int SB, int G>
+__global__ void __launch_bounds__(NT, 1) dn_kernel_fast(const Chunk* __restrict__ chunks, const char* __restrict__ w,
+                                                        const int64_t* __restrict__ xoff, const int64_t xadd,
+                                                        const block_q8_1_mmq* __restrict__ xq, const int total_rows,
+                                                        float* __restrict__ dst) {
+    static_assert((SB == 2 || SB == 4) && NT % 32 == 0 && TPP % G == 0, "");
+    constexpr int NW = NT / 32, WPS = 9 * SB / 2, S = WPS | 1, NSTEP = NB / SB, PIECES = DN_ROWS / NT;
+    constexpr int KI = (NT + 3 * NW - 1) / (3 * NW);
+    constexpr int AW = 9 * SB;                     // activation words per token and step (SB d + 8 SB qs words)
+    constexpr int AI = (TPP * AW + NT - 1) / NT;
+    using PT = typename std::conditional<SB == 4, int2, int>::type;
+    __shared__ int wsm[NT * S];
+    __shared__ __align__(16) int act_s[TPP][SB][16];
+    __shared__ __align__(8) float dy_s[SB * TPP];  // [SB][TPP]: dy of token t, block b at b * TPP + t
+    uint32_t tab[4];
+    load_tab(tab);
+    int r0;
+    const Chunk c = cta_work<PIECES, NT>(chunks, r0);
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    const int sub = lane / 9, pc = lane - 9 * sub;   // sub 3: lanes 27-31, idle
+    const int srow0 = 3 * warp + sub;
+    const bool sact = sub < 3;
+    const char* __restrict__ Wg = w + xoff[c.j] + xadd + (size_t) (r0 + srow0) * ROWB + pc * (int) sizeof(PT);
+    int* __restrict__ ws_st = wsm + srow0 * S + pc * (int) (sizeof(PT) / 4);
+    PT pre[KI];
+    int apre[AI];
+    auto load_w = [&](const int st) {
+        if (sact) {
+            const char* g = Wg + st * (SB * BB);
+#pragma unroll
+            for (int k = 0; k < KI; ++k)
+                if (k < KI - 1 || srow0 + 3 * NW * k < NT) pre[k] = __ldg((const PT*) (g + (size_t) k * 3 * NW * ROWB));
+        }
+    };
+    auto store_w = [&]() {
+        if (sact) {
+#pragma unroll
+            for (int k = 0; k < KI; ++k)
+                if (k < KI - 1 || srow0 + 3 * NW * k < NT) {
+                    if constexpr (SB == 4) {
+                        ws_st[k * 3 * NW * S] = pre[k].x;
+                        ws_st[k * 3 * NW * S + 1] = pre[k].y;
+                    } else {
+                        ws_st[k * 3 * NW * S] = pre[k];
+                    }
+                }
+        }
+    };
+    auto load_a = [&](const int st, const int trow0, const int nt) {
+        const int kb = (st * SB) >> 2, b0 = (st * SB) & 3;
+#pragma unroll
+        for (int i = 0; i < AI; ++i) {
+            const int idx = threadIdx.x + i * NT;
+            if (idx < nt * AW) {
+                const int t = idx / AW, wd = idx - t * AW;
+                const int* blk = (const int*) (xq + (size_t) kb * total_rows + trow0 + t);
+                apre[i] = __ldg(blk + (wd < SB ? b0 + wd : 4 + 8 * b0 + (wd - SB)));
+            }
+        }
+    };
+    auto store_a = [&](const int nt) {
+#pragma unroll
+        for (int i = 0; i < AI; ++i) {
+            const int idx = threadIdx.x + i * NT;
+            if (idx < nt * AW) {
+                const int t = idx / AW, wd = idx - t * AW;
+                if (wd < SB) {
+                    dy_s[wd * TPP + t] = __int_as_float(apre[i]);
+                } else {
+                    const int m = wd - SB, bb = m >> 3, mm = m & 7;
+                    int lo, hi;
+                    split01(apre[i], lo, hi);
+                    *(int2*) &act_s[t][bb][2 * mm] = make_int2(lo, hi);
+                }
+            }
+        }
+    };
+    load_w(0);
+    load_a(0, c.row0, min(TPP, c.rows));
+    const int* cw = wsm + threadIdx.x * S;
+    for (int p0 = 0; p0 < c.rows; p0 += TPP) {
+        const int nt = min(TPP, c.rows - p0);
+        const int trow0 = c.row0 + p0;
+        float acc[TPP];
+#pragma unroll
+        for (int t = 0; t < TPP; ++t) acc[t] = 0.0f;
+#pragma unroll 1
+        for (int st = 0; st < NSTEP; ++st) {
+            __syncthreads();
+            store_w();
+            store_a(nt);
+            __syncthreads();
+            if (st + 1 < NSTEP) {
+                load_w(st + 1);
+                load_a(st + 1, trow0, nt);
+            } else if (p0 + TPP < c.rows) {
+                load_w(0);
+                load_a(0, trow0 + TPP, min(TPP, c.rows - p0 - TPP));
+            }
+#pragma unroll 1
+            for (int p = 0; p < SB / 2; ++p) {
+                blk_compute_fast<NT, TPP, SB, G, 0>(cw, p, tab, act_s, dy_s, nt, acc);
+                blk_compute_fast<NT, TPP, SB, G, 1>(cw, p, tab, act_s, dy_s, nt, acc);
+            }
+        }
+#pragma unroll
+        for (int t = 0; t < TPP; ++t)
+            if (t < nt) dst[(size_t) (trow0 + t) * DN_ROWS + r0 + threadIdx.x] = acc[t];
+    }
+}
 }  // namespace nl4
 
 }  // namespace
@@ -449,8 +620,9 @@ void dn_q2_0(const Layer& L, double u, cudaStream_t s) {
     ck(cudaGetLastError(), "down Q2_0");
 }
 
-// IQ4_NL: 128 rows x 8 tokens (4-block steps) below 5 rows per expert, 256 x 16 below 20, then 256 x 32 (2-block steps)
-void dn_iq4_nl(const Layer& L, double u, cudaStream_t s) {
+// IQ4_NL: 128 rows x 8 tokens (4-block steps) below 5 rows per expert, 256 x 16 below 20, then 256 x 32 (2-block steps);
+// `fast` (STRATA_WS_FAST=1): the 256 x 32 tier runs dn_kernel_fast instead - the same Dm rows
+void dn_iq4_nl(const Layer& L, double u, cudaStream_t s, bool fast) {
     if (L.nchunks <= 0) return;
     const char* w = (const char*) L.w;
     const block_q8_1_mmq* x = (const block_q8_1_mmq*) L.hq;
@@ -460,6 +632,10 @@ void dn_iq4_nl(const Layer& L, double u, cudaStream_t s) {
     else if (u < 20.0)
         nl4::dn_kernel<256, 16, 4, 2><<<(unsigned) (L.nchunks * (DN_ROWS / 256)), 256, 0, s>>>(L.chunks, w, L.xoff, L.down_off, x,
                                                                                              (int) L.rows, L.dm);
+    else if (fast)
+        nl4::dn_kernel_fast<256, 32, 2, 2><<<(unsigned) (L.nchunks * (DN_ROWS / 256)), 256, 0, s>>>(L.chunks, w, L.xoff,
+                                                                                                  L.down_off, x,
+                                                                                                  (int) L.rows, L.dm);
     else
         nl4::dn_kernel<256, 32, 2, 2><<<(unsigned) (L.nchunks * (DN_ROWS / 256)), 256, 0, s>>>(L.chunks, w, L.xoff, L.down_off, x,
                                                                                              (int) L.rows, L.dm);

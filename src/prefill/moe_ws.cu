@@ -6,6 +6,7 @@
 #include "moe_ws.cuh"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -63,6 +64,22 @@ int mode() {
 
 bool supported(int gt, int dt) { return mode() != 0 && gu_type(gt) && (dt == GGML_TYPE_Q2_0 || dt == GGML_TYPE_IQ4_NL); }
 
+namespace {
+std::atomic<int> g_fast_override{-1};   // set_fast (benches, tests); -1: the environment
+}  // namespace
+
+int fast() {
+    const int o = g_fast_override.load(std::memory_order_relaxed);
+    if (o >= 0) return o;
+    static const int f = [] {
+        const char* e = std::getenv("STRATA_WS_FAST");   // opt-in
+        return e != nullptr && std::atoi(e) == 1 ? 1 : 0;
+    }();
+    return f;
+}
+
+void set_fast(int v) { g_fast_override.store(v < 0 ? -1 : (v != 0 ? 1 : 0), std::memory_order_relaxed); }
+
 bool faster(int t, double u) {
     const Measured* m = measured(t);
     if (m == nullptr) return false;
@@ -118,7 +135,19 @@ void down(const Layer& L, void* stream) {
     const cudaStream_t s = (cudaStream_t) stream;
     switch (L.d_type) {
         case GGML_TYPE_Q2_0: detail::dn_q2_0(L, u, s); break;
-        case GGML_TYPE_IQ4_NL: detail::dn_iq4_nl(L, u, s); break;
+        case GGML_TYPE_IQ4_NL: {
+            const bool f = fast() == 1;
+            if (f) {   // once per process: the switch is on and the WS path runs
+                static const bool said = [] {
+                    std::fprintf(stderr, "strata prefill: STRATA_WS_FAST=1: the weight-stationary IQ4_NL down's 32-token "
+                                         "tier with switched token pairs and transposed dy (the same Dm bits)\n");
+                    return true;
+                }();
+                (void) said;
+            }
+            detail::dn_iq4_nl(L, u, s, f);
+            break;
+        }
         default:
             std::fprintf(stderr, "prefill ws: down type %d has no kernel\n", L.d_type);
             std::exit(1);

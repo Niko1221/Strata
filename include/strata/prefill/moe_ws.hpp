@@ -20,6 +20,12 @@ namespace strata::prefill::ws {
 int mode();
 /// mode() != 0 and both formats have kernels.
 bool supported(int gu_type, int d_type);
+/// STRATA_WS_FAST=1 (opt-in, read once): the IQ4_NL down's 32-token tier (u >= 20 rows per routed expert) runs a
+/// kernel that issues fewer instructions per pass - a switch into the unrolled token pairs, dy transposed - with every
+/// token's operations and their order unchanged, so Dm is the same bits.  0 (unset): the kernels as before.
+int fast();
+/// Benches and tests: 0 / 1 overrides fast(), -1 goes back to the environment.
+void set_fast(int v);
 /// The weight-stationary product of `ggml_type` beats the per-group MMQ at u rows per routed expert (the measured
 /// ratios, moe_ws.cu; u is clamped to the measured 2.5 .. 160).
 bool faster(int ggml_type, double u);
