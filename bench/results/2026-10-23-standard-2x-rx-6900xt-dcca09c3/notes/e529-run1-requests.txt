@@ -1,0 +1,6 @@
+0 A-greedy-nothink     10.6 s  completion 512 finish=length
+1 B-greedy-think        9.8 s  completion 512 finish=length
+2 C-proto-sampled      11.1 s  completion 512 finish=length
+3 C-proto-sampled      11.1 s  completion 512 finish=length
+4 B-greedy-think        9.7 s  completion 512 finish=length
+5 A-greedy-nothink     10.2 s  completion 512 finish=length
