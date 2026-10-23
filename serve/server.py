@@ -82,6 +82,7 @@ from serve.responses import ResponsesError, error_body as responses_error_body  
 from serve import images as images_api  # noqa: E402
 from serve import grammar as grammar_api  # noqa: E402
 from serve import grammar_schema as grammar_conv  # noqa: E402
+from serve import grammar_tools  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -6994,6 +6995,15 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
+            # #3862: a grammar-capable engine can spell the call itself - the grammar carries the template
+            # serialization, so the prompt keeps no directive, the reply needs no forced prefix, and a model
+            # cannot write a broken call. MCP stays on the prompt path (hosted tool schemas are not
+            # validated here) and the response says which method ran.
+            tool_grammar, tool_method = grammar_tools.plan_tool_grammar(
+                svc.engine, tools, req.get("tool_choice"), req.get("strata_mcp") is True,
+                kw.get("enable_thinking", True) is not False)
+            if tool_grammar is not None:
+                force = None                    # the grammar opens the call; a forced prefix would double it
             # #3862: a grammar-capable engine constrains response_format in the sampler; the prompt directive
             # and the buffered validation ride along only when it cannot (the prompt path is the fallback).
             grammar_text, messages, validator = grammar_conv.plan_response_format(
@@ -7025,6 +7035,8 @@ def make_handler(svc: Service):
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
             if grammar_text is not None:                      # #3862: register once per engine generation; the
                 req["grammar"] = svc.engine.ensure_grammar(grammar_text)    # request carries the hash
+            elif tool_grammar is not None:                    # ... and so does the tool-call grammar
+                req["grammar"] = svc.engine.ensure_grammar(tool_grammar)
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -7038,7 +7050,10 @@ def make_handler(svc: Service):
                 chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
-                return self._json(200, openai_collect(chunks))
+                reply = openai_collect(chunks)
+                if tool_method is not None:   # the prompt path took an MCP turn on a grammar-capable engine:
+                    reply["strata"] = {"structured_output": {"method": tool_method}}    # the reply says which
+                return self._json(200, reply)
             self._sse()
             try:
                 for c in chunks:
@@ -7207,6 +7222,11 @@ def make_handler(svc: Service):
                     svc.engine, responses_api.text_format(req), messages, with_tools=bool(tools))
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
+            tool_grammar = None
+            if validator is None:                             # text.format's grammar owns the one slot
+                tool_grammar, _method = grammar_tools.plan_tool_grammar(
+                    svc.engine, tools, req.get("tool_choice"), False,
+                    kw.get("enable_thinking", True) is not False)
             noted = svc.__dict__.setdefault("hosted_tools_noted", set())   # said once per tool, not per request
             if set(skipped) - noted:
                 print(f"[strata] /v1/responses: left out the hosted tools {', '.join(sorted(set(skipped) - noted))} "
@@ -7229,6 +7249,8 @@ def make_handler(svc: Service):
             svc.load()
             if grammar_text is not None:                      # #3862: register once per engine generation
                 req["grammar"] = svc.engine.ensure_grammar(grammar_text)
+            elif tool_grammar is not None:                    # ... and so does the tool-call grammar
+                req["grammar"] = svc.engine.ensure_grammar(tool_grammar)
             # #924 (opt-in): a Codex compaction request is rendered with its conversation's tools, so its prompt
             # starts as the cached one did; the parser and the response keep the request's own tools
             shown = responses_api.prompt_tools(req, tools) if svc.codex_compaction_cache else tools
@@ -7273,10 +7295,19 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)        # "any" / {"type": "tool", "name": N}
+            # #3862: the tool-call grammar, as on the OpenAI route (the tools ride the OpenAI shape,
+            # anthropic_to_messages maps input_schema to parameters).
+            tool_grammar, _method = grammar_tools.plan_tool_grammar(
+                svc.engine, tools, req.get("tool_choice"), False,
+                kw.get("enable_thinking", True) is not False)
+            if tool_grammar is not None:
+                force = None                    # the grammar opens the call; a forced prefix would double it
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            if tool_grammar is not None:
+                req["grammar"] = svc.engine.ensure_grammar(tool_grammar)
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
