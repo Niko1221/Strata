@@ -286,6 +286,11 @@ on the `strata-q36` command line.
   1.20e-2, median 2.0e-3, p99 0.078, max 0.97 (the 14K prompt: mean 2.3e-2, max 0.97, top-1 58 of 65 steps; the controls are
   `--prefill 1024` with mean 8.9e-3 and max 0.51, and the accepted prefetch opt-ins with mean 2.2e-2 and max 1.95). Chunks of 9-33
   rows are a few microseconds per layer slower than the default kernel. Measured on a Core Ultra 9 285K with 61 GB DDR5-6800.
+- **`--async-swaps`**, **`--async-after-prompt`**: the expert slots' swaps (every 32 decode rows, `--decode-swaps`; and after a prompt read, up to
+  2048) copy on a copy stream instead of stopping the engine stream and the host, into the slot of an expert that already left the table;
+  the new expert enters the tables only once its copy has landed (checked at the start of the next forward), so no slot is read before its
+  bytes arrived. `--async-swaps` takes the decode ones, `--async-after-prompt` the after-prompt ones too (see "Slot swaps" below). They need
+  the pinned expert copy.
 - **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
   hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
   end the experts in the slots then, ranked by the routing counted since the warm-up, are saved to F (a `.tmp` beside it renamed over
@@ -300,11 +305,27 @@ on the `strata-q36` command line.
   host memory the GPU reads and writes in place instead of four copies per layer (each costs the stream 2-3 us). The same bytes.
 - **`--decode-swaps N`** (hybrid mode): how many experts move into VRAM slots every 32 decode tokens, over all layers (8 by
   default; the main path's `--adapt-swaps` counts another round, so the name differs).
+**Slot swaps.** The log's `rebalance:` line says how many calls, swaps and milliseconds the slot swaps took (RTX 5080, DDR5-6800 (this box now; the DDR5-6400 figures above are older runs), production
+flags, 256 forced tokens after a 4K / 16K / 40K prompt): decode 8 calls, 456 / 369 / 227 swaps, 20.8 / 16.7 / 10.8 ms (0.08 / 0.07 /
+0.04 ms per token, 1.5% / 1.2% / 0.8% of it); after the prompt 1100 / 990 / 960 swaps, 44.6 / 40.3 / 39.3 ms (about 40 us a swap).
+With `--async-swaps` the same decode calls take 2.0 / 2.4 / 2.8 ms of host time and forced-text decode goes 194.8 / 171.5 / 183.9 to
+196.6 / 172.1 / 184.5 tok/s (+0.9% / +0.4% / +0.3%; the sync runs repeat within +-0.4%, so only the 4K gain is outside the noise).
+Its class is C: a swapped-in expert becomes visible when its copy has landed and the next forward starts, which can be one forward later
+than in the synchronous path; in the 65-step KL runs (two rebalance calls) the logits were identical to the synchronous ones, which does not
+carry over to long decodes.
+`--async-after-prompt` takes the 40-45 ms out of the prompt read (pp4096
+5,609 to 5,937 tok/s) but the 1,000 experts then arrive over the next tokens, and decode of the next 256 tokens is 1.2-1.4% slower: it pays
+when the answer is shorter than about 600 tokens. A bigger `--decode-swaps` (128, 256) raises the GPU share (4K: 86.5 / 86.8 / 87.3%) but not the speed,
+with or without `--async-swaps`.
+`STRATA_Q36_AFTER_SWAPS_PER_KTOK=f` limits the after-prompt swaps to f per 1000 tokens read (default: no limit below 2048).
 
 Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
 `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
 `STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`),
-`STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap).
+`STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap),
+`STRATA_Q36_PF_CHECK=1` (the host's slot tables against the device's at every forward, the host's against its own bookkeeping, and four
+cache slots per layer plus every prefetch slot in the table byte for byte against the host copy; the log's `table check:` line counts the
+mismatches; it synchronizes the stream and copies about 0.5 GB a forward, so it is slow; not with the MTP-only placement), `STRATA_Q36_ASYNC_SWAPS=1/2/3` (the two async bits, as the two flags).
 
 ## Not done / limits
 
