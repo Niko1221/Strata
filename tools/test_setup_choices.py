@@ -524,6 +524,7 @@ class WindowKVWrite(unittest.TestCase):
         code, out, cfg, _ = self.install("--kv", "q4lm8v")
         self.assertEqual(code, 0, out)
         self.assertIn("q4lm8v", cfg["args"])
+        self.assertNotIn("--kv-resident", cfg["args"])   # the window and KV streaming do not combine (#A2)
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_S"], "256")
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_R"], "64")
@@ -534,6 +535,7 @@ class WindowKVWrite(unittest.TestCase):
         code, out, cfg, _ = self.install(answers={"KV cache?": "3"})
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q4lm8v")
+        self.assertNotIn("--kv-resident", cfg["args"])
         self.assertEqual(cfg["env"]["STRATA_KV_WINDOW_S"], "256")
 
     def test_the_default_stays_int8(self):
@@ -541,6 +543,18 @@ class WindowKVWrite(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "int8")
         self.assertNotIn("STRATA_KV_WINDOW", cfg.get("env", {}))
+        # 63.7 GB of RAM against Q2_0's 48 + ~1.8 GB of streamed 8-bit KV: the default streams; the window does not.
+        self.assertIn("--kv-resident", cfg["args"])
+
+    def test_streaming_on_beside_the_window_stays_off(self):
+        # --kv-streaming on is ignored beside the window: streamed cells have no resident side pool, the engine
+        # refuses the pair. Setup keeps the window and warns instead of writing a config that does not start.
+        code, out, cfg, _ = self.install("--kv", "q4lm8v", "--kv-streaming", "on")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--kv") + 1], "q4lm8v")
+        self.assertNotIn("--kv-resident", cfg["args"])
+        self.assertEqual(cfg["env"]["STRATA_KV_WINDOW"], "1")
+        self.assertIn("ignored beside the exact-cell window", out)
 
 
 class SmallCardTip(unittest.TestCase):

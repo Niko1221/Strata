@@ -8871,6 +8871,12 @@ def main() -> int:
     kv_ram_gb = kv_streaming_ram_gb(ctx, kv)      # the branches below are kv_streaming_wanted, with its messages
     # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
     stream_fits = ram >= MODELS[model]["ram_gb"] + kv_ram_gb + 1
+    # The exact-cell window (--kv q4lm8v) and KV streaming do not combine: the window's recent cells live in an
+    # always-resident side pool, which a streamed KV does not have, and the engine refuses the pair loudly (so a
+    # hand-edited config holding both does not start). The window is a memory plan of its own, so it wins when it is
+    # chosen: no --kv-resident beside q4lm8v, the window's KV stays in VRAM (the measured 5.29 bit at 128K).
+    if kv == "q4lm8v":
+        stream_fits = False
     if is_wsl() and ctx >= 65536:
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
         if a.kv_streaming == "on":
@@ -8878,6 +8884,17 @@ def main() -> int:
                  "only about 1 GB there): off")
     elif ctx >= 65536 and a.kv_streaming == "off":
         ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
+    elif ctx >= 65536 and kv == "q4lm8v":   # before the streaming branches: streaming never pairs with the window
+        if a.kv_streaming == "on":
+            warn("--kv-streaming on: kept as you chose, but it is ignored beside the exact-cell window "
+                 "(--kv q4lm8v): streamed cells have no resident side pool for the window's exact cells, and the "
+                 "engine refuses the pair. The window stays and streams nothing; to stream, drop the window "
+                 "(--kv int8/q4_0/k8v4)")
+        else:
+            ok("KV streaming off: the exact-cell window (--kv q4lm8v) and streaming do not combine (the window's "
+               "cells must stay resident, the engine refuses the pair), so the window's KV stays in VRAM "
+               f"(~{kv_ram_gb:.1f} GB at {ctx // 1024}K, the measured 5.29 bit). To stream instead, drop the window "
+               "(--kv int8/q4_0/k8v4)")
     elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
         args += ["--kv-resident", "32768"]
         ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")

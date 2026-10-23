@@ -3199,6 +3199,18 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    if (o.kv_resident > 0 && strata::core::qsa_kv_win()) {
+        // The exact-cell window keeps its recent cells in an always-resident side pool; a streamed KV
+        // (--kv-resident) has no such pool, so the window would read quantized where it promises exact - a silent
+        // wrong measurement, not a crash. Refused loudly instead. Setup never writes this pair (a q4lm8v config's
+        // KV cache stays in VRAM, nothing streams beside the window); this is the fallback for a hand-edited
+        // config that sets both.
+        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window (--kv q4lm8v + "
+                            "STRATA_KV_WINDOW=1) do not combine: the streamed cells have no resident side pool, so "
+                            "the window would read quantized. Keep the window without --kv-resident, or use --kv "
+                            "int8/q4_0/k8v4 for streaming\n");
+        return 2;
+    }
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
