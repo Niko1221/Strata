@@ -478,6 +478,11 @@ __global__ void k_group_hy(const int32_t* ids, int n_ent, int K_, int n_expert, 
         }
     }
 }
+/// A busy-wait of `cycles` clock cycles (tests: STRATA_Q36_SIDE_SKEW), one thread.
+__global__ void k_spin(long long cycles) {
+    const long long t0 = clock64();
+    while (clock64() - t0 < cycles) {}
+}
 /// The CPU pool's expert rows into the entries' rows: parts[e] = cpu[e] where miss[e].  grid (n_ent), block 256.
 __global__ void k_merge_cpu(float* parts, const float* cpu, const int32_t* miss, int n) {
     const int e = blockIdx.x;
@@ -1219,6 +1224,28 @@ struct ImgKey {
 struct Engine {
     const Model* m = nullptr;
     cudaStream_t st = nullptr;
+    // the side stream of a decode layer's independent matrices (z and the GDN alpha / beta; the attention's k and v): they
+    // read the layer's input like the first matrix and nothing reads them before the mixer, so they run beside it.  Same
+    // kernels on the same inputs, so the bits are the same.  --side-stream turns it on (off by default).
+    cudaStream_t ast = nullptr;
+    cudaEvent_t ev_a0 = nullptr, ev_a1 = nullptr;
+    bool side_on = false;   // --side-stream
+    // tests: STRATA_Q36_SIDE_SKEW=<us> inserts a spin kernel of that length on the side stream before its first kernel, and
+    // STRATA_Q36_SIDE_SKEW_JOIN=<us> one on the main stream right before the join wait: the interleavings natural timing never
+    // makes (a missing fork or join would show as different logits)
+    long long side_skew_us = 0, side_skew_join_us = 0;
+    // `ref` (the engine's stream member) is `s` inside the scope: apply() and friends read the member
+    struct StreamScope {
+        cudaStream_t &ref, keep;
+        StreamScope(cudaStream_t& r, cudaStream_t s) : ref(r), keep(r) { ref = s; }
+        ~StreamScope() { ref = keep; }
+    };
+    void side_spin(cudaStream_t s, long long us) {
+        if (us <= 0) return;
+        int khz = 0;
+        CK(cudaDeviceGetAttribute(&khz, cudaDevAttrClockRate, 0));
+        k_spin<<<1, 1, 0, s>>>((long long) khz * us / 1000);
+    }
     int ctx = 32768, tmax = 512;
     bool kv8 = false;   // --kv int8: the K / V cache as q8_0 rows (kv_cell_bytes), else fp32
     bool kv_v4 = false; // --kv k8v4: kv8's K, V as rotated q4_0 (q36attn::q4_cell); the grouped-query kernel always
@@ -1472,6 +1499,25 @@ struct Engine {
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+        if (side_on) {   // --side-stream: the stream and its events exist only then
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(__HIPCC__)   // (HIP: the default priority, as mtp.cpp)
+            // the side stream at the highest priority: its small kernels start while the first matrix still holds every SM
+            int lo = 0, hi = 0;
+            CK(cudaDeviceGetStreamPriorityRange(&lo, &hi));
+            if (!(hi < lo)) {   // one priority level: an equal-priority side stream measured no gain (+0.3%)
+                std::fprintf(stderr, "strata-q36: --side-stream needs a GPU with stream priorities: ignored\n");
+                side_on = false;
+            } else {
+                CK(cudaStreamCreateWithPriority(&ast, cudaStreamNonBlocking, hi));
+            }
+#else
+            std::fprintf(stderr, "strata-q36: --side-stream is not available on this build: ignored\n");   // HIP: not measured, and without the priority it does not pay
+            side_on = false;
+#endif
+            if (side_on) for (cudaEvent_t* ev : {&ev_a0, &ev_a1}) CK(cudaEventCreateWithFlags(ev, cudaEventDisableTiming));
+        }
+        if (const char* v = std::getenv("STRATA_Q36_SIDE_SKEW")) side_skew_us = std::atoll(v);
+        if (const char* v = std::getenv("STRATA_Q36_SIDE_SKEW_JOIN")) side_skew_join_us = std::atoll(v);
         x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N);
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
@@ -2073,19 +2119,35 @@ struct Engine {
             float* al_b = verify ? v_alpha[li] : alpha;
             float* be_b = verify ? v_beta[li] : beta;
             prep_in(T);
+            const bool side = side_on && !use_graph && T <= kGemmT;   // z and alpha / beta on the side stream, beside qkv
+            if (side) CK(cudaEventRecord(ev_a0, st));
             apply(L.qkv, xq, qkv_b, T);
-            apply(L.zg, xq, z, T);
-            if (T <= kGemmT) {
-                k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N,
-                                                                      HV);
-            } else {
-                f32mm(L.alpha, h, al_b, N, HV, T);
-                f32mm(L.beta, h, be_b, N, HV, T);
-                k_gdn_gb<<<grid1((int64_t) HV * T), kThreads, 0, st>>>(al_b, L.dt, L.ssm_a, be_b, HV, T);
+            if (side) {
+                CK(cudaStreamWaitEvent(ast, ev_a0, 0));
+                side_spin(ast, side_skew_us);
+                StreamScope on_side(st, ast);
+                k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N, HV);
+                apply(L.zg, xq, z, T);
+                CK(cudaEventRecord(ev_a1, ast));
+            }
+            if (!side) {
+                apply(L.zg, xq, z, T);
+                if (T <= kGemmT) {
+                    k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N,
+                                                                          HV);
+                } else {
+                    f32mm(L.alpha, h, al_b, N, HV, T);
+                    f32mm(L.beta, h, be_b, N, HV, T);
+                    k_gdn_gb<<<grid1((int64_t) HV * T), kThreads, 0, st>>>(al_b, L.dt, L.ssm_a, be_b, HV, T);
+                }
             }
             if (rows_mode) {   // batch rows: a slot's rows (one, or a verify window's two) in sequence on its own state
                 k_conv_seq<<<dim3(C / 128, rows_G), 128, 0, st>>>(nullptr, qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, 1,
                                                                   !verify, d_conv_tab + li * n_sess, d_gslot, d_grow0, d_gcnt);
+                if (side) {   // z, alpha, beta: first read here
+                    side_spin(st, side_skew_join_us);
+                    CK(cudaStreamWaitEvent(st, ev_a1, 0));
+                }
                 k_gdn_seq<<<dim3(HV, rows_G), dim3(128, 4), 0, st>>>(nullptr, hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps,
                                                                      gdn_y, HK, HV, 1, !verify, d_S_tab + li * n_sess,
                                                                      d_gslot, d_grow0, d_gcnt);
@@ -2107,6 +2169,10 @@ struct Engine {
                     }
                     k_gdn_norm<<<dim3(HV, T), 128, 0, st>>>(gdn_y, z, L.ssm_norm, m->eps, gdn_y, HV);
                 } else {   // decode, verify windows and commits: one kernel, so a window's rows are a decode step's rows
+                    if (side) {   // z, alpha, beta: first read here
+                        side_spin(st, side_skew_join_us);
+                        CK(cudaStreamWaitEvent(st, ev_a1, 0));
+                    }
                     k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV,
                                                            T, !verify);
                 }
@@ -2114,9 +2180,24 @@ struct Engine {
             mm(L.ssm_out, gdn_y, y, T);
         } else {
             prep_in(T);
+            const bool side = side_on && !use_graph && T <= kGemmT;   // k and v (512 rows each: launch-bound) beside q
+            if (side) CK(cudaEventRecord(ev_a0, st));
             apply(L.wq, xq, qg, T);
-            apply(L.wk, xq, kx, T);
-            apply(L.wv, xq, vx, T);
+            if (side) {
+                CK(cudaStreamWaitEvent(ast, ev_a0, 0));
+                side_spin(ast, side_skew_us);
+                StreamScope on_side(st, ast);
+                apply(L.wk, xq, kx, T);
+                apply(L.wv, xq, vx, T);
+                CK(cudaEventRecord(ev_a1, ast));
+            }
+            if (side) {
+                side_spin(st, side_skew_join_us);
+                CK(cudaStreamWaitEvent(st, ev_a1, 0));   // k and v: first read by k_attn_prep
+            } else {
+                apply(L.wk, xq, kx, T);
+                apply(L.wv, xq, vx, T);
+            }
             RowSel rs;
             if (rows_mode) {
                 rs.cell = d_rcell;
@@ -3996,7 +4077,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
     std::string kv = "fp32", tokens_file;
-    bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false;
+    bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -4042,6 +4123,7 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--gqa-attn") gqa_attn = true;               // the grouped-query decode attention (fp32 / int8 cache)
         else if (a == "--attn-mma") attn_mma = true;               // with --kv int8: its tensor-core kernel (sm_80+, not bit-identical)
         else if (a == "--chunked-gdn") chunked_gdn = true;        // the prompt's gated delta rule in pieces of 16 tokens
+        else if (a == "--side-stream") side_stream = true;         // z, alpha / beta, k, v of a decode layer on a second stream
         else if (a == "--fused-prompt-attn") fused_pattn = true;   // the prompt attention in one kernel (int8 cache)
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
@@ -4055,7 +4137,8 @@ int strata::qwen35::run(int argc, char** argv) {
                          "usage: strata-q36 --model GGUF [--max-context 32768] [--chunk 512] [--no-graph]\n"
                          "       (--serve | --tokens IDS | --tokens-file F [--n 64] [--force IDS] [--dump-full-logits F] | "
                          "--bench-pp N --bench-tg N)\n"
-                         "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n");
+                         "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
+                         "       [--side-stream]\n");
             return 2;
         }
     }
@@ -4120,6 +4203,7 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     E.fused_pattn = fused_pattn;
     E.chunked_gdn = chunked_gdn;
+    E.side_on = side_stream;
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
