@@ -8,7 +8,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <type_traits>
 #include <cstdlib>
+#include <cctype>
+#include <string>
 #include <algorithm>
 
 namespace q36attn {
@@ -499,6 +502,27 @@ __global__ void __launch_bounds__(256, R == 1 ? 2 : 1) part_q8x(const float* q, 
 // split into launches of whole groups (nt = 3: one launch of R = 3; 8: R = 4 twice; 7: R = 4, then R = 3).  one_row: the
 // batch rows mode, whose rows have different caches.  STRATA_Q36_ATTN_OLD=1 runs part_q8 (the A/B and the VERIFY
 // reference); STRATA_Q36_ATTN_ROWS=n caps R (tests).  Only for 8 query heads per KV head (Sage's 16 / 2).
+// STRATA_Q36_ATTN_MMA: 0/off/false/no -> off, 1/on/true/yes -> on, unset -> off (--attn-mma sets mma_enabled() too); anything else is said and ignored
+inline int env_tri(const char* name) {   // 0/off/false/no -> 0, 1/on/true/yes -> 1, unset -> -1; anything else is said and counts as unset
+    const char* v = std::getenv(name);
+    if (v == nullptr || *v == '\0') return -1;
+    std::string x(v);
+    for (char& c : x) c = (char) std::tolower((unsigned char) c);
+    if (x == "0" || x == "off" || x == "false" || x == "no") return 0;
+    if (x == "1" || x == "on" || x == "true" || x == "yes") return 1;
+    std::fprintf(stderr, "strata-q36: %s=%s: not 0 / off / false / no or 1 / on / true / yes, ignored\n", name, v);
+    return -1;
+}
+// the tensor-core kernel part_q8m for the int8 cache (not bit-identical, sm_80+)
+inline bool& mma_enabled() {
+    static bool on = env_tri("STRATA_Q36_ATTN_MMA") == 1;
+    return on;
+}
+template<class Rows>
+inline void launch_part_q8m(const float* q, const q8_cell* kc, const q8_cell* vc, const int32_t* pos0, int t0, int nt, int H,
+                            int HKV, int ctx, float scale, int nc, int chunks, float* pacc, float* pm, float* pl, Rows rs,
+                            bool one_row, cudaStream_t st, int rows_cap = 0);
+
 template<int R, class VC, class Rows>
 inline void launch_part_q8x_r(const float* q, const q8_cell* kc, const VC* vc, const int32_t* pos0, int rb, int rows, int t0,
                               int H, int HKV, int ctx, float scale, int nc, int chunks, float* pacc, float* pm, float* pl,
@@ -539,6 +563,12 @@ inline void launch_part_q8x(const float* q, const q8_cell* kc, const VC* vc, con
         part_q8<<<dim3(nc, nt * HKV), 256, 0, st>>>(q, kc, vc, pos0, t0, H, HKV, ctx, scale, chunks, pacc, pm, pl, rs);
         return;
     }
+    if constexpr (std::is_same<VC, q8_cell>::value) {
+        if (mma_enabled()) {   // not bit-identical: tensor cores, the int8 V only
+            launch_part_q8m(q, kc, vc, pos0, t0, nt, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, one_row, st, rows_cap);
+            return;
+        }
+    }
     const int rcap = std::max(1, std::min(one_row ? 1 : (rows_cap > 0 ? rows_cap : cap), 4));
     for (int rb = t0, rem = nt; rem > 0;) {
         const int R = std::min(rem, rcap), rows = rem / R * R;
@@ -547,6 +577,238 @@ inline void launch_part_q8x(const float* q, const q8_cell* kc, const VC* vc, con
             case 2: launch_part_q8x_r<2>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
             case 3: launch_part_q8x_r<3>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
             default: launch_part_q8x_r<4>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+        }
+        rb += rows;
+        rem -= rows;
+    }
+}
+
+// ---- part_q8m: part_q8x on tensor cores (STRATA_Q36_ATTN_MMA=1; not bit-identical, the int8 cache only) -----------------------------
+// part_q8x keeps part_q8's fp32 arithmetic bit for bit and is limited by its instruction count (310 us a row at 262K cells: a
+// 3-row window is compute-bound at ~925 us where its bytes need ~350).  Here the scores and the values are mma.sync m16n8k16
+// products (fp16 inputs, fp32 accumulation) of a window's 8R query vectors against the tile in shared memory:
+//  - scores S = Q K^T: Q (8R x 256) is rounded to fp16 once; K enters as the exact int8 values (an int8 pair becomes a half2 with
+//    two integer ops: s + 128 into the mantissa of 1024, minus 1152), two k-steps (one q8_0 block of 32 dims) per accumulator,
+//    and the block's fp32 scale d[cell][b] is applied to the partial sum in fp32;
+//  - softmax per query row in fp32 over the chunk (the chunk max, as in part_q8);
+//  - values O = P V: A = P x d_v[cell][b] (the cell's scale of the warp's 32-dim block) rounded to fp16, B = the exact int8 values.
+// The rounding of q, of P x d and of the products is the only difference from part_q8 (fp16: 2^-11 relative); the partials have part_q8's
+// layout, merge is unchanged.  Each output element depends only on its own row, so a decode step and a verify window agree bit for bit.
+// Dynamic shared memory: S * TC * 288 + 16 * MT * 264 * 2 (Q) + 8R * 260 * 4 (scores), MT = ceil(8R / 16).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800 && !defined(__HIPCC__)
+#define Q36A_MMA 1
+__device__ __forceinline__ void mma16816(float (&c)[4], const unsigned (&a)[4], unsigned b0, unsigned b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+__device__ __forceinline__ void ldsm4(unsigned (&r)[4], const void* p) {
+    asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3])
+                 : "r"((unsigned) __cvta_generic_to_shared(p)));
+}
+// two int8 values (bytes 0 and 1 of v) as an exact half2
+__device__ __forceinline__ unsigned i8x2_to_h2(unsigned v) {
+    const unsigned r = __byte_perm(v ^ 0x8080u, 0x64646464u, 0x4140u);   // [s0 + 128, 0x64, s1 + 128, 0x64] = 1024 + s + 128 as halves
+    const __half2 h = __hsub2(*reinterpret_cast<const __half2*>(&r), __float2half2_rn(1152.f));
+    return *reinterpret_cast<const unsigned*>(&h);
+}
+__device__ __forceinline__ unsigned pack_h2(float lo, float hi) {
+    const __half2 h = __floats2half2_rn(lo, hi);
+    return *reinterpret_cast<const unsigned*>(&h);
+}
+#endif
+
+template<int R, int TC, int S, class Rows>
+__global__ void __launch_bounds__(256) part_q8m(const float* q, const q8_cell* kc, const q8_cell* vc, const int32_t* pos0, int rb,
+                                                int t0, int H, int HKV, int ctx, float scale, int chunks, float* pacc, float* pm,
+                                                float* pl, Rows rs) {
+#ifdef Q36A_MMA
+    constexpr int D = 256, C = 256, G = 8, KB = sizeof(q8_cell), M = 8 * R, MT = (M + 15) / 16, QS = 264, SCS = 260;
+    static_assert(C % TC == 0 && TC == 32 && S >= 3 && R >= 1 && R <= 4, "tile ring");
+    extern __shared__ __align__(16) unsigned char sm[];
+    __half* Qs = reinterpret_cast<__half*>(sm + (size_t) S * TC * KB);                                     // [16 MT][QS]
+    float* Sc = reinterpret_cast<float*>(sm + (size_t) S * TC * KB + (size_t) 16 * MT * QS * sizeof(__half));   // [M][SCS]
+    __shared__ float stat[M][2];
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, g = lane >> 2, t = lane & 3;
+    const int kvh = blockIdx.y % HKV;
+    const int tb = rb + (blockIdx.y / HKV) * R;
+    const int p0 = blockIdx.x * C;
+    const int np0 = (rs.cell ? rs.cell[tb] : *pos0 + tb) + 1 - p0;   // row 0's cells in this chunk (row r has np0 + r, at most C)
+    const int nmax = min(C, np0 + R - 1);
+    if (nmax <= 0) return;
+    if (rs.kc) {   // batch rows (R == 1)
+        kc = reinterpret_cast<const q8_cell*>(rs.kc[rs.slot[tb]]);
+        vc = reinterpret_cast<const q8_cell*>(rs.vc[rs.slot[tb]]);
+    }
+    const size_t cell = (size_t) kvh * ctx + p0;
+    const unsigned char* kbase = reinterpret_cast<const unsigned char*>(kc + cell);
+    const unsigned char* vbase = reinterpret_cast<const unsigned char*>(vc + cell);
+    const int NT = (nmax + TC - 1) / TC;
+    auto issue = [&](int i) {
+        if (i < 2 * NT) {
+            const bool isv = i >= NT;
+            const int b = (isv ? i - NT : i) * TC;
+            const unsigned char* src = (isv ? vbase : kbase) + (size_t) b * KB;
+            unsigned char* dst = sm + (size_t) (i % S) * TC * KB;
+            const int nch = min(TC, nmax - b) * KB / 16;
+            for (int j = tid; j < nch; j += 256) cp16(dst + 16 * j, src + 16 * j);
+        }
+        cp_commit();
+    };
+    for (int i = 0; i < S - 1; ++i) issue(i);
+    // the window's queries as fp16 (rows past 8R are zero: the second m-tile of a 24-row window)
+    for (int idx = tid; idx < 16 * MT * D; idx += 256) {
+        const int m = idx / D, d = idx % D;
+        Qs[m * QS + d] = __float2half_rn(m < M ? q[((size_t) (tb + (m >> 3)) * H + kvh * G + (m & 7)) * D + d] : 0.f);
+    }
+    float oacc[MT][4][4];
+#pragma unroll
+    for (int mi = 0; mi < MT; ++mi)
+#pragma unroll
+        for (int j = 0; j < 4; ++j)
+#pragma unroll
+            for (int e = 0; e < 4; ++e) oacc[mi][j][e] = 0.f;
+    for (int i = 0; i < 2 * NT; ++i) {
+        cp_wait<S - 2>();
+        __syncthreads();
+        issue(i + S - 1);
+        const unsigned char* slot = sm + (size_t) (i % S) * TC * KB;
+        if (i < NT) {
+            // scores of the tile's 4 n-tiles (8 cells each): warp = (n-tile, m-tile), 16 k-steps of 16 dims
+            const int ntl = warp & 3, mi = warp >> 2;
+            if (mi < MT) {
+                const unsigned char* krow = slot + (size_t) (ntl * 8 + g) * KB;           // this lane's B column: cell ntl * 8 + g
+                const unsigned char* sp = slot + (size_t) (ntl * 8 + 2 * t) * KB + 256;   // scales of the C columns' cells (2 t, 2 t + 1)
+                float sacc[4] = {0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                for (int blk = 0; blk < 8; ++blk) {
+                    float acc[4] = {0.f, 0.f, 0.f, 0.f};
+#pragma unroll
+                    for (int h2 = 0; h2 < 2; ++h2) {
+                        const int ks = blk * 2 + h2;
+                        unsigned a[4];
+                        ldsm4(a, Qs + (size_t) (mi * 16 + (lane & 15)) * QS + ks * 16 + (lane >> 4) * 8);
+                        const unsigned v0 = *reinterpret_cast<const unsigned short*>(krow + ks * 16 + 2 * t);
+                        const unsigned v1 = *reinterpret_cast<const unsigned short*>(krow + ks * 16 + 2 * t + 8);
+                        mma16816(acc, a, i8x2_to_h2(v0), i8x2_to_h2(v1));
+                    }
+                    const float d0 = *reinterpret_cast<const float*>(sp + 4 * blk), d1 = *reinterpret_cast<const float*>(sp + KB + 4 * blk);
+                    sacc[0] = fmaf(d0, acc[0], sacc[0]); sacc[1] = fmaf(d1, acc[1], sacc[1]);
+                    sacc[2] = fmaf(d0, acc[2], sacc[2]); sacc[3] = fmaf(d1, acc[3], sacc[3]);
+                }
+                const int col = i * TC + ntl * 8 + 2 * t, m0 = mi * 16 + g;
+                if (m0 < M) *reinterpret_cast<float2*>(Sc + m0 * SCS + col) = make_float2(sacc[0] * scale, sacc[1] * scale);
+                if (m0 + 8 < M) *reinterpret_cast<float2*>(Sc + (m0 + 8) * SCS + col) = make_float2(sacc[2] * scale, sacc[3] * scale);
+            }
+        } else {
+            if (i == NT) {   // softmax per query row over the chunk (cells past the row's limit weigh 0)
+                for (int m = warp; m < M; m += 8) {
+                    const int nn = min(C, np0 + (m >> 3));
+                    float* row = Sc + m * SCS;
+                    float mx = -INFINITY;
+                    for (int k = lane; k < C; k += 32)
+                        if (k < nn) mx = fmaxf(mx, row[k]);
+                    mx = warp_max(mx);
+                    float den = 0.f;
+                    for (int k = lane; k < C; k += 32) {
+                        const float e = k < nn ? expf(row[k] - mx) : 0.f;
+                        row[k] = e;
+                        den += e;
+                    }
+                    den = warp_sum(den);
+                    if (lane == 0) { stat[m][0] = mx; stat[m][1] = den; }
+                }
+                __syncthreads();
+            }
+            // values: warp w owns dims 32 w .. 32 w + 31 (four n-tiles), two k-steps of 16 cells per tile
+            const int vt = i - NT;
+#pragma unroll
+            for (int ks = 0; ks < 2; ++ks) {
+                const int kl = ks * 16 + 2 * t, c0 = vt * TC + kl;   // tile-local and chunk-local first cell of this lane's pair
+                float dv[4];
+#pragma unroll
+                for (int e = 0; e < 4; ++e) {
+                    const int off = (e & 1) + (e >> 1) * 8;
+                    dv[e] = c0 + off < nmax ? *reinterpret_cast<const float*>(slot + (size_t) (kl + off) * KB + 256 + 4 * warp) : 0.f;
+                }
+                unsigned b0[4], b1[4];
+#pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    const unsigned char* col = slot + warp * 32 + j * 8 + g;
+                    b0[j] = i8x2_to_h2((unsigned) col[(size_t) kl * KB] | ((unsigned) col[(size_t) (kl + 1) * KB] << 8));
+                    b1[j] = i8x2_to_h2((unsigned) col[(size_t) (kl + 8) * KB] | ((unsigned) col[(size_t) (kl + 9) * KB] << 8));
+                }
+#pragma unroll
+                for (int mi = 0; mi < MT; ++mi) {
+                    const int m0 = mi * 16 + g, m1 = m0 + 8;
+                    const float2 p00 = m0 < M ? *reinterpret_cast<const float2*>(Sc + m0 * SCS + c0) : make_float2(0.f, 0.f);
+                    const float2 p01 = m0 < M ? *reinterpret_cast<const float2*>(Sc + m0 * SCS + c0 + 8) : make_float2(0.f, 0.f);
+                    const float2 p10 = m1 < M ? *reinterpret_cast<const float2*>(Sc + m1 * SCS + c0) : make_float2(0.f, 0.f);
+                    const float2 p11 = m1 < M ? *reinterpret_cast<const float2*>(Sc + m1 * SCS + c0 + 8) : make_float2(0.f, 0.f);
+                    unsigned a[4];
+                    a[0] = pack_h2(p00.x * dv[0], p00.y * dv[1]);
+                    a[1] = pack_h2(p10.x * dv[0], p10.y * dv[1]);
+                    a[2] = pack_h2(p01.x * dv[2], p01.y * dv[3]);
+                    a[3] = pack_h2(p11.x * dv[2], p11.y * dv[3]);
+#pragma unroll
+                    for (int j = 0; j < 4; ++j) mma16816(oacc[mi][j], a, b0[j], b1[j]);
+                }
+            }
+        }
+    }
+    cp_wait<0>();
+#pragma unroll
+    for (int mi = 0; mi < MT; ++mi)
+#pragma unroll
+        for (int hf = 0; hf < 2; ++hf) {
+            const int m = mi * 16 + g + hf * 8;
+            if (m < M && np0 + (m >> 3) > 0) {
+                const size_t out = ((size_t) (tb + (m >> 3) - t0) * H + kvh * G + (m & 7)) * chunks + blockIdx.x;
+#pragma unroll
+                for (int j = 0; j < 4; ++j)
+                    *reinterpret_cast<float2*>(pacc + out * D + warp * 32 + j * 8 + 2 * t) =
+                        make_float2(oacc[mi][j][2 * hf], oacc[mi][j][2 * hf + 1]);
+            }
+        }
+    if (tid < M && np0 + (tid >> 3) > 0) {
+        const size_t out = ((size_t) (tb + (tid >> 3) - t0) * H + kvh * G + (tid & 7)) * chunks + blockIdx.x;
+        pm[out] = stat[tid][0];
+        pl[out] = stat[tid][1];
+    }
+#endif
+}
+
+template<int R, class Rows>
+inline void launch_part_q8m_r(const float* q, const q8_cell* kc, const q8_cell* vc, const int32_t* pos0, int rb, int rows, int t0,
+                              int H, int HKV, int ctx, float scale, int nc, int chunks, float* pacc, float* pm, float* pl,
+                              Rows rs, cudaStream_t st) {
+    constexpr int TC = 32, S = 3, M = 8 * R, MT = (M + 15) / 16;
+    const size_t smem = (size_t) S * TC * sizeof(q8_cell) + (size_t) 16 * MT * 264 * sizeof(__half) + (size_t) M * 260 * sizeof(float);
+    static bool opted = false;
+    if (!opted) {
+#ifndef __HIPCC__
+        if (cudaFuncSetAttribute(part_q8m<R, TC, S, Rows>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem) != cudaSuccess)
+            std::fprintf(stderr, "strata-q36: part_q8m<%d>: %zu bytes of shared memory refused\n", R, smem);
+#endif
+        opted = true;
+    }
+    part_q8m<R, TC, S, Rows><<<dim3(nc, rows / R * HKV), 256, smem, st>>>(q, kc, vc, pos0, rb, t0, H, HKV, ctx, scale, chunks, pacc,
+                                                                        pm, pl, rs);
+}
+// A window of nt rows from t0 in whole groups of at most rows_cap (default 4) rows, as launch_part_q8x.
+template<class Rows>
+inline void launch_part_q8m(const float* q, const q8_cell* kc, const q8_cell* vc, const int32_t* pos0, int t0, int nt, int H,
+                            int HKV, int ctx, float scale, int nc, int chunks, float* pacc, float* pm, float* pl, Rows rs,
+                            bool one_row, cudaStream_t st, int rows_cap) {
+    const int rcap = std::max(1, std::min(one_row ? 1 : (rows_cap > 0 ? rows_cap : 4), 4));
+    for (int rb = t0, rem = nt; rem > 0;) {
+        const int R = std::min(rem, rcap), rows = rem / R * R;
+        switch (R) {
+            case 1: launch_part_q8m_r<1>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+            case 2: launch_part_q8m_r<2>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+            case 3: launch_part_q8m_r<3>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+            default: launch_part_q8m_r<4>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
         }
         rb += rows;
         rem -= rows;
