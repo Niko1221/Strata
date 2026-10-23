@@ -3623,6 +3623,78 @@ bool Verifier::brow_row(const int32_t* tokens, int n, float* out, std::string& e
     return brow_row_at(last_row_T_ - 1, tokens, n, out, err);   // M3.1: the same read, row named
 }
 
+// ---- jev systemone (M3.1 fix B): keep the head rows at named prompt positions -------------------
+//
+// The prompt path reads the prompt in verify windows and keeps every row of the window it just ran
+// (head_logits_ is T x n_vocab), but only the last one survives: the next window overwrites it.  A
+// caller that sends ONE prompt for N questions therefore cannot read N rows afterwards - which is why
+// BROWAT alone could not serve the multi-field readout.  These three calls close that gap: name the
+// positions, get each window offered as the prompt is read, and read the kept rows afterwards.
+
+void Verifier::set_row_capture(const int64_t* positions, int n) {
+    if (next_ != nullptr) { next_->set_row_capture(positions, n); return; }
+    clear_row_capture();
+    if (positions == nullptr || n <= 0) return;
+    cap_want_.assign(positions, positions + n);
+    std::sort(cap_want_.begin(), cap_want_.end());
+    cap_want_.erase(std::unique(cap_want_.begin(), cap_want_.end()), cap_want_.end());
+}
+
+void Verifier::clear_row_capture() {
+    if (next_ != nullptr) { next_->clear_row_capture(); return; }
+    cap_want_.clear();
+    cap_pos_.clear();
+    cap_rows_.clear();
+}
+
+bool Verifier::capture_window_rows(int64_t pos0, int T, std::string& err) {
+    if (next_ != nullptr) return next_->capture_window_rows(pos0, T, err);
+    if (cap_want_.empty()) return true;                       // nothing was asked for: not a cost, not a check
+    if (T <= 0) { err = "capture_window_rows: an empty window"; return false; }
+    if (n_vocab_ <= 0) { err = "capture_window_rows: the head has no vocabulary"; return false; }
+    for (const int64_t p : cap_want_) {
+        if (p < pos0 || p >= pos0 + T) continue;              // this window did not run that position
+        if (std::find(cap_pos_.begin(), cap_pos_.end(), p) != cap_pos_.end()) continue;
+        const int t = (int) (p - pos0);
+        std::vector<float> row((size_t) n_vocab_);
+#if defined(STRATA_GPU_METAL)
+        if (!strata::metal_engine::window_copy_logits(metal_, t, row.data())) {
+            err = "capture_window_rows: the head logits copy failed at position " + std::to_string(p);
+            return false;
+        }
+#else
+        if (head_logits_ == nullptr) { err = "capture_window_rows: no head logits for this window"; return false; }
+        if (cudaMemcpy(row.data(), head_logits_ + (size_t) t * (size_t) n_vocab_,
+                       (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            err = "capture_window_rows: reading the row at position " + std::to_string(p) + " failed";
+            return false;
+        }
+#endif
+        cap_rows_.insert(cap_rows_.end(), row.begin(), row.end());
+        cap_pos_.push_back(p);
+    }
+    return true;
+}
+
+bool Verifier::brow_row_captured(int64_t pos, const int32_t* tokens, int n, float* out, std::string& err) {
+    if (next_ != nullptr) return next_->brow_row_captured(pos, tokens, n, out, err);
+    const auto it = std::find(cap_pos_.begin(), cap_pos_.end(), pos);
+    if (it == cap_pos_.end()) {
+        // Never a neighbouring row: answering position 61 with row 62 is the bug this whole op exists to
+        // avoid, and it would look fast and correct.
+        err = "brow_row_at: prompt position " + std::to_string(pos) +
+              " was not captured by the last request (" + std::to_string(cap_pos_.size()) + " captured)";
+        return false;
+    }
+    if (tokens == nullptr || out == nullptr || n <= 0) { err = "brow_row_at: no tokens to read"; return false; }
+    const size_t base = (size_t) std::distance(cap_pos_.begin(), it) * (size_t) n_vocab_;
+    for (int i = 0; i < n; ++i) {
+        if (tokens[i] < 0 || tokens[i] >= n_vocab_) { err = "brow_row_at: a token id out of range"; return false; }
+        out[i] = cap_rows_[base + (size_t) tokens[i]];
+    }
+    return true;
+}
+
 bool Verifier::brow_row_at(int t, const int32_t* tokens, int n, float* out, std::string& err) {
     if (next_ != nullptr) return next_->brow_row_at(t, tokens, n, out, err);
     // The row must belong to the last window: a caller that asks for a position it never ran gets an

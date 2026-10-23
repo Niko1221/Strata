@@ -12269,7 +12269,8 @@ int main(int argc, char** argv) {
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
-                        "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
+                        "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g jevpos=%d%s "
+                        "engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -12287,6 +12288,7 @@ int main(int argc, char** argv) {
                         (long long) o.prefill_chunk, sp.stage_count(),
                         (long long) strata::prefill::Prefill::stream_all_min_tokens(),
                         strata::prefill::Prefill::pipe_setting(),
+                        o.jev_brow ? 1 : 0,        // jevpos= in INFO: the row-capture capability (M3.1 fix B)
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
@@ -13676,14 +13678,22 @@ int main(int argc, char** argv) {
             // the engine stays in step) when the flag is off, the row is outside the last window, or a
             // token is out of range.
             if (o.jev_brow && line.rfind("BROWAT ", 0) == 0) {
+                // static_cast after an explicit range check: an id past int32 used to wrap silently, and
+                // a wrapped id can be a perfectly valid token - i.e. a different question's answer.
+                constexpr size_t kMaxBrowTokens = 4096;
+                constexpr int64_t kMaxTokenId = 2147483647LL;
                 int64_t row = -1;
                 std::vector<int32_t> toks;
                 {
                     std::istringstream is(line.substr(7));
-                    if (!(is >> row)) row = -1;
-                    int64_t v;
-                    while (is >> v) toks.push_back((int32_t) v);
-                    if (row < 0 || toks.empty() || toks.size() > 4096 || (is.eof() && !is.fail() ? false : !is.eof())) {
+                    bool bad = !(is >> row) || row < 0;
+                    int64_t v = 0;
+                    while (!bad && (is >> v)) {
+                        if (v < 0 || v > kMaxTokenId || toks.size() >= kMaxBrowTokens) bad = true;
+                        else toks.push_back((int32_t) v);
+                    }
+                    if (!bad && !is.eof()) bad = true;      // trailing junk, not just a short list
+                    if (bad || toks.empty()) {
                         std::printf("ERR BROWAT: bad row or token list\n");
                         std::fflush(stdout);
                         continue;
@@ -13691,7 +13701,12 @@ int main(int argc, char** argv) {
                 }
                 std::vector<float> vals(toks.size());
                 std::string berr;
-                if (!ver.brow_row_at((int) row, toks.data(), (int) toks.size(), vals.data(), berr)) {
+                // jev fix B: when the last request named prompt positions, `row` is one of those ABSOLUTE
+                // positions and the row was captured during the prompt read.  Otherwise `row` is the index in
+                // the last window, as before - and a position the prompt never ran is refused by name.
+                const bool captured = ver.captured_rows() > 0;
+                if (!(captured ? ver.brow_row_captured((int64_t) row, toks.data(), (int) toks.size(), vals.data(), berr)
+                               : ver.brow_row_at((int) row, toks.data(), (int) toks.size(), vals.data(), berr))) {
                     std::printf("ERR BROWAT: %s\n", berr.c_str());
                     std::fflush(stdout);
                     continue;
@@ -13712,7 +13727,8 @@ int main(int argc, char** argv) {
             // the prefill chunk is read in more than one window, so only "rows == the token count I sent"
             // means its own numbering is the engine's.  Answers BROWROWSD <n>; the engine is never asked
             // unless a server sends BROWROWS.
-            if (o.jev_brow && line.rfind("BROWROWS", 0) == 0) {
+            if (o.jev_brow && line.compare(0, 8, "BROWROWS") == 0 &&
+                (line.size() == 8 || line[8] == ' ' || line[8] == '\r')) {
                 std::printf("BROWROWSD %d\n", ver.brow_rows());
                 std::fflush(stdout);
                 continue;
@@ -13981,6 +13997,9 @@ int main(int argc, char** argv) {
             // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
             // branch it leaves: N queries cost one prefix, not N.  Absent = as before.
             int64_t req_pin = 0;
+            // jevpos=p1,p2,... (jev --jev-brow, fix B): absolute prompt positions whose head rows the engine
+            // keeps, so one prompt can answer N questions.  Absent = no capture (BROWAT then reads the window).
+            std::vector<int64_t> req_jevpos;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -14008,6 +14027,24 @@ int main(int argc, char** argv) {
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "prefill") req_prefill_only = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
+                    else if (key == "jevpos") {   // jev fix B: absolute prompt positions to keep rows for
+                        req_jevpos.clear();
+                        const std::string list = tok.substr(eq + 1);
+                        size_t at = 0;
+                        bool bad = false;
+                        while (at <= list.size() && req_jevpos.size() < 32 && !bad) {
+                            const size_t comma = list.find(',', at);
+                            const std::string one = list.substr(at, comma == std::string::npos ? std::string::npos
+                                                                                              : comma - at);
+                            if (!one.empty()) {
+                                if (one.front() < '0' || one.front() > '9') bad = true;
+                                else req_jevpos.push_back((int64_t) std::atoll(one.c_str()));
+                            }
+                            if (comma == std::string::npos) break;
+                            at = comma + 1;
+                        }
+                        if (bad) req_jevpos.clear();   // a malformed list is no list: never a guessed position
+                    }
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
@@ -14823,7 +14860,14 @@ int main(int argc, char** argv) {
             // first segment raises it if KVA approximates it - and for any state no KVA read produced)
             if (use_mtp && mtp.cell_floor_enabled())
                 mtp.set_cell_floor(resume > 0 && reread_to <= 0 ? kva_floors.floor_for(ids.data(), resume) : 0);
-            const int64_t read_from = reread_to > 0 ? 0 : resume;
+            // jev fix B + C (hybrid): rows come from the windows THIS request runs, so a position inside a
+            // resumed prefix was never run here - BROWAT refuses it by name (never a neighbouring row).
+            // With a PINNED prefix the cue of a per-field prompt always sits past the prefix, so a resumed
+            // read is fine.  Without one (a one-shot consolidated prompt) the capture needs every named
+            // position to run in this request, so it reads from token 0 - a resumed prefix would leave its
+            // rows unreadable.  A re-read request still starts at 0, as before.
+            const int64_t read_from =
+                (reread_to > 0 || (!req_jevpos.empty() && req_pin <= 0)) ? 0 : resume;
             conversations.limit_reuse(read_from);
             pp_total = n;
             pp_from = read_from;
@@ -14856,6 +14900,7 @@ int main(int argc, char** argv) {
                                      "whole prompt through the batched path, none of it through the verify windows\n");
             }
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
+                if (!req_jevpos.empty()) return true;   // jev fix B: row capture needs the window loop
                 if (no_short || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)
@@ -14981,7 +15026,8 @@ int main(int argc, char** argv) {
             auto read_windows = [&](int64_t a, int64_t b, std::string& e) -> bool {
                 // (STRATA_LOGPOS reads every window's logits: the serial loop)
                 // the pipelined prompt read stays two-stage (three or more stages read serially; only the decode overlaps)
-                if (pipe && n_stages == 2 && pl_pw >= 1 && std::getenv("STRATA_LOGPOS") == nullptr) return read_windows_pl(a, b, e);
+                if (pipe && n_stages == 2 && pl_pw >= 1 && req_jevpos.empty() &&
+                    std::getenv("STRATA_LOGPOS") == nullptr) return read_windows_pl(a, b, e);
                 strata::core::progress_at("reading the prompt (verify windows), from token", a);   // #217: not "batched"
                 // every token is committed and the picks are discarded: no head sampling (see set_head_sampling)
                 struct NoHeadSampling {
@@ -15010,6 +15056,8 @@ int main(int argc, char** argv) {
                         e = "non-finite logits (#879)";
                         return false;
                     }
+                    // jev fix B: keep the head row at each position this request named (none: a no-op)
+                    if (!ver.capture_window_rows(q, T, e)) return false;
                     // STRATA_LOGPOS=<path>: the teacher-forced log-probability of every token read here (every
                     // token is committed and nxt[t] is the prompt's own next token), appended to <path>; the last
                     // column is the log-probability of STRATA_LOGPOS_EXTRA (default 248046, <|im_end|>), so the
@@ -15970,6 +16018,12 @@ int main(int argc, char** argv) {
                                  "%lld)\n", (long long) req_pin, (long long) read_from);
             }
             std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
+            if (!req_jevpos.empty()) {
+                // jev fix B: the capture only sees windows, so the prompt must be read by read_windows as one
+                // span - a part read by read_part (the batched path) computes no per-position rows, and the
+                // positions it covered would then be answered by nothing (ERR) or, worse, by a neighbour.
+                cuts = {n - 1};
+            }
             if (pin_at >= 0) {
                 cuts.push_back(pin_at);
                 std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
@@ -15997,6 +16051,11 @@ int main(int argc, char** argv) {
                 if (mt < 2) return -1;
                 return std::max(a0, n - mt);
             };
+            ver.set_row_capture(req_jevpos.empty() ? nullptr : req_jevpos.data(), (int) req_jevpos.size());
+            if (std::getenv("STRATA_JEVROWS_TRACE") != nullptr)
+                std::fprintf(stderr, "strata serve: JEVROWS trace: n=%lld read_from=%lld jevpos=%zu cuts=%zu "
+                                     "first=%lld last=%lld\n", (long long) n, (long long) read_from,
+                             req_jevpos.size(), cuts.size(), (long long) cuts.front(), (long long) cuts.back());
             for (const int64_t to : cuts) {
                 if (to <= at) continue;
                 err.clear();
@@ -17070,6 +17129,12 @@ int main(int argc, char** argv) {
                 const auto decode_pool_fn = use_mtp && mtp.prob() ? invariant_win_pool_fn : win_pool_fn;
                 if (!ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
+                    return 1;
+                }
+                // jev fix B: the prompt's LAST token is read by this window (the decode loop's first), so the
+                // capture looks here too - a cue on the final prompt token is otherwise never kept.
+                if (!ver.capture_window_rows(p, T, err)) {
+                    std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
                 if (aflipped) apply_pending(true);   // 0.1.43: every layer's copies were waited for in the window; the bookkeeping now
@@ -18721,6 +18786,12 @@ int main(int argc, char** argv) {
                     err.clear();
                     goto retry_round;
                 }
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            // jev fix B: the prompt's LAST token is read by this window (the decode loop's first), not by the
+            // prompt read - so the capture has to look here too, or a cue on the final token never arrives.
+            if (!ver.capture_window_rows(p, T, err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }

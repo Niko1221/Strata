@@ -53,19 +53,88 @@ Errors: `422` with `{"error": {"field": "questions.q2.criteria", "message": …}
 | **Decide-then-generate** | add `"then": {"generate": {"messages": [...], "max_tokens": 512}}` | Decide first, then generate with the answers folded into the last user turn as `Jev decisions (JSON): …`. Response adds `then: {text, finish_reason, usage}`. |
 | **Chat surface** | `POST /v1/chat/completions` with `"jev": {"questions": …}` and either `jev.state` or `messages` | The decision readout from the chat endpoint; the conversation is the state (`v1-chat`). `stream` is refused with the extension. Response: OpenAI-style envelope with the decision body under `jev`. |
 
+## Multi-field reads (M3.1)
+
+N questions on one state used to cost N cold prefills of the same state (the M3.0 defect). Three
+paths exist; the default is the one that ships.
+
+| path | env | what it changes | measured (N fields, RTX 3090, same states) |
+|---|---|---|---|
+| **C — state parking (default)** | `STRATA_JEV_PIN=0` disables | prompts stay byte-identical to M3.0; the engine is told where the shared prefix ends, reads it once and pins its checkpoint, so each later field reads only its own question turn | 1/2/3/5 fields 918/1232/1185/1667 ms; field 1 readout byte-identical; order-insensitive (199/200 argmax agreement when the fields are reversed) |
+| **B — one prompt, N rows (opt-in)** | `STRATA_JEV_ROWS=1` | one consolidated prompt; the request names every field's cue position (`jevpos=`), the engine copies those head rows out of whichever verify window covers them while the prompt is read, and `BROWAT` reads them back **by absolute position**, so one prefill answers N questions | 1.33× faster at 2 fields (981 vs 1232 ms), parity at 3+; but fields 2..N see the earlier questions, \|Δp\| grows .187 → .507 by N=5, field order matters (167/200 agreement), and at N=1 it disagrees with C on 17/600 GQA items (−1.8 points) — hence opt-in |
+| **H — pin + row capture (opt-in, rejected)** | `STRATA_JEV_HYBRID=1` | per-field prompts, pinned prefix, cue row captured from the shared read | 1.15× at 2 fields but 20–28% *slower* than C at N≥3 (one serial read per field); kept in the tree as a measured negative |
+
+Route by field count: N=1 either, N=2 B if the Δp shift is acceptable to the caller, N≥3 C.
+
+The engine ops behind these are `BROWAT <row> <tokens>` → `BROWATD <n> <tok>:<logit>…` and
+`BROWROWS` → `BROWROWSD <n>`. `BROWAT` has **two addressings**, and the difference matters:
+
+- **captured** — if the same request carried `jevpos=`, the named rows were kept during that read, and
+  `BROWAT <absolute prompt position>` reads one of them. A position the request never ran is refused
+  **by name**; it never falls back to a neighbouring row.
+- **window** — with no capture, `BROWAT <row>` indexes the LAST verify window, whose rows start at
+  that window's first token. `BROWROWS` reports how many rows it holds, so a caller can tell whether
+  its own numbering is the engine's (it only is when the count equals the tokens it sent).
+
+The capability is advertised in the engine's `INFO` line as `jevpos=1`; an engine that does not
+advertise it (older build, or started without `--jev-brow`) is never sent the row path at all. Both
+ops are under `--jev-brow`, and the engine is never asked unless the server sends one.
+
+## Label alphabet (`choice`)
+
+`STRATA_JEV_LABELS` picks how choice options are rendered and which token each option's logit is
+read from. The option list and the readout always use the same alphabet.
+
+- `upper` (default): `A`…`Z`. Every calibrator on disk was fitted against this.
+- `digit-lower`: `0`-`9`, then `a`-`z` to 26 options (the scheme requested on #3643, so a text
+  multi-field path can share a token-path scorer). Unknown values fail closed at import.
+
+Every rendered label must be **exactly one token**; a request whose label encodes to more than one
+is refused with `422` on `questions.<qid>.criteria` rather than scored on a truncated path.
+
+Changing the alphabet moves the readout slightly (`mean |Δp| = .0034` per option on ARC, 0/160
+identical vectors) but it did not change any decision on 160 items and the two alphabets' own
+optimal temperatures sit 8% apart (T = 1.00 vs .92), inside the shipped 1.0557. No refit was needed
+for the scheme itself — but note the test task was 99%-accurate ARC, the weakest possible detector;
+a 10-way uncertain task is where a refit would show if one is owed.
+
 ## Calibration (M3.2)
 
-Post-hoc, monotone, argmax-preserving — it reshapes probabilities, never picks a different label.
+Post-hoc and per-tuple. **Not accuracy-neutral**, and it is worth being precise about why:
 
-- `noul`: Platt scaling `sigmoid(a·d + c)` on the yes-logit
-- `choice`/`score`: temperature on label log-probs
+- `choice` / `score`: temperature on label log-probs — a monotone rescale of one softmax, so
+  these genuinely cannot change the winning label. Accuracy is unchanged by construction.
+- `noul`: Platt `sigmoid(a·logit(p_yes) + c)`. The map is monotone, so it cannot reorder options,
+  but a non-zero offset **is** a decision threshold: it moves the probability that crosses 0.5
+  away from the raw one. A fit can therefore change yes/no answers and accuracy.
 
-`calib/calib.json` is read at startup (identity until present), hot-swapped via
-`POST /admin/calib` (Bearer `STRATA_JEV_ADMIN_KEY`; empty key = open like the rest of
-the control plane). Every answered question logs a row to `calib/data/log.jsonl`
-(`ts, tuple, qid, type, raw_p[, v_d]`) — the same schema the donor's `fit.py` consumes.
+Measured on banking77 (2-field, held out, 2026-10-23): fitting `noul` moved accuracy .670 → .800
+and Brier .2208 → .1385, with the boundary pushed to raw p ≈ .94. That gain is threshold tuning
+on a balanced 50/50 prior, **not** better probabilities — on traffic with a different base rate it
+will over- or under-predict. The offset must be fitted per task on a representative sample and
+must never be carried over from another task: a banking77 fit moved POPE .883 → .850 and GQA
+.803 → .720, and zeroing only the offset (keeping the slope) restored both.
 
-**Measured on QFN (Qwen3.8-Flash-Next IQ3_XXS, RTX 3090), 100 items/task:**
+Two more rules that measurement forced:
+
+- **Fit on the task you serve.** Where the readout is already honest, refuse to fit: GQA raw ECE
+  is .054 and a dev fit made it worse (.083) while losing 2.3 points of accuracy. On the image
+  tuples the shipped fits are at their ceiling — refitting on top of them asks for T = .985/.984
+  and `a = 1.066, c = −.003`.
+- **Never fit on calibrated output.** A dev fit applied to probabilities that were already
+  calibrated compounds the transform, and the resulting parameters are not installable. Serve
+  identity (move `calib-*.json` aside) for any raw→fit measurement, and compare arms only after
+  inverting a known transform.
+
+`calib/calib-L.json`, `calib-D.json`, `calib-S.json` are the per-tuple files (L = text,
+D = image direct, S = image summary), read at startup, hot-swapped via `POST /admin/calib`
+(Bearer `STRATA_JEV_ADMIN_KEY`; empty key = open like the rest of the control plane). A file whose
+keys the loader does not read (e.g. `a`/`c`) loads as identity while still honouring its `T` — a
+silent half-fit; `STRATA_JEV_CALIB_STRICT=1` refuses that file instead. Every answered question
+logs a row to `calib/data/log.jsonl` (`ts, tuple, qid, type, raw_p[, v_d]`) — the schema the
+donor's `fit.py` consumes.
+
+**Measured on QFN (Qwen3.8-Flash-Next IQ3_XXS, RTX 3090), 100 items/task, 2026-10-15 readout:**
 
 | task | acc raw→cal | ECE15 raw→cal | ms/item |
 |---|---|---|---|
@@ -76,6 +145,14 @@ the control plane). Every answered question logs a row to `calib/data/log.jsonl`
 Fitted: `a_noul=0.7446 c_noul=0.2449 T_choice=1.0459 T_score=2.2428`
 (donor 27B baseline: 90.5 / 99 / 56.9 — parity). V-mode on the same ARC items:
 100% acc, 100/100 argmax agreement with L, 4631 ms/item.
+
+**Read that table with its own caveat (added 2026-10-23).** Those fits were evaluated on the
+same dev split they were fitted on, so they are calibration-saturated: re-running the same three
+suites on the current binary gives BoolQ .910 → .910 (ECE .049 raw), ARC 1.000 → 1.000 (ECE
+.007), SST-5 .520/.530 with the refit *hurting* test ECE (.127 → .140). The delivered calibrator
+has not regressed — the readout improved underneath it, and the remaining headroom on these three
+tasks is now ~zero. Where calibration still pays is a genuinely overconfident tuple: image summary
+mode wanted T = 5.03 before its file was fitted (POPE .883 → .767 when it was missing).
 
 ## Concurrency
 

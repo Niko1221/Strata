@@ -34,3 +34,34 @@ Fits shipped (2026-10-15, QFN IQ3_XXS, corrected top-label harness):
             ECE15 .122->.081)
 - S (image summary): identity until its own dev split is run (per-tuple swap
   loads calib-S.json when present).
+
+## Status 2026-10-23 (what re-measurement changed)
+
+The three shipped files are still correct, but three claims in the notes above do not survive a
+held-out re-run and are corrected here:
+
+1. **The 2026-10-15 test numbers are calibration-saturated.** They were evaluated on the same dev
+   split the fits came from. Re-running the same suites on the current binary: BoolQ .910 -> .910
+   (raw ECE .049), ARC 1.000 -> 1.000 (ECE .007), SST-5 .520/.530 with the refit HURTING test ECE
+   (.127 -> .140). The readout improved underneath the calibrator; the headroom on these three
+   tasks is now ~0. Refits come back near identity (a=1.009 c=.0037 / a=1.032 c=.062).
+2. **Image tuples are at their ceiling.** Refitting on top of calib-D asks for T=.985 / T=.984 and
+   a=1.066, c=-.003. Paired against identity-served on the same 100 test items, the shipped
+   calibrator changes no decision and improves Brier by .0046 (POPE) / .0315 (CV-Bench) / .0209
+   (CountBench), ECE by -.0075 / +.0100 / -.0583.
+3. **A fitted noul calibrator is NOT accuracy-neutral.** The residual monotonicity argument holds
+   for temperature only. Platt's offset c is a decision threshold: a fit on banking77 moved
+   held-out accuracy .670 -> .800 with the boundary at raw p ~.94, i.e. threshold tuning on a
+   balanced prior, not better probabilities.
+
+Refit rules that follow, and that the scripts enforce or warn about:
+
+- Fit per (tuple, task, mode) and evaluate on items the fit never saw. If the dev split is
+  saturated (acc 1.000, NLL ~.00x) T is unidentifiable - a fitter that reports 0.05 or 5.03 there
+  is reporting its own search bound, not a temperature.
+- Never fit on calibrated output. Move `calib-*.json` aside to serve identity for a raw->fit
+  measurement, or invert the known transform exactly first.
+- Never carry c across tasks. The slope is even approximately portable; the offset is a prior.
+  A banking77 fit cost POPE 3.3 points and GQA 8.3 points; zeroing only c restored both.
+- `STRATA_JEV_CALIB_STRICT=1` refuses a file whose keys the loader would silently drop (the
+  `a`/`c` vs `a_noul`/`c_noul` trap) and refuses a degenerate T.
