@@ -27,6 +27,9 @@ struct SamplerParams {
     bool greedy = false;
     const float* logit_bias = nullptr; // optional device array [n_vocab], added BEFORE penalties/filters; -inf bans
     bool gumbel = false;         // STRATA_SPEC_GUMBEL=1: Gumbel-max pick keyed by (seed, counter, token id) - see sampler.cu
+    const uint32_t* grammar_mask = nullptr; // per-row device bitmask [row][mask_stride_words], bit=1 BANS the token
+                                    // (-inf), read at the logit_bias site BEFORE logit_bias and penalties; null = off
+    int mask_stride_words = 0;   // words per row: (n_vocab + 31) / 32; 0 when grammar_mask is null
 };
 
 // logits (n_tokens, n_vocab) -> one sampled token id per row in `out`.

@@ -157,8 +157,10 @@ __global__ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vo
     // elements contributes nothing rather than contributing a bogus zero.
     float bv = __int_as_float(0xff800000);   // -inf
     int best = n_vocab;
+    const uint32_t* mrow = p.grammar_mask ? p.grammar_mask + (size_t) t * p.mask_stride_words : nullptr;
     for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
-        const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
+        const float raw = mrow && (mrow[v >> 5] & (1u << (v & 31))) ? __int_as_float(0xff800000) : l[v];
+        const float s = apply_penalties(p.logit_bias ? raw + p.logit_bias[v] : raw, hit_count(v), p);
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
@@ -351,11 +353,13 @@ __global__ void sampler_kernel(const float* __restrict__ logits, int n_vocab, in
         // the greedy kernel, whose tie rule this reduction shares).
         float bv = __int_as_float(0xff800000);   // -inf
         int best = n_vocab;
+        const uint32_t* mrow = p.grammar_mask ? p.grammar_mask + (size_t) t * p.mask_stride_words : nullptr;
         for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
             bool taken = false;
             for (int j = 0; j < i; ++j) if (sel_ids[j] == v) { taken = true; break; }
             if (taken) continue;
-            const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
+            const float raw = mrow && (mrow[v >> 5] & (1u << (v & 31))) ? __int_as_float(0xff800000) : l[v];
+            const float s = apply_penalties(p.logit_bias ? raw + p.logit_bias[v] : raw, hit_count(v), p);
             if (s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -597,11 +601,13 @@ sampler_one_block_kernel(const float* __restrict__ logits, int n_vocab, const in
     const int warp = (int) (threadIdx.x >> 5), lane = (int) (threadIdx.x & 31);
     float prev_v = __int_as_float(0x7f800000);   // +inf and id -1: round 0 takes every logit
     int prev_i = -1;
+    const uint32_t* mrow = p.grammar_mask ? p.grammar_mask + (size_t) t * p.mask_stride_words : nullptr;
     for (int i = 0; i < k; ++i) {
         float bv = __int_as_float(0xff800000);   // -inf
         int best = n_vocab;
         for (int v = threadIdx.x; v < n_vocab; v += blockDim.x) {
-            const float s = apply_penalties(p.logit_bias ? l[v] + p.logit_bias[v] : l[v], hit_count(v), p);
+            const float raw = mrow && (mrow[v >> 5] & (1u << (v & 31))) ? __int_as_float(0xff800000) : l[v];
+            const float s = apply_penalties(p.logit_bias ? raw + p.logit_bias[v] : raw, hit_count(v), p);
             if ((s < prev_v || (s == prev_v && v > prev_i)) && s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
@@ -726,11 +732,17 @@ sampler_split_part_kernel(const float* __restrict__ logits, int n_vocab, const i
     // This warp's logits, penalised: `apply_penalties` with a zero count returns the logit unchanged, so only the
     // bitmap's hits go through it.  Past the vocabulary: -inf, which no round picks.
     const int lo = blo + warp * kSplitWarpSpan;
+    const uint32_t* mrow = p.grammar_mask ? p.grammar_mask + (size_t) t * p.mask_stride_words : nullptr;
     float s[kSplitPerLane];
 #pragma unroll
     for (int j = 0; j < kSplitPerLane; ++j) {
         const int v = lo + 32 * j + lane;
-        s[j] = v < n_vocab ? (p.logit_bias ? l[v] + p.logit_bias[v] : l[v]) : __int_as_float(0xff800000);
+        // grammar mask first (bit=1 bans), then logit_bias: -inf + bias stays -inf
+        s[j] = v < n_vocab
+             ? (mrow && (mrow[v >> 5] & (1u << (v & 31)))
+                    ? __int_as_float(0xff800000)
+                    : (p.logit_bias ? l[v] + p.logit_bias[v] : l[v]))
+             : __int_as_float(0xff800000);
     }
     if (use_bits) {
 #pragma unroll
@@ -1258,7 +1270,8 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         }();
         // One block per token, 1,024 threads over the vocabulary.  See `sampler_greedy_kernel`.
         const int gthreads = 1024;
-        if (!(multi && shmem == 0 && !p.logit_bias && sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
+        if (!(multi && shmem == 0 && !p.logit_bias && !p.grammar_mask &&
+              sample_greedy_cluster(logits, n_tokens, n_vocab, out, stream)))
             sampler_greedy_kernel<<<(unsigned) n_tokens, gthreads, shmem, (cudaStream_t) stream>>>(
                 logits, n_vocab, history, history_len, p, p.penalty_last_n, p.penalty_last_n, out);
     } else if (sampled_path() == SampledPath::Old) {
