@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { engineProgressMark } from './agent/engine-progress.mjs';
+import './system-ca.mjs';        // #3722: the operating system's certificates, before any HTTPS request
 import { createCloudflare } from './cloudflare.mjs';
 import { createConnectorInstaller } from './cloudflared-install.mjs';
 import { findRunningConnector } from './cloudflared-find.mjs';
@@ -15,6 +17,7 @@ import { materializeSkills, parseSkillFile, skillSlug, writeCreatedSkill } from 
 import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
 import { createAgentBridge, plainTurnFailure } from './agent/agent-bridge.mjs';
+import { mcpSkippedNotices } from './agent/profile.mjs';
 import { createAgentTools } from './agent/tools-settings.mjs';
 import { withPlainStatus } from './agent/status.mjs';
 import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
@@ -55,6 +58,7 @@ import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
 import { createForkTimeskip } from './timeskip-fork.mjs';
+import { prepareOversized } from './oversize.mjs';
 import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
@@ -174,12 +178,15 @@ const agent = createAgentBridge({
   // The person's Response settings (thinking budget, Expert sampling) reach the agent's model through this host's own forwarding endpoint.
   proxyBase: `http://127.0.0.1:${PORT}/api/internal/agent-llm`,
   expertSampling: () => samplingFromExpert(store.get().expert),
+  // How far a local engine has got (the 2 s /metrics poll), for the agent's stall watchdog: it moves while a long prompt is read.
+  engineProgress: instanceId => engineProgressMark(native.readyInstances().find(i => i.id === instanceId)),
   onPlan: (chatId, event, plan) => hub.send('plan', { chatId, event, plan }),
   onQueue: (chatId, queue) => hub.send('queue', { chatId, queue }),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
   // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
   bundledDir: resolve(HERE, '..', '..', 'harness'),
+  defaultLocalId: () => native.defaultInstanceId(),
   localInstances: () => native.readyInstances().map(i => ({
     id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId,
     context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
@@ -601,8 +608,11 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
+    // "/compact" summarises the older messages of this chat now (it used to go to the model as text, which answered it as a question).
+    const compactLine = /^\/compact\s*$/i.test(message.trim());
     const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
+      : compactLine ? await agent.compactCommand(turnOptions)
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
       : goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
@@ -1717,6 +1727,16 @@ async function api(req, res, path, method, url) {
     try { const f = rawFile(chatRoot(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
+  /* A message too large for the model's window, made small enough to send: its text as a file in the chat's folder, or a shortened preview (oversize.mjs). */
+  if (path === '/api/chat/oversize' && method === 'POST') {
+    const body = await readBody(req, 12 * 1024 * 1024);
+    const text = String(body.text ?? '');
+    if (!text.trim()) return error(res, 400, 'text is required');
+    let instance = null;
+    try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); } catch { /* no local model: the length alone decides */ }
+    try { return json(res, 200, await prepareOversized({ mode: body.mode === 'file' ? 'file' : 'preview', text, root: chatRoot(String(body.sessionId ?? '')), instance })); }
+    catch (e) { return error(res, 400, 'The message could not be prepared. Try a shorter message.'); }
+  }
   /* "Attach as context": the file is named in the next message of the chat, so the assistant reads it again. */
   if (path === '/api/chat/attachments' && method === 'GET') return json(res, 200, { files: chatAttachments.list(url.searchParams.get('sessionId') ?? '') });
   if (path === '/api/chat/attachments' && method === 'POST') {
@@ -1934,6 +1954,8 @@ async function api(req, res, path, method, url) {
     if (chatId && !agentSkip) {
       const capability = agent.status();
       if (capability.state !== 'unavailable') {
+        const skipped = mcpSkippedNotices(capability.skippedServers);
+        for (const notice of skipped) res.write(`${JSON.stringify({ type: 'notice', ...notice })}\n`);
         await runAgentTurn({ res, controller, chatId, body, message, workspaceId, images });
         res.end();
         return undefined;

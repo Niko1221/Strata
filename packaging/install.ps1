@@ -68,12 +68,29 @@ try {
     if (Test-Path $incoming) { Remove-Item -Recurse -Force $incoming }
     $tooLong = 'If it says a path is too long, set $env:STRATA_DATA_DIR to a short folder such as C:\Strata and run this again; otherwise check the free disk space.'
     try {
-        # tar.exe (Windows 10 1803 and later) handles long paths; Expand-Archive in Windows PowerShell 5.1 does not
-        $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+        # tar.exe (Windows 10 1803 and later) handles long paths; Expand-Archive in Windows PowerShell 5.1 does not.
+        # tar.exe receives its arguments through the ANSI/OEM code page, so a folder with an accented letter in its name turns into one with a question mark and the
+        # unpack fails (A04). It is therefore started with ASCII-only, relative arguments from inside the data folder (PowerShell's own cmdlets are Unicode-safe),
+        # unpacks into a folder with an ASCII name, and that folder is renamed to $incoming.
+        # Windows' own bsdtar first: a GNU tar from Git for Windows or MSYS earlier on the PATH cannot read a zip
+        $tar = Get-Command (Join-Path $env:SystemRoot 'System32\tar.exe') -ErrorAction SilentlyContinue
+        if (-not $tar) { $tar = Get-Command tar.exe -ErrorAction SilentlyContinue }
         if ($tar) {
-            New-Item -ItemType Directory -Force -Path $incoming | Out-Null
-            $tarOut = & $tar.Source -xf $zip -C $incoming 2>&1 | Out-String
-            if ($LASTEXITCODE -ne 0) { throw $tarOut.Trim() }
+            $tag = 'u' + [Guid]::NewGuid().ToString('N').Substring(0, 6)
+            $terminalDir = Join-Path $data 'terminal'
+            Push-Location -LiteralPath $terminalDir
+            try {
+                Copy-Item -LiteralPath $zip -Destination "$tag.zip"
+                New-Item -ItemType Directory -Path $tag | Out-Null
+                $tarOut = & $tar.Source -xf "$tag.zip" -C $tag 2>&1 | Out-String
+                if ($LASTEXITCODE -ne 0) { throw $tarOut.Trim() }
+            }
+            finally {
+                Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath "$tag.zip"
+                Pop-Location
+            }
+            Move-Item -LiteralPath (Join-Path $terminalDir $tag) -Destination $incoming
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath (Join-Path $terminalDir $tag)
         } else { Expand-Archive -LiteralPath $zip -DestinationPath $incoming -Force }
     }
     catch { Remove-Item -Recurse -Force $incoming -ErrorAction SilentlyContinue; Die "the archive could not be unpacked ($($_.Exception.Message)). $tooLong Nothing was installed." }
@@ -96,9 +113,9 @@ try {
     $code = $LASTEXITCODE
     $ErrorActionPreference = $prevEap
     if ($code -ne 0) {
-        ($out -split "`n" | Select-Object -First 6 | ForEach-Object { "    $_" }) | ForEach-Object { [Console]::Error.WriteLine($_) }
+        ($out -split "`r?`n" | Where-Object { $_.Trim() } | ForEach-Object { "    $_" }) | ForEach-Object { [Console]::Error.WriteLine($_) }
         Remove-Item -Recurse -Force $incoming
-        Die "the release folder's signed feed could not be verified, so nothing was installed. If you trust this source, ask its owner to publish a signed feed."
+        Die "the release folder's signed feed could not be verified, so nothing was installed. The reason is printed above; if it names a newer feed already accepted here, use the newest release folder, or follow the step it gives. If you trust this source and see no such reason, ask its owner to publish a signed feed."
     }
     Write-Host '  Signature ok.'
 

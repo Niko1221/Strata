@@ -408,6 +408,9 @@ class Requirements(unittest.TestCase):
         lines = setup.requirement_lines()
         legacy = sorted(setup.PY_PACKAGES) + ["nvidia-cublas==13.0.2.14"]
         deps = {"markupsafe", "certifi", "charset-normalizer", "idna", "urllib3", "colorama"}
+        # the packages it has stay as they are; only truststore (#3722: the operating system's certificates) is new, and it is wanted
+        self.assertEqual(self.pip(legacy, lines, installed=deps)[0], ['truststore==0.10.5; python_version >= "3.10"'])
+        deps.add("truststore")
         self.assertEqual(self.pip(legacy, lines, installed=deps)[0], [])
         missing = [p for p in legacy if p != "psutil"]                         # an older list without psutil
         ran, _ = self.pip(missing, lines, installed=deps)

@@ -1,13 +1,14 @@
 """Elastic encoder failures reach clients, can be retried, and do not prevent recovery."""
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 import urllib.error
 import urllib.request
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, serve
+from serve.server import ByteTokenizer, Service, Vision, serve
 from serve.test_vision_elastic import ElasticVision
 from serve.test_vram import VramEngine
 
@@ -96,6 +97,43 @@ class EncoderFailureHTTP(unittest.TestCase):
             self.assertEqual(response.status, 200)
             response.read()
         self.assertEqual(self.vision.starts, 1)
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'child reaping is checked through /proc')
+    def test_real_encoder_failure_retries_and_reaps_each_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            started = Path(directory) / 'started-pids'
+            executable = Path(directory) / 'encoder-exits'
+            executable.write_text(
+                '#!' + sys.executable + '\nimport os\n'
+                'with open(' + repr(str(started)) + ', "a") as output:\n'
+                '    output.write(str(os.getpid()) + "\\n")\n'
+                'raise SystemExit(71)\n')
+            executable.chmod(0o700)
+            vision = Vision({'exe': str(executable), 'mmproj': 'unused', 'model': 'unused',
+                             'elastic': True}, lazy=True)
+            self.addCleanup(vision.unload)
+            self.svc.vision = vision
+            cases = [
+                ('/v1/chat/completions', self.chat_picture()),
+                ('/v1/messages', {'model': 'm', 'max_tokens': 8, 'messages': [{'role': 'user', 'content': [
+                    {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/png', 'data': 'eA=='}}]}]}),
+                ('/v1/responses', {'model': 'm', 'max_output_tokens': 8, 'input': [{'role': 'user', 'content': [
+                    {'type': 'input_image', 'image_url': 'data:image/png;base64,eA=='}]}]}),
+            ]
+            for path, body in cases:
+                for stream in (False, True):
+                    for retry in range(2):
+                        with self.subTest(path=path, stream=stream, retry=retry):
+                            previous = started.read_text().splitlines() if started.exists() else []
+                            with self.assertRaises(urllib.error.HTTPError) as got:
+                                self.post(path, {**body, 'stream': stream})
+                            with got.exception as response:
+                                self.assertEqual(response.code, 503)
+                                self.assertIn('the image encoder failed to start', json.load(response)['error']['message'])
+                            children = started.read_text().splitlines()
+                            self.assertEqual(len(children), len(previous) + 1)
+                            self.assertFalse(vision.alive())
+                            self.assertFalse(Path('/proc', children[-1]).exists())
 
 
 if __name__ == '__main__':

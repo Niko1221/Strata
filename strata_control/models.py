@@ -143,6 +143,18 @@ def _arg(args: list[str], flag: str) -> str | None:
         return None
 
 
+def _missing_parts(report: dict) -> list[dict]:
+    """The required parts a model's run config names that are not there: {"part": the component, "file": its file or folder name,
+    "status": "missing" | "invalid"}. The app names them so a person is not told only that "some files are missing" (#3478)."""
+    found = []
+    for item in report.get("components", []):
+        if item.get("required") and item.get("status") in ("missing", "invalid"):
+            where = item.get("path")
+            found.append({"part": _short(item.get("name")), "file": _short(os.path.basename(str(where).rstrip("/\\"))) if where else None,
+                          "status": item["status"]})
+    return found[:12]
+
+
 def _summary(model_id: str, path: Path, raw: bytes, cfg: dict, report: dict) -> dict:
     context = _arg(cfg["args"], "--max-context")
     context_tokens = int(context) if isinstance(context, str) and 1 <= len(context) <= 8 and \
@@ -154,6 +166,7 @@ def _summary(model_id: str, path: Path, raw: bytes, cfg: dict, report: dict) -> 
             "context_tokens": context_tokens,
             "component_status": "present" if report["ok"] else "missing_or_invalid",
             "issue_codes": [item.get("code") for item in report["issues"]][:32],
+            "missing": _missing_parts(report),
             "execution_compatibility": "unverified"}
 
 
@@ -339,11 +352,26 @@ def plain_issue(code: str) -> str:
     return f"{name}: {words}" if name else words
 
 
-def problem_words(issues: list, limit: int = 3) -> str:
+def missing_words(missing: list | None) -> str:
+    """"x-00002-of-00002.gguf is missing" for the shards of a split model that are not in the folder (#3478); "" when none are known."""
+    names = [str(n) for n in missing or []]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"{names[0]} is missing"
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]} are missing"
+    return f"{names[0]}, {names[1]} and {len(names) - 2} more files are missing"
+
+
+def problem_words(issues: list, limit: int = 3, missing: list | None = None) -> str:
     """The problems of a file set as ONE sentence part, each said once: the same reason for several files names the files together
     ("a.gguf and b.gguf: the file is cut short"), a reason that was already given is not given again, and a long list is cut with a count.
     A folder that holds several models does not also say "not a size Strata knows"."""
     codes = [str(x) for x in issues or []]
+    named = missing_words(missing)
+    if named:                                                # the generic "some parts are missing" is replaced by the files
+        codes = [x for x in codes if x != "incomplete_or_invalid_shard_set"]
     if "multiple_model_groups" in codes:
         codes = [x for x in codes if x != "unrecognized_or_unsupported_model_variant"]
     by_reason: dict[str, list[str]] = {}
@@ -354,7 +382,7 @@ def problem_words(issues: list, limit: int = 3) -> str:
             by_reason.setdefault(reason, []).append(name)
         else:
             by_reason.setdefault(words, [])
-    parts = []
+    parts = [named] if named else []
     for reason, names in by_reason.items():
         if not names:
             parts.append(reason)
@@ -565,6 +593,7 @@ def plan_import(raw_path: str) -> dict:
     notes: list[str] = []
     folder_holds: list[dict] = []
     issues: list[str] = []
+    missing_shards: list[str] = []
     if stat.S_ISDIR(details.st_mode):
         shards, ignored_auxiliary, cut = _list_gguf(path)
         if cut:
@@ -629,8 +658,13 @@ def plan_import(raw_path: str) -> dict:
         found = {int(m.group(2)) for m in (SHARD.fullmatch(item.name) for item in members) if m} or {1}
         if total > MAX_IMPORT_SHARDS or found != set(range(1, total + 1)):
             issues.append("incomplete_or_invalid_shard_set")
+            sample = next((SHARD.fullmatch(item.name) for item in members if SHARD.fullmatch(item.name)), None)
+            if sample and total <= MAX_IMPORT_SHARDS:        # #3478: name the files that are not there
+                missing_shards = [f"{sample.group(1)}-{i:05d}-of-{total:05d}.gguf" for i in range(1, total + 1) if i not in found]
     files = []
     for item in shards:
+        if missing_shards and not item.exists():
+            continue                                         # a shard that is named only to be reported missing has no header to read
         try:
             files.append(_gguf_header(item))
         except ProfileError as exc:
@@ -686,14 +720,14 @@ def plan_import(raw_path: str) -> dict:
     return {"source": str(path), "model_dir": str(model_dir), "scope": "local_gguf_candidate", "files": files,
             "file_count": len(files), "total_bytes": sum(item["bytes"] for item in files),
             "metadata": metadata, "candidate_selection": candidate,
-            "plain_issues": list(dict.fromkeys(plain_issue(i) for i in issues)),
+            "plain_issues": list(dict.fromkeys((missing_words(missing_shards) if (i == "incomplete_or_invalid_shard_set" and missing_shards) else plain_issue(i)) for i in issues)),
             "observed_expert_types": sorted(observed_experts),
             "observed_tensor_count": observed_tensor_count,
             "ignored_auxiliary_files": sorted(ignored_auxiliary),
             "projectors": projectors, "messages": messages, "already_set_up": _already_set_up(shards, candidate),
             "reads_pictures": any(p["status"] in ("ok", "other_name") for p in projectors) and
             not any(i.endswith("unsupported_architecture") for i in issues),
-            "folder_holds": folder_holds,
+            "folder_holds": folder_holds, "missing_shards": missing_shards,
             "file_set_status": "plausible" if not issues else "invalid_or_incomplete",
             "issues": issues, "adoption_status": "requires_architecture_quantization_tokenizer_and_engine_checks",
             "execution_compatibility": "unverified", "would_write": False,
