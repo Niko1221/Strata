@@ -2138,16 +2138,18 @@ struct Engine {
                             1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs);
                     // (from gqa_from cells: 8192 for fp32, 0 for int8 and k8v4)
                     else if (gqa_attn && H / HKV <= 8 && (graph_mode ? ctx : p0 + t0 + nt) >= gqa_from) {
+                        // (q36attn::launch_part_q8x: the cache through shared memory, one pass for all the window's rows of a
+                        // session; STRATA_Q36_ATTN_OLD=1 runs part_q8, the same bits)
                         if (kv_v4)   // k8v4: the same kernel on q4 V cells (rotated partials)
-                            q36attn::part_q8<<<dim3(nc, nt * HKV), kThreads, 0, st>>>(q,
+                            q36attn::launch_part_q8x(q,
                                 reinterpret_cast<const q36attn::q8_cell*>(rows_mode ? nullptr : kc[li]),
-                                reinterpret_cast<const q36attn::q4_cell*>(rows_mode ? nullptr : vc[li]), dpos, t0, H, HKV, ctx,
-                                1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs);
+                                reinterpret_cast<const q36attn::q4_cell*>(rows_mode ? nullptr : vc[li]), dpos, t0, nt, H, HKV, ctx,
+                                1.0f / sqrtf((float) HD), nc, n_chunk, pacc, pm, pl, rs, rows_mode, st);
                         else if (kv8)   // the int8 cache's own kernel (q36_attn.cuh)
-                            q36attn::part_q8<<<dim3(nc, nt * HKV), kThreads, 0, st>>>(q,
+                            q36attn::launch_part_q8x(q,
                                 reinterpret_cast<const q36attn::q8_cell*>(rows_mode ? nullptr : kc[li]),
-                                reinterpret_cast<const q36attn::q8_cell*>(rows_mode ? nullptr : vc[li]), dpos, t0, H, HKV, ctx,
-                                1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl, rs);
+                                reinterpret_cast<const q36attn::q8_cell*>(rows_mode ? nullptr : vc[li]), dpos, t0, nt, H, HKV, ctx,
+                                1.0f / sqrtf((float) HD), nc, n_chunk, pacc, pm, pl, rs, rows_mode, st);
                         else
                             q36attn::part<<<dim3(nc, nt * HKV), kThreads, 0, st>>>(q, rows_mode ? nullptr : kc[li],
                                 rows_mode ? nullptr : vc[li], dpos, t0, H, HKV, ctx,

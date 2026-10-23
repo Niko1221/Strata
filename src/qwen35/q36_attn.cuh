@@ -7,6 +7,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
 
 namespace q36attn {
 
@@ -295,6 +298,258 @@ __global__ void __launch_bounds__(256) part_q8(const float* q, const q8_cell* kc
         const size_t out = ((size_t) (t - t0) * H + kvh * group + h) * chunks + blockIdx.x;
         pacc[out * D + dim] = acc[h];
         if (tid == 0) { pm[out] = stat[h]; pl[out] = stat[G + h]; }
+    }
+}
+
+// ---- part_q8x: part_q8 with the cache streamed through shared memory (ATTN-1) and up to R window rows per block (ATTN-2).
+// Every output bit is part_q8's: each (row, head, cell) score is the same eight-term fma chain per lane and the same xor
+// tree (16, 8, 4, 2, 1) over the lanes, the softmax is the same warp-per-head code, and every (row, head, dim) accumulates its
+// cells in increasing order.  What changes is the memory side: part_q8 had one 1-byte load per lane and cell in its value loop
+// (a block took ~38 us for 256 cells whatever the context, 124 GB/s at 4K and ~545 GB/s at 200K); here the chunk's K tiles and
+// V tiles (TC cells, one contiguous byte range each) travel by cp.async through an S-slot ring, the V tiles already in
+// flight during the K scores and the softmax, and a K cell is dequantized once for all the rows and heads that use it.
+// A block serves rows tb .. tb + R - 1 of one session (consecutive cells: a verify window), so each K/V byte leaves DRAM once
+// for the whole window; row r sees the cells < npos_r.  Not for the batch rows mode (rows of different sessions): R = 1 there.
+// Dynamic shared memory: S * TC * 288 (the ring) + R * 256 * 8 * 4 (the scores [row][cell][head]).
+// cp.async is sm_80+: below that (and on HIP) the copies are plain loads/stores and the launcher does not pick part_q8x at all
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800 && !defined(__HIPCC__)
+#define Q36A_CP_ASYNC 1
+#endif
+__device__ __forceinline__ void cp16(void* dst, const void* src) {
+#ifdef Q36A_CP_ASYNC
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"((unsigned) __cvta_generic_to_shared(dst)), "l"(src));
+#else
+    *reinterpret_cast<int4*>(dst) = *reinterpret_cast<const int4*>(src);
+#endif
+}
+__device__ __forceinline__ void cp_commit() {
+#ifdef Q36A_CP_ASYNC
+    asm volatile("cp.async.commit_group;\n" ::);
+#endif
+}
+template<int N> __device__ __forceinline__ void cp_wait() {
+#ifdef Q36A_CP_ASYNC
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(N));
+#endif
+}
+
+template<int R, int TC, int S, class VC, class Rows>
+__global__ void __launch_bounds__(256, R == 1 ? 2 : 1) part_q8x(const float* q, const q8_cell* kc, const VC* vc,
+                                                               const int32_t* pos0, int rb, int t0, int H, int HKV, int ctx,
+                                                               float scale, int chunks, float* pacc, float* pm, float* pl,
+                                                               Rows rs) {
+    constexpr int D = 256, C = 256, G = 8, KB = sizeof(q8_cell), VB = sizeof(VC);
+    static_assert(C % TC == 0 && TC == 32 && S >= 3, "tile ring");
+    extern __shared__ __align__(16) unsigned char sm[];
+    float* scores = reinterpret_cast<float*>(sm + (size_t) S * TC * KB);   // [R][C][G]
+    __shared__ float stat[R][2 * G];                                       // per row and head: max, sum
+    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
+    const int kvh = blockIdx.y % HKV;             // (H / HKV == G query heads per KV head: the launcher's condition)
+    const int tb = rb + (blockIdx.y / HKV) * R;   // the block's first row; all R rows exist (the launcher splits the window)
+    const int p0 = blockIdx.x * C;
+    int n[R], nmax = 0;
+#pragma unroll
+    for (int r = 0; r < R; ++r) {
+        n[r] = min(C, (rs.cell ? rs.cell[tb + r] : *pos0 + tb + r) + 1 - p0);
+        nmax = max(nmax, n[r]);
+    }
+    if (nmax <= 0) return;
+    if (rs.kc) {   // batch rows (R == 1): the row's session
+        kc = reinterpret_cast<const q8_cell*>(rs.kc[rs.slot[tb]]);
+        vc = reinterpret_cast<const VC*>(rs.vc[rs.slot[tb]]);
+    }
+    const size_t cell = (size_t) kvh * ctx + p0;
+    const unsigned char* kbase = reinterpret_cast<const unsigned char*>(kc + cell);
+    const unsigned char* vbase = reinterpret_cast<const unsigned char*>(vc + cell);
+    const int NT = (nmax + TC - 1) / TC;   // K tiles, then as many V tiles
+    // tile i (K: i < NT, then V) into ring slot i % S: cells are contiguous, so a tile is one byte range
+    auto issue = [&](int i) {
+        if (i < 2 * NT) {
+            const bool isv = i >= NT;
+            const int b = (isv ? i - NT : i) * TC, cb = isv ? VB : KB;
+            const unsigned char* src = (isv ? vbase : kbase) + (size_t) b * cb;
+            unsigned char* dst = sm + (size_t) (i % S) * TC * KB;
+            const int nch = min(TC, nmax - b) * cb / 16;
+            for (int j = tid; j < nch; j += 256) cp16(dst + 16 * j, src + 16 * j);
+        }
+        cp_commit();
+    };
+    for (int i = 0; i < S - 1; ++i) issue(i);
+    float acc[R][G];
+#pragma unroll
+    for (int r = 0; r < R; ++r)
+#pragma unroll
+        for (int h = 0; h < G; ++h) acc[r][h] = 0.f;
+    const int dim = 32 * warp + lane;
+    // The four cells of a warp's tile are dealt to the lanes so that the xor tree's first two (transposing) steps need no
+    // selects: slot j of a lane holds cell (c0 ^ j) of the four, c0 = lane bits 4, 3.  Slots 0, 1 are kept and 2, 3 sent at
+    // xor 16 (the partner's slots 0, 1 are the cells we sent), then slot 1 is sent at xor 8.
+    const int c0 = (lane >> 3) & 3;
+    for (int i = 0; i < 2 * NT; ++i) {
+        cp_wait<S - 2>();
+        __syncthreads();   // tile i has landed (every thread's copies); the slot of tile i - 1 is free
+        issue(i + S - 1);
+        const unsigned char* slot = sm + (size_t) (i % S) * TC * KB;
+        if (i < NT) {
+            // scores: this warp takes cells 4 warp .. 4 warp + 3 of the tile, dequantized once for every row and head
+            // (cells past the tile's end hold stale shared memory: their scores are never stored)
+            const int kb = i * TC, k0 = 4 * warp;
+            float x[4][8];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const q8_cell& c = *reinterpret_cast<const q8_cell*>(slot + (size_t) (k0 + (c0 ^ j)) * KB);
+                const int2 w = *reinterpret_cast<const int2*>(c.q + 8 * lane);
+                const float d = c.d[lane >> 2];
+                const char4 lo = *reinterpret_cast<const char4*>(&w.x), hi = *reinterpret_cast<const char4*>(&w.y);
+                x[j][0] = lo.x * d; x[j][1] = lo.y * d; x[j][2] = lo.z * d; x[j][3] = lo.w * d;
+                x[j][4] = hi.x * d; x[j][5] = hi.y * d; x[j][6] = hi.z * d; x[j][7] = hi.w * d;
+            }
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+#pragma unroll
+                for (int h = 0; h < G; ++h) {
+                    const float* qh = q + ((size_t) (tb + r) * H + kvh * G + h) * D + 8 * lane;
+                    const float4 a = *reinterpret_cast<const float4*>(qh), b = *reinterpret_cast<const float4*>(qh + 4);
+                    const float qr[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+                    float v[4];
+#pragma unroll
+                    for (int j = 0; j < 4; ++j) {
+                        v[j] = 0.f;
+#pragma unroll
+                        for (int m = 0; m < 8; ++m) v[j] = fmaf(qr[m], x[j][m], v[j]);
+                    }
+                    // the xor tree 16, 8, 4, 2, 1 of part_q8, the four cells transposed over its first two steps
+                    const float e0 = v[0] + __shfl_xor_sync(0xffffffffu, v[2], 16, 32);
+                    const float e1 = v[1] + __shfl_xor_sync(0xffffffffu, v[3], 16, 32);
+                    float f = e0 + __shfl_xor_sync(0xffffffffu, e1, 8, 32);
+                    f += __shfl_xor_sync(0xffffffffu, f, 4, 32);
+                    f += __shfl_xor_sync(0xffffffffu, f, 2, 32);
+                    f += __shfl_xor_sync(0xffffffffu, f, 1, 32);
+                    if ((lane & 7) == 0 && kb + k0 + c0 < n[r]) scores[((size_t) r * C + kb + k0 + c0) * G + h] = f * scale;
+                }
+            }
+        } else {
+            if (i == NT) {   // the scores are complete: softmax per row and head (warp h), as in part_q8
+#pragma unroll
+                for (int r = 0; r < R; ++r) {
+                    if (n[r] > 0) {
+                        float* sc = scores + (size_t) r * C * G;
+                        float maximum = -INFINITY, denominator = 0.f;
+                        for (int k = lane; k < n[r]; k += 32) maximum = fmaxf(maximum, sc[k * G + warp]);
+                        maximum = warp_max(maximum);
+                        for (int k = lane; k < n[r]; k += 32) {
+                            const float e = expf(sc[k * G + warp] - maximum);
+                            sc[k * G + warp] = e;
+                            denominator += e;
+                        }
+                        denominator = warp_sum(denominator);
+                        if (lane == 0) { stat[r][warp] = maximum; stat[r][G + warp] = denominator; }
+                    }
+                }
+                __syncthreads();
+            }
+            // values: warp w takes dims 32 w .. 32 w + 31 (q8_0 block w of every cell), cells in order.  The rows of a window
+            // see up to R - 1 cells more than row 0, so only the last cells of the last chunk need the per-row stop (a select).
+            const int vb = (i - NT) * TC, cnt = min(TC, nmax - vb), kall = R == 1 ? cnt : max(0, min(cnt, n[0] - vb));
+#pragma unroll 4
+            for (int k = 0; k < kall; ++k) {
+                const float x = v_value(*reinterpret_cast<const VC*>(slot + (size_t) k * VB), dim, warp);
+#pragma unroll
+                for (int r = 0; r < R; ++r) {
+                    const float4 a = *reinterpret_cast<const float4*>(scores + ((size_t) r * C + vb + k) * G);
+                    const float4 b = *reinterpret_cast<const float4*>(scores + ((size_t) r * C + vb + k) * G + 4);
+                    acc[r][0] = fmaf(a.x, x, acc[r][0]); acc[r][1] = fmaf(a.y, x, acc[r][1]);
+                    acc[r][2] = fmaf(a.z, x, acc[r][2]); acc[r][3] = fmaf(a.w, x, acc[r][3]);
+                    acc[r][4] = fmaf(b.x, x, acc[r][4]); acc[r][5] = fmaf(b.y, x, acc[r][5]);
+                    acc[r][6] = fmaf(b.z, x, acc[r][6]); acc[r][7] = fmaf(b.w, x, acc[r][7]);
+                }
+            }
+            if (R > 1)
+                for (int k = kall; k < cnt; ++k) {
+                    const float x = v_value(*reinterpret_cast<const VC*>(slot + (size_t) k * VB), dim, warp);
+#pragma unroll
+                    for (int r = 0; r < R; ++r) {
+                        if (vb + k < n[r]) {
+                            const float4 a = *reinterpret_cast<const float4*>(scores + ((size_t) r * C + vb + k) * G);
+                            const float4 b = *reinterpret_cast<const float4*>(scores + ((size_t) r * C + vb + k) * G + 4);
+                            acc[r][0] = fmaf(a.x, x, acc[r][0]); acc[r][1] = fmaf(a.y, x, acc[r][1]);
+                            acc[r][2] = fmaf(a.z, x, acc[r][2]); acc[r][3] = fmaf(a.w, x, acc[r][3]);
+                            acc[r][4] = fmaf(b.x, x, acc[r][4]); acc[r][5] = fmaf(b.y, x, acc[r][5]);
+                            acc[r][6] = fmaf(b.z, x, acc[r][6]); acc[r][7] = fmaf(b.w, x, acc[r][7]);
+                        }
+                    }
+                }
+        }
+    }
+    cp_wait<0>();
+#pragma unroll
+    for (int r = 0; r < R; ++r) {
+        if (n[r] > 0) {
+#pragma unroll
+            for (int h = 0; h < G; ++h) {
+                const size_t out = ((size_t) (tb + r - t0) * H + kvh * G + h) * chunks + blockIdx.x;
+                pacc[out * D + dim] = acc[r][h];
+                if (tid == 0) { pm[out] = stat[r][h]; pl[out] = stat[r][G + h]; }
+            }
+        }
+    }
+}
+
+// Host side of part_q8x: R rows per block (a window's rows share one pass over the cache).  A window of nt rows from t0 is
+// split into launches of whole groups (nt = 3: one launch of R = 3; 8: R = 4 twice; 7: R = 4, then R = 3).  one_row: the
+// batch rows mode, whose rows have different caches.  STRATA_Q36_ATTN_OLD=1 runs part_q8 (the A/B and the VERIFY
+// reference); STRATA_Q36_ATTN_ROWS=n caps R (tests).  Only for 8 query heads per KV head (Sage's 16 / 2).
+template<int R, class VC, class Rows>
+inline void launch_part_q8x_r(const float* q, const q8_cell* kc, const VC* vc, const int32_t* pos0, int rb, int rows, int t0,
+                              int H, int HKV, int ctx, float scale, int nc, int chunks, float* pacc, float* pm, float* pl,
+                              Rows rs, cudaStream_t st) {
+    constexpr int TC = 32, S = 4;
+    const size_t smem = (size_t) S * TC * sizeof(q8_cell) + (size_t) R * 256 * 8 * sizeof(float);
+    static bool opted = false;
+    if (!opted) {
+#ifndef __HIPCC__
+        if (cudaFuncSetAttribute(part_q8x<R, TC, S, VC, Rows>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) smem) != cudaSuccess)
+            std::fprintf(stderr, "strata-q36: part_q8x<%d>: %zu bytes of shared memory refused\n", R, smem);
+#endif
+        opted = true;
+    }
+    part_q8x<R, TC, S, VC, Rows><<<dim3(nc, rows / R * HKV), 256, smem, st>>>(q, kc, vc, pos0, rb, t0, H, HKV, ctx, scale,
+                                                                             chunks, pacc, pm, pl, rs);
+}
+template<class VC, class Rows>
+inline void launch_part_q8x(const float* q, const q8_cell* kc, const VC* vc, const int32_t* pos0, int t0, int nt, int H, int HKV,
+                            int ctx, float scale, int nc, int chunks, float* pacc, float* pm, float* pl, Rows rs, bool one_row,
+                            cudaStream_t st, int rows_cap = 0) {
+#ifdef __HIPCC__
+    static const bool old = true;   // HIP not built: part_q8 only
+#else
+    static const bool old = [] {
+        if (std::getenv("STRATA_Q36_ATTN_OLD") != nullptr) return true;
+        int dev = 0, major = 0;   // part_q8x streams the cache with cp.async (sm_80+): older cards keep part_q8
+        if (cudaGetDevice(&dev) == cudaSuccess && cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+            major < 8) {
+            std::fprintf(stderr, "strata-q36: the shared-memory decode attention needs sm_80+ (this card is sm_%d): using part_q8\n", major);
+            return true;
+        }
+        return false;
+    }();
+#endif
+    static const int cap = [] { const char* v = std::getenv("STRATA_Q36_ATTN_ROWS"); return v ? std::atoi(v) : 4; }();
+    if (old || H / HKV != 8) {   // (part_q8x is the 8-heads-per-KV-head case: Sage's 16 / 2)
+        part_q8<<<dim3(nc, nt * HKV), 256, 0, st>>>(q, kc, vc, pos0, t0, H, HKV, ctx, scale, chunks, pacc, pm, pl, rs);
+        return;
+    }
+    const int rcap = std::max(1, std::min(one_row ? 1 : (rows_cap > 0 ? rows_cap : cap), 4));
+    for (int rb = t0, rem = nt; rem > 0;) {
+        const int R = std::min(rem, rcap), rows = rem / R * R;
+        switch (R) {
+            case 1: launch_part_q8x_r<1>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+            case 2: launch_part_q8x_r<2>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+            case 3: launch_part_q8x_r<3>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+            default: launch_part_q8x_r<4>(q, kc, vc, pos0, rb, rows, t0, H, HKV, ctx, scale, nc, chunks, pacc, pm, pl, rs, st); break;
+        }
+        rb += rows;
+        rem -= rows;
     }
 }
 
