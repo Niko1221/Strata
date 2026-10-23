@@ -2406,7 +2406,13 @@ class StrataEngine:
             parts = line.split()
             if len(parts) != 2 or not parts[1].isdigit():
                 self.ended = True
-                raise EngineDied(f"a malformed BROWROWSD answer: {line.strip()[:200]!r}")
+                try:                                     # same teardown as _brow_reply: fail closed hard
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"a malformed BROWROWSD answer: {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
             return int(parts[1])
 
     def _brow_reply(self, op: str, answer: str, row, tokens: list[int]) -> dict[int, float]:

@@ -127,7 +127,15 @@ def fit_platt(rows, ridge=1e-6):
         cur = cand
         if abs(step * da) < 1e-10 and abs(step * dc) < 1e-10:
             break
-    return az / sdx, cz - az * mx / sdx
+    a, c = az / sdx, cz - az * mx / sdx
+    # Divergence guard: Newton on a separable/saturated split can run away instead of settling
+    # (seen 2026-10-23: an early version returned a=-199109, c=-128141 and the caller printed it as
+    # a fit).  A Platt slope far from the 0.05..20 range carries no information - say so loudly
+    # rather than let it reach a calibrator file.
+    if not (math.isfinite(a) and math.isfinite(c)) or abs(a) > 20.0 or abs(c) > 50.0:
+        print(f"  !! WARNING: Platt fit did not converge (a={a:.6g} c={c:.6g}); "
+              f"the split is probably separable - do NOT install this fit", flush=True)
+    return a, c
 
 
 def brier(rows):
