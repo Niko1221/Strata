@@ -214,6 +214,14 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   layer has two (the share otherwise rounds to 0 at 1-2 misses). RTX 3090 + Ryzen 5 5600X: prompt read +5-7 % at 56K-117K
   tokens; decode level alone, +2-3 % with `--adapt-async 1` and `--pcie-frac 0.6`
   ([report](../bench/results/2026-10-11-community-rtx3090-5600x-arena-pin-by-need/README.md)).
+- **Pinned-memory headroom** (Windows CUDA, on by default; `STRATA_PIN_RESERVE_MIB=N`, `0` = off, sets it on any OS): the arena registers
+  slice by slice until the driver refuses one, and on a 64 GB PC that left no page-locked memory at all for the few small buffers the
+  engine allocates after it (the verify window's staging: `verify: mapped staging allocation failed`, exit 1, on Swift 1.5 IQ2_XS). The
+  engine now holds 640 MiB (given back as soon as the arena is placed) and 160 MiB (kept until a required buffer is refused, or READY) while
+  the arena pins, so the arena stops about one layer earlier; a refused required buffer gives both back and tries once more. If that still
+  fails the error ends with `[pinned-memory-exhausted]` and names the `STRATA_ARENA_PIN_GIB` to start with. Linux has no such ceiling
+  (the NVIDIA driver pins past `ulimit -l`), so the reserve is off there. Test knobs: `STRATA_TEST_PIN_BUDGET_MIB=N` makes the engine's own
+  pinned allocations fail beyond N MiB, `STRATA_TEST_PIN_LEFT_KIB=N` lowers that ceiling after the arena to what is charged plus N KiB.
 - `STRATA_EXCHANGE_ROTATE=1` (opt-in): an adaptive swap hands buffer ownership over instead of copying the evicted
   blob into the RAM copy (fully page-locked copy; layers of different blob sizes keep spare buffers per size). Same
   tokens, fewer host copies; it works with `--adapt-async 1` too. Swift 1.5 IQ3_S on an RTX 5090 with 64 GB RAM
@@ -261,7 +269,35 @@ from the GGUF gave identical tokens and logits. An expert read from the GGUF is 
 engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) with one batched page request
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
-**Linux file-tier I/O path (opt in, `STRATA_IO_PREFETCH=1`; 0.1.40.2):** the mapped file tier reads experts through
+**Linux file tier, 0.2.0 defaults (zero-copy page-cached experts, io prefetch, the decode gate):** when experts are read
+from a GGUF read in place (the native packs, also with `--mmap-experts`), Linux now runs three things by default
+(0.2.1: an `experts.bin` pack gets io prefetch and the decode gate when the page cache has room for at least 55% of the experts, see below; zero-copy
+does not apply to it, its blob is one range the kernels already read from the mapping).
+(1) **Zero-copy** (`STRATA_COLD_OVERLAP=4`): an expert of a GGUF read in place whose three tensors' pages are all in the page
+cache (mincore) is computed straight from the mapping; before, every such expert was first assembled into a staging buffer
+(a copy of ~1.5 MB per Q2_0 expert, on the decode's critical path). Same bytes, same rows, same output (identity gates
+IDENTICAL). (2) **io prefetch** (`STRATA_IO_PREFETCH=1`, the path described below): whole-blob `pread`s and the router-
+predicted experts of the next layers read ahead. (3) **the decode gate** (`STRATA_IO_PF_GATE=1`): every 16 decode windows the
+decode's read-ahead is judged - it runs only while the page cache has room for the experts (the memory available, the
+tightest cgroup limit included, over the experts' bytes: off below 0.55, on above 0.65, `STRATA_IO_PF_GATE_LO` / `_HI`) and
+while it pays (at least 128 MB read ahead in 16 windows and 10% of it used, `STRATA_IO_PF_GATE_USEFUL`; a probe every 256
+windows when it closed for that). Closed, the decode reads as it did without io prefetch (the look-ahead predicts one layer
+and warms with an madvise hint); the prompt path keeps its preads either way. Measured on an RTX PRO 5000 emulating a 12 GB
+card (`--expert-cache 4448`, Q2_0 GGUF in place, page cache dropped before each engine, RAM limited by a cgroup), the 0.2.0
+defaults against the 0.1.4x ones, 3 interleaved pairs, story / code / doc8k decode and 4K / 20K prompts: 32 GB of RAM
+1.70 / 2.56 / 2.88x decode (34.0 / 28.0 / 21.7 -> 57.6 / 71.7 / 62.6 tok/s), 1.54 / 1.91x prompts; 16 GB 1.16 / 1.25 / 1.25x
+decode, 1.63 / 1.68x prompts (the gate stays closed there); `--resident-budget-gib 18` in 32 GB 1.16 / 1.10 / 1.30x decode,
+1.55 / 1.91x prompts; greedy token ids equal on story and code (doc8k varies run to run with the adaptive tier in both). On a
+real RTX 3060 12 GB (32 GB cgroup, 3 pairs) zero-copy alone gave 1.14 / 1.44 / 1.47x decode, 1.06 / 1.02x prompts. With them,
+the container RAM check counts a cgroup's clean page cache (active and inactive) as available, as MemAvailable does on a bare
+host: before, the 18 GiB RAM tier in a 32 GiB cgroup re-checked "1.2 GiB available" once io prefetch's startup reads had left
+their cache in the group, and its file tier switched to unbuffered reads (which also left zero-copy off). Off switches: `STRATA_COLD_OVERLAP=0`, `STRATA_IO_PREFETCH=0`,
+`STRATA_IO_PF_GATE=0`; the startup log names what is on. Windows and macOS are unchanged.
+
+**Linux, `experts.bin` packs (0.2.1):** io prefetch and the decode gate are on by default when the page cache has room for at least 55% of the experts
+(the tightest cgroup limit or MemAvailable over the pack's expert bytes, asked once at start; `STRATA_IO_PF_GATE_LO`). Below that the pack reads as before and the log says so; `STRATA_IO_PREFETCH=1` forces it, `0` turns it off. Measured on an RTX 3060 12 GB, IQ3_XXS pack (43 GB `experts.bin`), `--mmap-experts`, cgroup RAM limit, page cache dropped before each engine, 5 interleaved pairs: 32 GB decode 1.38x / 1.21x / 1.33x (story / code / doc8k, 5/5 pairs faster each), prompts 4K 1.04x, 20K 1.06x. At 16 GB io prefetch gave decode +3..8% but the cold 4K prompt 4-6% slower, so it stays off there (room 38%). Identity gates (fixed flags, no RAM limit and a 32 GB cgroup): 10/10 texts, exact_pp 4K / 20K residual dumps IDENTICAL.
+
+**Linux file-tier I/O path (`STRATA_IO_PREFETCH=1`; 0.1.40.2, on by default on Linux since 0.2.0 - see above):** the mapped file tier reads experts through
 page faults. With this on, the layer's uncached experts and the router-predicted ones of the next layer (`STRATA_LOOKAHEAD_K`,
 `STRATA_IO_PREFETCH_DEPTH`, default 2 when on) are read by I/O threads (`STRATA_IO_PF_THREADS`, default 8) with whole-blob
 `pread`s into the page cache, and the CPU kernels read the mapping as before. The bytes are the same, so the output is the
@@ -332,6 +368,14 @@ move on a Threadripper PRO 3975WX + R9700 (14.5 ms, +0.4%, 5 pairs); no case rea
   reach, and the expert cache holds the rest, giving slots back as the context grows. It needs one GPU, an expert
   profile, the whole K/V in VRAM (no KV streaming) and every expert in RAM (not the resident low-RAM mode); otherwise,
   and with `--batch`, `--vram-elastic` or `--peer-device`, the engine says so and stays off.
+  On HIP (ROCm 6+) it runs through hipMemAddressReserve / hipMemCreate / hipMemMap (2 MiB chunks; the card must report
+  virtual memory management, `STRATA_HIP_VMM=0` turns it off); until then every AMD card printed "--kv-grow is off".
+  Radeon AI PRO R9700 with `--vram-reserve-mib 17084` (a 16 GB card), Q2_0 pack, `--max-context 196608`, 5 interleaved pairs:
+  expert-cache slots 6,213 -> 7,968 and decode 96.3 -> 98.5 tok/s (x1.023, 5/5; the noise arm read x0.999); at
+  `--max-context 262144` the default engine finds no VRAM left for the cache on that budget and does not start, `--kv-grow`
+  starts with 7,877 slots (94.4 tok/s). Prompts of 20K and 60K tokens through the growing K/V read as fast as without it
+  (x1.002, x1.001) and gave identical answers. At contexts up to 128K the K/V is small and nothing changes; it pays on cards of
+  about 24 GB or less with contexts of 128K and more.
 - `--host-core last` (or `STRATA_HOST_CORE=last`, Windows): the host thread runs on the last physical core and the
   workers take the first. Windows sends a GPU's interrupts to the first core, where a host spinning on the GPU's flags
   waits for them (`--host-core first` is the default; the startup log names the cores). It leaves a hybrid CPU as it
@@ -580,6 +624,34 @@ the same worker count and workload. This does not change kernels, phase barriers
 does not affect the legacy single-token/oracle fallback. Setup's `--calibrate` does not tune it yet.
 For the server, add `"--pool-tasks", "192"` to the existing `args` list in its configuration, then restart it.
 
+**How many CPU threads the engine starts (`--pool-workers`).** Without the setting the engine picks the number of
+CPU expert workers from the CPU, not from the count of logical threads: one worker per *physical* core (never an SMT
+sibling) except the core of the main thread, one core less on a CPU with 17 or more cores, only the cores of the main
+thread's CPU socket on a multi-socket machine, at most 32, no more than a container's CPU limit (docker `--cpus`) allows,
+and on a hybrid CPU with more efficiency than performance cores the performance cores but one plus half of the efficiency
+cores. When the OS does not say which logical processors share a core (some containers), it counts half of them. The start
+line says what bounded the number (`CPU pool: 31 workers by default (32 physical cores, 64 logical processors; bounded by ...)`).
+The workers wait by spinning, so a worker without a core of its own takes time from the others: on a 20-core CPU 24
+workers decoded 44% slower than the default, on a 32-core EPYC 63 workers 35% slower. A count in the config
+(`--pool-workers N`) is always used as given; when it is above what the CPU uses well the engine prints a plain warning
+with the recommended number at start (`strata cpu pool: warning: ...`). Setup writes no worker count except the hybrid
+CPU's, capped the same way, and gives the CPU vision encoder at most 16 threads (`--threads` in the `vision` entry of the
+config changes that).
+
+**Two sockets (community measurements, #3201; the default is the host's socket only).** Two dual-socket boxes gave opposite
+results for workers on both sockets, so measure on yours: `--pool-workers N` with N above one socket's cores, a fresh server
+for each value, the same prompt, decode tok/s from the log. On 2x Xeon Gold 6226 (2x12 cores, 4 of 6 memory channels per socket,
+RTX 3090, IQ4_XS at 262K, about 25% of the experts computed on the CPU) the default (11 workers) gave 52.6 tok/s and 22 workers
+gave 50.3, lower and noisier. On 2x Xeon E5-2670 v2 (AVX only, 2x CMP 50HX, IQ3_XXS at 393K, a 98% VRAM hit rate: the CPU computes
+about 2% of the experts) the default (9 workers) gave 65.5 tok/s and `--pool-workers 19` gave 75.1 (+15%, six runs, 74.9 to 75.1).
+So the cores of the second socket can pay off when the CPU's part of a window is short and its slowest expert sets the pace, and cost
+when the sockets wait for each other's counters. Prompt speed did not change in either. Check the IOMMU too: on a distro kernel
+with it translating every DMA (`cat /sys/kernel/iommu_groups/*/type | sort | uniq -c` shows `DMA-FQ`), pinned host-to-device copies ran at
+7.7 to 9.2 GB/s on PCIe 3.0 x16 and at 12.3 GB/s with `iommu=pt` on the kernel command line, which moved prompt speed by about 30% there.
+A NUMA-aware pool (one slice of workers per socket, each reading its own socket's copy of the CPU experts) gave +10 to +14% on
+the first box in a contributor's branch; 0.2.2 has it (on by itself with 2 or more NUMA nodes, `STRATA_NUMA_POOL=0` turns it off: see "NUMA-split CPU expert pool" below). Do not wrap the server in `numactl --cpunodebind` when you test
+workers across sockets: it pins them to one node.
+
 ### Running it at startup (Task Scheduler)
 
 To have the model up at logon, people start the serve from **Task Scheduler** (or a service). Beware: Windows
@@ -622,6 +694,7 @@ The same questions, the same automatic install (it uses `sudo apt` for Python an
 for the build tools), and the same start: `http://127.0.0.1:8080`. Later runs of `./setup.sh` (or `./run-<model>.sh`)
 start the model directly. Options as on Windows (`./setup.sh --setup`, `--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`).
 Terminal chat: `.venv/bin/python chat.py`.
+Building from git, trying a pull request, the monitor from a checkout: [INSTALL.md](INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code).
 
 - **Updating:** `git pull`, then `./setup.sh`: it compiles the engine again when its source changed (a minute or
   two for the changed files). If that compile fails, it says so and starts the engine you had.
@@ -890,7 +963,8 @@ print(r.choices[0].message.content)
   from going to sleep while at least one request is running or waiting (Windows' `SetThreadExecutionState` with
   `ES_SYSTEM_REQUIRED`; the screen may still turn off), and gives the normal sleep rules back when the server is idle
   and when it exits. Default off. On Linux and macOS it does nothing (one line at startup says so).
-- **A hard thinking budget (opt-in).** `"reasoning_budget_tokens": N` in a request (OpenAI or Anthropic) caps the
+- **A hard thinking budget (opt-in).** `"reasoning_budget_tokens": N` (or llama.cpp's `"thinking_budget_tokens": N`, which
+  clients written for llama-server send) in a request (OpenAI or Anthropic) caps the
   thinking at N tokens: when it gets there the server ends it with a short wrap-up line and `</think>`, and the model
   answers from there (the engine continues from what it already holds, so nothing is read again). The wrap-up is
   part of the thinking the client sees and counts as output tokens. `"reasoning_budget_tokens": N` in
@@ -925,7 +999,10 @@ print(r.choices[0].message.content)
   conversation and every idle slot (a slot still running finishes its reply and is not kept after it) and reads its
   prompt from token 0. The server retries a request that had sent nothing yet once, transparently; a reply that had
   started ends as `"length"` with a line in the server window; a second fire on the retry ends the request with an
-  error (503 before an answer, an error event in a stream). With replicas, the server forgets what that replica held.
+  error (503 before an answer, an error event in a stream). When the flagged window was one that reads the prompt's
+  last few tokens (the part after the last turn boundary, read through the verify windows, `--short-read`), the retry
+  reads its whole prompt through the batched path instead (#3465: a reporter's prompts failed in that tail every time and
+  passed with `--short-read 0`); the engine prints a line saying so. With replicas, the server forgets what that replica held.
   `repeat_stop_tokens` stays as the backstop. The kernel writes only its flags and the host only reads them, so an
   answer without a NaN is the one the engine gives with `STRATA_NAN_GUARD=0`, which records no kernel: on an RTX
   3080 with the RVN IQ3_S config at fixed expert sets (a chat replay of 8 turns on a 16K-token system prompt), the
@@ -973,6 +1050,12 @@ print(r.choices[0].message.content)
   long prompt the stream sends keep-alives, so agents do not time out; the server window prints progress every
   15 s, and `GET /status` says what it is doing (`reading the prompt`, `answering`, tokens so far). Closing the
   connection or pressing stop in your app really stops the model, so the next request starts at once.
+- **Which tool calls come back as calls.** A call counts only when it names a tool the request declared. A call for
+  another name, or any call in a Chat Completions or Anthropic request that declared no tools, is returned as the
+  text it was written as, so a client never runs a tool it did not offer (the Responses route keeps its own rule
+  for Codex's compaction requests). A call whose envelope drifted by a token, `<=NAME>`, `<function:NAME>` or `<NAME>`
+  instead of `<function=NAME>`, is read as the call when NAME is a declared tool. A `<tool_call>` block that still
+  does not read as a call is counted in the server window.
 - **Tool calls in other forms (opt-in).** `"tool_call_recovery": true` in `strata-<model>.json` reads a call of a
   tool the request declared also when the model writes it as `<parameter=NAME>` instead of `<function=NAME>`, as JSON
   (`{"name": ..., "arguments": ...}`) inside `<tool_call>`, as a `<function=NAME>` block at the start of a line
@@ -1030,17 +1113,18 @@ print(r.choices[0].message.content)
   ```
 
   Set `limit.context` to the context you chose in setup: OpenCode compacts the conversation before it gets there.
-  Keep `limit.output` well under it: a request whose prompt plus `max_tokens` runs past the context is refused (see
-  **Context** below), or add `"fit_max_tokens": true` to `strata-<model>.json`. For a hard cap on the thinking, add
+  Keep `limit.output` well under it: a request whose prompt plus `max_tokens` runs past the context has its `max_tokens`
+  shortened to the room left (see **Context** below). For a hard cap on the thinking, add
   `"reasoning_budget_tokens": N` to `strata-<model>.json` (see above).
 - **Claude Code** (Strata 0.1.17 or newer): set `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` and
   `ANTHROPIC_MODEL` to a Claude model name it knows (it refuses names it doesn't; Strata ignores the name), plus any
   `ANTHROPIC_AUTH_TOKEN` (or your `api_key`, if you set one).
 - **Codex CLI** (0.1.39): see [the Responses API](#the-responses-api-and-codex-cli) below.
 - **Context.** Chosen in setup (8K-262K). Requests longer than that are refused, never silently cut. A request whose
-  `max_tokens` would run past the context is refused too (400); agents that always ask for their full output cap
-  can instead get it shortened to the room left: add `"fit_max_tokens": true` to `strata-<model>.json` (or pass
-  `--fit-max-tokens` to `serve/server.py`). A prompt that leaves no room at all is still refused.
+  `max_tokens` would run past the context is answered with `max_tokens` shortened to the room left (agents such as
+  Claude Code ask for 32,000 on every request); the thinking budget follows the shortened cap. For the strict llama.cpp
+  behaviour (400) set `"fit_max_tokens": false` in `strata-<model>.json` or pass `--no-fit-max-tokens` to
+  `serve/server.py`. A prompt that leaves no room at all is always refused.
 - **Model aliases** (0.1.32). `"aliases": ["qwen", "local-model"]` in `strata-<model>.json` lists the model under
   those names too in `/v1/models` (each with its own `id`, and in the model's `aliases`), like llama-server's
   `--alias`; a request naming one is answered under that name. Any other name is still served, as before.
@@ -1054,7 +1138,9 @@ print(r.choices[0].message.content)
   editable there.
 - **From other devices on your network.** The server listens on your PC only (`127.0.0.1`) unless you say otherwise:
   run setup with `START-HERE.bat --setup --host 0.0.0.0 --api-key some-long-secret` (or add `"host": "0.0.0.0"` and
-  `"api_key": "..."` to `strata-<model>.json`). The server window then prints this PC's addresses
+  `"api_key": "..."` to `strata-<model>.json`). The key is recommended, not required: without one the server still starts and
+  warns that anyone who can reach the port can use the model and its tools (to say it is on purpose, use `--no-api-key` on
+  the server or `"api_key": "none"` in the config, which silences the config-empty note). The server window then prints this PC's addresses
   (`from other devices: http://192.168.x.x:8080/`); open that on the other device, or use `.../v1` as an API base URL.
   On Windows the firewall blocks it until you allow it: accept its prompt for Python (private networks), or run
   `New-NetFirewallRule -DisplayName "Strata 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`
@@ -1072,6 +1158,9 @@ print(r.choices[0].message.content)
 - **From web apps in a browser (CORS).** Off by default. `"cors_origins": ["https://chat.example.com"]` lets pages of
   those origins call `/v1/*` from the browser (Open WebUI's direct connections, browser extensions); `["*"]` lets any
   page do it - only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools.
+  `cors_origins` belongs to the engine's own server (`strata serve`, `./setup.sh`, port 8080 by default). The desktop
+  app answers browser pages on its own API address (the one under Serving, port 47831 or the next free one) and already allows pages of
+  any site there, so its "Allow browser origins" switch in the Expert parameters does nothing.
 - **Host names (DNS rebinding).** A web page of another site can point its own name at `127.0.0.1` and then reach
   this server as if it were its own, so without an API key the server answers only requests whose `Host` is a name
   it knows (with a key the check is off: such a page cannot send the key, and tunnels and proxies that pass their
@@ -1629,14 +1718,19 @@ The config snippets for every client, the tool arguments and the safety rules ar
 (Qwen3.6-35B-A3B reads pictures the same way, with its own `mmproj-F16.gguf`: [QWEN36.md](QWEN36.md).)
 
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
-(0.9 GB, a 27-layer ViT plus the projector into the language model). It is **optional**: say yes when the setup asks
-"Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
-helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
+(0.9 GB, a 27-layer ViT plus the projector into the language model). Pictures are **on by default** wherever a model can read
+them. The app, `strata launch` and setup use one rule for the reader: the **CPU reader under 24 GB** of graphics memory (nothing is
+taken from the card's memory, so the experts keep their room) and the **graphics card's reader from 24 GB**, on NVIDIA and AMD
+cards; a Mac reads on its GPU (Metal) whatever its memory. You can switch pictures off (`--vision no`, or "No" in the app and in `strata launch`) or pick the reader per model
+(`--vision gpu` or `--vision cpu`). The setup downloads the encoder and puts a small helper (`strata-vision`, from llama.cpp's
+`mtmd` library) beside the engine; it adds it to your start script. Nothing else changes. Where a reader is missing, pictures
+stay off and the screen says so: the Intel Arc engine has none yet. On AMD the card's reader is `strata-vision-hip`, a second program in the engine package; if it cannot start, the server
+starts the CPU reader by itself and prints one line ([AMD_HIP.md](AMD_HIP.md)).
 
 | Encoder on | Time per picture | Cost |
 | --- | --- | --- |
-| **GPU** (recommended) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
-| CPU | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
+| **GPU** (the default from 24 GB) | **0.1-0.5 s** (up to 1,024 image tokens) | ~1.4 GB of VRAM is kept free for it, so the expert cache is smaller: text output is a few % slower (table below) |
+| CPU (the default under 24 GB) | about 3 s at 300 image tokens on 8 cores (6-13 s on 4 threads); more tokens take longer, in proportion (#767, #625) | nothing on the GPU |
 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps
 do on every turn, is encoded only once.
@@ -1732,7 +1826,7 @@ WebP). Chat apps with image upload work the same way.
 | **IQ2_XS** | 468 | 458 | 77.1 | 74.0 |
 | **IQ3_XXS** | 411 | 401 | 64.7 | 59.5 |
 
-"Off" is the published setup; "on" runs with the encoder loaded on the GPU and its VRAM kept free, so ~1,000 fewer
+These numbers date from 2026-09-24 (an engine before 0.1.13). "Off" is the published setup; "on" runs with the encoder loaded on the GPU and its VRAM kept free, so ~1,000 fewer
 experts fit in VRAM and the CPU computes a few more per token: 2-8% slower. For text, turning images on changes
 nothing else (the output is bit-identical when the VRAM is the same).
 
@@ -1840,8 +1934,7 @@ says so; `STRATA_ROUTE_TAIL_SKIP=7` turns it on anyway, and `STRATA_TAIL_SKIP_MA
 `route tail skip: N missed experts skipped` (cumulative) while it is active.
 
 **Answers differ slightly from 0.1.41** (`STRATA_ROUTE_TAIL_SKIP=0` brings them back). Teacher-forced KL of the decode path (the default's own greedy text and the default sampled at T=0.8, 28 chat prompts of code,
-reasoning, chat, six languages and long-document summaries, 220 tokens each, about 6,000 scored tokens per set, through the real verify windows with the MTP drafts;
-`phaseA-tests/cuda-route-kl.md`):
+reasoning, chat, six languages and long-document summaries, 220 tokens each, about 6,000 scored tokens per set, through the real verify windows with the MTP drafts):
 
 | | RTX 3060 12 GB, IQ3_XXS | RTX A4000 16 GB, Q2_0 |
 |---|---|---|
@@ -1869,7 +1962,7 @@ median over the rounds (ratio of tokens/s, default over `=0`; rounds in which th
 | Tesla P100 16 GB, IQ3_XXS, `--pcie-frac 0.29` | 1.149 (5/5) | 1.182 (5/5) | 1.118 (5/5) | **1.146 (5/5)** |
 | two RTX A4000, layer split (hit rate 99.7%) | 0.987 (0/5) | 1.004 (5/5) | 1.002 (3/5) | 0.998 (1/5) |
 
-The gain follows how much of a token is spent waiting for missed experts (hit rate 75-90% on the single cards in the profile, `phaseA-tests/cuda-profile.md`); a 2-GPU
+The gain follows how much of a token is spent waiting for missed experts (hit rate 75-90% on the single cards in the profile); a 2-GPU
 split that holds nearly every expert (hit rate 99.7%) gains nothing. It does not touch prompt reading. Switches that stay opt-in and are not part of this:
 `STRATA_ROUTE_PRIOR` (adds speed, doubles the KL), `STRATA_ROUTE_RESIDENT` and `STRATA_ROUTE_RESIDENT_MTP` (the latter is not faster than the former).
 
@@ -1897,12 +1990,40 @@ Measured (interleaved pairs of whole engine runs, new default against `STRATA_PC
 Explicit-share runs are byte-identical to 0.1.41 (`mg_norepeat` 10 of 10, `exact_pp` 4096 and 20000). With the new default the answers differ a little
 from the old default, as any change of the share does (CPU and GPU round differently): teacher-forced KL against the old default 0.0015 on the 3060
 (run-to-run floor 0.0013) and 0.0011 on the A4000 (floor 0.0012; at that time the share was 0.25).
-The sweeps behind the constant: `phaseA-tests/notes-142-pciefrac.md`.
 
 `STRATA_PCIE_BALANCE=1` (opt-in, CUDA, one GPU, no `--batch`, no `--pcie-frac`; #1548 by sergiywith / stuchapin909): instead of one share for every layer, each verify layer
 reads over PCIe the number of its missed experts that balances the two sides. The spin kernels stamp the GPU's clock (the plan's arrival, the PCIe part's start, the wait for the CPU rows),
 the host times its pool, and least squares with forgetting fit the pool's `a + c*n_cpu + d*n_pcie` and the GPU's `g0 + g*n_pcie`; the engine prints the fit (`pcie model`) at the end of `generate`.
 Every 64th layer with a miss moves one expert to the other side so both fits stay measured. Unset, nothing changes (the logits equal the build before). Measured by us (5 interleaved pairs, box default flags, IQ3_XXS): RTX A4000 arena decode 48.45 -> 51.15 tok/s (+5.6%, 5/5 pairs), RTX 3060 resident 59.12 -> 58.15 (-1.6%), Tesla P100 37.95 -> 37.48 (-1.3%): opt-in, worth trying on A4000-class cards.
+
+## The prompt chunk follows the host's memory (Linux, file tier; on by default, `STRATA_PREFILL_HOST_PLAN=0` turns it off)
+
+When the experts that do not fit in VRAM are read from the model files through the page cache, the size of the prompt chunk decides how many times a long
+prompt walks over those files, and how big the working set is each time (the chunk's activation buffers and the lent slots take RAM and VRAM from the
+cache). Before engine 0.1.45.3 the chunk was always today's pick (8192 on most cards). The planner prices the host from what it can measure at start: the RAM copy and its
+lent slots, the page cache that is left, the drive class (read from the GGUF path) and the PCIe link, and picks the chunk (and the ring) with the fewest
+predicted bytes read per prompt. It prints one `chunk 8192 -> 3840, ring 96 -> 96: ...` line when it changes the pick, and `chunk 8192 kept: ...` when it does not.
+A prompt that fits today's chunk keeps one chunk; a longer one is read in equal chunks of at most the plan's size (no stub at the end). No weight or expert
+changes; only the rounding of the batched prompt path moves (first-window logits KL 0.002-0.012 against the fixed chunk, same top-1; the text matched in 30 of 30
+requests; a run at a fixed chunk is bit-identical to itself).
+
+Where it applies: a Linux file tier whose page cache is smaller than the file set at today's chunk. It does nothing, and says `kept`, when the GPU holds every
+expert, when the file set fits the cache (the owner-class RTX 5070 box: 14.8 GiB set against 41.2 GiB of cache, 2024 vs 2035 tok/s at 20K), when the set can
+never fit (a 16 GiB cgroup, 23.1 GiB set: 99.9 vs 98.9 tok/s at 20K, the fewest passes win), and on a fast NVMe where the bigger chunk wins even though it thrashes (P2003, 8192 kept).
+Windows reads the file tier unbuffered (no page cache), so it keeps today's pick. The plan is made for a prompt of `--max-context` tokens (at most 32768, at least 4096). `STRATA_SSD_GBPS` overrides the drive speed, `STRATA_PREFILL_PLAN_TOKS`
+the prompt speed (tokens/s) it assumes; `--prefill N` and `STRATA_PREFILL_RING` always win.
+
+Measured (RTX 3060 12 GB, IQ2_XS, 20 GiB of experts in RAM, cgroup 34 GB, SATA speed emulated at 450 MB/s, page cache dropped and a fresh engine per run, 5 interleaved
+pairs, plan off against the planner's `8192 -> 3840`, medians):
+
+| prompt (tokens) | plan off, tok/s | planner, tok/s | ratio | pairs faster | drive read, GB (off -> planner) | decode after, tok/s |
+|---|---|---|---|---|---|---|
+| 4,101 | 138.1 | 138.2 | 1.001 (one chunk either way) | 3/5 (tie) | 12.8 -> 12.7 | 27.0 -> 28.2 |
+| 20,400 | 334.0 | 822.3 | **2.46x** | 5/5 | 26.1 -> 2.7 | 25.4 -> 42.6 |
+| 28,887 | 418.8 | 910.4 | **2.17x** | 5/5 | 29.5 -> 0.6 | 28.6 -> 45.7 |
+
+The same box with its real NVMe and a 32 GB cap picks 8192 again (bigger chunk 480 vs 327 tok/s at 3328, even though it thrashes), and the 16 GiB cap is unchanged. Identity gate (fixed flags,
+`--expert-cache 1500`): the plan line says `kept`. The host model is `include/strata/program/prefill_plan.hpp` with `tests/program/prefill_plan_test.cpp`.
 
 ## More opt-in switches measured for 0.1.41 (all off unless you set them)
 
@@ -2014,6 +2135,66 @@ the pairs in which the switched arm won). They are here so you can try them on y
   option. The uniform cache (no profile) holds no resident expert when a native pack's prompt is read (serve needs the
   profile, and a one-shot run fills the cache only while it decodes), so `expert_cache_slot_guard_test` covers it.
 
+## Which logical processors the CPU workers use, and `--pool-cores` (experimental, off by default)
+
+The CPU expert workers read the experts that are not in graphics memory, and their speed is set by how many physical cores
+read memory at the same time. So the engine starts one worker per physical core, never two workers on the two hardware
+threads (SMT siblings) of one core, and keeps the first core for the main thread (the one that waits for the graphics
+card). The start-up log says where everything sits:
+
+```
+strata generate: CPU workers on logical processors 2,4,...,30 (15 workers, one per physical core; host on 0)
+```
+
+The numbers depend on the system. Windows numbers the two threads of a core next to each other (core k is logical
+processors 2k and 2k+1), so the workers sit on the even numbers. Linux usually numbers the first thread of every core first
+and the siblings after them (a 6-core, 12-thread CPU: cores 0 to 5, their siblings 6 to 11), so the workers sit on the low
+numbers. The engine does not guess: it reads the pairing from the system (Windows `GetLogicalProcessorInformationEx`, Linux
+`/sys/devices/system/cpu/cpu*/topology`). Where the system does not say (some containers), the line says so
+("the OS did not say which logical processors share a core") and the default count is half of the logical processors. The
+line also says when two workers do share a core. `ps -L -o tid,psr,comm` on Linux, and Process Explorer or any tool that reads
+thread names on Windows, show the workers as `strata-pool-N` and the main thread as `strata-host`; the other helper threads
+carry names too (`strata-stage`, `strata-adapt`, `strata-io`, ...).
+
+Only the workers and the main thread are pinned. Every other thread (the prompt copy threads, the adaptive tier's job thread,
+the graphics driver's threads) is placed by the operating system, and the picture encoder is a separate process whose threads
+are not pinned either. So a task manager that shows only the first few logical processors busy does not mean the pool is
+misplaced: while the experts are in graphics memory the workers have nothing to do. On Linux the helper threads the engine
+starts after the main thread is pinned inherit its single CPU; `--aux-cpus` (next section) moves them.
+
+What that looks like on a Ryzen AI MAX+ 395 (16 cores, 32 threads, Windows 11, Balanced power plan), with every expert in
+graphics memory: snapshots of four runs of the engine showed the unpinned threads on logical processors 0 to 15 only (the first
+eight cores, both threads of each) and 16 to 31 idle. Windows listed 16 to 31 as parked ("Parking Status" 1) while nothing
+pinned ran there. The 15 workers sat on 2, 4, ..., 30 and did nothing. The CPU picture encoder (`strata-vision`, 16 threads
+there) did the same: 16 threads on logical processors 0 to 15, 10.1 s for a 1024x1024 picture. Pinning those 16 threads to one
+per core (2, 4, ..., 30) made it far slower (74 to 193 s), and 8 threads pinned to 8 real cores took 12.3 s, so the encoder
+stays where the operating system puts it (the cause was not looked into; the parked second chiplet is the obvious suspect).
+
+With the experts on the CPU, the workers of the same machine were each at 100% on exactly the even numbers (the CPU pool alone
+on random expert data, so only the placement and the memory traffic are real). Why the default is not "the first N logical
+processors": 8 workers on logical processors 1 to 8 (four cores, both threads) read 67 GB/s, 8 workers on real cores
+2, 4, ..., 16 read 94 GB/s, and the default 15 workers on 2, 4, ..., 30 read 146 GB/s (medians of three interleaved 10-second
+runs; 31 workers on 1 to 31 read 123 GB/s).
+
+**`--pool-cores LIST`** (or `STRATA_POOL_CORES=LIST`, or `"pool_cores": "2,4,6,8"` in the run config, or
+`strata launch --pool-cores 2,4,6,8`) pins the workers to exactly these logical processors, in this order. It is for people who
+want to choose the cores themselves (leave some for other programs, use one chiplet, test a layout); the default is what was
+measured. The list is numbers, ranges and `first-last:step`: `0,2,4,6`, `2-14:2`. The numbers are the ones Task Manager and
+`lscpu` show. The worker count is the length of the list; `--pool-workers N` takes the first N entries (more workers than
+entries: the extra ones run unpinned). Nothing is refused; the engine warns:
+
+```
+strata cpu pool: --pool-cores: logical processors 0 and 1 are the two hardware threads of one core: two workers on it share the core's memory bandwidth and slow each other down (one per physical core is the default)
+strata cpu pool: --pool-cores: logical processor 0 is also the host thread's: a worker there competes with the thread that waits for the graphics card
+strata cpu pool: --pool-cores: left out: 99 is not a logical processor this process may run on
+```
+
+Processors the process may not use (not there, or outside a `taskset` / affinity limit) are left out; if none is left the
+pool uses its default placement. A list that cannot be read (`two,four`) is said and ignored. The main thread keeps the first
+core (`--host-core` still decides that), so leave that processor out of the list. The option moves threads only and never
+changes a result. It applies to the main engine; the Qwen3.6 engine (`strata-q36`) keeps its own `--pool-workers` and the
+default placement.
+
 ## Thread placement: `--aux-cpus` (Linux, off by default)
 
 The CPU pool pins its workers (one logical CPU per physical core) and the host thread pins itself to the pool's reserved
@@ -2056,6 +2237,29 @@ never changes a result.
   restart noise. The mean and the p99 of the doorbell-to-flag time are not worse without the flag; what appears is rare
   stalls above 100 us, in 7 and 8 of 12 requests off against 0 or 1 with `auto`. That preemption of the host causes the
   loss is an inference; the counters do not prove it. The warm-up requests of each run were discarded.
+
+**NUMA-split CPU expert pool (0.2.2: on by itself when the machine has 2 or more NUMA nodes; off with `STRATA_NUMA_POOL=0`):** on a 2-socket Linux box it splits the CPU expert pool into
+one slice per NUMA node, each with its own task counter and barrier, and at load it places each node's half of every
+CPU-side expert's rows in that node's memory (first touch by threads pinned to that node; the model file's page cache is
+released first), so a slice reads its own socket's memory. Under the split the default worker count is the physical cores
+of both sockets minus the host core, minus one more kept free from 16 workers on, capped at 32 (22 on 2x12 cores); an explicit `--pool-workers N` is spread alternately across the
+sockets. Measured on a dual Xeon Gold 6226 (2x12 cores, 64 GB, 4 of 6 memory channels per socket populated), RTX 3090,
+PCIe 3.0 with the kernel's IOMMU in passthrough (`iommu=pt`), `orcarouter-qwen3.8-flash-next-uncensored-iq4_xs` (the
+IQ4_XS pack) at 262K context, server decode median over 12 samples: 59.3 tok/s with the split against 54.05 for the 0.2.0
+default (11 workers, one socket), +9.7% (+14% and +11.5% in two earlier sessions with the IOMMU translating DMA). Without
+the split, 22 workers gave 43.25 tok/s, and the split at 12 workers gave 51.45; prompt speed is unchanged. It needs Linux, exactly 2
+NUMA nodes and enough free memory on each node for its half: otherwise the log warns `NUMA placement at risk`, and after
+the load it judges the placement from move_pages samples and prints FAILED when a node holds under 95% of its slice. Only
+native expert layers are split (`ArenaExpertSource` and the `cudaHostAlloc` path are not, and the engine says so at start-up
+for the arena path). The pool refuses the split with `STRATA_EXCHANGE_ROTATE=1` and when the two sockets' worker counts are
+lopsided, logs the reason (`NUMA split off: ...`) and runs as usual. `STRATA_NUMA_SPLIT=test` builds the same slices by
+alternating the threads between two slices on any machine, with no node lookup, no pinning requirement and no memory
+placement; it is for testing the per-slice scheduling, not for speed.
+
+*0.2.2: when it runs.* The split was a contributor's opt-in (`STRATA_NUMA_SPLIT=1`, issue #3201, measured on one dual Xeon Gold 6226 box). From 0.2.2 the pool counts the NUMA nodes that have CPUs (Linux: `/sys/devices/system/node/node*/cpulist`; Windows: `GetNumaHighestNodeNumber`) and, with 2 or more and neither `STRATA_NUMA_POOL` nor `STRATA_NUMA_SPLIT` set, tries the split by itself. **One node is exactly the pool as before: nothing is read, nothing is logged, no worker count changes.** On 2 or more nodes the split runs only when it can (Linux, exactly 2 nodes holding the pool's threads, balanced slices, pinned threads, no `STRATA_EXCHANGE_ROTATE=1`); otherwise the pool keeps its old worker count and cores and logs why: `strata cpu pool: NUMA pool off: <reason> (N NUMA nodes found), the pool runs as before` (a 4-node machine, a container that sees one node's CPUs, Windows). When it runs the log says `strata cpu pool: NUMA pool on: N NUMA nodes found, one slice of the pool per node (STRATA_NUMA_POOL=0 turns it off)`, then the `NUMA split on: slice 0 = node ...` line. **Off switch: `STRATA_NUMA_POOL=0`** (also `off`, `false`, `no`); it wins over `STRATA_NUMA_SPLIT=1`, and on a 2-node machine logs `NUMA pool off (STRATA_NUMA_POOL=0)`. `STRATA_NUMA_SPLIT=1` still asks for the split on any machine (and keeps the contributor's worker counts when it cannot run), `STRATA_NUMA_SPLIT=0` is off. On Windows the node count is read but the split itself is Linux-only for now: a Windows machine with 2 nodes logs the reason and runs as before. The 0.2.2 default was built from the report and tested on one-node machines only (identity gate and speed A/B unchanged there; the node logic runs in `numa_pool_test` on made-up topologies); it has not been run on a two-socket machine by us. Log: `strata cpu pool: NUMA split on: slice 0 = node 0 (N threads), slice 1 =
+node 1 (M threads)` at start, then `FileExpertSource: NUMA placement: node 0 <GiB> (xx.x % of its slices), node 1
+<GiB> (xx.x % of its slices); free before: ...; after the drop: ...; pages taken and page-locked in N s since the
+placement started`.
 
 ---
 
@@ -2117,7 +2321,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `this server was started without the vision encoder` | The model was set up for text only: run setup again with `--vision gpu`. |
 | Setup puts the model on an old drive after you moved or reinstalled Strata (#1070) | Setup remembers the data folder you used last in its settings file (`%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on Linux; the `data_dir` entry) and uses it again. Choose another place with `--data-dir DIR` (model files, packs, MTP layer) or `--models-dir DIR` (the GGUF files only), or delete the `data_dir` line; `--gguf-dir DIR` uses GGUF files you already have without copying. To move a model, copy its folder and run setup with the new `--data-dir`. |
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
-| Pictures are slow (3-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |
+| Pictures are slow (3-30 s) | The encoder runs on the CPU, which is the default under 24 GB of graphics memory (the card's reader is the default from 24 GB). To use the card's reader: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM; it takes room from the expert cache). |
 | A request never finishes: "reading the prompt", GPU "100%" at low power | The GPU ran out of VRAM (engines before 0.1.9 could end with ~30 MiB free at large contexts). Run `START-HERE.bat` once to get engine 0.1.9 or newer; the log then says `... MiB of VRAM free with everything loaded` (a few hundred) and names the `--vram-reserve-mib` to add if it is low. |
 | Output much slower than the tables above, only with a large `--context`, and the start says a small `... MiB of VRAM free with everything loaded` | The expert cache does not fit the card at that context. With `--expert-cache auto` the engine shrinks it to fit; with a fixed number it does not check again after the slots are written, and on Windows the extra is put in system memory instead of failing, so only the speed shows it. Use `auto`, a smaller number, or raise `--vram-reserve-mib` (it is deducted before the cache is sized). See "The expert cache size is a budget" under Sharing the GPU. |
 | Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`STRATA_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
@@ -2125,7 +2329,8 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | `the engine said nothing for ... s during the request` or `... did not finish the request after it was stopped (STOP)` | Issue #481: the engine and the server lost step (the engine waits for its next command, the server for the request's end; GPU at 0 %, nothing in the log). The server ends the engine after 300 s without a line from it during a request (while a prompt is read: each chunk may take three times the previous one's time, the first one up to its tokens at 50 tok/s more), the request ends with an error and the next request starts the engine again. `"engine_silence_s": 600` in `strata-<model>.json` sets the time (0 = wait forever, as before). If you see it, please add the end of the engine log to #481. |
 | `the engine said nothing for ... s and used no CPU or disk in that time (frozen ...)` | Issue #1317: a quicker version of the check above for an engine that is not slow but stopped (a deadlock inside a CUDA call, a driver stall): after 90 s without a line, if the engine process has also used no CPU time and moved no disk bytes in that time, the server ends it and the next request starts it again. An engine that is silent but still working is never ended by this check, the server prints one note (`... but is still working; it is not ended`) and leaves it to `engine_silence_s`. `STRATA_ENGINE_STALL_S=180` sets the time, `0` turns the check off (it needs `psutil`, which setup installs). |
 | `out of memory: cudaFuncSetAttribute` in the log (IQ3_XXS, long prompt) | Fixed in engine 0.1.15: CUDA loaded a kernel's code when it was first needed, and mid-prompt there was no VRAM left for it. Run `START-HERE.bat` (Windows) or `./setup.sh` (Linux) once to update. |
-| Anything else | The engine log is `strata-<model>.log` in this folder. |
+| The desktop app or the Terminal says it could not find an engine, or that a model needs a newer engine; a Mac says an app is "damaged" | [TROUBLESHOOTING.md](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal). |
+| Anything else | The engine log is `strata-<model>.log` in this folder. In the app: Settings, Engine, Diagnostics, View logs, Save logs. In the Terminal: `strata doctor`. |
 
 ---
 
@@ -2272,6 +2477,83 @@ under `compute-sanitizer --tool memcheck --error-exitcode 86`. Build with
 signal, early cleanup and `--errors` error-propagation checks. Its `--synchronous`
 mode is the negative control under memcheck: an eight-second watchdog releases
 the original launch/service deadlock and the test fails.
+
+## RTX 30 series (sm_86) and Tesla P100 (sm_60): bitwise decode switches on by default
+
+The 0.1.45 switch set that is bit-exact on every card was measured switch by switch on a 12 GB RTX 3060, a 16 GB RTX A4000 (one card)
+and a 16 GB Tesla P100, IQ3_XXS, default flags (adaptive tier on), fresh engine per run, 8 interleaved pairs, equal expert-cache slots,
+with a noise arm: the whole 16-switch set gave +9.6% (3060), +14.6% (A4000) and +17.8% (P100) decode, 8/8 pairs each, and the identity
+gate (10 prompts + exact_pp 4K/20K, fixed flags) is IDENTICAL with it on. Removing one switch at a time (4 rounds each) kept the ones that
+paid on their architecture. They are on by default now, per architecture (`include/strata/core/nv_defaults.hpp`, set before the
+engine reads its switches; a switch you set yourself, to anything, is kept):
+
+- sm_86 (RTX 3050-3090, RTX A2000-A6000): `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_CPU_IQ_ALL_EXACT1=1`,
+  `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_GR_UP75=1`, `STRATA_GU_SWIGLU=1`, `STRATA_QSA_ROWS=1`, `STRATA_B6_MMVQ_ROWS=1`.
+  `STRATA_SM86_PERF=0` turns the set off.
+- sm_60 (Tesla P100): `STRATA_ADAPT_NOWAIT=1`, `STRATA_ADAPT_LAG=2`, `STRATA_SIDE_MIXER=2`, `STRATA_FUSE_WAIT=2`, `STRATA_B6_MMVQ_ROWS=1`,
+  `STRATA_FUSE_DECODE=1`, `STRATA_GR_UP75=1`. `STRATA_SM60_PERF=0` turns the set off.
+
+The table is used when every visible card has that one compute capability. `STRATA_ADAPT_OVERLAP=1` (opt-in) does not run beside
+`STRATA_ADAPT_LAG` / `STRATA_ADAPT_NOWAIT`: set `STRATA_ADAPT_LAG=1 STRATA_ADAPT_NOWAIT=0` with it. Left out because they did not pay or
+were mixed: `STRATA_EXPDEC`, `STRATA_GR_NORM_FAST`, `STRATA_RAM_ADAPT`, `STRATA_KV_HOST_REGISTER`, `STRATA_HOST_CORE`,
+`STRATA_GR_DOWN_TG`, `STRATA_DEQUANT_WIDE`; `STRATA_EXCHANGE_ROTATE` never reaches READY on the 3060 and `STRATA_PCIE_BALANCE` is slower on a
+single card.
+
+The per-architecture sets themselves (no environment variables), against the engine without them, IQ3_XXS, default flags, 8
+interleaved pairs of fresh engines, the same number of expert-cache slots in every arm (engine 0.1.45.3 and its test builds):
+
+| Card | Decode before -> after | Gain | Pairs faster | Same engine against itself | With `STRATA_SM86_PERF=0` / `STRATA_SM60_PERF=0` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RTX 3060 12 GB (sm_86) | 60.36 -> 66.52 tok/s | +10.2% | 8/8 | 0.999 | 1.002 (equal to before) |
+| RTX A4000 16 GB (sm_86) | 51.16 -> 57.82 tok/s | +13.0% | 8/8 | 0.979 | 0.994 |
+| Tesla P100 16 GB (sm_60) | 36.56 -> 41.76 tok/s | +14.2% | 8/8 | 0.975 | 0.991 |
+
+Two things looked at and **not changed**. A prompt chunk above 8192 (`--prefill auto:16384` or `auto:32768`) changes prompt speed by -3% to +8%
+on 12-16 GB cards at 20K tokens (at 16384 / 32768: RTX 3060 +4.5% / +4.5%, Tesla P100 +3.1% / +7.7%, RTX A4000 -3.4% / +6.0%), but it is not bit-exact on
+CUDA (the residual dump differs on the P100 and the A4000; 32768 also changed the output tokens on the P100), so the default
+stays 8192 on NVIDIA. It is exact on gfx12, where 16384 is the default. And `STRATA_ROUTE_PRIOR=0.5` stays opt-in: on an RTX 3060
+(IQ3_XXS) its teacher-forced KL is 0.0126 against a run-to-run floor of 0.0012 (top-1 agreement 96.6% against 99.1%); on an RTX A4000
+HumanEval scored 154/164 against 157 and 159 for the default twice, and reasoning 25/30 against 24 and 26 (agent 6/6, needles 3/3, CJK
+8/8 and tool calls 5/5 for all), which is inside the run-to-run spread.
+
+## Compute capability 12.0 cards: faster decode (bitwise) and fused prompt experts by default
+
+Measured on an RTX PRO 5000 Blackwell 72 GB (110 SMs, sm_120, Linux, CUDA 13.2), IQ3_S with every expert in VRAM, setup's
+flags (`--spec 4 --spec-min-p 0.5`), 6 interleaved pairs of fresh engines, 300-token greedy answers, medians:
+
+| | story | code | 8K document | 4K / 20K / 98K prompt (tok/s) |
+|---|---|---|---|---|
+| before (tok/s) | 168.8 | 224.6 | 186.6 | 3829 / 4613 / 4767 |
+| now | 192.0 (+13.8%, 6/6 pairs) | 260.0 (+15.8%, 6/6) | 211.9 (+13.6%, 6/6) | 4212 / 4870 / 4929 (+9.9% / +5.4% / +3.4%, 6/6 each) |
+
+Decode is bitwise: with `STRATA_PF_FUSED=0` the answers are the same tokens as before and the identity gate passes (10 prompts
+plus the 4K and 20K prompt dumps, with the fixed small cache and with every expert resident). The prompts change at rounding
+level because of the fused prompt experts (below). What changed:
+
+- On a 12.0 card these bitwise switches are on unless set: `STRATA_SIDE_MIXER=2` (the mixer's input-only work on graph
+  branches), `STRATA_ATTN_DAILY=1` (the Daily's decode attention), `STRATA_GR_UP75=1` and `STRATA_GR_DOWN_TG=1` (the
+  hyper-connection read's up projection with its loads hoisted, and its down projection with a block row per token; token
+  pairs, `=2`, below 80 SMs),
+  `STRATA_GU_SWIGLU=1` (new: the routed experts' gate/up, SwiGLU and q8_1 in one launch). A fixed 4-token verify round went
+  13.70 -> 11.80 ms with them. `STRATA_SM120_PERF=0` turns the set off; each switch's own variable still wins in both directions.
+- The interleaved small-batch matvec (`native_mmvq_il`, docs/MMVQ_IL_TABLE.md) also runs 5 to 8 tokens (it stopped at 4, and a
+  5-token window cost 2 ms more than a 4-token one), with a 12.0 table for 5-8 tokens and, on 12.0 cards with 80+ SMs, its own
+  2-4 token table. Bitwise (`mmvq_il_parity`, 1-8 tokens). `STRATA_MMVQ_IL_WIDE=0` / `STRATA_MMVQ_IL_120=0` turn them off.
+- On 12.0 cards with 80 or more SMs the native packs' prompt experts run on the fused int8 kernels (`STRATA_PF_FUSED`, the rule
+  gfx12 has) for IQ2_S, IQ3_XXS, IQ3_S and IQ4_XS gate/up; IQ2_XXS / IQ2_XS keep MMQ until measured. An RTX 5070 (48 SMs, IQ2_XS
+  pack, experts partly in RAM) was 4.7% slower on 20K prompts with them (0/6 pairs), so smaller 12.0 cards keep MMQ. Quality on IQ3_S: teacher-forced KL against MMQ 0.0002
+  (5998 positions; MMQ against itself 0.0000) and 0.0010 after ~6K-token documents (1760 positions); first-token KL against
+  the FP16 prompt path 0.01181 vs MMQ's 0.01236 (48 prompts of 1.5K-24K tokens); HumanEval 156/164, reasoning 26/30, agent
+  6/6, needles 6/6, CJK 8/8, tool calls 4/5, the same as MMQ. `STRATA_PF_FUSED=0` keeps MMQ.
+- With the cheaper rows, deeper speculation was measured again (3 pairs): `--spec 3` 1.145 / 1.020 / 1.123 of before,
+  `--spec 4` 1.122 / 1.141 / 1.132, `--spec 5` 1.079 / 1.101 / 1.074, `--spec 6` 1.060 / 1.177 / 1.097, `--spec 8` 1.027 /
+  1.105 / 1.069 (story / code / document). `--spec 4 --spec-min-p 0.5` stays the default.
+- Setup (Linux, not WSL): when the RAM covers the model's need + the n-gram table + 16 GB (Q2_0 93 GB, IQ3_S 107 GB), the
+  table is kept in RAM (`--ple-io ram`), so a new prompt does not wait for its rows from the SSD: on this card 4K -18%, 20K
+  -9%, 98K -2% with a fresh engine per prompt, the same bits. On an R9700 the read was already hidden; with RAM short (a 48 GB
+  cap) ram mode cost +20% prompt and +14 s of start-up, which is why smaller PCs keep the SSD reads.
+
+Not measured: other 12.0 cards (RTX 5070), Windows, partly-resident caches, the IQ3_XXS and IQ2_XS packs.
 
 ## CUDA opt-in switches measured for 0.1.45 (RTX 3060 and RTX A4000, sm_86; all off unless you set them)
 

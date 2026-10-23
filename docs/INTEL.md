@@ -90,7 +90,7 @@ community llama.cpp SYCL image), so the PC needs no oneAPI. From the checkout (i
 folder above it is what the container mounts at `/work`):
 
     cd Strata
-    docker build -t strata-sycl-dev sycl/tools          # once: about 6 minutes, a 13 GB image
+    docker build --pull -t strata-sycl-dev sycl/tools   # once: about 6 minutes, a 13 GB image
     H=$(basename "$PWD")
 
 **Arc B-series** (Pro B70: `bmg-g31`; B580, B570 and Pro B60: `bmg-g21`; `ocloc ids bmg-g21` in the image lists the
@@ -104,6 +104,13 @@ device ids). Ahead-of-time code, no compile at the first start:
 
     docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e REPO=/work/$H \
         -e BUILD_DIR=/work/$H/build-sycl strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+
+`--pull` matters: the image starts from a community image whose tag moves, and `docker build` reuses a copy of it from an earlier
+build unless it is told to fetch the current one. An old copy can hold a device compiler (ocloc from Compute Runtime
+26.22.38646, IGC 2.36.3) that crashes on the Battlemage kernels ("IGC: Internal Compiler Error: Floating point exception", 77 device
+images, then `gen compiler command failed with exit code 245` at the last link, #3219). `sycl/tools/build.sh` checks the
+version before the compile and stops with the fix. If you cannot update the image, `-e I8_ESIMD=OFF` builds without the fused int8
+kernels (stubs: the prompt's experts take the slower XMX path, the answers do not change); `-e ALLOW_BAD_OCLOC=1` builds anyway.
 
 The build takes about 3 minutes and ends with `BUILD EXIT 0` and `errors: 0`. The binary is `build-sycl-aot/strata`
 (B-series) or `build-sycl/strata` (A-series); setup finds either one. Run the `docker build` again after pulling a
@@ -759,12 +766,88 @@ Measured on an Arc A750 (8 GB, `i915`, PCIe 4.0) with the Flash-Next IQ3_XXS in 
   8192 --prefill-repeat 5` for the time of both kernels. Not taken: the same kernel with its state in SLM (no register
   spills, the same bits, ~4x slower: 13.7 vs 3.1-3.3 ms at T=1000).
 
+### Prompt speed on Alchemist: the grouped XMX expert launch is the default (engine 0.1.45.3, `STRATA_PF_XMX`)
+
+The A750's prompt path decodes and multiplies a group of experts in one fused launch on the XMX units (`STRATA_PF_XMX=2`, `sycl/src/prefill/xmx_moe.dp.cpp`)
+instead of dequantizing each expert to FP16 and calling oneMKL. It is the default on Alchemist cards; `STRATA_PF_XMX=0` turns it off and `=1` is the
+variant that dequantizes first and runs one grouped XMX GEMM per product. Battlemage keeps the old path (the same kernels are 7-11% slower there).
+Measured on the A750 (IQ3_XXS, default flags, interleaved rounds against the run before): a 1K-token prompt 35.1 -> 46.4 tok/s, 2K 61.7 -> 83.1, 4K 79.3 -> 110.4
+(+39%, 5 of 5 rounds), 6K 66.3 -> 114.8; decode unchanged (18.7 tok/s), the same number of cache slots. It rounds differently from the FP16 path:
+teacher-forced KL against the default over 6,006 forced tokens 0.0002 (the default against itself: 0.0001; with the default PCIe share the A750's own run-to-run noise
+is 0.012), first-token KL 0.0017 (floor 0.0005), top-1 agreement 99.7%. HumanEval (every 2nd, 82) 73, 69 and 74 for the mode and two default runs, reasoning 21 / 23 / 22 of
+30, a 35-question Chinese/Japanese/Korean set 35/35 in all, needles at 2K-6K 9/9, an 8K-context tool-call agent 6/6.
+
+### A750: a prompt that never finished is fixed (engine 0.1.45.3, commit `fca3c5958`)
+
+On an Arc A750 some prompts never finished: with default flags a 2,744-token documentation excerpt hung in 6 of 6 runs (the
+thread spun in `sched_yield` inside `libze_intel_gpu` with every engine idle), and the same hang was seen on a 5.3K-token needle prompt. The
+cause: SYCL has no `cudaHostRegister`, so the expert arena is ordinary pageable memory even where the engine calls it
+pinned. Copying a 2.3 MB expert straight out of it went through the Level Zero driver's staging path on the calling thread,
+and on some prompts that call never returned. Now only experts in USM host memory (the `--stream-experts` pinned mirror)
+are copied directly (the answer is remembered per 2 MiB); every other expert goes through the stager's pinned buffers, like
+an unpinned one. **`STRATA_PF_DMA_PAGEABLE=1` restores the old direct copy.**
+
+Checked: the 2,744-token repro finished 3 of 3 times after the fix (0 of 6 before); the first-token logits and the tokens are
+identical old against new on the A750 (1.4K, 2.5K and 4K prompts) and on the Arc Pro B70 (stock config, and without
+`--stream-experts`); speed is unchanged where it did not hang (A750 4K prompt 79.4 against 79.3 tok/s, B70 stock 1,246
+against 1,240), and on the B70 without `--stream-experts` the prompt is faster (680-740 against 77-456 tok/s). The
+regression test is `sycl/tools/test_prompt_deadlock.sh` (the 2,744-token prompt; it times out on the old build and passes on
+the fix).
+
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
-  engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
+- Images on the llama.cpp config: not wired. On the SYCL port they are wired, see "Pictures on an Arc" below. Open there: a
+  Battlemage card (the B-series) keeps pictures opt-in because of the Arc Pro B70 fault, and nobody has run the SYCL picture reader
+  on a card of 24 GB or more.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
+
+## Pictures on an Arc (2026-10-19, branch f-021-arcvis)
+
+Pictures follow the rule of every other card ([MODELS.md](MODELS.md#the-versions)): a picture reader on the CPU under 24 GB of VRAM, on
+the card from 24 GB. `strata_control/vision_reader.py` is the one place for it. On an Arc:
+
+- **The CPU reader** is `strata-vision` (llama.cpp's mtmd). Setup compiles it into `engine-sycl/`, the server runs it on the host, and the
+  engine in the container reads the picture's embeddings from the host's `/dev/shm`, which `strata-sycl.sh` shares
+  (`STRATA_SYCL_SHM=0` keeps a private one). On the A750 a 448x448 picture takes 1.73 s.
+- **The SYCL reader** is `strata-vision-sycl`, the same program on llama.cpp's SYCL backend (`tools/vision`, `STRATA_VISION_SYCL=ON`).
+  `setup --backend sycl --vision gpu` compiles it on the host when the oneAPI compiler (`icx`, `icpx`, `intel-oneapi-mkl-devel`) is
+  installed; without it setup says so and keeps the CPU reader. It needs the PC's oneAPI runtime, not the container. If it does not
+  start, the server falls back to the CPU reader with one log line. On the A750: 0.16 s per picture instead of 1.73 s (after a 30 s
+  first start that compiles the kernels), and the embeddings match the CPU reader's (cosine 0.9959 to 0.9999 over 8 pictures). It takes
+  VRAM the experts would use, which is why the rule gives it to 24 GB cards only.
+- **Default.** On for an Alchemist card (A750, A770, ...) with the CPU reader. An Arc of 24 GB or more also keeps the CPU reader by
+  default: the SYCL reader has not run on such a card (the B70 is gone), so `--vision gpu` asks for it and
+  `vision_reader.INTEL_GPU_READER_BY_DEFAULT` is the switch to flip once one has. A Battlemage card (B580, B70, ...) keeps pictures
+  **off** by default: the first picture on the Arc Pro B70 (engine 0.1.45, IQ3_S, 2026-10-19, CPU reader) logged an xe engine reset
+  (ccs + bcs) and `Fault response: Unsuccessful -EINVAL`, and the request ended 503. The CPU reader was in use, so the fault is in the engine on xe, not in a GPU reader; it
+  has not been looked at since. `--vision yes` turns pictures on there; setup says so.
+
+Tested on the A750 (IQ3_XXS, 8K context, engine from f-021-int, JIT build, 2026-10-19): a picture with a red circle, a blue square and the
+words "STRATA 42", 8 variants, answered correctly by the CPU reader 10 of 10 (a first set with smaller text read "42" as "412"), and
+by the SYCL reader 10 of 10; two pictures in one request, a picture kept in the history of a second turn, and a long text prompt after the
+pictures all answered; a text request after every picture answered; 47 picture requests, outside and inside the container (inside, one
+answer was cut off by the 200-token limit of the test), no GPU fault in the kernel log, no 503.
+
+## Gyro on an Arc (2026-10-20, branch f-022-arcgyro)
+
+Gyro-S and Gyro-M (trellis-coded experts, [GYRO.md](GYRO.md#intel-arc-sycl)) run on the SYCL engine. Tested on the Arc A750 only (i915, 8 GB,
+Ryzen 5 5600X, 62 GB of RAM). Setup writes the usual A750 config for them (32K context, 300 MiB VRAM reserve), without `--ple-io ram`: the
+28 GB n-gram table stays on the SSD, because the expert arena already takes 24 GB (Gyro-S) of the RAM.
+
+| A750, Gyro-S | |
+| --- | ---: |
+| prompt, 1,406 tokens | 82 tok/s (40 with dequantize + oneMKL; the grouped XMX launch now takes the trellis types, 5/5 pairs) |
+| prompt, 2,377 / 20,000 tokens | 102 / 195 tok/s |
+| decode, MTP draft of 4 | 15-16 tok/s (13.7 with the old link share, 5/5 pairs) |
+| experts in the card's cache | 410 of 24,576 |
+
+Decode is bound by the CPU pool (5 workers, 8 GB/s) and the PCIe link (10.4 GB/s measured), not by the card's kernels (20 microseconds an
+expert). For trellis packs the engine takes the link share against a 12 GB/s reference instead of 20, which gives 0.48 on this card instead
+of 0.29. A smaller prompt chunk makes room for more cached experts and slows the prompt: `--prefill 1024` +13% decode, -24% prompt speed;
+the default stays `--prefill auto`. Gyro-M needs `--max-context 8192 --vram-reserve-mib 100 --prefill 1024` on 8 GB (14 tok/s decode,
+62 tok/s prompt). A second Arc card does not take Gyro's experts (the engine refuses and says so). The Battlemage AOT build (`bmg-g31`)
+compiles with the trellis kernels; it was not run, there is no B-series card here.
 
 ## Arc Pro B70 with a model that does not fit: Flash-Next IQ3_S (2026-10-07, branch f-141-intel)
 
@@ -881,3 +964,61 @@ gate identical in the 32K and the 128K configuration); every one has an off swit
 | decode | 23-25 tok/s; GPU 92% busy at 165 W, CPU idle |
 | prefill | 149 tok/s on a 2,701-token prompt; 424 tok/s on a 104,798-token prompt at 131k context |
 | quality | correct code on every test; matches the NVIDIA path token for token in spirit, not measured |
+
+## Arc Pro B70: `--prefill 8192` in the long-context config (2026-10-18, branch f-151-b70)
+
+`setup_intel.py` now recommends 8,192-token prompt chunks for a Battlemage card with 24 GB or more when the context is over 32K (the
+prompt borrows cache slots; `recommended_prefill()`), 4,096 everywhere else, and it keeps a chunk size you put in the config.
+Arc Pro B70, IQ3_S, setup's 128K flags (`--kv-resident 32768 --vram-reserve-mib 2048`), `--pcie-frac 0 --adapt-every 0`, 2 rounds,
+32 greedy tokens after the prompt (identical in every run):
+
+| prompt | `--prefill 4096` | `--prefill 8192` | cache slots | decode after |
+|---|---|---|---|---|
+| 16K | 1,222 tok/s | 1,347-1,362 (+10-11%) | 11,795 both | 33-38 / 38 |
+| 32K | 1,187 | 1,361-1,383 (+15-16%) | 11,794-11,795 both | 35 / 38.6 |
+
+The lent slots are refilled after the prompt, so the bigger chunk costs the decode nothing. First-token logits against 4096
+(`STRATA_DUMP_FIRST_LOGITS`, whole vocabulary): KL 1.1e-2 nats at 16K and 3.0e-2 at 32K, top-1 the same, largest logit
+difference 1.0 (the chunk boundary moves where the QSA block selection is made, so a different chunk size is not bit-identical;
+two runs of the same size are, KL 0). With the 32K context (own prompt buffers, no borrowing) a bigger chunk is +20% on a 16K
+prompt (1,236 -> 1,478-1,482) but takes 1,397 cache slots (10,926 -> 9,529) and decode after it falls 9-16%, so 4,096 stays there.
+
+## Arc Pro B70: the fused int8 expert path for the prompt (2026-10-18, branch f-151-b70, default on for Battlemage)
+
+On a Battlemage GPU (B70, B580, B570: detected by the device architecture id, `bmg-g21` and `bmg-g31`, not by name) the engine computes the routed experts of the prompt with ESIMD kernels that decode the quantized weights in
+registers straight into the s8 DPAS B operand (no FP16 copy of the expert, 2.1 MB of weights read instead of 9.8 MB written and read
+back) and multiply them by q8_1-quantized activations; `sycl/src/prefill/esimd_moe.dp.cpp`, behaviour note and switches in
+[INTEL_INT8_EXPERTS.md](INTEL_INT8_EXPERTS.md). Gate/up IQ3_S, IQ3_XXS, IQ2_S and down IQ4_NL, Q2_0 are covered (47 of the 48 layers of
+the mixed IQ3_S pack; the other layer, IQ4_XS gate/up, and any other format keep the FP16 path). Default (STRATA_PREFILL_MMQ unset) is `auto` on Battlemage and the FP16 chain on every other GPU (Alchemist A750 / A770, Lunar Lake, other vendors); `=0` turns it off, `=1` forces it, `=auto` is the default. The activations are
+quantized, so the bits differ from the FP16 path. `auto` times both chains on this GPU at the first layer of each format and takes int8
+below the measured crossover (130-250 rows per expert here), per group of experts.
+
+Arc Pro B70, IQ3_S pack, 32K config, `--prefill 4096`, fixed flags (`STRATA_PREFILL_CPU_SHARE=0 STRATA_ROUTE_TAIL_SKIP=0 --pcie-frac 0
+--adapt-every 0`), 5 interleaved rounds per size, prefill tok/s (medians; the noise arm is the default run again):
+
+| prompt | default | noise arm | `=1` | `=auto` |
+|---|---|---|---|---|
+| 1,024 tokens | 645.8 | 648.3 | 775.4 (+20%) | 783.5 (+21%) |
+| 4,095 tokens | 1,257.0 | 1,256.8 | 1,413.8 (+12.5%) | 1,407.7 (+12.0%) |
+
+The output tokens are identical in all runs. Quality (teacher-forced KL against the FP16 path over 6,002 positions of 28 prompts): mean
+2e-4 nats, p99 6e-3, top-1 99.7%, perplexity ratio 1.0004; a `--prefill 8192` chunk moves the first-token distribution by 1e-2 to 3e-2
+for comparison. At more than ~130 rows per expert (a chunk of 8,192 tokens or more) the int8 chain stops winning because every row block
+decodes the weights again (1.03x at 194 rows against 1.4-1.9x at 60): use `auto`.
+
+### Arc Pro B70, what else was measured on the prompt path (2026-10-18, branch f-151-b70)
+
+All on the 4,095-token IQ3_S prompt, 32K config, `--prefill 4096`, fixed flags, 3-4 interleaved rounds with a noise arm (prefill tok/s,
+medians, output tokens identical in every arm):
+
+| change | result |
+|---|---|
+| `STRATA_GDN_XE=1` (variant 6, the sub-group recurrence that is the default on Alchemist; bit-identical) | 1,251 -> 1,207 (-3.5%): stays off on Battlemage |
+| `STRATA_PROMPT_ATTN_XMX=1` / `=32` (the joint_matrix prompt attention, 64- / 32-cell chunks) | 1,258 -> 952 / 913 (-24% / -27%): stays opt-in |
+| QSA prompt attention, probabilities stored `[cell][head]` and read as three vectors per cell in the value phase (`STRATA_ATTN_RS=2`, now the default; first-token logits md5 equal at 4K and 16K) | 1,254 -> 1,265 (+0.9%, 3 of 3 rounds) |
+| the same plus a 16-shuffle reduce-scatter of the 12 heads' score sums (`STRATA_ATTN_RS=1`; also bit-exact) | 1,254 -> 1,236 (-1.5%): the score phase is not shuffle bound |
+| int8 expert groups of 24 or 32 experts instead of 16 | 1,416 -> 1,420 / 1,416: no effect |
+| K-quant / Q5_1 / Q8_0 multi-entry decode kernels (`STRATA_KQ_SPLIT`, on by default; bit-identical to `=0`), `native_grouped_parity --kqbench 16`, synthetic UD-Q4_K_XL-shaped experts | 1 token: 76.4 vs 75.0 us (-1.8%); 2 tokens: 122.5 vs 135.9 us (+10%); 4 tokens (an MTP window): 202.6 vs 233 us (+13%); Q6_K 4 tokens 387 vs 485 (+20%), Q8_0 290 vs 341 (+15%) |
+
+The B70's int8 expert kernels also build and pass the parity test as a SPIR-V JIT build and as an AOT build for `bmg-g21` (compile only: no
+G21 card here); an AOT build for another device (Alchemist, Xe-HPC) gets stubs (`STRATA_I8_NO_ESIMD`).

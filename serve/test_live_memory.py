@@ -189,10 +189,10 @@ class LiveMemoryTests(unittest.TestCase):
 
     def test_eager_start_rejects_missing_capability_before_serving(self):
         proc = mock.Mock(stdout=io.StringIO("INFO arena_mib=43008\nREADY 4096 stop\n"), poll=lambda: None)
-        with mock.patch("serve.server.subprocess.Popen", return_value=proc), mock.patch("serve.server.contain"):
+        with mock.patch("serve.server.popen", return_value=proc):
             with self.assertRaisesRegex(ValueError, "advertising"):
                 StrataEngine("unused", ARGS)
-        proc.stdin.write.assert_called_once_with("QUIT\n")
+        proc.stdin.write.assert_called_once_with("STOP\nQUIT\n")
 
     def test_legacy_service_still_reloads_only_at_request_boundary(self):
         e = engine()

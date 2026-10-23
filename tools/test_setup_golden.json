@@ -26,7 +26,10 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -38,7 +41,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+   }
   }
  },
  "128GB-1x24GB qwen IQ3_XXS": {
@@ -68,7 +78,10 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -80,7 +93,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+   }
   }
  },
  "128GB-1x24GB qwen Q2_0": {
@@ -110,7 +130,10 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -122,7 +145,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/q2_0/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
+   }
   }
  },
  "128GB-1x24GB qwen recommended": {
@@ -152,7 +182,10 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -164,7 +197,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+   }
   }
  },
  "128GB-1x24GB unsloth UD-Q4_K_XL": {
@@ -247,7 +287,10 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -255,6 +298,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -263,7 +311,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+   }
   }
  },
  "32GB-2x24GB qwen IQ3_XXS": {
@@ -292,7 +347,10 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -300,6 +358,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -308,7 +371,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+   }
   }
  },
  "32GB-2x24GB qwen Q2_0": {
@@ -337,7 +407,10 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -345,6 +418,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -353,7 +431,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/q2_0/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
+   }
   }
  },
  "32GB-2x24GB qwen recommended": {
@@ -361,11 +446,11 @@
   "config": {
    "args": [
     "--pack",
-    "<T>/data/packs/q2_0",
+    "<T>/data/packs/iq3_xxs",
     "--native",
-    "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "--ple-gguf",
-    "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
     "--expert-profile",
     "<T>/data/expert-profile.bin",
     "--expert-cache",
@@ -382,7 +467,10 @@
     "131072",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -390,15 +478,27 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
-   "log": "<T>/strata-q2_0.log",
-   "model_name": "qwen3.8-flash-next-q2_0",
+   "log": "<T>/strata-iq3_xxs.log",
+   "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+   }
   }
  },
  "32GB-2x24GB unsloth UD-Q4_K_XL": {
@@ -437,6 +537,10 @@
    },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
+   "gpu_roles": {
+    "0": "main",
+    "1": "off"
+   },
    "gpus_asked": true,
    "lib_dirs": [
     "<cuda>"
@@ -480,7 +584,8 @@
     "65536",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -488,6 +593,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -496,7 +606,15 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "47GB-2x16GB qwen IQ3_XXS": {
@@ -525,7 +643,8 @@
     "65536",
     "--kv",
     "int8",
-    "--resident-experts"
+    "--resident-experts",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -533,6 +652,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -541,7 +665,15 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "47GB-2x16GB qwen Q2_0": {
@@ -569,7 +701,8 @@
     "--max-context",
     "65536",
     "--kv",
-    "int8"
+    "int8",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -577,6 +710,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -585,7 +723,15 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/q2_0/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "47GB-2x16GB qwen recommended": {
@@ -593,11 +739,11 @@
   "config": {
    "args": [
     "--pack",
-    "<T>/data/packs/q2_0",
+    "<T>/data/packs/iq3_xxs",
     "--native",
-    "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "--ple-gguf",
-    "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
     "--expert-profile",
     "<T>/data/expert-profile.bin",
     "--expert-cache",
@@ -613,7 +759,9 @@
     "--max-context",
     "65536",
     "--kv",
-    "int8"
+    "int8",
+    "--resident-experts",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -621,15 +769,28 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
-   "log": "<T>/strata-q2_0.log",
-   "model_name": "qwen3.8-flash-next-q2_0",
+   "log": "<T>/strata-iq3_xxs.log",
+   "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "47GB-2x16GB unsloth UD-Q4_K_XL": {
@@ -658,9 +819,7 @@
     "int8",
     "--resident-budget-gib",
     "23",
-    "--vision",
-    "--vram-reserve-mib",
-    "700"
+    "--vision"
    ],
    "cwd": "<T>",
    "env": {
@@ -668,6 +827,10 @@
    },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
+   "gpu_roles": {
+    "0": "main",
+    "1": "off"
+   },
    "gpus_asked": true,
    "lib_dirs": [
     "<cuda>"
@@ -711,7 +874,10 @@
     "--max-context",
     "131072",
     "--kv",
-    "int8"
+    "int8",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -723,7 +889,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+   }
   }
  },
  "64GB-1x32GB qwen IQ3_XXS": {
@@ -753,7 +926,10 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -765,7 +941,14 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf"
+   }
   }
  },
  "64GB-1x32GB qwen Q2_0": {
@@ -795,7 +978,10 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -807,7 +993,14 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/q2_0/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf"
+   }
   }
  },
  "64GB-1x32GB qwen recommended": {
@@ -835,7 +1028,10 @@
     "--max-context",
     "131072",
     "--kv",
-    "int8"
+    "int8",
+    "--vision",
+    "--vram-reserve-mib",
+    "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -847,7 +1043,14 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": true,
+    "max_tokens": 1024,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+   }
   }
  },
  "64GB-1x32GB unsloth UD-Q4_K_XL": {
@@ -930,7 +1133,8 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -942,7 +1146,15 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "96GB-1x16GB qwen IQ3_XXS": {
@@ -972,7 +1184,8 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -984,7 +1197,15 @@
    "log": "<T>/strata-iq3_xxs.log",
    "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "96GB-1x16GB qwen Q2_0": {
@@ -1014,7 +1235,8 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -1026,7 +1248,15 @@
    "log": "<T>/strata-q2_0.log",
    "model_name": "qwen3.8-flash-next-q2_0",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/q2_0/tokenizer"
+   "tokenizer": "<T>/data/packs/q2_0/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "96GB-1x16GB qwen recommended": {
@@ -1056,7 +1286,8 @@
     "--kv",
     "int8",
     "--kv-resident",
-    "32768"
+    "32768",
+    "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
@@ -1068,7 +1299,15 @@
    "log": "<T>/strata-iq3_s.log",
    "model_name": "qwen3.8-flash-next-iq3_s",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer"
+   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "vision": {
+    "exe": "<T>/engine/strata-vision.exe",
+    "gpu": false,
+    "max_tokens": 300,
+    "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "threads": 6
+   }
   }
  },
  "96GB-1x16GB unsloth UD-Q4_K_XL": {
@@ -1097,9 +1336,7 @@
     "int8",
     "--kv-resident",
     "32768",
-    "--vision",
-    "--vram-reserve-mib",
-    "700"
+    "--vision"
    ],
    "cwd": "<T>",
    "env": {

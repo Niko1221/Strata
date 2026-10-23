@@ -3,6 +3,7 @@
 
 #include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
@@ -114,6 +115,7 @@ void PeerExperts::close() {
     d_x_ = d_out_ = h_x_ = h_out_ = nullptr;
     d_meta_ = h_meta_ = d_scratch_ = nullptr;
     d_q8_ = nullptr;
+    d_sx_ = d_sh_ = nullptr;
     stream_ = refill_ = nullptr;
     refill_ev_ = nullptr;
     device_ = -1;
@@ -181,6 +183,10 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         ck(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activations", err) &&
         ck(cudaMalloc(&d_scratch_, scratch), "scratch", err);
     if (!alloc_ok) { close(); return false; }
+    if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
+        d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);
+        d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) ff), (int) ff);
+    }
 
     // the pairs the primary does not hold, in rank order, as many as fit
     size_t free_b = 0, total_b = 0;
@@ -284,9 +290,12 @@ bool PeerExperts::launch(int64_t layer, const float* x, const int32_t* ids, int6
     Meta* dm = (Meta*) d_meta_;
     const auto& lay = strata::kernels::cpu::expert_layout();
     if (lay.native) {
-        strata::kernels::quantize_q8_1_rows(d_x_, n_tok, H, d_q8_, s);
         const auto& f = lay.fmt[(size_t) layer];
-        const auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+        // APR: Hadamard-folded gate/up take H (s * x); d_x_ is this device's private copy, rotated in place
+        if (f.had_gu) strata::kernels::hadamard_rows(d_x_, d_x_, n_tok, H, f.had_block, d_sx_, s);
+        strata::kernels::quantize_q8_1_rows(d_x_, n_tok, H, d_q8_, s);
+        auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
+        if (f.had_d) { L.had_block = f.had_block; L.d_signs = d_sh_; }
         strata::kernels::native_expert_grouped(L, dm->ptr, dm->start, dm->count, dm->dst, dm->tok, groups, rows, d_q8_,
                                                d_scratch_, d_out_, s);
     } else {

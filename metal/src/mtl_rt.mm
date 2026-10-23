@@ -3,6 +3,7 @@
 #import <Metal/Metal.h>
 
 #include "mtl_rt.h"
+#include "resource_path.h"
 
 #include <chrono>
 #include <cstdio>
@@ -53,10 +54,9 @@ Context::Context() : impl_(new Impl) {
         std::exit(2);
     }
     impl_->q = [impl_->dev newCommandQueue];
-    const char* g = std::getenv("STRATA_GGML_COMMON");
-    ggml_common_path = g ? g : STRATA_GGML_COMMON_DEFAULT;
-    const char* k = std::getenv("STRATA_METAL_KERNELS");
-    kernel_dir = k ? k : STRATA_METAL_KERNELS_DEFAULT;
+    // env, then <exe dir>/metal/ (a component package), then the compiled-in source-tree path
+    ggml_common_path = strata_metal::resource("STRATA_GGML_COMMON", "ggml-common.h", STRATA_GGML_COMMON_DEFAULT);
+    kernel_dir = strata_metal::resource("STRATA_METAL_KERNELS", "kernels", STRATA_METAL_KERNELS_DEFAULT);
 }
 
 Context::~Context() { delete impl_; }

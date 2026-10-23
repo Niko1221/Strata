@@ -3,6 +3,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -106,6 +107,7 @@ void RemoteExperts::close() {
         if (d_out_) cudaFree(d_out_);
         if (d_q8_) cudaFree(d_q8_);
         if (d_scales_) cudaFree(d_scales_);
+        if (d_xr_) cudaFree(d_xr_);
         if (d_scratch_) cudaFree(d_scratch_);
         if (d_meta_) cudaFree(d_meta_);
         if (h_x_) cudaFreeHost(h_x_);
@@ -121,6 +123,8 @@ void RemoteExperts::close() {
     h_meta_ = d_meta_ = nullptr;
     d_q8_ = nullptr;
     d_scales_ = nullptr;
+    d_xr_ = nullptr;
+    d_sx_ = d_sh_ = nullptr;
     d_scratch_ = nullptr;
     d_start_ = d_dst_ = d_tok_ = d_count_ = nullptr;
     d_ptr_ = nullptr;
@@ -213,11 +217,17 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         check(cudaMalloc((void**) &d_q8_, (size_t) CAP * (H / 32) * 36), "activation", err, device) &&
         check(cudaMalloc((void**) &d_scales_, (size_t) CAP * (H / 32) * sizeof(float)), "activation scales", err, device) &&
         check(cudaMalloc(&d_scratch_, scratch), "scratch", err, device) &&
-        check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device);
+        check(cudaMalloc(&d_meta_, meta_bytes), "group metadata", err, device) &&
+        (!strata::kernels::cpu::hadamard_spec().any() ||
+         check(cudaMalloc((void**) &d_xr_, (size_t) CAP * H * sizeof(float)), "rotated input", err, device));
     if (!allocated) { close(); return false; }
     if (!check(cudaStreamCreateWithFlags(&read_stream_, cudaStreamNonBlocking), "cache read stream", err, device)) {
         close();
         return false;
+    }
+    if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this device's copies of the sign vectors
+        d_sx_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) H), (int) H);
+        d_sh_ = strata::kernels::hadamard_device_signs(strata::kernels::cpu::hadamard_signs((int) FF), (int) FF);
     }
     // Zero-copy: the helper reads its input from, and writes its compact rows into, the pinned host buffers
     // directly - two copies fewer per layer, each of which is a PCIe round trip.  STRATA_REMOTE_ZEROCOPY=0 copies.
@@ -319,9 +329,15 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     if (!staged) return false;
     const auto& lay = strata::kernels::cpu::expert_layout();
     if (lay.native) {
-        strata::kernels::quantize_q8_1_rows(zero_copy_ ? z_x_ : d_x_, n_tok, H, d_q8_, s);
         const auto& fmt = lay.fmt[(size_t) layer];
+        const float* xe = zero_copy_ ? z_x_ : d_x_;
+        if (fmt.had_gu) {   // APR: Hadamard-folded gate/up take H (s * x)
+            strata::kernels::hadamard_rows(xe, d_xr_, n_tok, H, fmt.had_block, d_sx_, s);
+            xe = d_xr_;
+        }
+        strata::kernels::quantize_q8_1_rows(xe, n_tok, H, d_q8_, s);
         auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
+        if (fmt.had_d) { L.had_block = fmt.had_block; L.d_signs = d_sh_; }
         strata::kernels::native_expert_grouped(L, d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
                                                groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     } else {

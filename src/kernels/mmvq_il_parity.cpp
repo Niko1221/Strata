@@ -105,7 +105,8 @@ int run_case(const Case& c, bool bench, cudaStream_t s) {
             return 1;
     }
     int bad = 0;
-    for (int T = 1; T <= 4; ++T) {
+    const int t_max = std::getenv("MMVQ_IL_TMAX") ? std::atoi(std::getenv("MMVQ_IL_TMAX")) : 8;   // 147-verify: 5-8 columns
+    for (int T = 1; T <= t_max; ++T) {
         std::vector<float> x((std::size_t) T * c.n_in);
         std::normal_distribution<float> nd(0.f, 1.f);
         for (auto& v : x) v = nd(rng);
@@ -232,6 +233,20 @@ void emit_table() {
         }
         std::printf("}},   // %s\n", names[ti]);
     }
+    std::printf("// 5-8 columns (kIlRows58_<cc>; rows 4 runs as 2 there):\n");
+    for (int ti = 0; ti < 5; ++ti) {
+        std::printf("    {%d, {", types[ti]);
+        for (int nc = 5; nc <= 8; ++nc) {
+            int prev = 0;
+            std::printf("{");
+            for (int cls = 0; cls < 5; ++cls) {
+                prev = pick_cell(types[ti], nc, cls, prev);
+                std::printf("%d%s", prev, cls < 4 ? ", " : "");
+            }
+            std::printf("}%s", nc < 8 ? ", " : "");
+        }
+        std::printf("}},   // %s\n", names[ti]);
+    }
     std::printf("// one column (kIl1RowsShared):\n");
     for (int ti = 0; ti < 5; ++ti) {
         std::printf("    {%d, {", types[ti]);
@@ -251,12 +266,13 @@ int check_tables() {
         for (int nc = 2; nc <= 4; ++nc)
             for (int n_out : {512, 2560, 6144, 10240, 12288, 248320}) {
                 const int a = native_mmvq_il_rows_for(86, type, nc, n_out);
-                // sm_89 and sm_120 have no table of their own: they answer the shared table (what sm_86 answered before its
-                // own 143-dense table, which differs only in Q3_K, a type the shared table does not use)
+                // sm_89 has no table of its own: it answers the shared table (what sm_86 answered before its own
+                // 143-dense table, which differs only in Q3_K, a type the shared table does not use); sm_120 has its own
+                // since 147-verify
                 const int b = native_mmvq_il_rows_for(89, type, nc, n_out);
-                if (b != native_mmvq_il_rows_for(120, type, nc, n_out) || (type != 11 && b != a) || (type == 11 && b != 0)) {
+                if ((type != 11 && b != a) || (type == 11 && b != 0)) {
                     ++bad;
-                    std::printf("FAIL table: sm_89/sm_120 differ from sm_86 at type %d ncols %d n_out %d\n", type, nc, n_out);
+                    std::printf("FAIL table: sm_89 differs from sm_86 at type %d ncols %d n_out %d\n", type, nc, n_out);
                 }
                 if (a != 0 && a != 1 && a != 2 && a != 4) { ++bad; std::printf("FAIL table: rows %d\n", a); }
             }
@@ -270,7 +286,8 @@ int check_tables() {
         ++bad;
         std::printf("FAIL table: the sm_60 table is not the P100's\n");
     }
-    if (native_mmvq_il_rows_for(89, 99, 2, 2560) != 0 || native_mmvq_il_rows_for(89, 12, 5, 2560) != 0) {
+    if (native_mmvq_il_rows_for(89, 99, 2, 2560) != 0 || native_mmvq_il_rows_for(89, 12, 5, 2560) != 0 ||
+        native_mmvq_il_rows_for(86, 12, 5, 2560) != 0 || native_mmvq_il_rows_for(120, 12, 9, 2560) != 0) {
         ++bad;
         std::printf("FAIL table: an unknown type or ncols must be 0\n");
     }
@@ -289,6 +306,6 @@ int main(int argc, char** argv) {
     for (const Case& c : CASES)
         if (only == nullptr || std::strstr(c.name, only) != nullptr) bad += run_case(c, bench, s);
     if (emit) emit_table();
-    std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 1-4, rows 1/2/4 and the table, bitwise)");
+    std::printf("%s\n", bad ? "mmvq_il_parity: FAIL" : "mmvq_il_parity: OK (every case, T 1-8, rows 1/2/4 and the table, bitwise)");
     return bad ? 1 : 0;
 }

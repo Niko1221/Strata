@@ -1,9 +1,18 @@
 # Strata on a Mac (Apple Silicon, Metal)
 
 Strata runs on Apple Silicon Macs through its own engine on Metal. This is the same engine as on a PC. The NVIDIA
-kernels are replaced by Metal ones (`metal/`), and the host code and the server are the PC's. `./setup.sh` sets it up the way
-`START-HERE.bat` does on Windows. There is no ready-made Mac engine: setup builds it from source on your Mac
-(about 1-15 minutes). The NVIDIA, AMD and Intel engines are unchanged.
+kernels are replaced by Metal ones (`metal/`), and the host code and the server are the PC's. There are two ways in:
+
+- **The Strata app (`.dmg`) and the Terminal (`strata launch`).** The Metal engine comes ready-made: the `.dmg` has it
+  inside, and the Terminal fetches it as an engine component. Nothing is built on your Mac and you need no Command Line
+  Tools ([below](#the-desktop-app-and-strata-launch-on-a-mac)). macOS 15 or newer, as for the source build. If macOS says the
+  app is "damaged", see [Troubleshooting](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal); how the builds are signed:
+  [packaging/mac/README.md](../packaging/mac/README.md).
+- **From source: `./setup.sh`.** It sets things up the way `START-HERE.bat` does on Windows and builds the engine on your Mac
+  (about 1-15 minutes).
+
+**Pictures:** on by default in the app, the Terminal and the source build. The reader (`strata-vision`) comes in the engine package
+and runs on the Mac's GPU through Metal ([Limits](#limits-this-version)). The NVIDIA, AMD and Intel engines are unchanged.
 
 **Status:** new. It is measured on three Macs: an M5 Max with 128 GB, where the model stays in memory; and an M4 Mac mini
 with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the M1 Max: 7.9 tok/s decode, 186 tok/s on a
@@ -25,6 +34,8 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 | IQ3_S (recommended; the default from 96 GB) | 54.8 GB | 63 GB | 96 GB |
 | UD-Q4_K_XL (Unsloth, recommended: higher quality) | 82.6 GB | 91 GB | 128 GB |
 | UD-Q5_K_XL, UD-Q6_K_XL (Unsloth) | 103.9 / 114.8 GB | stream from the SSD on 128 GB | 128 GB, streamed |
+| Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the file's other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that (measured on 32 GB) |
+| Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 71 GB | 96 GB; streams below that (not measured on a Mac) |
 
 - **The n-gram table:** each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at a time and does not count against the memory above.
 - **Disk:** the download is 66-84 GB, plus about 7 GB for the pack and the draft layer. A Mac that streams also needs room for the experts' copy (below): 34-40 GB.
@@ -47,7 +58,7 @@ What the first run does (each step is skipped when it is already done):
 
 1. **Python.** It needs Python 3.10 or newer, but macOS ships 3.9. If that is all your Mac has, `setup.sh` downloads a standalone Python 3.12 (25 MB, pinned by SHA-256) into `.python`. No sudo, no Homebrew.
 2. **Checks your Mac:** the chip, the memory, the macOS version, the Command Line Tools and the free disk.
-3. **Python packages** into `.venv`. CMake and Ninja come from pip.
+3. **Python packages** into `.venv`. CMake and Ninja come from pip too, installed just before the build in step 4.
 4. **Builds the engine** (`build-metal/strata`). It uses Apple's metal-cpp headers (pinned by SHA-256) and llama.cpp's ggml at the commit the PC build pins.
 5. **Downloads the model.** The download resumes if interrupted. `--gguf-dir` uses files you already have.
 6. **Prepares the model:** the pack (seconds), and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that streams: the experts' copy instead of the draft layer (about 3 minutes on the M4, checked byte for byte against the model file).
@@ -61,6 +72,12 @@ The config uses the Mac defaults: `--spec 2` and the Q8_0 hyper-connection read 
 Options: `--model Q2_0|IQ3_XXS|IQ3_S|UD-Q4_K_XL|UD-Q5_K_XL|UD-Q6_K_XL` (the UD files are Unsloth's), `--vision yes|no`, `--context N`, `--port`, `--host` / `--api-key`, `--draft-vocab`, `--no-browser`,
 `--data-dir`, `--models-dir`, `--gguf-dir`, `--setup` (another model or new settings), `--no-start`, `--check` (only
 check the Mac), `--build` (build the engine again).
+
+### The desktop app and `strata launch` on a Mac
+
+The Strata app (and the Terminal's `strata launch`) do not build anything on your Mac. The Metal engine comes ready-made, as an engine component: from the update feed, or inside the app's installer. The model install is `setup.py` in its Control mode (`STRATA_CONTROL_INSTALL=1`): it downloads (or uses with `--gguf-dir`) and prepares the model files and writes a run config whose engine is `component:strata-engine`. It does not run `metal/setup_mac.py`, needs no Command Line Tools, and writes the same Metal flags (`--mmap-experts`, `--spec 2`, no draft layer when the experts stream from the SSD).
+
+The model list and the recommendation judge a Mac by its unified memory with the rules of `strata_control/mac_fit.py`, the module `setup_mac.py` uses too: Q2_0, IQ3_XXS and IQ3_S are offered (the Unsloth many-shard files need the repack of `./setup.sh` for now); a pack that does not stay in memory is listed as "read from the SSD", and a Mac under 16 GB of unified memory is told the model does not fit.
 
 ## Measured (M5 Max, 128 GB, macOS 27.2)
 
@@ -154,6 +171,52 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 `--spec 2` is the best default on mixed text. An explicit `--spec N` in the config's `args` is kept.
 
+### Gyro-S and Gyro-M (agentionai's trellis experts)
+
+From 0.2.2 the Mac engine runs [Gyro](GYRO.md): the routed experts are trellis-coded blocks (ggml types TQ2_T, TQK6, TQK7) in a
+Hadamard-rotated basis, read from the published file unchanged. The kernels are ours (`metal/kernels/quant.metal`, `moe.metal`,
+`moe_mm.metal`); the codebook and the decoder are the CPU engine's, the rotation is applied to the gate/up and down inputs as on CUDA.
+Setup offers Gyro-S and Gyro-M next to the other sizes (`./setup.sh --family gyro --model Gyro-S`), never as the default, and says
+what the choice risks on your Mac's memory. The 28.8 GB n-gram table is inside the file and is read from the SSD like every other
+pack's, so Gyro-S needs 58.5 GB of disk and about 38 GB of memory to stay resident (29.7 GB of weights).
+
+**Measured on the M4 Mac mini, 32 GB** (the experts stream from the SSD; no experts' copy, because the copy would need 26 GB more
+disk than this Mac had; one token per step, no draft layer; the arena was 11-12 GB of the 25.8 GB of experts):
+
+| | Gyro-S |
+|---|---|
+| Decode, story, 120 tokens (5 interleaved pairs, medians) | **9.14 tok/s** (9.07-9.15) |
+| Decode, with the dense-weight tiles turned off (`STRATA_METAL_GYRO_TILES=0`) | 8.70 tok/s (8.69-8.73); same tokens in all 10 runs |
+| Prompt, 4,065 tokens (3 runs) | **109 tok/s** (108-110) |
+| Memory the engine held | 18.6 GB of the 32 GB |
+
+Where the time goes: a decode window of two tokens takes 111 ms. The routed experts are about 40 ms of it, the dense weights
+(Gyro keeps its attention, state-space and shared-expert matrices in Q5_K and Q6_K: 3.6 GB read a token)
+about 66 ms before the tile change (a run with those kernels skipped). The kernel for one expert layer (ten experts, one token) takes
+278 us on the M4, 37.5 GB/s; IQ3_XXS takes 333 us and Q2_0 166 us. The trellis decode is limited by latency and ALU, not by memory:
+32-bit funnel shifts for the stream bits, fetching the next unit while decoding the current one, one lane a row with the unit index
+folded away and the codebook in constant memory were all tried and none beat the plain kernel, so it is the plain kernel with the
+tile that measured fastest. The prompt kernels (fp16 matrix units) are on par with IQ3_XXS: 68 ms against 62 ms a layer for
+1,024 tokens.
+
+**Checked against the CPU engine's decoder, on the real file:** the decoder equals the format's definition written out bit by bit
+(614,400 sampled blocks a layer, none differ); the Hadamard rotation equals the CPU's bit for bit (f32 and f16); the expert
+kernels reproduce a double-precision reference to 1e-7 relative on real experts of layers 0 and 47 of Gyro-S and of layers 0, 23
+and 47 of Gyro-M (the 92 GB file was read by range requests, 16 experts a layer: it does not fit this Mac's disk). Run it with
+`metal/tests/gyro_parity.sh`.
+
+**Against the CUDA engine, same file** (the pinned Gyro-S; `tools/quant_quality.py`, teacher-forced over the 5 text segments of
+`data/quant_quality/v1`, 4,995 positions; CUDA = an RTX 3060 with the engine of this release, run twice: experts on the GPU, experts on the CPU):
+
+| Reference -> run | top-1 agreement | mean KL | KL p99 | perplexity of the text |
+|---|---|---|---|---|
+| CUDA GPU experts -> CUDA CPU experts (the noise floor: two numerics of one engine) | 95.80 % | 0.0186 | 0.195 | 4.462 / 4.477 |
+| CUDA GPU experts -> Mac | 95.46 % | 0.0207 | 0.241 | 4.486 / 4.477 |
+| CUDA CPU experts -> Mac | 95.38 % | 0.0187 | 0.272 | 4.486 / 4.462 |
+
+The Mac is as far from either CUDA run as the two CUDA runs are from each other (the CUDA GPU path quantizes the activations to q8_1 and
+reads an int8 copy of the codebook, the CPU path an int16 one; the Mac multiplies fp16 codebook values with the float activations).
+
 ### Quality
 
 - **The Q8_0 hyper-connection read is the default on Mac.** It keeps a Q8_0 copy of the hyper-connection matrices instead of BF16. `STRATA_HC_Q8=0` in the config's `env` gives the exact BF16 read.
@@ -173,13 +236,29 @@ The arena was 11.5-14.7 GB. Tokens per second, one token per step (no MTP), medi
 
 ## Limits (this version)
 
-- **Images (vision):** `--vision yes` in setup. Checked on one test picture with Q2_0 and UD-Q4_K_XL: the answers equal the HIP engine's, and text output is unchanged with vision on. No other tests yet.
+- **Images (vision):** on by default. The app and the Terminal use the `strata-vision` that sits beside `strata` in the engine package;
+  `./setup.sh` builds it itself and asks "Should the model also read images?" (default yes). One program does both jobs: with `--gpu` it
+  reads on the Mac's GPU (ggml's Metal backend, the shaders are built into the program), without it on the CPU. A Mac always gets the GPU
+  reader, whatever its memory. The 24 GB rule of the PC cards does not apply: the Mac has no separate card memory to keep free, and the
+  reader's footprint is about the same on either side (1.18 GB on the GPU, 1.05 GB on the CPU, mostly the 0.9 GB projector file).
+  Measured on a Mac mini M4 (32 GB), Qwen3.8-Flash-Next's BF16 projector:
+
+  | Picture | GPU reader | CPU reader |
+  |---|---|---|
+  | 260 tokens (640x400) | 0.45 s | 50.7 s |
+  | 972 tokens (1600x1200) | 2.4 s | 194 s |
+
+  `--vision cpu` is still allowed and prints that note. The CPU reader is slow because ggml has no vector kernel for BF16 on ARM (a build
+  for newer chips, with the BF16 and int8 instructions, took the same 50.7 s). If the GPU reader cannot start, the server prints one line
+  and starts the same program on the CPU. With Q2_0 streaming from the SSD on that M4, the STRATA 42 test picture (red circle, blue square,
+  green triangle, the text "STRATA 42") was described correctly with both readers. Checked on one Mac only; the M5 Max is untested for pictures.
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can be set, but it is not measured.
 - **One request at a time.** `--parallel` (batch slots) is not ported. Several clients queue.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming:** measured at 32 GB only. The model's file must be on the internal SSD; an external disk is untested and likely much slower.
-- **Families:** the original Qwen3.8-Flash-Next and Unsloth's UD-Q4/Q5/Q6_K_XL are measured (above). Setup repacks Unsloth's shards into one file for the GPU. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
-- **Engine only from source.** There is no ready-made Mac engine in the release zips.
+- **Families:** the original Qwen3.8-Flash-Next, Unsloth's UD-Q4/Q5/Q6_K_XL and agentionai's Gyro-S are measured (above). Setup repacks Unsloth's shards into one file for the GPU; a Gyro file is used as it is. Gyro-M runs on the same kernels (checked tensor by tensor) but no Mac here could hold it. The Swift and Coder releases are not set up on Mac yet, and Qwen3.6 does not run on the Mac engine.
+- **The ready-made Mac engine is in the app and in the Terminal's engine component, not in the release zips.** The zips
+  (for `START-HERE.bat` and `setup.sh`) have no Mac engine: `./setup.sh` builds it.
 
 ## Switches (for testing; all off unless set, the defaults are above)
 

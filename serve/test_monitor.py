@@ -109,7 +109,11 @@ class Monitor(unittest.TestCase):
                         self.assertNotIn("response", record)
 
     def test_error_and_engine_death_are_not_successes(self):
+        # a request the server refuses is an error record: the strict mode (fit_max_tokens off) refuses a max_tokens
+        # that overshoots the context, the default shortens it (serve/test_server.py MaxTokens)
+        self.svc.fit_max_tokens = False
         self.assertEqual(self.chat(max_tokens=20000)[0], 400)
+        self.svc.fit_max_tokens = True
         self.assertEqual(self.latest()["state"], "error")
         for api in ("openai", "anthropic"):
             for stream in (False, True):

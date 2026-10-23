@@ -2,7 +2,8 @@
 rem Update Strata without starting the model (#475): the newest code (git pull, when this folder is a git clone), then
 rem what START-HERE.bat does before a start - the engine (a new one when this version needs it), the Python packages,
 rem each installed model's settings and draft subset. The model files are not touched. Start the model later with
-rem START-HERE.bat. Options are passed on to setup.py.
+rem START-HERE.bat. Options are passed on to setup.py. The bundled Python (python\ beside this file) is used when
+rem there is one: START-HERE.bat, which this file runs, picks it.
 setlocal
 title Strata - update
 cd /d "%~dp0"

@@ -5,6 +5,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/copy_queue.hpp"
 #include "strata/prefill/xmx_moe.hpp"
+#include "strata/prefill/esimd_moe.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
@@ -23,6 +24,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/cvec.hpp"
@@ -41,6 +43,13 @@
 #include "strata/prefill/kernels.hpp"
 
 #include <algorithm>
+#include <set>
+#include <map>
+#include <cmath>
+#include <chrono>
+#include <stdexcept>
+#include <sys/stat.h>
+#include <tuple>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -51,6 +60,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifndef STRATA_PREFILL_MMQ
@@ -97,6 +107,32 @@ namespace strata::prefill {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// 0.1.48, A750 deadlock: SYCL has no cudaHostRegister, so the expert arena is ordinary pageable memory even where the engine
+// calls it "pinned" (pinned.dp.cpp registers nothing).  A DMA straight from it, `copy->memcpy(stage, arena_ptr, 2.3 MB)`, makes the
+// Level Zero driver copy through its own staging buffers on the calling thread, and on some prompts that wait never ends (the
+// thread spins in sched_yield inside libze_intel_gpu with the GPU idle; tools: /data/148-intel notes).  Only a USM host
+// allocation (the --stream-experts pinned mirror, the B70's) is DMA'd directly; every other expert is copied into one of the
+// stager's pinned buffers by its threads first, the path unpinned experts already take.  STRATA_PF_DMA_PAGEABLE=1 restores the
+// direct copy from pageable memory.
+inline bool dma_direct(const core::ExpertSource* src, int64_t layer, int64_t expert, const void* blob) {
+    if (!src->pinned(layer, expert)) return false;
+    static const bool pageable_ok = [] { const char* v = std::getenv("STRATA_PF_DMA_PAGEABLE"); return v && v[0] == '1'; }();
+    if (pageable_ok) return true;
+    if (blob == nullptr) return false;
+    // the answer per 2 MiB bucket (a query costs ~2 us, 10k+ experts a chunk): "host USM" only when both ends of the bucket are, so a bucket
+    // that straddles two allocations is never taken for USM
+    static thread_local std::unordered_map<uintptr_t, bool> usm_bucket;
+    const uintptr_t key = (uintptr_t) blob >> 21;
+    const auto it = usm_bucket.find(key);
+    if (it != usm_bucket.end()) return it->second;
+    const auto ctx = dpct::get_in_order_queue().get_context();
+    const bool usm = sycl::get_pointer_type((const void*) (key << 21), ctx) == sycl::usm::alloc::host &&
+                     sycl::get_pointer_type((const void*) (((key + 1) << 21) - 1), ctx) == sycl::usm::alloc::host &&
+                     sycl::get_pointer_type(blob, ctx) == sycl::usm::alloc::host;
+    usm_bucket.emplace(key, usm);
+    return usm;
+}
 constexpr float EPS = 1e-6f;
 constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
 constexpr int64_t C = 10240, ZV = 6144, HV = 48;
@@ -230,7 +266,31 @@ inline int ring_slots(size_t T) {
 }
 // A770 port: STRATA_PF_XMX=2 holds up to a group of staged experts until its launch, so routed-only staging needs
 // that many more slots for the lookahead to keep copying (the slots are only reused once the group's event is in)
-inline int stage_slots() { return strata::prefill::xmx::mode() == 2 ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE; }
+// 151-b70: the fused int8 DPAS expert products (prefill/esimd_moe.dp.cpp, Battlemage).  Unset STRATA_PREFILL_MMQ (alias STRATA_PF_I8) is
+// auto on a Battlemage GPU (bmg-g21 / bmg-g31 by architecture id) whose kernels are in the binary, the FP16 chain on every other GPU
+// (Alchemist included); =0 forces the FP16 chain, =1 the int8 chain everywhere it applies (IQ3_S / IQ3_XXS / IQ2_S gate/up with IQ4_NL /
+// Q2_0 down, the 640 x 2560 expert), =auto the per-group choice from the crossover measured on this GPU.  The activations are quantized,
+// so the bits differ from the FP16 path (docs/INTEL_INT8_EXPERTS.md: KL 0.0002 nats, top-1 99.7%).
+static_assert(strata::kernels::kXmxGroupMax <= strata::prefill::i8::kMaxGroup, "the int8 path holds the grouped XMX path's experts: its Layout must be at least as big");
+inline const char* i8_env() {
+    const char* e = std::getenv("STRATA_PREFILL_MMQ");
+    if (e == nullptr || e[0] == 0) e = std::getenv("STRATA_PF_I8");
+    return (e != nullptr && e[0] != 0) ? e : nullptr;
+}
+std::atomic<bool> g_i8_failed{false};    // an int8 launch threw: the FP16 chain for the rest of the process
+// The chain this queue's prompt experts take: 0 FP16, 1 int8, 2 auto.
+inline int i8_mode(void* cs) {
+    if (g_i8_failed.load(std::memory_order_relaxed)) return 0;
+    const char* e = i8_env();
+    if (e != nullptr) return strata::prefill::i8::choose_mode(e, false, false);
+    return strata::prefill::i8::choose_mode(nullptr, strata::prefill::i8::battlemage(cs), strata::prefill::i8::available(cs));
+}
+// ring sizing happens before any queue is at hand: room for the int8 groups whenever the choice could be on
+inline int stage_slots() {
+    const char* e = i8_env();
+    const bool i8 = e != nullptr ? strata::prefill::i8::choose_mode(e, false, false) != 0 : strata::prefill::i8::any_battlemage();
+    return (strata::prefill::xmx::mode() == 2 || i8) ? STAGE + strata::prefill::xmx::kMaxGroup : STAGE;
+}
 constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + down)
 // A770 port: STRATA_PF_XMX=1 dequantizes a whole group of experts, then one grouped XMX launch per product
 inline int dq_slots() { return strata::prefill::xmx::mode() == 1 ? strata::prefill::xmx::kMaxGroup : DQ; }
@@ -656,6 +716,9 @@ struct Prefill::Impl {
     uint16_t *xn16 = nullptr, *lo16 = nullptr;
     float* mixed = nullptr;
     uint16_t *mixed_bf = nullptr, *mixed_h = nullptr;
+    // APR (prism.hadamard): per layer, this device's copies of the gate/up (n_embd) and down (n_ff) sign vectors
+    // (nullptr: identity signs or not folded), resolved once in init so a prompt chunk reads a pointer
+    std::vector<const float*> had_sx, had_sh;
     bool f16_io = false;   // HIP, STRATA_HIP_PROMPT_F16=1: this stage's 16-bit GEMMs run FP16 in and out (set in init)
     uint16_t *xn16_lo = nullptr, *lo16_lo = nullptr, *mixed_bf_lo = nullptr;   // bf16x2(): the BF16 GEMMs' low parts
     float* bo = nullptr;
@@ -781,6 +844,191 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 }
 }  // namespace
 
+
+// ------------------------------------------------------------------------------------------------ 151-b70: int8 or FP16 experts
+// STRATA_PREFILL_MMQ=auto picks per group of experts from the measured cost on THIS GPU: at the first layer of a given expert
+// format the int8 chain (quantize, gate/up, SwiGLU + quantize, down) and the FP16 chain (dequantize, two GEMMs, SwiGLU) are timed on
+// synthetic experts (random blobs of the layer's format and shape) at 16, 32, 64, 128 and 256 rows per expert, and the crossover
+// (the mean rows per expert where the FP16 chain becomes the faster one, interpolated on the cost ratio) is kept, with a flag for
+// how clear the measurement was.  It is cached in a small text file (STRATA_CACHE_DIR, else ~/.cache/strata/i8-crossover.txt) keyed by
+// device name, driver, formats and shape, and read back instead of measured when the key matches.
+namespace {
+struct I8Cross { double rows = 0; bool confident = false; bool measured = false; };
+
+std::string i8_cache_file() {
+    const char* d = std::getenv("STRATA_CACHE_DIR");
+    std::string dir;
+    if (d && d[0]) dir = d;
+    else if (const char* h = std::getenv("HOME")) dir = std::string(h) + "/.cache/strata";
+    else if (const char* a = std::getenv("LOCALAPPDATA")) dir = std::string(a) + "/strata";
+    else return "";
+    return dir + "/i8-crossover.txt";
+}
+bool i8_cache_read(const std::string& key, I8Cross& out) {
+    const std::string path = i8_cache_file();
+    if (path.empty()) return false;
+    std::FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return false;
+    char line[700];
+    bool ok = false;
+    while (std::fgets(line, sizeof line, f)) {
+        char k[600]; double rows; int conf;
+        if (std::sscanf(line, "%599[^\t]\t%lf\t%d", k, &rows, &conf) == 3 && key == k) { out.rows = rows; out.confident = conf != 0; ok = true; }
+    }
+    std::fclose(f);
+    return ok;
+}
+void i8_cache_write(const std::string& key, const I8Cross& c) {
+    const std::string path = i8_cache_file();
+    if (path.empty()) return;
+    const std::string dir = path.substr(0, path.rfind('/'));
+    std::vector<std::string> keep;   // the other keys' lines
+    if (std::FILE* f = std::fopen(path.c_str(), "r")) {
+        char line[700];
+        while (std::fgets(line, sizeof line, f)) {
+            std::string s(line);
+            if (s.compare(0, key.size() + 1, key + "\t") != 0) keep.push_back(s);
+        }
+        std::fclose(f);
+    }
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) {
+        ::mkdir(dir.c_str(), 0755);
+        f = std::fopen(path.c_str(), "w");
+        if (!f) return;
+    }
+    for (auto& s : keep) std::fputs(s.c_str(), f);
+    std::fprintf(f, "%s\t%.1f\t%d\n", key.c_str(), c.rows, c.confident ? 1 : 0);
+    std::fclose(f);
+}
+
+template <class M>
+I8Cross i8_calibrate(M& m, const strata::kernels::cpu::NativeFmt& f) {
+    namespace i8 = strata::prefill::i8;
+    sycl::queue& q = *m.cs;
+    const std::string dev = q.get_device().template get_info<sycl::info::device::name>() + "|" +
+                            q.get_device().template get_info<sycl::info::device::driver_version>();
+    char keyb[600];
+    std::snprintf(keyb, sizeof keyb, "%s|%d|%d|%lldx%lld", dev.c_str(), f.gu_type, f.d_type, (long long) f.n_ff, (long long) f.n_embd);
+    const std::string key = keyb;
+    I8Cross res;
+    if (i8_cache_read(key, res)) {
+        std::fprintf(stderr, "strata: int8 experts: crossover %.0f rows per expert (%s) from the cache for %s\n", res.rows,
+                     res.confident ? "clear" : "not clear", key.c_str());
+        return res;
+    }
+    constexpr int E = 8;
+    const int rows_list[5] = {16, 32, 64, 128, 256};
+    const int N = (int) f.n_embd, NF = (int) f.n_ff;
+    double t8[5] = {}, t16[5] = {};
+    const double facs[E] = {0.15, 0.35, 0.6, 0.85, 1.1, 1.4, 1.8, 2.45};
+    double fac[E];
+    std::vector<uint8_t*> blobs(E, nullptr);
+    uint16_t *X = nullptr, *Hh = nullptr;
+    float *GU = nullptr, *Dm = nullptr;
+    bool ok = true;
+    try {
+        // rows per expert are uneven like a real group (a few big experts and many small ones): factors of the mean, mean 1
+        for (int i = 0; i < E; ++i) { fac[i] = facs[i] / 1.0875; }
+        size_t rmax = 0;
+        for (int i = 0; i < E; ++i) rmax += (size_t) std::max(1.0, 256.0 * fac[i] + 0.5) + 8;   // rows of the largest sample (plus padding)
+        for (int i = 0; i < E; ++i) blobs[i] = sycl::malloc_device<uint8_t>(f.bytes + 256, q);
+        X = sycl::malloc_device<uint16_t>(rmax * N, q);
+        Hh = sycl::malloc_device<uint16_t>(rmax * NF, q);
+        GU = sycl::malloc_device<float>(rmax * 2 * NF, q);
+        Dm = sycl::malloc_device<float>(rmax * N, q);
+        for (int i = 0; i < E; ++i) ok = ok && blobs[i];
+        ok = ok && X && Hh && GU && Dm;
+        if (!ok) throw std::runtime_error("no VRAM for the measurement");
+        // synthetic experts: random bytes with a sane fp16 scale at every block start (the cost does not depend on the values)
+        std::vector<uint8_t> hb(f.bytes + 256);
+        uint32_t s = 12345;
+        auto rnd = [&] { s = s * 1664525u + 1013904223u; return s >> 8; };
+        for (size_t i = 0; i < hb.size(); ++i) hb[i] = (uint8_t) rnd();
+        const int gb = f.gu_type == 21 ? 110 : f.gu_type == 18 ? 98 : 82;
+        for (size_t o = 0; o + 2 <= f.up_off * 2 && o < hb.size(); o += gb) { hb[o] = 0x00; hb[o + 1] = 0x2C; }
+        for (size_t o = f.down_off; o + 2 <= f.bytes; o += 18) { hb[o] = 0x00; hb[o + 1] = 0x2C; }
+        for (int i = 0; i < E; ++i) q.memcpy(blobs[i], hb.data(), f.bytes);
+        std::vector<uint16_t> hx(rmax * N);
+        for (auto& x : hx) x = (uint16_t) (0x3400 + (rnd() & 0x3ff));   // ~0.25..0.5, no zeros
+        q.memcpy(X, hx.data(), hx.size() * 2);
+        q.wait();
+        auto timeit = [&](auto&& fn) {
+            fn(); q.wait();
+            const auto w0 = std::chrono::steady_clock::now();
+            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count() < 0.02) { fn(); q.wait(); }
+            double best = 1e30;
+            for (int r = 0; r < 4; ++r) {
+                const auto t0 = std::chrono::steady_clock::now();
+                fn(); q.wait();
+                best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count());
+            }
+            return best;
+        };
+        for (int ri = 0; ri < 5; ++ri) {
+            const int R = rows_list[ri];
+            int32_t cnt[i8::kMaxGroup];
+            for (int i = 0; i < E; ++i) cnt[i] = std::max(1, (int) (R * fac[i] + 0.5));
+            i8::Layout lo;
+            i8::make_layout(lo, cnt, E);
+            i8::Workspace ws;
+            if (!i8::workspace(lo, N, NF, ws, &q)) throw std::runtime_error("workspace");
+            std::vector<const uint8_t*> pb(E);
+            for (int i = 0; i < E; ++i) pb[i] = blobs[i];
+            bool refused = false;
+            t8[ri] = timeit([&] {
+                i8::quantize_rows(X, lo, N, ws.xq, ws.dx, &q);
+                if (!i8::gate_up(f.gu_type, pb.data(), f.up_off, NF, lo, N, ws.xq, ws.dx, GU, &q)) refused = true;
+                i8::swiglu_quantize(GU, lo, NF, ws.hq, ws.dh, &q);
+                if (!i8::down(f.d_type, pb.data(), f.down_off, N, lo, NF, ws.hq, ws.dh, Dm, &q)) refused = true;
+            }) / E;
+            if (refused) throw std::runtime_error("the int8 kernels refused this format");
+            t16[ri] = timeit([&] {
+                int64_t o = 0;
+                for (int i = 0; i < E; ++i) {
+                    const int qd = i % DQ;
+                    strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, blobs[i], blobs[i] + f.up_off, blobs[i] + f.down_off, NF, N,
+                                                           m.dq_gu[qd], m.dq_d[qd], &q);
+                    m.gemm.f16(X + o * N, m.dq_gu[qd], GU + o * 2 * NF, cnt[i], 2 * NF, N);
+                    strata::prefill::swiglu_interleaved(GU + o * 2 * NF, Hh + o * NF, cnt[i], &q);
+                    m.gemm.f16(Hh + o * NF, m.dq_d[qd], Dm + o * N, cnt[i], N, NF);
+                    o += cnt[i];
+                }
+            }) / E;
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "strata: int8 experts: the crossover measurement failed (%s): the int8 path is used below 64 rows per expert\n", e.what());
+        ok = false;
+    }
+    for (auto* b : blobs) if (b) sycl::free(b, q);
+    if (X) sycl::free(X, q);
+    if (Hh) sycl::free(Hh, q);
+    if (GU) sycl::free(GU, q);
+    if (Dm) sycl::free(Dm, q);
+    if (!ok) { res.rows = 64; res.confident = false; return res; }
+    // crossover: the first R where the FP16 chain is the faster one, interpolated in log(ratio) between the two bracketing sizes
+    double ratio[5];
+    for (int i = 0; i < 5; ++i) ratio[i] = t16[i] / t8[i];   // > 1: int8 faster
+    int first = -1;
+    for (int i = 0; i < 5; ++i) if (ratio[i] < 1.0) { first = i; break; }
+    if (first < 0) res.rows = 512;                    // int8 wins everywhere measured
+    else if (first == 0) res.rows = 0;                // FP16 wins even at 16 rows
+    else {
+        const double a = std::log(ratio[first - 1]), b = std::log(ratio[first]);
+        const double t = a / (a - b);
+        res.rows = std::exp(std::log((double) rows_list[first - 1]) + t * (std::log((double) rows_list[first]) - std::log((double) rows_list[first - 1])));
+    }
+    // clear: the ratio falls with the rows (within 5%) and the samples bracketing the crossover are at least 5% away from 1
+    bool mono = true;
+    for (int i = 1; i < 5; ++i) if (ratio[i] > ratio[i - 1] * 1.05) mono = false;
+    res.confident = mono && (first < 0 ? ratio[4] > 1.05 : first == 0 ? ratio[0] < 0.95 : (ratio[first - 1] > 1.05 && ratio[first] < 0.95));
+    res.measured = true;
+    std::fprintf(stderr, "strata: int8 experts, measured here (%s): us per expert at 16/32/64/128/256 rows, int8 %.1f/%.1f/%.1f/%.1f/%.1f, FP16 %.1f/%.1f/%.1f/%.1f/%.1f -> crossover %.0f rows per expert (%s)\n",
+                 key.c_str(), t8[0], t8[1], t8[2], t8[3], t8[4], t16[0], t16[1], t16[2], t16[3], t16[4], res.rows, res.confident ? "clear" : "not clear");
+    i8_cache_write(key, res);
+    return res;
+}
+}  // namespace
 Prefill::Prefill() : impl_(new Impl) {}
 Prefill::~Prefill() { release(); }
 
@@ -943,7 +1191,23 @@ bool Prefill::init(const core::WeightTable &wt, const core::ModelGeometry &g,
     if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
     }
+    {   // APR: the sign vectors on this device, once (hadamard_device_signs takes a mutex and allocates its copy)
+        const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+        m.had_sx.assign(lay.native ? lay.fmt.size() : 0, nullptr);
+        m.had_sh.assign(m.had_sx.size(), nullptr);
+        for (size_t l = 0; l < m.had_sx.size(); ++l) {
+            if (lay.fmt[l].had_gu)
+                m.had_sx[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].gu_signs, (int) lay.fmt[l].n_embd);
+            if (lay.fmt[l].had_d)
+                m.had_sh[l] = strata::kernels::hadamard_device_signs(lay.fmt[l].d_signs, (int) lay.fmt[l].n_ff);
+        }
+    }
     m.device = dpct::get_current_device_id();
+    if (static bool said_i8 = false; !said_i8 && i8_mode(m.cs) != 0) {
+        said_i8 = true;
+        std::fprintf(stderr, "strata: int8 prompt experts are on (%s); STRATA_PREFILL_MMQ=0 turns them off\n",
+                     i8_env() == nullptr ? "Battlemage default, auto" : "STRATA_PREFILL_MMQ set");
+    }
     if (stage_le_ < 0) stage_le_ = g.n_layers;
     if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers || (stage_le_ < g.n_layers) != (next_ != nullptr)) {
         err = "prefill: the stage's layer range is wrong";
@@ -2550,7 +2814,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 continue;
                             }
                         }
-                        if (!m.src->pinned(l, e)) {
+                        if (!dma_direct(m.src, l, e, b)) {
                             job = (int) js.size();
                             js.push_back({b, (size_t) lay0.blob_bytes(l)});
                         }
@@ -3222,6 +3486,17 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     // (moe_fused_iq.hpp) where they cover its two formats, else MMQ (or the FP16 path: IQ1_M).
                     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
+                    // APR (prism.hadamard): folded gate/up take H (s * x) on the gathered fp16 rows, folded down H (s * h) on
+                    // the fp16 SwiGLU output, both rotated in fp16 storage with fp32 arithmetic (as the CUDA FP16 path does).
+                    // The fused int8 products and the MMQ path do not rotate; they take only formats of unfolded layers.
+                    const bool had_gu = lay.native && lay.fmt[(size_t) l].had_gu;
+                    const bool had_d = lay.native && lay.fmt[(size_t) l].had_d;
+                    const int had_block = lay.native ? lay.fmt[(size_t) l].had_block : 0;
+                    const float* had_sx = had_gu ? m.had_sx[(size_t) l] : nullptr;
+                    const float* had_sh = had_d ? m.had_sh[(size_t) l] : nullptr;
+                    auto had_h = [&](int64_t row0, int64_t nrows) {
+                        if (had_d) strata::kernels::hadamard_rows_f16(m.Hh + row0 * 640, nrows, 640, had_block, had_sh, m.cs);
+                    };
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
                     // --peer-device: MMQ only, whether or not the peer took the prompt path (set_peer can decline), as
@@ -3466,6 +3741,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             }
                         } else {
                             gather_rows16(m.mixed_h, m.src_dev, m.Xs, T * K, N, m.cs);
+                            // APR: Xs is this layer's private gathered copy (rotated in fp16 storage, fp32 arithmetic)
+                            if (had_gu) strata::kernels::hadamard_rows_f16(m.Xs, T * K, N, had_block, had_sx, m.cs);
                         }
                         // multi-GPU: the peer's share, enqueued before the primary's own experts so both cards work at once
                         peer_now = use_mmq && !order_peer.empty();
@@ -3809,7 +4086,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             for (size_t j = 0; j < order.size(); ++j) {
                                 const int32_t e = order[j];
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
-                                if (m.src->pinned(l, e)) continue;
+                                { const uint8_t* pb = m.src->pinned(l, e) ? m.src->blob(l, e) : nullptr; if (dma_direct(m.src, l, e, pb)) continue; }
                                 job_of[j] = (int) js.size();
                                 if (gsrc != nullptr) {   // SYCL port: --stream-experts - the stager's thread reads it from the GGUF
                                 js.push_back({nullptr, (size_t) lay.blob_bytes(l), nullptr, (int32_t) l, e, gsrc});
@@ -3834,7 +4111,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             const int sl = stage_next;
                             stage_next = (stage_next + 1) % stage_slots();
                             const auto th = Clock::now();
-                            const bool pinned = m.src->pinned(l, e);   // pinned: never transient
+                            const uint8_t* pb0 = m.src->pinned(l, e) ? m.src->blob(l, e) : nullptr;
+                            const bool pinned = dma_direct(m.src, l, e, pb0);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob(l, e) : nullptr;
                             if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
                             if (pinned) {
@@ -3943,9 +4221,26 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         auto xmx2_fmt = [&]() {
                             if (!lay.native) return false;
                             const int gt = lay.fmt[(size_t) l].gu_type, dt = lay.fmt[(size_t) l].d_type;
+                            if ((gt == 144 || gt == 145) && (dt == 144 || dt == 146)) return true;   // Gyro's trellis experts (rotated above)
                             return (gt == 18 || gt == 21 || gt == 22 || gt == 23) && (dt == 20 || dt == 42);
                         };
-                        const bool xmx2 = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
+                        const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
+                        // 151-b70: the fused int8 DPAS products (IQ3_S gate/up, IQ4_NL down, the 640 x 2560 expert), the same
+                        // held group of staged experts as above
+                        const int i8m = i8_mode(m.cs);
+                        const bool i8on = !xmx2_only && i8m != 0 && !use_mmq && lay.native && !had_gu && !had_d &&
+                                          (lay.fmt[(size_t) l].gu_type == 21 || lay.fmt[(size_t) l].gu_type == 18 || lay.fmt[(size_t) l].gu_type == 22) &&
+                                          (lay.fmt[(size_t) l].d_type == 20 || lay.fmt[(size_t) l].d_type == 42) &&
+                                          lay.fmt[(size_t) l].n_ff == 640 && lay.fmt[(size_t) l].n_embd == 2560 &&
+                                          strata::prefill::i8::available(m.cs);
+                        const bool xmx2 = xmx2_only || i8on;
+                        if (i8_env() != nullptr && i8m != 0 && lay.native) {
+                            static std::set<std::tuple<int, int, int, int, int>> said_fmt;
+                            const auto& ff = lay.fmt[(size_t) l];
+                            if (said_fmt.insert({ff.gu_type, ff.d_type, (int) ff.n_ff, (int) ff.n_embd, (int) i8on}).second)
+                                std::fprintf(stderr, "strata: layer %lld experts gate/up type %d, down type %d, n_ff %d, n_embd %d -> int8 path %s\n",
+                                             (long long) l, ff.gu_type, ff.d_type, (int) ff.n_ff, (int) ff.n_embd, i8on ? "yes" : "no");
+                        }
                         if (strata::prefill::xmx::mode() == 2 && !xmx2) {
                             static bool said = false;
                             if (!said) {
@@ -3965,13 +4260,87 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         int64_t xg_r0 = 0;
                         auto xflush = [&]() {
                             if (xg_n == 0) return;
+                            const auto& f = lay.fmt[(size_t) l];
+                            int64_t nr = 0;
+                            for (int i = 0; i < xg_n; ++i) nr += xg_c[i];
+                            if (i8on) {
+                                // STRATA_PREFILL_MMQ=1: always; =auto: while the group's mean rows per expert are under the crossover
+                                // measured on this GPU (i8_calibrate); a group above it takes the FP16 chain below
+                                bool done8 = false;
+                                try {
+                                bool use_i8 = true;
+                                if (i8m == 2) {
+                                    static std::map<std::tuple<const void*, int, int>, I8Cross> xover;   // per queue (a layer split has a card per queue)
+                                    auto it = xover.find({(const void*) m.cs, f.gu_type, f.d_type});
+                                    if (it == xover.end()) it = xover.emplace(std::make_tuple((const void*) m.cs, f.gu_type, f.d_type), i8_calibrate(m, f)).first;
+                                    use_i8 = (double) nr / xg_n < it->second.rows;
+                                    static long groups_i8 = 0, groups_fp = 0;
+                                    (use_i8 ? groups_i8 : groups_fp) += 1;
+                                    if (static bool said_n = false; !said_n && groups_i8 + groups_fp >= 500) {
+                                        said_n = true;
+                                        std::fprintf(stderr, "strata: int8 experts (auto): %ld groups took the int8 chain, %ld the FP16 chain\n", groups_i8, groups_fp);
+                                    }
+                                }
+                                if (use_i8) {
+                                    if (static bool said = false; !said) {
+                                        said = true;
+                                        std::fprintf(stderr, "strata: prompt experts on the fused int8 DPAS products (STRATA_PREFILL_MMQ=%s)\n",
+                                                     i8m == 2 ? "auto" : "1");
+                                    }
+                                    namespace i8 = strata::prefill::i8;
+                                    i8::Layout lo8;
+                                    i8::make_layout(lo8, xg_c, xg_n);
+                                    i8::Workspace ws8;
+                                    pt.mark(kPfGemmGU, cs);
+                                    if (i8::workspace(lo8, (int) N, f.n_ff, ws8, m.cs)) {
+                                        i8::quantize_rows(m.Xs + xg_r0 * N, lo8, (int) N, ws8.xq, ws8.dx, m.cs);
+                                        if (i8::gate_up(f.gu_type, xg_g, f.up_off, f.n_ff, lo8, (int) N, ws8.xq, ws8.dx, m.GU + xg_r0 * 1280, m.cs)) {
+                                            i8::swiglu_quantize(m.GU + xg_r0 * 1280, lo8, f.n_ff, ws8.hq, ws8.dh, m.cs);
+                                            pt.mark(kPfGemmD, cs);
+                                            done8 = i8::down(f.d_type, xg_g, f.down_off, (int) N, lo8, f.n_ff, ws8.hq, ws8.dh, m.Dm + xg_r0 * N, m.cs);
+                                        }
+                                    }
+                                    if (!done8) {
+                                        if (static bool said_f = false; !said_f) {
+                                            said_f = true;
+                                            std::fprintf(stderr, "strata: the int8 expert products could not run (layer %lld, no workspace or a format they do not handle): the FP16 chain is used\n", (long long) l);
+                                        }
+                                    }
+                                }
+                                } catch (const std::exception& ex) {   // the kernels are not in this binary for this device, or a launch failed: the FP16 chain, for good
+                                    done8 = false;
+                                    if (!g_i8_failed.exchange(true))
+                                        std::fprintf(stderr, "strata: the int8 expert kernels failed to launch (%s): the FP16 expert chain is used from here\n", ex.what());
+                                }
+                                if (!done8) {   // the FP16 chain: dequantize, two oneMKL GEMMs, SwiGLU, per expert
+                                    int64_t o = xg_r0;
+                                    for (int i = 0; i < xg_n; ++i) {
+                                        const int qd = i % DQ;
+                                        pt.mark(kPfDequant, cs);
+                                        strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, xg_g[i], xg_u[i], xg_d[i], f.n_ff, f.n_embd,
+                                                                               m.dq_gu[qd], m.dq_d[qd], m.cs);
+                                        pt.mark(kPfGemmGU, cs);
+                                        m.gemm.f16(m.Xs + o * N, m.dq_gu[qd], m.GU + o * 1280, xg_c[i], 1280, N);
+                                        swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                        had_h(o, xg_c[i]);
+                                        pt.mark(kPfGemmD, cs);
+                                        m.gemm.f16(m.Hh + o * 640, m.dq_d[qd], m.Dm + o * N, xg_c[i], N, 640);
+                                        o += xg_c[i];
+                                    }
+                                }
+                                if (xg_ns > 0) {
+                                    const int rel = xg_slots[xg_ns - 1];
+                                    dpct::sync_barrier(m.used[rel], m.cs);
+                                    for (int i = 0; i < xg_ns; ++i) m.used_of[xg_slots[i]] = rel;
+                                }
+                                xg_n = 0;
+                                xg_ns = 0;
+                                return;
+                            }
                             if (static bool said = false; !said) {
                                 said = true;
                                 std::fprintf(stderr, "strata: prompt experts on the fused grouped XMX (STRATA_PF_XMX=2)\n");
                             }
-                            const auto& f = lay.fmt[(size_t) l];
-                            int64_t nr = 0;
-                            for (int i = 0; i < xg_n; ++i) nr += xg_c[i];
                             // measured (xmx_group_parity, 16 experts): the fused launch wins below ~200 rows per
                             // expert, dequantize + oneMKL above (gate/up 0.67-0.76x at 320); STRATA_PF_XMX_ROWS moves it
                             static const int xg_max = [] {
@@ -3983,6 +4352,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 strata::kernels::iq_xmx_grouped(f.gu_type, xg_g, xg_u, xg_c, xg_n, m.Xs + xg_r0 * N,
                                                                 m.GU + xg_r0 * 1280, 1280, (int) N, m.cs);
                                 swiglu_interleaved(m.GU + xg_r0 * 1280, m.Hh + xg_r0 * 640, nr, m.cs);
+                                had_h(xg_r0, nr);
                                 pt.mark(kPfGemmD, cs);
                                 strata::kernels::iq_xmx_grouped(f.d_type, xg_d, nullptr, xg_c, xg_n, m.Hh + xg_r0 * 640,
                                                                 m.Dm + xg_r0 * N, (int) N, 640, m.cs);
@@ -3997,6 +4367,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     pt.mark(kPfGemmGU, cs);
                                     m.gemm.f16(m.Xs + o * N, m.dq_gu[q], m.GU + o * 1280, xg_c[i], 1280, N);
                                     swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                    had_h(o, xg_c[i]);
                                     pt.mark(kPfGemmD, cs);
                                     m.gemm.f16(m.Hh + o * 640, m.dq_d[q], m.Dm + o * N, xg_c[i], N, 640);
                                     o += xg_c[i];
@@ -4134,6 +4505,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     }
                                 }
                                 swiglu_interleaved(m.GU + r0 * 1280, m.Hh + r0 * 640, nr, m.cs);
+                                had_h(r0, nr);
                                 pt.mark(kPfGemmD, cs);
                                 strata::prefill::xmx::grouped_f16(m.Hh + r0 * 640, wd, gc, ng, m.Dm + r0 * N, (int) N, 640,
                                                                   m.cs);
@@ -4143,6 +4515,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             pt.mark(kPfGemmGU, cs);
                             m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
                             swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                            had_h(o0, ne);
                             pt.mark(kPfGemmD, cs);
                             m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                             return true;

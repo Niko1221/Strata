@@ -392,6 +392,9 @@ class ReplicaEngine:
         held = False
         nonfinite = False
         try:
+            selected = getattr(cancel, "_strata_replica_selected", None)
+            if selected is not None:
+                selected(k)
             self.router.note(k, ids)
             if not int(getattr(e, "batch", 0) or 0):          # no slots: this replica takes one request at a time
                 lock = self.run_locks[k]

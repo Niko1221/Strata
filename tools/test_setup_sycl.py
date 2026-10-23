@@ -206,6 +206,28 @@ class ToSycl(unittest.TestCase):
         self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
         self.assertEqual(c["env"]["STRATA_SYCL_BIN"], "build-sycl/strata")
 
+    def test_gyro_memory_warning_reads_the_real_ram(self):
+        # setup's RAM rule is fed 1024 GB on the Intel path; Gyro counts VRAM + RAM, so it must see the real RAM
+        m = self.mod()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("setup_for_test", ROOT / "setup.py")
+        s = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(s)
+        have = m.real_mem_have(s.mem_have, 16.0, 1024.0)
+        self.assertEqual(have("Gyro-S", 1024.0, 8.0), 24.0)              # 16 GB RAM + 8 GB VRAM: below Gyro-S's 27.6, setup warns
+        self.assertLess(have("Gyro-S", 1024.0, 8.0), s.MODELS["Gyro-S"]["ram_gb"])
+        self.assertEqual(have("Gyro-S", 40.0, 8.0), 48.0)                # a real RAM figure passes through
+        self.assertEqual(have("Q2_0", 1024.0, 8.0), 16.0)                # the other sizes count RAM only, as before
+
+    def test_a_series_keeps_gyros_ngram_table_on_the_ssd(self):
+        # Gyro's table is half of the 58-92 GB file: --ple-io ram would not fit beside the experts' arena on a 64 GB PC
+        m = self.mod()
+        cfg = self.cfg(m)
+        cfg["args"][cfg["args"].index("--native") + 1] = str(m.MOUNT / "d" / "Qwen3.8-Flash-Next-Gyro-S-TQ1_0.gguf")
+        c = m.to_sycl(cfg, m.ROOT / "build-sycl" / "strata", 64.0, {}, 8.0, "i915")
+        self.assertNotIn("--ple-io", c["args"])
+        self.assertEqual(c["env"]["STRATA_VERIFY_NO_HOST"], "0")
+
     def test_split_short_rule(self):
         # #1980: 2x B60 24 GB - IQ3_XXS (42.9 GB) was refused under NO_HOST=1, IQ2_XS (35.5 GB) loads fully
         m = self.mod()
@@ -222,6 +244,73 @@ class ToSycl(unittest.TestCase):
         self.assertTrue(m.small_card(24.0, "i915"))
         self.assertTrue(m.small_card(10.0, "xe"))
         self.assertFalse(m.small_card(32.0, "xe"))
+
+    def test_pictures_follow_the_one_reader_rule_and_the_vision_section_survives(self):
+        """Intel Arc: pictures on gives the CPU reader (strata-vision) on the host under 24 GB and, until a 24 GB+ Arc has run the SYCL reader,
+        also from 24 GB; only --vision gpu asks for the SYCL reader (strata_control/vision_reader.py is the one place for the rule)."""
+        m = self.mod()
+        for asked in (None, "yes", "cpu", "on"):
+            self.assertEqual(m.intel_vision(asked, 8.0), "cpu")
+            self.assertEqual(m.intel_vision(asked, 32.0), "cpu")
+        self.assertEqual(m.intel_vision("gpu", 8.0), "gpu")
+        self.assertEqual(m.intel_vision("gpu", 32.0), "gpu")
+        for asked in ("no", "none", "off"):
+            self.assertEqual(m.intel_vision(asked, 32.0), "none")
+        section = {"exe": "/h/engine-sycl/strata-vision", "mmproj": "/h/models/mmproj.gguf", "model": "/h/models/m.gguf", "gpu": False,
+                   "max_tokens": 300}
+        cfg = self.cfg(m, ["--vision"])
+        cfg["vision"] = section
+        c = m.to_sycl(cfg, m.ROOT / "build-sycl-aot" / "strata", 64.0, {}, 32.0, "xe")
+        self.assertEqual(c["vision"], section)                              # host paths: the reader runs on the host, not in the container
+        self.assertIn("--vision", c["args"])
+
+    def test_pictures_are_on_by_default_on_an_alchemist_and_opt_in_on_a_battlemage(self):
+        """The A750 ran 47 picture requests without a fault; the first picture on the Arc Pro B70 reset the GPU (xe, 2026-10-19), so a
+        Battlemage card keeps them opt-in (--vision yes) and setup says so."""
+        m = self.mod()
+        self.assertTrue(m.pictures_on_by_default("i915", "56a1"))           # A750
+        self.assertTrue(m.pictures_on_by_default("i915", ""))
+        self.assertTrue(m.pictures_on_by_default("xe", "56a0"))             # A770
+        self.assertFalse(m.pictures_on_by_default("xe", "e223"))            # B70
+        self.assertFalse(m.pictures_on_by_default("xe", "e20b"))            # B580
+        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
+        self.assertIn('if "--vision" not in argv and not pictures_on_by_default(', src)
+        self.assertIn("S.hip_vision = intel_vision", src)
+        self.assertIn("S.build_vision_cpu(", src)                           # the CPU reader is compiled by setup's own step
+        self.assertIn("build_vision_sycl(", src)                            # --vision gpu: the SYCL reader, when the oneAPI compiler is there
+
+    def test_the_sycl_reader_is_built_only_when_asked_and_the_cpu_reader_stays_without_the_compiler(self):
+        from unittest import mock
+        m = self.mod()
+        with mock.patch.object(m, "oneapi_compiler", return_value=None), mock.patch.object(m.S, "warn") as warn:
+            self.assertFalse(m.build_vision_sycl_reader(Path("/nonexistent"), "/llama"))
+        self.assertIn("oneAPI compiler", warn.call_args[0][0])
+        self.assertIn("pictures are read on the CPU", warn.call_args[0][0])
+
+    def test_the_container_shares_dev_shm_with_the_server_for_the_embeddings(self):
+        sh = (ROOT / "sycl" / "serve" / "strata-sycl.sh").read_text(encoding="utf-8")
+        self.assertIn("-v /dev/shm:/dev/shm", sh)
+        self.assertIn("STRATA_SYCL_SHM", sh)
+
+    def test_a_picture_that_cannot_reach_the_container_is_said_once(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("server_intel_t", ROOT / "sycl" / "serve" / "server_intel.py")
+        src = (ROOT / "sycl" / "serve" / "server_intel.py").read_text(encoding="utf-8")
+        self.assertIn("install_shared_embeddings()", src.split('if __name__ == "__main__":')[1])
+        sys.path.insert(0, str(ROOT / "sycl" / "serve"))
+        try:
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+        except ImportError as e:                                           # no oneAPI / xe telemetry import here: the source check above stands
+            self.skipTest(str(e))
+        finally:
+            sys.path.pop(0)
+        out = io.StringIO()
+        with mock.patch.object(m.S, "combined_embeddings_path", lambda d, n: Path("/tmp/x/req.sve")), contextlib.redirect_stdout(out):
+            m.install_shared_embeddings()
+            m.S.combined_embeddings_path(Path("/tmp/x"), 10)
+            m.S.combined_embeddings_path(Path("/tmp/x"), 10)
+        self.assertEqual(out.getvalue().count("/dev/shm has no room"), 1)
 
 
 if __name__ == "__main__":

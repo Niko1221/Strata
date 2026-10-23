@@ -50,6 +50,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -502,6 +503,8 @@ struct Options {
     strata::kernels::cpu::PoolAffinity pool_affinity = strata::kernels::cpu::PoolAffinity::All;
     /// --host-core first|last (STRATA_HOST_CORE): the host thread's core (see HostCore in pool.hpp)
     std::string host_core;
+    /// --pool-cores LIST (STRATA_POOL_CORES; experimental, off by default): the logical processors the pool workers are pinned to
+    std::string pool_cores;
     /// R2.2's first half, as an A/B arm.  **ON by default**, because the measurement that justifies it is the
     /// pool's own drain: 33.7 GB/s against 5/6 x 44.14 = 36.8 for five workers, on a machine whose sixth core
     /// is reserved for a host thread that has nothing to do while the drain runs.
@@ -640,6 +643,8 @@ struct Options {
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
+    bool pcie_frac_auto = false;     ///< STRATA_PCIE_FRAC_DEFAULT=auto, single card, no --pcie-frac: the share is refined in the first decode windows (PcieAuto)
+    double pcie_probe_gbps = 0.0;    ///< the start-up probe's reading (for PcieAuto)
     std::string pcie_mode = "auto";   ///< auto | dma | kernel | direct
     /// Plan v0.3 P6: every `adapt_every` rounds, swap up to `adapt_swaps` of the most-routed missing experts into
     /// the VRAM tier in place of the least-routed resident ones (decayed counts).  0 = static residency.
@@ -928,6 +933,9 @@ void usage() {
                  "                       interrupts to one logical processor, usually the first, and every copy that lands\n"
                  "                       raises one: a spinning host there waits for them.  Moves threads only, never a\n"
                  "                       result.  Not on hybrid CPUs (STRATA_HOST_CORE sets it too).\n"
+                 "  --pool-cores LIST    Experimental, off by default: pin the CPU workers to exactly these logical\n"
+                 "                       processors (0,2,4,6 or 2-14:2).  Two entries on one core, or the host's own, are\n"
+                 "                       kept with a warning.  STRATA_POOL_CORES sets it too.\n"
                  "  --pool-affinity MODE Worker CPU affinity: all (default: one worker per physical core, as\n"
                  "                       always), auto (hybrid CPUs: P-cores first, then their SMT siblings,\n"
                  "                       then E-cores) or p-cores (P-cores and their siblings only).\n"
@@ -1624,9 +1632,49 @@ catch (sycl::exception const &exc) {
 // what the x16 share costs.  Continuous (#485): before, 19.9 GB/s gave 0.42 and 20.0 the full 0.55 (and 4.0 GB/s
 // gave 0.08, 3.9 none), so a reading near either edge moved the share by a quarter of its range.  From 20 GB/s up
 // (an x16 PCIe 4/5 link: ~26-28 GB/s) the share is unchanged.
-double pcie_frac_for_gbps(double gbps, double base) {
-    return gbps <= 0.0 ? base : base * std::min(1.0, gbps / 20.0);
+double pcie_frac_for_gbps(double gbps, double base, double ref_gbps = 20.0) {
+    return gbps <= 0.0 ? base : base * std::min(1.0, gbps / ref_gbps);
 }
+
+// 0.1.42 (CUDA) / 0.1.48 (SYCL, opt-in STRATA_PCIE_FRAC_DEFAULT=auto): the share refined from what the CPU pool measures in
+// the first decode windows.  The balance share of the missed experts is link / (link + 1.85 x CPU rate); the link is the
+// start-up probe, the CPU rate the expert bytes over the pool's wall time per missed expert (ms_run / multi_misses).
+// Three updates at most (after 48, then 96 and 96 more windows), each rounded to 0.05.
+struct PcieAuto {
+    static constexpr double kPoolFactor = 1.85;
+    bool on = false;
+    double link_gbps = 0.0, blob_bytes = 0.0;
+    double mark_ms = 0.0;
+    int64_t mark_jobs = 0;
+    double acc_ms = 0.0;
+    int64_t acc_jobs = 0;
+    int acc_win = 0, updates = 0;
+    void mark(double ms_run, int64_t jobs) { mark_ms = ms_run; mark_jobs = jobs; }
+    /// After a decode window: the new share, or -1 while there is nothing to change.  `tc_us`/`rate` get the reading.
+    double window(double ms_run, int64_t jobs, double cur, double* tc_us, double* rate) {
+        if (!on) return -1.0;
+        acc_ms += ms_run - mark_ms;
+        acc_jobs += jobs - mark_jobs;
+        mark(ms_run, jobs);
+        ++acc_win;
+        if (acc_win < (updates == 0 ? 48 : 96)) return -1.0;
+        if (acc_jobs < 300) {          // too few missed experts to read the pool's speed (everything hits): look again
+            if (acc_win >= 2000) on = false;
+            return -1.0;
+        }
+        const double tc = acc_ms * 1000.0 / (double) acc_jobs;
+        acc_ms = 0.0;
+        acc_jobs = 0;
+        acc_win = 0;
+        if (++updates >= 3) on = false;
+        if (!(tc > 1.0) || !(blob_bytes > 0.0) || !(link_gbps > 0.0)) return -1.0;
+        const double r = blob_bytes / (tc * 1e-6) / 1e9;
+        const double f = std::min(0.60, std::max(0.10, std::round(link_gbps / (link_gbps + kPoolFactor * r) * 20.0) / 20.0));
+        *tc_us = tc;
+        *rate = r;
+        return std::fabs(f - cur) < 0.025 ? -1.0 : f;
+    }
+};
 
 }  // namespace
 
@@ -1792,6 +1840,7 @@ int main(int argc, char **argv) try {
         else if (a == "--graph-only") o.graph_only = true;
         else if (a == "--gpu-only-full") o.gpu_only_full = true;
         else if (a == "--pool-workers") o.pool_workers = std::atoi(next("--pool-workers"));
+        else if (a == "--pool-cores") o.pool_cores = next("--pool-cores");
         else if (a == "--host-core") {
             o.host_core = next("--host-core");
             if (o.host_core != "first" && o.host_core != "last") {
@@ -2027,6 +2076,18 @@ int main(int argc, char **argv) try {
         if (hc.empty())
             if (const char* e = std::getenv("STRATA_HOST_CORE")) hc = e;
         if (hc == "last") strata::kernels::cpu::set_host_core(strata::kernels::cpu::HostCore::Last);
+    }
+    {   // --pool-cores / STRATA_POOL_CORES (experimental, off by default), before the pool is built; a list that cannot be read is
+        // said and left out (recommend, never force)
+        std::string pc = o.pool_cores;
+        if (pc.empty())
+            if (const char* e = std::getenv("STRATA_POOL_CORES")) pc = e;
+        if (!pc.empty()) {
+            std::vector<int> cpus;
+            std::string perr;
+            if (strata::kernels::cpu::parse_pool_cores(pc, cpus, perr)) strata::kernels::cpu::set_pool_cores(cpus);
+            else std::fprintf(stderr, "strata generate: --pool-cores: %s; the pool uses its default placement\n", perr.c_str());
+        }
     }
     strata::core::set_peer_portable(o.peer_device >= 1);   // multi-GPU: the Portable flag on mapped host buffers only with a peer device (before any allocation)
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
@@ -2568,6 +2629,11 @@ int main(int argc, char **argv) try {
                 return 1;
             }
         }
+        // APR (prism.hadamard) packs (Gyro): every expert path rotates its activations (CPU pool: native_quant_act / _h;
+        // GPU verify and the prompt's FP16 chain: hadamard_rows).  Validated on the Arc A750 (SYCL, JIT build).
+        if (strata::kernels::cpu::hadamard_spec().any())
+            std::fprintf(stderr, "strata generate: APR pack: Hadamard-folded experts (block %d)\n",
+                         strata::kernels::cpu::hadamard_spec().block);
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
@@ -2599,9 +2665,23 @@ int main(int argc, char **argv) try {
         if (!native_pack) {
             o.pcie_frac = base;
         } else if (bw > 0.0) {
-            o.pcie_frac = pcie_frac_for_gbps(bw, base);
+            // Gyro's trellis experts: the CPU pool decodes them at ~8 GB/s (48 cycles a block on AVX2, compute bound, a third of the
+            // i-quants' rate), so the link carries a bigger share of the misses than the 20 GB/s reference says.  Measured on the
+            // Arc A750 (10.5 GB/s link): 0.29 -> 12.8 tok/s, 0.45 -> 15.5, 0.60 -> 15.2 (5 interleaved pairs each).  The reference
+            // for these packs is 12 GB/s: 10.5 GB/s gives 0.48; from 12 GB/s up the measured 0.55 stays.
+            bool trellis = false;
+            {
+                const auto& lay = strata::kernels::cpu::expert_layout();
+                for (size_t l = 0; lay.native && l < lay.fmt.size(); ++l) trellis = trellis || lay.fmt[l].gu_type >= 144;
+            }
+            o.pcie_frac = pcie_frac_for_gbps(bw, base, trellis ? 12.0 : 20.0);
             std::fprintf(stderr, "strata generate: PCIe probe: %.1f GB/s host->device (best of %s) -> pcie_frac %.2f "
                                  "(default %.2f)\n", bw, bursts.c_str(), o.pcie_frac, base);
+            {   // PcieAuto on SYCL: opt-in (STRATA_PCIE_FRAC_DEFAULT=auto), one card, not the xe NO_HOST path
+                const char* pfd = std::getenv("STRATA_PCIE_FRAC_DEFAULT");
+                o.pcie_frac_auto = pfd != nullptr && std::strcmp(pfd, "auto") == 0 && o.layer_split.empty();
+                o.pcie_probe_gbps = bw;
+            }
         } else {
             o.pcie_frac = base;
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
@@ -4381,6 +4461,8 @@ int main(int argc, char **argv) try {
                              "(--host-core %s)\n", pool.workers(), on.c_str(), ht.host_core,
                      pool.host_works() ? " (draining too)" : "",
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last ? "last" : "first");
+        // the same facts in plain words, and whether each worker has a physical core of its own
+        std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
     }
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
@@ -7887,6 +7969,29 @@ int main(int argc, char **argv) try {
             std::all_of(host_res.begin(), host_res.end(), [](int32_t r) { return r >= 0; });
         if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident)
             drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
+        PcieAuto pcie_auto;
+        if (o.pcie_frac_auto && !all_experts_resident && o.batch == 0 && n_stages == 1) {
+            const auto& pl = strata::kernels::cpu::expert_layout();
+            double sum = 0.0;
+            for (int64_t l = 0; l < g.n_layers; ++l) sum += (double) pl.blob_bytes(l);
+            pcie_auto.on = true;
+            pcie_auto.link_gbps = o.pcie_probe_gbps;
+            pcie_auto.blob_bytes = g.n_layers > 0 ? sum / (double) g.n_layers : 0.0;
+        }
+        auto pcie_auto_step = [&](double& req_pcie_frac) {
+            if (!pcie_auto.on) return;
+            double tc_us = 0.0, rate = 0.0;
+            const double nf = req_pcie_frac == o.pcie_frac
+                                  ? pcie_auto.window(drive.d.ms_run, drive.d.multi_misses, o.pcie_frac, &tc_us, &rate)
+                                  : (pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses), -1.0);
+            if (nf < 0.0) return;
+            std::fprintf(stderr, "strata serve: PCIe share: the CPU pool takes %.0f us per missed expert (%.1f GB/s of expert bytes), "
+                                 "the link %.1f GB/s -> pcie_frac %.2f (was %.2f; --pcie-frac N fixes it)\n",
+                         tc_us, rate, pcie_auto.link_gbps, nf, o.pcie_frac);
+            o.pcie_frac = nf;
+            req_pcie_frac = nf;
+            drive.d.pcie_num = std::max(0, std::min(256, (int) (nf * 256.0 + 0.5)));
+        };
         // #477 --expert-profile-save: what the adaptive tier learned, kept across restarts (opt-in; off: `heat` stays
         // empty and nothing below runs).  It needs the adaptive tier's counts and the residency table.
         std::vector<double> heat;
@@ -10621,7 +10726,25 @@ int main(int argc, char **argv) try {
             const DecSnap ds0 = dec_snap();
             double dt_run = 0, dt_commit = 0, dt_draft = 0;
             int64_t dec_windows = 0, dec_T = 0;
+            // STRATA_FOLLOW=<file> (test path, off by default): this request decodes the token ids in <file> (whitespace
+            // separated, read and deleted at the request's start) instead of the argmax, through the real verify windows
+            // with the MTP drafts; STRATA_FOLLOW_LOGPOS=<path> appends, for every valid window row, the teacher-forced
+            // log-probability of the forced token and the top STRATA_LOGPOS_TOPK log-probabilities
+            std::vector<int32_t> fol;
+            if (const char* fp = std::getenv("STRATA_FOLLOW")) {
+                if (std::FILE* ff = std::fopen(fp, "r")) {
+                    long long v;
+                    while (std::fscanf(ff, "%lld", &v) == 1) fol.push_back((int32_t) v);
+                    std::fclose(ff);
+                    std::remove(fp);
+                }
+            }
+            static std::FILE* fol_lp = [] {
+                const char* p = std::getenv("STRATA_FOLLOW_LOGPOS");
+                return p != nullptr ? std::fopen(p, "ab") : nullptr;
+            }();
             const int64_t decode_hits0 = drive.d.cache_hits;
+            pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
@@ -11398,8 +11521,20 @@ int main(int argc, char **argv) try {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
+                int32_t fol_tgt[16];
+                if (!fol.empty()) {   // STRATA_FOLLOW: the forced continuation stands in for the argmax
+                    for (int i = 0; i < T && i < 16; ++i) {
+                        const size_t k = (size_t) produced_n + (size_t) i;
+                        fol_tgt[i] = k < fol.size() ? fol[k] : -1;
+                        if (fol_tgt[i] >= 0) outv[(size_t) i] = fol_tgt[i];
+                    }
+                }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                if (!fol.empty() && fol_lp != nullptr && !ver.window_logprobs(fol_tgt, a + 1, produced_n, -1, fol_lp, err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (strata::core::MtpDrafter::top2_env() && !from_sfx && !first_window && a < T_mtp - 1 && a < 8) {
@@ -11470,6 +11605,7 @@ int main(int argc, char **argv) try {
                     dt_run += msd(tw0, tw1); dt_commit += msd(tw1, tw2); dt_draft += msd(tw2, tw3);
                     ++dec_windows; dec_T += T;
                 }
+                pcie_auto_step(req_pcie_frac);   // PcieAuto (opt-in): the share refined from the CPU pool's speed
                 if (adapt_thr.joinable()) adapt_thr.join();
                 if (!adapt_ok) {
                     std::printf("ERR an adaptive refill failed\n");

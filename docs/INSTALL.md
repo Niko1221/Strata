@@ -1,10 +1,18 @@
 # Installing Strata
 
-Everything about installing, starting, updating and configuring Strata, on Windows and Linux, with an NVIDIA or an
-AMD graphics card. The short version is in the [README](../README.md#install); an AI coding assistant can do all of
-this for you with [AI_SETUP.md](AI_SETUP.md).
+Everything about installing, starting, updating and configuring Strata, on Windows, Linux and Mac, with an NVIDIA
+or an AMD graphics card or an Apple Silicon Mac. The short version is in the [README](../README.md#install). An AI
+coding assistant can do all of this for you with [AI_SETUP.md](AI_SETUP.md).
 
-> **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·
+There are three ways to install it. Take the first one unless you have a reason not to:
+
+1. **[The app](#the-app):** a desktop program with the engine inside. Install it, pick a model, chat.
+2. **[The Terminal](#the-terminal):** one line in a terminal, then `strata launch`. For scripts, servers and AI agents.
+3. **[From source](#from-source-windows):** `START-HERE.bat` on Windows, `./setup.sh` on Linux and Mac. It builds or
+   fetches the engine itself.
+
+> **On this page:** [What you need](#what-you-need) · [The app](#the-app) · [The Terminal](#the-terminal) ·
+> [From source: Windows](#from-source-windows) · [Linux](#from-source-linux) ([build from git](#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code)) · [Mac](#from-source-mac) ·
 > [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
 > [Older CPUs](#older-cpus-experimental) · [Updating](#updating) · [Where things are stored](#where-things-are-stored) ·
 > [Setup's questions](#setups-questions) · [Tuning](#tuning-for-your-pc) · [All options](#options-without-questions)
@@ -14,20 +22,103 @@ this for you with [AI_SETUP.md](AI_SETUP.md).
 | | |
 | --- | --- |
 | **GPU** | **NVIDIA** RTX 20, 30, 40 or 50 series, **12 GB VRAM or more** (8 GB runs, slowly). Measured on an RTX 5070 and an RTX 3090; RTX 20 (Turing, since 0.1.27) was tested by a contributor on an RTX 2070. **AMD** Radeon RX 7900 XT / XTX, RX 9070 / 9070 XT and Radeon AI PRO R9700 (validated), RX 7800 XT / 7700 XT and RX 9060 XT (validated by their owners), RX 6800 / 6900 series (community-reported), with 12 GB of VRAM or more. See [AMD cards](#amd-cards). |
-| **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-ram)); **64 GB** runs every size. A big GPU makes up for less RAM - the [low-RAM mode](MODELS.md#a-big-graphics-card-and-little-ram). |
+| **RAM** | Enough for the size you pick ([which model](MODELS.md#pick-by-memory)); **64 GB** runs every size. A big GPU makes up for less RAM - the [low-RAM mode](MODELS.md#a-big-graphics-card-and-little-ram). |
 | **CPU** | x86-64 with AVX2 (any Intel/AMD desktop CPU from the last ~8 years). AVX-512 (Ryzen 7000/9000) is a bit faster. Older CPUs without AVX2 are experimental and slow: [Older CPUs](#older-cpus-experimental). |
-| **Disk** | ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). **Q2_0 on an AVX-512 CPU** also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. On Linux with an AMD card, ROCm takes ~10 GB more when setup installs it. An NVMe SSD is strongly recommended: it makes the first start much faster. |
-| **OS** | Windows 10/11, or Linux (Ubuntu 22.04/24.04 and Debian 12/13 get everything installed automatically). |
+| **Disk** | The app and its engine take about 1-3 GB. ~70-80 GB free for the model, ~6 GB for the MTP layer (+1 GB with images). Q2_0 on an AVX-512 CPU also writes a one-time ~40 GB copy of its experts for the fast CPU kernel. On Linux with an AMD card, ROCm takes ~10 GB more when setup installs it. An NVMe SSD is strongly recommended: it makes the first start much faster. |
+| **OS** | Windows 10/11, Linux (Ubuntu 22.04/24.04 and Debian 12/13 get everything installed automatically; the app also runs on Fedora 44), or a Mac with Apple Silicon (M1 or newer) and macOS 15 or newer ([Mac](MAC.md)). |
 | **Driver** | **NVIDIA:** a current driver, version 580 or newer ([nvidia.com/drivers](https://www.nvidia.com/drivers) or the NVIDIA App). **AMD:** on Linux the kernel's amdgpu driver (no ROCm install needed); on Windows a current AMD Software: Adrenalin Edition driver ([amd.com/support](https://www.amd.com/en/support)). |
 
-The driver is the only thing you install yourself. Everything else - Python, the engine, the model - is set up for
-you the first time: Python 3.12 if you have none (for your user account, no admin), a private Python environment in
-`.venv/`, the Strata engine, the model and the MTP draft layer. On NVIDIA it uses the ready-made engine for RTX
+The driver is the only thing you install yourself. With the app, the engine is inside the installer. With the
+Terminal, `strata launch` fetches the engine for your card from the signed update feed, and nothing is compiled.
+Installing from source sets up the rest as well, the first time: Python 3.12 if you have none (for your user
+account, no admin), a private Python environment in `.venv/`, the Strata engine, the model and the MTP draft layer.
+On NVIDIA it uses the ready-made engine for RTX
 20/30/40/50 and NVIDIA's CUDA libraries from pip (~0.4 GB); if no ready-made engine fits your PC, it offers to install
 the build tools (Visual Studio Build Tools + CUDA Toolkit on Windows, `build-essential` + CUDA on Ubuntu) and compiles
 the engine for your GPU (asks first; 20-40 minutes once). More: [details](DETAILS.md#before-you-start).
 
-## Windows
+The normal Python install uses `requirements.txt` and does not install CMake or Ninja. If setup has to compile an
+engine or image encoder, it uses existing CMake/Ninja tools when available and installs missing pinned helpers from
+`requirements-build.txt` into `.venv`. An older `.venv` keeps any build helpers it already has; setup does not remove
+packages during an update.
+
+## The app
+
+The app is the easiest way. It has the engine inside, so there is nothing to build and no setup window.
+
+1. Download the installer for your system from the [releases page](https://github.com/Niko1221/Strata/releases/latest).
+   The page says which installer is for which graphics card (NVIDIA or AMD). Take the one that matches yours.
+   - **Windows 10 / 11:** run the `.exe`. It installs for your user and needs no administrator rights. Windows may
+     say "Windows protected your PC", because the installer is not code-signed yet. Choose **More info**, then
+     **Run anyway**. The installer asks for the folder (by default `%LOCALAPPDATA%\Programs\Strata`): on a PC
+     with little space on C:, pick a folder on another drive that you can write to (not Program Files, which needs
+     an administrator). Updates from inside the app go into the same folder. The engine inside the app
+     (`%LOCALAPPDATA%\Strata\components`) stays on C:; `STRATA_COMPONENTS_DIR` moves it, and the models go to the
+     folder you choose in the app.
+   - **Linux:** the `.AppImage`. Make it runnable (right-click, Properties, Permissions, "Allow executing file as
+     program", or `chmod +x`), then double-click it. It needs FUSE 2: `sudo apt install libfuse2` on Ubuntu 22.04,
+     `sudo apt install libfuse2t64` on Ubuntu 24.04 and newer, `sudo dnf install fuse fuse-libs` on Fedora. Without
+     FUSE you can still start it with `--appimage-extract-and-run` after the file name. The NVIDIA build needs
+     driver 580 or newer.
+   - **Mac:** the `.dmg`. Open it, drag Strata onto Applications, then open Strata from there. It needs Apple
+     Silicon and macOS 15 or newer. If macOS says the app is "damaged", the file is fine: see [MAC.md](MAC.md).
+2. Start Strata. The first start is a little slower on Linux and Mac, because the engine inside the app is copied
+   into your home folder.
+3. The first screen reads your PC and recommends a model that fits. Press the install button. The download is
+   big (40-70 GB). If it stops, it continues where it stopped.
+4. Chat. **Closing the window stops Strata and the engine.**
+
+**Update:** Settings, then Updates, then **Check for updates**. The buttons **Update Strata** and **Update engine**
+appear only when something is new. Your models and saved settings are kept. Unload the model first: an engine that
+is running cannot be replaced. **Roll back** in the same place brings the previous engine back.
+
+**Where things are:** the app's settings and chats are in the `.strata` folder in your user folder, the engine
+in `%LOCALAPPDATA%\Strata\components` (Linux and Mac: `~/.local/share/strata/components`), and the models in the
+`Strata` folder in your Documents (you can change the model folder in the app). Removing the app does not remove
+them. **For a bug report:** Settings, Engine, Diagnostics, View logs, **Save logs**.
+
+On a Mac pictures are on by default and read on the GPU ([MAC.md](MAC.md)). Everything else about pictures is in [Setup's questions](#setups-questions).
+
+## The Terminal
+
+The Terminal is the `strata` command. It uses the same engine, models and saved settings as the app, and it is the
+way for scripts, servers and AI agents. Linux (x86-64), Mac (Apple Silicon) and Windows (x64) are supported.
+
+Linux and Mac:
+
+```sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+```
+
+The installer finds out which computer this is, downloads the Terminal archive, checks its SHA-256, unpacks it into
+your home folder (`~/.local/share/strata/terminal`, or `%LOCALAPPDATA%\Strata\terminal` on Windows; no
+administrator rights), checks the release's signed update feed with the Terminal it just unpacked (if that check
+fails it removes what it unpacked), and puts `strata` on your PATH. On Windows, open a new terminal window
+afterwards. Then:
+
+```sh
+strata launch                                 # guided screens: model, context, pictures, who may connect, then serve
+strata launch --model q2_0 --yes --no-tui    # the same without questions (scripts, agents)
+```
+
+`strata launch` downloads the engine for your graphics card (signed, and test-started before it is used) and the
+model, starts serving on `http://127.0.0.1:8080` and shows the monitor. It never opens a browser unless you add
+`--open`. Its flags and screens: [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md).
+
+**Update:** `strata update --check` says what would change, `strata update` installs the new engine (it is test-started
+first and switched only if that works; the previous engine is kept), `strata components rollback` goes back. It
+refuses while a model is being served. **Check your PC and the installed engine:** `strata doctor`.
+
+To read the install script before you run it, download it first (`curl -fsSL <address> -o install.sh`), read it,
+then run `sh install.sh`.
+
+## From source: Windows
 
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or
    `git clone` it).
@@ -46,7 +137,7 @@ downloaded twice. Close its window to stop the model. `SETUP.bat` (the same as `
 another model or changes the settings. Starting Strata from Task Scheduler at logon needs two task settings, or the
 start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
 
-## Linux
+## From source: Linux
 
 ```bash
 ./setup.sh
@@ -63,9 +154,51 @@ On Nix/NixOS, you can use the flake:
 nix develop -c ./setup.sh
 ```
 
+### Build from git on Linux (to try a pull request or change the code)
+
+You do not need the app or the AppImage for this: the source install builds the engine on your PC and keeps
+everything in the checkout, so you can edit, rebuild and test.
+
+```bash
+git clone https://github.com/Niko1221/Strata.git && cd Strata
+./setup.sh              # first run: .venv, the engine build (build/, or build-hip/ on a Radeon), the model, then it serves
+```
+
+- **What it needs:** `git`, a C++ compiler and `cmake` (setup installs the build tools through `sudo apt` on
+  Debian and Ubuntu; elsewhere install them first), and the CUDA Toolkit for NVIDIA or ROCm with the HIP compiler for
+  a Radeon card ([AMD_HIP.md](AMD_HIP.md)). Python goes into `.venv` of the checkout.
+- **After you change the code:** run `./setup.sh` again. It compiles only what changed and starts the model. To
+  update without starting: `git pull`, then `./update.sh`. By hand, the build folder is an ordinary CMake build:
+  `cmake --build build --target strata -j8` (`build-hip` for a Radeon card; the options are in
+  [AMD_HIP.md](AMD_HIP.md)).
+- **To try a pull request:** `git fetch origin pull/<number>/head:pr-<number> && git checkout pr-<number>`, then
+  `./setup.sh`. `git checkout main` goes back; the next `./setup.sh` rebuilds.
+- **Settings for the engine** (for example `STRATA_HIPBLASLT_TUNING=/path/to/table.txt`) go into the `"env"` object of
+  `strata-<model>.json`, which `./setup.sh` writes next to the checkout. `./run-<model>.sh` starts the model with it.
+- **The Terminal monitor from a checkout:** the monitor needs one extra package, which the source install does not
+  put into `.venv`:
+
+  ```bash
+  .venv/bin/pip install -r requirements-monitor.txt
+  STRATA_PYTHON="$PWD/.venv/bin/python3" bin/strata monitor --url http://127.0.0.1:8080
+  ```
+
+  (`bin/strata` is the same `strata` command as the Terminal's: `bin/strata --help` lists the rest.)
+- **Only compile, without the installer:** the engine is a normal CMake project. For NVIDIA:
+  `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native &&
+  cmake --build build --target strata -j8`. The options, and the flags setup passes, are in `setup.py` (search for
+  `-DSTRATA_`).
+
+## From source: Mac
+
+On an Apple Silicon Mac with macOS 15 or newer, install Apple's Command Line Tools once (`xcode-select --install`),
+then run `./setup.sh` in the Strata folder. It builds the Mac (Metal) engine on your Mac and asks the same
+questions. The app and the Terminal do not build anything. All of it, and what fits which memory size, is in
+[MAC.md](MAC.md).
+
 ## AMD cards
 
-The steps are the same as with NVIDIA: `START-HERE.bat` on Windows, `./setup.sh` on Linux. Setup finds the Radeon
+The app and the Terminal pick the AMD engine for a Radeon card by themselves. From source the steps are the same as with NVIDIA: `START-HERE.bat` on Windows, `./setup.sh` on Linux. Setup finds the Radeon
 card and chooses the AMD (HIP) engine by itself on a PC with no NVIDIA card Strata can use; `--backend hip` chooses
 it on a PC that has both. Supported cards: RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT
 (gfx1200), RX 9070 / 9070 XT and Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030). Integrated
@@ -75,8 +208,7 @@ On Linux setup uses a system ROCm 7 when there is one, or installs ROCm into `.v
 sudo), and compiles the engine on your PC for the card (10-20 minutes, once; it needs a C++ compiler and git:
 `sudo apt install build-essential git`). Several AMD cards share the model with `--gpus`, as on NVIDIA.
 
-What differs from NVIDIA for now: pictures are read by the image encoder on the CPU (`--vision cpu`, about 3 s per
-picture at the default 300 image tokens on 8 cores), `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
+What differs from NVIDIA for now: `--calibrate` is NVIDIA-only, and Unsloth's 4-bit model needs an NVIDIA card. Measurements per card, the
 build by hand and the tuning tables: [AMD_HIP.md](AMD_HIP.md).
 
 ## Two or three cards
@@ -89,58 +221,15 @@ pipeline: on an RTX 5080 + RTX 3090 prompts were read 18-20% faster than on the 
 Every card must be an RTX 20 series or newer with 8 GB or more. See [MULTI_GPU.md](MULTI_GPU.md).
 
 **Several AMD cards:** setup takes one card (the one with the most VRAM, or `--gpu N`) unless you name more:
-`--gpus 1,0` splits the model's layers across them, the first one the main card (numbers as setup lists them). A
+`--gpus 1,0` splits the model's layers across them, the faster card goes last and is the Main card (`--gpu-roles 1=main,0=helper` says it yourself; docs/MULTI_GPU.md; numbers as setup lists them). A
 split pays only when no single card holds the model's experts ([AMD_HIP.md](AMD_HIP.md#rdna4-gfx1201)).
 
 ## Docker (Linux)
 
-The same idea, in a container (NVIDIA cards).
-
-1. Host: Docker with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-   and a driver **580 or newer** (CUDA 13.0).
-2. Build (this compiles the engine into the image, so the container never compiles):
-   `docker build -t strata .`
-   `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
-   The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
-   set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
-3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
-   `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
-
-   The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
-   (or `MODEL=Q2_0|IQ3_XXS|IQ3_S`, `FAMILY=swift|coder`; the defaults above are the recommended ones).
-   `-e VISION=cpu` keeps the image encoder on the CPU. `-e KV=int8|q4_0|k8v4` picks the KV cache
-   precision; `k8v4` is INT8 K with 4-bit V and keeps its KV in VRAM from 64K up.
-   Only the model files, the prepared pack, the MTP layer and the install config live in the
-   `strata-data` volume; the engine is part of the image. Switching between models already on the
-   volume needs no setup pass: `-e MODEL=Q2_0 -e FAMILY=coder` picks that model's config. Add
-   `-e REINSTALL=1` only to change settings for a model already set up (context, vision, KV, host,
-   api_key, LOW_RAM), since those are recorded in its config.
-   `MODEL` (with `FAMILY`) selects `/data/config/strata-<model>.json` (the model name in lowercase), so
-   `-e MODEL=IQ3_S.1X4-BATCH9` starts `/data/config/strata-iq3_s.1x4-batch9.json`: that is the way to keep
-   several configs of one model on one volume. `-e CONFIG=/data/config/my.json` overrides it with any
-   config file. A link `/opt/strata/strata-<model>.json` that already points into `/data/config/` (made by
-   a pod command before the entrypoint runs) is kept. The entrypoint prints one `Config:` line naming the
-   file the server starts with.
-   Strata loads 32-62 GB into RAM. `--gpus all` on a host with two usable cards takes both: the
-   layer split is setup's recommended default ([MULTI_GPU.md](MULTI_GPU.md)), and a volume
-   set up for one card switches to the pair on its first start there. Pin one card with `-e GPU=0`,
-   or name them with `-e GPUS=0,2` and where the later card's layers start with `-e LAYER_SPLIT=18`.
-   A memory limit needs `-e LOW_RAM=on`, which maps the model's experts from the pack instead of
-   keeping them in RAM: setup.py measures the host's RAM, not the container's limit, so it cannot
-   see a cap. LOW_RAM runs on one card unless `GPUS` names several (then the experts the cards do not hold are
-   read through the OS file cache, which can fill the RAM during long prompts).
-   The server listens on `0.0.0.0:8080` by default; set `-e API_KEY=<secret>` before exposing the port
-   to a network. The image has a `HEALTHCHECK` on `/health`, so `docker ps` shows the container
-   healthy once the model is loaded, and `GET /v1/status` says what it is running.
-   Model files you already have (setup's `--gguf-dir`): mount their folder and name it, e.g.
-   `-v /models/UD-Q4_K_XL:/gguf -e GGUF_DIR=/gguf -e FAMILY=unsloth -e MODEL=UD-Q4_K_XL`.
-   Mount it writable for the first start: setup checks the Unsloth file's SHA-256 once and keeps the
-   result as `<shard>.done` next to each shard; later starts skip setup, so `:ro` is fine then.
-   `-e RESIDENT_BUDGET_GIB=N` and `-e KV_STREAMING=on|off|auto` pass setup's `--resident-budget-gib`
-   and `--kv-streaming` (with `REINSTALL=1` for a model already set up).
-   Stopping: the engine releases its page-locked RAM (tens of GB) on SIGTERM, which takes longer than
-   Docker's default 10 s; give it time, or `docker stop` kills it (exit 137):
-   `docker run --stop-timeout 60 ...`, `docker stop -t 60 <name>`, or `stop_grace_period: 60s` in Compose.
+Ready-made images for NVIDIA (CUDA 13 and CUDA 12), AMD (RX 9000 / R9700 and RX 7000) and Intel Arc cards, with the Terminal
+inside: `docker run` one command, the model downloads on the first start into a volume, nothing is compiled on your computer.
+Which image for which card, the commands, Docker Compose, the API key, updating and troubleshooting: [DOCKER.md](DOCKER.md).
+Building from source: `docker build -t strata:src .` (CUDA 13; [DOCKER.md](DOCKER.md#build-it-yourself)).
 
 ## Older CPUs (experimental)
 
@@ -173,7 +262,14 @@ any PC (to try it). Problems and results on real hardware are welcome as GitHub 
 
 ## Updating
 
-**`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
+**The app:** Settings, Updates, **Check for updates**, then **Update Strata** or **Update engine** (see [the app](#the-app)).
+
+**The Terminal:** `strata update --check`, then `strata update` (see [the Terminal](#the-terminal)). Add `--app` to
+download the app's installer too. Models and saved tuning presets are never downloaded, replaced or deleted by an
+update. How the signed update feed works: [packaging/UPDATES.md](../packaging/UPDATES.md). What Strata downloads and
+how it checks it: [SAFETY.md](SAFETY.md).
+
+**From source: `UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
 something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
 `START-HERE.bat` does before a start: the engine (a new ready-made one when the new version needs it; on Linux a
 compiled engine is compiled again when its source changed), the Python packages, and each installed model's settings
@@ -209,7 +305,32 @@ says so and starts the engine you had.
   GitHub at the commit `LLAMA_CPP_COMMIT` in `setup.py` names. Put that commit's tree in `third_party/llama.cpp`
   yourself (from a mirror or another PC) and setup uses it instead (#585).
 
+### Keeping the models on another disk
+
+The model files are the only big part (70 to 190 GB). Put them where there is room; the app and the Terminal use the same folder.
+
+- **In the app:** the first screen shows the model folder with a button to change it, and Settings > Storage changes it
+  later. Pick a folder you can save files in; a whole drive (`D:\`) becomes `D:\Strata`, which Strata makes and says so.
+  Change folder then asks what to do with your models: move them (copied file by file and checked before the old copies are removed; you can stop at any time),
+  keep them where they are and also use the new folder, or start empty (the old files are never deleted). From the Terminal the same move is
+  `strata models move NEW_FOLDER` (add `--plan` to see what it would do first).
+- **In the Terminal:** `strata launch --data-dir D:\Strata` once. The folder is remembered for the next `strata launch`
+  and `strata models list`. Until you give it one, the Terminal uses the folder the app chose; the app keeps its own setting
+  (Settings > Storage) and does not read the Terminal's. `--move-data` moves the models you already have into it; without it they stay where they
+  are and the new folder gets the new downloads. Use your own files in place with `strata launch --model-path FOLDER` (a
+  folder of shards, a folder above it, or one `.gguf` file); a folder that holds several sizes needs the one `.gguf` file.
+- **Drives that are not NTFS** (exFAT, FAT32, a network share) work: Strata writes straight into `<folder>\models` and makes no
+  link there.
+- **What stays on C:** the engine (`%LOCALAPPDATA%\Strata\components`, 1 to 2 GB per version; `STRATA_COMPONENTS_DIR` moves it),
+  the app itself (the installer asks), your settings, chat history, tuning results and logs (`%LOCALAPPDATA%\Strata`,
+  `%APPDATA%\Strata`; a few MB). Nothing else large: downloads, the prepared model data (`packs`) and the draft layer (`mtp`) are
+  written in the model folder, and so are the half-finished files of an interrupted download.
+- **Docker:** `-v /mnt/big/strata:/data` (a folder on the big disk) instead of the volume `strata-data`; everything above lives in it.
+
 ## Setup's questions
+
+These are the questions of the installer from source (`START-HERE.bat`, `./setup.sh`). The app's first screen and
+`strata launch` ask the same things in their own look.
 
 - **Which model and size?** The original, Swift 1.5, the Coder or Unsloth's 4-bit, and Q2_0, IQ2_XS, IQ3_XXS or
   IQ3_S - see [which model](MODELS.md).
@@ -217,9 +338,12 @@ says so and starts the engine you had.
   512K (experimental) extend the model past its trained 262K by rope scaling - the setup turns it on itself (yarn and a
   covering factor; `--rope-scaling`/`--rope-scale` override) ([details](DETAILS.md): "Context extension past
   262K").
-- **Images?** Whether it should also read pictures. The image encoder (0.9 GB) runs on the GPU (0.1-0.5 s per
-  picture, ~1.4 GB of VRAM kept free for it) or on the CPU (about 3-13 s per picture, nothing on the GPU); with AMD cards
-  on the CPU for now. [Details](DETAILS.md#images-vision).
+- **Images?** Whether it should also read pictures. Pictures are on by default for models that can read them. The
+  image encoder (0.9 GB) runs on the CPU when your card has less than 24 GB (about 3-13 s per picture, nothing taken
+  from the GPU) and on the GPU from 24 GB (0.1-0.5 s per picture, ~1.4 GB of VRAM kept free for it). The rule is the
+  same for NVIDIA and AMD cards; `--vision gpu` and `--vision cpu` choose the reader yourself, `--vision no` turns
+  pictures off. On a Radeon AI PRO R9700 the GPU reader took 57 ms for a 260-token picture and the CPU reader 3.1 s.
+  A Mac reads on its GPU (0.45 s for a 260-token picture on an M4). [Details](DETAILS.md#images-vision).
 - **Experimental speed projection?** Off unless you say yes - [read what it does](DETAILS.md#experimental-speed-projection-experimental-off-by-default)
   first. It changes how the model answers, and only the original model offers it.
 
@@ -236,6 +360,8 @@ so the server is already running when it returns - do not start it a second time
 NVIDIA cards for now. [What it measures](DETAILS.md#double-click-start-herebat).
 
 ## Options without questions
+
+For the Terminal, `strata launch --help` lists every flag; the most used are in [TERMINAL_LAUNCH.md](TERMINAL_LAUNCH.md). These are the options of the installer from source:
 
 ```
 START-HERE.bat --setup                          install another model, or change context / images

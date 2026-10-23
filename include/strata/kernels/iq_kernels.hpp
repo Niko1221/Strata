@@ -48,6 +48,10 @@ struct NativeExpertLayout {
     size_t up_off = 0, down_off = 0;    // byte offsets inside the blob
     size_t bytes = 0;                   // the whole blob
     size_t tail_off = 0;                // NVFP4: {s_gate, s_up, s_down, 0} at the blob's end; 0 = none
+    // APR (prism.hadamard): the down weights are Hadamard-folded, so native_expert_grouped rotates h before
+    // quantizing it (hadamard_rows).  had_block 0 = none; d_signs is a DEVICE vector of n_ff signs or nullptr.
+    int had_block = 0;
+    const float* d_signs = nullptr;
 };
 NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd, int64_t n_ff);
 /// Whether `native_expert_grouped` has kernels for this gate/up and down type pair at these dimensions, and the
@@ -84,6 +88,15 @@ void native_grouped_set_v1(bool v1);
 /// (0 all, 1 gate/up + SwiGLU + quantize, 2 down).
 void native_expert_set_mode(int mode, int phase);
 
+/// APR (prism.hadamard): y = H_block (signs * x) per block of `block` values of each of `rows` rows of `width`
+/// (x == y allowed).  `signs`: a device vector of `width` signs, or nullptr (identity).  The same floats as the CPU's
+/// hadamard_rotate.  The f16 form rotates in place, computing in float.
+void hadamard_rows(const float* x, float* y, int64_t rows, int64_t width, int block, const float* signs, void* stream);
+void hadamard_rows_f16(uint16_t* x, int64_t rows, int64_t width, int block, const float* signs, void* stream);
+/// A device copy (on the current device) of the host sign vector `host` of `width` signs, made on first use and
+/// kept for the process.  Call it at setup, not inside a CUDA graph capture.  nullptr for a nullptr `host`.
+const float* hadamard_device_signs(const float* host, int width);
+
 /// EXPDEC (STRATA_EXPDEC=1, docs/EXPERTDEC.md): `native_expert_grouped` stages the group's q8_1 activations in shared
 /// memory and computes several rows per lane, the same sums per (row, entry) as the default kernels (bitwise), for
 /// gate/up IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S at n_embd 2560 and down IQ4_NL / Q2_0 at n_ff 640; other layouts
@@ -108,6 +121,11 @@ bool native_expert_expdec_takes(const NativeExpertLayout& L, bool& gu, bool& dow
 /// `iq_mmvq` and `native_expert_grouped` decode each weight part once and apply it to every column / entry;
 /// true selects the older kernels that decode it again per column (STRATA_OLD_IQ_MMVQ=1 at startup).  Both give
 /// bitwise the same results.  Set before graph capture; captured graphs keep the kernels they captured.
+/// Volta prompt experts (STRATA_PF_WMMA): Y[rows of expert e] = X[rows] . W_e^T for a group of experts, W_e at
+/// W + e * expert_bytes (n_out rows of K values of type ty, GGUF blocks), X FP16 (ldx), rows bounds[e]..bounds[e+1],
+/// Y FP32 (ldy).  FP16 tensor cores, FP32 sums.  false: not launched (shape or type not covered).  CUDA only.
+bool gemm_iq_f16_grouped(int ty, const void* W, size_t expert_bytes, int n_out, int K, const void* X, int ldx,
+                         const int32_t* bounds, int n_experts, int max_rows, float* Y, int ldy, void* stream);
 void iq_set_old_kernels(bool old);
 bool iq_old_kernels();
 

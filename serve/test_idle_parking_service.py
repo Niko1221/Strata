@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -708,7 +709,7 @@ class VisionTeardownTests(unittest.TestCase):
         original = vision.proc
         original.wait.side_effect = subprocess.TimeoutExpired("encoder", 10)
         vision.spawn = (["unused"], None, {})
-        vision.dir = "."
+        vision.dir = Path(".")
         vision._readline = mock.Mock(side_effect=RuntimeError("did not start"))
         with mock.patch("serve.server.popen", return_value=original), mock.patch("serve.server.contain"):
             with self.assertRaises(EngineStuck):

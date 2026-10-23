@@ -2,7 +2,7 @@
 
 Strata runs [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) (35B mixture of experts, 3B active, 256 experts, top-8) from
 [Unsloth's GGUFs with the MTP layer](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF) (UD-Q4_K_XL, UD-Q6_K_XL, Q8_0) on its own
-engine path (`src/qwen35`; `strata` switches to it from the file's architecture). Pick it in setup (`--family qwen36`). Besides text it
+engine path (`src/qwen35`; `strata` switches to it from the file's architecture). Pick it in the app's model list, in `strata launch` or in setup (`--family qwen36`). Besides text it
 reads **pictures** and serves **several requests at once**, the same two options the Flash-Next models have.
 
 Measured on an AMD Radeon AI PRO R9700 32 GB (HIP, Linux, UD-Q4_K_XL, every expert in VRAM) and on an RTX 3060 12 GB (CUDA, 20 threads,
@@ -13,10 +13,11 @@ UD-Q4_K_XL in the hybrid mode: 22-37 of 256 experts per layer in VRAM, the rest 
 The vision encoder is Unsloth's `mmproj-F16.gguf` (0.9 GB, pinned revision, SHA-256 checked by setup): a 27-layer ViT with a 2x2 merger,
 the same projector family as the Flash-Next models' (`qwen3vl_merger`; only its output width differs: 2048 here, 2560 there). Strata runs
 it with the same helper (`strata-vision`, llama.cpp's `mtmd`), so the encoder choices are the Flash-Next ones
-([Images](DETAILS.md#images-vision)): **setup asks "Do you want images?"**, the default answer is yes on an NVIDIA card of 16 GB or more
-(GPU encoder, ~1.2 GB of VRAM at up to 1,024 image tokens) and on AMD under Linux (CPU encoder, no VRAM); `--vision yes|no|gpu|cpu`
-and `--vision-tokens N` work as there. A card under 16 GB is recommended the CPU encoder (the GPU one takes room from the experts);
-`--vision gpu` is kept as asked, with a note.
+([Images](DETAILS.md#images-vision)). Pictures are on by default, the same rule as for every model on NVIDIA and AMD cards:
+the CPU reader under 24 GB of graphics memory (a few seconds per picture, no VRAM), the card's reader from 24 GB (GPU encoder,
+~1.2 GB of VRAM at up to 1,024 image tokens; on AMD it is `strata-vision-hip`, with the CPU reader as its fallback).
+`--vision yes|no|gpu|cpu` and `--vision-tokens N` work as there; what you ask for is kept, with a note. The Mac engine does
+not run this model.
 
 | Encoder | Time per picture (640x400 = 260 tokens / 800x450 = 350 tokens) | VRAM |
 | --- | --- | --- |
@@ -171,7 +172,7 @@ prompt state: KL against the 512 chunk on six real 1.5-3.2K-token documents (48 
 4096 3.6e-3 (per prompt 2.3e-3 .. 5.9e-3), top-1 agreement 44-48 of 48 rows - the size of the llama.cpp CPU-vs-HIP difference on the same
 file (4.2e-3), not a quality loss. Greedy 64 tokens after those six documents: the default chunk gives the base engine's text for 2 of 6,
 `--prefill 512` for 6 of 6. A prompt shorter than the chunk (every chat turn after the first) is one chunk either way: unchanged.
-The new default's goldens are `phaseA-tests/q36speed/golden/` (six documents, greedy 64): later changes are checked against them.
+The maintainers keep the new default's reference outputs (six documents, greedy 64) and check later changes against them.
 
 **Tried and dropped.** The MTP drafts' head over a subset of the vocabulary (`--draft-vocab N`, kept as an opt-in; the answer never
 changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% on Chinese / Russian / Arabic / Hindi (70% of a Chinese

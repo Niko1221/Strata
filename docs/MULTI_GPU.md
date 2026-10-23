@@ -11,6 +11,18 @@ verify window (a few hundred KB through pinned RAM), not twice per layer. No NVL
 needed; cards on x4 or x1 slots work, and the PCIe share of each card is probed on its own link. A `--pcie-frac` you give
 is every card's share and skips those probes; there is no per-card setting yet.
 
+**Two models on two cards (the app).** A layer split puts one model on several cards. The other way to use two cards is two
+models, one per card, each answering on its own. In the app, turn on **Run multiple models** on the Models page: the card
+list then says which card a loaded model uses ("In use by ..."), starts that card as Off for the next model, and
+explains a failed start on a card that is taken. Measured on a PC with Radeon AI PRO R9700 cards (two of four, Linux): Q2_0 on
+one card and IQ3_XXS on another both loaded (33 s and 59 s with the files cached, 114 s the first time), both answered chats
+(about 60 tokens/s each), the Monitor listed both, and unloading one left the other answering. This was run with the AMD build only;
+the same app code drives NVIDIA cards, but we have not run two models on two NVIDIA cards.
+
+**One make of card per engine.** An engine drives one make of card (NVIDIA, AMD or Intel). The app, `strata launch` and setup
+offer only the cards the engine can drive, never split a model across two makes, say in one plain line when the other make has
+the bigger card, and say that two models at once on two makes is not supported.
+
 ## Using it
 
 **Nothing to type.** `START-HERE.bat` (Linux: `./setup.sh`) lists your NVIDIA cards and says for each one whether
@@ -22,20 +34,68 @@ Strata can use it:
     GPU 1: NVIDIA GeForce GTX 1080 Ti, 11 GB VRAM - not supported - older than the RTX 20 series (compute capability 6.1; Strata needs 7.5 or newer)
     GPU 2: NVIDIA GeForce RTX 3090, 24 GB VRAM - can be used
   ...
-  1) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) + GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) together   (recommended)
-  2) GPU 2 (NVIDIA GeForce RTX 3090, 24 GB) only
-  3) GPU 0 (NVIDIA GeForce RTX 5080, 16 GB) only
+  1) RTX 3090 + RAM: fits: needs 44 GB of the 70 GB available   (recommended)
+  2) RTX 3090 + RTX 5080 + RAM (layer split): fits: needs 44 GB of the 84 GB available
+       prompts are read about 20% faster; the cards share the layers (docs/MULTI_GPU.md)
+  3) RTX 5080 + RAM: fits: needs 44 GB of the 66 GB available
 Which GPUs? [1]:
 ```
 
-When two or more cards can share the model, the two best together are recommended (the newest generation first:
-it becomes the main card). A model installed on one card asks once, at its next start, whether to use both from
-now on; the answer is kept.
+## Main, Helper, Off
 
-**Choosing yourself** (at setup or at any start):
+Every card has one of three roles:
+
+| Role | What it does |
+|---|---|
+| **Main** | Runs the **last** stage of the split: the output head, the draft layer and the check of its guesses. A prompt chunk waits on it. Exactly one card is Main. |
+| **Helper** | Holds a share of the layers and of the expert cache, so more of the model fits on graphics cards instead of being read from the drive. Prompts are read about 20% faster. |
+| **Off** | Strata does not touch the card (a game, the screen, a card that is too small). |
+
+The Main card is the **last** card in the engine's order, not the first. The first card runs the first layers and, by default,
+the picture reader. (Older versions of this page said "the first is the main one"; that has not been true since 0.1.41.1.)
+
+**Recommended roles** (the same rule in the app, `strata launch` and setup; `strata_control/gpu_roles.py`): the faster card
+is Main (speed is multiprocessors x max clock, the engine's own measure; cards within 5% are the same card, and the one with
+more memory wins, then the lower number; two identical cards: the highest number is Main, so the engine order stays 0, 1 as it always was; a card with clearly more memory beats a faster one that is at least half as fast).
+Every other card starts as Helper, except a card with **8 GB or less** (Off), built-in graphics beside a card with memory of
+its own (Off) and a card the engine cannot run (Off). Every role is one click (the app), one key (`strata launch`: M, H, O;
+R goes back to the recommendation) or one line (below).
+
+Only a few things are warned about, in one short line each: built-in graphics as Main, a card the engine cannot run, too
+little memory for the chosen setup (part of the model would be read from the drive). **Every card Off** is allowed. The CUDA,
+HIP and SYCL engines cannot start without a card, so the server then says so in one line and stops; an engine that can run on
+the processor (the Mac engine) says "Performance is degraded on CPU only." and goes on.
+
+**Setting roles**
 
 ```
---gpus 0,2                 these cards together, as nvidia-smi numbers them; the first is the main one. Remembered.
+strata launch --gpu-roles 1=main,0=helper       cards you do not name are Off
+./setup.sh --gpu-roles 1=main,0=helper          (START-HERE.bat --gpu-roles ... on Windows); saved
+strata launch                                     the Cards step: M Main, H Helper, O Off, R recommended, D details
+```
+
+or in the run settings (`strata-*.json`), which is what the app writes:
+
+```json
+"gpu_roles": {"1": "main", "0": "helper", "2": "off"},
+"gpu": [0, 1],
+"gpu_order": "as_given"
+```
+
+`gpu` is the same choice for older engines and the Monitor: the Helpers (slowest first), then the Main card, with the Off
+cards left out. The server reads `gpu_roles`; when `gpu` was edited by hand and no longer matches, `gpu` wins and the log says
+so (a settings file that names its cards keeps them). Nothing is rewritten on upgrade: a file with only `"gpu": [1, 0]` shows
+as Main = the last card, Helper = the first, the rest Off. The recommendation itself is not saved, so a card you add later is
+recommended again; a card you add after choosing roles starts Off. Docker: `GPU_ROLES=1=main,0=helper` is passed as `--gpu-roles`.
+
+**One rule for which cards count** (`strata_control/gpu_fit.py` keeps the memory arithmetic): not an integrated chip beside
+a real card, at least 4 GB of graphics memory to be listed, 8 GB or less starts Off. The arithmetic is the app's `fitOn`;
+each extra card of a split costs an estimated 2 GB of its own buffers.
+
+**Choosing the cards without roles** (at setup or at any start):
+
+```
+--gpus 0,2                 these cards together, as nvidia-smi numbers them; Strata puts the faster card last. Remembered.
 --gpus all                 every card that can share the model
 --gpu 0                    one card (at a start: for that start only)
 --layer-split auto         (default) or the first layer of each later card, e.g. 18 or 16,32
@@ -111,6 +171,10 @@ helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
 `STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
 `STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+On two Radeon AI PRO R9700 (each limited to 16 GB with `--vram-reserve-mib 17084`, Q2_0 pack, layer split auto, 5 interleaved pairs,
+noise arm within 0.2%), `STRATA_PREFILL_HELP=1` gave prompt tok/s without -> with: 700 tokens 638 -> 672 (x1.053, 5/5), 1.5K 839 -> 809
+(x0.964), 3K 1,105 -> 929 (x0.840), 6K 1,284 -> 1,211 (x0.943): the PCIe 4.0 x16 links of this box (28.4 GB/s each) make the share lose
+from 1.5K tokens up, so it stays off (`STRATA_PREFILL_HELP_FRAC` was not tuned for it).
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
@@ -233,8 +297,10 @@ KV, layers 0-25 / 26-47; 512-token greedy answers, median of 8 runs:
 | decode, code prompt | 53 tok/s | 70.1 tok/s | ~70 tok/s |
 | decode, prose prompt | 45 tok/s | 55.9 tok/s | ~68 tok/s |
 
-Greedy output is byte-identical with the flag at 0 and 1; the quiz set scored the same (47/51). Not measured on
-NVIDIA yet, where a sync and a graph launch cost less.
+Greedy output is byte-identical with the flag at 0 and 1; the quiz set scored the same (47/51). On NVIDIA it
+gives nothing: 2x RTX A4000 (IQ3_XXS, 5 interleaved pairs, 0.2.1 engine), decode story +0.3 %, code +2.1 %, facts -0.3 % against
++2.8 % of noise, prompts +0.1 %, with the same tokens. A sync and a graph launch cost less there. The second card then reads about 94 %
+busy in `nvidia-smi` (a kernel waiting for the flag), against 58 % without the flag, with no more tokens per second.
 
 The reading stage's wait for the flag is bounded on the GPU: `STRATA_SPLIT_WAIT_MS` (default 30000, 0 = no bound).
 If the flag does not arrive in time, the wait marks an error word and returns, the window's graph completes, and the

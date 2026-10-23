@@ -1,6 +1,7 @@
 // src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/core/sm75_series.hpp"
+#include "strata/core/sm120_series.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -832,15 +833,29 @@ bool query_swizzle_gfx906_device() {
 // pass on PR #540's kernel (attn_chunk_kernel_pre75<M, 2, false>, the Daily's attn_chunk_kernel), bit for bit the
 // default kernel's partials.  CUDA only; unset or anything but "1" keeps upstream 0.1.42's kernels.
 // STRATA_ATTN_PRE75=0 still turns the chunk kernel off (A/B).
+// 147-verify: unset, it is on for a compute capability 12.0 card (sm120_series.hpp; RTX PRO 5000, a 4-token verify round
+// -2.6%, bitwise); STRATA_ATTN_DAILY=0 (anything but "1") keeps upstream's kernels there too.
 [[maybe_unused]] bool daily_attn() {
 #if defined(__HIPCC__)
     return false;
 #else
-    static const bool on = [] {
+    static const int env = [] {
         const char* v = std::getenv("STRATA_ATTN_DAILY");
-        return v != nullptr && v[0] == '1' && v[1] == '\0';
+        if (v == nullptr) return -1;
+        return v[0] == '1' && v[1] == '\0' ? 1 : 0;
     }();
-    return on;
+    if (env >= 0) return env != 0;
+    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (!per_dev[dev]) {
+        int maj = 0, mnr = 0;
+        const bool ok = cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = ok && strata::sm120_default(maj, mnr) ? 2 : 1;
+    }
+    return per_dev[dev] == 2;
 #endif
 }
 
@@ -910,13 +925,11 @@ int attn_kv_mode(const QsaAttnPools& p) {
 // STRATA_ATTN_MERGE_V2: 1 merges with attn_merge_v2_kernel, 0 with attn_merge_kernel.  Unset it follows
 // STRATA_ATTN_DAILY (the Daily had it on by default on NVIDIA), so upstream's merger stays the default.
 int attn_merge_v2() {
-    static const int on = [] {
-        int r = daily_attn() ? 1 : 0;
+    static const int env = [] {
         const char* v = std::getenv("STRATA_ATTN_MERGE_V2");
-        if (v != nullptr && *v != '\0') r = std::atoi(v) != 0 ? 1 : 0;
-        return r;
+        return v != nullptr && *v != '\0' ? (std::atoi(v) != 0 ? 1 : 0) : -1;
     }();
-    return on;
+    return env >= 0 ? env : (daily_attn() ? 1 : 0);
 }
 
 // the merge of `n_q` queries' partials: v2 = 0 attn_merge_kernel, 1 attn_merge_v2_kernel (bitwise the same output)

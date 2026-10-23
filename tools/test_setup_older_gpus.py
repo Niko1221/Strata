@@ -163,6 +163,7 @@ def fake_prebuilt(calls):
         (eng / "BUILD.json").write_text(json.dumps({"version": "0.1.39", "source": "release", "archs": [86], "ptx": True,
                                                     "cuda": "12.9" if toolkit == 12 else "13.0", "vision": "gpu"}))
         (eng / setup.EXE).write_bytes(b"")
+        (eng / setup.VEXE).write_bytes(b"")                    # pictures are on by default: the engine carries the reader
         return eng
     return get
 

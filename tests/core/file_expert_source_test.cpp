@@ -399,6 +399,51 @@ void test_pin_pacing() {
     require(page_cache_hint("MemFree: 100 kB\nCached: 1000 kB\n").empty(), "a small cache was reported");
 }
 
+// NUMA split: per-slice byte ranges of one complement slot (page rule: a page holding a slice-0 byte is slice 0's)
+void test_numa_slice_ranges() {
+    using strata::core::detail::numa_slice_ranges;
+    constexpr uint64_t P = 4096;
+    const uint64_t roles[3] = {870400, 870400, 921600};
+    const uint64_t slot_bytes = roles[0] + roles[1] + roles[2];
+    const uint64_t offs[3] = {0, 2662400ull * 7, P * 3 + 100};
+    for (uint64_t off : offs) {
+        const auto r0 = numa_slice_ranges(off, roles, 0), r1 = numa_slice_ranges(off, roles, 1);
+        for (int r = 0; r < 3; ++r) {
+            require(r0[r].first % P == 0 && r0[r].second % P == 0 && r1[r].first % P == 0 && r1[r].second % P == 0,
+                    "a slice range boundary was not page aligned");
+            require(r0[r].first <= r0[r].second && r1[r].first <= r1[r].second, "a slice range was inverted");
+        }
+        // every page fully inside the slot is in exactly one of the six ranges (and none is in two)
+        for (uint64_t pg = (off + P - 1) / P * P; pg + P <= off + slot_bytes; pg += P) {
+            int hits = 0;
+            for (int r = 0; r < 3; ++r) {
+                hits += (pg >= r0[r].first && pg + P <= r0[r].second);
+                hits += (pg >= r1[r].first && pg + P <= r1[r].second);
+            }
+            require(hits == 1, "a page was in " + std::to_string(hits) + " slice ranges, not exactly one");
+        }
+    }
+    // (b) no slice-1 range intersects a slice-0 range, within a slot and across two consecutive slots
+    const auto meet = [](const std::pair<uint64_t, uint64_t>& x, const std::pair<uint64_t, uint64_t>& y) {
+        return x.first < y.second && y.first < x.second;
+    };
+    for (uint64_t off : offs) {
+        const auto s0 = numa_slice_ranges(off, roles, 0), s1 = numa_slice_ranges(off, roles, 1);
+        const auto n0 = numa_slice_ranges(off + slot_bytes, roles, 0), n1 = numa_slice_ranges(off + slot_bytes, roles, 1);
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                require(!meet(s0[i], s1[j]), "a slice-1 range intersects a slice-0 range of the same slot");
+                require(!meet(s1[i], n0[j]) && !meet(n1[i], s0[j]),
+                        "a slice-1 range intersects a slice-0 range of the neighbouring slot");
+            }
+    }
+    const auto a = numa_slice_ranges(0, roles, 0), b = numa_slice_ranges(0, roles, 1);
+    require(a[0].first <= 435199 && 435199 < a[0].second, "last slice-0 gate byte not in slice 0's gate range");
+    require(b[0].first <= 435200 + P && 435200 + P < b[0].second, "a slice-1 gate byte not in slice 1's gate range");
+    require(a[1].first <= 870400 && 870400 < a[1].second, "the gate/up boundary page was not slice 0's up range");
+    require(!(b[0].first <= 870400 && 870400 < b[0].second), "the gate/up boundary page was in slice 1's gate range");
+}
+
 void test_resident_memory_budget() {
     using strata::core::detail::clamp_resident_budget;
     constexpr uint64_t GiB = 1ull << 30, margin = 256ull << 20, headroom = 4 * GiB;
@@ -433,18 +478,41 @@ void test_cgroup_memory_budget() {
     constexpr uint64_t GiB = 1ull << 30;
     uint64_t bytes = 0;
 
+    // the kernel keeps min(half the clean cache, limit / 64) of it: 56 GiB / 64 = 0.875 GiB here
+    const uint64_t keep56 = 56 * GiB / 64;
     CgroupMemoryStat clean_cache{40 * GiB, 32 * GiB, 0, 0, true};
     require(cgroup_available_bytes(56 * GiB, clean_cache, bytes), "valid cgroup memory.stat was rejected");
-    require(bytes == 48 * GiB, "clean inactive file cache was not credited against the cgroup cap");
+    require(bytes == 48 * GiB - keep56, "clean inactive file cache was not credited against the cgroup cap");
 
     CgroupMemoryStat dirty_cache{40 * GiB, 32 * GiB, 4 * GiB, 2 * GiB, true};
     require(cgroup_available_bytes(56 * GiB, dirty_cache, bytes), "valid dirty-cache counters were rejected");
-    require(bytes == 42 * GiB, "dirty/writeback pages were incorrectly counted as reclaimable");
+    require(bytes == 42 * GiB - keep56, "dirty/writeback pages were incorrectly counted as reclaimable");
 
     CgroupMemoryStat oversized_inactive{10 * GiB, 20 * GiB, 0, 0, true};
     require(cgroup_available_bytes(12 * GiB, oversized_inactive, bytes),
             "valid oversized inactive-file counter was rejected");
-    require(bytes == 12 * GiB, "inactive-file accounting exceeded charged current usage");
+    require(bytes == 12 * GiB - 12 * GiB / 64, "inactive-file accounting exceeded charged current usage");
+
+    // 149: the ACTIVE page cache is reclaimable too (memory.stat "file" = active + inactive), as MemAvailable counts
+    // it: a 32 GiB group whose own reads left 26 GiB of cache, 25 GiB of it active, and 4.5 GiB of anonymous memory
+    CgroupMemoryStat active_cache{30 * GiB + GiB / 2, 1 * GiB, 0, 0, true, 26 * GiB};
+    require(cgroup_available_bytes(32 * GiB, active_cache, bytes), "a memory.stat with file was rejected");
+    require(bytes == 32 * GiB - (4 * GiB + GiB / 2) - 32 * GiB / 64, "the active page cache was not credited");
+    // without "file" (an old kernel's stat): inactive_file alone, as before
+    CgroupMemoryStat no_file{30 * GiB + GiB / 2, 1 * GiB, 0, 0, true};
+    require(cgroup_available_bytes(32 * GiB, no_file, bytes) && bytes == 32 * GiB - (29 * GiB + GiB / 2) - GiB / 2,
+            "a stat without file did not fall back to inactive_file");
+    // dirty and writeback pages of the active cache stay charged; a small cache keeps half of itself
+    CgroupMemoryStat dirty_active{20 * GiB, 1 * GiB, 2 * GiB, 1 * GiB, true, 10 * GiB};
+    require(cgroup_available_bytes(32 * GiB, dirty_active, bytes) && bytes == 32 * GiB - (20 * GiB - 7 * GiB) - GiB / 2,
+            "dirty / writeback pages of the active cache were counted as reclaimable");
+    CgroupMemoryStat tiny_cache{8 * GiB, 0, 0, 0, true, 256ull << 20};
+    require(cgroup_available_bytes(32 * GiB, tiny_cache, bytes) && bytes == 32 * GiB - 8 * GiB + (128ull << 20),
+            "a small clean cache was not kept at half");
+    // "file" larger than what is charged (a racy read) is bounded by memory.current
+    CgroupMemoryStat racy{4 * GiB, 1 * GiB, 0, 0, true, 9 * GiB};
+    require(cgroup_available_bytes(32 * GiB, racy, bytes) && bytes == 32 * GiB - GiB / 2,
+            "a file counter above memory.current escaped the bound");
 
     const uint64_t max = std::numeric_limits<uint64_t>::max();
     CgroupMemoryStat large_counters{max, max, max - 1, max, true};
@@ -562,7 +630,13 @@ void test_host_memory() {
     put("fs/box/memory.max", std::to_string(48 * GiB) + "\n");
     put("fs/box/memory.current", std::to_string(16 * GiB) + "\n");
     put("fs/box/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nfile_dirty 0\nfile_writeback 0\n");
-    require(probe("0::/box\n") && m.available == 36 * GiB && m.cgroup_limit == 48 * GiB, "v2 limit");
+    require(probe("0::/box\n") && m.available == 36 * GiB - 48 * GiB / 64 && m.cgroup_limit == 48 * GiB, "v2 limit");
+    // 149: with "file" (active + inactive cache) the active part counts too: 12 GiB of cache, 4 GiB anonymous
+    put("fs/box/memory.stat", "file " + std::to_string(12 * GiB) + "\ninactive_file " + std::to_string(4 * GiB) +
+                              "\nfile_dirty 0\nfile_writeback 0\n");
+    require(probe("0::/box\n") && m.available == 44 * GiB - 48 * GiB / 64 && m.cgroup_limit == 48 * GiB,
+            "v2 limit, the active page cache credited");
+    put("fs/box/memory.stat", "inactive_file " + std::to_string(4 * GiB) + "\nfile_dirty 0\nfile_writeback 0\n");
     put("fs/box/memory.max", "max\n");
     require(probe("0::/box\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v2 max");
     put("fs/box/memory.max", "48G\n");
@@ -918,6 +992,7 @@ int main(int argc, char** argv) {
         test_resident_exchange();
         test_resident_memory_budget();
         test_pin_pacing();
+        test_numa_slice_ranges();
         test_cgroup_memory_budget();
         test_host_memory();
         test_canonical_layout();
