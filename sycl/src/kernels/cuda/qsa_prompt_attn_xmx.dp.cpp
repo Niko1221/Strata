@@ -13,6 +13,7 @@
 // K^T packed as 4-byte pairs with INT8 converted on the load, hi and lo halves of Q accumulated into one accumulator per
 // scale group, and one accumulator update per chunk after the whole P.V product has run in registers.
 #include "strata/kernels/qsa_prompt_attn_xmx.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -29,6 +30,8 @@ namespace strata::kernels {
 namespace {
 namespace jm = sycl::ext::oneapi::experimental::matrix;
 constexpr int HD = 256, G = 12, SG = 16, NSG = 8, THREADS = SG * NSG, QS = HD + 8;
+static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv,
+              "qsa_prompt_attn_xmx is compiled for core/geometry.hpp");
 constexpr int QK4_0 = 32;
 struct q4_0_block { uint16_t d; uint8_t qs[QK4_0 / 2]; };
 

@@ -233,7 +233,7 @@ class Protocol(FakeRoot):
         self.assertIn("tools", init["capabilities"])
         self.assertEqual(init["serverInfo"]["name"], "strata")
         names = [t["name"] for t in r[2]["result"]["tools"]]
-        self.assertEqual(names, ["strata_status", "strata_models", "strata_install", "strata_start", "strata_stop",
+        self.assertEqual(names, ["strata_status", "strata_models", "strata_remove", "strata_install", "strata_start", "strata_stop",
                                  "strata_logs", "strata_benchmark", "strata_connect_info"])
         for t in r[2]["result"]["tools"]:
             self.assertEqual(t["inputSchema"]["type"], "object")
@@ -242,7 +242,7 @@ class Protocol(FakeRoot):
         call = r[3]["result"]
         self.assertFalse(call["isError"])
         self.assertIn("families", call["structuredContent"])
-        self.assertEqual(json.loads(call["content"][0]["text"])["recommendation"]["model"], "IQ3_XXS")
+        self.assertEqual(json.loads(call["content"][0]["text"])["recommendation"]["model"], "IQ3_S")
         self.assertEqual(r[4]["result"], {})
         self.assertNotIn(None, r)                       # the notification got no answer
 
@@ -272,7 +272,7 @@ class Protocol(FakeRoot):
                            timeout=60, env=dict(os.environ))
         lines = [json.loads(x) for x in p.stdout.splitlines()]
         self.assertEqual(sorted(m["id"] for m in lines), [1, 2, 3])
-        self.assertEqual(len(next(m for m in lines if m["id"] == 2)["result"]["tools"]), 8)
+        self.assertEqual(len(next(m for m in lines if m["id"] == 2)["result"]["tools"]), 9)
         self.assertIn("ready", p.stderr)
 
     def test_not_a_strata_folder(self):
@@ -291,7 +291,7 @@ class Validation(FakeRoot):
     def test_install_arguments(self):
         self.assertRejected("strata_install", {"model": "Q9_X"}, "model must be one of")
         self.assertRejected("strata_install", {"family": "llama"}, "family must be one of")
-        self.assertRejected("strata_install", {"context": 12345}, "context must be one of")
+        self.assertRejected("strata_install", {"context": 100}, "context must be between")
         self.assertRejected("strata_install", {"gpus": "0;rm -rf /"}, "gpus=")
         self.assertRejected("strata_install", {"gpus": "0 && calc"}, "gpus=")
         self.assertRejected("strata_install", {"gpu": -1}, "between")
@@ -308,19 +308,30 @@ class Validation(FakeRoot):
         self.assertEqual(res["plan"]["images"], "yes")
         self.assertRejected("strata_install", {"vision": "yes\nrm"}, "control characters")
 
-    def test_amd_vision_follows_setups_rules(self):
-        """#990: --vision cpu is allowed with the AMD backend on Linux (setup.hip_vision); a GPU encoder is not."""
-        with mock.patch.object(M, "WIN", False):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "yes"}, "no GPU image encoder")
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "gpu"}, "vision=cpu")
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "cpu"})
+    def test_amd_vision_follows_the_picture_rule(self):
+        """Owner rule 2026-10-18: pictures are on for AMD too, on Linux and Windows (setup picks the reader: CPU under 24 GB, GPU from 24 GB)."""
+        for win in (False, True):
+            with mock.patch.object(M, "WIN", win):
+                for asked in ("yes", "gpu", "cpu"):
+                    res, err = self.call("strata_install", {"backend": "hip", "vision": asked})
+                    self.assertFalse(err, res)
+                    self.assertEqual(res["plan"]["images"], asked)
+                    self.assertIn("--vision " + asked, res["plan"]["setup_command"])
+                res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})
+                self.assertFalse(err, res)
+                self.assertEqual(res["plan"]["images"], "no")
+
+    def test_pictures_default_on(self):
+        """Nothing asked: pictures are on where the model can read them (any backend), off for a model that cannot."""
+        for backend in (None, "cuda", "hip"):
+            args = {"backend": backend} if backend else {}
+            res, err = self.call("strata_install", args)
             self.assertFalse(err, res)
-            self.assertEqual(res["plan"]["images"], "cpu")
-            self.assertIn("--vision cpu", res["plan"]["setup_command"])
-            res, err = self.call("strata_install", {"backend": "hip", "vision": "no"})
-            self.assertFalse(err, res)
-        with mock.patch.object(M, "WIN", True):
-            self.assertRejected("strata_install", {"backend": "hip", "vision": "cpu"}, "Linux")
+            self.assertEqual(res["plan"]["images"], "yes")
+            self.assertIn("--vision yes", res["plan"]["setup_command"])
+        res, err = self.call("strata_install", {"vision": "no"})
+        self.assertFalse(err, res)
+        self.assertEqual(res["plan"]["images"], "no")
 
     def test_data_dir_paths(self):
         self.assertRejected("strata_install", {"data_dir": "models"}, "absolute")
@@ -334,6 +345,17 @@ class Validation(FakeRoot):
         ok = [self.root.parent / "Strata-data", self.root / "models-here", self.root.parent / "Strata-big"]
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
+
+    def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
+        """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
+        folder still needs a Strata... name."""
+        chosen = self.root.parent / "my-big-disk"
+        chosen.mkdir()
+        self.assertRejected("strata_install", {"data_dir": str(chosen)}, "named Strata")
+        settings = self.tools.s.settings_path()
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps({"data_dir": str(chosen)}))
+        self.assertEqual(M.norm(self.tools.check_data_dir(str(chosen))), M.norm(chosen))
 
     def test_other_tools_arguments(self):
         self.assertRejected("strata_start", {"model": "../../etc/passwd"}, "not valid")
@@ -366,7 +388,7 @@ class Install(FakeRoot):
         res, err = self.call("strata_install", {})
         self.assertFalse(err)
         self.assertIn("Nothing was done yet", res["summary"])
-        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_XXS", 32768))
+        self.assertEqual((res["plan"]["family"], res["plan"]["model"], res["plan"]["context"]), ("qwen", "IQ3_S", 32768))
         self.assertFalse((self.root / "setup-args.json").exists())
         self.assertIsNone(self.strata.install_job())
 
@@ -573,26 +595,64 @@ class Helpers(unittest.TestCase):
         self.assertEqual(list(S.CONTEXTS), M.FALLBACK_CONTEXTS)
 
     def test_unsloth_sizes(self):
-        """0.1.39: UD-IQ4_XS is a regular size, listed first (the family's default); UD-Q4_K_XL stays experimental."""
+        """0.1.39: UD-IQ4_XS is a regular size, listed first; MODEL-UPDATE Phase 2: UD-Q4_K_XL is no longer experimental,
+        and UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 follow by size."""
         s = M.Strata(HERE.parent)
         for models in (s.tables()[0], M.FALLBACK_MODELS):
-            self.assertEqual(s.sizes_of(models, "unsloth"), ["UD-IQ4_XS", "UD-Q4_K_XL"])
+            self.assertEqual(s.sizes_of(models, "unsloth"), ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
             self.assertFalse(models["UD-IQ4_XS"].get("experimental"))
-            self.assertTrue(models["UD-Q4_K_XL"].get("experimental"))
+            self.assertFalse(models["UD-Q4_K_XL"].get("experimental"))
         self.assertEqual(s.sizes_of(M.FALLBACK_MODELS, "qwen"), ["Q2_0", "IQ2_XS", "IQ3_XXS", "IQ3_S"])
         fam = next(f for f in s.model_table({"ram_gb": 63.7, "gpus": []}) if f["family"] == "unsloth")
         self.assertFalse(fam["experimental"])
         self.assertTrue(fam["images"])
         by = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual((by["UD-IQ4_XS"]["experimental"], by["UD-IQ4_XS"]["images"]), (False, True))
-        self.assertEqual((by["UD-Q4_K_XL"]["experimental"], by["UD-Q4_K_XL"]["images"]), (True, True))   # #967
+        self.assertEqual((by["UD-Q4_K_XL"]["experimental"], by["UD-Q4_K_XL"]["images"]), (False, True))   # #967
         self.assertFalse(by["UD-IQ4_XS"]["on_this_pc"].startswith("experimental"))
-        self.assertTrue(by["UD-Q4_K_XL"]["on_this_pc"].startswith("experimental"))
+        self.assertIn("read from the SSD", by["UD-Q4_K_XL"]["on_this_pc"])      # 64 GB: the RAM budget
+        fam = next(f for f in s.model_table({"ram_gb": 127.8, "gpus": []}) if f["family"] == "unsloth")
+        by = {x["model"]: x for x in fam["sizes"]}
+        self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "fits (all of its experts in RAM)")
+        self.assertIn("read from the SSD", by["Q8_0"]["on_this_pc"])
+
+    def test_qwen36_is_listed_with_its_three_sizes(self):
+        """QA 2026-10-18: the Qwen3.6-35B-A3B page of the first-run setup showed no versions, because setup.py keeps the family
+        in OWN_PATH_FAMILIES (not FAMILIES) and the model list only walked FAMILIES."""
+        s = M.Strata(HERE.parent)
+        self.assertIn("qwen36", s.tables()[1])
+        fam = next(f for f in s.model_table({"ram_gb": 63.7, "gpus": [{"index": 0, "name": "x", "vram_gb": 12.0, "usable": True}]})
+                   if f["family"] == "qwen36")
+        by = {x["model"]: x for x in fam["sizes"]}
+        self.assertEqual(list(by), ["UD-Q4_K_XL", "UD-Q6_K_XL", "Q8_0"])
+        self.assertEqual(by["UD-Q4_K_XL"]["id"], "qwen36-ud-q4_k_xl")          # the tag the install writes its config under
+        self.assertEqual(by["UD-Q4_K_XL"]["download_gb"], 22.9)
+        self.assertTrue(all(x["images"] and x["engine_min"] == "0.1.45" and x["gpu_options"] is None for x in by.values()))
+        self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
+        small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
+        self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"does not fit"})
+        self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[-1], "Q8_0")      # the Unsloth Flash-Next sizes are untouched
+
+    def test_qwen36_install_plan(self):
+        s = M.Strata(HERE.parent)
+        s.hardware = lambda fresh=False: {"ram_gb": 64.0, "gpus": [{"index": 0, "name": "x", "vram_gb": 12.0, "usable": True, "vendor": "nvidia"}],
+                                          "cpu": {"avx2": True}}
+        s.disk_free = lambda p: 1000.0
+        plan, args = M.Tools(s).install_plan("qwen36", "UD-Q4_K_XL", 32768, "yes", "int8", None, None, None, "auto", None, None)
+        self.assertEqual((plan["title"], plan["download_gb"], plan["family"]), ("Qwen3.6-35B-A3B UD-Q4_K_XL", 22.9, "qwen36"))
+        self.assertEqual(args[:10], ["--yes", "--no-start", "--family", "qwen36", "--model", "UD-Q4_K_XL", "--context", "32768",
+                                     "--vision", "yes"])
+        for flag in ("--kv", "--low-ram", "--experimental-speed-projection"):      # Flash-Next settings: setup would only warn
+            self.assertNotIn(flag, args)
+        plan, _a = M.Tools(s).install_plan("qwen36", None, 32768, "no", None, None, None, None, None, None, None)
+        self.assertEqual(plan["model"], "UD-Q4_K_XL")
+        with self.assertRaises(M.ToolError):
+            M.Tools(s).install_plan("qwen36", "IQ3_S", 32768, "no", None, None, None, None, None, None, None)
 
     def test_recommendation_follows_ram(self):
         s = M.Strata(HERE.parent)
         gpu = [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}]
-        cases = {96: ("qwen", "IQ3_XXS", 131072), 48: ("qwen", "Q2_0", 131072), 32: ("coder", "IQ1_M", 131072)}
+        cases = {96: ("qwen", "IQ3_S", 131072), 48: ("qwen", "IQ3_S", 131072), 32: ("qwen", "IQ3_XXS", 131072), 12: ("coder", "IQ1_M", 131072)}   # the owner's tiers count RAM + VRAM (24 GB card): 120, 72, 56 GB; the Coder where the older rules stand
         for ram, want in cases.items():
             r = s.recommend({"ram_gb": ram, "gpus": gpu, "cpu": {"avx2": True}})
             self.assertEqual((r["family"], r["model"], r["context"]), want, ram)
@@ -603,6 +663,370 @@ class Helpers(unittest.TestCase):
         r = s.recommend({"ram_gb": 64, "gpus": [{**gpu[0], "vram_gb": 12.0}], "cpu": {"avx2": True}})
         self.assertEqual(r["context"], 32768)
 
+    def test_a_pick_that_reads_from_the_ssd_says_so(self):
+        # #3425: 36 GB RAM + 16 GB VRAM - 5 GB is the 48 GB tier; about 8 GB of IQ3_XXS would come from the SSD
+        s = M.Strata(HERE.parent)
+        gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
+        r = s.recommend({"ram_gb": 36.0, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_XXS"))
+        self.assertTrue(any("read from the SSD" in n for n in r["notes"]), r["notes"])
+        roomy = s.recommend({"ram_gb": 64, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertFalse(any("read from the SSD" in n for n in roomy["notes"]), roomy["notes"])
+
+    def test_3425_the_tiers_leave_5_gb_for_windows(self):
+        # the reporter: RTX 5080 (16 GB) + 32 GB of RAM used to sum to 48 GB and get IQ3_XXS; now the 40 GB tier
+        s = M.Strata(HERE.parent)
+        gpu = [{"index": 0, "name": "x", "vram_gb": 15.9, "usable": True, "vendor": "nvidia"}]
+        self.assertEqual(M.TIER_SYSTEM_RESERVE_GB, 5.0)
+        r = s.recommend({"ram_gb": 31.9, "gpus": gpu, "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("swift", "IQ2_XS"))
+        # boundary: 43 GB of RAM + VRAM is the lowest 40 GB tier PC, 51 GB the lowest 48 GB tier PC
+        def pick(ram, vram):
+            g = [{**gpu[0], "vram_gb": vram}]
+            r = s.recommend({"ram_gb": ram, "gpus": g, "cpu": {"avx2": True}})
+            return r["family"], r["model"]
+        self.assertEqual(pick(30.0, 13.0), ("swift", "IQ2_XS"))
+        self.assertNotEqual(pick(30.0, 12.9), ("swift", "IQ2_XS"))
+        self.assertEqual(pick(38.0, 13.0), ("qwen", "IQ3_XXS"))
+        self.assertEqual(pick(38.0, 12.9), ("swift", "IQ2_XS"))
+        self.assertEqual(pick(54.0, 13.0), ("qwen", "IQ3_S"))
+        self.assertEqual(pick(54.0, 12.9), ("qwen", "IQ3_XXS"))
+
+
+class PhysicalCores(unittest.TestCase):
+    """#3417: the hardware report's cpu.cores is the physical cores; the Work profile takes 80% of it for --pool-workers."""
+
+    def test_physical_not_logical(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"model": "x", "logical": 16, "physical": 8, "hybrid": False}),                 mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 8)
+
+    def test_unknown_falls_back_to_threads(self):
+        from strata_control import tune_machine
+        with mock.patch.object(tune_machine, "cpu", return_value={"physical": None}), mock.patch.object(M.os, "cpu_count", return_value=16):
+            self.assertEqual(M.physical_cores(), 16)
+        with mock.patch.object(tune_machine, "cpu", side_effect=OSError("no")), mock.patch.object(M.os, "cpu_count", return_value=4):
+            self.assertEqual(M.physical_cores(), 4)
+
+
+class MacCatalog(unittest.TestCase):
+    """A Mac (Apple Silicon): one pool of unified memory, judged by strata_control/mac_fit.py (the rules metal/setup_mac.py uses)."""
+
+    def hw(self, ram, macos="27.2", chip="Apple M4"):
+        from strata_control import mac_fit
+        s = M.Strata(HERE.parent)
+        info = {"chip": chip, "ram_gb": float(ram), "macos": macos, "arm64": True, "clt": "", "perf_cores": 4}
+        with mock.patch.object(M.sys, "platform", "darwin"), mock.patch.object(mac_fit, "mac_info", return_value=info):
+            hw = s._hardware()
+        return s, hw
+
+    def test_the_hardware_is_one_apple_gpu_with_unified_memory(self):
+        s, hw = self.hw(32)
+        self.assertEqual(hw["ram_gb"], 32.0)
+        self.assertEqual(len(hw["gpus"]), 1)
+        g = hw["gpus"][0]
+        self.assertEqual((g["vendor"], g["name"], g["usable"], g["vram_gb"], g["unified_gb"]), ("apple", "Apple M4", True, 0.0, 32.0))
+        self.assertEqual(hw["mac"]["unified_gb"], 32.0)
+        self.assertFalse(hw["nvidia_smi"])
+
+    def test_recommendation_by_unified_memory(self):
+        cases = {32: ("Q2_0", 32768), 48: ("Q2_0", 32768), 80: ("IQ3_XXS", 32768), 128: ("IQ3_S", 65536)}
+        for ram, (model, ctx) in cases.items():
+            s, hw = self.hw(ram)
+            r = s.recommend(hw)
+            self.assertEqual((r["family"], r["model"], r["context"], r["backend"]), ("qwen", model, ctx, "metal"), ram)
+            self.assertNotIn("NVIDIA", r["why"])
+            self.assertFalse([n for n in r["notes"] if "UD-" in n], "the Unsloth sizes are not offered in the app yet")
+        s, hw = self.hw(32)
+        self.assertIn("read from the SSD", s.recommend(hw)["why"])
+        s, hw = self.hw(128)
+        self.assertIn("stays in memory", s.recommend(hw)["why"])
+
+    def test_a_mac_too_small_or_too_old_has_no_recommendation_and_says_why(self):
+        s, hw = self.hw(8)
+        r = s.recommend(hw)
+        self.assertIsNone(r["model"])
+        self.assertIn("8 GB of unified memory", r["why"])
+        s, hw = self.hw(32, macos="14.6")
+        r = s.recommend(hw)
+        self.assertIsNone(r["model"])
+        self.assertIn("macOS 15 or newer", r["why"])
+
+    def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
+        s, hw = self.hw(32)
+        fams = s.model_table(hw)
+        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro"], "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes")
+        by = {x["model"]: x for x in fams[0]["sizes"]}
+        self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
+        gy = {x["model"]: x for x in fams[1]["sizes"]}
+        self.assertEqual(list(gy), ["Gyro-S", "Gyro-M"])
+        self.assertEqual(gy["Gyro-S"]["download_gb"], 58.5)
+        self.assertTrue(all(v["on_this_pc"] and "SSD" in v["on_this_pc"] for v in gy.values()), "32 GB: both stream (said, not refused)")
+        self.assertIn("read from the SSD", by["Q2_0"]["on_this_pc"])
+        self.assertIn("slower", by["Q2_0"]["on_this_pc"])
+        self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
+        self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
+        self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
+        s, hw = self.hw(128)
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"fits"})
+        s, hw = self.hw(8)
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) for x in f["sizes"]}, {"does not fit"})
+
+    def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
+        s, hw = self.hw(32)
+        s.hardware = lambda fresh=False: hw
+        s.disk_free = lambda p: 1000.0
+        with tempfile.TemporaryDirectory() as own:
+            plan, args = M.Tools(s).install_plan("qwen", "Q2_0", None, "no", "int8", 0, None, None, "auto", None, None, own)
+        self.assertEqual(plan["context"], 32768)
+        self.assertEqual(args[:9], ["--yes", "--no-start", "--family", "qwen", "--model", "Q2_0", "--context", "32768", "--vision"])
+        for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
+            self.assertNotIn(flag, args)
+        self.assertIn("--gguf-dir", args)
+        with tempfile.TemporaryDirectory() as own:      # nothing said about pictures: on, as everywhere (the Mac's reader is the Metal one)
+            _plan, args = M.Tools(s).install_plan("qwen", "Q2_0", None, None, "int8", 0, None, None, "auto", None, None, own)
+        self.assertEqual(args[args.index("--vision") + 1], "yes")
+        with self.assertRaises(M.ToolError):
+            s2, hw2 = self.hw(8)
+            s2.hardware = lambda fresh=False: hw2
+            M.Tools(s2).install_plan(None, None, None, None, None, None, None, None, None, None, None)
+
+    def test_a_pc_is_unchanged(self):
+        s = M.Strata(HERE.parent)
+        r = s.recommend({"ram_gb": 96, "gpus": [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}],
+                         "cpu": {"avx2": True}})
+        self.assertEqual((r["family"], r["model"]), ("qwen", "IQ3_S"))
+        self.assertIn("unsloth", [f["family"] for f in s.model_table({"ram_gb": 96, "gpus": []})])
+
+
+class MixedGraphics(unittest.TestCase):
+    def test_an_integrated_amd_gpu_beside_an_nvidia_card_is_not_offered(self):
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        nv = [{"index": 0, "name": "NVIDIA GeForce RTX 5090", "vram_gb": 31.8, "arch": "120", "driver": "580.95"}]
+        igpu = [{"index": 0, "name": "AMD Radeon Graphics", "vram_gb": 0.5, "arch": "gfx1036", "uma": True}]
+        with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: [dict(g) for g in nv]), mock.patch.object(S, "gpu_problem", lambda g: None),                 mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]), mock.patch.object(S, "amd_problem", lambda g: None):
+            hw = s._hardware()
+        by = {g["vendor"]: g for g in hw["gpus"]}
+        self.assertTrue(by["nvidia"]["usable"])
+        self.assertFalse(by["amd"]["usable"])
+        self.assertIn("NVIDIA card", by["amd"]["problem"])
+        rec = s.recommend({**hw, "ram_gb": 92.0})
+        self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("cuda", "NVIDIA GeForce RTX 5090"))
+        # with no NVIDIA card the integrated GPU stays what it was
+        with mock.patch.object(M.sys, "platform", "linux"), mock.patch.object(M, "WIN", False),                 mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in igpu]),                 mock.patch.object(S, "amd_problem", lambda g: None):
+            self.assertTrue(s._hardware()["gpus"][0]["usable"])
+
+    def test_an_amd_card_the_installed_engine_has_no_code_for_is_not_usable(self):
+        """#3203: the engine package lists its GPU code; a card outside it is flagged unusable with the plain reason, so no list offers it."""
+        status = {"usable": True, "engine": {"backend": "hip", "archs": ["gfx1200", "gfx1201"]}}
+        hw = {"gpus": [{"vendor": "amd", "index": 0, "name": "AMD Radeon 760M", "arch": "gfx1103", "usable": False, "problem": "integrated"},
+                       {"vendor": "amd", "index": 1, "name": "AMD Radeon RX 6800 XT", "arch": "gfx1030", "usable": True, "problem": None},
+                       {"vendor": "amd", "index": 2, "name": "AMD Radeon RX 9070 XT", "arch": "gfx1201", "usable": True, "problem": None},
+                       {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060", "arch": "86", "usable": True, "problem": None}]}
+        with mock.patch("strata_control.engine_component.status", lambda: status):
+            M.Strata._engine_code(hw)
+        by = {g["name"]: g for g in hw["gpus"]}
+        self.assertFalse(by["AMD Radeon RX 6800 XT"]["usable"])
+        self.assertIn("no code for gfx1030", by["AMD Radeon RX 6800 XT"]["problem"])
+        self.assertEqual(by["AMD Radeon 760M"]["problem"], "integrated", "an earlier reason stays")
+        self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
+        self.assertTrue(by["NVIDIA GeForce RTX 3060"]["usable"])
+        # no engine package that lists archs (a source build, no engine yet): nothing is judged
+        for other in ({"usable": False}, {"usable": True, "engine": {"backend": "cuda", "archs": ["sm_86"]}}):
+            again = {"gpus": [{"vendor": "amd", "index": 1, "name": "x", "arch": "gfx1030", "usable": True, "problem": None}]}
+            with mock.patch("strata_control.engine_component.status", lambda other=other: other):
+                M.Strata._engine_code(again)
+            self.assertTrue(again["gpus"][0]["usable"])
+
+    @mock.patch("strata_control.engine_component.status", lambda: {"usable": False})   # not this PC's installed (CUDA) engine
+    def test_windows_lists_an_amd_card_and_not_the_integrated_radeon(self):
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        cards = [{"index": 0, "name": "AMD Radeon RX 9070 XT", "vram_gb": 15.9, "arch": "gfx1201", "driver": "32.0.1"},
+                 {"index": 1, "name": "AMD Radeon(TM) Graphics", "vram_gb": 0.5, "arch": "unknown (PCI 164E)", "driver": "32.0.1"}]
+        with mock.patch.object(M, "WIN", True), mock.patch.object(S, "gpus", lambda: []),                 mock.patch.object(S, "amd_gpus", lambda: [dict(g) for g in cards]),                 mock.patch.object(M, "windows_video_controllers", lambda: [{"name": "AMD Radeon RX 9070 XT", "driver": "32"}]),                 mock.patch.object(S, "ram_gb", lambda: 64.0), mock.patch.object(S, "page_file_gb", lambda: 10.0):
+            hw = s._hardware()
+            by = {g["name"]: g for g in hw["gpus"]}
+            self.assertTrue(by["AMD Radeon RX 9070 XT"]["usable"])
+            self.assertFalse(by["AMD Radeon(TM) Graphics"]["usable"])
+            rec = s.recommend({**hw, "ram_gb": 64.0})
+            self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("hip", "AMD Radeon RX 9070 XT"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RemoveMissingFilesTest(unittest.TestCase):
+    """Deleting a model whose plan lists files that are already gone (or inside a folder removed earlier) is a success, not 'Some files could not be removed'."""
+
+    def test_missing_paths_are_already_removed(self):
+        import importlib.util, tempfile, threading
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location("strata_mcp_rm", Path(__file__).with_name("strata_mcp.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            folder = root / "Gyro-M"
+            folder.mkdir()
+            (folder / "a.gguf").write_bytes(b"x")
+            (folder / "b.gguf").write_bytes(b"y")
+            gone = root / "already-gone.gguf"
+            cfg = root / "model.json"
+            cfg.write_text("{}")
+            plan = {"model": "gyro-m", "gb": 0.1, "remove": [
+                {"path": str(folder)}, {"path": str(folder / "a.gguf")}, {"path": str(gone)}, {"path": str(cfg)}]}
+
+            class S:
+                lock = threading.RLock()
+                def find_config(self, model): return cfg
+                def removal_plan(self, config): return plan
+                def install_job(self): return None
+                def tracked_server(self): return None
+                def model_paths(self, c): return ([], [])
+                def read_config(self, c): return {}
+
+            result = mod.Tools(S()).strata_remove(model="gyro-m", confirm=True)
+            self.assertEqual(result["failed"], [], result)
+            self.assertFalse(folder.exists()); self.assertFalse(cfg.exists())
+            again = mod.Tools(S()).strata_remove(model="gyro-m", confirm=True)
+            self.assertEqual(again["failed"], [], "a second delete of the same model finds nothing left and still succeeds")
+
+
+class DiskUsageTest(unittest.TestCase):
+    """QA 2026-10-18 (F02): Storage showed IQ3_S as 0.0 GB while it uses 84 GB, and Gyro-S as 119 GB while it is 59 GB.  The sizes come from the real
+    files: every part of a model in parts, the picture reader, the packs; a file one config names through several flags counts once; a
+    file two models share counts once in the total; a model's own figure leaves out another model's files."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = Path(self.tmp.name)
+        self.root, self.data, self.own = d / "install", d / "data", d / "owner-folder"
+        for p in (self.root, self.data / "models" / "gyro-Gyro-S", self.data / "packs" / "swift-iq2_xs", self.data / "mtp" / "rt", self.own):
+            p.mkdir(parents=True)
+        (d / "settings.json").write_text(json.dumps({"data_dir": str(self.data)}), encoding="utf-8")
+        env = mock.patch.dict(os.environ, {"STRATA_SETTINGS_FILE": str(d / "settings.json")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def blob(self, path: Path, size: int) -> str:
+        path.write_bytes(b"x" * size)
+        return str(path)
+
+    def write_config(self, name: str, args: list, vision=None):
+        cfg = {"exe": sys.executable, "args": args, "port": 8080}
+        if vision:
+            cfg["vision"] = {"mmproj": vision}
+        (self.root / f"strata-{name}.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    def test_sizes_come_from_the_files_not_from_what_may_be_deleted(self):
+        gyro = self.blob(self.data / "models" / "gyro-Gyro-S" / "Gyro-S.gguf", 59_000)
+        reader = self.blob(self.data / "models" / "mmproj.gguf", 900)
+        part1 = self.blob(self.own / "Model-IQ3_S-00001-of-00002.gguf", 30_000)
+        self.blob(self.own / "Model-IQ3_S-00002-of-00002.gguf", 54_000)
+        # Gyro: the one file is --native, --ple-gguf, --embd-gguf and --native-dense-gguf at once
+        self.write_config("gyro-gyro-s", ["--native", gyro, "--ple-gguf", gyro, "--embd-gguf", gyro, "--native-dense-gguf", gyro], reader)
+        # IQ3_S: adopted from the person's own folder, the config names the first part only
+        self.write_config("iq3_s", ["--native", part1], reader)
+        s = M.Strata(self.root)
+        use = s.disk_usage()
+        self.assertEqual(use["models"]["gyro-gyro-s"]["bytes"], 59_000, "the Gyro file is counted once, not four times")
+        self.assertEqual(use["models"]["iq3_s"]["bytes"], 84_000, "both parts of IQ3_S, although the config names the first")
+        self.assertEqual(use["shared_bytes"], 900, "the picture reader both use is one file")
+        self.assertEqual(use["total_bytes"], 59_000 + 84_000 + 900, "rows plus the shared files add up to the total")
+        self.assertEqual(use["models"]["iq3_s"]["shared_bytes"], 900)
+        # deleting IQ3_S would remove nothing: its files are the person's own
+        by = {d["model"]: d for d in (s.describe_config(c, use) for c in s.configs())}
+        self.assertEqual(by["iq3_s"]["disk_bytes"], 84_000)
+        self.assertEqual(by["iq3_s"]["removable_gb"], 0.0)
+        self.assertEqual(by["gyro-gyro-s"]["disk_bytes"], 59_000)
+
+    def test_a_pack_folder_and_the_shared_draft_layer_count_once(self):
+        gguf = self.blob(self.data / "models" / "gyro-Gyro-S" / "m.gguf", 10_000)
+        pack = self.data / "packs" / "swift-iq2_xs"
+        self.blob(pack / "experts.bin", 40_000)
+        self.blob(pack / "index.txt", 100)
+        mtp = self.data / "mtp" / "rt"
+        self.blob(mtp / "experts.bin", 5_000)
+        self.write_config("swift-iq2_xs", ["--native", gguf, "--pack", str(pack), "--mtp", str(mtp)])
+        link_target = self.data / "models" / "gyro-Gyro-S" / "m2.gguf"
+        try:
+            os.link(gguf, link_target)                      # a hard link: the same bytes under another name
+        except OSError:
+            self.skipTest("no hard links here")
+        self.write_config("other", ["--native", str(link_target), "--mtp", str(mtp)])
+        use = M.Strata(self.root).disk_usage()
+        self.assertEqual(use["models"]["swift-iq2_xs"]["bytes"], 40_100)
+        self.assertEqual(use["models"]["other"]["bytes"], 0)
+        self.assertEqual(use["shared_bytes"], 10_000 + 5_000, "the hard-linked GGUF and the draft layer are shared")
+        self.assertEqual(use["total_bytes"], 55_100)
+
+    def test_a_model_with_a_part_missing_is_not_ready(self):
+        part1 = self.blob(self.own / "Model-00001-of-00003.gguf", 10)
+        self.blob(self.own / "Model-00002-of-00003.gguf", 10)
+        self.write_config("three-parts", ["--native", part1])
+        s = M.Strata(self.root)
+        desc = s.describe_config(s.configs()[0])
+        self.assertFalse(desc["ready"], "one part of three is on disk: not downloaded")
+        self.assertTrue(any(m.endswith("Model-00003-of-00003.gguf") for m in desc["missing_files"]), desc["missing_files"])
+        self.blob(self.own / "Model-00003-of-00003.gguf", 10)
+        desc = s.describe_config(s.configs()[0])
+        self.assertEqual([m for m in desc["missing_files"] if m.endswith(".gguf")], [])
+
+
+class DraftLayerAndCancel(unittest.TestCase):
+    """#3257: the draft layer's download shows real progress, and a cancel ends the whole tree."""
+
+    def test_step_6_shows_the_draft_layer_download_added_to_the_finished_model_files(self):
+        lines = ["=== Step 6: preparing the model for Strata ===", "  > python mtp_fetch.py fetch",
+                 "  MTP draft layer:   2.00 / 5.00 GB (40%)"]
+        with tempfile.TemporaryDirectory() as d:
+            shard = Path(d) / "m-00001-of-00001.gguf"
+            shard.write_bytes(b"x" * 20_000_000)
+            job = {"files": [{"path": str(shard), "bytes": None, "role": "model"}], "total_gb": 60}
+            prog = M.combined_progress(M.install_progress(lines), job)
+        self.assertEqual(prog["download"]["file"], "Draft layer")
+        self.assertEqual([p["kind"] for p in prog["parts"]], ["model", "draft"])
+        self.assertEqual(prog["parts"][0]["state"], "done")
+        self.assertAlmostEqual(prog["parts"][1]["done_gb"], 2.0)
+        self.assertAlmostEqual(prog["parts"][1]["total_gb"], 5.0)
+        self.assertGreater(prog["download"]["total_gb"], 5.0)
+        self.assertEqual(prog["download"]["percent"], min(99, int(100 * prog["download"]["done_gb"] / prog["download"]["total_gb"])))
+
+    def test_without_a_file_list_the_draft_layer_alone_is_shown(self):
+        prog = M.combined_progress(M.install_progress(["=== Step 6: x ===", "  MTP draft layer:   5.00 / 5.00 GB (100%)"]), {})
+        self.assertEqual([(p["kind"], p["state"]) for p in prog["parts"]], [("draft", "done")])
+
+    def test_other_step_6_output_still_shows_no_download(self):
+        prog = M.combined_progress(M.install_progress(["=== Step 6: x ===", "  IQ2_XS:   0.00 / 0.00 GB (0%)"]), {})
+        self.assertNotIn("download", prog)
+
+    @unittest.skipUnless(M.WIN, "Windows process trees")
+    def test_cancel_ends_a_grandchild_even_when_taskkill_does_not_reach_it(self):
+        """setup.py -> tools/*.py: taskkill /T walks parent ids; a snapshot taken first still finds the grandchild."""
+        code = ("import subprocess,sys,time; c=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)']);"
+                "print(c.pid, flush=True); time.sleep(120)")
+        top = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        grand = int(top.stdout.readline())
+        try:
+            ident, gident = M.proc_identity(top.pid), M.proc_identity(grand)
+            self.assertTrue(ident and gident)
+            self.assertIn((grand, gident), M.proc_tree_snapshot(top.pid))
+            real_run = subprocess.run
+
+            def no_taskkill(cmd, *a, **kw):                  # the case of #3257: taskkill ends the parent only
+                if cmd and cmd[0] == "taskkill":
+                    return real_run(["taskkill", "/PID", str(top.pid), "/F"], capture_output=True)
+                return real_run(cmd, *a, **kw)
+            with mock.patch.object(M.subprocess, "run", no_taskkill):
+                M.proc_kill_tree(top.pid, ident)
+            M.wait_gone(grand, gident, 10)
+            self.assertFalse(M.proc_alive(grand, gident), "the grandchild kept running")
+            self.assertFalse(M.proc_alive(top.pid, ident))
+        finally:
+            for pid in (grand, top.pid):
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+            top.wait(10)

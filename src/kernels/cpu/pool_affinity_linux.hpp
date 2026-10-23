@@ -66,4 +66,22 @@ inline int pin_thread_to_cpu(int core) {
 }
 
 }  // namespace strata::kernels::cpu::detail
+#elif defined(__APPLE__)
+#include <thread>
+#include <vector>
+
+// macOS has no thread-to-core pinning (the scheduler places threads; affinity tags are hints at most): every CPU is
+// allowed and a pin is a no-op, so the pool keeps its threads where the OS puts them.
+namespace strata::kernels::cpu::detail {
+inline int get_thread_affinity(std::vector<unsigned long>& mask, std::vector<int>* cpus = nullptr) {
+    mask.assign(1, ~0ul);
+    if (cpus) {
+        cpus->clear();
+        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) cpus->push_back((int) i);
+    }
+    return 0;
+}
+inline int set_thread_affinity(const std::vector<unsigned long>&) { return 0; }
+inline int pin_thread_to_cpu(int) { return 0; }   // nothing to do: the OS places the thread
+}  // namespace strata::kernels::cpu::detail
 #endif

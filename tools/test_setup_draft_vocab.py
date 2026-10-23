@@ -80,6 +80,50 @@ class Refresh(unittest.TestCase):
         self.assertEqual(fr[len(en):], sorted(fr[len(en):]))
 
 
+class SharedFolder(unittest.TestCase):
+    """setup.py --update refreshes the draft subset of every installed config, most recently used first.  Two configs
+    that name one MTP folder: the folder keeps the subset of the one used last, not of the one used longest ago."""
+
+    def setUp(self):
+        self.data = ROOT / "data"
+        if not all((self.data / setup.DRAFT_VOCABS[c]).exists() for c in ("cjk", "cyrillic", "en")):
+            self.skipTest("the shipped draft subsets are not in this checkout")
+        self.sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()   # noqa: E731
+
+    def run_update(self, rt, cfgs):
+        done: set = set()
+        for cfg in cfgs:                                                    # update_install's loop, newest first
+            setup.refresh_shared_draft_vocab(cfg, done)
+        return self.sha(rt / "draft_vocab.bin")
+
+    def test_the_most_recently_used_config_decides(self):
+        with tempfile.TemporaryDirectory() as d:
+            rt = Path(d)
+            (rt / "draft_vocab.bin").write_bytes((self.data / setup.DRAFT_VOCABS["cyrillic"]).read_bytes())
+            in_use = {"args": ["--mtp", str(rt), "--spec", "4"], "draft_vocab": "cyrillic"}
+            older = {"args": ["--mtp", str(rt), "--spec", "4"]}             # no key: the default subset (cjk)
+            self.assertEqual(self.run_update(rt, [in_use, older]), self.sha(self.data / setup.DRAFT_VOCABS["cyrillic"]))
+            self.assertEqual(self.run_update(rt, [older, in_use]), self.sha(self.data / setup.DRAFT_VOCABS["cjk"]))
+
+    def test_separate_folders_each_keep_their_own(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d) / "a", Path(d) / "b"
+            for rt in (a, b):
+                rt.mkdir()
+                (rt / "draft_vocab.bin").write_bytes((self.data / setup.DRAFT_VOCABS["cjk"]).read_bytes())
+            done: set = set()
+            setup.refresh_shared_draft_vocab({"args": ["--mtp", str(a), "--spec", "4"], "draft_vocab": "cyrillic"}, done)
+            setup.refresh_shared_draft_vocab({"args": ["--mtp", str(b), "--spec", "4"], "draft_vocab": "en"}, done)
+            self.assertEqual(self.sha(a / "draft_vocab.bin"), self.sha(self.data / setup.DRAFT_VOCABS["cyrillic"]))
+            self.assertEqual(self.sha(b / "draft_vocab.bin"), self.sha(self.data / setup.DRAFT_VOCABS["en"]))
+
+    def test_a_config_without_a_draft_layer_is_skipped(self):
+        done: set = set()
+        setup.refresh_shared_draft_vocab({"args": ["--spec", "0"]}, done)
+        setup.refresh_shared_draft_vocab({}, done)
+        self.assertEqual(done, set())
+
+
 class SmallCardNote(unittest.TestCase):
     """#474: a card under 14 GB is told about a smaller draft subset - a note only, and not when one was chosen."""
 

@@ -3,6 +3,7 @@
 #include "strata/core/remote_experts.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
@@ -162,6 +163,10 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const ExpertCache &primary, ExpertSource &source,
                          std::vector<uint8_t> &claimed, std::string &err, bool /*auto_size*/) try {
     close();
+    if (strata::kernels::cpu::hadamard_spec().any()) {   // APR: this helper does not rotate the expert input yet (SYCL)
+        err = "second-GPU experts: Hadamard-folded (Gyro) experts are not supported on a second Intel GPU yet";
+        return false;
+    }
     int count = 0;
     if (!check(DPCT_CHECK_ERROR(count = dpct::device_count()),
                "cudaGetDeviceCount", err, device)) return false;

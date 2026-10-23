@@ -308,4 +308,13 @@ void iota(int32_t* dst, int64_t n, void* stream) {
     ck(0, "iota");
 }
 
+// STRATA_MMQ_DIRECT (include/strata/prefill/moe_mmq.hpp): the pointer-table MMQ is CUDA only, so SYCL keeps the
+// gather - these say so, for a prefill.cpp migrated from a tree that calls them
+bool tab_built() { return false; }
+bool tab_fits(int, int64_t) { return false; }
+size_t overread_bytes(int, int64_t) { return 0; }
+int direct_mode() { return 0; }
+size_t direct_slot_guard() { return 0; }
+void prep_group(const GuardTab&, size_t, void*, void*, size_t, void*) {}
+
 }  // namespace strata::prefill::mmq

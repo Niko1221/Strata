@@ -563,9 +563,7 @@ bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
 // ================================ the QSA mixer ================================
 namespace {using strata::kernels::QsaIndexerBuffers;using strata::kernels::QsaShapes;
-/// The geometry the QSA kernels want, from the one place that defines it.  `ModelGeometry` carries the widths
-/// the LAYOUT needs; `QsaShapes` adds `n_rot`, `idx_block` and `idx_top_k`, which are kernel contracts.
-QsaShapes qsa_shapes(const ModelGeometry& g) {    QsaShapes s = strata::kernels::qsa_real_shapes();    s.n_head = g.n_head;    s.n_head_kv = g.n_head_kv;    s.head_dim = g.head_dim;    s.idx_n_head = g.idx_q_heads;    s.idx_dim = g.idx_key_dim;    return s;}
+// `qsa_shapes(g)` (layout.hpp): the geometry the QSA kernels want, every field from the model's geometry
 uint64_t align_up16(uint64_t n) { return (n + 15) & ~15ull; }
 /// One cursor over an arena, so every region is 16-byte aligned without a list of hand-added offsets.
 struct Cursor {    uint8_t* p;    uint64_t used = 0;    template <typename T>    T* take(uint64_t count) {        T* r = (T*) (p + used);        used = align_up16(used + count * sizeof(T));        return r;    }    uint8_t* take_bytes(uint64_t n) {        uint8_t* r = p + used;        used = align_up16(used + n);        return r;    }};

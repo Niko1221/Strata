@@ -20,6 +20,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -35,6 +36,7 @@
 namespace strata::kernels {
 namespace {
 constexpr int N = 2560, H = 4, D = N * H, HISTORY = 9;
+static_assert(N == strata::core::kCompiledGeometry.n_embd && H == strata::core::kCompiledGeometry.hc, "native_ple_postops is compiled for core/geometry.hpp");
 inline float warp_sum(float x) {
     /*
 DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature masked

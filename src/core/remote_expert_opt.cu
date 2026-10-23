@@ -98,8 +98,12 @@ void RemoteExpertOpt::prepare(const RemoteExperts& remote, void* metadata) const
 
 bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::string& err) {
     const auto& p = *std::find_if(peers_.begin(), peers_.end(), [&](const Peer& p) { return p.remote == &remote; });
+    // finish() synchronizes this stream before the host reads h_out_. When mapped output is available,
+    // write the reduced rows there directly, avoiding a separate device-to-host copy for every layer.
+    float* sum = remote.zero_copy_ ? remote.z_out_ : p.sum;
     reduce_experts<<<dim3((H + 255) / 256, tokens_), 256, 0, remote.stream_>>>(
-        remote.d_out_, (const ReduceMeta*) metadata, p.sum);
+        remote.d_out_, (const ReduceMeta*) metadata, sum);
+    if (remote.zero_copy_) return check(cudaGetLastError(), err);
     return check(cudaMemcpyAsync(remote.h_out_, p.sum, tokens_ * H * sizeof(float),
                                   cudaMemcpyDeviceToHost, remote.stream_), err);
 }

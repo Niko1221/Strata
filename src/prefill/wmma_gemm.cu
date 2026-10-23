@@ -39,7 +39,7 @@
 using v8fp32 = float __attribute__((ext_vector_type(8)));
 
 // Does the CURRENT device run the gfx11 WMMA kernels of this file?  Exactly the targets whose intrinsics are selected
-// below (gfx1100 / 1101 / 1102 / 1150 / 1151): a gfx11 part outside the list (gfx1103, gfx1152) has no device code
+// below (gfx1100 / 1101 / 1102 / 1103 / 1150 / 1151): a gfx11 part outside the list (gfx1152) has no device code
 // here, so it takes the hipBLASLt / hipBLAS paths instead of running a kernel that is not there.  Cached per device
 // (hipGetDeviceProperties is not cheap, and a mixed-GPU box has more than one answer).
 static bool strata_wmma_gfx11_device() {
@@ -56,6 +56,9 @@ static bool strata_wmma_gfx11_device() {
     return c == 1;
 }
 
+// The same answer for host code that decides whether to pad an activation's row stride (prefill.cpp, STRATA_PF_PAD).
+bool strata_pf_padded_gemm_available() { return strata_wmma_gfx11_device(); }
+
 template <typename ElemT>
 struct WmmaTraits;
 
@@ -63,7 +66,7 @@ template <>
 struct WmmaTraits<_Float16> {
     using vec_t = _Float16 __attribute__((ext_vector_type(16)));
     __device__ static inline v8fp32 mma(vec_t a, vec_t b, v8fp32 c) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
         return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(a, b, c);
 #else
         (void) a; (void) b; (void) c;
@@ -76,7 +79,7 @@ template <>
 struct WmmaTraits<__bf16> {
     using vec_t = __bf16 __attribute__((ext_vector_type(16)));
     __device__ static inline v8fp32 mma(vec_t a, vec_t b, v8fp32 c) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
         return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, c);
 #else
         (void) a; (void) b; (void) c;
@@ -321,7 +324,7 @@ template <int BN, int WN>
 __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, const _Float16* __restrict__ W,
                                               float* __restrict__ Y, int M, int N, int K, int ldy, int accumulate,
                                               int ldx, int ldw) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
     constexpr int TN = WN / 16, NB = BN / 64;
     __shared__ __align__(16) _Float16 sA[2][BM][LDK];
     __shared__ __align__(16) _Float16 sB[2][BN][LDK];
@@ -398,7 +401,7 @@ __global__ void __launch_bounds__(256) kernel(const _Float16* __restrict__ X, co
 __global__ void __launch_bounds__(256) kernel_bk64(const _Float16* __restrict__ X, const _Float16* __restrict__ W,
                                                    float* __restrict__ Y, int M, int N, int K, int ldy, int accumulate,
                                                    int ldx, int ldw) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
     constexpr int BN = 256, WN = 64, BK64 = 64, LDK64 = BK64 + 8;
     __shared__ __align__(16) _Float16 sA[BM][LDK64];
     __shared__ __align__(16) _Float16 sB[BN][LDK64];
@@ -493,7 +496,7 @@ __global__ void __launch_bounds__(256) kernel_hcdown(const uint16_t* __restrict_
                                                      const uint16_t* __restrict__ Wd, const uint16_t* __restrict__ Wi,
                                                      int nd, int ni, float* __restrict__ lo, float* __restrict__ inj,
                                                      int M, int K) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
     constexpr int BN = 128, WN = 32, TN = 2, BK64 = 64, LDK64 = BK64 + 8;
     __shared__ __align__(16) uint16_t sA[BM][LDK64];
     __shared__ __align__(16) uint16_t sB[BN][LDK64];
@@ -586,7 +589,7 @@ __device__ __forceinline__ hb16 hx_frag(const uint16_t* p) {
 }
 __global__ void __launch_bounds__(HX_NT) kernel_hcd_exact(const uint16_t* __restrict__ X, int ldx,
                                                           const uint16_t* __restrict__ W, float* __restrict__ Y, int M) {
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
     constexpr int K = HX_K, BN = HX_BN, BMT = HX_BM, BK = HX_BK, NT = HX_NT;
     __shared__ __align__(16) uint16_t sA[BMT][HX_LDK];
     __shared__ __align__(16) uint16_t sB[BN][HX_LDK];
@@ -716,6 +719,8 @@ bool strata_pf_gemm_f16_ld(const uint16_t*, int64_t, const uint16_t*, int64_t, f
                            int64_t, float, void*) {
     return false;
 }
+// No padded product in this build (no gfx11 target): prefill.cpp does not pad an activation's row stride.
+bool strata_pf_padded_gemm_available() { return false; }
 bool strata_pf_hcdown_bf16(const uint16_t*, int64_t, const uint16_t*, const uint16_t*, int64_t, int64_t, float*, float*,
                            int64_t, int64_t, void*) {
     return false;

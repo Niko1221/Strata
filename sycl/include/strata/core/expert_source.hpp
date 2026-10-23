@@ -570,6 +570,11 @@ public:
     bool pcie_layer(int64_t layer) const override;
     bool transient(int64_t layer, int64_t expert) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    /// The blob read from the model file(s) only, never from the RAM copy or an exchange buffer (STRATA_CHECK_SWAPS).
+    bool copy_blob_from_file(int64_t layer, int64_t expert, uint8_t* dst) const {
+        return base_ != nullptr && dst != nullptr && layer >= 0 && expert >= 0 && layer < n_layers_ && expert < n_expert_ &&
+               copy_from_files(layer, expert, dst);
+    }
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     /// CS-T: the GGUF in place assembles the missed experts on `fetch_threads_` threads.

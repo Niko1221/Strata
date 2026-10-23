@@ -12,6 +12,12 @@ import sys
 import time
 
 
+# the cards sycl/setup_intel.py names by PCI id (INTEL_ARC)
+ARC_NAMES = {"e223": "Arc Pro B70", "e221": "Arc Pro B60", "e211": "Arc Pro B60", "e20b": "Arc B580", "e20c": "Arc B570",
+             "e212": "Arc B50", "56a0": "Arc A770", "56a1": "Arc A750", "56a2": "Arc A580", "56a5": "Arc A380",
+             "56a6": "Arc A310", "5690": "Arc A770M"}
+
+
 class _XeGpu:
     """The Intel Arc readings in NVML's shape. Load and VRAM come from /run/gpustat.json (a root sampler: the only
     VRAM accounting xe exposes is per-client fdinfo, readable by root only); temperature, power and the PCIe link are
@@ -21,13 +27,15 @@ class _XeGpu:
     def __init__(self, index=0):
         import glob
         self.dev = None
+        cards = []                              # #2001: the Intel cards in sysfs order, as setup numbers them
         for d in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
             try:
                 if open(f"{d}/vendor").read().strip() == "0x8086" and os.path.isdir(f"{d}/tile0"):
-                    self.dev = os.path.realpath(d)
-                    break
+                    cards.append(os.path.realpath(d))
             except OSError:
                 continue
+        if 0 <= index < len(cards):
+            self.dev = cards[index]
         self.hwmon = None
         for n in glob.glob(f"{self.dev}/hwmon/hwmon*/name") if self.dev else []:
             self.hwmon = os.path.dirname(n)
@@ -38,7 +46,13 @@ class _XeGpu:
 
     def name(self):
         st = self._stat()
-        return (st or {}).get("name") or "Intel Arc GPU"
+        if (st or {}).get("name"):
+            return st["name"]
+        try:                                    # the PCI id's name (setup_intel.INTEL_ARC), not a generic one
+            with open(f"{self.dev}/device") as f:
+                return "Intel " + ARC_NAMES.get(f.read().strip().lower().replace("0x", ""), "Arc GPU")
+        except (OSError, TypeError):
+            return "Intel Arc GPU"
 
     def _stat(self):
         try:

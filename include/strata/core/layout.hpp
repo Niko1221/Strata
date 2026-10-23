@@ -15,53 +15,28 @@
 // at LOAD time - not as a wrong number inside a GEMV at token 4000.
 #pragma once
 
+#include "strata/core/geometry.hpp"
 #include "strata/core/weights.hpp"
+#include "strata/kernels/qsa.hpp"
 
 #include <cstdint>
 #include <string>
 
 namespace strata::core {
 
-/// The model's geometry, taken from `docs/semantics.md` and the artifact's own metadata.  Every field here
-/// is a number a kernel depends on, so a change is a change to a kernel contract and not a tuning knob.
-struct ModelGeometry {
-    int64_t n_embd = 2560;
-    int64_t n_layers = 48;
-    int64_t qsa_interval = 4;      ///< every 4th layer is full attention: layers 3, 7, ... 47
-
-    // GDN (36 layers)
-    int64_t ssm_state_size = 128;
-    int64_t ssm_k_heads = 16;
-    int64_t ssm_v_heads = 48;
-    int64_t ssm_d_conv = 4;
-    int64_t ssm_conv_channels = 10240;   ///< 2*128*16 + 128*48
-    int64_t ssm_value_dim = 6144;        ///< 128 * 48
-
-    // QSA (12 layers)
-    int64_t n_head = 24;
-    int64_t n_head_kv = 2;
-    int64_t head_dim = 256;
-    int64_t idx_q_heads = 4;
-    int64_t idx_key_dim = 128;
-
-    // gated residual, on every layer
-    int64_t hc = 4;
-    int64_t hc_lr = 320;
-
-    // MoE, on every layer
-    int64_t n_expert = 512;
-    int64_t n_ff = 640;
-
-    int64_t hc_dim() const { return hc * n_embd; }
-    /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
-    int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
-    int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
-};
-
-/// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval
-/// = 4` and an explicit `attention.compress_ratios` array - and this is the first of the two.
-inline bool is_qsa_layer(const ModelGeometry& g, int64_t layer) {
-    return layer % g.qsa_interval == g.qsa_interval - 1;
+/// The shapes the QSA kernels want, every one from the model's geometry; only the KV page size is the
+/// kernels' own choice (`qsa_real_shapes`).
+inline strata::kernels::QsaShapes qsa_shapes(const ModelGeometry& g) {
+    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
+    s.n_head = g.n_head;
+    s.n_head_kv = g.n_head_kv;
+    s.head_dim = g.head_dim;
+    s.n_rot = g.n_rot;
+    s.idx_n_head = g.idx_q_heads;
+    s.idx_dim = g.idx_key_dim;
+    s.idx_block = g.idx_block;
+    s.idx_top_k = g.idx_top_k;
+    return s;
 }
 
 /// One layer's tensors, resolved by NAME.  `get("attn_qkv.weight")` looks up `blk.<layer>.attn_qkv.weight`

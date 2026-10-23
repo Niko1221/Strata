@@ -45,6 +45,7 @@ if os.name == "nt":
     _k32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
     _k32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
     _k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _k32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
 
     def _make_job():
         job = _k32.CreateJobObjectW(None, None)     # no security attributes: the handle is not inherited
@@ -78,6 +79,14 @@ if os.name == "nt":
 else:
     def no_throttle(handle) -> bool:
         return False
+
+
+def terminate() -> bool:
+    """End every process in the job now (the deadline kill of an owner that must not leave a tree behind). False when
+    there is no job (nothing was contained, or not Windows)."""
+    if os.name != "nt" or not _job:
+        return False
+    return bool(_k32.TerminateJobObject(_job, 1))
 
 
 def contain(proc) -> bool:

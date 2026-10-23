@@ -74,7 +74,7 @@ class Lifecycle(unittest.TestCase):
                 self.assertEqual(engine.last, {})
                 if running:
                     proc.terminate.assert_called_once()
-                    proc.wait.assert_called_once_with(timeout=20)
+                    proc.wait.assert_called_once_with(timeout=5)
                 else:
                     proc.terminate.assert_not_called()
                     proc.wait.assert_not_called()

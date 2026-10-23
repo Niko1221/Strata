@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,8 +23,9 @@ import calibrate as CAL  # noqa: E402
 class FakeEngine:
     """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`."""
 
-    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None):
+    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None, read=None, reads=None):
         self.args = list(args)
+        self.read, self.reads = read, reads      # prompt read speed = read(prefill_pipe); the values it read with
         self.adapt_bonus = (adapt or {}).get(CAL.arg_value(args, "--adapt-swaps"), 1.0)
         w = CAL.arg_value(args, "--pool-workers")
         self.workers = int(w) if w else info_workers
@@ -41,21 +43,134 @@ class FakeEngine:
         for _ in range(max_new):
             yield 1
         self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000.0}
+        if "prefill_pipe" in tune and self.read is not None:
+            n = len(ids)
+            self.last.update(prompt_tokens=n, prompt_read=n, prompt_ms=n / self.read(tune["prefill_pipe"]) * 1000.0)
+            if self.reads is not None:
+                self.reads.append(tune["prefill_pipe"])
 
 
 BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8192"]
 
 
 class Calibrate(unittest.TestCase):
-    def run_with(self, speed, workers=6, base=BASE, adapt=None):
+    def run_with(self, speed, workers=6, base=BASE, adapt=None, read=None, reads=None):
         starts = []
-        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt),
-                          say=lambda *_: None)
+        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt, read, reads),
+                          say=lambda *_: None, long_prompt=lambda i, n: [1] * n)
         return res, starts
+
+    def test_prefill_pipe_on_a_layer_split(self):
+        # two stages that read fastest with b/a 1536: kept, and only one engine start measures it
+        split = BASE + ["--layer-split", "auto"]
+        reads = []
+        res, _ = self.run_with(lambda f, p, w: 50.0, base=split, reads=reads,
+                               read=lambda v: {1536: 600.0, 768: 560.0, 1: 520.0}.get(v, 500.0))
+        self.assertEqual(res["settings"].get("--prefill-pipe"), "1536")
+        self.assertEqual(sorted(set(reads)), sorted(set(CAL.PIPE_VALUES)))
+        self.assertIn("pipe_sweep", res["report"])
+        self.assertEqual(CAL.arg_value(CAL.apply(split, res["settings"]), "--prefill-pipe"), "1536")
+
+    def test_prefill_pipe_noise_stays_off(self):
+        # 2% faster evened out: below MIN_GAIN, so the engine default (off) stays
+        res, _ = self.run_with(lambda f, p, w: 50.0, base=BASE + ["--layer-split", "auto"],
+                               read=lambda v: 510.0 if v == 1 else 500.0)
+        self.assertNotIn("--prefill-pipe", res["settings"])
+
+    def test_prefill_pipe_must_win_every_round(self):
+        # 1536 looks 12% faster in the sweep and the median, but one paired round reads slower: noise, it stays off
+        calls = {}
+
+        def read(v):
+            calls[v] = calls.get(v, 0) + 1
+            if v != 1536:
+                return 500.0
+            return [560.0, 560.0, 560.0, 480.0, 560.0, 560.0][min(calls[v], 6) - 1]
+        res, _ = self.run_with(lambda f, p, w: 50.0, base=BASE + ["--layer-split", "auto"], read=read)
+        self.assertNotIn("--prefill-pipe", res["settings"])
+        self.assertEqual(len(res["report"]["pipe_confirm"]["1536"]), 3)
+
+    def test_prefill_pipe_reads_the_same_text(self):
+        # every read: the same stretch of text after a header of its own (only the chunks differ between values)
+        tok = type("T", (), {"encode": lambda s, t, **k: [ord(c) for c in t]})()
+        make = CAL.doc_prompt(tok)
+        a, b = make(1, 300), make(2, 300)
+        self.assertNotEqual(a[:40], b[:40])
+        self.assertEqual(a[-320:], b[-320:])
+
+    def test_prefill_pipe_only_on_a_layer_split(self):
+        reads = []
+        res, _ = self.run_with(lambda f, p, w: 50.0, read=lambda v: 600.0 if v == 1536 else 500.0, reads=reads)
+        self.assertEqual(reads, [])
+        self.assertNotIn("--prefill-pipe", res["settings"])
+        # an old calibration's value goes when a new one does not keep it
+        self.assertIsNone(CAL.arg_value(CAL.apply(BASE + ["--prefill-pipe", "800"], {}), "--prefill-pipe"))
+
+    def test_prefill_pipe_follows_the_engines_stage_count(self):
+        # --layer-split that left one prompt stage (the engine says prefill_stages=1): nothing to measure
+        reads = []
+
+        class OneStage(FakeEngine):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.info["prefill_stages"] = 1
+        res = CAL.measure(BASE + ["--layer-split", "auto"], [[1, 2, 3]] * 3,
+                          lambda a: OneStage(a, lambda f, p, w: 50.0, 6, None, None,
+                                             lambda v: 600.0 if v == 1536 else 500.0, reads),
+                          say=lambda *_: None, long_prompt=lambda i, n: [1] * n)
+        self.assertEqual(reads, [])
+        self.assertNotIn("--prefill-pipe", res["settings"])
 
     def test_defaults_kept_when_flat(self):
         res, _ = self.run_with(lambda f, p, w: 50.0)
         self.assertEqual(res["settings"], {})
+
+    def test_measure_reports_bounded_stages_and_stops_between_samples(self):
+        events = []
+        stopped = threading.Event()
+
+        def progress(stage, completed, total):
+            events.append((stage, completed, total))
+            if stage == "pcie_share" and completed == 1:
+                stopped.set()
+
+        with self.assertRaises(CAL.CalibrationCancelled):
+            CAL.measure(BASE, [[1, 2, 3]] * 3,
+                        lambda args: FakeEngine(args, lambda *_: 50.0),
+                        say=lambda *_: None, progress=progress, cancel_event=stopped)
+        self.assertIn(("loading", 1, 1), events)
+        self.assertIn(("pcie_share", 1, len(CAL.PCIE_FRACS) * CAL.SWEEP_ROUNDS), events)
+        self.assertNotIn("draft_floor", [stage for stage, _, _ in events])
+
+    def test_active_generation_receives_shared_cancel_event(self):
+        stopped = threading.Event()
+        seen = []
+
+        class Engine:
+            def generate(self, ids, max_new, sampling, cancel):
+                seen.append(cancel)
+                cancel.set()
+                yield None
+
+        session = CAL.Session(Engine(), [[1, 2, 3]], stopped)
+        with self.assertRaises(CAL.CalibrationCancelled):
+            session.rate()
+        self.assertEqual(seen, [stopped])
+
+    def test_successful_sweep_covers_every_progress_stage(self):
+        events = []
+        CAL.measure(BASE, [[1, 2, 3]] * 3,
+                    lambda args: FakeEngine(args, lambda *_: 50.0),
+                    say=lambda *_: None, progress=lambda *item: events.append(item))
+        stages = list(dict.fromkeys(stage for stage, _, _ in events))
+        self.assertEqual(stages, ["loading", "pcie_share", "draft_floor", "confirmation",
+                                  "cpu_workers", "expert_tier"])
+        for stage in stages:
+            readings = [(done, total) for current, done, total in events if current == stage]
+            self.assertEqual(readings[0][0], 0)
+            self.assertEqual(readings[-1][0], readings[-1][1])
+            self.assertTrue(all(before[0] <= after[0] and before[1] == after[1]
+                                for before, after in zip(readings, readings[1:])))
 
     def test_small_gain_is_noise(self):
         # 2% better at pcie 0.35: below MIN_GAIN, so the default stays
@@ -126,6 +241,48 @@ class Calibrate(unittest.TestCase):
         self.assertIsNone(CAL.arg_value(starts[0], "--pool-workers"))
         self.assertEqual(CAL.arg_value(starts[0], "--spec-min-p"), "0.5")
 
+    def test_sh_stream_is_measured_on_hip_only(self):
+        # #1272 / #816: the shared-expert fork is measured off (the HIP default) against on, each with a restart and
+        # the engine variable set explicitly; it is kept only when it wins by more than MIN_GAIN
+        def run(bonus, hip=True):
+            starts, envs = [], []
+
+            def start(args, env=None):
+                envs.append(dict(env or {}))
+                fork = (env or {}).get(CAL.SH_STREAM) == "1"
+                return FakeEngine(args, lambda f, p, w: 50.0 * (bonus if fork else 1.0), 6, starts)
+            res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None, hip=hip)
+            return res, starts, envs
+        res, starts, envs = run(1.08)
+        self.assertEqual(res["env"], {CAL.SH_STREAM: "1"})
+        self.assertEqual(envs[-2:], [{CAL.SH_STREAM: "0"}, {CAL.SH_STREAM: "1"}])
+        self.assertEqual(starts[-1], starts[-2])                      # the same args for both: only the variable differs
+        self.assertGreater(res["report"]["tok_s"], 52.0)              # the reported speed is the fork's
+        flat, _, _ = run(1.02)                                        # within noise: the default stays
+        self.assertEqual(flat["env"], {})
+        self.assertEqual(set(flat["report"]["sh_stream"]), {"0", "1"})
+        slower, _, _ = run(0.80)
+        self.assertEqual(slower["env"], {})
+        cuda, _, envs = run(1.50, hip=False)                          # not AMD: no step, no engine variable
+        self.assertEqual(cuda["env"], {})
+        self.assertNotIn("sh_stream", cuda["report"])
+        self.assertTrue(all(e == {} for e in envs))
+
+    def test_a_failed_fork_start_keeps_the_default(self):
+        def start(args, env=None):
+            if (env or {}).get(CAL.SH_STREAM) == "1":
+                raise RuntimeError("out of memory")
+            return FakeEngine(args, lambda f, p, w: 50.0, 6)
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None, hip=True)
+        self.assertEqual(res["env"], {})
+        self.assertIn(f"{CAL.SH_STREAM}=1", res["report"]["failed_starts"])
+
+    def test_apply_env(self):
+        old = {"STRATA_ROCBLAS_TUNING": "tools/hip", CAL.SH_STREAM: "1"}
+        self.assertEqual(CAL.apply_env(old, {}), {"STRATA_ROCBLAS_TUNING": "tools/hip"})   # an older choice goes
+        self.assertEqual(CAL.apply_env({"X": "1"}, {CAL.SH_STREAM: "1"}), {"X": "1", CAL.SH_STREAM: "1"})
+        self.assertEqual(CAL.apply_env(None, None), {})
+
     def test_apply(self):
         a = CAL.apply(BASE, {"--pcie-frac": "0.35", "--pool-workers": "4"})
         self.assertEqual(CAL.arg_value(a, "--pcie-frac"), "0.35")
@@ -157,14 +314,16 @@ class Calibrate(unittest.TestCase):
             (tok / "token_type.json").write_text(json.dumps([1, 1]))
             seen = []
             saved = CAL.measure
-            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(): seen.append(args) or {}
+            CAL.measure = lambda args, ids_list, start_engine, say=print, extra=(), long_prompt=None, hip=False: (
+                seen.append((args, hip)) or {})
             fake = type("ST", (), {"Tokenizer": lambda *a: type("T", (), {"encode": lambda s, t, **k: [0]})()})
             try:
                 with mock.patch.dict(sys.modules, {"strata_tokenizer": fake}):
                     CAL.run({"tokenizer": d, "args": list(BASE), "gpu": [0]}, start_engine=lambda a: None)
+                    CAL.run({"tokenizer": d, "args": list(BASE), "gpu": [0], "backend": "hip"}, start_engine=lambda a: None)
             finally:
                 CAL.measure = saved
-        self.assertEqual(seen, [BASE])
+        self.assertEqual(seen, [(BASE, False), (BASE, True)])         # the shared-expert step runs on AMD only
 
     def test_engine_error(self):
         with tempfile.TemporaryDirectory() as d:
@@ -236,6 +395,21 @@ class SetupIntegration(unittest.TestCase):
         other = dict(written, args=CAL.with_arg(written["args"], "--max-context", "131072"))
         self.assertIsNone(self.S.saved_calibration(other))
 
+    def test_calibrate_config_writes_the_env_choice(self):
+        # HIP: the measured engine variable goes into the config's "env" and the settings file; a re-run that finds it
+        # no longer faster removes it again, and leaves the config's other variables alone
+        cfg_path = Path(self.tmp.name) / "strata-iq3_s.json"
+        cfg = {"exe": "x", "args": list(BASE), "model_name": "m", "backend": "hip", "env": {"STRATA_ROCBLAS_TUNING": "t"}}
+        cfg_path.write_text(json.dumps(cfg))
+        CAL.run = lambda c, say=print, start_engine=None: {"settings": {}, "env": {CAL.SH_STREAM: "1"}, "report": {"tok_s": 70.1}}
+        self.assertTrue(self.S.calibrate_config(cfg_path))
+        written = json.loads(cfg_path.read_text())
+        self.assertEqual(written["env"], {"STRATA_ROCBLAS_TUNING": "t", CAL.SH_STREAM: "1"})
+        self.assertEqual(self.S.saved_calibration(written)["env"], {CAL.SH_STREAM: "1"})
+        CAL.run = lambda c, say=print, start_engine=None: {"settings": {}, "env": {}, "report": {"tok_s": 65.0}}
+        self.assertTrue(self.S.calibrate_config(cfg_path))
+        self.assertEqual(json.loads(cfg_path.read_text())["env"], {"STRATA_ROCBLAS_TUNING": "t"})
+
     def test_failed_calibration_keeps_defaults(self):
         cfg_path = Path(self.tmp.name) / "strata-q2_0.json"
         cfg_path.write_text(json.dumps({"exe": "x", "args": list(BASE), "model_name": "m"}))
@@ -268,7 +442,7 @@ class SetupIntegration(unittest.TestCase):
         self.assertNotIn("an earlier start", out.getvalue())
         out = io.StringIO()
         with mock.patch.object(self.S, "ROOT", Path(self.tmp.name)), \
-                mock.patch.object(self.S, "data_folder", lambda d: (Path(self.tmp.name) / "data", [])), \
+                mock.patch.object(self.S, "data_folder", lambda d, *a, **k: (Path(self.tmp.name) / "data", [])), \
                 mock.patch.object(self.S, "update_installed_engine", lambda *a: None), \
                 mock.patch.object(sys, "argv", ["setup.py", "--calibrate", "--no-start"]), \
                 contextlib.redirect_stdout(out):

@@ -15,7 +15,10 @@
 namespace {
 struct Ty { int id; const char* name; int bytes_per_256; };
 const Ty kTypes[] = {{16, "IQ2_XXS", 66}, {17, "IQ2_XS", 74}, {22, "IQ2_S", 82}, {18, "IQ3_XXS", 98},
-                     {21, "IQ3_S", 110}, {20, "IQ4_NL", 144}, {42, "Q2_0", 72}};
+                     {21, "IQ3_S", 110}, {20, "IQ4_NL", 144}, {42, "Q2_0", 72},
+                     // Unsloth's files (MODEL-UPDATE): gate/up Q4_K / Q5_K / Q6_K / Q8_0, down Q5_1 / Q8_0
+                     {12, "Q4_K", 144}, {13, "Q5_K", 176}, {14, "Q6_K", 210}, {7, "Q5_1", 192}, {8, "Q8_0", 272},
+                     {2, "Q4_0", 144}, {3, "Q4_1", 160}, {6, "Q5_0", 176}};
 uint64_t fnv(const uint16_t* p, size_t n) {
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }

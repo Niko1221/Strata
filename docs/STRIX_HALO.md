@@ -1,14 +1,14 @@
-# Strix Halo (Ryzen AI Max, gfx1151): build from source on Linux
+# Strix Halo (Ryzen AI Max, gfx1151)
 
 Strata runs on the Ryzen AI Max "Strix Halo" APUs (Radeon 8060S / 8050S, RDNA3.5, `gfx1151`, one pool of LPDDR5X shared by the
 CPU and the GPU) through the same HIP backend as the Radeon cards in [AMD_HIP.md](AMD_HIP.md). **Status: experimental.**
 Everything here was built and measured on one machine, the maintainers' Strix Halo box (Ryzen AI Max+ 395, 128 GB,
 Ubuntu 26.04, kernel 7.0, ROCm 7.14.1). Setup (`setup.sh`, `START-HERE.bat`) recognizes it from 0.1.40, by its PCI id (`1002:1586`, one id for the 8060S, 8050S and 8040S) and by
 `gfx1151` exactly: a Strix Point (890M / 880M, gfx1150), Krackan (860M / 840M, gfx1152) or Phoenix / Hawk Point (780M / 760M, gfx1103) Radeon is
-named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). On
-Windows the ready-made `strata-windows-x64-hip.zip` carries gfx1151 code from 0.1.40 (untested on a Windows Strix Halo so far); a zip
-without it is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
+named as what it is and not supported. On Linux setup compiles the engine for gfx1151 itself (the steps below are the same, by hand). The 0.2.0-beta release also has ready-made packages: `Strata-0.2.0-beta-linux-amd-strixhalo.AppImage` (engine `halo`, gfx1151, ROCm 7.14.1) and, on Windows, `Strata-0.2.0-beta-windows-hip-rdna3.exe` (engine `rdna3`: gfx1100, gfx1101, gfx1102 and gfx1151, ROCm 10.2.0a20260930); any app installer plus **Update engine** (or `strata update`) fetches the same package. What was run: both packages were built, linked and scanned, and the Linux package refuses to start on a card of another family (tried on an RX 9000 card); the maintainers have no Strix Halo and ran neither on one. The measurements on this page come from source builds on Linux (the maintainers' earlier box and community machines). Nobody has run a Strix Halo on Windows. The packaged engines do not carry the hipBLASLt table of section 3 yet (planned for 0.2.1), so their prompt reading is slower than the numbers below until then. A Windows zip of the 0.1.x START-HERE route without gfx1151 code is refused with a message, never used. Setup counts the GPU's memory as the BIOS carve-out plus the shared memory
 (the GTT pool; on Windows half the RAM) and recommends UD-IQ4_XS from about 80 GB of memory; it changes no BIOS or kernel setting.
+
+**Windows start-up (0.2.1.2).** On a Strix Halo under Windows the engine no longer registers the expert arena with the GPU driver: registering it took all free VRAM (91 GiB before, 0 after, on a 64 GB carve-out + 32 GB shared PC), the expert cache got no slots and the engine stopped with "the embedding buffer failed" (0.2.1 and earlier). The arena stays in RAM, held by the working-set lock, and the cache gets its normal slots. `STRATA_ARENA_PIN_GIB=N` (or `0`) registers it as before, `STRATA_UMA_REGISTER=1` too. Linux is unchanged.
 
 What the engine does differently on this chip:
 
@@ -16,7 +16,7 @@ What the engine does differently on this chip:
   the memory plan use) counts what Linux can give back (`MemAvailable` less 6 GiB for the system, `STRATA_UMA_HEADROOM_GIB`
   changes the 6) instead of only `MemFree`, per device, for any integrated GPU on Linux (this applies to a DGX Spark too).
 - **gfx11 matrix cores.** The prompt attention, the block scorer, the prompt GEMMs and the prompt experts have WMMA kernels for
-  gfx1100 / 1101 / 1102 / 1150 / 1151. A gfx11 part outside that list (gfx1103, gfx1152) is not given them: it takes the portable path.
+  gfx1100 / 1101 / 1102 / 1103 / 1150 / 1151. A gfx11 part outside that list (gfx1152) is not given them: it takes the portable path.
 - **The hipBLASLt table** `tools/hip/gfx1151-hipblaslt-100401.txt` (ROCm 7.14.1's hipBLASLt 1.x `100401`), including the prompt shapes
   at `--prefill 16384` (T 16383 / 16384). Setup's own ROCm for gfx1151 (the 7.14.0a20260608 wheels, hipBLASLt 1.4.0) takes
   `tools/hip/gfx1151-hipblaslt-100400.txt`: the same shapes, calibrated against that library (docs/AMD_HIP.md, Tuning table).
@@ -92,12 +92,15 @@ they change speed, not answers. Nothing here applies to CUDA or to another AMD a
 | `STRATA_GDN_HEAD`, `STRATA_GDN_PP=2`, `STRATA_GDN_CONVL2`, `STRATA_GDN_NOY` | the prompt's gated-delta-net recurrence: four lanes per column, two columns per lane, the convolution and the norms fused |
 | `STRATA_HCD_EXACT` | the hyper-connection down projection (N 320, K 10240) in a WMMA kernel that reproduces hipBLASLt solution 1176 / 1177's summation order (`hip_prefill_hcd_exact_parity` checks it bit for bit); it runs only where the table makes hipBLASLt pick one of those two, and says once if it cannot |
 | `STRATA_CVEC_FUSE`, `STRATA_PF_PAD` | a steered layer's write, control vector and next norm in one pass; padded GEMM row strides |
+| `STRATA_TOPK_REG_MIN_BLOCKS=4096` | the prompt's QSA top-k uses the register kernel from 16K cells of context instead of 28K (the original kernel is slower there; the selected cells are identical, `qsa_topk_parity` checks it) |
 | `STRATA_Q8_PACKED`, `STRATA_Q6_PACKED`, `STRATA_MMVF_ROWS`, `STRATA_ATTN_LANECELL` | decode layouts and kernels (packed Q8_0 / Q6_K weights, 4-row BF16 GEMV, one-cell-per-thread attention scores) |
 | `STRATA_EXPERT_V2`, `STRATA_TSUM`, `STRATA_LFUSE` | the grouped decode experts (IQ3_S / IQ4_NL), single-butterfly warp sums, fewer launches around the shared expert and the KV append |
 | `STRATA_GDN_SPLIT`, `STRATA_QFUSE`, `STRATA_PLE_BATCH` | the GDN step over four blocks per head, activation images written by their producers, the PLE key / value projections of a verify window at once |
 | `STRATA_SH_STREAM=1` | the shared expert on a second stream beside the routed experts. It is off by default on other AMD cards (#816), but it pays on gfx1151: decode +1.8% (UD-IQ4_XS) and +6.7% (UD-Q4_K_XL) at 8K |
 
 ## 5. What is not on by default (it changes bits)
+
+**Five of the switches below (`STRATA_PF_GEMM`, `STRATA_HC_UPMIX`, `STRATA_PA_FAST`, `STRATA_HIP_WMMA`, `STRATA_SELECT_WMMA`) are one opt-in on an integrated Radeon: `STRATA_IGPU_PROMPT_SET=1` ([AMD_HIP.md](AMD_HIP.md), "Integrated GPUs"). It was measured on a Radeon 780M only, where it is the default.** `STRATA_PF_FUSED`, `STRATA_HC_Q8`, `STRATA_PF_SWITCH_MIN_T` and `STRATA_PREFILL_STREAM_MIN` stay opt-in as well.
 
 These are faster on gfx1151 and **round differently** from the default path (a different summation order or a half-precision
 intermediate), so they are opt-in and the maintainers gate them with KL against the default (`STRATA_PF_SWITCH_MIN_T=4096` keeps
@@ -124,8 +127,37 @@ replay 3.4 -> 2.1 s per turn). Its output is the fused path's, which reads of 1,
 under `STRATA_PF_SWITCH_MIN_T`, which gates only the hyper-connection and padding switches. A UD-Q4_K_XL or other K-quant
 pack takes the fused experts only with `STRATA_PF_FUSED_KQ=1` as well.
 
+`STRATA_PF_F16=1` (gfx11 only; add it to the list above) runs the covered prompt experts on the F16 matrix cores instead of
+the int8 ones: K-quant gate/up and Q5_1 down (with `STRATA_PF_FUSED_KQ=1`), IQ2 / IQ3 / IQ4_XS gate/up, Q2_0 / IQ4_NL / Q8_0
+down. One layer, 16,384 tokens: Q4_K / Q5_1 85.3 -> 53.5 ms, IQ3_S / IQ4_NL gate/up 11.65 -> 9.87 and down 6.11 -> 4.71 ms.
+It rounds differently from the int8 kernels. First-token KL against a run with no switches, 12 natural-text prompts of
+1.5K-24K tokens (Strata's own docs and sources), top-1 the same in 12 of 12: UD-Q4_K_XL mean 0.0068 (median 0.0021) against
+0.0031 (0.0024) for `STRATA_PF_FUSED=1 STRATA_PF_FUSED_KQ=1` without it; UD-IQ4_XS 0.0085 (0.0036) against 0.0068 (0.0032). One
+1.5K prompt carries most of the Q4_K_XL mean (0.049).
+
+`STRATA_REFILL_PARTS=1` (opt-in, exact; HIP and CUDA, a GGUF read in place) refills the expert-cache slots a prompt borrowed straight from the GGUF mapping (an expert's gate, up and down tensors) instead of through an assembled 4 MB copy per expert: the same bytes in the slot (checked against the assembled blob on 162 slots), 0.1 to 0.3 s less at the end of a prompt; gfx1151, UD-Q4_K_XL and UD-IQ4_XS: a 4K-8K prompt +2.3% to +3.5%, 32K +1.1%. It is not in the table above because only gfx1151 has measured it.
+
 Two engine flags help on long contexts and are not Strix-specific: `--mtp-window 8192` (the draft layer attends to the last 8,192
 cells: 64K output +3.5%, 32K -0.4%) and `--spec`, `--lookup-chain`, `--mtp-q4` (see [DETAILS.md](DETAILS.md)).
+
+## 5b. The desktop, the RAM, and a discrete card beside the Strix Halo (Linux)
+
+The Strix Halo chip usually draws your desktop, and its graphics memory is your RAM. Two things follow, and the engine now takes both into account.
+
+- **One memory, counted once.** The expert cache of an integrated GPU lives in the same RAM as the expert arena. The automatic cache size is the smaller of
+  what the GPU reports free and what the OS reports available, less a reserve for the desktop (the larger of 8 GiB and 8% of the RAM; the start-up line says so
+  when it changes the size). `STRATA_UMA_RESERVE_GIB=N` sets the reserve (`0` = the old sizing, nothing kept back); `--expert-cache N` is never changed.
+- **A card of its own beside the chip** (for example a Radeon AI PRO R9700). A card of its own is the recommended Main card and the chip stays Off in the card roles.
+  If you name the chip in a layer split anyway (`--gpus 0,1`, or the config's `"gpu": [0, 1]`), the split runs as asked, the chip is placed on the first layers and
+  never on the last stage (the output head, the draft layer and the check of its guesses), the picture reader is started on the card of its own, and the
+  start prints one plain line about it. `"gpu_order": "as_given"` and a manual `layer_split` keep your order. `setup --gpus all` leaves the chip out
+  when two cards of their own are present; name it by number to use it.
+- **The CPU.** On Linux with built-in Radeon graphics the engine starts at nice +5, so the desktop keeps its share of the CPU while the engine's workers spin.
+  `STRATA_ENGINE_NICE=0` turns it off, `STRATA_ENGINE_NICE=N` sets another value.
+
+What is not known yet: how much of the screen freeze a long compute job on the same chip causes, and whether registering the whole expert arena with the driver
+(the Linux default on gfx1151; Windows uses the unregistered arena since 0.2.1.2) hurts when the GTT is small. `STRATA_ARENA_PIN_GIB=none` runs the unregistered
+arena on any OS; reports with `amdgpu_top` and `dmesg` are welcome.
 
 ## 6. Measured
 

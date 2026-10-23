@@ -21,10 +21,12 @@ $env:STRATA_EXCHANGE_ROTATE = '1'
 
 Only the exact value `1` opts in. Set it to `0` or remove it to restore the copy
 path. This setting does not select resident RAM mode or change any preset.
-It applies only when all layers have equal-size expert blocks, the resident
-complement is fully pinned and GPU-mapped, and the exchange buffers can also be
-pinned and mapped. Other layouts keep the copy path and log why rotation could
-not be enabled. Configurations without a resident complement do not use it.
+It applies only when the resident complement is fully pinned and GPU-mapped
+and the exchange buffers can also be pinned and mapped. Other layouts keep the
+copy path and log why rotation could not be enabled. Configurations without a
+resident complement do not use it. Layers may differ in expert block size (a
+GGUF with mixed quantizations per layer): see
+[Layers of different block sizes](#layers-of-different-block-sizes).
 
 The startup diagnostic confirms activation:
 
@@ -45,6 +47,71 @@ pairs. Compute readers and GPU transfers must still finish before the existing
 serialized commit; rotation adds no overlapping compute or new synchronization
 policy. Reserve the maximum exchange capacity before rotation starts: growing a
 live exchange arena is rejected because it can now hold resident experts.
+
+## Layers of different block sizes
+
+A swap exchanges two experts of the same layer, so the RAM slot the promoted
+expert leaves has exactly the size of the block the evicted one needs. Rotation
+therefore keeps its spare buffers per block size: an exchange of a layer takes
+a spare of that layer's size and hands back one of the same size, and every
+size keeps its number of spares for good. The first version required one size
+for all layers and fell back to the copy path on any other pack; Swift 1.5
+IQ3_S has seven sizes (1,510,400 to 2,662,400 bytes) and IQ3_XXS has nine
+too, so neither could rotate.
+
+The exchange allocation holds one spare of every size per swap of a round:
+`--adapt-swaps` (at most 96) times the sum of the distinct sizes. With
+`--adapt-async 1` the second half of the buffers only stages copies and is
+kept in the largest size alone. On IQ3_S with `--adapt-swaps 80` that is
+1.06 GiB of page-locked RAM (1.26 GiB with `--adapt-async 1`), against 0.20
+and 0.40 GiB for the copy path's buffers. The startup line says how many sizes
+and how much:
+
+```text
+FileExpertSource: exchange buffer rotation enabled: 80 buffers in 7 block sizes (largest 2662400 bytes, 1.06 GiB page-locked); no host commit memcpy
+```
+
+With `--adapt-async 1` a rotated round also ends one verify window sooner:
+there are no bytes for the background job to move, so the ownership flip runs
+in the tick that sees the copies in.
+
+`tests/core/exchange_storage_test.cpp` covers it without CUDA (three sizes,
+6,144 exchanges: bytes, aliases, a spare of another size or an expert of
+another layer refused, overlapping resident blocks refused).
+
+### Measured: Swift 1.5 IQ3_S on an RTX 5090 with 64 GB (Windows 11)
+
+Core i7-13700K, RTX 5090 32 GB, 64 GB DDR5, Windows 11, driver 617.42, CUDA
+13.0.88, engine 0.1.42 built from source with this change. Swift 1.5 IQ3_S,
+128K context, `--resident-experts` (31.4 GiB of experts page-locked in RAM,
+about 10,800 of 24,576 in VRAM), `--adapt-every 1 --adapt-swaps 80
+--adapt-decay 0.97`, `--spec 4`, `--pool-affinity p-cores`. In the first and third
+rows one binary ran both arms and only `STRATA_EXCHANGE_ROTATE` differs; in the
+second the off arm is the build before this change (the third row's binary also
+carried extra timers).
+
+| Run | Rotation off | Rotation on |
+|---|---|---|
+| One 8K prompt, the same 1,500 forced tokens (`--spec-follow`), blocking tier, decode tok/s | 163.4, 165.1, 163.1, 161.6, 162.6 | 187.4, 188.7, 185.8, 184.9 |
+| `--serve`, 23 coding-agent turns (`tools/agent_turns_bench.py`'s turns, greedy, up to 400 new tokens), blocking tier, tok/s over all turns, three interleaved rounds | 147.8, 159.2, 158.4 | 175.2, 184.9, 172.8 |
+| The same turns with `--adapt-async 1`, one binary, two interleaved rounds | 166.0, 170.1 | 185.6, 182.5 |
+
+In the first row, two runs of each arm that sized the expert cache alike (10,681
+slots) wrote the same `--window-hashes` file for all 434 windows: the same
+arithmetic, window by window. (`--expert-cache auto` sizes the cache from the
+free VRAM at start, and a run with another slot count places experts
+differently, so its hashes differ with or without rotation.) The tier swapped
+about 14,000 experts in such a run, 10,100 to 10,600 of them exchanges. In the serve rows the
+rotated arm was faster on 23 of 23 turns (blocking tier) and 22 of 23
+(`--adapt-async 1`). On this box the tier swaps about 30 experts per verify
+window all through a run (the cache holds 44% of the experts), so the copy
+path moved about 50 MiB of RAM per window on the decode thread; that is the
+time rotation removes. With `--adapt-async 1` the same copy ran on the
+background job, and the decode thread still lost about 1 ms per window (0.4 to 2.5 by request)
+while it ran; rotated, the tier's part of a window is 0.06 ms.
+
+Not measured: Linux, AMD cards, a layer split, a pack with one block size on
+this machine (the code path for it is the one above with a single size).
 
 ## Tests
 

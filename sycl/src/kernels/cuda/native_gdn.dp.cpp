@@ -25,6 +25,7 @@
 // SOFTWARE.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_gdn.hpp"
@@ -38,6 +39,7 @@ namespace strata::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int S = 128;
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "native_gdn is compiled for core/geometry.hpp");
 
 __dpct_inline__ float warp_sum(float value) {
 #pragma unroll

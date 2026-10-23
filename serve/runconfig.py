@@ -14,22 +14,27 @@ import os
 import shutil
 from pathlib import Path
 
+from strata_control import user_args
+from strata_control import atomic as _atomic_mod
+
 # (key, kind, help).  kind: "bool", "int>=0", "num>=0", ("enum", values), "names", or ("sampling", check) for a key
 # of the "sampling" block, ("arg", flag) for an engine option kept in "args".
 EDITABLE = [
     ("sampling.temperature", ("sampling", "num>=0"),
-     "Default temperature for requests that send none (0 = greedy, the default without a sampling block)"),
+     "Default temperature for requests that send none (0 = greedy; without it the model card's: 1.0 thinking, 0.7 not)"),
     ("sampling.top_p", ("sampling", "0<x<=1"), "Default top_p for requests that send none"),
     ("sampling.top_k", ("sampling", "1..64"), "Default top_k for requests that send none (1-64)"),
     ("sampling.min_p", ("sampling", "0<=x<=1"), "Default min_p for requests that send none"),
     ("reasoning_budget_tokens", "int>=0", "Cap the thinking of every request at this many tokens (0 or empty: no cap)"),
-    ("fit_max_tokens", "bool", "Shorten a max_tokens that does not fit the context instead of answering 400"),
+    ("fit_max_tokens", "bool", "Shorten a max_tokens that does not fit the context (on by default); off: answer 400 like llama.cpp"),
     ("anthropic_thinking", ("enum", ["model", "on_request"]),
      "Anthropic requests that do not ask for thinking: think as the model does (model) or not (on_request)"),
     ("effort_position", ("enum", ["start", "end"]),
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
+    ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
+                    "empty or on: as installed"),
     ("lazy_load", "bool", "Start without loading the model; the first request loads it (text only)"),
     ("engine_silence_s", "num>=0", "End a request when the engine says nothing for this long (default 300 s, 0 = wait)"),
     ("api_monitor", "bool", "Keep the last 100 requests' prompts and answers in memory for /api-monitor"),
@@ -153,6 +158,13 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
             elif v is not None:
                 a += [flag, str(v)]
             new["args"] = a
+            mine = user_args.set_flag(user_args.capture(new), flag, v)   # a value set here is the person's: it survives setup and the app
+            if mine:
+                new[user_args.USER_KEY] = mine
+            else:
+                new.pop(user_args.USER_KEY, None)
+            if user_args.WRITTEN_KEY in new:
+                new[user_args.WRITTEN_KEY] = list(a)
         elif v is None:
             new.pop(key, None)
         else:
@@ -168,7 +180,7 @@ def save(path: str | Path, cfg: dict) -> Path:
     shutil.copyfile(path, bak)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
+    _atomic_mod.replace(tmp, path)
     return bak
 
 

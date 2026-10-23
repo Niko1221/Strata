@@ -25,6 +25,10 @@
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 
+#include "strata/prefill/kernels.hpp"
+
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -91,19 +95,155 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
     return d / (m > 1e-30 ? m : 1e-30);
 }
 
+// Compare every state element and every token/head output, including FP16 bits.
+// Fixtures have nonzero initial state, modulo-paired heads, signed q/k/v, and
+// both shallow and deep decay. A tolerance is diagnostic only, never a pass.
+int prefill_case(int T, int seed, int repeats) {
+    constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+    sycl::queue q(dpct::get_in_order_queue().get_device(),
+                  sycl::property_list{sycl::property::queue::in_order{}});
+    // Variant 6 runs on Intel GPUs only (the engine throws elsewhere): skip, not fail, on any other device.
+    const auto dev = q.get_device();
+    const auto sizes = dev.get_info<sycl::info::device::sub_group_sizes>();
+    if (!dev.is_gpu() || dev.get_info<sycl::info::device::vendor_id>() != 0x8086 ||
+        std::find(sizes.begin(), sizes.end(), size_t(32)) == sizes.end() ||
+        std::find(sizes.begin(), sizes.end(), size_t(16)) == sizes.end()) {
+        static bool said = false;
+        if (!said) std::printf("prefill gdn: skipped (needs an Intel GPU with sub-groups 16 and 32)\n");
+        said = true;
+        return 0;
+    }
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> gauss(0.0f, 1.0f);
+    std::vector<float> st(size_t(S) * HV * S), h(size_t(T) * C),
+        gate(size_t(T) * HV), beta(gate.size()), z(size_t(T) * HV * S), gamma(S);
+    for (auto& x : st) x = gauss(rng) * 0.03f;
+    for (int t = 0; t < T; ++t) {
+        for (int j = 0; j < C; ++j) h[size_t(t) * C + j] = gauss(rng) * (j < 2 * HK * S ? 0.08f : 0.7f);
+    }
+    for (auto& x : gate) x = -(seed % 2 ? 0.02f : 2.0f) * (1.0f + std::fabs(gauss(rng)));
+    for (auto& x : beta) x = 0.1f + float(rng() % 800) / 1000.0f;
+    for (auto& x : z) x = gauss(rng);
+    for (auto& x : gamma) x = 1.0f + 0.2f * gauss(rng);
+    auto copy = [&](const std::vector<float>& src) {
+        auto* ptr = sycl::malloc_device<float>(src.size(), q);
+        if (!ptr) throw std::bad_alloc();
+        q.memcpy(ptr, src.data(), src.size() * sizeof(float)).wait_and_throw();
+        return ptr;
+    };
+    float *dst = copy(st), *dh = copy(h), *dg = copy(gate), *db = copy(beta), *dz = copy(z), *dgm = copy(gamma);
+    float* dy = sycl::malloc_device<float>(z.size(), q);
+    uint16_t* dy16 = sycl::malloc_device<uint16_t>(z.size(), q);
+    if (!dy || !dy16) throw std::bad_alloc();
+    std::vector<float> refst(st.size()), refy(z.size()), gotst(st.size()), goty(z.size());
+    std::vector<uint16_t> ref16(z.size()), got16(z.size());
+    auto run = [&](int variant, std::vector<float>& ost, std::vector<float>& oy, std::vector<uint16_t>& o16) {
+        // Warm up the compiled kernel before measuring; every run resets state.
+        q.memcpy(dst, st.data(), st.size() * sizeof(float)).wait_and_throw();
+        if (variant == -1)
+            strata::prefill::gdn_recurrence(dst, dh, dg, db, dz, dgm, 1e-6f, dy, dy16, T, &q);
+        else
+            strata::prefill::gdn_recurrence_variant(variant, dst, dh, dg, db, dz, dgm,
+                                                   1e-6f, dy, dy16, T, &q);
+        q.wait_and_throw();
+        double elapsed = 0;
+        for (int i = 0; i < repeats; ++i) {
+            q.memcpy(dst, st.data(), st.size() * sizeof(float)).wait_and_throw();
+            const auto start = std::chrono::steady_clock::now();
+            if (variant == -1)
+                strata::prefill::gdn_recurrence(dst, dh, dg, db, dz, dgm, 1e-6f, dy, dy16, T, &q);
+            else
+                strata::prefill::gdn_recurrence_variant(variant, dst, dh, dg, db, dz, dgm,
+                                                       1e-6f, dy, dy16, T, &q);
+            q.wait_and_throw();
+            elapsed += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+        q.memcpy(ost.data(), dst, ost.size() * sizeof(float)).wait_and_throw();
+        q.memcpy(oy.data(), dy, oy.size() * sizeof(float)).wait_and_throw();
+        q.memcpy(o16.data(), dy16, o16.size() * sizeof(uint16_t)).wait_and_throw();
+        return elapsed / repeats;
+    };
+    const double base_ms = run(0, refst, refy, ref16);
+    const double xe_ms = run(6, gotst, goty, got16);
+    size_t state_bad = 0, y_bad = 0, half_bad = 0;
+    double max_abs = 0, max_rel = 0;
+    auto compare = [&](const std::vector<float>& a, const std::vector<float>& b, size_t& mismatches) {
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!std::isfinite(a[i]) || !std::isfinite(b[i]) ||
+                std::memcmp(&a[i], &b[i], sizeof(float)) != 0) ++mismatches;
+            const double diff = std::fabs(double(a[i]) - b[i]);
+            max_abs = std::max(max_abs, diff);
+            max_rel = std::max(max_rel, diff / std::max(std::fabs(double(a[i])), 1e-20));
+        }
+    };
+    compare(refst, gotst, state_bad);
+    compare(refy, goty, y_bad);
+    for (size_t i = 0; i < ref16.size(); ++i) half_bad += ref16[i] != got16[i];
+    std::printf("prefill T=%d seed=%d heads=%d: state=%zu y=%zu fp16=%zu mismatches; max_abs=%.9g max_rel=%.9g; baseline=%.3f ms xe=%.3f ms\n",
+                T, seed, HV, state_bad, y_bad, half_bad, max_abs, max_rel, base_ms, xe_ms);
+    // T=7 additionally checks the production entry point (variant 6 on Alchemist or under STRATA_GDN_XE=1,
+    // else variant 0) and T=0's no-op contract.
+    int extra_bad = 0;
+    if (T == 7) {
+        run(-1, gotst, goty, got16);
+        // Both variants must match anyway; compare production to baseline.
+        extra_bad += std::memcmp(refst.data(), gotst.data(), refst.size() * sizeof(float)) != 0;
+        extra_bad += std::memcmp(refy.data(), goty.data(), refy.size() * sizeof(float)) != 0;
+        extra_bad += ref16 != got16;
+        q.memcpy(dst, st.data(), st.size() * sizeof(float)).wait_and_throw();
+        strata::prefill::gdn_recurrence_variant(6, dst, dh, dg, db, dz, dgm,
+                                               1e-6f, dy, dy16, 0, &q);
+        q.memcpy(gotst.data(), dst, st.size() * sizeof(float)).wait_and_throw();
+        extra_bad += gotst != st;
+        const auto saved_y = goty;
+        const auto saved16 = got16;
+        q.memcpy(goty.data(), dy, goty.size() * sizeof(float)).wait_and_throw();
+        q.memcpy(got16.data(), dy16, got16.size() * sizeof(uint16_t)).wait_and_throw();
+        extra_bad += goty != saved_y || got16 != saved16;
+        std::printf("prefill production + T=0: %s\n", extra_bad ? "FAIL" : "OK");
+    }
+    for (auto ptr : {dst, dh, dg, db, dz, dgm, dy}) sycl::free(ptr, q);
+    sycl::free(dy16, q);
+    return state_bad || y_bad || half_bad || extra_bad ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool selftest = false;
+    bool selftest = false, prefill_only = false;
+    int prefill_tokens = 0, prefill_repeat = 1;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: gdn_parity [--selftest]\n"); return 2; }
+        const std::string arg(argv[i]);
+        if (arg == "--selftest") selftest = true;
+        else if (arg == "--prefill-only") prefill_only = true;
+        else if ((arg == "--prefill-tokens" || arg == "--prefill-repeat") && i + 1 < argc) {
+            char* end = nullptr;
+            const long n = std::strtol(argv[++i], &end, 10);
+            if (!end || *end || n < 1 || n > (arg == "--prefill-tokens" ? 32768 : 1000)) return 2;
+            (arg == "--prefill-tokens" ? prefill_tokens : prefill_repeat) = int(n);
+        } else {
+            std::fprintf(stderr, "usage: gdn_parity [--selftest] [--prefill-only] [--prefill-tokens N] [--prefill-repeat N]\n");
+            return 2;
+        }
+    }
+    const auto device = dpct::get_in_order_queue().get_device();
+    std::printf("device: %s (%s), sub-groups:", device.get_info<sycl::info::device::name>().c_str(),
+                device.is_cpu() ? "CPU" : device.is_gpu() ? "GPU" : "other");
+    for (auto n : device.get_info<sycl::info::device::sub_group_sizes>()) std::printf(" %zu", n);
+    std::printf("\n");
+    int prefill_bad = 0;
+    for (int t : prefill_tokens ? std::vector<int>{prefill_tokens} : std::vector<int>{1, 7, 256, 1000})
+        for (int seed : {2025, 2026}) prefill_bad += prefill_case(t, seed, prefill_repeat);
+    std::printf("prefill gdn: %d failures\n", prefill_bad);
+    if (prefill_only) {
+        if (selftest && !prefill_bad) std::printf("gdn_parity OK\n");
+        return prefill_bad ? 1 : 0;
     }
 
     const int S = 128, h_k = 16, h_v = 48;      // the artifact's real geometry
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
-    int bad = 0;
+    int bad = prefill_bad;
 
     // ================= 1. the recurrence =================
     {

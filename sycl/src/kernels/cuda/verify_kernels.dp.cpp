@@ -4,6 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
@@ -30,6 +31,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 
@@ -2084,7 +2086,7 @@ resident_plan_kernel(const int32_t *__restrict__ ids, int n, int k,
                      const unsigned long long *slot_off, long long blob,
                      int32_t *__restrict__ pl, long long capx, uint32_t *skip,
                      uint32_t ring, const unsigned long long *__restrict__ mir,
-                     volatile uint32_t *plan_err) {
+                     volatile uint32_t *plan_err, int32_t *usage) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int32_t[kResidentPlanMax]>(
@@ -2109,6 +2111,9 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         s_ids[tid] = eid;
         slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
         if (slot < 0 && eid >= 0 && eid < n_expert && mir != nullptr) maddr = mir[eid];
+        if (usage != nullptr && eid >= 0 && eid < n_expert)   // the adaptive tier's routing counts (device side)
+            sycl::atomic_ref<int32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                             sycl::access::address_space::global_space>(usage[eid]).fetch_add(1);
         if (slot < 0 && maddr == 0)
             dpct::atomic_fetch_or<sycl::access::address_space::generic_space>(
                 &s_bad, 1);
@@ -2360,8 +2365,17 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+int32_t* g_usage = nullptr;
+long long g_mirror_entries = 0;   // 0: unchecked
+// #1980: the layer slice `res_layer` belongs to the table the mirror was set for (a later stage passes its own)
+bool in_mirror_table(const int32_t* res_layer) {
+    if (g_mirror_res == nullptr || res_layer < g_mirror_res) return false;
+    return g_mirror_entries <= 0 || res_layer - g_mirror_res < g_mirror_entries;
 }
-void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
+}
+void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage, long long entries) {
+    g_mirror_entries = entries;
+    g_usage = usage;
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
 }
@@ -2369,8 +2383,9 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
-    if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
-        mir = g_mirror_table + (res_layer - g_mirror_res);
+    int32_t* use = nullptr;                    // the layer's slice of the device routing counts, if on
+    if (g_mirror_table != nullptr && in_mirror_table(res_layer)) mir = g_mirror_table + (res_layer - g_mirror_res);
+    if (g_usage != nullptr && in_mirror_table(res_layer)) use = g_usage + (res_layer - g_mirror_res);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2384,7 +2399,7 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                     [[sycl::reqd_sub_group_size(32)]] {
                         resident_plan_kernel(
                             ids, n_entries, k, res_layer, n_expert, cache_base,
-                            slot_off, blob, plan, capx, skip, ring, mir, plan_err);
+                            slot_off, blob, plan, capx, skip, ring, mir, plan_err, use);
                     });
     }
     check("resident_plan");

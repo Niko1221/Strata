@@ -16,32 +16,37 @@ namespace strata::prefill {
 /// xn[t, c*2560 + d] = R[t,c,d] * rsqrt(mean_d R[t,c,:]^2 + eps) * w_norm[c*2560 + d]; also its BF16 image.
 /// `xn16_lo` (null: none) takes bf16(x - xn16): W.xn16 + W.xn16_lo is the product with ~16 mantissa bits of x.
 void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t* xn16, int64_t T, void* stream,
-             uint16_t* xn16_lo = nullptr);
+             uint16_t* xn16_lo = nullptr, bool f16img = false);
 /// F-1: gr_norm without its FP32 output: the row scales rs[t*4 + c] and the BF16 image; gr_mix_r then reads R.
 void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint16_t* xn16, int64_t T, void* stream,
-                uint16_t* xn16_lo = nullptr, int64_t ldx = 0);   // ldx: xn16's token stride (0 = 10240)
+                uint16_t* xn16_lo = nullptr, int64_t ldx = 0, bool f16img = false);   // ldx: xn16's token stride (0 = 10240)
 /// gr_mix with xn recomputed from R, rs and w_norm exactly as gr_norm computes it (the same bits).
 void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float* gated, float* mixed, uint16_t* mixed16,
               int64_t T, void* stream, uint16_t* mixed_h = nullptr, uint16_t* mixed16_lo = nullptr);
 /// F-2: gr_write, then gr_norm_rs of the next half (its norm weights) over the rows just written - the same bits as
 /// the two calls, without reading R back.
 /// S23 (opt-in STRATA_HC_UPMIX=1): the up projection (lo16 x w_up^T, BF16, FP32 accumulate) with gr_mix_r as its
-/// epilogue - `gated` is never written.  False (nothing launched) off gfx11.
+/// epilogue - `gated` is never written.  gfx11 and CUDA sm_80+; false (nothing launched) elsewhere.
 bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const float* rs, const float* w_norm,
               float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream);
 void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps,
                       float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr,
-                      int64_t ldx = 0);
+                      int64_t ldx = 0, bool f16img = false);
 /// S23 (STRATA_CVEC_FUSE=1): gr_write, then the control vector (v_l = layer l's direction row, *s_l its scale,
 /// *on the request flag, mode 0 project / 1 add; cvec_kernel's arithmetic), then gr_norm_rs with the next half's
 /// norm - one pass over R, the same bits as the three kernels.
 void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* v_l,
                            const float* s_l, const int* on, int mode, const float* w_norm_next, float eps, float* rs,
-                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr, int64_t ldx = 0);
+                           uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr, int64_t ldx = 0, bool f16img = false);
 /// lo16[t, k] = bf16(silu(lo[t, k] / hc))
 void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t* lo16_lo = nullptr);
 /// The BF16-weight GEMMs' activation image (gr_* kernels, to_bf16) in FP16 instead of BF16, on the current device.
 void set_act_f16(bool on);
+/// STRATA_F16_RANGE: count what the activation images convert to FP16 on this device (hf_sat): the largest |value| and
+/// how many were beyond 65504 or NaN.  f16_range_read returns them (and resets when asked); false if the device
+/// refused the copy.
+void set_f16_range(bool on);
+bool f16_range_read(float& max_abs, unsigned long long& over, bool reset);
 /// mixed[t, d] = mean_c xn[t, c, d] * sigmoid(gated[t, c, d]); FP32, BF16 and FP16 (either image may be null).
 void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16, int64_t T, void* stream,
             uint16_t* mixed_h = nullptr, uint16_t* mixed16_lo = nullptr);
@@ -63,7 +68,10 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
                     int64_t ld16 = 0);   // ld16: y16's row stride (0 = 6144; S23 STRATA_PF_PAD pads it)
 /// The kernels behind gdn_recurrence, for the parity test: 0 = the column-split kernels + the norm kernel (or the
 /// one-block-per-head kernel under STRATA_GDN_REC_HEADS), 1 = four lanes per column (no barrier per token) + the grid-stride norm, 2 = the
-/// one-block-per-head kernel (its fused norm rounds differently).  0 and 1 give the same bits.
+/// one-block-per-head kernel (its fused norm rounds differently).  0 and 1 give the same bits.  On HIP, 0 and 1 run the opt-in
+/// chunked WMMA recurrence instead (gfx11, STRATA_GDN_CHUNKED=1, 64 tokens and more: other bits, see docs/AMD_HIP.md).
+/// SYCL only: 6 = the Xe sub-group recurrence (16-lane sub-groups, one barrier per token) + the norm kernel, the same
+/// bits as 0 on an Arc A770; gdn_recurrence takes it by default on Alchemist (STRATA_GDN_XE=0 off, =1 any Intel GPU).
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
                             void* stream, int64_t ld16 = 0);
@@ -75,6 +83,8 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream);
 /// h16[n, r] = fp16(silu(gu[n, 2r]) * gu[n, 2r + 1])   (the interleaved expert gate/up)
 void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream);
+/// the Volta prompt experts: SwiGLU of gate/up rows (gate first, or interleaved) to FP16, saturated like swiglu_interleaved
+void swiglu_split_f16(const float* gu, uint16_t* h16, int64_t rows, int n_ff, bool interleaved, void* stream);
 /// h16[n, r] = fp16(silu(g[n, r]) * u[n, r])   (the shared expert, gate and up separate, width 640)
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
 /// dst[i] = src[i] for n int32s, as a kernel: either side may be mapped host memory, and the copy never waits
@@ -87,7 +97,7 @@ void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream);
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream);
+                 int64_t T, void* stream, const float* row_sd = nullptr);
 /// --peer-device's prompt share as sums: bo[t, :] = (sum over the k with slot[t, k] < rows_local of w[t, k] *
 /// D[slot[t, k], :], in k order) + peer[t, :] + shared[t, :] * sigmoid(sg[t]).  `peer` (the peer's per-token sums)
 /// may be mapped host memory.

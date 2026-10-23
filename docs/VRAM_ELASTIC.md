@@ -105,6 +105,25 @@ expert outside the cache), but I have not run a fault-injection test of these tw
 - `GET /v1/status` has a `vram` object with the last figures the engine reported (empty until the first successful
   call) and `elastic`.
 
+## The image encoder on demand
+
+With `"elastic": true` in the config's `"vision"` section (and `"vram_elastic": true`; without it the server says so
+and starts the encoder with the model, as before) the GPU encoder is not started with the server or with a load:
+
+- **A picture's turn** (the same FIFO turn an encode always takes): if the encoder is not running, the engine's
+  `VRAM` command first keeps `"elastic_mib"` (default 2048) free on top of the reserve - the last `POST /v1/vram`, or 0
+  when none was made - and then the encoder starts. If the cache cannot shrink (the resident low-RAM mode, an engine
+  without `--vram-elastic`) it starts anyway, as a non-elastic encoder would, and the log says why.
+- **Idle** for `"elastic_idle_s"` (default 120) without a picture: a thread stops the encoder between requests and
+  sends `VRAM` with that reserve again, so the cache grows back to the size it had (0, not the start's reserve: that
+  would leave it a segment or more smaller).
+- **`POST /v1/vram` while the encoder runs** keeps the asked reserve on top of the encoder's share; the encoder's stop
+  then goes back to the asked reserve.
+- An unload of the model stops the encoder too. The log lines start with `[strata] images:` **(code; the unit tests in
+  `serve/test_vision_elastic.py` pin each case)**.
+
+`--vram-elastic` turns `--kv-grow` off (the engine says so at start): with both asked, the whole K/V is in VRAM.
+
 ## What to build on
 
 For automation: treat only `200` with `status: "ok"` as a call that ran, then check `vram_free_mib >= reserve_mib`

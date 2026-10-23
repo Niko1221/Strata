@@ -236,10 +236,15 @@ __global__ void copy_from_mapped_kernel(float4* __restrict__ dst, const volatile
 // the CPU rows of a verify window, skipping the rows the GPU plan computes itself (the
 // pool writes +0.0 into those, so this writes +0.0 too): block = row, the plan's hit rows `dst[0, *count)`.
 __global__ void copy_rows_from_mapped_kernel(float4* __restrict__ dst, const volatile float4* src, int64_t row4,
-                                             const int32_t* __restrict__ hit_rows, const int32_t* __restrict__ count) {
+                                             const int32_t* __restrict__ hit_rows, const int32_t* __restrict__ count,
+                                             const volatile uint32_t* wait_flag = nullptr, uint32_t wait_value = 0) {
     const int row = blockIdx.x;
     __shared__ int hit;
     if (threadIdx.x == 0) {
+        if (wait_flag != nullptr) {   // 143-amdk: the wait_flag_ge launch folded in
+            while (*wait_flag < wait_value) strata_spin_pause();
+            __threadfence_system();
+        }
         int h = 0;
         const int c = *count;
         for (int i = 0; i < c; ++i) h |= hit_rows[i] == row;
@@ -280,6 +285,16 @@ void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t w
     }
     copy_rows_from_mapped_kernel<<<(unsigned) rows, 128, 0, (cudaStream_t) stream>>>((float4*) dst, (const volatile float4*) src,
                                                                                   width / 4, hit_rows, count);
+}
+void copy_rows_from_mapped_after(const uint32_t* flag, uint32_t value, float* dst, const float* src, int64_t rows,
+                                 int64_t width, const int32_t* hit_rows, const int32_t* count, void* stream) {
+    if (rows <= 0) return;
+    if ((width & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
+        std::fprintf(stderr, "copy_rows_from_mapped_after: width must be a multiple of 4 and both pointers 16-byte aligned\n");
+        std::exit(1);
+    }
+    copy_rows_from_mapped_kernel<<<(unsigned) rows, 128, 0, (cudaStream_t) stream>>>(
+        (float4*) dst, (const volatile float4*) src, width / 4, hit_rows, count, (const volatile uint32_t*) flag, value);
 }
 void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream) {
     if (n <= 0) return;

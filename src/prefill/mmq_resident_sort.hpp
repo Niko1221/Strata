@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +17,22 @@ inline bool mmq_resident_sort_flag(const char* value) {
 inline bool mmq_resident_sort_requested() {
     static const bool on = mmq_resident_sort_flag(std::getenv("STRATA_MMQ_RESIDENT_SORT_NE"));
     return on;
+}
+
+// STRATA_MMQ_GROUP_SORT=1: the same row-count order for the full 16-expert groups only; the last, partial group keeps
+// its experts in ID order. A full group's launch has 160 * ntx (gate/up) or 320 * ntx (down) tiles, at or above the
+// 90 % tile efficiency on the cards' SM counts, so it runs one block per tile with no stream-k K split whatever its tile
+// width: each expert's rows get the same bits in any full group. The partial group can take the stream-k split, whose
+// K boundaries depend on the group's tile count - leaving it unchanged keeps the prompt's bits.
+inline bool mmq_group_sort_requested() {
+    static const bool on = mmq_resident_sort_flag(std::getenv("STRATA_MMQ_GROUP_SORT"));
+    return on;
+}
+
+// How many of `n` ordered experts the sort may move: all of them (STRATA_MMQ_RESIDENT_SORT_NE), or the full groups
+// of `group` experts (STRATA_MMQ_GROUP_SORT).
+inline size_t mmq_resident_sort_span(size_t n, size_t group, bool keep_tail) {
+    return keep_tail && group > 0 ? n - n % group : n;
 }
 
 inline bool mmq_resident_sort_eligible(bool requested, bool use_mmq, bool native_layout, bool has_cache,
@@ -35,10 +52,12 @@ inline bool mmq_resident_sort_eligible(bool requested, bool use_mmq, bool native
 // order contains each positive-count expert once in ID order; off has count.size()+1 entries;
 // routes fits its original int32 offsets, and slot/src each have routes writable entries.
 // After sorting, off[e] is an expert-indexed START, not an ID-prefix end at off[e+1].
+// Only order[0, span) is sorted (span >= order.size(): all of it); the entries after it keep their positions.
 inline void mmq_resident_sort_rows(const int32_t* ids, int64_t routes, int32_t k,
                                    const std::vector<int32_t>& count, std::vector<int32_t>& off,
-                                   std::vector<int32_t>& order, int32_t* slot, int32_t* src) {
-    std::stable_sort(order.begin(), order.end(), [&](int32_t a, int32_t b) {
+                                   std::vector<int32_t>& order, int32_t* slot, int32_t* src,
+                                   size_t span = SIZE_MAX) {
+    std::stable_sort(order.begin(), order.begin() + (ptrdiff_t) std::min(span, order.size()), [&](int32_t a, int32_t b) {
         return count[(size_t) a] != count[(size_t) b]
             ? count[(size_t) a] < count[(size_t) b] : a < b;
     });

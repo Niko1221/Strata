@@ -1,6 +1,7 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
@@ -24,6 +25,7 @@ namespace {
 
 constexpr int HD = 256;           // head_dim
 constexpr int G = 12;             // query heads per KV head
+static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, "qsa_prompt_attn is compiled for core/geometry.hpp");
 #ifndef D1_CH
 #define D1_CH 32
 #endif

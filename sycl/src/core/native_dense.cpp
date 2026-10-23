@@ -30,7 +30,7 @@ bool in_range(const std::string& name) {
     return l >= g_layer_lb && l < g_layer_le;
 }
 // S23 experiment (STRATA_HC_Q8=1): the hyper-connection projections' Q8_0 bytes for the verify read
-bool hc_q8_requested() {
+bool hc_q8_env() {
     static const bool on = [] { const char* v = std::getenv("STRATA_HC_Q8"); return v != nullptr && v[0] == '1'; }();
     return on;
 }
@@ -107,6 +107,9 @@ struct Pending {
 };
 }
 
+// the shared header declares the static member (b60aab1b); this port only needs the env switch
+bool NativeDense::hc_q8_requested() { return hc_q8_env(); }
+
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
                                std::set<std::string>& out, std::string& err) {
     try {
@@ -167,7 +170,7 @@ bool NativeDense::load(const std::vector<std::string> &shards,
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
             if (gguf.get("general.architecture")) {
-                err = strata::check_architecture(gguf);
+                err = strata::check_engine_architecture(gguf);
                 if (!err.empty()) return false;
                 have_architecture = true;
                 if (count && number && tensors && number->u == 0 && count->u > 1) {

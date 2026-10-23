@@ -3,9 +3,11 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <cmath>
 int main(int argc, char** argv) {
@@ -46,6 +48,51 @@ int main(int argc, char** argv) {
     for (int i = 0; i < it; ++i) strata::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, ncols, s);
     s->wait();
     const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / it;
-    std::printf("q6_k mmvq %d x %d, %d cols: %.1f us  (%.1f GB/s of weights)\n", n_in, n_out, ncols, us, wbytes / us / 1e3);
+    std::vector<float> hy((size_t) ncols * n_out);
+    s->memcpy(hy.data(), y, hy.size() * 4).wait();
+    unsigned long long cs = 1469598103934665603ull;
+    for (float v : hy) { unsigned u; std::memcpy(&u, &v, 4); cs = (cs ^ u) * 1099511628211ull; }
+    std::printf("q6_k mmvq %d x %d, %d cols: %.1f us  (%.1f GB/s of weights)  checksum %016llx\n", n_in, n_out, ncols, us, wbytes / us / 1e3, cs);
+    // STRATA_BENCH_PLANAR=1 (#2340): the same matrix as STRATA_Q6_PLANAR planes, bitwise against the GGUF-layout result above; then a
+    // gathered row subset (the MTP draft head's case) against the same rows of the full result. Exit 1 on any difference.
+    const char* pe = std::getenv("STRATA_BENCH_PLANAR");
+    if (pe && std::atoi(pe) != 0) {
+        void* w2 = sycl::malloc_device(wbytes, *s);
+        s->memcpy(w2, hw.data(), wbytes).wait();
+        void* wp = strata::kernels::native_q6_k_planar_adopt(w2, n_in, n_out, "bench matrix");
+        if (!strata::kernels::native_q6_k_is_planar(wp)) { std::printf("planar: adopt declined\n"); return 1; }
+        float* y2 = sycl::malloc_device<float>((size_t) ncols * n_out, *s);
+        strata::kernels::native_q6_k_mmvq(wp, xq, y2, n_in, n_out, ncols, s); s->wait();
+        std::vector<float> hp((size_t) ncols * n_out);
+        s->memcpy(hp.data(), y2, hp.size() * 4).wait();
+        const bool same = std::memcmp(hp.data(), hy.data(), hp.size() * 4) == 0;
+        for (int i = 0; i < 20; ++i) strata::kernels::native_q6_k_mmvq(wp, xq, y2, n_in, n_out, ncols, s);
+        s->wait();
+        const auto p0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < it; ++i) strata::kernels::native_q6_k_mmvq(wp, xq, y2, n_in, n_out, ncols, s);
+        s->wait();
+        const double pus = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - p0).count() / it;
+        std::printf("q6_k planar %d x %d, %d cols: %.1f us  (%.1f GB/s of weights)  bitwise %s\n", n_in, n_out, ncols, pus, wbytes / pus / 1e3,
+                    same ? "EQUAL" : "DIFFERENT");
+        int rc = same ? 0 : 1;
+        const int nsel = std::max(1, n_out / 3);
+        std::vector<int32_t> rows(nsel);
+        for (int i = 0; i < nsel; ++i) rows[i] = (int32_t) (((uint64_t) i * 2654435761ull + 12345) % (uint64_t) n_out);
+        int32_t* rd = sycl::malloc_device<int32_t>(nsel, *s);
+        s->memcpy(rd, rows.data(), nsel * 4).wait();
+        void* wg = strata::kernels::native_q6_k_planar_gather(wp, n_in, rd, nsel, "bench subset");
+        if (!wg) { std::printf("planar gather: declined\n"); return 1; }
+        float* y3 = sycl::malloc_device<float>((size_t) ncols * nsel, *s);
+        strata::kernels::native_q6_k_mmvq(wg, xq, y3, n_in, nsel, ncols, s); s->wait();
+        std::vector<float> hg((size_t) ncols * nsel);
+        s->memcpy(hg.data(), y3, hg.size() * 4).wait();
+        size_t bad = 0;
+        for (int c = 0; c < ncols; ++c)
+            for (int i = 0; i < nsel; ++i)
+                if (std::memcmp(&hg[(size_t) c * nsel + i], &hy[(size_t) c * n_out + rows[i]], 4) != 0) ++bad;
+        std::printf("q6_k planar gather %d of %d rows, %d cols: %zu of %zu outputs differ\n", nsel, n_out, ncols, bad, hg.size());
+        if (bad) rc = 1;
+        return rc;
+    }
     return 0;
 }

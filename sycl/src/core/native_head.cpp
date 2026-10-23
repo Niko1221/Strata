@@ -32,7 +32,7 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
         // The architecture is the metadata shard's; output.weight comes from whichever shard holds it (shard 2
         // of Unsloth's UD-Q4_K_XL, whose shard 1 holds no tensor).  GgufModel refuses a duplicate across shards.
         const strata::GgufModel model(shards);
-        err = strata::check_architecture(model.meta());
+        err = strata::check_engine_architecture(model.meta());
         if (!err.empty()) return false;
         size_t at = 0;
         const strata::TensorInfo* tensor = model.find("output.weight", &at);
@@ -91,6 +91,8 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
         type_ = (int) tensor->type;
         if (type_ == 14 && strata::kernels::native_q6_k_packed_enabled())   // STRATA_Q6_PACKED=1
             strata::kernels::native_q6_k_pack(weights_, n_in_, n_out_, "output head");
+        if (type_ == 14 && !strata::kernels::native_q6_k_packed_enabled() && strata::kernels::native_q6_k_planar_enabled())   // STRATA_Q6_PLANAR: stored as planes (same bytes)
+            weights_ = strata::kernels::native_q6_k_planar_adopt(weights_, n_in_, n_out_, "output head");
         return true;
     } catch (const std::exception& error) {
         err = std::string("native head: ") + error.what();
@@ -171,7 +173,7 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
         const strata::GgufModel model(shards);
         // --embd-gguf's one-tensor file (tools/embd_bf16_pack.py) says "strata-embd": only its tensor is checked
         const strata::MetaValue* arch = model.meta().get("general.architecture");
-        err = arch != nullptr && arch->s == "strata-embd" ? std::string() : strata::check_architecture(model.meta());
+        err = arch != nullptr && arch->s == "strata-embd" ? std::string() : strata::check_engine_architecture(model.meta());
         if (!err.empty()) { err = "native embedding: " + err; return false; }
         size_t at = 0;
         const strata::TensorInfo* t = model.find("token_embd.weight", &at);

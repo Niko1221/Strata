@@ -20,7 +20,17 @@ QUESTIONS = [
     "Explain how a transformer's attention works, step by step.",
     "Donne une recette de tarte aux pommes, etape par etape.",
     "Describe the life cycle of a star like the Sun.",
+    "Erklaere ausfuehrlich, wie ein Dieselmotor funktioniert.",
+    "Write a Rust function that parses a CSV line with quoted fields, then explain it.",
+    "What were the main consequences of the invention of the printing press?",
+    "Explique le theoreme de Pythagore avec trois demonstrations differentes.",
+    "Describe how the immune system responds to a viral infection.",
+    "Explain the difference between processes and threads in an operating system.",
+    "Beschreibe die Geschichte des Roemischen Reiches in Grundzuegen.",
+    "How does public-key cryptography work? Give an example with RSA.",
 ]
+# more than 16 slots: the same questions again, asked to answer in German
+QUESTIONS = QUESTIONS + [q + " Answer in German." for q in QUESTIONS]
 
 
 def tokenizer(path):

@@ -128,6 +128,87 @@ class Ranges(FetchCase):
         self.assertEqual({r["name"]: r["sha256"] for r in manifest}, HASHES)
         self.assertEqual(M.verify(str(self.out)), [])
 
+    def test_ranges_are_read_in_parallel_and_come_back_in_order(self):
+        data = bytes(range(256)) * 40
+        seen = []
+
+        def get(url, a, b):
+            seen.append((a, b))
+            return data[a:b + 1]
+
+        for workers in (1, 4, 32):
+            seen.clear()
+            with self.subTest(workers=workers), mock.patch.object(M, "get", get):
+                got = b"".join(M.ranged("u", 100, len(data) - 1, 1000, workers))
+            self.assertEqual(got, data[100:])
+            self.assertEqual(sorted(seen)[0], (100, 1099))
+        with mock.patch.dict(M.os.environ, {"STRATA_DL_CONNECTIONS": "1"}):
+            self.assertEqual(M.connections(), 1)
+        with mock.patch.dict(M.os.environ, {"STRATA_DL_CONNECTIONS": ""}):
+            self.assertEqual(M.connections(), 16)
+
+    def test_the_cdn_address_is_reused_and_forgotten_after_an_error(self):
+        """HF redirects /resolve/ to a signed CDN address: only the first range goes through the redirect (the rest of a
+        tensor's ranges use the CDN address), and any error makes the next try ask the original address again."""
+        asked = []
+
+        def opener(req, timeout=None):
+            asked.append(req.full_url)
+            a, b = (int(x) for x in req.headers["Range"].split("=")[1].split("-"))
+            r = Response(bytes(b - a + 1), 206, {"Content-Range": "bytes %d-%d/1000" % (a, b)})
+            r.geturl = lambda: "https://cdn.example/x?sig=1"
+            return r
+
+        M._cdn.clear()
+        with mock.patch.object(M.urllib.request, "urlopen", opener):
+            for a in (0, 100, 200):
+                M.get("https://hf.example/f", a, a + 99)
+            self.assertEqual(asked, ["https://hf.example/f"] + ["https://cdn.example/x?sig=1"] * 2)
+            asked.clear()
+            fails = [True]
+
+            def flaky(req, timeout=None):
+                if fails.pop() if fails else False:
+                    raise IOError("expired")
+                return opener(req, timeout)
+
+            with mock.patch.object(M.urllib.request, "urlopen", flaky), mock.patch.object(M.time, "sleep", lambda s: None),                     contextlib.redirect_stderr(io.StringIO()):
+                M.get("https://hf.example/f", 300, 399)
+            self.assertEqual(asked, ["https://hf.example/f"])               # the cached address failed: the original is asked again
+        M._cdn.clear()
+
+    def test_a_slow_first_range_does_not_stop_the_ones_behind_it(self):
+        import threading
+        gate = threading.Event()
+        started = []
+
+        def get(url, a, b):
+            started.append(a)
+            if a == 0:
+                gate.wait(5)
+            return bytes(b - a + 1)
+
+        def release():                                   # lets the first range go once the later ones have been started
+            for _ in range(200):
+                if len(started) >= 9:
+                    break
+                M.time.sleep(0.01)
+            gate.set()
+
+        threading.Thread(target=release, daemon=True).start()
+        with mock.patch.object(M, "get", get):
+            list(M.ranged("u", 0, 40 * 1000 - 1, 1000, 4))
+        self.assertGreaterEqual(len(started), 9)                           # four connections, nine ranges started before range 0 ended
+
+    def test_a_failing_range_stops_the_parallel_read(self):
+        def get(url, a, b):
+            if a >= 2000:
+                raise IOError("boom")
+            return bytes(b - a + 1)
+
+        with mock.patch.object(M, "get", get), self.assertRaises(IOError):
+            list(M.ranged("u", 0, 9999, 1000, 4))
+
     def test_wrong_bytes_are_fetched_again_once_then_refused(self):
         self.fetch(Mirror())
         bad = bytes(len(A))                       # an install the #327 mirror corrupted: right size, wrong bytes
@@ -195,6 +276,108 @@ class Setup(unittest.TestCase):
                         setup.subprocess, "run", return_value=mock.Mock(returncode=code)) as run:
                     self.assertEqual(setup.mtp_corrupt(mtp), want)
                     self.assertIn("verify", run.call_args[0][0])
+
+
+
+
+class Progress(FetchCase):
+    """#3257: the fetch says how far it is in the form of setup's own download line, so the app can show it."""
+
+    def test_progress_lines_name_the_whole_download_and_end_at_100(self):
+        err = self.fetch(Mirror())
+        lines = [x for x in err.splitlines() if "MTP draft layer:" in x]
+        total = len(A) + len(B)
+        self.assertTrue(lines)
+        self.assertIn("/ %.2f GB" % (total / 1e9), lines[-1])
+        self.assertIn("(100%)", lines[-1])
+        import re
+        for x in lines:                                  # the shape tools/strata_mcp.py install_progress reads
+            self.assertTrue(re.match(r"\s*(\S.*?): +([\d.]+) / ([\d.]+) GB \((\d+)%\)", x), x)
+
+    def test_a_resumed_fetch_starts_from_what_is_already_there(self):
+        self.fetch(Mirror())
+        err = self.fetch(Mirror())
+        self.assertIn("(100%)", [x for x in err.splitlines() if "MTP draft layer:" in x][0])
+
+    def test_the_progress_figure_follows_the_job_in_strata_mcp(self):
+        import strata_mcp as MCP
+        got = MCP.install_progress(["=== Step 6: preparing the model for Strata ===",
+                                    "  MTP draft layer:   1.23 / 5.04 GB (24%)"])
+        self.assertEqual(got["download"], {"file": "MTP draft layer", "done_gb": 1.23, "total_gb": 5.04, "percent": 24})
+
+
+class Flaky(FetchCase):
+    def test_a_connection_that_drops_mid_tensor_does_not_end_the_run(self):
+        """#3214: every range of the tensor fails past get()'s own retries once: the tensor is tried again (fewer connections)."""
+        honest, fails = Mirror(), [0]
+
+        def mirror(req, timeout=None):
+            if req.get_header("Range") and req.full_url.endswith("model-2.safetensors") and fails[0] < 12:
+                a, b = map(int, req.get_header("Range").split("=")[1].split("-"))
+                if (a, b) == Mirror.span("model-2.safetensors", "mtp.b"):
+                    fails[0] += 1
+                    raise IOError("timed out")
+            return honest(req, timeout)
+
+        err = self.fetch(mirror)
+        self.assertEqual(self.tensor("mtp.b"), B)
+        self.assertIn("continuing with", err)
+
+    def test_a_link_that_never_works_ends_with_a_plain_sentence(self):
+        def mirror(req, timeout=None):
+            if req.get_header("Range") and req.full_url.endswith("model-2.safetensors"):
+                a, b = map(int, req.get_header("Range").split("=")[1].split("-"))
+                if (a, b) == Mirror.span("model-2.safetensors", "mtp.b"):
+                    raise IOError("timed out")
+            return Mirror()(req, timeout)
+
+        with self.assertRaisesRegex(SystemExit, "keeps failing"):
+            self.fetch(mirror)
+
+
+class OneAtATime(unittest.TestCase):
+    def test_a_second_fetch_in_the_same_folder_waits_for_the_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            first = M.lock_folder(d)
+            told = io.StringIO()
+            with mock.patch.object(M.time, "sleep", lambda s: None), contextlib.redirect_stderr(told), \
+                    self.assertRaisesRegex(SystemExit, "another MTP download"):
+                M.lock_folder(d, wait=0.0)
+            first.close()
+            M.lock_folder(d).close()                     # free again once the first ends
+
+    def test_a_download_ends_with_the_process_that_started_it(self):
+        """#3257: setup killed, its child must not go on: a grandchild whose parent is gone."""
+        import subprocess
+        import time
+        child_code = ("import sys,time; sys.path.insert(0, %r); import mtp_fetch as M; M.exit_with_parent(); "
+                      "print('up', flush=True); time.sleep(60)" % str(ROOT / "tools"))
+        parent_code = ("import subprocess,sys,os; env=dict(os.environ, STRATA_EXIT_WITH_PARENT='1'); "
+                       "p=subprocess.Popen([sys.executable,'-c',%r], env=env, stdout=subprocess.PIPE, text=True); "
+                       "print(p.pid, flush=True); p.stdout.readline(); print('ready', flush=True); sys.stdout.flush(); os._exit(0)" % child_code)
+        r = subprocess.Popen([sys.executable, "-c", parent_code], stdout=subprocess.PIPE, text=True)
+        pid = int(r.stdout.readline())
+        r.stdout.readline()
+        r.wait(30)
+        end = time.time() + 15
+        alive = True
+        while time.time() < end and alive:
+            time.sleep(0.5)
+            if os.name == "nt":
+                out = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid], capture_output=True, text=True).stdout
+                alive = str(pid) in out
+            else:
+                try:
+                    os.kill(pid, 0)
+                    alive = True
+                except OSError:
+                    alive = False
+        if alive:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            else:
+                os.kill(pid, 9)
+        self.assertFalse(alive, "the download kept running after its parent ended")
 
 
 if __name__ == "__main__":

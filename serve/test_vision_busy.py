@@ -42,7 +42,7 @@ class Busy(unittest.TestCase):
         v = server.Vision.__new__(server.Vision)
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.gettempdir())
-        with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", lambda *a, **k: proc):
             with self.assertRaises(RuntimeError) as cm:
                 v._start()
         self.assertIn("Exclusive_Process", str(cm.exception))

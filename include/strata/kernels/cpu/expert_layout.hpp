@@ -96,6 +96,8 @@ const ExpertLayout& expert_layout();
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
-inline constexpr int kExpertLayoutVersion = 4;
+/// v5 = v4 plus `hadamard.txt` beside it: Hadamard-folded experts (hadamard.hpp), written only for such models,
+/// so an engine that cannot rotate the activations refuses the pack instead of running it wrong.
+inline constexpr int kExpertLayoutVersion = 5;
 
 }  // namespace strata::kernels::cpu

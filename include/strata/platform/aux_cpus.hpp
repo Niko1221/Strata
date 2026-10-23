@@ -19,6 +19,7 @@
 // do not link each other.  No output of the engine depends on where a thread runs.
 #pragma once
 
+#include "strata/platform/thread_name.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -159,6 +160,7 @@ struct State {
     std::vector<int> allowed;                     ///< the process's CPUs, snapshotted before any thread is pinned
     std::vector<int> plan;                        ///< the aux CPUs (empty: nothing to do)
     std::vector<int> workers;                     ///< the pool's CPUs: their threads are never touched
+    int host_cpu = -1;                            ///< the CPU the host thread is pinned to (-1: unknown)
     cpu_set_t target;
     std::set<int> owned;                          ///< tids of pool workers and host threads
     std::map<int, cpu_set_t> original;            ///< tid -> the mask it had before this module moved it
@@ -286,6 +288,66 @@ inline void set_enabled(bool on) {
 
 inline bool enabled() { return detail::state().enabled.load(std::memory_order_acquire); }
 
+namespace detail {
+/// The CPUs a thread that must not share the host's core runs on: every CPU the process may use but the host's and
+/// the pool workers' (on an SMT machine with the default pool, the idle sibling threads); without such CPUs, every CPU
+/// but the host's; failing that, every CPU.  Caller holds `mu`.  False when `configure` saw no CPUs.
+inline bool off_host_target_locked(const State& s, cpu_set_t& out) {
+    if (s.allowed.empty()) return false;
+    auto build = [&](bool skip_workers) {
+        CPU_ZERO(&out);
+        int n = 0;
+        for (int c : s.allowed) {
+            if (c == s.host_cpu) continue;
+            if (skip_workers && std::find(s.workers.begin(), s.workers.end(), c) != s.workers.end()) continue;
+            CPU_SET(c, &out);
+            ++n;
+        }
+        return n;
+    };
+    if (build(true) > 0 || build(false) > 0) return true;
+    CPU_ZERO(&out);
+    for (int c : s.allowed) CPU_SET(c, &out);
+    return true;
+}
+}  // namespace detail
+
+/// Puts the calling thread off the host's core and off the pool workers' CPUs (see off_host_target_locked).  A thread
+/// the host creates inherits the host's single CPU; one that must not share that core (the concurrent prompt read's
+/// thread and its doorbell thread, STRATA_PIPED_CONCURRENT) calls this first.  False when nothing changed.
+inline bool place_off_host() {
+    detail::State& s = detail::state();
+    std::lock_guard<std::mutex> lk(s.mu);
+    cpu_set_t to;
+    if (!detail::off_host_target_locked(s, to)) return false;
+    return sched_setaffinity(0, sizeof to, &to) == 0;
+}
+
+/// Called on the host thread: every other thread that runs on exactly the host's CPUs (it inherited them: the prefill
+/// copy threads started by the first prompt, a helper the host started) goes where place_off_host puts a thread.  The
+/// pool's workers and the host threads are never moved.  Returns how many moved.
+inline int release_host_inheritors() {
+    detail::State& s = detail::state();
+    std::lock_guard<std::mutex> lk(s.mu);
+    cpu_set_t host, all, to;
+    CPU_ZERO(&host);
+    CPU_ZERO(&all);
+    if (!detail::off_host_target_locked(s, to) || sched_getaffinity(0, sizeof host, &host) != 0) return 0;
+    for (int c : s.allowed) CPU_SET(c, &all);
+    if (detail::same_mask(host, all)) return 0;   // the host is not pinned: nothing inherited a single core
+    detail::purge_locked(s);
+    const int self = detail::self_tid();
+    int n = 0;
+    for (int tid : detail::task_ids()) {
+        if (tid == self || s.owned.find(tid) != s.owned.end()) continue;
+        cpu_set_t m;
+        CPU_ZERO(&m);
+        if (sched_getaffinity(tid, sizeof m, &m) != 0 || !detail::same_mask(m, host)) continue;
+        if (sched_setaffinity(tid, sizeof to, &to) == 0) ++n;
+    }
+    return n;
+}
+
 /// The aux CPUs of the plan ({} when there is none).
 inline std::vector<int> plan() {
     detail::State& s = detail::state();
@@ -324,6 +386,7 @@ inline std::string set_topology(int host_cpu, const std::vector<int>& worker_cpu
                               : derive(allowed, host_cpu, worker_cpus);
         s.plan = plan;
         s.workers = worker_cpus;
+        s.host_cpu = host_cpu;
         CPU_ZERO(&s.target);
         for (int c : plan) CPU_SET(c, &s.target);
         s.have_plan.store(!plan.empty(), std::memory_order_release);
@@ -353,6 +416,8 @@ inline void pin_current_thread() {}
 inline int restore() { return 0; }
 inline void set_enabled(bool) {}
 inline bool enabled() { return false; }
+inline bool place_off_host() { return false; }   // (a new thread does not inherit the host's CPU set here)
+inline int release_host_inheritors() { return 0; }
 inline std::vector<int> plan() { return {}; }
 inline std::string set_topology(int, const std::vector<int>&) { return "strata aux cpus: not available on this system"; }
 

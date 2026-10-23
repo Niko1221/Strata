@@ -95,6 +95,49 @@ __global__ void combine_k10_vec4(const float4* __restrict__ parts4, const float*
     sum.w += sh.w;
     output4[c4] = sum;
 }
+__global__ void combine_k10_vec4_hits(const float4* __restrict__ parts4, const float4* __restrict__ hits4,
+                                      const int32_t* __restrict__ dst, const int32_t* __restrict__ count,
+                                      const float* __restrict__ weights, const float4* __restrict__ shared4,
+                                      float4* __restrict__ output4, int64_t n4) {
+    const int64_t tk = blockIdx.y;
+    __shared__ int hit_mask;
+    if (threadIdx.x == 0) hit_mask = 0;
+    __syncthreads();
+    const int nh = *count;
+    for (int h = threadIdx.x; h < nh; h += blockDim.x) {
+        const int r = dst[h];
+        if (r / 10 == (int) tk) atomicOr(&hit_mask, 1 << (r % 10));
+    }
+    __syncthreads();
+    const int mask = hit_mask;
+    parts4 += tk * 10 * n4;
+    hits4 += tk * 10 * n4;
+    weights += tk * 10;
+    shared4 += tk * n4;
+    output4 += tk * n4;
+    const int64_t c4 = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (c4 >= n4) return;
+    const float w0 = __ldg(weights + 0);
+    float4 p0 = parts4[c4];
+    if (mask & 1) { const float4 hh = hits4[c4]; p0.x += hh.x; p0.y += hh.y; p0.z += hh.z; p0.w += hh.w; }
+    float4 sum = make_float4(p0.x * w0, p0.y * w0, p0.z * w0, p0.w * w0);
+#pragma unroll
+    for (int expert = 1; expert < 10; ++expert) {
+        const float w = __ldg(weights + expert);
+        float4 p = parts4[int64_t(expert) * n4 + c4];
+        if ((mask >> expert) & 1) { const float4 hh = hits4[int64_t(expert) * n4 + c4]; p.x += hh.x; p.y += hh.y; p.z += hh.z; p.w += hh.w; }
+        sum.x = fmaf(p.x, w, sum.x);
+        sum.y = fmaf(p.y, w, sum.y);
+        sum.z = fmaf(p.z, w, sum.z);
+        sum.w = fmaf(p.w, w, sum.w);
+    }
+    const float4 sh = shared4[c4];
+    sum.x += sh.x;
+    sum.y += sh.y;
+    sum.z += sh.z;
+    sum.w += sh.w;
+    output4[c4] = sum;
+}
 bool valid_span(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
     return p && address % alignof(float) == 0 && bytes <= UINTPTR_MAX - address;
@@ -128,6 +171,22 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
         combine<<<unsigned((n_embd + 255) / 256), 256, 0, static_cast<cudaStream_t>(stream)>>>(
             parts, weights, shared, output, n_embd, int(k));
     }
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+bool native_moe_combine_hits_supported(const float* parts, const float* shared, const float* output, int64_t n_embd, int64_t k, int n_tok) {
+    return k == 10 && shared != nullptr && n_tok >= 1 && n_tok <= 8 && n_embd > 0 && (n_embd & 3) == 0 &&
+           (((uintptr_t) parts | (uintptr_t) shared | (uintptr_t) output) & 15u) == 0;
+}
+void native_moe_combine_multi_hits_added(const float* parts, const float* hits, const int32_t* dst, const int32_t* count,
+                                         const float* weights, const float* shared, float* output, int64_t n_embd, int64_t k,
+                                         int n_tok, void* stream) {
+    if (!stream || !native_moe_combine_hits_supported(parts, shared, output, n_embd, k, n_tok) || ((uintptr_t) hits & 15u) != 0)
+        throw std::invalid_argument("native MoE combine (hits added) requires k = 10, aligned spans, 1..8 tokens");
+    const int64_t n4 = n_embd >> 2;
+    combine_k10_vec4_hits<<<dim3(unsigned((n4 + 127) / 128), (unsigned) n_tok), 128, 0, static_cast<cudaStream_t>(stream)>>>(
+        reinterpret_cast<const float4*>(parts), reinterpret_cast<const float4*>(hits), dst, count, weights,
+        reinterpret_cast<const float4*>(shared), reinterpret_cast<float4*>(output), n4);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
