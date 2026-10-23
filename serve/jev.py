@@ -808,17 +808,21 @@ def handle(svc, req: dict, mode: str = "L") -> tuple[int, dict]:
                 return _err("state", "tokenization failed")
             variants = [svc.tok.encode(lbl, parse_special=True)[:1] for lbl in qdef["render_labels"]]
             keys = _request_keys(l_pin)
+            # STATE PARKING, fields 2..N: a field that resumes from the checkpoint the pin marks has nothing
+            # to park, and parking one is real work (~75 ms per field on the 3090: measured 2026-10-23,
+            # five fields 1527 ms with the park against 1232 ms without, on byte-identical prompts and
+            # identical answers).  Field 1 must keep parking - it is the one the pin marks, so suppressing it
+            # there would leave nothing for the later fields to resume from.
+            if l_pin > 0 and l_seen > 0:
+                keys["strata_checkpoint"] = False
             # M3.1 hybrid: name this field's cue so the ONE decode step this field already runs is the read
             # (the decode is not skipped - max_new stays 1; the row it computes is simply read back by
-            # position instead of being the implicit readout).  The first field keeps its checkpoint - the one the pin
-            # marks; the later ones resume from it and park nothing.
+            # position instead of being the implicit readout).
             cue = None
             if (_hybrid_enabled() and l_pin > 0 and not image_state
                     and _row_capture(engine) and hasattr(engine, "row_logits_at")):
                 cue = len(ids) - 1
                 keys["jevpos"] = [cue]
-                if l_seen > 0:
-                    keys["strata_checkpoint"] = False
             cancel = threading.Event()
             for _ in engine.generate(ids, 1, keys, cancel):
                 pass                                     # the one decode step; its logits row is the readout
