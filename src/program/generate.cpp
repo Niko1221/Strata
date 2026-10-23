@@ -11963,12 +11963,14 @@ int main(int argc, char** argv) {
                 std::vector<int32_t> toks;
                 {
                     std::istringstream is(line.substr(7));
-                    bool bad = !(is >> row) || row < 0;
+                    bool bad = !(is >> row) || row < 0 || row > kMaxTokenId;   // row is narrowed to int below
                     int64_t v = 0;
-                    while (!bad && (is >> v)) {
-                        if (v < 0 || v > kMaxTokenId || toks.size() >= kMaxBrowTokens) bad = true;
+                    // the cap is checked BEFORE each push, so a multi-megabyte line cannot allocate first
+                    while (!bad && toks.size() < kMaxBrowTokens && (is >> v)) {
+                        if (v < 0 || v > kMaxTokenId) bad = true;
                         else toks.push_back((int32_t) v);
                     }
+                    if (!bad && !is.eof() && toks.size() >= kMaxBrowTokens) bad = true;   // more than the cap
                     if (!bad && !is.eof()) bad = true;      // trailing junk, not just a short list
                     if (bad || toks.empty()) {
                         std::printf("ERR BROWAT: bad row or token list\n");
@@ -12004,6 +12006,16 @@ int main(int argc, char** argv) {
             // the prefill chunk is read in more than one window, so only "rows == the token count I sent"
             // means its own numbering is the engine's.  Answers BROWROWSD <n>; the engine is never asked
             // unless a server sends BROWROWS.
+            // jev fix B: how many head rows the LAST request kept for the positions it named (0 = no
+            // capture).  A client that sends jevpos= checks this equals the number it named BEFORE reading
+            // them: if the capture was dropped (a malformed list, a request that ran no window for the
+            // position), BROWAT would fall back to window addressing and answer a neighbouring row.
+            if (o.jev_brow && line.compare(0, 7, "BROWCAP") == 0 &&
+                (line.size() == 7 || line[7] == ' ' || line[7] == '\r')) {
+                std::printf("BROWCAPD %d\n", ver.captured_rows());
+                std::fflush(stdout);
+                continue;
+            }
             if (o.jev_brow && line.compare(0, 8, "BROWROWS") == 0 &&
                 (line.size() == 8 || line[8] == ' ' || line[8] == '\r')) {
                 std::printf("BROWROWSD %d\n", ver.brow_rows());
