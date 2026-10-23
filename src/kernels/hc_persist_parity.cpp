@@ -48,12 +48,26 @@ T* dev(size_t n) {
     ck(cudaMalloc(&p, n * sizeof(T)), "malloc");
     return (T*) p;
 }
+void set_env(const char* name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+void unset_env(const char* name) {
+#if defined(_WIN32)
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     const bool off = argc > 1 && std::strcmp(argv[1], "--off") == 0;
-    if (off) unsetenv("STRATA_HC_PERSIST");
-    else setenv("STRATA_HC_PERSIST", "1", 1);
+    if (off) unset_env("STRATA_HC_PERSIST");
+    else set_env("STRATA_HC_PERSIST", "1");
     k::fused_gr_check();
     k::fused_gr_persist_init();
 
