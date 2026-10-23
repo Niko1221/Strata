@@ -20,6 +20,11 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-23: 3x V100 32 GB (2x PG500-216 + V100 PCIe, sm_70, PCIe gen3 x16), 2x Xeon E5-2696 v3, 128 GB DDR3L-1600](../bench/results/2026-10-23-community-3xv100-gsq-0148-standard/README.md):
+  first `strata bench run` standard-v1 result on a release engine (0.1.48, GSQ-RCO IQ3_S, 262,144-token context, ~98% expert residency,
+  layer split 3/20/25): short decode 78.9 tok/s, 4K prompt 1139 tok/s, 16K prompt 1542 tok/s, TTFT 0.84-10.7 s, all 12 sanity checks passed,
+  optional 4-way concurrency round 27 s. A slow-DDR3 host with the model on HDD; loading and model hashing are excluded per the protocol.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
