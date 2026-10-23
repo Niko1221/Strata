@@ -1743,8 +1743,13 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
     if (io_pf_ || io_stats_) {   // count what the page cache holds; with io prefetch, read what it does not with pread
         Span sp[3];
         const int ns = spans(layer, expert, sp);
+        uint64_t resv[3] = {0, 0, 0};
+        static const bool io_debug = std::getenv("STRATA_IO_DEBUG") != nullptr;
+        static std::atomic<int> io_debug_n{0};
+        const bool dbg = io_debug && io_debug_n.fetch_add(1, std::memory_order_relaxed) < 6;
         for (int i = 0; i < ns; ++i) {
             const uint64_t res = resident_in(sp[i].p, sp[i].n);
+            resv[i] = res;
             io_cached_.fetch_add(res, std::memory_order_relaxed);
             io_uncached_.fetch_add(sp[i].n - res, std::memory_order_relaxed);
             const bool dec = in_decode();
@@ -1765,6 +1770,13 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
             }
             std::memcpy(dst + sp[i].at, sp[i].p, (size_t) sp[i].n);
         }
+        if (dbg)
+            std::fprintf(stderr,
+                         "strata io debug: L%lld e%lld ns %d spans[res/n/fd] %llu/%zu/%d %llu/%zu/%d %llu/%zu/%d pf %d\n",
+                         (long long) layer, (long long) expert, ns, (unsigned long long) resv[0],
+                         (size_t) sp[0].n, sp[0].fd, (unsigned long long) resv[1], (size_t) sp[1].n,
+                         sp[1].fd, (unsigned long long) resv[2], (size_t) sp[2].n, sp[2].fd,
+                         (int) io_pf_);
         if (ns > 0) return true;
     }
 #endif

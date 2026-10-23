@@ -1,4 +1,4 @@
-﻿# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
 # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -260,6 +260,16 @@ target_link_libraries(strata_artifact INTERFACE strata_warnings)
 
 add_executable(strata-gguf src/artifact/gguf_reader.cpp)
 target_link_libraries(strata-gguf PRIVATE strata_artifact)
+
+# the dsv4 MVP weight-mapping probe (K8b): host-only, header-only reader, no CUDA; validates the dsv4 layout
+# table (include/strata/dsv4/layout.hpp) against a real GGUF + pack (native / dense.bin / experts.bin routes)
+add_executable(strata-dsv4-probe src/dsv4/dsv4_probe.cpp)
+target_link_libraries(strata-dsv4-probe PRIVATE strata_artifact)
+
+# the dsv4 MVP reference forward (phase 1.2, skeleton): host-only, no CUDA; embed -> 43 identity layers ->
+# hc_head -> output_norm -> head, validated against the golden oracle dumps (tools/dsv4/compare.py)
+add_executable(strata-dsv4ref src/dsv4/dsv4ref.cpp)
+target_link_libraries(strata-dsv4ref PRIVATE strata_artifact)
 
 add_executable(strata-dequant src/artifact/dequant.cpp)
 target_link_libraries(strata-dequant PRIVATE strata_artifact)
@@ -793,6 +803,40 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(strata PRIVATE strata_qwen35)
   target_compile_definitions(strata PRIVATE STRATA_HAVE_QWEN35=1)
   endif()
+
+  # DeepSeek V4-Flash (deepseek4) engine path (notes/engines/202610-dsv4-engine-integration-plan.md F3): a library
+  # that `strata` switches to for a deepseek4 model (the family switch at the top of its main, next to Qwen3.6's)
+  # and that strata-dsv4 wraps on its own.  strata_engine is linked for the pack loaders it shares with the other
+  # families (WeightTable, FileExpertSource); nothing in it is recompiled differently.
+  add_library(strata_dsv4 STATIC src/dsv4/dsv4_engine.cu src/dsv4/dsv4_moe.cu)
+  target_include_directories(strata_dsv4 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata_dsv4 PRIVATE strata_engine strata_prefill strata_kernels strata_warnings strata_dsv4_attn ${_strata_gpu_runtime_target})
+  if(STRATA_NATIVE_EXPERTS)
+    # the native_experts.txt v3 layout and the NVFP4 blob format live in the ggml-cpu expert path
+    target_link_libraries(strata_dsv4 PRIVATE strata_kernels_cpu)
+    target_compile_definitions(strata_dsv4 PRIVATE STRATA_DSV4_CPU_POOL=1)
+  endif()
+  add_executable(strata-dsv4 src/dsv4/dsv4_main.cpp)
+  target_link_libraries(strata-dsv4 PRIVATE strata_dsv4 ${_strata_gpu_runtime_target})
+  target_link_libraries(strata PRIVATE strata_dsv4)
+  target_compile_definitions(strata PRIVATE STRATA_HAVE_DSV4=1)
+
+  # dsv4 slices S3+S4: the dense MLA attention block (hash layers L0/L1) and the compressor block
+  # (r = 4 / r = 128 layers, src/dsv4/dsv4_comp.cu) - MQA-512 kernels plus the standalone
+  # golden-comparison test.  The test needs only the header-only GGUF reader
+  # (strata_artifact) and the S3 kernel library; it deliberately does not link strata_dsv4
+  # (the S0 loader is not exported while src/dsv4/dsv4_engine.cu is owned by the parallel S2
+  # wiring effort).
+  add_library(strata_dsv4_attn STATIC src/dsv4/dsv4_attn.cu src/dsv4/dsv4_comp.cu)
+  target_include_directories(strata_dsv4_attn PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(strata_dsv4_attn PRIVATE strata_warnings ${_strata_gpu_runtime_target})
+  add_executable(strata-dsv4-attn-test src/dsv4/dsv4_attn_test.cpp)
+  target_link_libraries(strata-dsv4-attn-test PRIVATE strata_dsv4_attn strata_artifact ${_strata_gpu_runtime_target})
+
+  # dsv4 slice S4: compressor unit test (synthetic weights vs a verbatim host port of dsv4ref's
+  # compressor_forward; also the memcheck small-geometry target for the S4 kernels).
+  add_executable(strata-dsv4-comp-test src/dsv4/dsv4_comp_test.cpp)
+  target_link_libraries(strata-dsv4-comp-test PRIVATE strata_dsv4_attn ${_strata_gpu_runtime_target})
 
   if(STRATA_ENABLE_HIP)
     enable_testing()

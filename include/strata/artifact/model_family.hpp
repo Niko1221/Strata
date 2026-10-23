@@ -16,11 +16,13 @@ enum class ModelFamily {
     Unknown = 0,
     Qwen4Exp,    ///< Qwen3.8-Flash-Next and its fine-tunes / pruned variants (Swift 1.5, the Coder)
     Qwen35Moe,   ///< Qwen3.6-35B-A3B (Unsloth's MTP GGUFs): plain pre-norm residual, dense attention, nextn MTP block
+    DeepseekV4,  ///< DeepSeek V4-Flash (deepseek4): MLA + DSA indexer attention, sinkhorn hyper-connections, NVFP4 MoE
 };
 
 inline ModelFamily model_family_from_arch(const std::string& arch) {
     if (arch == "qwen4exp") return ModelFamily::Qwen4Exp;
     if (arch == "qwen35moe") return ModelFamily::Qwen35Moe;
+    if (arch == "deepseek4") return ModelFamily::DeepseekV4;
     return ModelFamily::Unknown;
 }
 
@@ -31,6 +33,8 @@ inline const char* model_family_arch(ModelFamily f) {
         return "qwen4exp";
     case ModelFamily::Qwen35Moe:
         return "qwen35moe";
+    case ModelFamily::DeepseekV4:
+        return "deepseek4";
     default:
         return "";
     }
@@ -43,6 +47,8 @@ inline const char* model_family_title(ModelFamily f) {
         return "Qwen3.8-Flash-Next";
     case ModelFamily::Qwen35Moe:
         return "Qwen3.6-35B-A3B";
+    case ModelFamily::DeepseekV4:
+        return "DeepSeek V4-Flash";
     default:
         return "an unknown model";
     }
@@ -51,7 +57,12 @@ inline const char* model_family_title(ModelFamily f) {
 /// Whether Flash-Next's engine path runs the family.  Qwen3.6 has an engine path of its own (src/qwen35), which the
 /// CUDA and HIP builds of `strata` switch to at the top of main(); the Intel Arc (SYCL) build has none yet, so there
 /// (and on Flash-Next's path) the family is refused with `model_family_not_supported`.
-inline bool model_family_runs(ModelFamily f) { return f == ModelFamily::Qwen4Exp; }
+inline bool model_family_runs(ModelFamily f) {
+    // DeepseekV4 runs on its own engine path (src/dsv4), switched to at the top of main() like Qwen3.6's; without
+    // this entry the CUDA build's own generate.cpp refused the family with model_family_not_supported before the
+    // switch could see it.  (The SYCL build has no dsv4 path yet and the switch there is compiled out.)
+    return f == ModelFamily::Qwen4Exp || f == ModelFamily::DeepseekV4;
+}
 
 /// The refusal for a recognised family the engine does not run (empty when it runs it).
 inline std::string model_family_not_supported(ModelFamily f) {

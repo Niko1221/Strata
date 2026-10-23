@@ -386,6 +386,12 @@ void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int,
 #endif
 
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
+    // the compiled-for shape (Qwen's H/FF): what this overload has always meant
+    return expert_layout_load(pack_dir, n_layers, n_expert, H, FF, err);
+}
+
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
+                        int64_t n_ff, std::string& err) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
@@ -437,7 +443,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             return false;
         }
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
+        if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
         if (f.bytes != blob) {
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
                   " B but its formats make " + std::to_string(f.bytes);

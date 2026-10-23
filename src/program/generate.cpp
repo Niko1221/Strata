@@ -102,6 +102,9 @@
 #if defined(STRATA_HAVE_QWEN35)
 #include "strata/qwen35/engine.hpp"
 #endif
+#if defined(STRATA_HAVE_DSV4)
+#include "strata/dsv4/engine.hpp"
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
@@ -2336,8 +2339,12 @@ int main(int argc, char** argv) {
         }
         // `strata --families`: the GGUF architectures this build runs (setup asks before it installs one)
         if (std::strcmp(argv[i], "--families") == 0) {
-#if defined(STRATA_HAVE_QWEN35)
+#if defined(STRATA_HAVE_QWEN35) && defined(STRATA_HAVE_DSV4)
+            std::printf("qwen4exp qwen35moe deepseek4\n");
+#elif defined(STRATA_HAVE_QWEN35)
             std::printf("qwen4exp qwen35moe\n");
+#elif defined(STRATA_HAVE_DSV4)
+            std::printf("qwen4exp deepseek4\n");
 #else
             std::printf("qwen4exp\n");
 #endif
@@ -2409,6 +2416,22 @@ int main(int argc, char** argv) {
 #endif
 #if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     prime_hw_queues();
+#endif
+#if defined(STRATA_HAVE_DSV4)
+    // The same switch for DeepSeek V4-Flash (GGUF architecture deepseek4): decided from the file's header, the
+    // engine path is src/dsv4 (strata::dsv4::run).  Placed after Qwen3.6's block, an additive sibling of it.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::strcmp(argv[i], "--native") != 0 && std::strcmp(argv[i], "--model") != 0) continue;
+        bool dsv4 = false;
+        try {
+            const strata::GgufFile meta(strata::gguf_split_paths(argv[i + 1]).front());
+            dsv4 = strata::model_family(meta) == strata::ModelFamily::DeepseekV4;
+        } catch (const std::exception&) {
+            // not readable here: the normal path below reports it
+        }
+        if (dsv4) return strata::dsv4::run(argc, argv);
+        break;
+    }
 #endif
     Options o;
     bool have_tokens = false;

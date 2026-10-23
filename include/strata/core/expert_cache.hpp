@@ -164,6 +164,23 @@ public:
         old = kNotResident;
     }
 
+    /// Publish a replacement whose VICTIM AND NEWCOMER SIT IN DIFFERENT LAYERS: the victim's slot moves
+    /// to `(new_layer, new_expert)`.  This is what a globally managed pool needs - the eviction policy
+    /// picks the coldest resident of the whole cache, not of the newcomer's own layer, so a layer that
+    /// over-routes can borrow from a layer that under-routes in this same pass.
+    ///
+    /// Only meaningful with `set_per_layer_admission(false)`: under per-layer admission the slot ranges
+    /// are the invariant, and moving a slot across a layer boundary would hand layer A's slot to layer
+    /// B permanently.  Returns the slot, or `kNotResident` when `(old_layer, old_expert)` is not
+    /// resident (nothing is moved in that case).
+    int32_t replace_across(int64_t old_layer, int32_t old_expert, int64_t new_layer, int32_t new_expert) {
+        int32_t& old = residency_[(size_t) old_layer * n_expert_ + old_expert];
+        if (old == kNotResident) return kNotResident;
+        residency_[(size_t) new_layer * n_expert_ + new_expert] = old;
+        old = kNotResident;
+        return residency_[(size_t) new_layer * n_expert_ + new_expert];
+    }
+
     /// **R4.2g: GIVE EACH LAYER ITS OWN SLOTS.  ROUND 328 MEASURED WHY THE GLOBAL FORM CANNOT WORK.**
     ///
     /// `admit`'s original policy hands out slots in ARRIVAL ORDER from one counter shared by every layer

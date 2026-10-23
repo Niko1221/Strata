@@ -94,6 +94,11 @@ const ExpertLayout& expert_layout();
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+/// The same, with the expert geometry given at run time instead of the compiled-for Qwen shape (H/FF of
+/// include/strata/kernels/cpu/expert.hpp): DeepSeek V4-Flash's 43 x 256 experts are 4096 -> 2048 NVFP4, which
+/// native_fmt must know to size a blob.  The 4-argument form passes the compiled-for shape, unchanged.
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd,
+                        int64_t n_ff, std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 /// v5 = v4 plus `hadamard.txt` beside it: Hadamard-folded experts (hadamard.hpp), written only for such models,

@@ -134,6 +134,7 @@ inline const char* ggml_type_name(uint32_t t) {
 inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
     switch (t) {
     case 0:
+    case 26:   // I32
         elems = 1;
         bytes = 4;
         return true;
@@ -824,6 +825,170 @@ inline std::string geometry_unsupported(const core::ModelGeometry& g) {
     return {};
 }
 
+/// DeepSeek V4-Flash (arch "deepseek4"): the third family's guard (dsv4 MVP, phase 0).  Every geometry key the
+/// dsv4 path reads is required and pinned to the value the kernels are compiled for — a V4 variant of another
+/// shape is refused by the key that differs rather than silently mis-run.  Then the tensor inventory the loader
+/// will take: the NVFP4 expert mergers with their per-expert scales, the ratio-conditioned compressor and indexer
+/// sets, and the hash-layer / routed-MoE router split.  The vocabulary stays free: the head and the embedding
+/// carry their shapes on their tensors.
+inline std::string check_architecture_deepseek4(const GgufFile& f) {
+    const std::string p = "deepseek4.";
+    struct IPin { const char* key; uint64_t want; };
+    const IPin ipins[] = {
+        {"block_count", 43},
+        {"embedding_length", 4096},
+        {"embedding_length_out", 16384},
+        {"attention.head_count", 64},
+        {"attention.head_count_kv", 1},
+        {"attention.key_length", 512},
+        {"attention.value_length", 512},
+        {"attention.q_lora_rank", 1024},
+        {"attention.sliding_window", 128},
+        {"attention.output_group_count", 8},
+        {"attention.output_lora_rank", 1024},
+        {"attention.indexer.head_count", 64},
+        {"attention.indexer.key_length", 128},
+        {"attention.indexer.top_k", 512},
+        {"hyper_connection.count", 4},
+        {"hyper_connection.sinkhorn_iterations", 20},
+        {"hash_layer_count", 3},
+        {"expert_count", 256},
+        {"expert_used_count", 6},
+        {"expert_shared_count", 1},
+        {"expert_feed_forward_length", 2048},
+        {"expert_gating_func", 4},  // llama's LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS
+        {"rope.dimension_count", 64},
+    };
+    for (const IPin& pin : ipins) {
+        const MetaValue* v = f.get(p + pin.key);
+        if (!v) return "missing " + p + pin.key;
+        if (!v->is_num() || v->type == MetaType::F32 || v->type == MetaType::F64 || v->type == MetaType::BOOL)
+            return p + pin.key + " is not an integer";
+        if (v->u != pin.want)
+            return p + pin.key + " = " + std::to_string(v->u) + ", the dsv4 kernels are compiled for " +
+                   std::to_string(pin.want);
+    }
+    struct FPin { const char* key; double want; };
+    const FPin fpins[] = {
+        {"attention.compress_rope_freq_base", 160000.0},
+        {"rope.freq_base", 10000.0},
+        {"rope.scaling.factor", 16.0},
+        {"rope.scaling.yarn_beta_fast", 32.0},
+        {"rope.scaling.yarn_beta_slow", 1.0},
+        {"expert_weights_scale", 1.5},
+        {"hyper_connection.epsilon", 1e-6},
+        {"attention.layer_norm_rms_epsilon", 1e-6},
+    };
+    for (const FPin& pin : fpins) {
+        const MetaValue* v = f.get(p + pin.key);
+        if (!v) return "missing " + p + pin.key;
+        if (!v->is_num()) return p + pin.key + " is not a number";
+        if (std::abs(v->num() - pin.want) > 1e-6 * std::abs(pin.want)) {
+            char buf[192];
+            std::snprintf(buf, sizeof buf, "%s%s = %g, the dsv4 kernels are compiled for %g", p.c_str(), pin.key,
+                          v->num(), pin.want);
+            return buf;
+        }
+    }
+    if (const MetaValue* v = f.get(p + "expert_weights_norm"); !v || v->type != MetaType::BOOL || !v->u)
+        return p + std::string("expert_weights_norm must be true (the router renormalises the top-k weights)");
+    if (const MetaValue* v = f.get(p + "rope.scaling.type"); !v || v->type != MetaType::STRING || v->s != "yarn")
+        return p + std::string("rope.scaling.type must be 'yarn'");
+    if (const MetaValue* v = f.get(p + "rope.scaling.original_context_length");
+        !v || !v->is_num() || v->u != 65536)
+        return p + std::string("rope.scaling.original_context_length = ") +
+               (v && v->is_num() ? std::to_string(v->u) : "missing") + ", the yarn tables are built for 65536";
+
+    // The layer split, per layer: 46 entries — 43 layers plus three trailing zeros for the dspark stages (which
+    // carry no blk.* tensors in a main-model file).  Pure hash layers 0-1 have ratio 0; layer 2 is the hybrid
+    // (hash routing AND a compressor+indexer stack, ratio 4).  From layer 2 on, even layers take ratio 4 with
+    // compressor AND indexer, odd layers ratio 128 with the compressor only — a 128-wide pooling block needs no
+    // indexer pass, attention runs over the compressed KV directly.
+    const MetaValue* cr = f.get(p + "attention.compress_ratios");
+    if (!cr || cr->type != MetaType::ARRAY || cr->count != 46 || cr->items.size() != cr->count)
+        return p + std::string("attention.compress_ratios must list 46 entries (43 layers + 3 dspark stages)");
+    int64_t ratios[43];
+    for (int64_t l = 0; l < 43; ++l) {
+        const int64_t r = (int64_t) cr->items[(size_t) l].u;
+        const int64_t want = (l < 2) ? 0 : (l % 2 == 0 ? 4 : 128);
+        if (r != want)
+            return p + "attention.compress_ratios[" + std::to_string(l) + "] = " + std::to_string(r) +
+                   ", but the dsv4 split wants " + std::to_string(want) +
+                   (l < 2 ? " (a pure hash layer)" : l % 2 == 0 ? " (compressor + indexer)" : " (compressor only)");
+        ratios[l] = r;
+    }
+    for (int64_t l = 43; l < 46; ++l)
+        if ((int64_t) cr->items[(size_t) l].u != 0)
+            return p + "attention.compress_ratios[" + std::to_string(l) + "] must be 0 (a dspark stage entry)";
+
+    // The tensor inventory the loader takes.  Shapes are pinned on the expert mergers (they ARE the expert GEMV
+    // contract) and on the head/embedding; the rest is required to exist.
+    auto need = [&](const std::string& name) -> std::string {
+        if (!f.find(name)) return "missing tensor " + name;
+        return {};
+    };
+    auto need_shape = [&](const std::string& name, std::initializer_list<uint64_t> dims,
+                          const char* type) -> std::string {
+        const TensorInfo* t = f.find(name);
+        if (!t) return "missing tensor " + name;
+        if (t->shape != std::vector<uint64_t>(dims))
+            return "tensor " + name + " has " + std::to_string(t->shape.size()) + " dims, the dsv4 kernels take " +
+                   std::to_string(dims.size());
+        if (std::strcmp(t->type_name(), type) != 0)
+            return "tensor " + name + " is " + t->type_name() + std::string(", the dsv4 kernels read ") + type;
+        return {};
+    };
+    for (int64_t l = 0; l < 43; ++l) {
+        const std::string b = "blk." + std::to_string(l) + ".";
+        const char* core[] = {
+            "attn_norm.weight", "attn_q_a.weight", "attn_q_a_norm.weight", "attn_q_b.weight", "attn_kv.weight",
+            "attn_kv_a_norm.weight", "attn_output_a.weight", "attn_output_b.weight", "attn_sinks.weight",
+            "hc_attn_fn.weight", "hc_attn_base.weight", "hc_attn_scale.weight", "ffn_norm.weight",
+            "ffn_gate_inp.weight", "ffn_gate_shexp.weight", "ffn_down_shexp.weight", "ffn_up_shexp.weight",
+            "hc_ffn_fn.weight", "hc_ffn_base.weight", "hc_ffn_scale.weight",
+            "ffn_gate_exps.scale", "ffn_gate_exps.input_scale", "ffn_down_exps.scale", "ffn_down_exps.input_scale",
+            "ffn_up_exps.scale", "ffn_up_exps.input_scale",
+        };
+        for (const char* n : core)
+            if (std::string err = need(b + n); !err.empty()) return err;
+        if (std::string err = need_shape(b + "ffn_gate_exps.weight", {4096, 2048, 256}, "NVFP4"); !err.empty()) return err;
+        if (std::string err = need_shape(b + "ffn_down_exps.weight", {2048, 4096, 256}, "NVFP4"); !err.empty()) return err;
+        if (std::string err = need_shape(b + "ffn_up_exps.weight", {4096, 2048, 256}, "NVFP4"); !err.empty()) return err;
+        if (l < 3) {
+            if (std::string err = need(b + "ffn_gate_tid2eid.weight"); !err.empty()) return err;
+            if (f.find(b + "exp_probs_b.bias"))
+                return "tensor " + b + "exp_probs_b.bias must not exist on a hash layer (tid2eid routes it)";
+        } else {
+            if (std::string err = need(b + "exp_probs_b.bias"); !err.empty()) return err;
+            if (f.find(b + "ffn_gate_tid2eid.weight"))
+                return "tensor " + b + "ffn_gate_tid2eid.weight must not exist on a routed layer";
+        }
+        if (ratios[l]) {
+            const char* comp[] = {"attn_compressor_kv.weight", "attn_compressor_gate.weight",
+                                  "attn_compressor_ape.weight", "attn_compressor_norm.weight"};
+            for (const char* n : comp)
+                if (std::string err = need(b + n); !err.empty()) return err;
+        }
+        if (ratios[l] == 4) {
+            const char* idx[] = {"indexer.proj.weight", "indexer.attn_q_b.weight", "indexer_compressor_kv.weight",
+                                 "indexer_compressor_gate.weight", "indexer_compressor_ape.weight",
+                                 "indexer_compressor_norm.weight"};
+            for (const char* n : idx)
+                if (std::string err = need(b + n); !err.empty()) return err;
+        }
+    }
+    if (std::string err = need_shape("token_embd.weight", {4096, 129280}, "Q8_0"); !err.empty()) return err;
+    if (std::string err = need_shape("output.weight", {4096, 129280}, "Q8_0"); !err.empty()) return err;
+    const char* root[] = {"output_norm.weight", "output_hc_fn.weight", "output_hc_base.weight",
+                          "output_hc_scale.weight"};
+    for (const char* n : root)
+        if (std::string err = need(n); !err.empty()) return err;
+    if (const MetaValue* v = f.get("tokenizer.ggml.tokens");
+        !v || v->type != MetaType::ARRAY || v->count != 129280)
+        return "tokenizer.ggml.tokens must list the 129280 tokens";
+    return {};
+}
+
 /// The architecture guard: "" when the engine can read the model whose metadata shard is `f`.  Qwen3.8-Flash-Next
 /// (qwen4exp) is read and checked against the shape the kernels are compiled for; Qwen3.6-35B-A3B (qwen35moe) must
 /// carry every key its geometry is read from (core::geometry_from_gguf).
@@ -832,6 +997,7 @@ inline std::string check_architecture(const GgufFile& f) {
     if (!arch) return "missing general.architecture";
     const ModelFamily family = model_family_from_arch(arch->s);
     if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    if (family == ModelFamily::DeepseekV4) return check_architecture_deepseek4(f);
     core::ModelGeometry g;   // anything else is refused by name by read_geometry
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);
