@@ -275,12 +275,18 @@ was the per-field path on an older base and is withdrawn.
 
 **What the one-prompt path buys, measured.** 29–45% fewer prompt tokens from two fields up, and **no
 wall-clock win at any N** — C's pinned checkpoint makes each extra field cheaper than B's single longer
-prefill. Accuracy is unchanged: banking77, 200 items, 2 fields, C .660 vs B .665 on the card question,
-group .750 vs .755, McNemar on both-right 2 vs 3 discordant, **p = 1.000**. Field order still matters on
-B: reversing the two questions agrees on 147/200 (mean |Δp| .1326, 52 flips one way against 1 the other,
-McNemar p = 0.0008), with the first/second-request latency controlled at 681.7 vs 682.4 ms. So the
-one-prompt path is a **token-cost** feature that ships opt-in; it is not a latency feature, and it must
-pin field order server-side before it could ever be a default.
+prefill, and the row-capturing read runs on the serial window path (the two-stage pipelined prefill keeps
+no head rows, so `read_windows_pl` cannot serve a capture request). Accuracy on the 2-field set is a wash
+against the default: banking77, 200 items, group .750 in both orders, McNemar p = 1.000. So the one-prompt
+path is a **token-cost** feature that ships opt-in, not a latency feature.
+
+**Field order, after the canonical-order fix (`a8b6d38b`).** The fields are sorted by `qid` before the
+consolidated prompt is rendered, so a caller's key order cannot change an answer: field reversal now
+agrees on **199/200** items (mean |Δp| **.007**, McNemar p = 1.0) against 147/200 (|Δp| .1326, p = 0.0008)
+before it. What it does not remove is the cost of one prompt: which field goes first still moves answers
+materially — `is_card` scores .660 when it is asked first and .785 when it is asked after `group` on the
+same 200 items. That is intrinsic to a consolidated prompt, not a caller-dependence, and it is why B is
+opt-in and why the canonical order is fixed rather than tuned per dataset.
 
 **Label alphabet** (`STRATA_JEV_LABELS`, the #3643 scheme): same 160 ARC items, `A`-`Z` vs
 `0`-`9`/`a`-`z` — 160/160 identical decisions, mean |Δp| .0034 per option, prompt tokens
