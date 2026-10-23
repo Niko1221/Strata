@@ -1985,8 +1985,9 @@ runs without layer l's CPU rows. The stage's last layer is never deferred, nor l
 
 It changes the answers (teacher-forced KL against the default: see below). Windows that run without it (one start-up
 line says why): batch windows, `--spec-split` token groups, `--remote-expert-opt`, `STRATA_PCIE_BALANCE` (its fit
-times the wait for the CPU rows), the all-resident graph (no CPU rows), a stage with no layer to defer, a control
-vector on the stage. Start-up lines when on:
+times the wait for the CPU rows), the DFlash2 taps (`--draft dflash2`, `STRATA_TAP_FILE`: a tap copies layer l's
+output before a deferred layer's CPU rows join it), the all-resident graph (no CPU rows), a stage with no layer to
+defer, a control vector on the stage. Start-up lines when on:
 `STRATA_VERIFY_DEFER_CPU=1 (changes the output)`, then the split's (below)
 `STRATA_VERIFY_DEFER_CPU_BELOW=0.1 (the default): a deferred layer waits for its CPU rows of routing weight >= 0.1 ...`
 (without `(the default)` when it is set; `STRATA_VERIFY_DEFER_CPU_BELOW=<w>: every CPU row joins late` for `w` >= 1),

@@ -2610,6 +2610,8 @@ bool Verifier::defer_ok(int T, std::string* why) const {
     // (set_pcie_balance's GPU fit ends at the wait for the CPU rows, which a deferred layer does not make: init turns
     // deferral off then, as the balance is set before it; this keeps a stamped window from being captured deferred)
     if (m_bal_ != nullptr) return no("STRATA_PCIE_BALANCE");
+    // (a tap copies layer l's output in post(l), before a deferred layer's CPU rows join it in pre(l+1))
+    if (tap_on_) return no("the DFlash2 taps (--draft dflash2, STRATA_TAP_FILE)");
     if (ar_on()) return no("every expert of the stage is in VRAM: no CPU rows");
     // record_window's deferred(): not the stage's last layer, nor layer 0 under the PLE block
     const bool ple_layer0 = lb_ == 0 && ss_->ple.ready() && ple_stage();
