@@ -173,3 +173,15 @@ test('an AMD build on an NVIDIA PC is not unpacked and the sentence names the ri
 test('wrongMakeNotice names the make, not a list of reasons', () => {
   assert.equal(wrongMakeNotice({ backend: 'cuda', archs: ['sm_86'] }, 'hip'), 'This Strata is for NVIDIA cards. Your PC has an AMD card: download the AMD version from https://github.com/Niko1221/Strata/releases');
 });
+
+test('Windows: the display adapters decide the make, and a leftover nvidia-smi does not outvote them (#3688)', async () => {
+  const { gpuBackendHere, windowsDisplayVendors } = await import('../server/bundled-engine.mjs');
+  assert.equal(gpuBackendHere({}, { vendors: new Set(['1002']) }), 'hip');
+  assert.equal(gpuBackendHere({}, { vendors: new Set(['10de', '1002']) }), 'cuda');
+  assert.equal(gpuBackendHere({}, { vendors: new Set(['8086']) }), 'sycl');
+  assert.equal(gpuBackendHere({ STRATA_ENGINE_BACKEND: 'cuda' }, { vendors: new Set(['1002']) }), 'cuda', 'an explicit choice wins');
+  const out = 'MatchingDeviceId    REG_SZ    PCI/VEN_1002&DEV_7551&SUBSYS_0' + String.fromCharCode(10) + 'MatchingDeviceId    REG_SZ    PCI/VEN_8086&DEV_46A6';
+  assert.deepEqual([...windowsDisplayVendors({ platform: 'win32', run: () => out })].sort(), ['1002', '8086']);
+  assert.equal(windowsDisplayVendors({ platform: 'linux', run: () => { throw new Error('must not run'); } }).size, 0);
+  assert.equal(windowsDisplayVendors({ platform: 'win32', run: () => { throw new Error('no registry'); } }).size, 0);
+});

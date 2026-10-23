@@ -447,10 +447,21 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         return forced, "environment"
     if host_platform().startswith("macos"):
         return "metal", "platform"
+    # Windows: the display adapters are the machine's own statement about which cards it has, so they decide first. A leftover
+    # nvidia-smi from a card that was taken out, or a toolkit installed for another card, must never outvote them: that is how an
+    # AMD PC was given a CUDA engine (#3688). A tool is only asked about a make that has an adapter here.
+    adapters = windows_display_adapters() if host_platform().startswith("windows") else []
+    present = adapter_makes(adapters)
+    if present:
+        return _first_make(present), "display adapters"
     probes = (("cuda", ("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")),
               ("hip", ("rocminfo",) if os.name != "nt" else ("hipInfo",)),
               ("sycl", ("sycl-ls",)))
+    vendors_here = {a.get("vendor") for a in adapters}
+    vendor_of = {"cuda": "10de", "hip": "1002", "sycl": "8086"}
     for backend, command in probes:
+        if vendors_here and vendor_of[backend] not in vendors_here:
+            continue                                  # the adapters list no card of this make: a tool that answers is a leftover
         tool = shutil.which(command[0])
         if not tool:
             continue
@@ -471,15 +482,57 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
     return None, "no GPU tool answered"
 
 
-def _drm_vendor_backend() -> str | None:
+def _first_make(makes) -> str:
+    """The make Strata uses when a PC has cards of several: NVIDIA, then AMD, then Intel (the order of every probe)."""
+    return next(m for m in ("cuda", "hip", "sycl") if m in makes)
+
+
+def adapter_makes(adapters: list[dict] | None) -> set[str]:
+    """The engine families the Windows display adapters call for: cuda (an NVIDIA adapter), hip (an AMD card, not an integrated
+    Radeon), sycl (an Intel adapter). Empty when the list is empty. Read-only, nothing is run."""
+    makes = set()
+    for adapter in adapters or []:
+        vendor = adapter.get("vendor")
+        if vendor == "10de":
+            makes.add("cuda")
+        elif vendor == "8086":
+            makes.add("sycl")
+    if windows_amd_cards(adapters or []):
+        makes.add("hip")
+    return makes
+
+
+def gpu_makes_present() -> set[str]:
+    """The engine families this PC has a graphics card for, from the display adapters (Windows) or the PCI vendors (Linux); empty
+    when that cannot be read. Used to keep an update on the make the installation was built for (#3688)."""
+    if os.name == "nt":
+        return adapter_makes(windows_display_adapters())
+    return _drm_vendor_makes()
+
+
+def _drm_vendor_makes(root: str = "/sys/class/drm") -> set[str]:
+    vendors = set()
+    try:
+        for card in sorted(Path(root).glob("card[0-9]*")):
+            if "-" not in card.name:
+                try:
+                    vendors.add((card / "device" / "vendor").read_text().strip().lower())
+                except OSError:
+                    continue
+    except OSError:
+        return set()
+    return {backend for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")) if vendor in vendors}
+
+
+def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that
     order. Read-only sysfs, nothing is run."""
-    if not os.path.isdir("/sys/class/drm"):
+    if not os.path.isdir(root):
         return None
     vendors = set()
     try:
-        for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+        for card in sorted(Path(root).glob("card[0-9]*")):
             if "-" in card.name:
                 continue
             try:

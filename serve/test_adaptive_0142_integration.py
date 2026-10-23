@@ -388,6 +388,18 @@ class VisionPipeTests(unittest.TestCase):
         self.assertIs(v.proc, proc)
         self.assertFalse(v.stopped)
 
+    def test_bad_startup_reply_keeps_a_child_that_has_not_exited(self):
+        v, proc = self.vision(dead=False)
+        v.spawn = (['unused-encoder'], None, None)
+        v.dir = Path(tempfile.gettempdir())
+        proc.wait.side_effect = subprocess.TimeoutExpired('encoder', 10)
+        with mock.patch.object(server, 'popen', return_value=proc), \
+                mock.patch.object(v, '_readline', return_value='ERR startup failed'):
+            with self.assertRaises(server.EngineStuck):
+                v._start_reader()
+        self.assertIs(v.proc, proc)
+        proc.stdin.close.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

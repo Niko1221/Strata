@@ -5,10 +5,10 @@
 #   docker compose -f docker-compose.nvidia.yml logs -f        # the first start downloads the model (resumable)
 #
 # Image: cuda13 for RTX 20-50 with driver 580 or newer; cuda12 for Pascal / Volta (GTX 10, Tesla P100, V100) or drivers 575-579.
-# Images: ghcr.io/niko1221/strata (published from 0.2.1 on). To use one you built yourself: STRATA_IMAGE=strata:0.2.2-<flavor> docker compose up -d
+# Images: ghcr.io/niko1221/strata (published from 0.2.1 on). To use one you built yourself: STRATA_IMAGE=strata:0.2.3-<flavor> docker compose up -d
 services:
   strata:
-    image: ${STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.2-cuda13}
+    image: ${STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.3-cuda13}
     container_name: strata
     restart: unless-stopped
     ports:

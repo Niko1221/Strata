@@ -1,4 +1,4 @@
-"""The Terminal tells people the app's version (0.2.2), and its README no longer contradicts itself."""
+"""The Terminal tells people the app's version (0.2.3), and its README no longer contradicts itself."""
 
 from __future__ import annotations
 
@@ -16,12 +16,13 @@ import package_terminal  # noqa: E402
 
 
 class ProductVersion(unittest.TestCase):
-    def test_it_equals_the_apps_own_version(self):
+    def test_it_is_the_apps_own_version_or_a_terminal_only_hotfix_of_it(self):
         cargo = ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.toml"
         if not cargo.is_file():
             self.skipTest("no app source in this tree")
         m = re.search(r'^version\s*=\s*"([^"]+)"', cargo.read_text(encoding="utf-8"), re.MULTILINE)
-        self.assertEqual(strata_cli.PRODUCT_VERSION, m.group(1))
+        # 0.2.3.1 is a Control-only hotfix: the Terminal says 0.2.3.1 while the app (and its updater entry) stay 0.2.3
+        self.assertRegex(strata_cli.PRODUCT_VERSION, "^" + re.escape(m.group(1)) + r"(\.[0-9]+)?$")
 
     def test_dash_dash_version_leads_with_it_and_keeps_the_build_number(self):
         out = subprocess.run([sys.executable, str(ROOT / "strata.py"), "--version"], capture_output=True, text=True, check=True).stdout
@@ -34,7 +35,7 @@ class ProductVersion(unittest.TestCase):
 
 class Readme(unittest.TestCase):
     def readme(self, target: str) -> str:
-        return package_terminal._readme("0.2.2", target)
+        return package_terminal._readme("0.2.3", target)
 
     def test_it_does_not_say_nothing_downloads_and_then_that_launch_fetches(self):
         text = " ".join(self.readme("windows-x86_64").split())

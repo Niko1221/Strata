@@ -81,6 +81,24 @@ class Adaptive0144Integration(unittest.TestCase):
         self.assertEqual(svc.vision.starts, 0)
         self.assertFalse(svc.fifo.locked())
 
+    def test_tool_picture_does_not_hide_uncertain_encoder_teardown(self):
+        svc = self.service()
+        messages = [{'role': 'tool', 'content': [{'type': 'image', 'source': 'x.png'}]}]
+        with mock.patch.object(svc.vision, 'restart', side_effect=server.EngineStuck('retained encoder')):
+            with self.assertRaisesRegex(server.EngineStuck, 'retained encoder'):
+                svc._note_unreadable_tool_images(messages)
+        self.assertEqual(messages[0]['content'][0]['type'], 'image')
+        self.assertFalse(svc.fifo.locked())
+
+    def test_tool_picture_does_not_hide_failed_admission(self):
+        svc = self.service()
+        messages = [{'role': 'tool', 'content': [{'type': 'image', 'source': 'x.png'}]}]
+        with mock.patch.object(svc, '_vision_turn', side_effect=server.RequestParkCapacity('no reload room')):
+            with self.assertRaisesRegex(server.RequestParkCapacity, 'no reload room'):
+                svc._note_unreadable_tool_images(messages)
+        self.assertEqual(messages[0]['content'][0]['type'], 'image')
+        self.assertEqual(svc.vision.starts, 0)
+
     def test_parking_releases_elastic_hold_without_loading_encoder_on_return(self):
         svc = self.service()
         svc.vision.up = svc.vision_held = True

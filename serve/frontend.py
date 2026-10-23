@@ -895,8 +895,18 @@ class OutputParser:
         # the client has no tool to run).  The Responses route leaves it off: a Codex compaction request keeps its
         # conversation's tools in the prompt only, and its calls come back as before.
         self.declared_only = declared_only
-        self._alias = {k.replace(".", "__", 1) for k in self.schemas if isinstance(k, str) and "." in k}
+        # PR #3556: the native namespace__member spelling of a declared namespace.member tool is accepted without advertising a
+        # duplicate tool.  Only an unambiguous alias counts (two namespaces can end in the same member), and an exactly declared
+        # name always wins over an alias.
+        aliases = {}
+        for name in self.schemas:
+            if isinstance(name, str) and "." in name:
+                namespace, member = name.rsplit(".", 1)
+                aliases.setdefault(f"{namespace}__{member}", set()).add(name)
+        self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
+                        if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
+        self.unread_names: list[str] = []   # the names (first few) of those that named a tool the request did not declare
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
         # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
@@ -930,7 +940,7 @@ class OutputParser:
         none declared, only where `declared_only` is off."""
         if not self.schemas:
             return not self.declared_only
-        return name in self.schemas or name in self._alias
+        return name in self.schemas or name in self.aliases
 
     def _loose_open(self, after: str):
         """#3441: `after` (text after a `<tool_call>`, whitespace dropped) opens a call in a drifted form that names a
@@ -945,7 +955,7 @@ class OutputParser:
             bare = after[1:].strip().lstrip("=").strip()
             if after[1:].lstrip().startswith(("=", "function")):
                 return "wait"
-            if any(k.startswith(bare) for k in list(self.schemas) + list(self._alias) if isinstance(k, str)):
+            if any(k.startswith(bare) for k in list(self.schemas) + list(self.aliases) if isinstance(k, str)):
                 return "wait"
         return None
 
@@ -981,8 +991,10 @@ class OutputParser:
         while p >= 0:
             if self._ok_at(p):
                 gt = self.buf.find(">", p)
-                name = self.buf[p + len(FUNC_START):gt if gt >= 0 else len(self.buf)]
-                if gt < 0 and not any(c.isspace() for c in name):
+                raw_name = self.buf[p + len(FUNC_START):gt if gt >= 0 else len(self.buf)]
+                name = raw_name.strip()
+                name = self.aliases.get(name, name)
+                if gt < 0 and re.fullmatch(r"\s*[^<>\s]*\s*", raw_name):
                     return p, False
                 if gt >= 0 and name in self.schemas:
                     return p, True
@@ -1082,7 +1094,7 @@ class OutputParser:
     def _reset_scan(self):
         self._call_end_checked = 0   # closing-tag search progress for the current wrapped call
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
-        self.ss = "name"             # name -> between -> str|raw -> ... -> done
+        self.ss = "name"             # name -> between -> str|raw -> ... -> function_done -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
         self.sfirst = True
         self.sval_started = False
@@ -1116,7 +1128,11 @@ class OutputParser:
                 b = rest.find(">", a + 10) if a >= 0 else -1
                 if b < 0:
                     return out
-                name = rest[a + 10:b]
+                raw_name = rest[a + 10:b]
+                name = raw_name.strip()
+                name = self.aliases.get(name, name)
+                if raw_name != raw_name.strip() and name not in self.schemas:
+                    return out
                 self.scall = ToolCall(name=name, arguments={})
                 props = ((self.schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
                 self.sdeclared = {k: (v or {}).get("type") for k, v in props.items()}
@@ -1141,9 +1157,8 @@ class OutputParser:
                     else:
                         self.ss = "raw"
                 elif stripped.startswith("</function>"):
-                    args("}")
                     self.sp += len("</function>")
-                    self.ss = "done"
+                    self.ss = "function_done"
                 else:
                     return out          # a tag still arriving (or trailing text): wait
             elif self.ss == "str":
@@ -1191,7 +1206,7 @@ class OutputParser:
                 return out
 
     def _close_scan(self) -> list[Event]:
-        """A streamed call that ended without a clean </function>: close its JSON so clients can still parse it."""
+        """Close streamed JSON only after its call boundary has been confirmed."""
         out = []
         if self.scall is None or self.ss == "done":
             return out
@@ -1236,8 +1251,10 @@ class OutputParser:
                     call = None
                     try:
                         name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
+                        name = self.aliases.get(name, name)
                         if name in self.schemas:
                             call = parse_tool_call(body[:end], self.schemas.get(name))
+                            call.name = name
                     except ValueError:
                         pass
                     raw = self.buf[:len(CALL_START) + end + len(CALL_END)]
@@ -1393,11 +1410,19 @@ class OutputParser:
                     continue
                 if kind == "wait":
                     after = ""
-                if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
+                is_call = re.match(r"<function=(\s*[^<>\s]+\s*)>", after)
+                if is_call:
+                    raw_name = is_call.group(1)
+                    name = raw_name.strip()
+                    name = self.aliases.get(name, name)
+                    if raw_name != raw_name.strip() and name not in self.schemas:
+                        is_call = None     # only declared names gain whitespace normalization
+                is_partial = FUNC_START.startswith(after) or re.fullmatch(r"<function=\s*[^<>\s]*\s*", after)
+                if not is_call and not is_partial:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue
-                if not after.startswith(FUNC_START):
+                if not is_call:
                     j = i
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
@@ -1418,6 +1443,9 @@ class OutputParser:
                             self.buf = self.buf[j:]
                         return out
                     if gt >= 0 and (nl < 0 or gt < nl) and not self._callable(after[len(FUNC_START):gt].strip()):
+                        self.unread += 1                 # logged by the server: otherwise "the model ignored my tool" is the only clue
+                        if len(self.unread_names) < 5:
+                            self.unread_names.append(after[len(FUNC_START):gt].strip()[:80])
                         out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                         self.buf = self.buf[i + len(CALL_START):]
                         continue
@@ -1452,9 +1480,12 @@ class OutputParser:
                     i = self._wrapped_call_end()
                     if i >= 0:
                         drop = len(CALL_END)
-                    if self.recover:                # a batch in one wrapper: the next call follows this one's
-                        f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
-                        nxt = self.buf[f:].lstrip() if f >= 0 else ""
+                    # Only a following call opener confirms an omitted wrapper closer.
+                    f = function_end(self.buf)
+                    nxt = self.buf[f:].lstrip() if f >= 0 else ""
+                    if re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", nxt):
+                        i, drop = f, 0
+                    if self.recover:                # a batch in one wrapper: the next call follows </function>
                         if nxt.startswith(PARAM_START) and self._follower(nxt) == "param":
                             at = len(self.buf) - len(nxt)
                             self.buf = self.buf[:at] + FUNC_START + nxt[len(PARAM_START):]
@@ -1496,8 +1527,12 @@ class OutputParser:
             return out
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
-            if self.ss == "done":               # only its </tool_call> is missing: the call itself is whole
+            if self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
+                # A natural end immediately after </function> retains native streaming recovery.
+                out += self._close_scan()
                 out.append(Event("tool_call", call=self.scall))
+            elif self.ss == "function_done":
+                out.append(Event("content", self._track(CALL_START + self.buf)))
             self.buf = ""
             self._reset_scan()
             return out
@@ -1514,10 +1549,15 @@ class OutputParser:
     def _finish_call(self, body: str) -> list[Event]:
         """A whole call body in the template's form -> its tool_call event.  With recover, one that still does not
         parse is the text it is instead of an error that ends the request."""
-        name = body.strip()[len(FUNC_START):].split(">", 1)[0].strip()
+        raw_name = body.strip()[len(FUNC_START):].split(">", 1)[0]
+        name = raw_name.strip()
+        name = self.aliases.get(name, name)
         bare, self.bare = self.bare, False
         try:
+            if raw_name != raw_name.strip() and name not in self.schemas:
+                raise ValueError("whitespace tool name is not declared")
             call = parse_tool_call(body, self.schemas.get(name))
+            call.name = name
         except ValueError:
             if not self.recover:
                 raise
