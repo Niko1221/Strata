@@ -64,6 +64,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.turn_splice import TurnSplicer  # noqa: E402
 from serve import runconfig  # noqa: E402
 from strata_control import engine_component  # noqa: E402
 from strata_control import tls  # noqa: E402
@@ -3795,6 +3796,10 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.turns = None                             # (opt-in "splice_turns"): serve/turn_splice.py's TurnSplicer
+        # STRATA_REUSE_DIAG=1: a prompt that does not continue the tokens held for its conversation says where they part
+        # (with the text there: off by default, as the server never logs a request's content otherwise)
+        self.reuse_diag = os.environ.get("STRATA_REUSE_DIAG") == "1"
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -4697,15 +4702,19 @@ class Service:
         A control token's text (<|im_start|>, <|im_end|>, <|endoftext|>, ...) inside a message is text as well: only
         the control tokens the template writes are control tokens.  `store=False` (a token count) reuses the kept
         prompts without adding or replacing one."""
+        return self.encode_prompt_text(messages, tools, kwargs, store)[1]
+
+    def encode_prompt_text(self, messages, tools, kwargs, store: bool = True) -> tuple[str, list[int]]:
+        """encode_prompt(), and the rendered prompt it encoded."""
         marked, marked_tools, changed = mark_think_literals(messages, tools, self.literals)
         prompt = self.render_prompt(marked, marked_tools, kwargs)
         plain = ()
         if changed:
             prompt, plain = unmark_think_literals(prompt, self.literals)
         if self.prompts is not None:            # #567: only what follows the last special shared with a recent prompt
-            return self.prompts.encode(prompt, plain, store)
-        return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
-            self.tok.encode(prompt, parse_special=True)
+            return prompt, self.prompts.encode(prompt, plain, store)
+        return prompt, (self.tok.encode(prompt, parse_special=True, plain=plain) if plain else
+                        self.tok.encode(prompt, parse_special=True))
 
     @contextlib.contextmanager
     def _turn(self, cancel=None):
@@ -4768,7 +4777,20 @@ class Service:
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
         fetched = self._note_unreadable_tool_images(messages, cancel)
-        ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
+        if self.turns is None:
+            ids = self.encode_prompt(messages, tools, kwargs)
+        else:
+            text, ids = self.encode_prompt_text(messages, tools, kwargs)
+        encoded_ids = ids
+        thinking = kwargs.get("enable_thinking", True) is not False
+        if self.turns is not None and not images_of(messages) and not (force and not thinking):
+            # (opt-in "splice_turns") the previous reply as the ids the model wrote, when it came back as the same
+            # text: the engine then continues from the state it holds (serve/turn_splice.py)
+            ids = self.turns.splice(text, ids, thinking, tools) or ids
+            why = self.turns.diagnose(ids) if self.reuse_diag else None
+            if why:
+                print(f"[strata] prompt reuse: {why}", flush=True)
+            self.turns.expect(ids, text, encoded_ids, thinking, tools)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
@@ -4863,7 +4885,7 @@ class Service:
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        return ids, thinking, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
 
@@ -5059,6 +5081,8 @@ class Service:
         tail = ""                                       # the last characters written (the newlines before a call)
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         nf_retried = False                              # #879: the request was sent again after non-finite logits
+        held_lost = False                               # the engine dropped its state (#879 after tokens went out)
+        passes = 0                                      # engine runs for this request (splice_turns keeps a run of one)
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
@@ -5172,6 +5196,7 @@ class Service:
                     for ev in opening:
                         yield "event", ev
                     while True:
+                        passes += 1
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
                         gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
@@ -5313,6 +5338,7 @@ class Service:
                                   "ends here as \"length\"; the engine dropped its cached state, so the next request "
                                   "reads its prompt from the start", flush=True)
                             finish = "length"
+                            held_lost = True
                             break
                         if recover_prompt is not None and not cancel.is_set() and n < max_new:
                             recovery_count += 1
@@ -5517,6 +5543,10 @@ class Service:
                   "not use)" + (f"; the names the model wrote: {', '.join(named)}" if named else ""), flush=True)
         if stops is not None and stops.hit is None and stops.held:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
+        if self.turns is not None:      # (splice_turns) the engine holds ids + raw_ids after a run of one pass: a
+            # second pass (#123's wrap-up, #537's call opening, #1053's close, a recovery) read another prompt
+            self.turns.generated(ids, raw_ids, finish in ("stop", "length") and not cancel.is_set() and not held_lost
+                                 and not recovery_count and passes == 1)
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
                 "reasoning_recoveries": recovery_count}
@@ -8351,6 +8381,15 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         svc.requested_slots = per_replica * len(groups) if groups else per_replica
     svc.answer_room = cfg.get("answer_room") is not False
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
+    splice = os.environ.get("STRATA_SPLICE_TURNS") or cfg.get("splice_turns", False)   # opt-in: serve/turn_splice.py
+    if splice not in (False, True, "0", "1", "text", "parsed"):
+        raise SystemExit(f"[strata] config \"splice_turns\" must be true, false, \"text\" or \"parsed\", not {splice!r}")
+    if splice not in (False, "0") or svc.reuse_diag:     # (STRATA_REUSE_DIAG alone: the turns kept, none spliced)
+        slots = conversation_slots(engine)
+        # one kept turn per conversation slot, at most 8 (each holds a whole prompt's text and ids)
+        svc.turns = TurnSplicer(tok, svc.stop_ids, tok.encode(IM_END, parse_special=True)[0],
+                                keep=min(slots, 8) if slots else 4, parser=OutputParser,
+                                mode="off" if splice in (False, "0") else "parsed" if splice == "parsed" else "text")
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
                     if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)

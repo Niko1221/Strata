@@ -50,6 +50,23 @@ Pictures work with several requests at once, with the MTP drafts and with the co
 app resends its pictures) continues from the held state when its pictures are the same (they are matched by the server's key for each
 picture); a different picture starts that conversation again.
 
+## A conversation that parts from the held tokens (opt-in)
+
+The engine continues a conversation only when the new prompt starts with every token it holds (the DeltaNet state cannot step
+back). An agent's reply comes back as text and is encoded again, and about once in 8,000 sampled tokens the model writes a piece of
+text in other tokens than the tokenizer's own split: the whole conversation is read again (80-105K tokens, 30-45 s in the hybrid mode
+on an RTX 5080 with DDR5-6400 dual channel, two long agent sessions with a Qwen3.6-35B-A3B fine-tune (Q4_K_M)). Three opt-ins:
+
+- `"splice_turns": true` in `strata-<model>.json` (or `STRATA_SPLICE_TURNS=1`) sends a reply that comes back as the same text as the
+  ids the model wrote (`"parsed"`: also one that reads back as the same reasoning, answer and calls). A reply with a control token
+  the model wrote in it (`<|im_start|>`, say) is never sent as its ids: its text stays text, as in any other message.
+- `--snapshots 2` in the config's `args` keeps two copies of the recurrent state per session (62.8 MiB each for Qwen3.6-35B-A3B),
+  taken at the end of reading a prompt of 4,096 tokens or more (`--snapshot-min N`): a prompt that parts from the held tokens after
+  one restores it and reads only the rest.
+
+`STRATA_REUSE_DIAG=1` (off by default: it logs a few of the conversation's tokens) makes the engine log the token where a prompt parts
+from a session's held tokens, and the server say it in text.
+
 ## Several requests at once
 
 `"parallel": N` in the model's config (`strata-qwen36-<size>.json`, or `--parallel N` at setup) makes the engine keep N conversations open
@@ -318,6 +335,7 @@ on the `strata-q36` command line.
   The main path has its own sampled drafting (`STRATA_SPEC_PROB`, `--coupled-draft`, docs/DETAILS.md "Sampled drafting"); `STRATA_SPEC_MIN_TEMP`
   and the rule in `spec_prob.hpp` are that path's, reused here. With this option the host's top-k breaks exact ties between logits by id (as
   `--sample-gpu` does); without either option a sampled request is unchanged.
+- **`--snapshots K`**, **`--snapshot-min N`**: see "A conversation that parts from the held tokens" (K up to 4).
 - **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
   hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
   end the experts in the slots then, ranked by the routing counted since the warm-up, are saved to F (a `.tmp` beside it renamed over
@@ -393,7 +411,9 @@ Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q
 `STRATA_Q36_STAGE_TAIL_CHECK=1` (the staging buffers' zero tail, counted in the `lent slots:` neighbour line), `STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap),
 `STRATA_Q36_PF_CHECK=1` (the host's slot tables against the device's at every forward, the host's against its own bookkeeping, and four
 cache slots per layer plus every prefetch slot in the table byte for byte against the host copy; the log's `table check:` line counts the
-mismatches; it synchronizes the stream and copies about 0.5 GB a forward, so it is slow; not with the MTP-only placement), `STRATA_Q36_ASYNC_SWAPS=1/2/3` (the two async bits, as the two flags).
+mismatches; it synchronizes the stream and copies about 0.5 GB a forward, so it is slow; not with the MTP-only placement), `STRATA_Q36_ASYNC_SWAPS=1/2/3` (the two async bits, as the two flags),
+`STRATA_Q36_SNAPSHOT_TEST=L[,J]` (`--tokens` mode: read L tokens, take a snapshot, read J others, restore it, read the rest; its
+logits against a plain read).
 
 ## Not done / limits
 
@@ -422,4 +442,6 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
   `q` give the exact joint of four tokens (with `--spec-min-p` and a `--draft-vocab` row too), and three wrong rules fail; the
   shortlist of `--sample-gpu` gives the whole row's chain, token and rng state on random rows with ties and penalties.
 - `q36_spec_sampled.py`: `--mtp-sampled` on the real model (the distribution of short continuations against `off`, and the speed).
+- `q36_snapshot_check.py`: `--snapshots` over the serve protocol: a prompt that parts after a snapshot gives the tokens of a fresh read.
+- `tools/reuse_replay.py`: a recorded agent session replayed against a running server: how much of each prompt the engine reused.
 - `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.

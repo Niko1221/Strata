@@ -16,7 +16,7 @@
 //
 // Modes: --serve (serve/server.py's engine protocol: READY / GEN / T / DONE / STOP / PP), --tokens IDS [--n N]
 // [--force IDS] [--dump-full-logits F] (tools/qwen35/kl.py's reference interface; --tokens-file F reads IDS from a
-// file), --bench-pp N / --bench-tg N.  The opt-ins (--kv, --gqa-attn, --mtp-sampled, ...): docs/QWEN36.md.
+// file), --bench-pp N / --bench-tg N.  The opt-ins (--kv, --gqa-attn, --mtp-sampled, --snapshots, ...): docs/QWEN36.md.
 #include <fstream>
 #include <iterator>
 
@@ -1516,6 +1516,19 @@ struct Engine {
     // ---- sessions: the conversation states.  One for a single-request engine; --batch N keeps N, each with its own
     // recurrent state and KV cache, so N requests run at once: their rows share one decode window (forward_rows).  The
     // members conv / S / kc / vc / pos / hlast above are the CURRENT session's (select() swaps them).
+    // --snapshots K (opt-in): the recurrent state a prompt read left, K per session.  The DeltaNet
+    // layers' S and short-conv state cannot step back; the attention and MTP caches can (cells from the position on are
+    // never read), and hlast (the MTP seed) is kept beside the state.  A prompt that parts from the held tokens after a
+    // snapshot's position (the reply re-encoded to other ids, a reply the client changed) restores it and reads only
+    // the rest instead of the whole conversation.
+    struct Snap {
+        std::vector<float*> conv, S;        // per layer (null for the attention layers)
+        float* hlast = nullptr;
+        int64_t len = 0;                    // the held tokens it was taken after (0: none)
+        int32_t rdelta = 0;
+        std::vector<ImgKey> imgs;
+        uint64_t when = 0;
+    };
     struct Sess {
         std::vector<float*> conv, S, kc, vc;
         float* hlast = nullptr;
@@ -1525,7 +1538,10 @@ struct Engine {
         std::vector<ImgKey> imgs;           // the pictures among them
         bool active = false;                // a batch slot is decoding in it
         uint64_t used = 0;                  // when it was last used (the LRU pick)
+        std::vector<Snap> snaps;            // snapshots of its first snaps[k].len held tokens (len 0: none)
     };
+    int n_snaps = 0;                        // snapshots per session (--snapshots, 0: off)
+    int64_t snap_min = 4096;                // taken after reads of prompts at least this long (--snapshot-min)
     std::vector<Sess> sess;
     int n_sess = 1, cur = 0;
     uint64_t use_clock = 0;
@@ -1752,6 +1768,95 @@ struct Engine {
             ss.vc.push_back(alloc_kv((size_t) g.n_head_kv * ctx, kv_cell_v()));
         }
         ss.hlast = dalloc((size_t) g.n_embd);
+        ss.snaps.resize((size_t) n_snaps);
+        for (Snap& sn : ss.snaps) {         // allocated with the session: before the experts take the rest of the VRAM
+            for (const Layer& L : m->layers) {
+                sn.conv.push_back(L.attn ? nullptr : dalloc(C * (g.ssm_d_conv - 1)));
+                sn.S.push_back(L.attn ? nullptr : dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
+            }
+            sn.hlast = dalloc((size_t) g.n_embd);
+        }
+    }
+    /// The bytes of one snapshot (the DeltaNet layers' conv and S state, hlast).
+    size_t snap_bytes() const {
+        const auto& g = m->g;
+        size_t n = (size_t) g.n_embd;
+        for (const Layer& L : m->layers)
+            if (!L.attn) n += (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) + (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size;
+        return n * 4;
+    }
+
+    /// The current session's recurrent state into a snapshot (one of the same position, else a free one, else
+    /// the oldest).
+    void snapshot() {
+        Sess& ss = sess[(size_t) cur];
+        if (ss.snaps.empty() || pos <= 0) return;
+        ss.pos = pos;
+        Snap* d = nullptr;
+        for (Snap& sn : ss.snaps)
+            if (sn.len == pos) d = &sn;
+        for (Snap& sn : ss.snaps)
+            if (!d && sn.len == 0) d = &sn;
+        if (!d)
+            for (Snap& sn : ss.snaps)
+                if (!d || sn.when < d->when) d = &sn;
+        const auto& g = m->g;
+        for (size_t l = 0; l < conv.size() && l < d->conv.size(); ++l) {
+            if (!d->conv[l]) continue;
+            CK(cudaMemcpyAsync(d->conv[l], conv[l], (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * 4,
+                               cudaMemcpyDeviceToDevice, st));
+            CK(cudaMemcpyAsync(d->S[l], S[l], (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4,
+                               cudaMemcpyDeviceToDevice, st));
+        }
+        CK(cudaMemcpyAsync(d->hlast, hlast, (size_t) g.n_embd * 4, cudaMemcpyDeviceToDevice, st));
+        CK(cudaStreamSynchronize(st));
+        d->len = pos;
+        d->rdelta = ss.rdelta;
+        d->imgs = ss.imgs;
+        d->when = ++use_clock;
+    }
+    /// Session dst takes snapshot k of session src: its recurrent state, src's first len cache cells (in place
+    /// when dst is src), the position and the held tokens up to there.  dst's snapshots past that position no longer hold.
+    void restore(int src, int k, int dst) {
+        sess[(size_t) cur].pos = pos;
+        const auto& g = m->g;
+        Sess& a = sess[(size_t) src];
+        Sess& b = sess[(size_t) dst];
+        const Snap& sn = a.snaps[(size_t) k];
+        const int64_t len = sn.len;
+        // K and V cells: kv_cell() / kv_cell_v() (fp32, fp16, int8, or k8v4's int8 K + q4 V)
+        const size_t cb = kv_cell(), row = (size_t) ctx * cb, cbv = kv_cell_v(), rowv = (size_t) ctx * cbv;
+        for (size_t l = 0; l < b.conv.size(); ++l) {   // (the MTP block's index, past the layers, has a cache only)
+            if (l < sn.conv.size() && sn.conv[l]) {
+                CK(cudaMemcpyAsync(b.conv[l], sn.conv[l], (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * 4,
+                                   cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(b.S[l], sn.S[l], (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4,
+                                   cudaMemcpyDeviceToDevice, st));
+            }
+            if (src != dst && a.kc[l]) {
+                CK(cudaMemcpy2DAsync(b.kc[l], row, a.kc[l], row, (size_t) len * cb, (size_t) g.n_head_kv,
+                                     cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpy2DAsync(b.vc[l], rowv, a.vc[l], rowv, (size_t) len * cbv, (size_t) g.n_head_kv,
+                                     cudaMemcpyDeviceToDevice, st));
+            }
+        }
+        CK(cudaMemcpyAsync(b.hlast, sn.hlast, (size_t) g.n_embd * 4, cudaMemcpyDeviceToDevice, st));
+        CK(cudaStreamSynchronize(st));
+        b.rdelta = sn.rdelta;
+        b.imgs = sn.imgs;
+        if (src != dst) {
+            b.live.assign(a.live.begin(), a.live.begin() + (long) len);
+            for (Snap& s_ : b.snaps) s_.len = 0;
+        } else {
+            b.live.resize((size_t) len);
+            for (Snap& s_ : b.snaps)
+                if (s_.len > len) s_.len = 0;
+        }
+        b.pos = len;
+        if (dst == cur) load_cur();
+    }
+    static void drop_snaps(Sess& ss) {
+        for (Snap& sn : ss.snaps) sn.len = 0;
     }
 
     /// The current session: `i`'s state, cache and position become the engine's (conv / S / kc / vc / pos / hlast).
@@ -1976,7 +2081,8 @@ struct Engine {
             size_t n_attn = m->has_mtp ? 1 : 0, n_gdn = 0;
             for (const Layer& L : m->layers) (L.attn ? n_attn : n_gdn) += 1;
             const size_t per = (size_t) g.n_head_kv * (kv_cell() + kv_cell_v()) * (size_t) ctx * n_attn +
-                               (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn;
+                               (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * 4 * n_gdn +
+                               (size_t) n_snaps * snap_bytes();
             size_t fr0 = 0, tot0 = 0;
             CK(cudaMemGetInfo(&fr0, &tot0));
             if (n_sess > 1)
@@ -1991,6 +2097,10 @@ struct Engine {
             }
         }
         for (Sess& ss : sess) alloc_session(ss);
+        if (n_snaps > 0)
+            std::fprintf(stderr, "strata-q36: recurrent-state snapshots: %d per session, %.1f MiB each (%.1f MiB in all), "
+                         "taken after prompt reads of %lld tokens or more\n", n_snaps, (double) snap_bytes() / (1 << 20),
+                         (double) snap_bytes() * n_snaps * n_sess / (1 << 20), (long long) snap_min);
         if (n_sess > 1) {   // the batch rows' tables: per state index the session pointers, on the device
             const size_t ns = sess[0].conv.size();
             std::vector<float*> hc(ns * (size_t) n_sess), hs(hc), hk(hc), hv(hc);
@@ -3757,6 +3867,7 @@ struct Engine {
         b.rdelta = a.rdelta;
         b.live = a.live;
         b.imgs = a.imgs;
+        drop_snaps(b);
         if (dst == cur) load_cur();
     }
     int hybrid_swaps_after_prompt = 2048;
@@ -4796,6 +4907,63 @@ struct Serve {
         return in_live == ss.imgs ? L : 0;
     }
 
+    /// The tokens of `ids` session ss can take without reading them: all it holds when that is a proper start
+    /// of `ids` (snap -1), else the longest of its snapshots that is (snap: its index), else 0.
+    size_t held_len(const Engine::Sess& ss, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs,
+                    int& snap) const {
+        snap = -1;
+        const size_t L = match_len(ss, ids, imgs);
+        if (L > 0) return L;
+        size_t best = 0;
+        for (size_t k = 0; k < ss.snaps.size(); ++k) {
+            const Engine::Snap& sn = ss.snaps[k];
+            const size_t l = (size_t) sn.len;
+            if (l == 0 || l <= best || l >= ids.size() || l > ss.live.size() ||
+                !std::equal(ss.live.begin(), ss.live.begin() + (long) l, ids.begin()))
+                continue;
+            std::vector<ImgKey> in_l;
+            bool cut = false;
+            for (const ImgKey& im : imgs) {
+                if (im.cell + im.n <= (int64_t) l) in_l.push_back(im);
+                else if (im.cell < (int64_t) l) cut = true;   // the snapshot ends inside a picture
+            }
+            if (cut || !(in_l == sn.imgs)) continue;
+            best = l;
+            snap = (int) k;
+        }
+        return best;
+    }
+
+    /// STRATA_REUSE_DIAG=1 (off by default: it logs a few of the conversation's token ids): a prompt that parts from
+    /// the tokens a session holds well after their start, 64 or more of them read again (a conversation read again from
+    /// the start, or from a snapshot), gets one log line with where, and the ids there (the server says it in text).
+    void note_parting(const std::vector<int32_t>& ids, size_t reuse) const {
+        static const bool on = [] {
+            const char* v = std::getenv("STRATA_REUSE_DIAG");
+            return v != nullptr && std::string(v) == "1";
+        }();
+        if (!on) return;
+        size_t lcp = 0, held = 0;
+        int at = -1;
+        for (int i = 0; i < E.n_sess; ++i) {
+            const std::vector<int32_t>& lv = E.sess[(size_t) i].live;
+            const size_t n = std::min(lv.size(), ids.size());
+            const size_t c = (size_t) (std::mismatch(lv.begin(), lv.begin() + (long) n, ids.begin()).first - lv.begin());
+            if (c > lcp) { lcp = c; held = lv.size(); at = i; }
+        }
+        if (at < 0 || lcp < 1024 || reuse + 64 > lcp) return;
+        const std::vector<int32_t>& lv = E.sess[(size_t) at].live;
+        auto ids_at = [&](const std::vector<int32_t>& v) {
+            std::string o;
+            for (size_t j = lcp >= 3 ? lcp - 3 : 0; j < std::min(v.size(), lcp + 4); ++j)
+                o += (j == lcp ? " |" : " ") + std::to_string(v[j]);
+            return o;
+        };
+        std::fprintf(stderr, "strata serve: the prompt (%zu tokens) parts from the %zu tokens session %d holds at token %zu "
+                     "(%zu reused, %zu read again): held%s, prompt%s\n", ids.size(), held, at, lcp, reuse, lcp - reuse,
+                     ids_at(lv).c_str(), ids_at(ids).c_str());
+    }
+
     /// The session a request alone takes: the one holding the longest start of its prompt, else an empty one, else the
     /// least recently used (never a decoding slot).
     int pick_session(const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs) const {
@@ -4804,7 +4972,8 @@ struct Serve {
         for (int i = 0; i < E.n_sess; ++i) {
             const Engine::Sess& ss = E.sess[(size_t) i];
             if (ss.active) continue;
-            const size_t l = match_len(ss, ids, imgs);
+            int k;
+            const size_t l = held_len(ss, ids, imgs, k);
             if (l > bl) { bl = l; best = i; }
             if (ss.live.empty() && free_empty < 0) free_empty = i;
             if (lru < 0 || ss.used < E.sess[(size_t) lru].used) lru = i;
@@ -4903,25 +5072,27 @@ struct Serve {
         // ---- the session: the held state continues when the request extends it (the recurrent state cannot step back)
         const int s = adm ? slot : pick_session(ids, ir.imgs);
         Engine::Sess& ss = E.sess[(size_t) s];
-        size_t reuse = match_len(ss, ids, ir.imgs);
+        int src = s, snap = -1;   // snap >= 0: the state is src's snapshot snap
+        size_t reuse = held_len(ss, ids, ir.imgs, snap);
         if (adm) {   // another session holding more of this prompt (the conversation was read alone): copy its state
-            int src = -1;
             size_t best = reuse;
             for (int i = 0; i < E.n_sess; ++i) {
                 if (i == s || E.sess[(size_t) i].active) continue;
-                const size_t l = match_len(E.sess[(size_t) i], ids, ir.imgs);
-                if (l > best) { best = l; src = i; }
+                int k;
+                const size_t l = held_len(E.sess[(size_t) i], ids, ir.imgs, k);
+                if (l > best) { best = l; src = i; snap = k; }
             }
-            if (src >= 0) {
-                E.copy_session(src, s);
-                reuse = best;
-            }
+            reuse = best;
         }
+        note_parting(ids, reuse);
+        if (snap >= 0) E.restore(src, snap, s);
+        else if (src != s) E.copy_session(src, s);
         E.select(s);
         if (reuse == 0) {
             E.reset();
             ss.live.clear();
             ss.imgs.clear();
+            Engine::drop_snaps(ss);
         }
         if (geni) E.set_images(ir.rows, ir.cell_row, ir.mrope, (int64_t) ids.size(), ir.delta);
         else E.clear_images();
@@ -4952,8 +5123,11 @@ struct Serve {
         if (cancelled && cut) {   // stopped inside a picture: the state cannot be continued, the next read starts over
             ss.live.clear();
             ss.imgs.clear();
+            Engine::drop_snaps(ss);
         }
         E.sess[(size_t) E.cur].pos = E.pos;
+        // --snapshots: the state this read left, for a later prompt that parts from what is generated next
+        if (!cancelled && !ss.snaps.empty() && (int64_t) ids.size() >= E.snap_min) E.snapshot();
         const double prompt_ms = ms_since(t0);
         if (cancelled) {
             std::printf("DONE 0 %zu %.1f 0.0 cancel 0 0 %zu 0 0 0 0 0.0 %lld 0\n", ids.size(), prompt_ms, reuse, (long long) got);
@@ -5184,7 +5358,8 @@ int strata::qwen35::run(int argc, char** argv) {
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
     std::string kv = "fp32", tokens_file, expert_profile, expert_profile_save;
     bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false, split_stage_copy = false, zero_copy = false, async_swaps = false, async_after = false;
-    int expert_prefetch = 0, decode_swaps = -1, pool_warm = -1, prefetch_copies = -1;
+    int expert_prefetch = 0, decode_swaps = -1, snapshots = 0, pool_warm = -1, prefetch_copies = -1;
+    int64_t snapshot_min = 4096;
     bool lend_staging = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -5260,6 +5435,8 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--async-swaps") async_swaps = true;   // the decode slot swaps' copies off the engine stream
         else if (a == "--lend-staging") lend_staging = true;   // the prompt staging buffers as extra expert slots in decode
         else if (a == "--async-after-prompt") async_after = true;   // ... and the after-prompt ones
+        else if (a == "--snapshots") snapshots = std::atoi(next().c_str());       // recurrent-state snapshots per session
+        else if (a == "--snapshot-min") snapshot_min = std::atoll(next().c_str());
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -5273,7 +5450,7 @@ int strata::qwen35::run(int argc, char** argv) {
                          "       (--serve | --tokens IDS | --tokens-file F [--n 64] [--force IDS] [--dump-full-logits F] | "
                          "--bench-pp N --bench-tg N)\n"
                          "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--mtp-sampled off|match|q] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
-                         "       [--side-stream] [--split-stage-copy] [--async-swaps] [--async-after-prompt] [--lend-staging] [--expert-profile F] [--expert-profile-save F] [--spec-min-p P]\n"
+                         "       [--side-stream] [--split-stage-copy] [--async-swaps] [--async-after-prompt] [--lend-staging] [--snapshots K] [--snapshot-min N] [--expert-profile F] [--expert-profile-save F] [--spec-min-p P]\n"
                          "       [--expert-prefetch P] [--prefetch-copies 0|1] [--pool-warm K] [--hybrid-zero-copy] [--decode-swaps N] [--sample-gpu]\n");
             return 2;
         }
@@ -5348,6 +5525,12 @@ int strata::qwen35::run(int argc, char** argv) {
     E.pf_copies_want = prefetch_copies;
     E.expert_profile = expert_profile;
     E.count_heat = !expert_profile_save.empty();
+    // recurrent-state snapshots per session (--snapshots K, up to 4), taken after reads of prompts of --snapshot-min
+    // tokens or more (4096); STRATA_Q36_SNAPSHOT_TEST=L[,J] checks one (a test setting, see below)
+    E.n_snaps = std::max(0, std::min(4, snapshots));
+    E.snap_min = std::max<int64_t>(1, snapshot_min);
+    const char* snap_test = std::getenv("STRATA_Q36_SNAPSHOT_TEST");
+    if (snap_test && !serve_mode) E.n_snaps = std::max(E.n_snaps, 1);
     // --async-swaps: the decode rebalance's copies; --async-after-prompt: the after-prompt rebalance's too;
     // STRATA_Q36_ASYNC_SWAPS=1 / 2 / 3 sets the two bits (tests)
     E.lend_on = lend_staging;
@@ -5562,7 +5745,29 @@ int strata::qwen35::run(int argc, char** argv) {
                      ir.rows.size() / (size_t) m.g.n_embd, (int) ir.delta);
     }
     const auto t0 = Clock::now();
-    E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
+    if (snap_test && !serve_mode && emb_file.empty()) {
+        // STRATA_Q36_SNAPSHOT_TEST=L[,J] (a test setting): the prompt's first L tokens, a snapshot, J other tokens
+        // (default 2048: the prompt's own start again, which writes the cache cells and the state past L), the snapshot
+        // restored, the rest of the prompt.  Its logits (--force, --dump-full-logits) against a plain run's: what a snapshot-resumed
+        // read gives against a fresh one.  J = 0 is the same split without the detour (the reference for the chunking).
+        const int64_t L = std::atoll(snap_test);
+        const char* cm = std::strchr(snap_test, ',');
+        const int64_t J = std::min<int64_t>({cm ? std::atoll(cm + 1) : 2048, (int64_t) prompt.size(), (int64_t) E.ctx - L});
+        if (L <= 0 || L >= (int64_t) prompt.size()) {
+            std::fprintf(stderr, "strata-q36: STRATA_Q36_SNAPSHOT_TEST=%s: L must be inside the prompt (%zu tokens)\n",
+                         snap_test, prompt.size());
+            return 2;
+        }
+        E.process(prompt.data(), L, [](int64_t) {});
+        E.snapshot();
+        if (J > 0) E.process(prompt.data(), J, [](int64_t) {});
+        E.restore(E.cur, 0, E.cur);
+        E.process(prompt.data() + L, (int64_t) prompt.size() - L, [](int64_t) {});
+        std::fprintf(stderr, "strata-q36: snapshot test: %lld tokens, a snapshot, %lld other tokens, the snapshot restored, "
+                     "the prompt's other %lld tokens\n", (long long) L, (long long) J, (long long) prompt.size() - L);
+    } else {
+        E.process(prompt.data(), (int64_t) prompt.size(), [](int64_t) {});
+    }
     const double pp_ms = ms_since(t0);
     const auto t1 = Clock::now();
     if (E.mtp_d > 0 && forced.empty() && !ff) {
