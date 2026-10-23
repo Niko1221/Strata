@@ -81,6 +81,41 @@ void rows_scalar_t(const uint8_t* w, size_t row_bytes, int n, const tq_detail::T
     }
 }
 
+// TQP (Gyro-L): 64 pair-trellis steps of 2 weights; a 32-value group is 16 steps.  The table row holds the
+// TQ2_T state's two pairs; TQP uses the first pair only (weight 2t+j = lut[2*hyb(2*s)+j]).
+template <int KB>
+void rows_scalar_tqp_t(const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
+                       float* const* out, int r0, int r1) {
+    const int nb = n / 128;
+    constexpr size_t bsz = 2 + 8 * KB;
+    const int16_t* tab = tq_state_table();
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* x = w + (size_t) r * row_bytes;
+        float acc[kTqMaxTokens][4] = {};
+        for (int i = 0; i < nb; ++i) {
+            const uint8_t* blk = x + (size_t) i * bsz;
+            const float dx = tq_detail::tq_half_to_float(tq_detail::tq_ld16(blk));
+            uint32_t st[64];
+            tq_detail::tq_states_tqp<KB>(blk + 2, st);
+            for (int t = 0; t < nt; ++t) {
+                const int16_t* q = a[t]->q + 128 * i;
+                for (int k = 0; k < 4; ++k) {
+                    int32_t s = 0;
+                    for (int j = 0; j < 16; ++j) {   // step 16k+j: two weights
+                        const int16_t* wv = tab + 4 * st[16 * k + j];
+                        const int16_t* qv = q + 32 * k + 2 * j;
+                        s += wv[0] * qv[0] + wv[1] * qv[1];
+                    }
+                    const float sc = dx * a[t]->d[4 * i + k];
+                    acc[t][k] = std::fma((float) s, sc, acc[t][k]);
+                }
+            }
+        }
+        for (int t = 0; t < nt; ++t)
+            out[t][r] = ((acc[t][0] + acc[t][1]) + (acc[t][2] + acc[t][3])) * (1.0f / 8192.0f);
+    }
+}
+
 }  // namespace
 
 const int16_t* tq_state_table() {
@@ -89,9 +124,9 @@ const int16_t* tq_state_table() {
     return g_table;
 }
 
-bool tq_supported(int t) noexcept { return t == 144 || t == 145 || t == 146; }
+bool tq_supported(int t) noexcept { return t == 144 || t == 145 || t == 146 || t == 147 || t == 148 || t == 149; }
 
-int tq_kbits(int t) noexcept { return t == 144 ? 8 : t == 145 ? 6 : t == 146 ? 7 : 0; }
+int tq_kbits(int t) noexcept { return t == 144 ? 8 : t == 145 ? 6 : t == 146 ? 7 : t == 147 ? 5 : t == 148 ? 6 : t == 149 ? 7 : 0; }
 
 bool tq_isa_ok(TqIsa isa) {
 #if defined(STRATA_TQ_X86)
@@ -147,6 +182,13 @@ void tq_rows_scalar(int kb, const uint8_t* w, size_t row_bytes, int n, const TqA
     else rows_scalar_t<7>(w, row_bytes, n, a, nt, out, r0, r1);
 }
 
+void tq_rows_scalar_tqp(int kb, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
+                        float* const* out, int r0, int r1) {
+    if (kb == 5) rows_scalar_tqp_t<5>(w, row_bytes, n, a, nt, out, r0, r1);
+    else if (kb == 6) rows_scalar_tqp_t<6>(w, row_bytes, n, a, nt, out, r0, r1);
+    else rows_scalar_tqp_t<7>(w, row_bytes, n, a, nt, out, r0, r1);
+}
+
 }  // namespace tq_detail
 
 namespace {
@@ -167,8 +209,14 @@ ActSet& unpack_all(const void* const* act, int n, int nt) {
     return *set;
 }
 
-void rows_on(TqIsa isa, int kb, const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
+void rows_on(TqIsa isa, int type, const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
              float* const* out, int r0, int r1) {
+    const int kb = tq_kbits(type);
+    if (type >= 147 && type <= 149) {   // TQP: the AVX2 pair kernel (AVX-512 falls back to it too)
+        if (isa == TqIsa::scalar) tq_detail::tq_rows_scalar_tqp(kb, w, row_bytes, n, a, nt, out, r0, r1);
+        else tq_detail::tq_rows_avx2_tqp(kb, w, row_bytes, n, a, nt, out, r0, r1);
+        return;
+    }
     switch (isa) {
 #if defined(STRATA_TQ_X86)
         case TqIsa::avx512: tq_detail::tq_rows_avx512(kb, w, row_bytes, n, a, nt, out, r0, r1); break;
@@ -185,7 +233,7 @@ void tq_rows(TqIsa isa, int ggml_type, const uint8_t* w, size_t row_bytes, int n
     if (!tq_isa_ok(isa)) std::abort();   // a caller bug: asked for an ISA this CPU does not have
     tq_state_table();
     const ActSet& s = unpack_all(act, n, nt);
-    rows_on(isa, tq_kbits(ggml_type), w, row_bytes, n, s.ptr, nt, out, r0, r1);
+    rows_on(isa, ggml_type, w, row_bytes, n, s.ptr, nt, out, r0, r1);
 }
 
 void tq_gu_rows(TqIsa isa, int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
@@ -202,9 +250,8 @@ void tq_gu_rows(TqIsa isa, int ggml_type, const uint8_t* blob, size_t gu_row, si
         gp[t] = gbuf.data() + (size_t) t * nr;
         up[t] = ubuf.data() + (size_t) t * nr;
     }
-    const int kb = tq_kbits(ggml_type);
-    rows_on(isa, kb, blob, gu_row, n, s.ptr, nt, gp, r0, r1);
-    rows_on(isa, kb, blob + up_off, gu_row, n, s.ptr, nt, up, r0, r1);
+    rows_on(isa, ggml_type, blob, gu_row, n, s.ptr, nt, gp, r0, r1);
+    rows_on(isa, ggml_type, blob + up_off, gu_row, n, s.ptr, nt, up, r0, r1);
     for (int t = 0; t < nt; ++t)
         for (int r = r0; r < r1; ++r) {
             const float g = gp[t][r], u = up[t][r];

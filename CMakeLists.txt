@@ -1698,6 +1698,10 @@ if(STRATA_NATIVE_EXPERTS)
   # tree leaves them to the FP16 prompt path
   if(STRATA_GGML_DIR AND EXISTS "${STRATA_GGML_DIR}/ggml/src/ggml-cuda/template-instances/mmq-instance-tqk6.cu")
     list(APPEND _strata_mmq_types tq2_t tqk6 tqk7)
+    # Gyro-L's pair trellis (types 147-149): the same fork's ggml has their MMQ instances
+    if(EXISTS "${STRATA_GGML_DIR}/ggml/src/ggml-cuda/template-instances/mmq-instance-tqp5.cu")
+      list(APPEND _strata_mmq_types tqp5 tqp6 tqp7)
+    endif()
     set(_strata_mmq_tq ON)
   elseif(STRATA_MMQ_TQ_OVERLAY AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
     # an upstream llama.cpp: the trellis MMQ instances come from an overlay of the pinned ggml-cuda headers written at
@@ -1763,7 +1767,7 @@ if(STRATA_NATIVE_EXPERTS)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
     endforeach()
     if(_strata_mmq_tq_overlay)
-      foreach(_t tq2_t tqk6 tqk7)
+      foreach(_t tq2_t tqk6 tqk7 tqp5 tqp6 tqp7)
         target_sources(strata_mmq PRIVATE ${_strata_tq_overlay_dir}/template-instances/mmq-instance-${_t}.cu)
       endforeach()
       # first on the include path: the patched mmq.cuh / ggml.h shadow the pinned ones for this target only
