@@ -21,6 +21,7 @@
 #include <iterator>
 
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/expert_cache.hpp"   // (strata_engine, through strata_prefill)
 #include "strata/core/family_layout.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -478,10 +479,76 @@ __global__ void k_group_hy(const int32_t* ids, int n_ent, int K_, int n_expert, 
         }
     }
 }
+/// --hybrid-zero-copy (the hybrid hand-off without copies, also with --expert-prefetch): the routing and the MoE
+/// input stored by the SMs into the pinned host buffers (mapped: unified addressing) instead of two device-to-host
+/// copies - a copy after a kernel costs the stream an engine switch, ~2-3 us, twice per layer.  Bitwise the same bytes.
+/// grid1(n_h / 4).
+__global__ void k_route_to_host(const int32_t* ids, const float* h, int32_t* h_ids, float* h_h, int n_ids, int n_h) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_ids) h_ids[i] = ids[i];
+    if (i < n_h / 4) ((float4*) h_h)[i] = ((const float4*) h)[i];
+}
+/// --hybrid-zero-copy: k_merge_cpu reading the CPU's rows in place (pinned host memory) instead of after two
+/// host-to-device copies, the missed entries as a mask argument (n_ent <= 64).  grid (N / 1024, n_ent), block 256.
+__global__ void k_merge_mapped(float* parts, const float* cpu, unsigned long long miss, int n) {
+    const int e = blockIdx.y;
+    if (!((miss >> e) & 1ull)) return;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n / 4) ((float4*) (parts + (size_t) e * n))[i] = ((const float4*) (cpu + (size_t) e * n))[i];
+}
+/// --expert-prefetch: the next layer's router logits (the prediction) for row blockIdx.y, y[o] = W[o] . x -
+/// four warps per output (two outputs per block, grid (n_out / 2, rows)) so that it is short beside the stream's kernels.
+/// n_in % 512 == 0.
+__global__ void k_pred_gemv(const float* W, const float* x, float* y, int n_in, int n_out) {
+    __shared__ float part[8];
+    const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+    const int o = blockIdx.x * 2 + warp / 4, q = warp % 4;
+    const int per = n_in / 16;   // float4s per quarter
+    x += (size_t) blockIdx.y * n_in;
+    y += (size_t) blockIdx.y * n_out;
+    float acc = 0.f;
+    if (o < n_out) {
+        const float4* wr = (const float4*) (W + (size_t) o * n_in) + q * per;
+        const float4* xr = (const float4*) x + q * per;
+        for (int i = lane; i < per; i += 32) {
+            const float4 a = wr[i], b = xr[i];
+            acc += a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+        }
+    }
+    for (int m = 16; m > 0; m >>= 1) acc += __shfl_xor_sync(0xffffffffu, acc, m);
+    if (lane == 0) part[warp] = acc;
+    __syncthreads();
+    if (threadIdx.x < 2 && blockIdx.x * 2 + (int) threadIdx.x < n_out) {
+        const int b = threadIdx.x * 4;
+        y[blockIdx.x * 2 + threadIdx.x] = part[b] + part[b + 1] + part[b + 2] + part[b + 3];
+    }
+}
 /// A busy-wait of `cycles` clock cycles (tests: STRATA_Q36_SIDE_SKEW), one thread.
 __global__ void k_spin(long long cycles) {
     const long long t0 = clock64();
     while (clock64() - t0 < cycles) {}
+}
+/// --expert-prefetch: a prefetch copy has landed (on the copy's stream, after it): its slot's word = gen.
+__global__ void k_pf_landed(int32_t* flag, int32_t gen) {
+    *(volatile int32_t*) flag = gen;
+    __threadfence();
+}
+/// ... and, on the engine's stream before a layer's routing, the slot table's changes on the GPU's own timeline: the
+/// evicted experts out, then each copy whose word says it has landed in (a copy still in flight stays out: the CPU
+/// computes that expert, nothing waits); what it did goes to out[p] (mapped: gen, or 0) for the host's plan.  One
+/// thread, in order.
+struct PfPub {
+    int32_t ev_x[16], x[16], slot[16], gen[16], p[16];
+    int nev, n;
+};
+__global__ void k_pf_publish(int32_t* slot_of, const int32_t* flag, int32_t* out, PfPub u) {
+    for (int i = 0; i < u.nev; ++i) slot_of[u.ev_x[i]] = -1;
+    for (int i = 0; i < u.n; ++i) {
+        const bool landed = ((const volatile int32_t*) flag)[u.p[i]] == u.gen[i];
+        if (landed) slot_of[u.x[i]] = u.slot[i];
+        out[u.p[i]] = landed ? u.gen[i] : 0;
+    }
+    __threadfence_system();
 }
 /// The CPU pool's expert rows into the entries' rows: parts[e] = cpu[e] where miss[e].  grid (n_ent), block 256.
 __global__ void k_merge_cpu(float* parts, const float* cpu, const int32_t* miss, int n) {
@@ -1308,6 +1375,7 @@ struct Engine {
     bool cache_window = false;
     size_t rebalance_cursor = 0;
     int cache_swaps = 1024;  // the history window: copy at most this many experts per 32 rows
+    int decode_swaps = 8;    // slot replacements per kRebalanceEvery decode rows over all layers (--decode-swaps)
     int gqa_from = 8192;     // the grouped-query kernel from this many cells (graph mode: a context at least this big)
     int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
 
@@ -1356,7 +1424,23 @@ struct Engine {
     struct Hy {
         std::vector<int> slot_of, exp_in_slot;
         std::vector<double> score;   // routing counts, halved at each rebalance
+        std::vector<double> heat;    // the same counts never halved, since the warm-up (with count_heat)
         int32_t* slot_of_d = nullptr;
+        // --expert-prefetch: the prefetch slots (n_slots + p), the round robin's next, and the table changes
+        // not yet on the device (k_pf_publish at the layer's next routing)
+        struct PfSlot {
+            int x = -1;                // the expert copied in (or being copied in)
+            int state = 0;             // 0 empty, 1 loading (copy issued, not seen landed), 2 ready (in the table)
+            int32_t gen = 0;           // its copy's number (k_pf_landed writes it)
+            bool offered = false;      // the last k_pf_publish offered it (pf_settle reads the outcome)
+            long long last_ref = -1;   // the forward (pf_fwd) whose plan last read it
+        };
+        std::vector<PfSlot> pf;
+        int pf_next = 0;
+        std::vector<int32_t> evicted;  // experts out of a prefetch slot, not yet out of the device table
+        int32_t* flag_d = nullptr;     // device [P]: the landed copies' numbers
+        int32_t* out_h = nullptr;      // mapped [P]: k_pf_publish's outcome
+        int32_t* out_d = nullptr;
 #if defined(STRATA_Q36_CPU_POOL)
         strata::kernels::cpu::NativeFmt fmt;
 #endif
@@ -1387,6 +1471,42 @@ struct Engine {
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
     double hy_cpu_ms = 0;
+    // --expert-profile (the main path's file, include/strata/core/expert_cache.hpp; set before place_experts): each
+    // hybrid layer's first slots take its most-routed experts from it.  Here a "layer" is the engine's state index (the
+    // main layers, then the MTP block).  `profile_ranked`: its pairs as read (--expert-profile-save's prior).
+    std::string expert_profile;
+    std::vector<std::pair<int32_t, int32_t>> profile_ranked;
+    bool count_heat = false;   // --expert-profile-save: Hy::heat counted (what the save ranks by)
+    // --expert-prefetch P (opt-in): P of each main hybrid layer's VRAM slots (the same VRAM: P fewer cached experts)
+    // hold experts fetched ahead for a decode row or a verify window (up to kPfRows rows: the union of the rows'
+    // predictions, the experts most rows predict first).  Layer l+1's router applied to layer l's MoE input
+    // (pre-gating, on stream pst beside layer l's experts) names the experts layer l+1 will likely pick (64% of its
+    // misses in its top 8 at 4K cells; a Qwen3.6-35B-A3B fine-tune, Q4_K_M, RTX 5080, DDR5-6400 dual channel); the
+    // ones without a slot are copied from the pinned host copy into the prefetch slots (stream pfst, the copy engine)
+    // once layer l's pool is done and layer l+1's first product is queued - DRAM is idle through layer l+1's mixer, while the pool's reads would share it,
+    // and the stream is not kept waiting for the host.  The main path's foresight swap rules (foresight_swap.hpp): a
+    // copy is used only once it has landed - k_pf_publish, on the engine's stream before layer l+1's routing, takes it
+    // into the table if its copy's word (k_pf_landed) says so, else the CPU computes that expert and the copy serves a
+    // later forward, nothing waits (decided on the GPU's timeline: the host enqueues ahead of it); a slot is refilled
+    // only when no plan of the running forward read it (a verify window's kernels may still run) and never while its
+    // copy is in flight; at most pf_budget copies per forward.  A predicted miss is then a GPU hit; the CPU pool
+    // computes only the rest.  pf_topk: how many of the predicted picks are candidates.
+    int pf_want = 0;              // --expert-prefetch P (set before place_experts, which makes pf_slots of it)
+    int pf_slots = 0, pf_topk = 8;
+    bool zc = false;   // --hybrid-zero-copy: the hybrid hand-off without copies (k_route_to_host, k_merge_mapped)
+    cudaStream_t pst = nullptr, pfst = nullptr;
+    cudaEvent_t ev_pf0 = nullptr, ev_pred = nullptr;
+    bool pf_join_pending = false;
+    float *d_pflog = nullptr, *h_pflog = nullptr;   // mapped: the next layer's predicted router logits ([2][kPfRows][ne])
+    int pf_for = -1;              // the layer the pending prediction is for
+    long long pf_fwd = 0;         // main forwards so far (the slots' reuse rule: never one a running forward's plan read)
+    int pf_budget = 64, pf_used = 0;   // copies per forward, used this forward
+    int32_t pf_gen = 0;           // the prefetch copies' numbers (1 .. INT32_MAX, then 1 again; STRATA_Q36_PF_GEN_START for tests)
+    long long pf_copies = 0, pf_hits = 0, pf_preds = 0, pf_late = 0;
+    std::vector<int> pf_order, pf_idx, pf_cnt;   // the candidates, a row's sort, rows predicting each expert
+    std::vector<float> pf_best;                  // each expert's highest predicted logit over the rows
+    static constexpr int kPfRows = 8;            // rows predicted (decode, verify windows up to 8 rows)
+    int pf_rows = 1;                             // rows in the pending prediction
     // decode / verify rows: their routing is counted once the rows are kept (commit), so a verify window's rejected
     // drafts never move the slots; the slots follow the counts at every kRebalanceEvery-th position exactly (a
     // window never steps over one), so plain and speculative decoding see the same slot tables at every position
@@ -1397,14 +1517,17 @@ struct Engine {
         const int Kp = (int) m->top_k;
         for (size_t li = 0; li < row_ids.size() && li < hy.size(); ++li)
             if (!row_ids[li].empty())
-                for (int e = 0; e < n * Kp; ++e) hy[li].score[(size_t) row_ids[li][(size_t) e]] += 1.0;
+                for (int e = 0; e < n * Kp; ++e) {
+                    hy[li].score[(size_t) row_ids[li][(size_t) e]] += 1.0;
+                    if (count_heat) hy[li].heat[(size_t) row_ids[li][(size_t) e]] += 1.0;
+                }
     }
     void after_rows(int n) {   // a decode step / verify window kept n rows: count them, rebalance at the boundary
         if (!m->hybrid) return;
         count_rows(n);
         if (pos % kRebalanceEvery == 0) {
             CK(cudaStreamSynchronize(st));
-            rebalance(cache_window ? cache_swaps : 8);
+            rebalance(cache_window ? cache_swaps : decode_swaps);
         }
     }
     void after_prompt() {
@@ -2114,6 +2237,10 @@ struct Engine {
         const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
         const int C = (int) g.ssm_conv_channels;
         const int H = (int) g.n_head, HKV = (int) g.n_head_kv, HD = (int) g.head_dim;
+        if (pf_slots && li == 0) {   // --expert-prefetch: a new main forward
+            ++pf_fwd;
+            pf_used = 0;
+        }
         if (!L.attn) {
             float* qkv_b = verify ? v_qkv[li] : qkv;
             float* hc_b = verify ? v_hc[li] : hc;
@@ -2131,6 +2258,7 @@ struct Engine {
                 apply(L.zg, xq, z, T);
                 CK(cudaEventRecord(ev_a1, ast));
             }
+            prefetch_issue();   // --expert-prefetch: the last layer's prediction's copies, the stream fed first
             if (!side) {
                 apply(L.zg, xq, z, T);
                 if (T <= kGemmT) {
@@ -2192,6 +2320,7 @@ struct Engine {
                 apply(L.wv, xq, vx, T);
                 CK(cudaEventRecord(ev_a1, ast));
             }
+            prefetch_issue();   // --expert-prefetch: the last layer's prediction's copies, the stream fed first
             if (side) {
                 side_spin(st, side_skew_join_us);
                 CK(cudaStreamWaitEvent(st, ev_a1, 0));   // k and v: first read by k_attn_prep
@@ -2326,12 +2455,26 @@ struct Engine {
         // a decode batch of up to 8 rows takes the router and the shared expert's gate in one product too (rows of 257) when the fused
         // router follows; the prompt chunks and the checks keep the separate products
         const bool ext = one || (fast_k && std::getenv("STRATA_Q36_NO_EXT") == nullptr && !verify_k && T <= kGemmT && g.n_expert == 256 && Kp == 8);
+        // (the next layer takes the hybrid rows path only for T <= hybrid_t: a bigger batch streams its experts, a prediction would be wasted)
+        if (pf_slots && T <= std::min<int>(kPfRows, hybrid_t) && li + 1 < m->layers.size() && lhy(li + 1)) {
+            // --expert-prefetch: the next layer's router on this layer's MoE input, on pst beside this layer's experts,
+            // into mapped host memory; the stream waits for it before h is rewritten (pf_join)
+            CK(cudaEventRecord(ev_pf0, st));
+            CK(cudaStreamWaitEvent(pst, ev_pf0, 0));
+            k_pred_gemv<<<dim3(((int) g.n_expert + 1) / 2, T), 256, 0, pst>>>(
+                m->layers[li + 1].router, h, d_pflog + ((li + 1) % 2) * kPfRows * g.n_expert, N, (int) g.n_expert);
+            pf_rows = T;
+            CK(cudaEventRecord(ev_pred, pst));
+            pf_for = (int) li + 1;
+            pf_join_pending = true;
+        }
         if (ext) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, T);
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
         const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
+        if (pf_slots && hy_rows) prefetch_publish(li);
         if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T, ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
@@ -2373,7 +2516,10 @@ struct Engine {
             shared_expert();   // independent of the routing: the GPU runs it while the host waits for the counts
             CK(cudaEventSynchronize(ev_route));
             if (lhy(li))
-                for (int x = 0; x < ne; ++x) hy[li].score[(size_t) x] += h_cnt[li * g.n_expert + x];
+                for (int x = 0; x < ne; ++x) {
+                    hy[li].score[(size_t) x] += h_cnt[li * g.n_expert + x];
+                    if (count_heat) hy[li].heat[(size_t) x] += h_cnt[li * g.n_expert + x];
+                }
             const int64_t maxr = hpin[10];
             const uint8_t* wbase = lhy(li) ? stream_take((int) li) : L.blobs;
             // each token's row once, written to its Kp sorted rows (rinv: entry -> sorted row): the bytes of quantizing per entry
@@ -2567,8 +2713,13 @@ struct Engine {
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k;
         const int64_t n_ent = (int64_t) T * Kp;
-        CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
-        CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
+        // --hybrid-zero-copy (or --expert-prefetch, whose copies hold the copy engine) stores them from a kernel
+        if (zc || pf_slots)
+            k_route_to_host<<<(T * N / 4 + 255) / 256, 256, 0, st>>>(ids, h, h_ids, h_h, (int) n_ent, T * N);
+        else {
+            CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
+            CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
+        }
         CK(cudaEventRecord(ev_route, st));
         group_entries(L, hy[li].slot_of_d, T);
         if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
@@ -2587,6 +2738,7 @@ struct Engine {
         const Layer& L = layer_at((int) li);
         while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
         }
+        if (pf_slots) pf_settle(li);   // --expert-prefetch: the copies the GPU took (before the plan reads slot_of)
         const auto t0 = Clock::now();
         // the missed entries per expert (up to MAXT tokens per job)
         jobs.clear();
@@ -2600,8 +2752,15 @@ struct Engine {
         }
         for (int e = 0; e < n_ent; ++e) {
             const int x = h_ids[e];
-            if (!defer) H.score[(size_t) x] += 1.0;
+            if (!defer) {
+                H.score[(size_t) x] += 1.0;
+                if (count_heat) H.heat[(size_t) x] += 1.0;
+            }
             h_miss[e] = H.slot_of[(size_t) x] < 0;
+            if (pf_slots && H.slot_of[(size_t) x] >= L.n_slots) {   // a prefetch slot: this forward reads it
+                ++pf_hits;
+                H.pf[(size_t) (H.slot_of[(size_t) x] - L.n_slots)].last_ref = pf_fwd;
+            }
             if (!h_miss[e]) continue;
             ++n_miss;
             const int t = e / Kp;
@@ -2623,9 +2782,20 @@ struct Engine {
         }
         hy_cpu += n_miss;
         hy_gpu += n_ent - n_miss;
-        if (n_miss == 0) return;
+        if (n_miss == 0) {
+            pf_join();
+            return;
+        }
         pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
         hy_cpu_ms += ms_since(t0);
+        pf_join();
+        if (zc && n_ent <= 64 && N % 1024 == 0) {   // --hybrid-zero-copy: the rows read in place
+            unsigned long long mask = 0;
+            for (int e = 0; e < n_ent; ++e)
+                if (h_miss[e]) mask |= 1ull << e;
+            k_merge_mapped<<<dim3(N / 1024, n_ent), 256, 0, st>>>(eparts, cpu_out, mask, N);
+            return;
+        }
         CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
         k_merge_cpu<<<n_ent, kThreads, 0, st>>>(eparts, ecpu, d_miss, N);
@@ -2635,6 +2805,146 @@ struct Engine {
 #endif
     }
 
+    /// --expert-prefetch: layer nl's predicted misses (pf_for: its prediction is on the host once ev_pred is)
+    /// into its free prefetch slots (pf_free), copies on pfst; prefetch_publish puts the landed ones in nl's table.
+    void prefetch_issue() {
+        if (pf_for < 0) return;
+        const size_t nl = (size_t) pf_for;
+        pf_for = -1;
+        while (cudaEventQuery(ev_pred) == cudaErrorNotReady) {
+        }
+        Hy& H = hy[nl];
+        const Layer& L = layer_at((int) nl);
+        const int ne = (int) m->g.n_expert;
+        // the candidates: each row's predicted top pf_topk, the experts more rows predict first (then the higher logit);
+        // one row: its top pf_topk in logit order
+        pf_cnt.assign((size_t) ne, 0);
+        pf_best.assign((size_t) ne, -INFINITY);
+        pf_order.clear();
+        pf_idx.resize((size_t) ne);
+        for (int r = 0; r < pf_rows; ++r) {
+            const float* pl = h_pflog + ((nl % 2) * kPfRows + (size_t) r) * ne;
+            for (int x = 0; x < ne; ++x) pf_idx[(size_t) x] = x;
+            std::partial_sort(pf_idx.begin(), pf_idx.begin() + pf_topk, pf_idx.end(),
+                              [&](int a, int b) { return pl[a] > pl[b] || (pl[a] == pl[b] && a < b); });
+            for (int k = 0; k < pf_topk; ++k) {
+                const int x = pf_idx[(size_t) k];
+                if (pf_cnt[(size_t) x]++ == 0) pf_order.push_back(x);
+                pf_best[(size_t) x] = std::max(pf_best[(size_t) x], pl[x]);
+            }
+        }
+        std::sort(pf_order.begin(), pf_order.end(), [&](int a, int b) {
+            if (pf_cnt[(size_t) a] != pf_cnt[(size_t) b]) return pf_cnt[(size_t) a] > pf_cnt[(size_t) b];
+            if (pf_best[(size_t) a] != pf_best[(size_t) b]) return pf_best[(size_t) a] > pf_best[(size_t) b];
+            return a < b;
+        });
+        const int ncand = (int) pf_order.size();
+        ++pf_preds;
+        for (int k = 0; k < ncand; ++k) {
+            const int x = pf_order[(size_t) k];
+            if (H.slot_of[(size_t) x] >= 0 || pf_holds(H, x)) continue;   // resident, prefetched or on its way
+            const int p = pf_free(H);
+            if (p < 0 || !pf_copy(H, L, p, x)) break;
+        }
+    }
+    /// a prefetch slot of H holds x or is loading it
+    static bool pf_holds(const Hy& H, int x) {
+        for (const Hy::PfSlot& q : H.pf)
+            if (q.state != 0 && q.x == x) return true;
+        return false;
+    }
+    /// The next free prefetch slot of H, round robin, or -1: not loading (a copy not seen landed is never overwritten),
+    /// not read by a plan of this forward (its kernels may still run; earlier forwards' are done - the host waited for
+    /// this forward's routing), and not holding one of the current prediction's candidates.
+    int pf_free(const Hy& H) const {
+        const int P = (int) H.pf.size();
+        for (int i = 0; i < P; ++i) {
+            const int p = (H.pf_next + i) % P;
+            const Hy::PfSlot& q = H.pf[(size_t) p];
+            if (q.state == 1 || q.last_ref >= pf_fwd) continue;
+            if (q.state == 2 && pf_cnt[(size_t) q.x] > 0) continue;
+            return p;
+        }
+        return -1;
+    }
+    /// Expert x's blob into prefetch slot p of H (on pfst); its old expert leaves the table (pending patch).  False when
+    /// the forward's copy budget is spent.
+    bool pf_copy(Hy& H, const Layer& L, int p, int x) {
+        if (pf_budget > 0 && pf_used >= pf_budget) return false;
+        const int S = L.n_slots;
+        Hy::PfSlot& q = H.pf[(size_t) p];
+        if (q.state == 2 && H.slot_of[(size_t) q.x] == S + p) {
+            H.slot_of[(size_t) q.x] = -1;
+            H.evicted.push_back(q.x);
+        }
+        CK(cudaMemcpyAsync(L.blobs + (size_t) (S + p) * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes,
+                           cudaMemcpyHostToDevice, pfst));
+        // (the word 0 means "not landed": the number skips it when the counter wraps, 2^31 copies on)
+        if (pf_gen >= INT32_MAX) std::fprintf(stderr, "strata-q36: the prefetch copies' numbers wrapped (skipping 0)\n");
+        pf_gen = pf_gen >= INT32_MAX ? 1 : pf_gen + 1;
+        q.gen = pf_gen;
+        k_pf_landed<<<1, 1, 0, pfst>>>(H.flag_d + p, q.gen);
+        q.x = x;
+        q.state = 1;
+        q.offered = false;
+        H.pf_next = (p + 1) % (int) H.pf.size();
+        ++pf_used;
+        ++pf_copies;
+        return true;
+    }
+    /// the stream waits for the prediction's read of h before anything rewrites it (where it waits for the pool anyway)
+    void pf_join() {
+        if (!pf_join_pending) return;
+        pf_join_pending = false;
+        CK(cudaStreamWaitEvent(st, ev_pred, 0));
+    }
+    /// ... before layer li's routing: k_pf_publish with the evictions and the loading copies (the GPU takes the landed
+    /// ones into the table as it gets there - the host enqueues ahead of the GPU, so it cannot tell)
+    void prefetch_publish(size_t li) {
+        Hy& H = hy[li];
+        const int S = layer_at((int) li).n_slots;
+        PfPub u{};
+        // (between two publishes at most P evictions and P loading copies, P <= 8: PfPub's 16 hold them)
+        if (H.evicted.size() > 16 || H.pf.size() > 16) {
+            std::fprintf(stderr, "strata-q36: %zu prefetch evictions, %zu slots: more than k_pf_publish takes\n",
+                         H.evicted.size(), H.pf.size());
+            std::abort();
+        }
+        for (int32_t x : H.evicted) u.ev_x[u.nev++] = x;
+        H.evicted.clear();
+        for (size_t p = 0; p < H.pf.size(); ++p) {
+            Hy::PfSlot& q = H.pf[p];
+            if (q.state != 1) continue;
+            if (H.slot_of[(size_t) q.x] >= 0) {   // rebalance gave it a slot meanwhile: the slot is free (a later copy
+                q.state = 0;                       // into it is behind this one on pfst)
+                q.x = -1;
+                q.offered = false;
+                continue;
+            }
+            u.x[u.n] = q.x;
+            u.slot[u.n] = S + (int) p;
+            u.gen[u.n] = q.gen;
+            u.p[u.n++] = (int) p;
+            q.offered = true;
+        }
+        if (u.n || u.nev) k_pf_publish<<<1, 1, 0, st>>>(H.slot_of_d, H.flag_d, H.out_d, u);
+    }
+    /// ... and once the routing is on the host (moe_hybrid_cpu): the host's table takes what the GPU did
+    void pf_settle(size_t li) {
+        Hy& H = hy[li];
+        const int S = layer_at((int) li).n_slots;
+        for (size_t p = 0; p < H.pf.size(); ++p) {
+            Hy::PfSlot& q = H.pf[p];
+            if (q.state != 1 || !q.offered) continue;
+            q.offered = false;
+            if (((volatile int32_t*) H.out_h)[p] != q.gen) {
+                ++pf_late;
+                continue;
+            }
+            q.state = 2;
+            H.slot_of[(size_t) q.x] = S + (int) p;
+        }
+    }
     /// The slots to the experts the routing used most (the counts halved each time): at most max_swaps replacements
     /// over all layers, between forwards (the copies are on the engine's stream).
     void rebalance(int max_swaps) {
@@ -2671,7 +2981,7 @@ struct Engine {
             bool changed = false;
             for (int i = 0; i < S && left > 0; ++i) {
                 const int x = order[(size_t) i];
-                if (H.slot_of[(size_t) x] >= 0) continue;
+                if (H.slot_of[(size_t) x] >= 0 && H.slot_of[(size_t) x] < S) continue;
                 while (vi < victims.size()) {
                     const int s = victims[vi];
                     const int y = H.exp_in_slot[(size_t) s];
@@ -2679,6 +2989,10 @@ struct Engine {
                     // y must not be in the top S itself
                     ++vi;
                     H.slot_of[(size_t) y] = -1;
+                    if (H.slot_of[(size_t) x] >= S) {   // promoted from a prefetch slot: that slot is free again
+                        H.pf[(size_t) (H.slot_of[(size_t) x] - S)].state = 0;
+                        H.pf[(size_t) (H.slot_of[(size_t) x] - S)].x = -1;
+                    }
                     H.slot_of[(size_t) x] = s;
                     H.exp_in_slot[(size_t) s] = x;
                     CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) x * L.stride, L.L.bytes,
@@ -2690,8 +3004,10 @@ struct Engine {
                 }
                 if (vi >= victims.size()) break;
             }
-            if (changed)
+            if (changed) {
                 CK(cudaMemcpyAsync(H.slot_of_d, H.slot_of.data(), (size_t) ne * 4, cudaMemcpyHostToDevice, st));
+                H.evicted.clear();   // the whole table went up
+            }
             for (double& v : H.score) v *= 0.5;
             if (cache_window && left < before) next = (li + 1) % hy.size();
         }
@@ -2908,7 +3224,7 @@ struct Engine {
         rows_G_last = G;
         if (m->hybrid) {
             count_rows(T);
-            if (++win_count % kRebalanceEvery == 0) rebalance(cache_window ? cache_swaps : 8);
+            if (++win_count % kRebalanceEvery == 0) rebalance(cache_window ? cache_swaps : decode_swaps);
         }
     }
     /// One window for the next token of each of the rows' sessions (no proposals): the greedy picks in rows_pick.
@@ -3125,9 +3441,13 @@ struct Engine {
         }
         CK(cudaStreamSynchronize(st));
         warming = false;
-        for (Hy& H : hy) std::fill(H.score.begin(), H.score.end(), 0.0);
+        for (Hy& H : hy) {
+            std::fill(H.score.begin(), H.score.end(), 0.0);
+            std::fill(H.heat.begin(), H.heat.end(), 0.0);
+        }
         hy_cpu = hy_gpu = hy_swaps = 0;
         hy_cpu_ms = 0;
+        pf_preds = pf_copies = pf_hits = pf_late = 0;
         reset();
         std::fprintf(stderr, "strata-q36: warmed up in %.1f s (one prompt chunk, a decode step%s)\n",
                      ms_since(t0) / 1000.0, mtp_d > 0 ? ", a speculative step" : "");
@@ -3258,13 +3578,22 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         const size_t left = budget2 > total_main ? budget2 - total_main : 0;
         S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
     }
+    // --expert-prefetch P: P of each main hybrid layer's slots become prefetch slots (the same VRAM; the MTP block
+    // keeps S, without them); at least one slot stays a cache slot
+    int P = 0;
+    if (E.pf_want > 0 && !mtp_only && E.main_hybrid)
+        P = std::max(0, std::min(E.pf_want, std::min(S - 1, 8)));   // (PfPub holds 2 P changes)
+    S -= P;
     {   // what the hybrid mode allocates next (the staging pair, the CPU part's outputs, the slots) against the VRAM the
         // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
         const size_t Tn = (size_t) E.tmax, Nn = (size_t) g.n_embd, Kn = (size_t) m.top_k;
         size_t need = staging + Tn * Kn * Nn * 4 + Tn * Kn * 4;
         for (Layer* L : all) {
             if (mtp_only && L != &m.mtp) need += L->stride * (size_t) ne + kMmqTail;
-            else need += (S > 0 ? (size_t) S * L->stride + kMmqTail : 0);
+            else {
+                const int n = L == &m.mtp ? S : S + P;
+                need += n > 0 ? (size_t) n * L->stride + kMmqTail : 0;
+            }
         }
         if (need > fr) {
             err = "not enough VRAM left for the hybrid experts' buffers and slots (" + std::to_string((need >> 20)) +
@@ -3288,8 +3617,30 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             return false;
         }
     }
+    if (P > 0 && !pinned) {   // the prefetch copies need the pinned host copy: its slots stay cache slots
+        std::fprintf(stderr, "strata-q36: --expert-prefetch needs the pinned expert copy; off\n");
+        S += P;
+        P = 0;
+    }
     size_t off = 0;
     E.hy.resize(all.size());
+    // --expert-profile (opt-in): each layer's first slots get its most-routed experts from a saved profile instead of
+    // experts 0 .. S - 1; a profile that cannot be read is said, and the default order is used
+    std::vector<std::vector<int>> prof;
+    if (!E.expert_profile.empty()) {
+        std::string perr;
+        int64_t pslots = 0;
+        if (strata::core::read_expert_profile(E.expert_profile, (int64_t) all.size(), ne, E.profile_ranked, pslots, perr)) {
+            prof.assign(all.size(), {});
+            std::vector<uint8_t> seen(all.size() * (size_t) ne, 0);   // (a pair listed twice counts once)
+            for (const auto& [l, e] : E.profile_ranked)
+                if (!seen[(size_t) l * ne + e]++) prof[(size_t) l].push_back((int) e);
+            std::fprintf(stderr, "strata-q36: expert profile %s: the initial slots from it\n", E.expert_profile.c_str());
+        } else {
+            std::fprintf(stderr, "strata-q36: expert profile not used: %s\n", perr.c_str());
+            E.profile_ranked.clear();
+        }
+    }
     for (size_t li = 0; li < all.size(); ++li) {
         Layer& L = *all[li];
         if (mtp_only && &L != &m.mtp) {   // a main layer: every expert in VRAM, as in the all-in-VRAM placement
@@ -3308,19 +3659,43 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
         for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
         L.n_slots = S;
-        if (S > 0) {
-            CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
-            CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
-            CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+        // the initial residents: experts 0 .. S - 1, or the profile's ranking for this layer (then the rest by index)
+        std::vector<int> first((size_t) ne);
+        for (int64_t e = 0; e < ne; ++e) first[(size_t) e] = (int) e;
+        if (!prof.empty() && !prof[li].empty()) {
+            std::vector<uint8_t> taken((size_t) ne, 0);
+            size_t k = 0;
+            for (int e : prof[li]) { first[k++] = e; taken[(size_t) e] = 1; }
+            for (int64_t e = 0; e < ne; ++e)
+                if (!taken[(size_t) e]) first[k++] = (int) e;
+        }
+        const int Pl = &L == &m.mtp ? 0 : P;   // (prefetch slots: the main layers only)
+        if (S + Pl > 0) {
+            CK(cudaMalloc(&L.blobs, L.stride * (size_t) (S + Pl) + kMmqTail));
+            CK(cudaMemset(L.blobs, 0, L.stride * (size_t) (S + Pl) + kMmqTail));
+            if (prof.empty()) CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+            else
+                for (int s = 0; s < S; ++s)
+                    CK(cudaMemcpy(L.blobs + (size_t) s * L.stride, L.hblobs + (size_t) first[(size_t) s] * L.stride, L.stride,
+                                  cudaMemcpyHostToDevice));
         }
         Engine::Hy& H = E.hy[li];
         H.slot_of.assign((size_t) ne, -1);
         H.exp_in_slot.assign((size_t) S, 0);
         for (int s = 0; s < S; ++s) {
-            H.slot_of[(size_t) s] = s;
-            H.exp_in_slot[(size_t) s] = s;
+            H.slot_of[(size_t) first[(size_t) s]] = s;
+            H.exp_in_slot[(size_t) s] = first[(size_t) s];
         }
         H.score.assign((size_t) ne, 0.0);
+        H.heat.assign((size_t) ne, 0.0);
+        H.pf.assign((size_t) Pl, Engine::Hy::PfSlot{});
+        if (Pl > 0) {
+            CK(cudaMalloc(&H.flag_d, (size_t) Pl * 4));
+            CK(cudaMemset(H.flag_d, 0, (size_t) Pl * 4));
+            CK(cudaHostAlloc((void**) &H.out_h, (size_t) Pl * 4, cudaHostAllocMapped));
+            std::memset(H.out_h, 0, (size_t) Pl * 4);
+            CK(cudaHostGetDevicePointer((void**) &H.out_d, H.out_h, 0));
+        }
         CK(cudaMalloc(&H.slot_of_d, (size_t) ne * 4));
         CK(cudaMemcpy(H.slot_of_d, H.slot_of.data(), (size_t) ne * 4, cudaMemcpyHostToDevice));
         if (!C::native_fmt(L.L.gu_type, L.L.d_type, g.n_embd, g.n_ff, H.fmt, err)) return false;
@@ -3360,6 +3735,19 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         }
     }
     E.pool = std::make_unique<C::ExpertPool>(threads);
+    if (P > 0) {   // --expert-prefetch
+        E.pf_slots = P;
+        E.pf_topk = std::min<int>(E.pf_topk, (int) ne);   // (prefetch_issue's partial_sort)
+        if (const char* v = std::getenv("STRATA_Q36_PF_GEN_START"))   // tests: start the copies' numbers near the wrap
+            E.pf_gen = (int32_t) std::max<long long>(0, std::min<long long>(INT32_MAX - 1, std::atoll(v)));
+        CK(cudaStreamCreateWithFlags(&E.pst, cudaStreamNonBlocking));
+        CK(cudaStreamCreateWithFlags(&E.pfst, cudaStreamNonBlocking));
+        for (cudaEvent_t* ev : {&E.ev_pf0, &E.ev_pred}) CK(cudaEventCreateWithFlags(ev, cudaEventDisableTiming));
+        CK(cudaHostAlloc((void**) &E.h_pflog, (size_t) ne * 4 * 2 * Engine::kPfRows, cudaHostAllocMapped));
+        CK(cudaHostGetDevicePointer((void**) &E.d_pflog, E.h_pflog, 0));
+        std::fprintf(stderr, "strata-q36: prefetch: %d of the %d slots per layer filled by pre-gating (top %d)\n", P,
+                     S + P, E.pf_topk);
+    }
     CK(cudaDeviceSynchronize());
     if (mtp_only)
         std::fprintf(stderr, "strata-q36: every main layer's routed experts in VRAM (%.2f GiB); the MTP block's: %d of "
@@ -4107,8 +4495,9 @@ int strata::qwen35::run(int argc, char** argv) {
     int expert_slots = 0, batch = 0, draft_vocab = -1;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
-    std::string kv = "fp32", tokens_file;
-    bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false, split_stage_copy = false;
+    std::string kv = "fp32", tokens_file, expert_profile, expert_profile_save;
+    bool gqa_attn = false, attn_mma = false, fused_pattn = false, chunked_gdn = false, side_stream = false, split_stage_copy = false, zero_copy = false;
+    int expert_prefetch = 0, decode_swaps = -1;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -4157,6 +4546,11 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--side-stream") side_stream = true;         // z, alpha / beta, k, v of a decode layer on a second stream
         else if (a == "--split-stage-copy") split_stage_copy = true;   // the prompt's staging copy: resident experts from 1/8, own stream
         else if (a == "--fused-prompt-attn") fused_pattn = true;   // the prompt attention in one kernel (int8 cache)
+        else if (a == "--hybrid-zero-copy") zero_copy = true;      // the hybrid hand-off without copies
+        else if (a == "--expert-prefetch") expert_prefetch = std::atoi(next().c_str());   // P prefetch slots per layer
+        else if (a == "--expert-profile") expert_profile = next();             // the main path's names: the initial slots
+        else if (a == "--expert-profile-save") expert_profile_save = next();   // ... and what this run learned, at exit
+        else if (a == "--decode-swaps") decode_swaps = std::atoi(next().c_str());   // the hybrid slots' swaps per 32 tokens
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
             // (with its value), not fatal
@@ -4170,7 +4564,8 @@ int strata::qwen35::run(int argc, char** argv) {
                          "       (--serve | --tokens IDS | --tokens-file F [--n 64] [--force IDS] [--dump-full-logits F] | "
                          "--bench-pp N --bench-tg N)\n"
                          "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
-                         "       [--side-stream] [--split-stage-copy]\n");
+                         "       [--side-stream] [--split-stage-copy] [--expert-profile F] [--expert-profile-save F]\n"
+                         "       [--expert-prefetch P] [--hybrid-zero-copy] [--decode-swaps N]\n");
             return 2;
         }
     }
@@ -4237,6 +4632,11 @@ int strata::qwen35::run(int argc, char** argv) {
     E.chunked_gdn = chunked_gdn;
     E.side_on = side_stream;
     E.split_copy = split_stage_copy;
+    if (decode_swaps >= 0) E.decode_swaps = decode_swaps;
+    E.zc = zero_copy;
+    E.pf_want = expert_prefetch;
+    E.expert_profile = expert_profile;
+    E.count_heat = !expert_profile_save.empty();
     if (chunk == 0) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
@@ -4290,18 +4690,43 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     struct Report {
         Engine& E;
+        const std::string& save;   // --expert-profile-save
         ~Report() {
             if (E.verify_k) std::fprintf(stderr, "strata-q36 VERIFY: %lld comparisons, %lld mismatches\n", E.v_calls, E.v_bad);
             if (E.verify_k)
                 for (const auto& kv : E.v_by)
                     std::fprintf(stderr, "strata-q36 VERIFY   %s: %lld mismatches\n", kv.first.c_str(), kv.second);
             if (!E.m->hybrid) return;
+            if (!save.empty()) {
+                // what this run learned (#477's order, rank_learned_profile): per layer the experts in its cache slots
+                // now, then the rest, each by the routing counted since the warm-up (`heat`), then by the profile it
+                // started from, then by index (prefetch slots and layers without a slot table count as not resident)
+                const int64_t ne = (int64_t) E.m->g.n_expert, nl = (int64_t) E.hy.size();
+                std::vector<uint8_t> resident((size_t) (nl * ne), 0);
+                std::vector<double> heat((size_t) (nl * ne), 0.0);
+                for (int64_t l = 0; l < nl; ++l) {
+                    const Engine::Hy& H = E.hy[(size_t) l];
+                    const int S = E.layer_at((int) l).n_slots;
+                    for (int64_t e = 0; e < ne && (size_t) e < H.slot_of.size(); ++e) {
+                        resident[(size_t) (l * ne + e)] = H.slot_of[(size_t) e] >= 0 && H.slot_of[(size_t) e] < S;
+                        heat[(size_t) (l * ne + e)] = H.heat[(size_t) e];
+                    }
+                }
+                const auto ranked = strata::core::rank_learned_profile(nl, ne, resident, heat, E.profile_ranked);
+                std::string serr;
+                if (strata::core::write_expert_profile(save, nl, ne, ranked, serr))
+                    std::fprintf(stderr, "strata-q36: expert profile saved to %s\n", save.c_str());
+                else std::fprintf(stderr, "strata-q36: expert profile not saved: %s\n", serr.c_str());
+            }
             const long long n = E.hy_cpu + E.hy_gpu;
             std::fprintf(stderr, "strata-q36: hybrid experts: %lld of %lld batch entries on the GPU (%.1f%%), %lld on the "
                          "CPU pool in %.0f ms, %lld slot replacements\n", E.hy_gpu, n, n ? 100.0 * E.hy_gpu / n : 0.0,
                          E.hy_cpu, E.hy_cpu_ms, E.hy_swaps);
+            if (E.pf_slots)
+                std::fprintf(stderr, "strata-q36: prefetch: %lld predictions, %lld copies, %lld entries hit a prefetch slot, "
+                             "%lld routings found a copy still in flight\n", E.pf_preds, E.pf_copies, E.pf_hits, E.pf_late);
         }
-    } report{E};
+    } report{E, expert_profile_save};
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
     if (draft_vocab < 0 && std::getenv("STRATA_Q36_DRAFT_VOCAB") != nullptr) draft_vocab = std::atoi(std::getenv("STRATA_Q36_DRAFT_VOCAB"));

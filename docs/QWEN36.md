@@ -217,8 +217,11 @@ and the per-layer wait for the routing counts is an event wait with the shared e
 **Tried and dropped.** The MTP drafts' head over a subset of the vocabulary (`--draft-vocab N`, kept as an opt-in; the answer never
 changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% on Chinese / Russian / Arabic / Hindi (70% of a Chinese
 prompt's token ids are above 65,536), and a candidate list built from the tokens seen so far loses on both. The shared expert on a second
-stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. Chunked (WY) GDN and the PCIe-assisted hybrid decode
-were not attempted.
+stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. In the hybrid mode, a share of each token's
+missed experts copied over PCIe and run on the GPU beside the CPU pool: slower (a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080, DDR5-6400 dual channel: 155 instead of 184
+tok/s with 30% of them), because the copies read the same RAM the pool already nearly fills (88 of about 96 GB/s); and the CPU's
+experts of the last token copied into the prefetch slots (below) after the pool: those recur 18% of the time, and their copies crowd
+out the predicted ones. Chunked (WY) GDN was not attempted.
 
 ## Opt-ins of this engine path
 
@@ -283,10 +286,25 @@ on the `strata-q36` command line.
   1.20e-2, median 2.0e-3, p99 0.078, max 0.97 (the 14K prompt: mean 2.3e-2, max 0.97, top-1 58 of 65 steps; the controls are
   `--prefill 1024` with mean 8.9e-3 and max 0.51, and the accepted prefetch opt-ins with mean 2.2e-2 and max 1.95). Chunks of 9-33
   rows are a few microseconds per layer slower than the default kernel. Measured on a Core Ultra 9 285K with 61 GB DDR5-6800.
+- **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
+  hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
+  end the experts in the slots then, ranked by the routing counted since the warm-up, are saved to F (a `.tmp` beside it renamed over
+  it). A layer here is the engine's: the model's layers, then the MTP block, so a profile of another model or path is refused (and the
+  default order used).
+- **`--expert-prefetch P`** (hybrid mode, P up to 8): P of each layer's VRAM slots hold experts fetched ahead: the next layer's router
+  applied to this layer's MoE input names the experts it will likely pick (64% of its misses are in the top 8: a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080, 4K cells), and
+  the ones not in VRAM are copied there while the GPU works on the next layer's mixer. A copy is used only once it has landed; until
+  then the CPU computes that expert, so which side computes an expert depends on timing and the text can differ from run
+  to run in the last bits (the GPU's and the CPU's rounding). Needs the pinned host copy of the experts (else off, said in the log).
+- **`--hybrid-zero-copy`** (hybrid mode): the routing and the MoE input go to the CPU, and the CPU's rows come back, through pinned
+  host memory the GPU reads and writes in place instead of four copies per layer (each costs the stream 2-3 us). The same bytes.
+- **`--decode-swaps N`** (hybrid mode): how many experts move into VRAM slots every 32 decode tokens, over all layers (8 by
+  default; the main path's `--adapt-swaps` counts another round, so the name differs).
 
 Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
 `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
-`STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`).
+`STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`),
+`STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap).
 
 ## Not done / limits
 
