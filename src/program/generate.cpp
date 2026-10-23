@@ -12278,6 +12278,11 @@ int main(int argc, char** argv) {
             // jevpos=p1,p2,... (jev --jev-brow, fix B): absolute prompt positions whose head rows the engine
             // keeps, so one prompt can answer N questions.  Absent = no capture (BROWAT then reads the window).
             std::vector<int64_t> req_jevpos;
+            // jev fix B: clear the previous request's captured rows HERE, at the top of every request, not only
+            // at the read loop below.  A request that fails earlier (oversize prompt, tokenization, cancel)
+            // returns before that call site, and a later BROWAT would then be answered from stale rows of a
+            // prompt that is no longer the last one - `captured_rows() > 0` cannot tell stale from fresh.
+            ver.clear_row_capture();
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             double req_pcie_frac = o.pcie_frac, req_spec_min_p = o.spec_min_p;
@@ -12314,7 +12319,10 @@ int main(int argc, char** argv) {
                             const std::string one = list.substr(at, comma == std::string::npos ? std::string::npos
                                                                                               : comma - at);
                             if (!one.empty()) {
-                                if (one.front() < '0' || one.front() > '9') bad = true;
+                                // every character, not just the first: "12x" used to pass as 12 because
+                                // atoll stops at the junk, i.e. a guessed position wearing a valid one
+                                for (const char ch : one)
+                                    if (ch < '0' || ch > '9') bad = true;
                                 else if (req_jevpos.size() >= 32) bad = true;   // more than the cap: refuse the
                                 else req_jevpos.push_back((int64_t) std::atoll(one.c_str()));   // list, never truncate
                             }
