@@ -3973,6 +3973,16 @@ int main(int argc, char** argv) {
     constexpr int64_t kKvWinBatchMax = 6144;
     if (strata::core::qsa_kv_win() && g.n_qsa_layers() > 0) {
         int64_t chunk = o.prefill_chunk > 0 ? o.prefill_chunk : 512;
+        if (!strata::core::qsa_kv_win_batch_is_explicit()) {
+            // The auto scan's ceiling floors at 8192 (#282, auto_ceiling below), and the host cap is read at
+            // parse time where a free ring cannot influence it - so without this the scan may pick 8,192 while
+            // the ring holds S + 6,144, and the batched append exits mid-prompt.  Measured on this PC (RX 9060
+            // XT, Windows HIP 7.1): --kv q4lm8v STRATA_KV_WINDOW=1 S=256 R=64 --prefill auto:16384, an
+            // 8,191-token prompt -> "kv_append_win: 8191 cells in one batch do not fit the 6400-row recent
+            // ring", exit 1, no DONE.  An explicit STRATA_KV_WINDOW_BATCH stays out of it: the append's
+            // loud refusal is the contract for a ring the user sized.
+            o.prefill_auto_cap = kKvWinBatchMax;
+        }
         if (chunk > kKvWinBatchMax && !strata::core::qsa_kv_win_batch_is_explicit()) {
             std::fprintf(stderr,
                          "strata generate: the exact-cell window's ring holds 6,144-cell prompt chunks; "
