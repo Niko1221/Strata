@@ -60,6 +60,31 @@ def _set_for_test(c: Calib | None, mode: str = "") -> None:
 # ---- file load (donor calib_load :565-586) ----
 CALIB_DIR = Path(os.environ.get("STRATA_JEV_CALIB_DIR", "calib"))
 
+# Opt-in strictness (default OFF: the default path stays byte-identical to the last release).
+# The defect it guards: a file whose keys the loader does not read (e.g. "a"/"c" instead of
+# "a_noul"/"c_noul") loads as identity while its T is still honoured - a silent half-fitted
+# calibrator.  STRATA_JEV_CALIB_STRICT=1 refuses such a file outright and logs why.
+STRICT = os.environ.get("STRATA_JEV_CALIB_STRICT", "0") not in ("0", "false", "False", "off", "")
+_KNOWN_KEYS = {"tuple", "a_noul", "c_noul", "T_choice", "T_score", "provenance"}
+
+
+def _strict_problem(j: dict) -> str:
+    """-> reason string when a doc is unusable under strict mode, else ""."""
+    unknown = set(j) - _KNOWN_KEYS
+    if unknown:
+        return (f"keys {sorted(unknown)} are not read by the loader (expected "
+                f"a_noul/c_noul/T_choice/T_score) - those values would be silently dropped")
+    for f in ("T_choice", "T_score"):
+        if f in j:
+            try:
+                t = float(j[f])
+            except (TypeError, ValueError):
+                return f"{f} is not a number"
+            if t <= 0.05 or t >= 10.0:
+                return (f"{f}={t:g} is at/over the degenerate edge (apply() only rejects <=0.01; "
+                        f"a 1/{t:g} exponent makes the readout near one-hot or near-uniform)")
+    return ""
+
 
 def load(path: Path) -> Calib:
     """Parse one calib.json; missing/corrupt -> not loaded (identity).
@@ -78,6 +103,12 @@ def load(path: Path) -> Calib:
             print(f"[jev-calib] refusing {path.name}: tuple readout '{got}' != '{want}' "
                   f"(B1.4 mismatch; identity until a matching file is fitted)", flush=True)
             return c
+        if STRICT:
+            why = _strict_problem(j)
+            if why:
+                print(f"[jev-calib] REFUSING {path.name} (STRATA_JEV_CALIB_STRICT): {why}; "
+                      f"identity until the file is refitted", flush=True)
+                return c
         if "T_choice" in j:
             c.T_choice = float(j["T_choice"])
         if "T_score" in j:

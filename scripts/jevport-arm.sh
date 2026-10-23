@@ -75,11 +75,22 @@ PY
 if [ -n "$CALIB" ]; then
   # calib/ is root-owned inside the container (the model writes its own logs there), so every write
   # goes through `docker exec` from a staging file in /cfg/strata - a host-side cp gets EACCES.
-  if [ "$CALIB" = "none" ]; then
-    $DOCKER exec llama-swap sh -c "test -f $CALIB_DIR/calib-L.json.prev-20261022" \
-      || { echo "no .prev backup to revert to" >&2; exit 1; }
-    $DOCKER exec llama-swap sh -c "cp $CALIB_DIR/calib-L.json.prev-20261022 $CALIB_DIR/calib-L.json"
-    echo "calibrator: reverted calib-L.json from .prev-20261022"
+  if [ "$CALIB" = "identity" ]; then
+    # no calibrator file = identity, per tuple.  Use this for any raw->fit measurement: with a
+    # calibrator installed the "raw" column is already f_old(raw) and a new fit COMPOUNDS it,
+    # so the fitted params are not installable and the before/after numbers are not honest.
+    # L = text, D = image direct, S = image summary.  V has no shipped file (never fitted).
+    $DOCKER exec llama-swap sh -c "cd $CALIB_DIR && for f in calib-L.json calib-D.json calib-S.json; do
+      if [ -f \$f ]; then mv -f \$f \$f.hold; echo \"  aside: \$f\"; fi
+    done; true"
+    echo "calibrator: identity (L/D/S files moved to .hold)"
+  elif [ "$CALIB" = "none" ]; then
+    # restore whatever identity moved aside; fall back to the archived Oct-15 L fit if .hold is gone
+    $DOCKER exec llama-swap sh -c "cd $CALIB_DIR && for f in calib-L.json calib-D.json calib-S.json; do
+      if [ -f \$f.hold ]; then mv -f \$f.hold \$f; echo \"  restored: \$f\";
+      elif [ \"\$f\" = calib-L.json ] && [ -f \$f.prev-20261022 ]; then cp \$f.prev-20261022 \$f; echo \"  restored \$f from .prev-20261022\"; fi
+    done; true"
+    echo "calibrator: restored from .hold (or the .prev-20261022 archive)"
   else
     [ -f "$SCRIPTS/$CALIB" ] || { echo "no such calibrator: $SCRIPTS/$CALIB" >&2; exit 1; }
     STAGE=/opt/data/llm-swap/strata/calib-incoming.json
@@ -87,7 +98,7 @@ if [ -n "$CALIB" ]; then
     $DOCKER exec llama-swap sh -c "cp $CALIB_DIR/calib-L.json $CALIB_DIR/calib-L.json.prev-$(date +%Y%m%d-%H%M%S) 2>/dev/null || true; cp /cfg/strata/calib-incoming.json $CALIB_DIR/calib-L.json"
     echo "calibrator: installed $CALIB"
   fi
-  $DOCKER exec llama-swap sh -c "grep -E 'a_noul|c_noul|T_choice|tuple' $CALIB_DIR/calib-L.json | tr -d ' \n'; echo"
+  $DOCKER exec llama-swap sh -c "cd $CALIB_DIR && for f in calib-L.json calib-D.json calib-S.json; do if test -f \$f; then printf '%s: ' \$f; grep -E 'a_noul|c_noul|T_choice' \$f | tr -d ' \n'; echo; fi; done; echo '(absent = identity)'"
 fi
 
 echo "restarting llama-swap (a config reload alone does NOT restart an already-running preset,"
