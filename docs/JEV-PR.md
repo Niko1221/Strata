@@ -253,21 +253,34 @@ the slope is the only part that is even approximately portable.** The banking77 
 threshold at raw p ≈ .94 on a balanced 50/50 set — which is why its +13 points is threshold tuning
 on a prior, not a better probability, and must not be quoted as an accuracy result.
 
-**Multi-field arms (N questions, one state), ref = default:**
+**Multi-field arms (N questions, one state), ref = default.** Measured 2026-10-23 on engine
+`a2182599` (jev-port @ `f2d2621f`), RTX 3090, IQ3_XXS, median of 3 per cell (`scripts/rowreadout_probe.py`):
 
-| N | C (default) | H (opt-in) | B (opt-in) | B field-N max abs Δp |
+| N | C (default) | H (opt-in) | B (one prefill, opt-in) | B prompt tokens vs C |
 |---|---|---|---|---|
-| 1 | 918 ms | 831 (1.10×) | 841 (1.09×) | .007 |
-| 2 | 1232 ms | 1076 (1.15×) | **981 (1.33×)** | .187 |
-| 3 | 1185 ms | 1508 (0.79×) | 1258 (0.94×) | .307 |
-| 4 | 1406 ms | 1899 (0.74×) | 1382 (1.02×) | .288 |
-| 5 | 1667 ms | 2321 (0.72×) | 1582 (1.05×) | **.507** |
+| 1 | 209.7 ms (86 tok) | 209.3 ms (86) | 235.2 ms (86) | same |
+| 2 | 549.1 ms (189) | 915.1 ms (189) | 1013.2 ms (134) | **29% fewer** |
+| 3 | 1231.7 ms (299) | 1470.7 ms (299) | 1299.5 ms (189) | **37% fewer** |
+| 4 | 1405.4 ms (387) | 1826.9 ms (387) | 1447.2 ms (222) | **43% fewer** |
+| 5 | 1698.5 ms (490) | 2287.5 ms (490) | 1726.6 ms (270) | **45% fewer** |
 
-Accuracy, where the arms were compared with the same calibrator discipline: banking77 2-field
-.670 vs .675 (McNemar p = 1.000, then .800 vs .805 once both were refitted — no arm claim), GQA
-600 items raw .812 vs .793 in favour of the default (14:3 discordant, p = .013), field order
-reversed 199/200 agreement for the default vs 167/200 for the one-prompt arm. So the one-prompt
-path buys 1.33× at exactly two fields and costs readout fidelity everywhere; it ships opt-in.
+**A correction this table replaces.** Every earlier B-arm number in this document was measured while
+the consolidated path was silently falling back to one prompt per field: the `jevpos=` parser pushed a
+position once per digit character and counted its 32-entry cap in digits, so on a real prompt (cue
+positions of two or three digits) the engine kept the wrong number of rows, the server detected the
+mismatch and used the per-field path instead. Fixed in `f2d2621f` — the parser is extracted to
+`include/strata/program/jevpos.hpp` and pinned by `tests/program/jevpos_test.cpp`. The table above is
+the first measurement of the path that actually runs. The earlier "981 ms, 1.33× faster at two fields"
+was the per-field path on an older base and is withdrawn.
+
+**What the one-prompt path buys, measured.** 29–45% fewer prompt tokens from two fields up, and **no
+wall-clock win at any N** — C's pinned checkpoint makes each extra field cheaper than B's single longer
+prefill. Accuracy is unchanged: banking77, 200 items, 2 fields, C .660 vs B .665 on the card question,
+group .750 vs .755, McNemar on both-right 2 vs 3 discordant, **p = 1.000**. Field order still matters on
+B: reversing the two questions agrees on 147/200 (mean |Δp| .1326, 52 flips one way against 1 the other,
+McNemar p = 0.0008), with the first/second-request latency controlled at 681.7 vs 682.4 ms. So the
+one-prompt path is a **token-cost** feature that ships opt-in; it is not a latency feature, and it must
+pin field order server-side before it could ever be a default.
 
 **Label alphabet** (`STRATA_JEV_LABELS`, the #3643 scheme): same 160 ARC items, `A`-`Z` vs
 `0`-`9`/`a`-`z` — 160/160 identical decisions, mean |Δp| .0034 per option, prompt tokens

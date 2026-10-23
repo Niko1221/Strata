@@ -60,11 +60,13 @@ paths exist; the default is the one that ships.
 
 | path | env | what it changes | measured (N fields, RTX 3090, same states) |
 |---|---|---|---|
-| **C — state parking (default, ON unless disabled)** | `STRATA_JEV_PIN=0` disables | prompts stay byte-identical to M3.0; the engine is told where the shared prefix ends, reads it once and pins its checkpoint, so each later field reads only its own question turn | 1/2/3/5 fields 918/1232/1185/1667 ms; field 1 readout byte-identical; order-insensitive (199/200 argmax agreement when the fields are reversed) |
-| **B — one prompt, N rows (opt-in)** | `STRATA_JEV_ROWS=1` | one consolidated prompt; the request names every field's cue position (`jevpos=`), the engine copies those head rows out of whichever verify window covers them while the prompt is read, and `BROWAT` reads them back **by absolute position**, so one prefill answers N questions | 1.33× faster at 2 fields (981 vs 1232 ms), parity at 3+; but fields 2..N see the earlier questions, \|Δp\| grows .187 → .507 by N=5, field order matters (167/200 agreement), and at N=1 it disagrees with C on 17/600 GQA items (−1.8 points) — hence opt-in |
+| **C — state parking (default, ON unless disabled)** | `STRATA_JEV_PIN=0` disables | prompts stay byte-identical to M3.0; the engine is told where the shared prefix ends, reads it once and pins its checkpoint, so each later field reads only its own question turn | 1/2/3/4/5 fields 210/549/1232/1405/1699 ms (measured 2026-10-23, engine `a2182599`, median of 3); field 1 readout byte-identical; order-insensitive (199/200 argmax agreement when the fields are reversed) |
+| **B — one prompt, N rows (opt-in)** | `STRATA_JEV_ROWS=1` | one consolidated prompt; the request names every field's cue position (`jevpos=`), the engine copies those head rows out of whichever verify window covers them while the prompt is read, and `BROWAT` reads them back **by absolute position**, so one prefill answers N questions | **29–45% fewer prompt tokens from 2 fields up, but slower wall-clock at every N≥2** (N=2 134 vs 189 tokens, 1013 vs 549 ms; N=5 270 vs 490 tokens, 1727 vs 1699 ms — measured 2026-10-23, engine `a2182599`, median of 3; the earlier "1.33× faster at 2 fields" was measured while this path silently fell back to one prompt per field and is withdrawn); fields 2..N see the earlier questions, field order matters (147/200 agreement, mean \|Δp\| .1326, McNemar p=.0008), and at N=1 it disagrees with C on 17/600 GQA items (−1.8 points) — hence opt-in |
 | **H — pin + row capture (opt-in, rejected)** | `STRATA_JEV_HYBRID=1` | per-field prompts, pinned prefix, cue row captured from the shared read | 1.15× at 2 fields but 20–28% *slower* than C at N≥3 (one serial read per field); kept in the tree as a measured negative |
 
-Route by field count: N=1 either, N=2 B if the Δp shift is acceptable to the caller, N≥3 C.
+Route by field count: N=1 either; **N≥2 C**, unless the caller needs fewer prompt tokens and can pin the
+field order itself and accept the answer shift — B is a token-cost path, not a latency one, so it stays
+opt-in and is never the default.
 
 **Two changes are on by default, not behind a flag**, and both are deliberate: the single-token label
 refusal (above) and **state parking** (`STRATA_JEV_PIN`, on unless set to 0), which is the M3.1 fix
