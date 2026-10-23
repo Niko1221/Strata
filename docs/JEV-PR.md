@@ -187,6 +187,25 @@ PR gate.
 
 ## 4. Benchmarking results (all live, QFN IQ3_XXS, RTX 3090)
 
+### 4a-ter. Reproduced on this PR's own build (2026-10-23, `a748e5b4`)
+
+Every number in 4a/4a-bis was measured on the older engine base (0.1.45-era). The head of this PR
+builds against 0.1.47, so the two runs below were repeated against **the build this PR ships** —
+same items, same calibrators, same box (RTX 3090), engine md5 `e8a39ff2`'s successor built from this
+tree, `calib=platt_v1` served:
+
+- banking77, 100 items, C vs B paired: is_card .670 vs .660 (1 discordant, McNemar p=1.000),
+  group .700 vs .730 (0 vs 3, p=.250), both .510 vs .510 (1 vs 1, p=1.000); Brier .2278 vs .2339.
+  **Same conclusion as 4a: no arm has an accuracy claim.**
+- image suite, direct, `calib-D` served, 100 test items: POPE .883 → .900 (1 flip, p=1.000),
+  CV-Bench .650 → .650 (0 flips), CountBench 1.000 → 1.000 (0 flips); Brier deltas +.003/−.007/−.003,
+  all inside the box's run-to-run variation.
+
+One caveat, stated rather than hidden: the server files on the test box are this branch's `serve/jev.py`
+(byte-identical to the PR) with the pre-rebase `serve/server.py`, because the 0.1.47 `server.py` imports
+the in-repo `strata_control` package and cannot start from a bare `serve/` deployment directory. The
+engine — the part this PR changes — is the build from this tree.
+
 ### 4a. Pre/post calibration (held-out test, offline replay of identical items)
 
 | tuple (mode\|qtype\|set) | n | acc pre→post | NLL pre→post | ECE15 pre→post |
