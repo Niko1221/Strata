@@ -179,6 +179,33 @@ __global__ void __launch_bounds__(S) gdn_conv_ab_kernel(int conv_blocks, float* 
     }
 }
 
+// fuse-gdn (STRATA_FUSE_GDNCONV): every slot group's conv in one launch (blockIdx.y = the window row, its group found
+// from the row), with AB the a/b blocks first as in gdn_conv_ab_kernel; each block runs its own kernel's body unchanged
+template <int MAX_T, bool EXACT_T, bool AB>
+__global__ void __launch_bounds__(S) gdn_conv_groups_kernel(GdnConvGroups gr, const float* __restrict__ qkv,
+                                                            const float* __restrict__ w, float* __restrict__ h, int C,
+                                                            int qk_heads, float eps, bool commit, const float* __restrict__ x,
+                                                            const uint16_t* __restrict__ wa, const uint16_t* __restrict__ wb,
+                                                            const float* __restrict__ dt, const float* __restrict__ ssm_a,
+                                                            float* __restrict__ gate, float* __restrict__ beta, int n, int h_v,
+                                                            int T, int conv_blocks) {
+    // one-dimensional grid: the a/b blocks first, then row r's conv blocks at ab_blocks + r * conv_blocks.  The 2-D
+    // grid (conv + a/b blocks, rows) it replaces took 18.4 us at exactly 4 rows on gfx1201 (6.3 us like this; 2, 6, 7,
+    // 8 rows the same either way) - the same blocks, only their order of dispatch
+    const int ab_blocks = AB ? (2 * h_v + 1) / 2 : 0;
+    int ab = -1, bx = 0, r = 0;
+    if ((int) blockIdx.x < ab_blocks) ab = blockIdx.x;
+    else { const int i = (int) blockIdx.x - ab_blocks; r = i / conv_blocks; bx = i % conv_blocks; }
+    if (ab < 0) {
+        int g = 0;
+        while (g + 1 < gr.n && r >= gr.first[g + 1]) ++g;
+        const size_t off = (size_t) gr.first[g] * C;
+        gdn_conv_l2_body(bx, r - gr.first[g], gr.hist[g], qkv + off, w, h + off, C, qk_heads, eps, 0, commit);
+    } else if (AB && threadIdx.x < 64) {
+        gdn_ab_body<MAX_T, EXACT_T>(ab, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T);
+    }
+}
+
 // State-only commit kernel: each head's 128 independent state columns are split across 4 blocks of 32 columns
 // (48 * 4 = 192 blocks of 128 threads across all SMs, vs 48 blocks of 512 threads), with no sq/o/norm/z/y work.
 // DBG (STRATA_DBG_GDN=1, #937): a window count the launch never allowed (n_keep is read from device memory; n_max is the
@@ -293,7 +320,7 @@ __device__ __forceinline__ void gdn_q8_1_store(GdnQ81* __restrict__ xq, size_t i
     if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);   // #606: clamped (the QFUSE path bypassed the finite helper)
 }
 
-template <bool ALL_OUT, bool Q>
+template <bool ALL_OUT, bool Q, bool P = false>
 __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __restrict__ state,
                                                                      const float* __restrict__ hbuf, int C,
                                                                      const float* __restrict__ gate,
@@ -311,9 +338,12 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
         beta += (size_t) f * h_v;
         z += (size_t) f * S * h_v;
         y += (size_t) f * S * h_v;
+        if constexpr (Q) xq += (size_t) f * (S * h_v / 32);   // fuse-gdn STRATA_FUSE_GDNQ8: the group's rows' q8_1 too
         T = grp.ntok[gi];
         n_keep = grp.keep[gi];
     }
+    int pn = 0;   // P (STRATA_FUSE_GDNDEFER): the slot's pending rows
+    if constexpr (P) pn = grp.n > 0 && grp.pend_n[blockIdx.y] != nullptr ? *grp.pend_n[blockIdx.y] : 0;
     __shared__ float sk[2][S], sq[2][S];
     __shared__ float red_kv[RG][S];
     __shared__ float red_o[RG][S];
@@ -329,7 +359,32 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
     float* base = state + ((size_t) (rg * RPG) * h_v + head) * S + col;
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
-    for (int r = 0; r < RPG; ++r) s[r] = ALL_OUT ? __ldg(&base[r * row_stride]) : base[r * row_stride];
+    for (int r = 0; r < RPG; ++r) s[r] = (ALL_OUT && !P) ? __ldg(&base[r * row_stride]) : base[r * row_stride];
+    if constexpr (P) {
+        if (pn > 0) {   // gdn_step_commit_body's recurrence over the pending rows (its operations, in its order), sk[1]
+            const float* ph = grp.pend_h[blockIdx.y];
+            const float* pg = grp.pend_g[blockIdx.y];
+            const float* pb = grp.pend_b[blockIdx.y];
+            for (int t = 0; t < pn; ++t) {
+                const float* ht = ph + (size_t) t * C;
+                vk_sync_lds();
+                if (rg == 0) sk[1][col] = ht[qk + qh * S + col];
+                vk_sync_lds();
+                const float g = __expf(pg[(size_t) t * h_v + head]);
+                float kv = 0.0f;
+#pragma unroll
+                for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[1][rg * RPG + r], kv);
+                red_kv[rg][col] = kv;
+                vk_sync_lds();
+                const float kv_col = red_kv[0][col] + red_kv[1][col] + red_kv[2][col] + red_kv[3][col];
+                const float delta = (ht[2 * qk + head * S + col] - g * kv_col) * pb[(size_t) t * h_v + head];
+#pragma unroll
+                for (int r = 0; r < RPG; ++r) s[r] = fmaf(g, s[r], sk[1][rg * RPG + r] * delta);
+            }
+#pragma unroll
+            for (int r = 0; r < RPG; ++r) base[r * row_stride] = s[r];
+        }
+    }
     const float gam = (rg == 0) ? gamma[col] : 0.0f;
     if (n > 0 && (rg == 0 || (rg == 1 && (ALL_OUT || 0 >= t_out_begin)))) {
         const float kq0 = hbuf[(rg == 0 ? qk : 0) + qh * S + col];
@@ -754,6 +809,45 @@ void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, 
     check("fetch_blobs");
 }
 
+namespace {
+// STRATA_FUSE_FETCH: wait_flag_ge(_or)_kernel + fetch_blobs_kernel + rebase_ptrs_kernel.  A block with no blob word to
+// copy has nothing to wait for, except block 0 (the launch must not end before the flag: the grouped call after it
+// reads the staging and the PCIe share's rows).  The pointers go to their own array: rebasing `src` in place could
+// overwrite a pointer another block has yet to read.
+__global__ void wait_fetch_rebase_kernel(const volatile uint32_t* flag, uint32_t value, const uint32_t* skip,
+                                         const unsigned long long* __restrict__ src, const int32_t* __restrict__ n,
+                                         uint4* __restrict__ dst, long long per, unsigned long long* __restrict__ ptr_out,
+                                         unsigned long long base, long long bytes) {
+    const int nb = *n;
+    const long long total = (long long) nb * per;
+    if (blockIdx.x == 0 || (long long) blockIdx.x * blockDim.x < total) {   // uniform over the block
+        if (threadIdx.x == 0 && !(skip != nullptr && *(const volatile uint32_t*) skip == value)) {
+            while (*flag < value) strata_spin_pause();
+            __threadfence_system();
+        }
+        __syncthreads();
+    }
+    if (blockIdx.x == 0 && threadIdx.x < 128 && (int) threadIdx.x < nb)   // rebase_ptrs_kernel's 128 threads
+        ptr_out[threadIdx.x] = base + (unsigned long long) threadIdx.x * (unsigned long long) bytes;
+    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total;
+         i += (long long) gridDim.x * blockDim.x) {
+        const long long k = i / per, off = i - k * per;
+        dst[i] = ((const uint4*) src[k])[off];
+    }
+}
+}  // namespace
+
+void wait_fetch_rebase(const uint32_t* flag, uint32_t value, const uint32_t* skip, const unsigned long long* src,
+                       const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, unsigned long long* ptr_out,
+                       void* stream) {
+    if (cap <= 0) return;
+    if (blob_bytes % 16 != 0) { std::fprintf(stderr, "wait_fetch_rebase: blob size must be a multiple of 16\n"); std::exit(1); }
+    wait_fetch_rebase_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>((const volatile uint32_t*) flag, value, skip, src, n,
+                                                                       (uint4*) dst, (long long) (blob_bytes / 16), ptr_out,
+                                                                       (unsigned long long) dst, (long long) blob_bytes);
+    check("wait_fetch_rebase");
+}
+
 void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream) {
     if (n <= 0) return;
     res_patch_kernel<<<(n + 255) / 256 < 64 ? (n + 255) / 256 : 64, 256, 0, (cudaStream_t) stream>>>(table, pairs, n);
@@ -793,6 +887,42 @@ void copy_row_to_first(const int32_t* row_dev, float* a, int64_t a_n, float* b, 
                        void* stream) {
     copy_row_to_first_kernel<<<16, 256, 0, (cudaStream_t) stream>>>(row_dev, a, a_n, b, b_n, c, c_n);
     check("copy_row_to_first");
+}
+
+namespace {
+__global__ void mtp_pair_pick_rows_kernel(const int32_t* __restrict__ row_a, const int32_t* __restrict__ row_b,
+                                          const float* __restrict__ R_a, const float* __restrict__ R_b,
+                                          float* __restrict__ R_out, int64_t R_stride,
+                                          const float* __restrict__ inj_a, const float* __restrict__ inj_b,
+                                          float* __restrict__ inj_out, int64_t inj_stride,
+                                          const float* __restrict__ mixed_a, const float* __restrict__ mixed_b,
+                                          float* __restrict__ mixed_out, int64_t mixed_stride) {
+    const int r = int(blockIdx.y);
+    const int64_t row = r == 0 ? *row_a : *row_b;
+    const float* srcR = r == 0 ? R_a : R_b;
+    const float* srcI = r == 0 ? inj_a : inj_b;
+    const float* srcM = r == 0 ? mixed_a : mixed_b;
+    float* dstR = R_out + (size_t) r * (size_t) R_stride;
+    float* dstI = inj_out + (size_t) r * (size_t) inj_stride;
+    float* dstM = mixed_out + (size_t) r * (size_t) mixed_stride;
+    const int64_t i0 = (int64_t) blockIdx.x * blockDim.x + threadIdx.x, st = (int64_t) gridDim.x * blockDim.x;
+    for (int64_t i = i0; i < R_stride; i += st) dstR[i] = srcR[row * R_stride + i];
+    for (int64_t i = i0; i < inj_stride; i += st) dstI[i] = srcI[row * inj_stride + i];
+    for (int64_t i = i0; i < mixed_stride; i += st) dstM[i] = srcM[row * mixed_stride + i];
+}
+}  // namespace
+
+void mtp_pair_pick_rows(const int32_t* row_a, const int32_t* row_b,
+                        const float* R_a, const float* R_b, float* R_out, int64_t R_stride,
+                        const float* inj_a, const float* inj_b, float* inj_out, int64_t inj_stride,
+                        const float* mixed_a, const float* mixed_b, float* mixed_out, int64_t mixed_stride,
+                        void* stream) {
+    const int64_t most = std::max(R_stride, std::max(inj_stride, mixed_stride));
+    const unsigned bx = (unsigned) ((most + 255) / 256 < 64 ? (most + 255) / 256 : 64);
+    mtp_pair_pick_rows_kernel<<<dim3(bx < 1 ? 1 : bx, 2), 256, 0, (cudaStream_t) stream>>>(
+        row_a, row_b, R_a, R_b, R_out, R_stride, inj_a, inj_b, inj_out, inj_stride, mixed_a, mixed_b, mixed_out,
+        mixed_stride);
+    check("mtp_pair_pick_rows");
 }
 
 void mtp_select(const float* R_src, int64_t R_stride, const int32_t* ids, const int32_t* row_dev, float* R_dst,
@@ -1119,6 +1249,38 @@ void gdn_conv_ab_multi(const float* history, const float* qkv, const float* conv
     check("gdn_conv_ab_multi");
 }
 
+void gdn_conv_groups(const GdnConvGroups& gr, const float* qkv, const float* conv_w, float* h, int channels, int qk_heads,
+                     float eps, bool commit, const float* x, const uint16_t* w_alpha, const uint16_t* w_beta,
+                     const float* dt, const float* ssm_a, float* gate, float* beta, int n_embd, int h_v, void* stream) {
+    int rows = 0;
+    bool ok = gr.n >= 1 && gr.n <= 8 && qkv && conv_w && h && channels % S == 0 && (!x || n_embd % 8 == 0);
+    for (int i = 0; ok && i < gr.n; ++i) {
+        ok = gr.hist[i] && gr.first[i] == rows && gr.ntok[i] >= 1 && (!commit || gr.ntok[i] == 1);
+        rows += gr.ntok[i];
+    }
+    if (!ok || rows > kVerifyMaxT) {
+        std::fprintf(stderr, "gdn_conv_groups: invalid arguments\n");
+        std::exit(1);
+    }
+    const int conv_blocks = channels / S, ab_blocks = x ? (2 * h_v + 1) / 2 : 0;
+    const dim3 grid((unsigned) (ab_blocks + rows * conv_blocks));
+    cudaStream_t st = (cudaStream_t) stream;
+#define STRATA_CONV_GROUPS(MT, EX, AB) gdn_conv_groups_kernel<MT, EX, AB><<<grid, S, 0, st>>>(gr, qkv, conv_w, h, channels, \
+        qk_heads, eps, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, rows, conv_blocks)
+    if (!x) STRATA_CONV_GROUPS(1, true, false);
+    else switch (rows) {
+        case 1: STRATA_CONV_GROUPS(1, true, true); break;
+        case 2: STRATA_CONV_GROUPS(2, true, true); break;
+        case 3: STRATA_CONV_GROUPS(3, true, true); break;
+        case 4: STRATA_CONV_GROUPS(4, true, true); break;
+        case 5: STRATA_CONV_GROUPS(5, true, true); break;
+        case 6: STRATA_CONV_GROUPS(6, true, true); break;
+        default: STRATA_CONV_GROUPS(kVerifyMaxT, false, true); break;
+    }
+#undef STRATA_CONV_GROUPS
+    check("gdn_conv_groups");
+}
+
 void gdn_conv_commit(float* history, const float* qkv, int channels, const int32_t* n_keep, void* stream) {
     gdn_conv_commit_kernel<<<(unsigned) ((channels + 255) / 256), 256, 0, (cudaStream_t) stream>>>(history, qkv,
                                                                                                  channels, n_keep);
@@ -1127,7 +1289,8 @@ void gdn_conv_commit(float* history, const float* qkv, int channels, const int32
 
 bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
                        const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
-                       int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream) {
+                       int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream,
+                       const int32_t* n_state) {
     // gdn_step_commit_layers_kernel is bitwise identical to both per-layer commit kernels (gdn_step_commit_kernel and
     // gdn_state_replay_kernel), so STRATA_GDN_SPLIT=1 also uses the 2-launch batched commit unless STRATA_GDN_COMMIT_SPLIT=0
     static const bool per_layer = [] {
@@ -1143,9 +1306,58 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
         state + conv_off, (long long) state_stride, qkv, (long long) qkv_stride, conv_channels, n_keep);
     gdn_step_commit_layers_kernel<<<dim3((unsigned) h_v, 4u, (unsigned) n_layers), dim3(32, RG), 0, st>>>(
         state, (long long) state_stride, h, (long long) h_stride, conv_channels, gate, beta, (long long) gb_stride, h_k, h_v,
-        n_keep);
+        n_state != nullptr ? n_state : n_keep);
     check("gdn_commit_layers");
     return true;
+}
+
+namespace {
+// gdn_pend_copy_layers: blockIdx.y = the layer; h as float4 (conv_channels % 4 == 0), then gate and beta
+__global__ void gdn_pend_copy_layers_kernel(float* __restrict__ pend, long long pend_stride, int pm,
+                                            const float* __restrict__ h, long long h_stride, const float* __restrict__ gate,
+                                            const float* __restrict__ beta, long long gb_stride, int C, int h_v,
+                                            const int32_t* __restrict__ n_pend) {
+    const int n = *n_pend;
+    if (n <= 0) return;
+    float* dst = pend + (long long) blockIdx.y * pend_stride;
+    const float* hs = h + (long long) blockIdx.y * h_stride;
+    const int c4 = C / 4, nh = n * c4, ng = n * h_v;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < nh + 2 * ng; i += gridDim.x * blockDim.x) {
+        if (i < nh) {
+            const int r = i / c4, c = i % c4;
+            reinterpret_cast<float4*>(dst + (size_t) r * C)[c] = reinterpret_cast<const float4*>(hs + (size_t) r * C)[c];
+        } else if (i < nh + ng) {
+            const int j = i - nh;
+            dst[(size_t) pm * C + j] = gate[(long long) blockIdx.y * gb_stride + j];
+        } else {
+            const int j = i - nh - ng;
+            dst[(size_t) pm * C + (size_t) pm * h_v + j] = beta[(long long) blockIdx.y * gb_stride + j];
+        }
+    }
+}
+}  // namespace
+
+void gdn_pend_copy_layers(float* pend, int64_t pend_stride, int pm, const float* h, int64_t h_stride, const float* gate,
+                          const float* beta, int64_t gb_stride, int conv_channels, int h_v, int n_layers,
+                          const int32_t* n_pend, void* stream) {
+    if (pm < 1 || pm > kVerifyMaxT || conv_channels % 4 != 0 || n_layers < 1 || n_layers > 65535 || !n_pend) {
+        std::fprintf(stderr, "gdn_pend_copy_layers: invalid arguments\n");
+        std::exit(1);
+    }
+    const int work = pm * (conv_channels / 4 + 2 * h_v);
+    gdn_pend_copy_layers_kernel<<<dim3((unsigned) ((work + 255) / 256), (unsigned) n_layers), 256, 0, (cudaStream_t) stream>>>(
+        pend, (long long) pend_stride, pm, h, (long long) h_stride, gate, beta, (long long) gb_stride, conv_channels, h_v,
+        n_pend);
+    check("gdn_pend_copy_layers");
+}
+
+void gdn_pend_apply_layers(float* state, int64_t state_stride, const float* pend, int64_t pend_stride, int pm,
+                           int conv_channels, int h_k, int h_v, int n_layers, const int32_t* n_pend, void* stream) {
+    const float* g = pend + (size_t) pm * conv_channels;
+    gdn_step_commit_layers_kernel<<<dim3((unsigned) h_v, 4u, (unsigned) n_layers), dim3(32, RG), 0, (cudaStream_t) stream>>>(
+        state, (long long) state_stride, pend, (long long) pend_stride, conv_channels, g, g + (size_t) pm * h_v,
+        (long long) pend_stride, h_k, h_v, n_pend);
+    check("gdn_pend_apply_layers");
 }
 
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
@@ -1170,7 +1382,7 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
 
 void gdn_step_norm_groups(const GdnGroups& groups, const float* h, int conv_channels, const float* gate, const float* beta,
                           const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, bool commit,
-                          void* stream) {
+                          void* stream, void* xq_out) {
     if (groups.n < 1 || groups.n > 8 || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k) {
         std::fprintf(stderr, "gdn_step_norm_groups: invalid arguments\n");
         std::exit(1);
@@ -1181,11 +1393,25 @@ void gdn_step_norm_groups(const GdnGroups& groups, const float* h, int conv_chan
             std::exit(1);
         }
     const dim3 g1((unsigned) h_v, (unsigned) groups.n), b1(S, RG);
+    bool pend = false;   // STRATA_FUSE_GDNDEFER
+    for (int i = 0; i < groups.n; ++i) pend = pend || groups.pend_n[i] != nullptr;
     // the kernel gdn_step_norm_multi picks for these calls: a window's rows (all outputs, no keep) or a commit of
     // one-row groups (keep, t_out_begin 0)
-    if (commit)
+    if (pend && !commit) {
+        if (xq_out != nullptr)
+            gdn_step_norm_multi_kernel<true, true, true><<<g1, b1, 0, (cudaStream_t) stream>>>(
+                nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0,
+                static_cast<GdnQ81*>(xq_out), groups);
+        else
+            gdn_step_norm_multi_kernel<true, false, true><<<g1, b1, 0, (cudaStream_t) stream>>>(
+                nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
+    } else if (commit)
         gdn_step_norm_multi_kernel<false, false><<<g1, b1, 0, (cudaStream_t) stream>>>(
             nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
+    else if (xq_out != nullptr)   // fuse-gdn STRATA_FUSE_GDNQ8: + the outputs' q8_1, as gdn_step_norm_multi's xq_out
+        gdn_step_norm_multi_kernel<true, true><<<g1, b1, 0, (cudaStream_t) stream>>>(
+            nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0,
+            static_cast<GdnQ81*>(xq_out), groups);
     else
         gdn_step_norm_multi_kernel<true, false><<<g1, b1, 0, (cudaStream_t) stream>>>(
             nullptr, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, 0, nullptr, 0, nullptr, groups);
@@ -1520,6 +1746,21 @@ __global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile
     if (*skip == value) return;
     for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
 }
+// STRATA_FUSE_PLAN: wait_flag_ge_or_kernel then copy_i32_unless_kernel in one launch (nothing when *skip == value)
+__global__ void wait_copy_i32_unless_kernel(const volatile uint32_t* flag, uint32_t value, const volatile uint32_t* skip,
+                                            int32_t* __restrict__ dst, const volatile int32_t* src, int n) {
+    __shared__ int s_skip;
+    if (threadIdx.x == 0) {
+        s_skip = *skip == value;
+        if (!s_skip) {
+            while (*flag < value) strata_spin_pause();
+            __threadfence_system();
+        }
+    }
+    __syncthreads();
+    if (s_skip) return;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) dst[i] = src[i];
+}
 __global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile float4* src, long long n4,
                                     const uint32_t* skip, uint32_t value) {
     const bool zero = *skip == value;
@@ -1544,6 +1785,12 @@ void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, 
     if (n <= 0) return;
     copy_i32_unless_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(dst, (const volatile int32_t*) src, (int) n, skip, value);
     check("copy_i32_from_mapped_unless");
+}
+void wait_copy_i32_from_mapped_unless(const uint32_t* flag, uint32_t value, const uint32_t* skip, int32_t* dst,
+                                      const int32_t* src, long long n, void* stream) {
+    wait_copy_i32_unless_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(flag, value, skip, dst, (const volatile int32_t*) src,
+                                                                     (int) (n > 0 ? n : 0));
+    check("wait_copy_i32_from_mapped_unless");
 }
 void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
                               void* stream) {

@@ -7,6 +7,10 @@
 
 #include <cstdint>
 
+#ifndef STRATA_DPP_XOR
+#define STRATA_DPP_XOR 0
+#endif
+
 namespace strata::hip_compat {
 
 __device__ __forceinline__ int signed_byte(uint32_t word, int lane) {
@@ -112,10 +116,53 @@ __device__ __forceinline__ void syncwarp(uint32_t mask = 0xffffffffu) {
 }
 #endif
 
+// STRATA_DPP_XOR=1 (compile time, CMake option STRATA_DPP_XOR): a butterfly step with a constant lane mask under the
+// width moves its data with DPP (row_xmask, masks 1-15) or v_permlanex16 (16) instead of ds_bpermute - the lane
+// __shfl_xor reads, so the same value.  Anything else (a runtime mask or width, mask >= width, a width that is not a
+// power of two, wave64, not a 32-bit type) is __shfl_xor.  dpp_xor_parity checks the two against each other.
+#if defined(__HIP_DEVICE_COMPILE__) && (defined(__GFX10__) || defined(__GFX11__) || defined(__GFX12__))
+__device__ __forceinline__ int dpp_xor_i32(int v, int m) {   // m: a constant 1..16
+    switch (m) {
+    case 1: return __builtin_amdgcn_update_dpp(0, v, 0x161, 0xf, 0xf, true);
+    case 2: return __builtin_amdgcn_update_dpp(0, v, 0x162, 0xf, 0xf, true);
+    case 3: return __builtin_amdgcn_update_dpp(0, v, 0x163, 0xf, 0xf, true);
+    case 4: return __builtin_amdgcn_update_dpp(0, v, 0x164, 0xf, 0xf, true);
+    case 5: return __builtin_amdgcn_update_dpp(0, v, 0x165, 0xf, 0xf, true);
+    case 6: return __builtin_amdgcn_update_dpp(0, v, 0x166, 0xf, 0xf, true);
+    case 7: return __builtin_amdgcn_update_dpp(0, v, 0x167, 0xf, 0xf, true);
+    case 8: return __builtin_amdgcn_update_dpp(0, v, 0x168, 0xf, 0xf, true);
+    case 9: return __builtin_amdgcn_update_dpp(0, v, 0x169, 0xf, 0xf, true);
+    case 10: return __builtin_amdgcn_update_dpp(0, v, 0x16a, 0xf, 0xf, true);
+    case 11: return __builtin_amdgcn_update_dpp(0, v, 0x16b, 0xf, 0xf, true);
+    case 12: return __builtin_amdgcn_update_dpp(0, v, 0x16c, 0xf, 0xf, true);
+    case 13: return __builtin_amdgcn_update_dpp(0, v, 0x16d, 0xf, 0xf, true);
+    case 14: return __builtin_amdgcn_update_dpp(0, v, 0x16e, 0xf, 0xf, true);
+    case 15: return __builtin_amdgcn_update_dpp(0, v, 0x16f, 0xf, 0xf, true);
+    default: return __builtin_amdgcn_permlanex16(0, v, 0x76543210u, 0xfedcba98u, false, true);   // 16: the other row
+    }
+}
+template <typename T>
+__device__ __forceinline__ T shfl_xor_dpp(T value, int lane_mask, int width) {
+    if constexpr (sizeof(T) == 4) {
+        if (__builtin_constant_p(lane_mask) && __builtin_constant_p(width) && warpSize == 32 && lane_mask >= 1 &&
+            lane_mask <= 16 && lane_mask < width && width <= 32 && (width & (width - 1)) == 0)
+            return __builtin_bit_cast(T, dpp_xor_i32(__builtin_bit_cast(int, value), lane_mask));
+    }
+    return __shfl_xor(value, lane_mask, width);
+}
+#else
+template <typename T>
+__device__ __forceinline__ T shfl_xor_dpp(T value, int lane_mask, int width) { return __shfl_xor(value, lane_mask, width); }
+#endif
+
 template <typename T>
 __device__ __forceinline__ T shfl_xor_sync(uint32_t mask, T value, int lane_mask, int width = 32) {
     require_full_wave_mask(mask);
+#if STRATA_DPP_XOR
+    return shfl_xor_dpp(value, lane_mask, width);
+#else
     return __shfl_xor(value, lane_mask, width);
+#endif
 }
 
 template <typename T>

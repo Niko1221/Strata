@@ -52,6 +52,8 @@ struct Case {
     int block_elems;   // elements per weight block
     int block_bytes;
     int scale_at[2];   // byte offsets of the block's fp16 scales in native_mmvq.cu's block structs; -1 = none
+    int fill = 0;        // Q6_K extremes (the 24-bit products' bound): 1 = codes 0x00 (-32), 2 = 0xFF (31); scales -128
+    float xconst = 0;    // every activation this (q8_1 +-127), else normal
 };
 
 // the types a head or a projection can have in this model
@@ -63,6 +65,8 @@ const Case CASES[] = {
     {"Q6_K", 14, 2048, 512, 256, 210, {208, -1}},     // Q6KBlock: half d after ql, qh, scales
     {"IQ4_XS", 23, 4096, 512, 256, 136, {0, -1}},     // IQ4XSBlock: half d; n_in 4096, see THE NEGATIVE CONTROL
     {"Q5_K wide", 13, 4096, 2048, 256, 176, {0, 2}},
+    {"Q4_0 head", 2, 2048, 131072, 32, 18, {0, -1}},   // --mtp-q4 head: the draft head's shape (two slots' rows)
+    {"Q4_0 head4k", 2, 4096, 65536, 32, 18, {0, -1}},
 };
 
 // a normal fp16 in +-[2^-10, 2^-5): exponent field 5..9 (bias 15), any mantissa, either sign
@@ -80,6 +84,8 @@ bool ck(cudaError_t e, const char* what) {
     std::printf("CUDA: %s: %s\n", what, cudaGetErrorString(e));
     return false;
 }
+
+int g_v2_multi = -1;   // >= 0: native_mmvq_set_q6k_v2 for the T-column call only (the single-column calls: V1)
 
 // Returns the number of outputs that differ bit for bit; counts the non-finite outputs and the differences on
 // outputs that are finite in both paths.
@@ -99,6 +105,12 @@ long long compare(const Case& c, int T, cudaStream_t s, long long& nonfinite, lo
     std::mt19937 rng(1234u + (unsigned) c.type * 97u + (unsigned) T);
     std::vector<uint8_t> w(wbytes);
     for (auto& b : w) b = (uint8_t) (rng() & 0xff);
+    if (c.fill) {   // Q6_K: ql, qh the fill, the 16 int8 scales at 192 -128
+        for (std::size_t k = 0; k < w.size(); k += (std::size_t) c.block_bytes) {
+            std::memset(&w[k], c.fill == 1 ? 0x00 : 0xFF, 192);
+            std::memset(&w[k + 192], 0x80, 16);
+        }
+    }
     const std::size_t n_blocks = (std::size_t) c.n_out * (std::size_t) (c.n_in / c.block_elems);
     if (n_blocks * (std::size_t) c.block_bytes != wbytes) {
         std::printf("%-12s T=%d: %zu blocks of %d bytes are not the %zu weight bytes native_mmvq expects\n", c.name,
@@ -113,7 +125,7 @@ long long compare(const Case& c, int T, cudaStream_t s, long long& nonfinite, lo
             }
     std::vector<float> x((std::size_t) T * c.n_in);
     std::normal_distribution<float> nd(0.f, 1.f);
-    for (auto& v : x) v = nd(rng);
+    for (auto& v : x) v = c.xconst != 0 ? c.xconst : nd(rng);
 
     void* dw = nullptr;
     void* xq = nullptr;
@@ -134,7 +146,9 @@ long long compare(const Case& c, int T, cudaStream_t s, long long& nonfinite, lo
     if (!ck(cudaStreamSynchronize(s), "quantize")) return -1;
 
     try {
+        if (g_v2_multi >= 0) strata::kernels::native_mmvq_set_q6k_v2(g_v2_multi);
         strata::kernels::native_mmvq(c.type, dw, xq, dmulti, c.n_in, c.n_out, T, s);
+        if (g_v2_multi >= 0) strata::kernels::native_mmvq_set_q6k_v2(0);
         for (int j = 0; j < T; ++j)
             strata::kernels::native_mmvq(c.type, dw, (const uint8_t*) xq + (std::size_t) j * qcol,
                                          dsingle + (std::size_t) j * c.n_out, c.n_in, c.n_out, 1, s);
@@ -210,14 +224,63 @@ int sweep(bool exact, cudaStream_t s, Totals& t) {
 
 }  // namespace
 
+// STRATA_Q6K_V2: Q6_K at the model's shapes and the kernel's edges (1 iteration with idle warps, a partial last
+// iteration, an odd row count, 6 iterations) and the extremes, 1-4 columns (V2) against single-column calls (V1), with B6 on its gfx12 table and off (the exact rows kernel)
+const Case V2_CASES[] = {
+    {"Q6_K", 14, 2048, 512, 256, 210, {208, -1}},
+    {"Q6_K 512x63", 14, 512, 63, 256, 210, {208, -1}},
+    {"Q6_K 2560x513", 14, 2560, 513, 256, 210, {208, -1}},
+    {"Q6_K out", 14, 6144, 2560, 256, 210, {208, -1}},
+    {"Q6_K qkv", 14, 2560, 10240, 256, 210, {208, -1}},
+    {"Q6_K gate", 14, 2560, 6144, 256, 210, {208, -1}},
+    {"Q6_K qsa q", 14, 2560, 12288, 256, 210, {208, -1}},
+    {"Q6_K ext lo", 14, 6144, 2560, 256, 210, {208, -1}, 1, 1.0f},
+    {"Q6_K ext hi", 14, 6144, 2560, 256, 210, {208, -1}, 2, -1.0f},
+    {"Q6_K ext lo-", 14, 2560, 6144, 256, 210, {208, -1}, 1, -1.0f},
+};
+int sweep_v2(cudaStream_t s, Totals& t) {
+    strata::kernels::native_mmvq_set_multi_exact(true);
+    int bad = 0;
+    for (const int b6 : {-1, 0}) {
+        strata::kernels::native_mmvq_set_b6_rows(b6);
+        std::printf("\n=== STRATA_Q6K_V2, B6 rows mode %d ===\n", b6);
+        for (const Case& c : V2_CASES) {
+            for (int T = 1; T <= 4; ++T) {
+                long long nf = 0, dfin = 0;
+                bool ran = false;
+                g_v2_multi = 1;
+                const long long diff = compare(c, T, s, nf, dfin, ran);
+                g_v2_multi = -1;
+                strata::kernels::native_mmvq_set_q6k_v2(-1);
+                if (!ran) { ++bad; continue; }
+                t.checked += (long long) T * c.n_out;
+                t.diff += diff;
+                t.nonfinite += nf;
+                const bool ok = diff == 0 && nf == 0;
+                std::printf("%-14s %3d %10lld %10lld %10lld  %s\n", c.name, T, (long long) T * c.n_out, diff, nf, ok ? "ok" : "FAIL");
+                bad += !ok;
+            }
+        }
+    }
+    strata::kernels::native_mmvq_set_b6_rows(-1);
+    return bad;
+}
+
 int main() {
     cudaStream_t s;
     if (!ck(cudaStreamCreate(&s), "stream create")) return 1;
 
-    Totals on, off;
+    Totals on, off, v2;
     const int bad = sweep(true, s, on);
     const int bad_off = sweep(false, s, off);
     strata::kernels::native_mmvq_set_multi_exact(true);   // back to the default
+    const int bad_v2 = sweep_v2(s, v2);
+    std::printf("\nSTRATA_Q6K_V2: %lld outputs compared, %lld differ bitwise from single-column calls, %lld non-finite\n",
+                v2.checked, v2.diff, v2.nonfinite);
+    if (bad_v2 != 0) {
+        std::printf("\nmmvq_multi_parity: FAILED. %d STRATA_Q6K_V2 case(s) differ from single-column calls or did not run.\n", bad_v2);
+        return 1;
+    }
 
     std::printf("\nmulti_exact on:   %lld outputs compared, %lld differ bitwise, %lld non-finite\n",
                 on.checked, on.diff, on.nonfinite);

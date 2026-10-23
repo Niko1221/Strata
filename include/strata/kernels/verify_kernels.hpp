@@ -35,6 +35,20 @@ void gdn_conv_ab_multi(const float* history, const float* qkv, const float* conv
                        int h_v, void* stream);
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream);
+/// fuse-gdn (STRATA_FUSE_GDNCONV): a batch window's conv of every slot group in one launch - group i is rows
+/// [first[i], first[i] + ntok[i]) of qkv / h over its own slot's conv history hist[i], each row exactly as
+/// gdn_conv_l2_multi(hist[i], qkv + first[i] * C, conv_w, h + first[i] * C, C, qk_heads, eps, ntok[i], 0, commit) - and,
+/// with `x` set, gdn_ab_multi over all rows (n_tok = the groups' rows) in the same launch (gdn_conv_ab_multi's split).
+/// Groups are contiguous from row 0; `commit` needs 1-row groups.  Bitwise the per-group calls.
+struct GdnConvGroups {
+    float* hist[8] = {};
+    int first[8] = {};
+    int ntok[8] = {};
+    int n = 0;
+};
+void gdn_conv_groups(const GdnConvGroups& groups, const float* qkv, const float* conv_w, float* h, int channels, int qk_heads,
+                     float eps, bool commit, const float* x, const uint16_t* w_alpha, const uint16_t* w_beta,
+                     const float* dt, const float* ssm_a, float* gate, float* beta, int n_embd, int h_v, void* stream);
 /// The recurrence + output norm for T tokens (h = (T, conv_channels) as q|k|v, gate/beta (T, h_v), z/y
 /// (T, value_dim)).  With `n_keep == nullptr` the state is read and NOT written (verify); otherwise the first
 /// *n_keep tokens are run and the state is written (commit; `y` may be scratch).  Bitwise `fused_gdn_step_norm`.
@@ -46,12 +60,21 @@ struct GdnGroups {
     int first[8] = {};
     int ntok[8] = {};
     int n = 0;
+    // fuse-gdn STRATA_FUSE_GDNDEFER (a window, not a commit): group i's slot may hold *pend_n[i] rows of the last window
+    // that its state does not have yet (gdn_pend_copy_layers' image of them: rows of h, gate, beta); the window runs
+    // them into the state first - the commit's arithmetic - and writes the state back.  pend_n[i] null: none
+    const float* pend_h[8] = {};
+    const float* pend_g[8] = {};
+    const float* pend_b[8] = {};
+    const int32_t* pend_n[8] = {};
 };
 /// gdn_step_norm_multi over several slots' groups at once (the generic kernel, grid.y = group; per group the
 /// same arithmetic as one call each: bit-identical).  `commit`: every group keeps *keep[i] tokens, no outputs used.
+/// fuse-gdn (STRATA_FUSE_GDNQ8): `xq_out` non-null (a window, not a commit) also writes the outputs' q8_1 image, row r
+/// of y at xq_out's row r - native_quantize_q8_1's bytes (gdn_step_norm_multi's xq_out, STRATA_QFUSE).
 void gdn_step_norm_groups(const GdnGroups& groups, const float* h, int conv_channels, const float* gate, const float* beta,
                           const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, bool commit,
-                          void* stream);
+                          void* stream, void* xq_out = nullptr);
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin = 0, void* xq_out = nullptr);
@@ -61,9 +84,21 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 /// gdn_step_norm_multi's commit (n_keep set, no outputs).  Every layer's arithmetic is the per-layer call's, so the result
 /// is bitwise the loop of per-layer calls.  Returns false (nothing launched) when the per-layer commit would not take the
 /// state-only kernel (STRATA_GDN_SPLIT=1, STRATA_GDN_COMMIT_SPLIT=0, STRATA_DBG_GDN=1): the caller then keeps the loop.
+/// fuse-gdn STRATA_FUSE_GDNDEFER: `n_state` non-null - the recurrence runs *n_state rows (0: none), the conv still *n_keep.
 bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, const float* qkv, int64_t qkv_stride,
                        const float* h, int64_t h_stride, const float* gate, const float* beta, int64_t gb_stride,
-                       int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream);
+                       int conv_channels, int h_k, int h_v, int n_max, int n_layers, const int32_t* n_keep, void* stream,
+                       const int32_t* n_state = nullptr);
+/// fuse-gdn STRATA_FUSE_GDNDEFER: the first *n_pend rows of every layer's h (conv_channels wide), gate and beta (h_v) -
+/// gdn_commit_layers' sources - copied into `pend`: layer j at pend + j * pend_stride, its h rows first (pm of them), then
+/// pm gate rows, then pm beta rows.  Nothing when *n_pend is 0.
+void gdn_pend_copy_layers(float* pend, int64_t pend_stride, int pm, const float* h, int64_t h_stride, const float* gate,
+                          const float* beta, int64_t gb_stride, int conv_channels, int h_v, int n_layers,
+                          const int32_t* n_pend, void* stream);
+/// ... and those rows run into every layer's state by gdn_commit_layers' recurrence kernel (the flush of a slot that
+/// leaves the windows with rows pending)
+void gdn_pend_apply_layers(float* state, int64_t state_stride, const float* pend, int64_t pend_stride, int pm,
+                           int conv_channels, int h_k, int h_v, int n_layers, const int32_t* n_pend, void* stream);
 /// (xq_out, S26 STRATA_QFUSE: also write the q8_1 image of output rows [t_out_begin, n_tok) there - the bytes
 /// native_quantize_q8_1(y + t_out_begin * value_dim, xq_out, value_dim, n_tok - t_out_begin) would write.)
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
@@ -113,6 +148,10 @@ void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip,
 /// copy_i32_from_mapped unless *skip == value.
 void copy_i32_from_mapped_unless(int32_t* dst, const int32_t* src, long long n, const uint32_t* skip, uint32_t value,
                                  void* stream);
+/// STRATA_FUSE_PLAN: wait_flag_ge_or(flag, value, skip) then copy_i32_from_mapped_unless(dst, src, n, skip, value), one
+/// launch (the same words copied, the same wait).
+void wait_copy_i32_from_mapped_unless(const uint32_t* flag, uint32_t value, const uint32_t* skip, int32_t* dst,
+                                      const int32_t* src, long long n, void* stream);
 /// copy_from_mapped, or zeros when *skip == value (n a multiple of 4, 16-byte aligned).
 void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const uint32_t* skip, uint32_t value,
                               void* stream);
@@ -141,6 +180,13 @@ void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, 
 void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
+/// STRATA_FUSE_FETCH: wait_flag_ge (or wait_flag_ge_or with `skip`), fetch_blobs and rebase_ptrs in ONE launch.  Block 0
+/// and every block with blob words to copy wait for *flag >= value first (thread 0 spins, unless *skip == value);
+/// the copies are fetch_blobs' and the staged pointers base + k * blob_bytes (k < *n) go to `ptr_out`, NOT over `src`
+/// (other blocks may still be reading it).  The same bytes as the three launches, two kernel nodes fewer.
+void wait_fetch_rebase(const uint32_t* flag, uint32_t value, const uint32_t* skip, const unsigned long long* src,
+                       const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, unsigned long long* ptr_out,
+                       void* stream);
 
 // ---- the MTP draft layer (src/core/mtp.cpp)
 /// R[t][c][:] = h[t][c][:] + e[t][:]  (the embedding branch added to every stream).
@@ -159,6 +205,14 @@ void force_token(int32_t* tok, const int32_t* force, int j, void* stream);
 /// row 0).  Graph-capturable: the row is read on the device.
 void copy_row_to_first(const int32_t* row_dev, float* a, int64_t a_n, float* b, int64_t b_n, float* c, int64_t c_n,
                        void* stream);
+/// STRATA_FUSE_DRAFTPAIR_ROUND: gather two draft rounds' selected row (each row index is read on the device) into
+/// two contiguous rows: out row r gets src_r[*row_r] for R (n_embd*hc), the injection (hc) and the mixed vector
+/// (n_embd).  A byte-for-byte copy, one launch for both rows.
+void mtp_pair_pick_rows(const int32_t* row_a, const int32_t* row_b,
+                        const float* R_a, const float* R_b, float* R_out, int64_t R_stride,
+                        const float* inj_a, const float* inj_b, float* inj_out, int64_t inj_stride,
+                        const float* mixed_a, const float* mixed_b, float* mixed_out, int64_t mixed_stride,
+                        void* stream);
 /// dst row i = src row ids[i] (row_bytes each, multiple of 16), for n rows.
 void gather_rows(const uint8_t* src, int64_t row_bytes, const int32_t* ids, int64_t n, uint8_t* dst, void* stream);
 /// ids[t] = table[ids[t]] for n entries (a subset index back to a token id).

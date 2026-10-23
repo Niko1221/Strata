@@ -1,10 +1,13 @@
 // pin_budget_test: the pinned-memory headroom (include/strata/core/pin_budget.hpp) with the simulated ceiling.
 // Needs a GPU for the pinned calls; without one it prints SKIP and passes.
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/pinned.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 static int g_fail = 0;
 #define CHECK(c)                                                              \
@@ -18,7 +21,7 @@ static int g_fail = 0;
 #define SETENV(k, v) setenv(k, v, 1)
 #endif
 
-int main() {
+int main(int argc, char** argv) {
     // the singleton reads its environment on first use: set everything first
     SETENV("STRATA_TEST_PIN_BUDGET_MIB", "100");
     SETENV("STRATA_PIN_RESERVE_MIB", "32");   // soft 32 MiB, hard 64 MiB (a quarter of 32 is below the 64 MiB floor)
@@ -28,6 +31,28 @@ int main() {
         return 0;
     }
     (void) cudaGetLastError();
+
+    // HIP, KFD ceiling: the arena's sliced pin stops when the simulated budget refuses a slice; the HIP build must give
+    // ~1 GiB back for code objects.  Here 100 MiB allows six 16 MiB slices, so the 1 GiB back-off drops all six.
+    if (argc > 1 && std::strcmp(argv[1], "arena-backoff") == 0) {
+        constexpr uint64_t MiB = 1ull << 20;
+        std::vector<uint64_t> bounds;
+        for (int i = 0; i <= 8; ++i) bounds.push_back((uint64_t) i * 16 * MiB);
+        PinnedArena arena(128 * MiB, bounds);
+        if (kfd_system_pin_limit_bytes() != 0) {
+            CHECK(arena.note.find("KFD system pin limit") != std::string::npos);
+            CHECK(arena.note.find("backed off") != std::string::npos);
+            CHECK(arena.registered_bytes == 0);
+            CHECK(arena.registered_slices == 0);
+        } else {
+            CHECK(arena.registered_bytes == 96 * MiB);   // not a HIP/Linux build: no back-off
+            CHECK(arena.registered_slices == 6);
+        }
+        std::printf("arena note: %s\n", arena.note.c_str());
+        std::printf(g_fail == 0 ? "pin_budget_test arena-backoff: OK\n" : "pin_budget_test arena-backoff: %d FAILED\n",
+                    g_fail);
+        return g_fail == 0 ? 0 : 1;
+    }
 
     // 1. a registration beyond the ceiling is refused, one inside it works and is charged
     {

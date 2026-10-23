@@ -8,6 +8,7 @@
 //     output, k = 9 and a null shared row take the scalar one) against a host replay of the documented contract:
 //     the first product rounds to F32, the next ones accumulate with FMA in expert order, the shared row is added
 //     once: memcmp.
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/router_top10.hpp"
@@ -182,6 +183,81 @@ int main(int argc, char**) {
         }
         std::printf("  %-52s %s (%d cases)\n", (std::string("combine ") + c.name).c_str(), cfg_bad ? "*** NO ***" : "bitwise", cases);
         bad += cfg_bad;
+    }
+
+    // ---- STRATA_FUSE_ROUTEBELL: the window's top-10 and its doorbell in one launch, against the two calls
+    // (route_multi then doorbell_publish_res): n = 1..8 rows, every expert resident and with misses, ids, weights,
+    // the published rows and the ring compared with memcmp
+    {
+        const int N = 2560, NE = 512, K = 10;
+        int cases = 0, bell_bad = 0;
+        for (int miss = 0; miss < 3; ++miss) {
+            for (int n = 1; n <= 8; ++n) {
+                std::vector<float> lg((size_t) n * NE), xv((size_t) n * N);
+                for (auto& v : lg) v = gauss(rng) * 2.0f;
+                for (auto& v : xv) v = gauss(rng);
+                std::vector<int32_t> res(NE, 0);
+                if (miss == 1) res[(size_t) (rng() % NE)] = -1;
+                if (miss == 2) for (int e = 0; e < NE; e += 3) res[(size_t) e] = -1;
+                float* d_l = up(lg);
+                float* d_x = up(xv);
+                int32_t* d_res = up(res);
+                int32_t *d_i, *d_ir;
+                float *d_w, *d_wr;
+                float *d_xo, *d_xor;
+                int32_t *d_ido, *d_idor;
+                uint32_t *d_seq, *d_seqr;
+                const size_t nk = (size_t) n * K, nx = (size_t) n * N;
+                check(cudaMalloc(&d_i, nk * 4), "i");
+                check(cudaMalloc(&d_w, nk * 4), "w");
+                check(cudaMalloc(&d_ir, nk * 4), "ir");
+                check(cudaMalloc(&d_wr, nk * 4), "wr");
+                check(cudaMalloc(&d_xo, nx * 4), "xo");
+                check(cudaMalloc(&d_xor, nx * 4), "xor");
+                check(cudaMalloc(&d_ido, nk * 4), "ido");
+                check(cudaMalloc(&d_idor, nk * 4), "idor");
+                check(cudaMalloc(&d_seq, 4), "seq");
+                check(cudaMalloc(&d_seqr, 4), "seqr");
+                const uint32_t zero = 0;
+                check(cudaMemcpy(d_seq, &zero, 4, cudaMemcpyHostToDevice), "z");
+                check(cudaMemcpy(d_seqr, &zero, 4, cudaMemcpyHostToDevice), "z");
+                // the rows are only published on a miss, so both sides start from the same bytes (cudaMalloc does not zero)
+                std::vector<float> seed_x(nx);
+                for (size_t i = 0; i < nx; ++i) seed_x[i] = -7.0f;
+                check(cudaMemcpy(d_xo, seed_x.data(), nx * 4, cudaMemcpyHostToDevice), "s");
+                check(cudaMemcpy(d_xor, seed_x.data(), nx * 4, cudaMemcpyHostToDevice), "s");
+                // the two calls, in order
+                native_router_top10_multi(d_l, d_i, d_w, n, st);
+                doorbell_publish_res(d_x, d_i, d_res, NE, (int64_t) nx, (int64_t) nk, d_xo, d_ido, d_seq, st);
+                // the one launch
+                if (!native_router_top10_multi_bell(d_l, d_ir, d_wr, n, d_x, d_res, NE, (int64_t) nx, (int64_t) nk, d_xor,
+                                                    d_idor, d_seqr, st)) {
+                    std::printf("    *** native_router_top10_multi_bell refused n=%d, misses=%d ***\n", n, miss);
+                    ++bell_bad;
+                }
+                check(cudaDeviceSynchronize(), "sync");
+                const auto i1 = down(d_i, nk), i2 = down(d_ir, nk);
+                const auto w1 = down(d_w, nk), w2 = down(d_wr, nk);
+                const auto x1 = down(d_xo, nx), x2 = down(d_xor, nx);
+                const auto o1 = down(d_ido, nk), o2 = down(d_idor, nk);
+                const auto s1 = down(d_seq, (size_t) 1), s2 = down(d_seqr, (size_t) 1);
+                ++cases;
+                if (std::memcmp(i1.data(), i2.data(), nk * 4) != 0 || std::memcmp(w1.data(), w2.data(), nk * 4) != 0 ||
+                    std::memcmp(x1.data(), x2.data(), nx * 4) != 0 || std::memcmp(o1.data(), o2.data(), nk * 4) != 0 ||
+                    s1[0] != s2[0]) {
+                    std::printf("    *** native_router_top10_multi_bell n=%d misses=%d differs from the two calls ***\n", n, miss);
+                    ++bell_bad;
+                }
+                check(cudaFree(d_l), "f"); check(cudaFree(d_x), "f"); check(cudaFree(d_res), "f");
+                check(cudaFree(d_i), "f"); check(cudaFree(d_w), "f"); check(cudaFree(d_ir), "f");
+                check(cudaFree(d_wr), "f"); check(cudaFree(d_xo), "f"); check(cudaFree(d_xor), "f");
+                check(cudaFree(d_ido), "f"); check(cudaFree(d_idor), "f"); check(cudaFree(d_seq), "f");
+                check(cudaFree(d_seqr), "f");
+            }
+        }
+        std::printf("  %-52s %s (%d cases)\n", "router top-10 + doorbell, one launch == two calls",
+                    bell_bad ? "*** NO ***" : "bitwise", cases);
+        bad += bell_bad;
     }
 
     std::printf("\nnative_multi: %d failures\n", bad);

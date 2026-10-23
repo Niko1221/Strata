@@ -11,6 +11,7 @@
 #endif
 #include "mmq_resident_sort.hpp"
 #include "wmma_gemm.h"
+#include "strata/core/tail_prof.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/pinned_ring.hpp"
 #include "strata/core/progress.hpp"
@@ -2593,6 +2594,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
+    core::acommit_dbg().check(&ss, "prefill");   // STRATA_DBG_ACOMMIT
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
     // The direct successor's future lives on the Prefill object. Intermediate

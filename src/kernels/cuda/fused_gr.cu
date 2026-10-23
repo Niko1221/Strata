@@ -1214,6 +1214,12 @@ bool gr_tsum_on() {
     if (const char* v = std::getenv("STRATA_TSUM")) return v[0] == '1';
     return norm_fast_on();
 }
+// STRATA_GR_Q8_V2=1: gr_down_q8_v2_kernel / gr_up_q8_v2_kernel for the Q8_0 read (with tsum; bitwise the same)
+int g_gr_q8_v2 = -1;   // fused_gr_set_q8_v2 (the bench); -1 = STRATA_GR_Q8_V2
+int gr_q8_v2() {
+    static const int env = [] { const char* v = std::getenv("STRATA_GR_Q8_V2"); return v ? std::atoi(v) : 0; }();
+    return g_gr_q8_v2 >= 0 ? g_gr_q8_v2 : env;
+}
 // Turing: gr_up75_kernel for 3+ tokens (bitwise gr_up_multi_kernel; fused_gr_bench cold on an RTX 2080 Ti, up incl. a
 // stamp: T 3 27.3 -> 24.6 us, T 4 33.2 -> 28.7, T 6 46.6 -> 36.6); STRATA_GR_UP75=0 / 1 forces it off / on
 bool up75_on() {
@@ -2199,16 +2205,389 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_fast_kernel(GrMulti m, const
     if (m.a[0].q8_mixed != nullptr) gr_q8_tail(m, d0);   // S26 STRATA_QFUSE
 }
 
+#if !STRATA_GR_FAST_BUILD
+// STRATA_GR_Q8_V2=1 (HIP gfx12, with tsum): gr_down_q8_fast_kernel<T, 4> / gr_up_q8_q32_kernel<T, true> with every
+// output's operations in the same order (bitwise; fused_gr_bench's Q8 V2 check), rescheduled.  Both kernels run one
+// round of ~10 waves a SIMD, so their time is ~ (instructions a wave) x 10 plus whatever of the cold weight read the
+// instructions do not overlap.  Hence: every load issued first, in the order its consumers run (the load counter
+// retires in order: a wait for one load waits for all before it), the L2 reads ahead of the DRAM weights, no wait
+// inside a branch; weights addressed as one base + immediate offsets; an activation step read from LDS once for
+// several rows; a Q8_0 code dequantized in 2.25 instructions (f16 magic number + v_fma_mix) instead of 3; a token's
+// pending-write gate computed once a block.
+typedef _Float16 q8_h2 __attribute__((ext_vector_type(2)));
+// = q8_four(q, q8_half(h)): the codes made exact f16 (byte ^ 0x80 under exponent 0x64: 1024 + 128 + code, less
+// 1152), the products d * code each one v_fma_mix (as q8_four compiles: fma(d, code, -0))
+__device__ __forceinline__ float4 q8_four_h(uint32_t q, uint32_t h) {
+    const uint32_t u = q ^ 0x80808080u;
+    q8_h2 lo = __builtin_bit_cast(q8_h2, __builtin_amdgcn_perm(0x64646464u, u, 0x04010400u));
+    q8_h2 hi = __builtin_bit_cast(q8_h2, __builtin_amdgcn_perm(0x64646464u, u, 0x04030402u));
+    lo -= (q8_h2) {(_Float16) 1152.0f, (_Float16) 1152.0f};
+    hi -= (q8_h2) {(_Float16) 1152.0f, (_Float16) 1152.0f};
+    const float d = (float) __builtin_bit_cast(_Float16, (unsigned short) h);
+    return make_float4(d * (float) lo.x, d * (float) lo.y, d * (float) hi.x, d * (float) hi.y);
+}
+// m.a[k].<field> for a lane-dependent k < T, from T scalar loads (readfirstlane: else the select folds back into an
+// indexed - vector - load of the kernel argument)
+template <typename V>
+__device__ __forceinline__ V q8_uni(V v) {
+    if constexpr (sizeof(V) == 8) {
+        uint64_t u;
+        __builtin_memcpy(&u, &v, 8);
+        u = (uint64_t) (uint32_t) __builtin_amdgcn_readfirstlane((int) (uint32_t) u) |
+            (uint64_t) (uint32_t) __builtin_amdgcn_readfirstlane((int) (uint32_t) (u >> 32)) << 32;
+        __builtin_memcpy(&v, &u, 8);
+        return v;
+    } else if constexpr (sizeof(V) == 4) {
+        uint32_t u;
+        __builtin_memcpy(&u, &v, 4);
+        u = (uint32_t) __builtin_amdgcn_readfirstlane((int) u);
+        __builtin_memcpy(&v, &u, 4);
+        return v;
+    } else {
+        return (V) __builtin_amdgcn_readfirstlane((int) v);
+    }
+}
+template <int T, typename F>
+__device__ __forceinline__ auto tok_sel(const GrMulti& m, int k, F f) {
+    auto v = q8_uni(f(m.a[0]));
+#pragma unroll
+    for (int j = 1; j < T; ++j) {
+        const auto x = q8_uni(f(m.a[j]));
+        if (k == j) v = x;
+    }
+    return v;
+}
+
+// INJ: the inject block (rg == Q8_RG), a separate path so no branch joins its loads with the weight rows'
+template <int T, int R, bool INJ, bool JT>
+__device__ __forceinline__ void gr_down_q8_v2_body(const GrMulti& m, float* __restrict__ part, float* __restrict__ ssg,
+                                                   float (&xs)[T][Q8_KC], float (&red)[WARPS][T]) {
+    constexpr int P = pow2_ceil(T), NR = INJ ? 1 : R;
+    static_assert(R * P <= 32, "a lane a sum");
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int rg = blockIdx.x, kc = blockIdx.y, c = kc / Q8_CPS;
+    const bool inj_bf16 = INJ && m.a[0].q8_inject == nullptr;
+    const bool rows_on = !INJ || ((m.a[0].q8_inject != nullptr || m.a[0].w_inject != nullptr) && warp < HC);
+    const int sub = lane & 7, bl = lane >> 3;
+    const int tk = tsum_token<P>(lane);
+    const bool owner = lane == tsum_lane<P>(tk) && tk < T;
+    // the activations' loads first (L2), then the weights' (DRAM) step-major, as the dots consume them
+    const bool stager = t < Q8_KC / 4;   // one column quad a thread
+    const int col = kc * Q8_KC + 4 * (stager ? t : 0);
+    float4 rr[T], bb[T];
+    float ip[T];
+#pragma unroll
+    for (int k = 0; k < T; ++k) {
+        const FusedGrArgs& a = m.a[k];
+        rr[k] = *reinterpret_cast<const float4*>(a.R + col);
+        // (no pending write: any other in-range quad - R + col would fold into a branch and a wait)
+        bb[k] = *reinterpret_cast<const float4*>(a.apply ? a.bo_prev + (col - c * N) : a.R + (col ^ 4));
+        ip[k] = a.apply ? a.inj_prev[c] : 0.0f;
+    }
+    const float4 g = *reinterpret_cast<const float4*>(m.a[0].w_norm + col);   // (every token's w_norm is a[0]'s)
+    __builtin_amdgcn_sched_barrier(0);
+    uint32_t q[Q8_SPB][NR], h[Q8_SPB][NR];   // raw: codes, scale bits (inj_bf16: the 4 bf16 values)
+    if (INJ && inj_bf16) {
+        if (rows_on) {
+            const uint16_t* w = reinterpret_cast<const uint16_t*>(m.a[0].w_inject) + (size_t) warp * D + kc * Q8_KC + 4 * lane;
+#pragma unroll
+            for (int s = 0; s < Q8_SPB; ++s) {
+                const uint2 b = *reinterpret_cast<const uint2*>(w + 128 * s);
+                q[s][0] = b.x; h[s][0] = b.y;
+            }
+        }
+    } else if (rows_on) {
+        const uint8_t* w = (INJ ? m.a[0].q8_inject + (size_t) warp * (D / 32) * Q8B
+                                : m.a[0].q8_down + (size_t) (rg * WARPS + warp) * R * (D / 32) * Q8B) +
+                           kc * (Q8_KC / 32) * Q8B + bl * Q8B;
+#pragma unroll
+        for (int s = 0; s < Q8_SPB; ++s)
+#pragma unroll
+            for (int r = 0; r < NR; ++r) {
+                const uint8_t* blk = w + r * (D / 32) * Q8B + 4 * s * Q8B;
+                h[s][r] = q8_ld16(blk);
+                q[s][r] = q8_ld16(blk + 2 + 4 * sub) | q8_ld16(blk + 4 + 4 * sub) << 16;
+            }
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    float ssp[P];
+#pragma unroll
+    for (int k = 0; k < P; ++k) ssp[k] = 0.0f;
+    if (stager) {
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+            float4 r = rr[k];
+            if (m.a[k].apply) {
+                const float gw = 2.0f * sigmoidf_(ip[k] / (float) HC);
+                const float4 b = bb[k];
+                r.x = fmaf(b.x, gw, r.x); r.y = fmaf(b.y, gw, r.y);
+                r.z = fmaf(b.z, gw, r.z); r.w = fmaf(b.w, gw, r.w);
+            }
+            // gr_down_q8_fast_kernel's `ssp += x x + y y + z z + w w` as its compiled contraction (0 + s folded):
+            // spelled out, as this kernel's code would contract it in another order
+            ssp[k] = fmaf(r.w, r.w, fmaf(r.z, r.z, fmaf(r.x, r.x, r.y * r.y)));
+            *reinterpret_cast<float4*>(&xs[k][4 * t]) = make_float4(r.x * g.x, r.y * g.y, r.z * g.z, r.w * g.w);
+        }
+    }
+    {
+        const float v = tsum<P>(ssp, lane);
+        if (owner) red[warp][tk] = v;
+    }
+    gr_sync_lds();
+    if (!INJ && rg == 0 && t < T) {
+        float s = 0.0f;
+        for (int w = 0; w < WARPS; ++w) s += red[w][t];
+        ssg[t * Q8_NKC + kc] = s;
+    }
+    if (!rows_on) return;
+    // a step's x read once for the NR rows, each row's sum in gr_down_q8_fast_kernel's order
+    float acc[NR][P];
+#pragma unroll
+    for (int r = 0; r < NR; ++r)
+#pragma unroll
+        for (int k = 0; k < P; ++k) acc[r][k] = 0.0f;
+#pragma unroll
+    for (int s = 0; s < Q8_SPB; ++s) {
+        const int v = 128 * s + 4 * lane;   // = 32 (4 s + bl) + 4 sub
+        float4 w[NR];
+#pragma unroll
+        for (int r = 0; r < NR; ++r) {
+            if (inj_bf16) {
+                w[r] = make_float4(__uint_as_float(q[s][r] << 16), __uint_as_float(q[s][r] & 0xffff0000u),
+                                   __uint_as_float(h[s][r] << 16), __uint_as_float(h[s][r] & 0xffff0000u));
+            } else {
+                w[r] = q8_four_h(q[s][r], h[s][r]);
+            }
+        }
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+            const float4 x = *reinterpret_cast<const float4*>(&xs[k][v]);
+#pragma unroll
+            for (int r = 0; r < NR; ++r) {
+                acc[r][k] = fmaf(w[r].x, x.x, acc[r][k]); acc[r][k] = fmaf(w[r].y, x.y, acc[r][k]);
+                acc[r][k] = fmaf(w[r].z, x.z, acc[r][k]); acc[r][k] = fmaf(w[r].w, x.w, acc[r][k]);
+            }
+        }
+    }
+    if (!JT) {   // a row at a time
+#pragma unroll
+        for (int r = 0; r < NR; ++r) {
+            const int prow = INJ ? LR + warp : (rg * WARPS + warp) * R + r;
+            const float v = tsum<P>(acc[r], lane);
+            if (owner) part[((size_t) tk * Q8_NKC + kc) * PR + prow] = v;
+        }
+    } else {   // the NR x P sums at once, one a lane (tsum<NR P>: bitwise the per-row warp sums)
+        const float v = tsum<NR * P>(&acc[0][0], lane);
+        const int j = tsum_token<NR * P>(lane), r = j / P, k = j - r * P;
+        const int prow = INJ ? LR + warp : (rg * WARPS + warp) * R + r;
+        if (lane == tsum_lane<NR * P>(j) && k < T) part[((size_t) k * Q8_NKC + kc) * PR + prow] = v;
+    }
+}
+// R rows a warp: LR / (8 R) row-group blocks + the inject block, a column chunk each
+template <int T, int R, bool JT>
+__global__ void __launch_bounds__(THREADS) gr_down_q8_v2_kernel(GrMulti m, float* __restrict__ part, float* __restrict__ ssg) {
+    static_assert(LR % (WARPS * R) == 0, "geometry");
+    __shared__ __align__(16) float xs[T][Q8_KC];
+    __shared__ float red[WARPS][T];
+    if (blockIdx.x == LR / (WARPS * R)) gr_down_q8_v2_body<T, R, true, JT>(m, part, ssg, xs, red);
+    else gr_down_q8_v2_body<T, R, false, JT>(m, part, ssg, xs, red);
+}
+
+// QL: part 16-byte aligned, read a row quad (4 consecutive rows, the last quad the inject rows) a thread
+template <int T, bool QL>
+__global__ void __launch_bounds__(Q32_THREADS) gr_up_q8_v2_kernel(GrMulti m, const float* __restrict__ part,
+                                                                  const float* __restrict__ ssg) {
+    constexpr int P = pow2_ceil(T);
+    constexpr int RPW8 = HC * Q32_COLS / Q32_WARPS;                  // 8 rows a warp
+    constexpr int G = RPW8 * P <= 32 ? RPW8 : 32 / P, NG = RPW8 / G;  // rows a group: G x P sums <= a lane each
+    constexpr int W = QL ? 4 : 1, PW = PR / W;                       // part rows a read, reads a token
+    constexpr int NI = (T * PW + Q32_THREADS - 1) / Q32_THREADS;     // reads a thread
+    static_assert(LR % 4 == 0 && HC == 4, "the inject rows: part's last row quad");
+    static_assert(Q32_WARPS * 2 == Q32_COLS && T * HC <= Q32_THREADS, "geometry");
+    __shared__ __align__(16) float lo[T][LR];
+    __shared__ float rsS[T][HC], gwS[T][HC];
+    __shared__ float g[T][HC][Q32_COLS];
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int d0 = blockIdx.x * Q32_COLS;
+    const bool inj_rows = blockIdx.x == 0 && (m.a[0].w_inject != nullptr || m.a[0].q8_inject != nullptr);   // (the same for every token)
+    // row warp + 16 qq: stream qq / 2, column d0 + dd(qq).  A group's G x P sums end one a lane (tsum<G P>, bitwise
+    // the per-row warp sums): this lane's (row, token) and whether it is the one that writes it
+    auto ddq = [&](int qq) { return warp + Q32_WARPS * (qq & 1); };
+    const int ej = tsum_token<G * P>(lane), eq = ej / P, ek = ej - eq * P, ekc = ek < T ? ek : 0;
+    const bool eown = lane == tsum_lane<G * P>(ej) && ek < T;
+    // every load first: (L2) the sums of squares, partial dots (each stream's chunks summed in gr_up_q8_q32_kernel's
+    // order; out-of-range threads read an in-range sum and drop it), pending-write gates ...
+    const int ts = t < T * HC ? t : 0, sk = ts / HC, sc = ts - sk * HC;
+    float ss = 0.0f;
+#pragma unroll
+    for (int j = 0; j < Q8_CPS; ++j) ss += ssg[sk * Q8_NKC + sc * Q8_CPS + j];
+    const float ipv = tok_sel<T>(m, sk, [](const FusedGrArgs& a) { return a.apply ? a.inj_prev : a.R; })[sc];
+    float pp[NI][HC][W];
+#pragma unroll
+    for (int n = 0; n < NI; ++n) {
+        const int i = t + n * Q32_THREADS, ic = i < T * PW ? i : 0, k = ic / PW, r = (ic - k * PW) * W;
+#pragma unroll
+        for (int c = 0; c < HC; ++c) {
+            float p[W];
+#pragma unroll
+            for (int e = 0; e < W; ++e) p[e] = 0.0f;
+#pragma unroll
+            for (int j = 0; j < Q8_CPS; ++j) {
+                const float* src = part + ((size_t) k * Q8_NKC + c * Q8_CPS + j) * PR + r;
+                if constexpr (QL) {
+                    const float4 v = *reinterpret_cast<const float4*>(src);
+                    p[0] += v.x; p[1] += v.y; p[2] += v.z; p[3] += v.w;
+                } else {
+                    p[0] += *src;
+                }
+            }
+#pragma unroll
+            for (int e = 0; e < W; ++e) pp[n][c][e] = p[e];
+        }
+    }
+    // ... this lane's (row, token)s' R, w_norm and pending write ...
+    const bool apply = tok_sel<T>(m, ekc, [](const FusedGrArgs& a) { return a.apply; });
+    const float* Rk = tok_sel<T>(m, ekc, [](const FusedGrArgs& a) { return a.R; });
+    const float* bok = tok_sel<T>(m, ekc, [](const FusedGrArgs& a) { return a.apply ? a.bo_prev : a.R; });
+    float rv[NG], wn[NG], bo[NG];
+#pragma unroll
+    for (int gi = 0; gi < NG; ++gi) {
+        const int qq = gi * G + eq, i = (qq >> 1) * N + d0 + ddq(qq);
+        rv[gi] = Rk[i];
+        wn[gi] = m.a[0].w_norm[i];
+        bo[gi] = bok[d0 + ddq(qq)];
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    // ... (DRAM) the weights, in the dots' order (the third step's lanes 16-31 read lanes 0-15's blocks, unused)
+    uint32_t wq[RPW8][3], wh[RPW8][3];
+    {
+        const uint8_t* w = m.a[0].q8_up + (size_t) (d0 + warp) * (LR / 32) * Q8B;
+#pragma unroll
+        for (int qq = 0; qq < RPW8; ++qq)
+#pragma unroll
+            for (int s = 0; s < 3; ++s) {
+                const int l = s < 2 ? lane : lane & 15;
+                const uint8_t* blk = w + ((qq >> 1) * N + Q32_WARPS * (qq & 1)) * (LR / 32) * Q8B + (4 * s + (l >> 3)) * Q8B;
+                wh[qq][s] = q8_ld16(blk);
+                wq[qq][s] = q8_ld16(blk + 2 + 4 * (l & 7)) | q8_ld16(blk + 4 + 4 * (l & 7)) << 16;
+            }
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    if (t < T * HC) {
+        const float r = rsqrtf(ss / (float) N + tok_sel<T>(m, sk, [](const FusedGrArgs& a) { return a.eps; }));
+        rsS[sk][sc] = r;
+        gwS[sk][sc] = 2.0f * sigmoidf_(ipv / (float) HC);   // (used only if token sk applies)
+        if (blockIdx.x == 0) tok_sel<T>(m, sk, [](const FusedGrArgs& a) { return a.rs; })[sc] = r;
+    }
+    gr_sync_lds();
+#pragma unroll
+    for (int n = 0; n < NI; ++n) {
+        const int i = t + n * Q32_THREADS, k = i / PW, r = (i - k * PW) * W;
+        if (i >= T * PW || (r >= LR && !inj_rows)) continue;
+        float sum[W];
+#pragma unroll
+        for (int e = 0; e < W; ++e) {
+            sum[e] = 0.0f;
+#pragma unroll
+            for (int c = 0; c < HC; ++c) sum[e] = fmaf(rsS[k][c], pp[n][c][e], sum[e]);
+        }
+        if (r < LR) {
+#pragma unroll
+            for (int e = 0; e < W; ++e) {
+                const float x = sum[e] / (float) HC;
+                lo[k][r + e] = x / (1.0f + __expf(-x));
+            }
+        } else {
+            float* io = tok_sel<T>(m, k, [](const FusedGrArgs& a) { return a.inject_out; });
+#pragma unroll
+            for (int e = 0; e < W; ++e) io[r - LR + e] = sum[e];
+        }
+    }
+    gr_sync_lds();
+    float* Rk_out = tok_sel<T>(m, ekc, [](const FusedGrArgs& a) { return a.R_out; });
+    // G rows at a time: a step's lo read once for all of them, each row's sum in gr_up_q8_q32_kernel's order
+#pragma unroll
+    for (int gi = 0; gi < NG; ++gi) {
+        const int q0 = gi * G;
+        float4 w[G][3];
+#pragma unroll
+        for (int qg = 0; qg < G; ++qg)
+#pragma unroll
+            for (int s = 0; s < 3; ++s) w[qg][s] = q8_four_h(wq[q0 + qg][s], wh[q0 + qg][s]);
+        float acc[G * P];
+#pragma unroll
+        for (int j = 0; j < G * P; ++j) acc[j] = 0.0f;
+#pragma unroll
+        for (int k = 0; k < T; ++k) {
+#pragma unroll
+            for (int s = 0; s < 3; ++s) {
+                const int v = 4 * lane + 128 * s;
+                if (v < LR) {
+                    const float4 x = *reinterpret_cast<const float4*>(&lo[k][v]);
+#pragma unroll
+                    for (int qg = 0; qg < G; ++qg) {
+                        float& a = acc[qg * P + k];
+                        a = fmaf(w[qg][s].x, x.x, a); a = fmaf(w[qg][s].y, x.y, a);
+                        a = fmaf(w[qg][s].z, x.z, a); a = fmaf(w[qg][s].w, x.w, a);
+                    }
+                }
+            }
+        }
+        const float mine = tsum<G * P>(acc, lane);
+        if (eown) {
+            const int qq = q0 + eq, c = qq >> 1, dd = ddq(qq), i = c * N + d0 + dd;
+            float x = rv[gi];
+            if (apply) {
+                x = fmaf(bo[gi], gwS[ek][c], x);
+                Rk_out[i] = x;
+            }
+            x = x * wn[gi] * rsS[ek][c];
+            g[ek][c][dd] = x * sigmoidf_(mine);
+        }
+    }
+    gr_sync_lds();
+    if (warp < T) {   // as gr_up_q8_q32_kernel: warp k owns token k's 32 columns, quantized in registers
+        float sum = 0.0f;
+#pragma unroll
+        for (int c = 0; c < HC; ++c) sum += g[warp][c][lane];
+        const float xi = sum / (float) HC;
+        tok_sel<T>(m, warp, [](const FusedGrArgs& a) { return a.mixed; })[d0 + lane] = xi;
+        if (m.a[0].q8_mixed != nullptr) {
+            float amax = fabsf(xi), qsum = xi;
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) qsum += __shfl_xor_sync(0xffffffffu, qsum, o);
+            const float d = q8_1_finite(amax / 127.0f);
+            const int8_t q = q8_1_quant(xi, d, amax);
+            GrQ81* y = reinterpret_cast<GrQ81*>(tok_sel<T>(m, warp, [](const FusedGrArgs& a) { return a.q8_mixed; })) + d0 / 32;
+            y->qs[lane] = q;
+            if (lane == 0) y->ds = q8_1_ds(d, qsum);
+        }
+    }
+}
+#endif
+
 template <int T> void launch_q8_t(const GrMulti& m, float* part, float* ssg, cudaStream_t st, unsigned long long* stamp_buf,
                                   int stamp_i0) {
     const bool ts = gr_tsum_on();
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, (void*) st);
+#if !STRATA_GR_FAST_BUILD
+    const int v2 = ts ? gr_q8_v2() : 0;   // STRATA_GR_Q8_V2 (bitwise the tsum kernels)
+    if (v2)   // (the joint warp sum measured slower at T = 4..6)
+        gr_down_q8_v2_kernel<T, 4, (T <= 3 || T >= 7)><<<dim3(LR / (WARPS * 4) + 1, Q8_NKC), THREADS, 0, st>>>(m, part, ssg);
+    else
+#endif
     if (ts) gr_down_q8_fast_kernel<T, 4><<<dim3(LR / (WARPS * 4) + 1, Q8_NKC), THREADS, 0, st>>>(m, part, ssg);
     else gr_down_q8_kernel<T><<<dim3(Q8_RG + 1, Q8_NKC), THREADS, 0, st>>>(m, part, ssg);
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
 #if !STRATA_GR_FAST_BUILD
     if (m.a[0].q8_mixed != nullptr && qfuse_hc_local()) {   // HIP (not gfx906): the block owns a q8_1 group
-        if (ts) gr_up_q8_q32_kernel<T, true><<<Q32_BLOCKS, Q32_THREADS, 0, st>>>(m, part, ssg);
+        if (v2) {
+            // (the quad reads measured slower at T = 7, 8)
+            if (T <= 6 && ((uintptr_t) part & 15) == 0) gr_up_q8_v2_kernel<T, T <= 6><<<Q32_BLOCKS, Q32_THREADS, 0, st>>>(m, part, ssg);
+            else gr_up_q8_v2_kernel<T, false><<<Q32_BLOCKS, Q32_THREADS, 0, st>>>(m, part, ssg);
+        } else if (ts) gr_up_q8_q32_kernel<T, true><<<Q32_BLOCKS, Q32_THREADS, 0, st>>>(m, part, ssg);
         else gr_up_q8_q32_kernel<T, false><<<Q32_BLOCKS, Q32_THREADS, 0, st>>>(m, part, ssg);
         return;
     }
@@ -2249,6 +2628,7 @@ static bool gr_fast() {
 int g_gr_fast = -1;
 #endif
 void fused_gr_set_fast(int on) { g_gr_fast = on; }
+void fused_gr_set_q8_v2(int on) { g_gr_q8_v2 = on; }
 
 bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, void* stream, unsigned long long* stamp_buf,
                          int stamp_i0) {

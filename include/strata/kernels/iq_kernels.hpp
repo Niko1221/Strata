@@ -78,11 +78,22 @@ void iq_xmx_grouped(int ty, const uint8_t* const* a, const uint8_t* const* b, co
 void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
-                           int64_t grid_groups = 0);
+                           int64_t grid_groups = 0, uint32_t* sw_counters = nullptr);
 /// true: `native_expert_grouped`'s launches before the group stride (STRATA_GROUPED_V1=1 at startup) - a block row
 /// per possible group, SwiGLU and the q8_1 quantization as two kernels over all cap_entries.  Bitwise the same results
 /// (native_grouped_parity checks it); kept for A/B timing.  Set before graph capture; captured graphs keep theirs.
 void native_grouped_set_v1(bool v1);
+/// STRATA_FUSE_SWIGLU_DOWN (1 on, 0 off, -1 the environment's): the down kernel makes the SwiGLU + q8_1 blocks of its
+/// entries from gate / up itself, one launch fewer per call - in calls with grid_groups 1..4 only (the PCIe call; same output,
+/// native_grouped_parity checks it).
+/// Set before graph capture.
+void native_expert_set_fuse_sw_down(int on);
+/// STRATA_FUSE_SWIGLU_GU (1 on, 0 off, -1 the environment's): where the expdec gate/up kernel runs and the call is not
+/// fused by STRATA_FUSE_SWIGLU_DOWN, the second of a column chunk's gate and up blocks makes those SwiGLU + q8_1 blocks, one launch
+/// fewer per call.  Needs `sw_counters` in native_expert_grouped: cap_groups * n_ff / 32 (<= 4096) device words, zero
+/// before the first call (each call leaves them zero again).  Set before graph capture.
+void native_expert_set_fuse_sw_gu(int on);
+bool native_expert_fuse_sw_gu();
 
 /// The bench only: the AMD kernel layout (STRATA_EXP_MODE values; -1 = the environment's) and the phase
 /// (0 all, 1 gate/up + SwiGLU + quantize, 2 down).
@@ -114,6 +125,7 @@ int native_expert_expdec();
 struct NativeExpertExpdecParams {
     int gu_rows_per_lane = 0, down_rows_per_lane = 0, gu_min_blocks_per_sm = 0, down_iq4_nl = -1, down = -1;
     int gu_rows_per_block = -1, down_rows_per_block = -1, min_blocks = 0;
+    int v2 = -1;   // STRATA_EXPDEC_V2
 };
 void native_expert_set_expdec_params(const NativeExpertExpdecParams& p);
 NativeExpertExpdecParams native_expert_expdec_params();

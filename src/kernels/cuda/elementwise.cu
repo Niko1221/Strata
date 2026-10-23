@@ -397,7 +397,7 @@ __global__ void copy_i32_from_mapped_kernel(int32_t* __restrict__ dst, const vol
 }
 
 struct MappedCopies {
-    MappedCopy c[8];
+    MappedCopy c[16];
 };
 
 __global__ void copy_from_mapped_multi_kernel(MappedCopies a) {
@@ -422,7 +422,7 @@ void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* str
 
 void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
     if (n <= 0) return;
-    if (n > 8) { std::fprintf(stderr, "copy_from_mapped_multi: at most 8 copies\n"); std::exit(1); }
+    if (n > 16) { std::fprintf(stderr, "copy_from_mapped_multi: at most 16 copies\n"); std::exit(1); }
     const char* e = std::getenv("STRATA_MTP_MULTI_COPY");
     const bool multi_on = e == nullptr || e[0] != '0';
     if (!multi_on) {

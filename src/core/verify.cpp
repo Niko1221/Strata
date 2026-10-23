@@ -26,6 +26,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
+#include "strata/core/tail_prof.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/native_moe.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -48,6 +49,7 @@
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/qsa_select.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/rope.hpp"
@@ -379,6 +381,64 @@ bool fuse_rows_on() {
 #endif
 }
 
+// STRATA_FUSE_FETCH=1: the PCIe share's wait, fetch_blobs and rebase_ptrs in one launch (wait_fetch_rebase; the same
+// bytes, two kernel nodes fewer per layer and group).  Opt-in.
+// STRATA_FUSE_PLAN=1: with the device plan, the wait for the host's plan and its copy in one launch.  Opt-in.
+bool fuse_plan_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_PLAN"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+bool fuse_fetch_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_FETCH"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// STRATA_FUSE_COMBINE=1: the CPU share's wait and copy (copy_rows_from_mapped_after, or with the device plan
+// wait_flag_ge_or + copy_or_zero_from_mapped) folded into the hits-added combine, which reads the pool's mapped rows
+// itself (native_moe_combine_multi_hits_mapped; the same values, one or two kernel nodes fewer per layer and group).
+// Opt-in.
+bool fuse_combine_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_COMBINE"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+// STRATA_FUSE_SHPAIR=1: the shared expert's gate and up in one launch (native_mmvq_pair, which covers the K-quant /
+// IQ4_XS kernels under the same switch) outside STRATA_LFUSE too.  Opt-in.
+bool fuse_shpair_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_SHPAIR"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+// STRATA_FUSE_ROUTEBELL=1: the window's top-10 (route_multi) and the doorbell (doorbell_publish_res) in one launch
+// (native_router_top10_multi_bell): the same ids, weights and published rows, one kernel node fewer per layer and group,
+// and the bell no longer waits for a launch of its own.  Only where nothing runs between the two (no route prior /
+// resident swap, no device plan, the plain doorbell).  Opt-in.
+bool fuse_routebell_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_ROUTEBELL"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+// STRATA_FUSE_SHBEL=1 (with STRATA_FUSE_ROUTEBELL): the shared expert's gate/up pair (native_mmvq_pair's one launch)
+// also rides in that top-10 + doorbell launch (native_mmvq_pair_router_bell): block 0 routes and fires the bell, the
+// pair's blocks follow and never wait for it.  The q8_1 image of x must exist before the router, so this path quantizes
+// it there (the same bytes the old path made inside shared_expert_multi).  Opt-in, default off.
+bool fuse_shbel_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_SHBEL"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+// STRATA_FUSE_QGEMV=1: the router's bf16 GEMV and the q8_1 quantization of the same MoE input (the shared expert's
+// pair input) in one launch (bf16_gemv_fp32_mmvf_multi_quant): both read x, neither depends on the other.  The q8_1
+// bytes are native_quantize_q8_1's, so shared_expert_multi reads them instead of quantizing again.  Opt-in.
+bool fuse_qgemv_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_QGEMV"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+// STRATA_FUSE_SHGATE=1 (with STRATA_FUSE_COMBINE, outside the all-resident path): the shared expert's gate row rides in
+// the router's GEMV launch (bf16_gemv_fp32_mmvf_multi_aux) and its sigmoid + row scale in that combine
+// (native_moe_combine_multi_hits_mapped's shared_gate), as STRATA_LFUSE does on the all-resident path: two kernel nodes
+// fewer per layer and group.  Opt-in.
+bool fuse_shgate_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_SHGATE"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
 // 143-amdk: STRATA_FUSE_CONVAB=1 - the GDN conv and the a/b projections in one launch.  Opt-in: measured -0.3% on gfx1201 (the a/b dot chain is the longer one).
 bool fuse_convab_on() {
 #if defined(STRATA_USE_HIP)
@@ -387,6 +447,99 @@ bool fuse_convab_on() {
 #else
     return false;
 #endif
+}
+
+// fuse-gdn: STRATA_FUSE_BCOMMIT=1 - the batch commit graph's GDN commits and QSA indexer appends one launch per slot over
+// all of the slot's layers (gdn_commit_layers / native_qsa_indexer_append_steps_layers, bitwise the per-layer calls)
+bool fuse_bcommit_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_BCOMMIT"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_GDNCONV=1 - a batch window's GDN conv of every slot group in one launch per layer (gdn_conv_groups);
+// =2 also the a/b projections in that launch (where the window computes them on the main stream right after)
+int fuse_gdnconv_level() {
+    static const int lv = [] { const char* v = std::getenv("STRATA_FUSE_GDNCONV"); return v != nullptr ? std::atoi(v) : 0; }();
+    return lv;
+}
+
+// fuse-gdn: STRATA_FUSE_IDXAPP=1 - a batch window's indexer tail snapshots and key appends one launch per QSA layer
+// (native_qsa_indexer_append_slots: one block per slot group, bitwise the per-row appends)
+bool fuse_idxapp_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_IDXAPP"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_QSASEL=1 - a batch window's per-row QSA path (KV streaming) scores and selects every row in
+// one launch each before the rows' resolve + attention (qsa_block_scores_slots, qsa_block_topk over the rows)
+bool fuse_qsasel_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_QSASEL"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_KVROWS=1 - a batch window's int8 K/V cells of every row in one launch per QSA layer
+// (kv_append_q8_rows: each row its own slot's pools, bitwise the per-row kv_append_q8_step calls)
+bool fuse_kvrows_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_KVROWS"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_ATTNMERGE=1 - a batch window's per-row QSA attention (KV streaming) runs each row's chunk pass
+// after its resolve and merges all rows' partials in one launch at the end (qsa_decode_attn_batch_chunks / _merge)
+bool fuse_attnmerge_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_ATTNMERGE"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_QSAWAVE=1 (with STRATA_FUSE_ATTNMERGE=1) - the streamed per-row QSA path takes the window's rows
+// in waves, wave w = the w-th row of every slot group: one resolve launch (kv_stream_resolve_rows, a block per row, each
+// its own slot's map) and one chunk launch (qsa_decode_attn_wave_chunks) per wave.  A slot's rows keep their order.
+bool fuse_qsawave_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_QSAWAVE"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_NR3=1 (with the fused norm + rope, STRATA_NORM_ROPE=1 on HIP) - a QSA layer's K, query and indexer
+// query norm + rope in one launch (native_qsa_rms_norm_rope_segs); the query's and the indexer query's projections,
+// which read only the layer's input, run before it instead of after the K/V appends
+bool fuse_nr3_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_NR3"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_GATEMERGE=1 (with STRATA_FUSE_ATTNMERGE=1, HIP) - the streamed per-row QSA path's late merge
+// also applies the output gate (qsa_decode_attn_batch_merge_gate), when no rotation comes between the two
+bool fuse_gatemerge_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_GATEMERGE"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_IDXPAIR=1 - a QSA layer's indexer key and indexer query projections (bf16, both of the mixer
+// input) in one launch (bf16_gemv_fp32_mmvf_multi_pair) where the key's is made; the query's chain skips its own
+bool fuse_idxpair_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_IDXPAIR"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_GATEMERGE_Q8=1 (with STRATA_FUSE_GATEMERGE=1) - that merge also writes the out projection's q8_1
+// input (qsa_decode_attn_batch_merge_gate's xq_out) instead of a quantize launch after it
+bool fuse_gatemerge_q8_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_GATEMERGE_Q8"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+// fuse-gdn: STRATA_FUSE_GDNQ8=1 - a batch window's GDN recurrence in one launch (STRATA_BATCH_GDN_GROUPS=1) also writes
+// the out projection's q8_1 input (gdn_step_norm_groups' xq_out) instead of a quantize launch after it
+// STRATA_FUSE_PLELATE=1: run_slot_rows gathers the window's PLE rows after the graph's launch (as run() does), not in
+// stage_batch before it: the graph reads them after its layer-1 wait on the PLE flag, and the read overlaps layer 0
+bool fuse_plelate_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_PLELATE"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
+}
+
+bool fuse_gdnq8_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_GDNQ8"); return v != nullptr && std::atoi(v) != 0; }();
+    return on;
 }
 
 // 143-amdk: STRATA_FUSE_HITS - moe_hit_add folded into the combine (gfx12 default; =0 / 1 forces off / on)
@@ -637,6 +790,10 @@ Verifier::~Verifier() {
         if (kv.second) cudaGraphExecDestroy(kv.second);
     if (arena_b_) cudaFree(arena_b_);
     if (h_commitb_) cudaFreeHost(h_commitb_);
+    if (h_echo_) cudaFreeHost(h_echo_);
+    if (pend_) cudaFree(pend_);
+    if (b2_shadow_) cudaFree(b2_shadow_);
+    if (ev_cbcopy_) cudaEventDestroy(ev_cbcopy_);
     if (qcnt_) cudaFree(qcnt_);
     if (d_spec_) cudaFree(d_spec_);
     if (tap_file_) std::fclose(tap_file_);
@@ -909,6 +1066,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         one_ = b.take<int32_t>(4);
         hist_snap_ = b.take<float>(T * HS);
         ple_key_ = b.take<float>(T * (uint64_t) strata::kernels::NG_HC_DIM); ple_val_ = b.take<float>(T * N);
+        staged_ptr_ = fuse_fetch_on() ? b.take<unsigned long long>(kStagingBlobs) : nullptr;   // last: the rest as before
+        // STRATA_FUSE_SWIGLU_GU: the expdec gate/up kernel's column-chunk counters, a set per group (zeroed with the arena)
+        sw_cnt_ = strata::kernels::native_expert_fuse_sw_gu() ? b.take<uint32_t>(2 * 4096) : nullptr;
     };
     Bump count;
     carve(count);
@@ -1154,6 +1314,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                shared_expert_native_bf16_enabled();
     };
     bool sg_gated_[2] = {false, false};   // per group: the combine applies the shared gate
+    // STRATA_FUSE_COMBINE: post() folds the CPU share's wait + copy into the hits-added combine (the same conditions in
+    // pre(), which defers the shared gate to that combine under STRATA_FUSE_SHGATE)
+    auto comb_fusable = [&](int n, int tb) {
+        return fuse_combine_on() && fuse_hits_on() && !prof_on_ && !remote_opt_ && !ar_on() && dec_batch && n > 1 && n <= 8 &&
+               native_moe_combine_enabled() && m_bal_ == nullptr && (device_plan_ || fuse_rows_on()) &&
+               native_moe_combine_hits_supported(m_ymiss_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
+    };
+    auto shgate_on = [&](int n, int tb) {
+        return fuse_shgate_on() && comb_fusable(n, tb) && shared_expert_native_bf16_enabled();
+    };
     if (!batch_rec_) groups_[T] = G;
     // Programmatic dependent launch (pdl.hpp; sm_90+, opt-in: STRATA_DF_PDL=1): the window's quantizations and dense
     // projections may start while the kernel before them finishes, loading their weights before they wait for its
@@ -1258,7 +1428,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         bool pending = l > 0 && !cvec().covers(l - 1);
         if (l == 1 && ple_on) {
             if (grp == 0) {
-                if (ar_on()) wait_flag_ge(m_flag_, 1, cs);
+                // (E-6 device plan: layer 0's combine skips its wait for flag 1 when every expert is resident)
+                if (ar_on() || device_plan_) wait_flag_ge(m_flag_, 1, cs);
                 copy_from_mapped(ple_, m_ple_, (int64_t) T * N, cs);
             }
             float* normalized = (float*) ((uint8_t*) ss.ple.scratch + ple_block_scratch_bytes());
@@ -1469,8 +1640,43 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                 df_side_[1]);
                 }
                 const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem;   // the side mixer computes the gates on its branch
-                if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
+                // STRATA_FUSE_PROJ: qkv and z in one launch (bitwise the two calls; z is read only after the recurrence)
+                bool proj_z = false;
+                if (!side_proj && !br && strata::kernels::native_mmvq_proj_on()) {
+                    const strata::kernels::MmvqSeg sg[2] = {{wqkv->native_type, wqkv->native_data, qkv + (size_t) tb * C, (int) C},
+                                                            {wg->native_type, wg->native_data, z_ + (size_t) tb * ZV, (int) ZV}};
+                    proj_z = strata::kernels::native_mmvq_proj(sg, 2, xq_, (int) N, n, cs);
+                }
+                if (!side_proj && !proj_z) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
                 stamp(l, 2, grp);
+                // STRATA_FUSE_GDNCONV: the slot groups' convs (=2: and the a/b projections) in one launch
+                bool conv_grouped = false, ab_done = false;
+                if (batch_rec_ && fuse_gdnconv_level() >= 1 && te - tb <= strata::kernels::kVerifyMaxT) {
+                    strata::kernels::GdnConvGroups cg;
+                    for (int t = tb; t < te && cg.n < 8;) {
+                        const int first = t;
+                        while (t < te && brow_[t] == brow_[first]) ++t;
+                        SessionState& sx = slot_ss(first);
+                        cg.hist[cg.n] = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats +
+                                        (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        cg.first[cg.n] = first - tb;
+                        cg.ntok[cg.n] = t - first;
+                        ++cg.n;
+                        conv_grouped = t == te;
+                    }
+                    for (int i = 0; conv_grouped && keep_rows && i < cg.n; ++i)   // committing groups: one per slot
+                        for (int j = 0; j < i; ++j) conv_grouped = conv_grouped && cg.hist[i] != cg.hist[j];
+                    if (conv_grouped) {
+                        ab_done = fuse_gdnconv_level() >= 2 && !br && !sidem && !prof_on_;
+                        strata::kernels::gdn_conv_groups(cg, qkv + (size_t) tb * C, (const float*) wc->data, hb + (size_t) tb * C,
+                                                         (int) C, (int) (2 * HK), EPS, keep_rows, ab_done ? xm : nullptr,
+                                                         (const uint16_t*) wa->data, (const uint16_t*) wb->data,
+                                                         (const float*) wdt->data, (const float*) wsa->data,
+                                                         gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV, cs);
+                    }
+                }
+                if (conv_grouped) {
+                } else
                 if (batch_rec_) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
                         const int first = t;
@@ -1497,12 +1703,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     join(0);
                     join(1);
                 } else {
-                if (!fuse_ab && !sidem)   // the gates: the HIP fused conv kernel (143-amdk) or the side mixer's branch, else here
+                if (!fuse_ab && !sidem && !ab_done)   // the gates: a fused conv kernel (143-amdk, fuse-gdn) or the side mixer's branch, else here
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
                              n, cs);
                 stamp(l, 4, grp);
-                if (!side_proj) mm(wg, z_ + (size_t) tb * ZV, (int) N, (int) ZV);
+                if (!side_proj && !proj_z) mm(wg, z_ + (size_t) tb * ZV, (int) N, (int) ZV);
                 stamp(l, 5, grp);
                 if (side_proj && cudaStreamWaitEvent(cs, pjoin_, 0) != cudaSuccess) {
                     err = "verify: the gate projection's branch could not join";
@@ -1518,8 +1724,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     const char* v = std::getenv("STRATA_BATCH_GDN_GROUPS");
                     return v != nullptr && std::atoi(v) != 0;
                 }();
+                bool gdn_q8 = false;   // STRATA_FUSE_GDNQ8: xq_ written by the recurrence below
                 if (batch_rec_ && gdn_groups_on && te - tb <= 8) {
                     strata::kernels::GdnGroups gg;
+                    const bool defer = defer_on() && tb == 0 && te == T;   // STRATA_FUSE_GDNDEFER: one group of rows
                     for (int t = tb; t < te;) {
                         const int first = t;
                         while (t < te && brow_[t] == brow_[first]) ++t;
@@ -1527,12 +1735,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         gg.state[gg.n] = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats;
                         gg.first[gg.n] = first;
                         gg.ntok[gg.n] = t - first;
+                        if (defer) {
+                            const float* pl = pend_ + ((size_t) brow_[first] * pend_layers_ + (size_t) (gi - pend_gdn0_)) * pend_pl_;
+                            gg.pend_h[gg.n] = pl;
+                            gg.pend_g[gg.n] = pl + pend_pm_ * C;
+                            gg.pend_b[gg.n] = pl + pend_pm_ * C + pend_pm_ * HV;
+                            gg.pend_n[gg.n] = pendw_ + 2 * brow_[first] + 1;
+                        }
                         ++gg.n;
                     }
+                    (defer ? cap_defer_ : cap_defer_bad_) = true;
+                    gdn_q8 = fuse_gdnq8_on() && tb == 0;   // xq_ row r = the window's row tb + r
                     strata::kernels::gdn_step_norm_groups(gg, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS,
-                                                          y_, (int) HK, (int) HV, false, cs);
+                                                          y_, (int) HK, (int) HV, false, cs, gdn_q8 ? (void*) xq_ : nullptr);
                 } else
                 if (batch_rec_) {   // each slot's recurrence over its own proposed-token group
+                    cap_defer_bad_ = true;   // (STRATA_FUSE_GDNDEFER: no pending rows here)
                     for (int t = tb; t < te;) {
                         const int first = t;
                         while (t < te && brow_[t] == brow_[first]) ++t;
@@ -1549,7 +1767,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 6, grp);
                 // STRATA_QFUSE: done above by gdn_step_norm_multi - but a batch's per-slot recurrence passes it no q8_1
                 // destination (#1139: the out-projection read stale bytes), so that case quantizes here as without it
-                if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
+                if (gdn_q8) il_ready = false;
+                else if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
                 else il_ready = false;
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
             } else {
@@ -1628,12 +1847,40 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     }
                     norm_rope_on(data, norm, rows, cols, pos, ns);
                 };
+                bool idx_paired = false;   // STRATA_FUSE_IDXPAIR: idx_key wrote qidx_'s projection too
                 auto idx_key = [&](cudaStream_t ns) {
+                    if (qb && ns == cs && !sidem && !qbr && fuse_idxpair_on())
+                        idx_paired = bf16_gemv_fp32_mmvf_multi_pair(mixed_ + tb * N, N, (const uint16_t*) wik->data,
+                                                                    idx_raw + tb * ID, ID, ID, (const uint16_t*) wiq->data,
+                                                                    qidx_ + tb * IQ * ID, IQ * ID, IQ * ID, N, n, ns);
+                    if (idx_paired) return;
                     if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, ns);
                     else for (int t = tb; t < te; ++t)
                         bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, ns);
                 };
+                // STRATA_FUSE_IDXAPP: a batch window's snapshots + appends in one launch (idx_append), when every
+                // slot group fits and has its own indexer buffers
+                QsaIndexerSlots idx_slots;
+                bool idx_fused = batch_rec_ && fuse_idxapp_on();
+                for (int t = tb; idx_fused && t < te;) {
+                    const int first = t;
+                    while (t < te && brow_[t] == brow_[first]) ++t;
+                    const QsaState& sx = slot_ss(first).qsa_states[qi];
+                    const int i = idx_slots.n;
+                    idx_fused = i < QsaIndexerSlots::kMax && sx.max_cells <= INT32_MAX;
+                    for (int j = 0; idx_fused && j < i; ++j) idx_fused = idx_slots.tail[j] != sx.idx_tail;
+                    if (!idx_fused) break;
+                    idx_slots.raw[i] = idx_raw + first * ID;
+                    idx_slots.pos[i] = step_ + first * kStepCount + kStepPos;
+                    idx_slots.n_steps[i] = t - first;
+                    idx_slots.snap[i] = keep_rows ? nullptr : tail_snap_b_ + ((size_t) brow_[first] * nQall + qi) * TS;
+                    idx_slots.tail[i] = sx.idx_tail; idx_slots.dead[i] = sx.idx_dead; idx_slots.pooled[i] = sx.idx_pooled;
+                    idx_slots.block_pos[i] = sx.idx_block_pos;
+                    idx_slots.max_cells[i] = (int) sx.max_cells;
+                    idx_slots.n = i + 1;
+                }
                 auto idx_snap = [&](cudaStream_t ns) {
+                    if (idx_fused) return;   // in idx_append's launch
                     if (batch_rec_) {   // snapshot each slot's indexer tail before its first proposed row
                         for (int t = tb; t < te && !keep_rows; ++t)
                             if (t == tb || brow_[t] != brow_[t - 1])
@@ -1643,6 +1890,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, ns);
                 };
                 auto idx_append = [&](cudaStream_t ns) {
+                    if (idx_fused) {
+                        native_qsa_indexer_append_slots(idx_slots, kStepCount, 0, (const float*) wikn->data, EPS, s,
+                                                        rope_scaling(), ns);
+                    } else
                     if (dec_batch && !g_no_batch_kv && !batch_rec_) {
                         const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                         native_qsa_indexer_append_steps(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, kStepCount,
@@ -1660,6 +1911,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 };
                 auto idx_query = [&](cudaStream_t ns) {
                     if (qb) {
+                        if (!idx_paired)
                         bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
                                                   N, IQ * ID, n, ns);
                         norm_rope_s(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ, ns);
@@ -1735,8 +1987,40 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 if (!sidem) idx_key(cs);
                 stamp(l, 7, grp);
-                mm(wk, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
-                mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
+                // STRATA_FUSE_NR3: the three norm + rope calls of the batched path (K here, the query in q_chain, the
+                // indexer query in idx_query) as one launch, each segment that call's arguments
+                const bool nr3 = fuse_nr3_on() && fuse_nr && qb && !sidem && !side_proj && !qbr &&
+                                 native_norm_rope_usable((int) ID, (int) s.n_rot);
+                // STRATA_FUSE_PROJ: k, v and (NR3) q_chain's projection in one launch, bitwise the three calls (k + v
+                // alone is slower as one launch: not paired)
+                bool proj_kvq = false;
+                if (nr3 && strata::kernels::native_mmvq_proj_on()) {
+                    const strata::kernels::MmvqSeg sg[3] = {
+                        {wk->native_type, wk->native_data, kcur_ + tb * NKV * HD, (int) (NKV * HD)},
+                        {wv->native_type, wv->native_data, vcur_ + tb * NKV * HD, (int) (NKV * HD)},
+                        {wq->native_type, wq->native_data, qfull_ + tb * NH * 2 * HD, (int) (NH * 2 * HD)}};
+                    proj_kvq = strata::kernels::native_mmvq_proj(sg, 3, xq_, (int) N, n, cs);
+                }
+                if (!proj_kvq) {
+                    mm(wk, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
+                    mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
+                }
+                if (nr3) {
+                    if (!proj_kvq) mm(wq, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD));   // q_chain's projection
+                    if (!idx_paired)
+                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
+                                              N, IQ * ID, n, cs);                          // idx_query's
+                    NormRopeSegs sg;
+                    auto seg = [&](const float* x, int stride, const WeightRef* w, float* out, int rows, int hd, const int32_t* pos) {
+                        sg.x[sg.n] = x; sg.in_stride[sg.n] = stride; sg.gamma[sg.n] = (const float*) w->data; sg.out[sg.n] = out;
+                        sg.rows[sg.n] = rows; sg.head_dim[sg.n] = hd; sg.positions[sg.n++] = pos;
+                    };
+                    seg(kcur_ + tb * NKV * HD, (int) HD, wkn, kcur_ + tb * NKV * HD, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
+                    seg(qfull_ + tb * NH * 2 * HD, (int) (2 * HD), wqn, qcur_ + tb * NH * HD, (int) (n * NH), (int) HD, pos_ + tb * NH);
+                    seg(qidx_ + tb * IQ * ID, (int) ID, wiqn, qidx_ + tb * IQ * ID, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
+                    native_qsa_rms_norm_rope_segs(sg, (int) s.n_rot, EPS, rope_scaling(), cs);
+                    if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, cs);   // q_chain's rotation
+                } else
                 if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
@@ -1774,6 +2058,26 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             kv_append_step(st.k_pool, st.v_pool, st.page_table, step_ + t * kStepCount,
                                            kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st.host);
                 } else
+                if (batch_rec_ && fuse_kvrows_on() && te - tb <= KvQ8Rows::kMax &&
+                    [&] {   // every row an int8 cache (the per-row loop's kv_append_q8_step case)
+                        for (int t = tb; t < te; ++t) {
+                            const QsaState& sx = slot_ss(t).qsa_states[qi];
+                            if (sx.kv_hybrid || sx.kv_q4 || !sx.kv_int8) return false;
+                        }
+                        return true;
+                    }()) {
+                    KvQ8Rows kr;
+                    for (int t = tb; t < te; ++t) {
+                        const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        const int j = t - tb;
+                        kr.k_q[j] = sx.k_q; kr.v_q[j] = sx.v_q; kr.k_scale[j] = sx.k_scale; kr.v_scale[j] = sx.v_scale;
+                        kr.table[j] = sx.page_table;
+                        kr.host[j] = sx.host;
+                    }
+                    kr.n = te - tb;
+                    kv_append_q8_rows(kr, step_ + tb * kStepCount, (int) kStepCount, kcur_ + tb * NKV * HD,
+                                      vcur_ + tb * NKV * HD, (int) (NKV * HD), s, cs);
+                } else
                 for (int t = tb; t < te; ++t) {
                     const QsaState& st = slot_ss(t).qsa_states[qi];   // the row's own K/V (ss's outside a batch)
                     const int32_t* step_t = step_ + t * kStepCount;
@@ -1798,11 +2102,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 9, grp);
                 if (qbr) {
                     join(1);   // the indexer query, for the block scores
-                } else {
+                } else if (!nr3) {
                     if (!side_proj && !q_chain(cs)) return false;
                     if (!sidem) idx_query(cs);
                 }
                 stamp(l, 10, grp);
+                bool gate_done = false;   // STRATA_FUSE_GATEMERGE: the merge below wrote attn32_ too
+                bool gate_q8 = false;     // STRATA_FUSE_GATEMERGE_Q8: and xq_ (attn32_'s q8_1)
                 bool streamed = false;   // a streamed KV cache keeps the per-row resolve-then-attend order
                 if (batch_rec_ && g_qsa_slots)
                     for (int t = tb; t < te; ++t) streamed = streamed || slot_ss(t).qsa_states[qi].kv_mode == 1;
@@ -1869,18 +2175,105 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                                       attn_ + t * NH * HD, 1, cs);
                     }
                 } else if (batch_rec_) {   // each row selects and attends over its own slot's K/V
+                    // STRATA_FUSE_QSASEL: the scores and the top-k of every row first, one launch each (they read the
+                    // indexer and write the row's own scores / sel; the resolves and attention below do not touch those)
+                    bool sel_done = false;
+                    // STRATA_FUSE_ATTNMERGE: the merges after all rows' chunk passes (the per-query stride is the
+                    // window's scratch stride, so one merge launch reads every row's partials where they are)
+                    const bool merge_late = fuse_attnmerge_on() &&
+                                            attn_scratch_floats_ == (int64_t) qsa_decode_attn_scratch_floats(cap_, s);
+                    if (fuse_qsasel_on() && te - tb <= kQsaAttnMaxSlots) {
+                        const float* pooled[kQsaAttnMaxSlots];
+                        const float* dead[kQsaAttnMaxSlots];
+                        for (int t = tb; t < te; ++t) {
+                            const QsaState& sx = slot_ss(t).qsa_states[qi];
+                            pooled[t - tb] = sx.idx_pooled;
+                            dead[t - tb] = sx.idx_dead;
+                        }
+                        sel_done = qsa_block_scores_slots(pooled, dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, te - tb,
+                                                          max_blocks_, s, scores_ + (size_t) tb * max_blocks_, cs);
+                        if (sel_done)
+                            qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, te - tb, max_blocks_,
+                                           cap_, s, sel_ + (size_t) tb * cap_, cs);
+                    }
+                    // STRATA_FUSE_QSAWAVE: the rows by waves (the w-th row of every slot group), every row a streamed
+                    // layer of one format and a wave's maps all different (else the per-row loop below)
+                    int g_first[KvResolveRows::kMax], g_size[KvResolveRows::kMax], n_groups = 0, n_waves = 0;
+                    bool waves = merge_late && fuse_qsawave_on() && te - tb <= KvResolveRows::kMax;
+                    for (int t = tb; waves && t < te; ++t) {
+                        const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        if (sx.kv_mode != 1 || qsa_kv_format(sx) != qsa_kv_format(slot_ss(tb).qsa_states[qi])) waves = false;
+                        if (t == tb || brow_[t] != brow_[t - 1]) { g_first[n_groups] = t; g_size[n_groups++] = 0; }
+                        const int w = g_size[n_groups - 1]++;
+                        n_waves = w + 1 > n_waves ? w + 1 : n_waves;
+                        for (int g = 0; g + 1 < n_groups; ++g)   // the same wave's row of an earlier group: another map
+                            if (w < g_size[g] && slot_ss(g_first[g] + w).qsa_states[qi].map.ctl == sx.map.ctl) waves = false;
+                    }
+                    if (waves) {
+                        for (int t = tb; !sel_done && t < te; ++t) {   // the selections first (as STRATA_FUSE_QSASEL)
+                            const QsaState& sx = slot_ss(t).qsa_states[qi];
+                            qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
+                                             max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
+                            qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
+                                           sel_ + (size_t) t * cap_, cs);
+                        }
+                        for (int w = 0; w < n_waves; ++w) {
+                            KvResolveRows kr;
+                            QsaAttnWave aw;
+                            for (int g = 0; g < n_groups; ++g) {
+                                if (w >= g_size[g]) continue;
+                                const int t = g_first[g] + w;
+                                const QsaState& sx = slot_ss(t).qsa_states[qi];
+                                kr.m[kr.n] = sx.map;
+                                kr.slots[kr.n] = qsa_attn_pools(sx);
+                                kr.host[kr.n] = sx.host;
+                                kr.row[kr.n++] = t - tb;
+                                aw.p[aw.n] = qsa_attn_pools(sx);
+                                aw.row[aw.n++] = t - tb;
+                            }
+                            kv_stream_resolve_rows(kr, qsa_kv_format(slot_ss(tb).qsa_states[qi]), sel_ + (size_t) tb * cap_,
+                                                   step_ + tb * kStepCount, cap_, s, cs, kv_stream_fuse_copy_on());
+                            if (!qsa_decode_attn_wave_chunks(qcur_ + tb * NH * HD, aw, sel_ + (size_t) tb * cap_,
+                                                             step_ + tb * kStepCount, cap_, s,
+                                                             attn_scratch_ + (size_t) tb * attn_scratch_floats_, cs))
+                                for (int z = 0; z < aw.n; ++z) {
+                                    const int t = tb + aw.row[z];
+                                    qsa_decode_attn_batch_chunks(qcur_ + t * NH * HD, aw.p[z], sel_ + (size_t) t * cap_,
+                                                                 step_ + t * kStepCount, cap_, s,
+                                                                 attn_scratch_ + (size_t) t * attn_scratch_floats_, 1, cs);
+                                }
+                        }
+                    } else
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        if (!sel_done) {
                         qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
                                          max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
                                        sel_ + (size_t) t * cap_, cs);
+                        }
                         qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
                         const QsaAttnPools px = qsa_attn_pools(sx);
+                        if (merge_late)
+                            qsa_decode_attn_batch_chunks(qcur_ + t * NH * HD, px, sel_ + (size_t) t * cap_,
+                                                         step_ + t * kStepCount, cap_, s,
+                                                         attn_scratch_ + (size_t) t * attn_scratch_floats_, 1, cs);
+                        else
                         qsa_decode_attn_batch(qcur_ + t * NH * HD, px, sel_ + (size_t) t * cap_, step_ + t * kStepCount,
                                               cap_, s, attn_scratch_ + (size_t) t * attn_scratch_floats_,
                                               attn_ + t * NH * HD, 1, cs);
                     }
+                    if (merge_late && fuse_gatemerge_on() && qb && !st.kv_rot && !st.kv_hybrid)   // and the gate below
+                        gate_done = qsa_decode_attn_batch_merge_gate(step_ + tb * kStepCount, cap_, s,
+                                                                     attn_scratch_ + (size_t) tb * attn_scratch_floats_,
+                                                                     attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD,
+                                                                     attn32_ + tb * NH * HD, te - tb, cs,
+                                                                     fuse_gatemerge_q8_on() ? (void*) xq_ : nullptr);
+                    gate_q8 = gate_done && fuse_gatemerge_q8_on();
+                    if (merge_late && !gate_done)   // every row's partials, written above, into its attention row
+                        qsa_decode_attn_batch_merge(step_ + tb * kStepCount, cap_, s,
+                                                    attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD,
+                                                    te - tb, cs);
                 } else {
                 if (!sidem) idx_select(cs);
                 else if (cudaStreamWaitEvent(cs, mjoin_, 0) != cudaSuccess) {
@@ -1908,7 +2301,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 stamp(l, 13, grp);
                 if (st.kv_rot || st.kv_hybrid) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
-                if (qb) native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
+                if (gate_done) {
+                } else if (qb) native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
                                               (int) (n * NH), (int) HD, cs);
                 else
                 for (int t = tb; t < te; ++t) {
@@ -1919,7 +2313,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         qsa_gate_apply_f32(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, s, attn32_ + t * NH * HD, cs);
                 }
                 stamp(l, 14, grp);
-                quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
+                if (gate_q8) il_ready = false;
+                else quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
                 mm(wo, bo_ + tb * N, (int) (NH * HD), (int) N);
             }
         } catch (const std::exception& e) {
@@ -1947,17 +2342,87 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const WeightRef* w_router = v.get("ffn_gate_inp.weight");
         // S26 STRATA_LFUSE=1: the shared expert's gate row rides in the router GEMV launch, its sigmoid + row scale
         // move into the combine, gate + up share one launch (all bitwise; resident combine path, 2-8 rows only)
-        const WeightRef* w_sgi = lfuse_on(n) && g_lfuse_gate() ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
+        const WeightRef* w_sgi = (lfuse_on(n) && g_lfuse_gate()) || shgate_on(n, tb) ? v.get("ffn_gate_inp_shexp.weight") : nullptr;
         bool sg_ready = false;
+        // STRATA_VERIFY_QDEDUP: the experts' q8_1 image of xm is made first and the shared expert's gate/up read it
+        // (quantize_q8_1_rows and native_quantize_q8_1 write the same bytes).  STRATA_FUSE_SHBEL needs that image before
+        // the router, so the same flag is decided here and the one quantization is moved up when it fuses.
+        bool qdedup = g_qdedup() && !sh_fork && strata::kernels::cpu::expert_layout().native;
+        bool qdedup_ready = false;
+        static const float route_prior = [] { const char* v = std::getenv("STRATA_ROUTE_PRIOR"); return v ? (float) std::atof(v) : 0.0f; }();
+        // STRATA_FUSE_ROUTEBELL: the doorbell below rides in the top-10's launch where nothing runs between them
+        bool bell_done = false;
+        bool bell_fuse = fuse_routebell_on() && !ar_on() && !device_plan_ && !remote_opt_ && !always_publish_ &&
+                         !(route_prior > 0.0f && hits_.d_res != nullptr) && !(route_resident_cfg().margin > 0.0f && hits_.d_res != nullptr);
+#if defined(STRATA_USE_HIP)
+        bell_fuse = bell_fuse && !g_doorbell_store;
+#endif
+        // STRATA_FUSE_SHBEL: the shared expert's gate/up pair's weights and its q8_1 input, for the fused router launch
+        const WeightRef* w_sg_pair = v.get("ffn_gate_shexp.weight");
+        const WeightRef* w_su_pair = v.get("ffn_up_shexp.weight");
+        const auto pair_type_ok = [](const WeightRef* w) {
+            return w != nullptr && w->native_data != nullptr &&
+                   (w->native_type == 12 || w->native_type == 13 || w->native_type == 14 || w->native_type == 23);
+        };
+        const bool sh_pair_path = (lfuse_on(n) && g_lfuse_pair()) || fuse_shpair_on();
+        const bool shbel_candidate = fuse_shbel_on() && bell_fuse && sh_pair_path && pair_type_ok(w_sg_pair) &&
+                                     pair_type_ok(w_su_pair) && n >= 2 && n <= 8 && N % 256 == 0 && g.n_ff % 2 == 0 &&
+                                     (!sh_fork || sh_fork_late);
+        bool sh_pair_fused = false;
+        const void* sh_q8_ready = nullptr;   // the MoE input's q8_1 image, when this window made it early
+        const bool qgemv_candidate = fuse_qgemv_on() && !q8_ffn && (!sh_fork || sh_fork_late);
+        bool qgemv_done = false;
         if (dec_batch && n > 1 && w_router != nullptr && native_router_enabled() && NE == 512 && K == 10) {
             try {
-                if (w_sgi != nullptr)
-                    sg_ready = bf16_gemv_fp32_mmvf_multi_aux(mixed_ + tb * N, N, (const uint16_t*) w_router->data,
-                                                             logits_ + tb * NE, NE, N, NE, n,
-                                                             (const uint16_t*) w_sgi->data, sh_g_ + tb, 1, cs);
-                if (!sg_ready)
-                bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE, N,
-                                          NE, n, cs);
+                if (q8_ffn && shbel_candidate) sh_q8_ready = nat_xq_ + (size_t) tb * (N / 32) * 36;
+                if (qgemv_candidate) {   // quantize the MoE input with the router GEMV: both read x, no dependency
+                    void* q8 = qdedup ? (void*) (nat_xq_ + (size_t) tb * (N / 32) * 36) : (void*) (sh_fork ? sh_xq_ : xq_);
+                    const bool aux = w_sgi != nullptr;
+                    qgemv_done = bf16_gemv_fp32_mmvf_multi_quant(
+                        mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE, N, NE, n,
+                        aux ? (const uint16_t*) w_sgi->data : nullptr, aux ? sh_g_ + tb : nullptr, aux ? 1 : 0, mixed_ + tb * N,
+                        q8, (int64_t) n * N, cs);
+                    if (qgemv_done) {
+                        sg_ready = aux;
+                        sh_q8_ready = q8;
+                        qdedup_ready = qdedup;   // the q8_1 image is nat_xq_'s when qdedup chose it
+                    }
+                }
+                if (!qgemv_done) {
+                    if (w_sgi != nullptr)
+                        sg_ready = bf16_gemv_fp32_mmvf_multi_aux(mixed_ + tb * N, N, (const uint16_t*) w_router->data,
+                                                                 logits_ + tb * NE, NE, N, NE, n,
+                                                                 (const uint16_t*) w_sgi->data, sh_g_ + tb, 1, cs);
+                    if (!sg_ready)
+                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE, N,
+                                              NE, n, cs);
+                }
+                if (shbel_candidate) {   // the q8_1 image has to exist before the launch that also reads it
+                    if (sh_q8_ready == nullptr) {
+                        if (qdedup) {
+                            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+                            sh_q8_ready = nat_xq_ + (size_t) tb * (N / 32) * 36;
+                            qdedup_ready = true;
+                        } else {
+                            void* q8 = sh_fork ? (void*) sh_xq_ : (void*) xq_;
+                            native_quantize_q8_1(xm, q8, (int) N, n, cs);
+                            sh_q8_ready = q8;
+                        }
+                    }
+                    sh_pair_fused = native_mmvq_pair_router_bell(
+                        w_sg_pair->native_type, w_su_pair->native_type, w_sg_pair->native_data, w_su_pair->native_data,
+                        sh_q8_ready, sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, (int) N, (int) g.n_ff, n,
+                        logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, xm,
+                        hits_.d_res != nullptr ? (hits_.d_res + l * g.n_expert) : nullptr, (int) g.n_expert,
+                        (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
+                    if (sh_pair_fused) bell_done = true;
+                }
+                if (bell_fuse && !bell_done)
+                    bell_done = native_router_top10_multi_bell(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, xm,
+                                                               hits_.d_res != nullptr ? (hits_.d_res + l * g.n_expert) : nullptr,
+                                                               (int) g.n_expert, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
+                                                               m_ids_ + tb * K, m_seq_, cs);
+                if (!bell_done)
                 native_router_top10_multi(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, cs);
             } catch (const std::exception& e) { err = "verify router: " + std::string(e.what()); return false; }
 #if defined(STRATA_HIP_GFX906)
@@ -1977,7 +2442,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         // STRATA_ROUTE_PRIOR=lambda (opt-in, changes the output): the top-10 picked again with a logit bonus for the
         // resident experts; the weights stay the router's (route_prior.cu)
-        static const float route_prior = [] { const char* v = std::getenv("STRATA_ROUTE_PRIOR"); return v ? (float) std::atof(v) : 0.0f; }();
         if (route_prior > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr)
             route_prior_top10(logits_ + tb * NE, hits_.d_res + l * g.n_expert, route_prior, ids_ + tb * K, w_ + tb * K, n, cs);
         if (route_resident_cfg().margin > 0.0f && NE == 512 && K == 10 && hits_.d_res != nullptr) {
@@ -2011,7 +2475,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (remote_opt_ || always_publish_)
                 doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                  m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
-            else {
+            else if (!bell_done) {
                 const int32_t* layer_res = hits_.d_res != nullptr ? (hits_.d_res + l * g.n_expert) : nullptr;
                 doorbell_publish_res(xm, ids_ + tb * K, layer_res, (int) g.n_expert, (int64_t) n * N, (int64_t) n * K,
                                      m_x_ + tb * N, m_ids_ + tb * K, m_seq_, cs);
@@ -2022,7 +2486,6 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         }
         stamp(l, 17, grp);
-        bool qdedup = false;   // STRATA_VERIFY_QDEDUP took effect: the experts' q8_1 image of xm is already made
         {
             const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
                             *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
@@ -2035,11 +2498,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             nsw.up_type = wsu->native_type; nsw.up_data = wsu->native_data;
             nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
             nsw.q8_1 = sh_fork ? sh_xq_ : xq_;
-            // STRATA_VERIFY_QDEDUP=1 (not with the forked shared-expert stream, which quantizes into its own buffer): the
-            // experts' q8_1 image of xm is made first and the shared expert's gate/up read it (quantize_q8_1_rows and
-            // native_quantize_q8_1 write the same bytes)
-            qdedup = g_qdedup() && !sh_fork && strata::kernels::cpu::expert_layout().native;
-            if (qdedup && !q8_ffn) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+            // STRATA_VERIFY_QDEDUP (see above): the experts' q8_1 image of xm is made first; STRATA_FUSE_SHBEL already
+            // made it before the router, so the one quantization is not repeated.
+            if (qdedup && !q8_ffn && !qdedup_ready) quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
             if (!shared_expert_native_bf16_enabled()) {
                 if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream);   // contiguous rows
                 else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
@@ -2047,8 +2508,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             try {
                 shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data, sh_gate_ + (size_t) tb * g.n_ff,
                                     sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb, shared_ + tb * N, N, g.n_ff, sh_stream,
-                                    qdedup ? (const void*) (nat_xq_ + (size_t) tb * (N / 32) * 36) : nullptr,
-                                    (sg_ready ? 1 : 0) | (lfuse_on(n) && g_lfuse_pair() ? 2 : 0));
+                                    sh_q8_ready != nullptr
+                                        ? sh_q8_ready
+                                        : (qdedup ? (const void*) (nat_xq_ + (size_t) tb * (N / 32) * 36) : nullptr),
+                                    (sg_ready ? 1 : 0) | (sh_pair_path ? 2 : 0) | (sh_pair_fused ? 4 : 0));
                 sg_gated_[grp] = sg_ready;
             } catch (const std::exception& e) {
                 err = std::string("verify shared expert: ") + e.what();
@@ -2106,19 +2569,24 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
                 if (f.had_d) { L.had_block = f.had_block; L.d_signs = had_sh_; }   // APR: h is rotated in there
                 native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap,
-                                      nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, dst_buf, cs, gy);
+                                      nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, dst_buf, cs, gy,
+                                      sw_cnt_ != nullptr ? sw_cnt_ + (size_t) grp * 4096 : nullptr);
             } else {
                 moe_grouped_s2(gp, gs, gn, p_dst, p_tok, cap, cap, hit_xq_ + (size_t) tb * (N / 32) * 34,
                                hit_xs_ + (size_t) tb * (N / 32), hit_scratch_, dst_buf, cs);
             }
         };
         bool hits_in_combine = false;
+        bool fuse_comb = false;   // STRATA_FUSE_COMBINE took effect: the combine reads the CPU's mapped rows itself
         if (ar_on()) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, parts_out);
             stamp(l, 20, grp);
         } else {
-            if (device_plan_) {   // E-6: skipped when the device planned this group (all its experts resident)
+            if (device_plan_ && fuse_plan_on()) {   // STRATA_FUSE_PLAN: the two below in one launch
+                wait_copy_i32_from_mapped_unless(m_flagA_, ring, skip_ + grp, pl, m_plan_ + (size_t) grp * (size_t) plan_i32_,
+                                                 plan_i32_, cs);
+            } else if (device_plan_) {   // E-6: skipped when the device planned this group (all its experts resident)
                 wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
                 copy_i32_from_mapped_unless(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, skip_ + grp, ring, cs);
             } else {
@@ -2135,6 +2603,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, hit_out);
             stamp(l, 20, grp);
+            // STRATA_FUSE_FETCH: the wait, the copy and the pointers in one launch; the pointers into staged_ptr_
+            const bool fuse_fetch = sink_.pcie_mode == 2 && staged_ptr_ != nullptr && m_bal_ == nullptr && !prof_on_;
+            const unsigned long long* p_ptr2_use = p_ptr2;
+            if (fuse_fetch) {
+                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
+                unsigned long long* sp = staged_ptr_ + grp * per;
+                wait_fetch_rebase(m_flagB_, ring, device_plan_ ? skip_ + grp : nullptr, p_ptr2, p_counts + 2, stage,
+                                  (int64_t) lay.blob_bytes(l), (int) per, sp, cs);
+                p_ptr2_use = sp;
+            } else {
             if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
             else if (m_bal_ != nullptr)   // set_pcie_balance: the PCIe part starts
                 wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
@@ -2145,11 +2624,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
                 rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
             }
+            }
             stamp(l, 21, grp);
             // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
             // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
-            grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
+            grouped(p_ptr2_use, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
             stamp(l, 22, grp);
+            // STRATA_FUSE_COMBINE: the hits-added combine below waits for the CPU's rows and reads them where they are
+            fuse_comb = comb_fusable(n, tb);
+            if (fuse_comb) {
+                stamp(l, 23, grp);
+                hits_in_combine = true;
+            } else
             if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
@@ -2175,6 +2661,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
             }
             // 143-amdk: the add of the GPU's hit rows is done by the combine that follows (one launch fewer)
+            if (!fuse_comb)
             hits_in_combine = fuse_hits_on() && !prof_on_ && !remote_opt_ && !sg_gated_[grp] && dec_batch && n > 1 &&
                               native_moe_combine_enabled() && n <= 8 &&
                               native_moe_combine_hits_supported(parts_ + (size_t) tb * K * N, shared_ + tb * N, bo_ + tb * N, N, K, n);
@@ -2185,6 +2672,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (sh_stream_on() && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
+        if (sg_gated_[grp] && !ar_on() && !fuse_comb) {   // STRATA_FUSE_SHGATE defers the gate only to that combine
+            err = "verify: the shared gate was deferred to a combine that did not run";
+            return false;
+        }
+        if (fuse_comb) {   // STRATA_FUSE_COMBINE (+ STRATA_FUSE_SHGATE: the shared gate applied here)
+            try {
+                native_moe_combine_multi_hits_mapped(m_ymiss_ + (size_t) tb * K * N, hit_out, p_dst, p_counts + 1, w_ + tb * K,
+                                                     shared_ + tb * N, bo_ + tb * N, N, K, n, m_flag_, ring,
+                                                     device_plan_ ? skip_ + grp : nullptr, sg_gated_[grp] ? sh_g_ + tb : nullptr, cs);
+            } catch (const std::exception& e) { err = "verify combine: " + std::string(e.what()); return false; }
+        } else
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
             try {
                 native_moe_combine_multi_hits_gated(parts_out, w_ + tb * K, shared_ + tb * N, sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
@@ -3136,6 +3634,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             return false;
         }
         commit_pending_ = false;
+        strata::core::acommit_dbg().clear();
         if (prof_on_ && G == 1) collect_profile();
         return true;
     }
@@ -3163,6 +3662,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         return false;
     }
     commit_pending_ = false;
+    strata::core::acommit_dbg().clear();
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
         cudaStreamSynchronize(copy_);   // no host function of this window may raise flag B in the next one
@@ -3393,6 +3893,33 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
 }
 
 namespace { bool g_commit_async = false; }
+// STRATA_FUSE_ACOMMIT=1: commit_slot_prefixes launches the batch commit without waiting for it (one card); the commit
+// graphs then leave out the keep words' copies, stage_commit_words launches them ahead of the graph
+static bool fuse_acommit_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_FUSE_ACOMMIT"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_FUSE_GDNDEFER=1 (with ACOMMIT, one stage): the batch commit of a slot that goes on leaves its GDN recurrence
+// rows pending - it copies them (gdn_pend_copy_layers) and the next window runs them into the state before its own
+// (GdnGroups pend_*: the commit's arithmetic), one state read and write fewer per layer.  A slot whose rows are pending
+// and that the next window does not take, a window graph without the groups recurrence, and every wait_commit run
+// them first (flush_pend: the commit's own kernel)
+static bool fuse_gdndefer_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_FUSE_GDNDEFER");
+        return fuse_acommit_on() && v != nullptr && v[0] == '1';
+    }();
+    return on;
+}
+static bool dbg_b2check_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_DBG_B2CHECK"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+bool Verifier::defer_on() const { return fuse_gdndefer_on() && pend_ != nullptr && next_ == nullptr; }
+static uint64_t gdn_layer_floats(const ModelGeometry& g) {
+    return (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+           (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+}
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
 
 bool Verifier::commit(int n_keep, std::string& err) {
@@ -3454,18 +3981,22 @@ bool Verifier::commit(int n_keep, std::string& err) {
     return next_ == nullptr || next_->commit(n_keep, err);
 }
 
-bool Verifier::wait_commit(std::string& err) {
+bool Verifier::wait_commit(std::string& err, bool flush) {
 #if defined(STRATA_GPU_METAL)
     (void) err;
+    (void) flush;
     return true;
 #endif
+    if (flush && !flush_pend(err)) return false;   // STRATA_FUSE_GDNDEFER: the pending rows into their states first
     if (commit_pending_) {
         const OnDevice on_device(device_);
         commit_pending_ = false;
         const cudaError_t se = cudaEventSynchronize(commit_done_);
         if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
+        if (std::find(pend_live_.begin(), pend_live_.end(), 1) == pend_live_.end()) strata::core::acommit_dbg().clear();
+        echo_check();
     }
-    return next_ == nullptr || next_->wait_commit(err);
+    return next_ == nullptr || next_->wait_commit(err, flush);
 }
 
 
@@ -3489,17 +4020,44 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     const int64_t S = (int64_t) slots.size(), CB = 2 + max_t_;
     const int64_t TS = (s.idx_block - 1) * g_->idx_key_dim, nQ = g_->n_qsa_layers();
     void* d = nullptr;
-    if (!mapped((size_t) (S * CB * 4 + 16), (void**) &h_commitb_, (void**) &m_commitb_)) {
+    if (!mapped((size_t) ((S * CB + 2 * S) * 4 + 16), (void**) &h_commitb_, (void**) &m_commitb_)) {
         err = "verify: the batch commit staging failed";
         return false;
     }
-    const uint64_t a = ((uint64_t) S * CB * 4 + 255) & ~255ull;
+    std::memset(h_commitb_, 0, (size_t) (S * CB + 2 * S) * 4);
+    const uint64_t a = ((uint64_t) (S * CB + 2 * S) * 4 + 255) & ~255ull;
     if (cudaMalloc(&d, a + (uint64_t) S * std::max<int64_t>(nQ, 1) * TS * 4) != cudaSuccess) {
         err = "verify: the batch buffers do not fit";
         return false;
     }
+    void* echo_d = nullptr;
+    if ((cudaEventCreateWithFlags(&ev_cbcopy_, cudaEventDisableTiming) != cudaSuccess) ||
+        (strata::core::AcommitDbg::on() && !mapped((size_t) ((S * CB + 2 * S) * 4 + 16), (void**) &h_echo_, &echo_d))) {
+        err = "verify: the batch commit events failed";
+        return false;
+    }
     arena_b_ = d;
     commitb_ = (int32_t*) d;
+    pendw_ = commitb_ + S * CB;
+    h_pendw_ = h_commitb_ + S * CB;
+    m_pendw_ = m_commitb_ + S * CB;
+    cudaMemset(pendw_, 0, (size_t) S * 2 * 4);
+    pend_live_.assign((size_t) S, 0);
+    pend_want_.assign((size_t) S, 0);
+    if (fuse_gdndefer_on() && pend_ == nullptr && max_t_ <= strata::kernels::kVerifyMaxT) {
+        pend_layers_ = pend_gdn0_ = 0;
+        for (int64_t l = 0; l < le_; ++l)
+            if (!is_qsa_layer(*g_, l)) (l < lb_ ? pend_gdn0_ : pend_layers_) += 1;
+        pend_pm_ = max_t_;
+        pend_pl_ = pend_pm_ * (g_->ssm_conv_channels + 2 * g_->ssm_v_heads);
+        const size_t bytes = (size_t) S * pend_layers_ * pend_pl_ * 4;
+        if (pend_layers_ > 0 && cudaMalloc((void**) &pend_, bytes) != cudaSuccess) {
+            err = "verify: the GDN pending rows do not fit (STRATA_FUSE_GDNDEFER)";
+            return false;
+        }
+        std::fprintf(stderr, "strata verify: STRATA_FUSE_GDNDEFER: %.1f MB of pending GDN rows (%lld slots, %lld layers, %lld rows)\n",
+                     bytes / 1e6, (long long) S, (long long) pend_layers_, (long long) pend_pm_);
+    }
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
@@ -3519,7 +4077,9 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     row_base_ = hbase;
     for (int t = 0; t < S; ++t) brow_[t] = rows[t];
     std::string rerr;
+    cap_defer_ = cap_defer_bad_ = false;
     const bool ok = record_window(S, cs_, rerr);
+    b2_win_[bkey(rows, S, hbase)] = cap_defer_ && !cap_defer_bad_;
     batch_rec_ = false;
     row_base_ = 0;
     cudaGraph_t graph = nullptr;
@@ -3559,24 +4119,110 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
     }
     bool ok = true;
     try {
-        for (int t = 0; t < S; ++t)
-            if (t == 0 || rows[t] != rows[t - 1])
-                copy_i32_from_mapped(commitb_ + (size_t) rows[t] * CB, m_commitb_ + (size_t) rows[t] * CB, CB, cs_);
+        if (!fuse_acommit_on())   // (STRATA_FUSE_ACOMMIT: stage_commit_words, ahead of the graph)
+            for (int t = 0; t < S; ++t)
+                if (t == 0 || rows[t] != rows[t - 1])
+                    copy_i32_from_mapped(commitb_ + (size_t) rows[t] * CB, m_commitb_ + (size_t) rows[t] * CB, CB, cs_);
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < lb_; ++l) (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
+        // STRATA_BATCH_GDN_GROUPS=1: one-row groups (no --batch-mtp proposals) commit their recurrence
+        // in one launch for all slots; the conv commits stay per slot
+        static const bool gdn_groups_on = [] {
+            const char* v = std::getenv("STRATA_BATCH_GDN_GROUPS");
+            return v != nullptr && std::atoi(v) != 0;
+        }();
+        bool one_row = S <= 8;
+        for (int t = 1; one_row && t < S; ++t) one_row = rows[t] != rows[t - 1];
+        // STRATA_FUSE_BCOMMIT=1: per slot, every GDN layer's conv + state commit in two launches and every QSA layer's
+        // tail restore + indexer append in one (the single-slot commit graph's kernels, each slot's rows and keep count);
+        // a slot or layer kind that does not fit keeps the per-layer loop below
+        bool gdn_fused = false, qsa_fused = false;
+        if (fuse_bcommit_on()) {
+            int64_t n_gdn = 0;
+            bool weights_ok = true;   // the loop's weight checks, kept
+            for (int64_t l = lb_; l < le_ && weights_ok; ++l)
+                weights_ok = need(LayerView(*wt_, l), is_qsa_layer(g, l) ? "indexer.k_norm.weight" : "ssm_norm.weight",
+                                  err) != nullptr;
+            for (int64_t l = lb_; l < le_; ++l) n_gdn += !is_qsa_layer(g, l);
+            if (!weights_ok) ok = false;
+            if (ok && n_gdn > 0 && !(gdn_groups_on && one_row)) {
+                bool all = true;
+                for (int t = 0; t < S && all;) {
+                    const int first = t;
+                    while (t < S && rows[t] == rows[first]) ++t;
+                    SessionState& sx = *slots_[(size_t) rows[first]];
+                    const bool defer = defer_on() && n_gdn == pend_layers_ && gdn_index == pend_gdn0_;
+                    all = gdn_commit_layers(sx.gdn_state + (size_t) (gdn_index - sx.gdn_ord0) * gdn_floats,
+                                            (int64_t) gdn_floats,
+                                            (int64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size,
+                                            qkv_L_ + (size_t) gdn_index * MT * C + (size_t) first * C, MT * C,
+                                            h_L_ + (size_t) gdn_index * MT * C + (size_t) first * C, MT * C,
+                                            gate_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV,
+                                            beta_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV, MT * HV, (int) C,
+                                            (int) g.ssm_k_heads, (int) HV, t - first, (int) n_gdn,
+                                            commitb_ + (size_t) rows[first] * CB, cs_,
+                                            defer ? pendw_ + 2 * rows[first] : nullptr);
+                    if (!all && first > 0) throw std::runtime_error("gdn_commit_layers declined after a launch");
+                    if (all && defer)   // STRATA_FUSE_GDNDEFER: the rows the window's recurrence runs (n_pend of them)
+                        gdn_pend_copy_layers(pend_ + (size_t) rows[first] * pend_layers_ * pend_pl_, pend_pl_, (int) pend_pm_,
+                                             h_L_ + (size_t) gdn_index * MT * C + (size_t) first * C, MT * C,
+                                             gate_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV,
+                                             beta_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV, MT * HV, (int) C,
+                                             (int) HV, (int) n_gdn, pendw_ + 2 * rows[first] + 1, cs_);
+                    b2_commit_[bkey(rows, S, hbase)] = all && defer;
+                }
+                gdn_fused = all;
+            }
+            if (ok) {
+                // every slot's QSA layers in one launch each, when its layers all fit QsaIndexerLayers and share max_cells
+                std::vector<std::pair<QsaIndexerLayers, int64_t>> per;   // a slot group's layers and max_cells
+                bool fits = true;
+                for (int t = 0; t < S && fits;) {
+                    const int first = t;
+                    while (t < S && rows[t] == rows[first]) ++t;
+                    QsaIndexerLayers il;
+                    int nq = 0;
+                    int64_t mc = -1;
+                    for (int64_t l = lb_, qi = qsa_index; l < le_ && fits; ++l) {
+                        if (!is_qsa_layer(g, l)) continue;
+                        const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qi];
+                        if (nq >= QsaIndexerLayers::kMax || (mc >= 0 && st.max_cells != mc)) { fits = false; break; }
+                        mc = st.max_cells;
+                        il.gamma[nq] = (const float*) need(LayerView(*wt_, l), "indexer.k_norm.weight", err)->data;
+                        il.tail_src[nq] = tail_snap_b_ + ((size_t) rows[first] * nQ + qi) * TS;
+                        il.tail[nq] = st.idx_tail; il.dead[nq] = st.idx_dead; il.pooled[nq] = st.idx_pooled;
+                        il.block_pos[nq] = st.idx_block_pos;
+                        ++nq;
+                        ++qi;
+                    }
+                    per.emplace_back(il, nq > 0 ? mc : 0);
+                }
+                if (fits) {
+                    int k = 0;
+                    for (int t = 0; t < S; ++k) {
+                        const int first = t;
+                        while (t < S && rows[t] == rows[first]) ++t;
+                        int nq = 0;
+                        for (int64_t l = lb_; l < le_; ++l) nq += is_qsa_layer(g, l);
+                        if (nq > 0)
+                            native_qsa_indexer_append_steps_layers(idx_raw_L_ + (size_t) (qsa_index * MT + first) * ID, MT * ID,
+                                                                   commitb_ + (size_t) rows[first] * CB + 2, 1, t - first, 0,
+                                                                   EPS, per[(size_t) k].first, nq, s, per[(size_t) k].second,
+                                                                   rope_scaling(), cs_);
+                    }
+                    qsa_fused = true;
+                }
+            }
+        }
         for (int64_t l = lb_; l < le_ && ok; ++l) {
             const LayerView v(*wt_, l);
-            if (!is_qsa_layer(g, l)) {
+            if (!is_qsa_layer(g, l) && gdn_fused) {
+                ++gdn_index;
+            } else if (is_qsa_layer(g, l) && qsa_fused) {
+                ++qsa_index;
+            } else if (!is_qsa_layer(g, l)) {
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
-                // STRATA_BATCH_GDN_GROUPS=1: one-row groups (no --batch-mtp proposals) commit their recurrence
-                // in one launch for all slots; the conv commits stay per slot
-                static const bool gdn_groups_on = [] {
-                    const char* v = std::getenv("STRATA_BATCH_GDN_GROUPS");
-                    return v != nullptr && std::atoi(v) != 0;
-                }();
-                bool one_row = S <= 8;
-                for (int t = 1; one_row && t < S; ++t) one_row = rows[t] != rows[t - 1];
                 strata::kernels::GdnGroups gg;
                 for (int t = 0; t < S;) {
                     const int first = t;
@@ -3708,9 +4354,25 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
     return true;
 }
 
-bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
-                           std::string& err) {
+// STRATA_DBG_PLECHECK=1: every row a batch window's gather wrote, read again on its own (read_row: no prefetch) and
+// compared bit for bit
+static void ple_check_rows(const strata::kernels::PleTable& tab, const uint32_t* rows, size_t n_tokens, const float* got) {
     using namespace strata::kernels;
+    strata::core::TailProf& tp = strata::core::tail_prof();
+    float ref[PLE_HEAD_DIM];
+    for (size_t i = 0; i < n_tokens * PLE_N_HEADS; ++i) {
+        tab.read_row(rows[i], ref);
+        ++tp.ple_checked;
+        if (std::memcmp(ref, got + i * PLE_HEAD_DIM, sizeof ref) != 0) ++tp.ple_bad;
+    }
+}
+
+bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos,
+                           std::string& err, bool defer_ple) {
+    using namespace strata::kernels;
+    strata::core::TailProf& tp = strata::core::tail_prof();
+    const bool tpo = strata::core::TailProf::on() && next_ == nullptr;
+    const auto tq0 = tpo ? tp.now() : std::chrono::steady_clock::time_point{};
     // the row layout: a slot may own a contiguous group of rows (--batch-mtp), also across the stages of a layer split,
     // whose hand-off buffers hold kVerifyMaxT rows, or set_handoff_rows' (a stage that hands rows on or takes them)
     if (const char* why = batch_rows_error(rows, S, pos, (int) slots_.size(), max_t_, hbase,
@@ -3726,9 +4388,12 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
             return false;
         }
     refresh_ar();
+    const auto tq1 = tpo ? tp.now() : tq0;
     // --batch-mtp only (limit 0 = 0.1.39: no eviction): slot rotation creates new layouts; bound the captured graph
     // pairs, evicting the least recently used layout.  Without a limit the same eviction frees VRAM for a capture.
     const auto key = bkey(rows, S, hbase);
+    // STRATA_FUSE_ACOMMIT: a capture or an eviction (which destroys graph execs) after the last batch commit has run
+    if (exec_bm_.find(key) == exec_bm_.end() && !wait_commit(err)) return false;
     bool evicted = false;
     if (batch_graph_limit_ > 0 && exec_bm_.find(key) == exec_bm_.end() && exec_bm_.size() >= batch_graph_limit_ &&
         !evict_batch_graph(key, evicted, err))
@@ -3736,6 +4401,7 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     bm_used_[key] = ++bm_tick_;
     if (!capture_batch(rows, S, hbase, err) || !capture_commit_batch(rows, S, hbase, err)) return false;
     const Clock::time_point t0 = Clock::now();
+    if (tpo) { tp.add(tp.kSbRefresh, tq0, tq1); tp.add(tp.kSbCapture, tq1, t0); }
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {
         h_tok_[t] = tokens[t];
@@ -3746,6 +4412,8 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
         for (int64_t h = 0; h < g.n_head_kv; ++h) pk[t * g.n_head_kv + h] = (int32_t) pos[t];
         for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = (int32_t) pos[t];
     }
+    const auto tq2 = tpo ? tp.now() : tq0;
+    if (tpo) tp.add(tp.kSbRecords, t0, tq2);
     if (ss_->ple.ready() && ple_stage()) {
         uint32_t ple_rows[kVerifyMaxT * PLE_N_HEADS];   // (not `rows`: that is the slots of the window's rows)
         for (int t = 0; t < S; ++t) {
@@ -3757,17 +4425,31 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
             }
             ngram_rows(&tokens[t], prev, 1, ss_->ple.consts, ple_rows + t * PLE_N_HEADS);
         }
-        if (!ss_->ple.table->gather_batch(ple_rows, (size_t) S, h_ple_, err)) return false;
+        if (defer_ple) {
+            ple_late_rows_.assign(ple_rows, ple_rows + (size_t) S * PLE_N_HEADS);
+            ple_late_n_ = S;
+        } else {
+            if (!ss_->ple.table->gather_batch(ple_rows, (size_t) S, h_ple_, err)) return false;
+            if (strata::core::TailProf::ple_check()) ple_check_rows(*ss_->ple.table, ple_rows, (size_t) S, h_ple_);
+        }
     }
+    if (tpo) tp.add(tp.kSbPle, tq2, tp.now());
     // Each slot owns a contiguous group. The default commit keeps all its rows; speculative
     // decoding may change the prefix length after comparing the draft with these picks.
     const int64_t CB = 2 + max_t_;
+    if (fuse_acommit_on()) {   // the last batch commit may still be queued: its words have left the staging first
+        cudaError_t q;
+        while ((q = cudaEventQuery(ev_cbcopy_)) == cudaErrorNotReady) _mm_pause();
+        if (q != cudaSuccess) { err = std::string("verify: batch commit words: ") + cudaGetErrorString(q); return false; }
+    }
     for (int t = 0; t < S;) {
         const int first = t;
         while (t < S && rows[t] == rows[first]) ++t;
         int32_t* c = h_commitb_ + (size_t) rows[first] * CB;
         c[0] = t - first;
         c[1] = t - first - 1;
+        h_pendw_[2 * rows[first]] = t - first;   // (STRATA_FUSE_GDNDEFER: all rows, none pending)
+        h_pendw_[2 * rows[first] + 1] = 0;
         for (int64_t j = 0; j < max_t_; ++j)
             c[2 + j] = j < t - first ? (int32_t) pos[first + j] : -1;
     }
@@ -3785,6 +4467,37 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     return true;
 }
 
+bool Verifier::ple_prefetch_slot(int slot, int32_t tok0, int32_t tok1) {
+    using namespace strata::kernels;
+    if (!(ss_->ple.ready() && ple_stage()) || slot < 0 || slot >= (int) slots_.size()) return false;
+    const SessionState& sx = *slots_[(size_t) slot];
+    uint32_t r16[PLE_N_HEADS];
+    if (tok1 < 0) {
+        const int32_t prev[2] = {sx.ple_prev[0], sx.ple_prev[1]};
+        ngram_rows(&tok0, prev, 1, ss_->ple.consts, r16);
+    } else {
+        const int32_t prev[2] = {sx.ple_prev[1], tok0};
+        ngram_rows(&tok1, prev, 1, ss_->ple.consts, r16);
+    }
+    ss_->ple.table->prefetch_rows(r16);
+    return true;
+}
+
+bool Verifier::gather_ple_late(std::string& err) {
+    if (ple_late_n_ == 0) return true;
+    const strata::core::TailProf& tp = strata::core::tail_prof();
+    const bool tpo = strata::core::TailProf::on() && next_ == nullptr;
+    const auto t0 = tpo ? tp.now() : std::chrono::steady_clock::time_point{};
+    const int n = ple_late_n_;
+    ple_late_n_ = 0;
+    if (!ss_->ple.table->gather_batch(ple_late_rows_.data(), (size_t) n, h_ple_, err)) return false;
+    if (strata::core::TailProf::ple_check()) ple_check_rows(*ss_->ple.table, ple_late_rows_.data(), (size_t) n, h_ple_);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    _mm_sfence();
+    if (tpo) strata::core::tail_prof().add(tp.kSbPle, t0, tp.now());
+    return true;
+}
+
 bool Verifier::run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
                          std::string& err) {
     int rows[8] = {};
@@ -3797,9 +4510,25 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     using namespace strata::kernels;
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
+    strata::core::TailProf& tp = strata::core::tail_prof();
+    const bool tpo = strata::core::TailProf::on();
+    const auto tp0 = tpo ? tp.now() : std::chrono::steady_clock::time_point{};
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
-    if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
+    if (tpo) tp.add(tp.kRunPreLaunch, tp0, tp.now());
+    ple_late_n_ = 0;
+    if (!stage_batch(rows, S, 0, tokens, pos, err, fuse_plelate_on())) return false;
+    if (defer_on()) {   // STRATA_FUSE_GDNDEFER: this window runs its slots' pending rows - unless it cannot
+        bool need = batch_self_commits(rows, S);   // (no commit after it would rewrite the words)
+        const auto it = b2_win_.find(bkey(rows, S, 0));
+        need = need || it == b2_win_.end() || !it->second;
+        for (size_t x = 0; x < pend_live_.size() && !need; ++x)
+            if (pend_live_[x]) need = std::find(rows, rows + S, (int) x) == rows + S;
+        if (need && !flush_pend(err)) return false;
+        for (int t = 0; t < S; ++t) pend_live_[(size_t) rows[t]] = 0;   // (the window runs them)
+    }
+    const auto tp1 = tpo ? tp.now() : tp0;
     const cudaError_t le = cudaGraphLaunch(exec_bm_[bkey(rows, S, 0)], cs_);
+    if (tpo) { tp.add(tp.kRunPrep, tp0, tp1); tp.add(tp.kRunLaunch, tp1, tp.now()); }
     if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
     volatile uint32_t* const seq = h_seq_;
@@ -3815,6 +4544,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     // graph waits on host doorbells the skipped service never raises (GPU at 100%, host in the sync below).
     if (ar_on()) {
         if (ss_->ple.ready() && ple_stage()) {
+            if (!gather_ple_late(err)) return false;
             std::atomic_thread_fence(std::memory_order_seq_cst);
             _mm_sfence();
             *flag = 1;
@@ -3879,6 +4609,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
             *(volatile uint32_t*) h_flagA_ = want;
             raise_flag(h_flagB_, want);
         }
+        if (k == 0 && !gather_ple_late(err)) return false;   // (layer 0's plan is out: its experts run meanwhile)
         *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
@@ -3903,12 +4634,146 @@ bool Verifier::commit_slots(std::string& err) {
     return commit_slot_prefixes(keep.data(), err);
 }
 
+// STRATA_FUSE_GDNDEFER: every slot's pending rows into its state, by gdn_commit_layers' own kernel, on cs_ behind the
+// commit that left them (wait_commit then waits for it)
+bool Verifier::flush_pend(std::string& err) {
+    if (std::find(pend_live_.begin(), pend_live_.end(), 1) == pend_live_.end()) return true;
+    const OnDevice on_device(device_);
+    cudaError_t q;   // the words in the staging go to the device first (the commit may still be queued)
+    while ((q = cudaEventQuery(ev_cbcopy_)) == cudaErrorNotReady) _mm_pause();
+    if (q != cudaSuccess) { err = std::string("verify: GDN pending rows: ") + cudaGetErrorString(q); return false; }
+    const ModelGeometry& g = *g_;
+    const uint64_t gdn_floats = gdn_layer_floats(g);
+    for (size_t x = 0; x < pend_live_.size(); ++x) {
+        if (!pend_live_[x]) continue;
+        SessionState& sx = *slots_[x];
+        strata::kernels::gdn_pend_apply_layers(sx.gdn_state + (size_t) (pend_gdn0_ - sx.gdn_ord0) * gdn_floats,
+                                               (int64_t) gdn_floats, pend_ + x * pend_layers_ * pend_pl_, pend_pl_,
+                                               (int) pend_pm_, (int) g.ssm_conv_channels, (int) g.ssm_k_heads,
+                                               (int) g.ssm_v_heads, (int) pend_layers_, pendw_ + 2 * x + 1, cs_);
+        cudaMemsetAsync(pendw_ + 2 * x + 1, 0, 4, cs_);
+        h_pendw_[2 * x + 1] = 0;
+        pend_live_[x] = 0;
+        ++strata::core::tail_prof().b2_flushes;
+    }
+    const cudaError_t re = cudaEventRecord(commit_done_, cs_);
+    if (re != cudaSuccess) { err = std::string("verify: GDN pending rows: ") + cudaGetErrorString(re); return false; }
+    commit_pending_ = true;
+    return true;
+}
+
+// STRATA_DBG_B2CHECK: every 25th commit that leaves a slot's rows pending, a shadow of that slot's states with the rows
+// run the commit's way (gdn_pend_apply_layers on a copy, behind the commit); at the next commit - after the window that
+// ran them its way - the two compared bit for bit (the recurrence part of every layer)
+void Verifier::b2check_record() {
+    if (!dbg_b2check_on() || !defer_on()) return;
+    static long long n = 0;
+    int x = -1;
+    for (size_t i = 0; i < pend_live_.size() && x < 0; ++i) if (pend_live_[i]) x = (int) i;
+    if (x < 0 || ++n % 25 != 1) return;
+    const ModelGeometry& g = *g_;
+    const uint64_t gdn_floats = gdn_layer_floats(g);
+    const size_t bytes = (size_t) pend_layers_ * gdn_floats * 4;
+    if (b2_shadow_ == nullptr && cudaMalloc((void**) &b2_shadow_, bytes) != cudaSuccess) { b2_shadow_ = nullptr; return; }
+    SessionState& sx = *slots_[(size_t) x];
+    cudaMemcpyAsync(b2_shadow_, sx.gdn_state + (size_t) (pend_gdn0_ - sx.gdn_ord0) * gdn_floats, bytes,
+                    cudaMemcpyDeviceToDevice, cs_);
+    strata::kernels::gdn_pend_apply_layers(b2_shadow_, (int64_t) gdn_floats, pend_ + (size_t) x * pend_layers_ * pend_pl_,
+                                           pend_pl_, (int) pend_pm_, (int) g.ssm_conv_channels, (int) g.ssm_k_heads,
+                                           (int) g.ssm_v_heads, (int) pend_layers_, pendw_ + 2 * x + 1, cs_);
+    b2chk_slot_ = x;
+}
+
+void Verifier::b2check_compare() {
+    const int x = b2chk_slot_;
+    if (x < 0) return;
+    b2chk_slot_ = -1;
+    if (std::find(last_rows_, last_rows_ + last_t_, x) == last_rows_ + last_t_) return;   // (it left: flushed)
+    const ModelGeometry& g = *g_;
+    const uint64_t gdn_floats = gdn_layer_floats(g);
+    const size_t SF = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size, n = (size_t) pend_layers_ * gdn_floats;
+    std::vector<uint32_t> a(n), b(n);
+    SessionState& sx = *slots_[(size_t) x];
+    if (cudaStreamSynchronize(cs_) != cudaSuccess ||
+        cudaMemcpy(a.data(), sx.gdn_state + (size_t) (pend_gdn0_ - sx.gdn_ord0) * gdn_floats, n * 4,
+                   cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(b.data(), b2_shadow_, n * 4, cudaMemcpyDeviceToHost) != cudaSuccess)
+        return;
+    strata::core::TailProf& tp = strata::core::tail_prof();
+    int bad = 0;
+    for (int64_t l = 0; l < pend_layers_; ++l)
+        bad += std::memcmp(a.data() + l * gdn_floats, b.data() + l * gdn_floats, SF * 4) != 0;
+    ++tp.b2_checked;
+    if (bad > 0 && ++tp.b2_bad <= 8)
+        std::fprintf(stderr, "strata: DBG_B2CHECK: slot %d: %d of %lld layers' states differ from the commit's\n", x, bad,
+                     (long long) pend_layers_);
+}
+
+void Verifier::stage_commit_words(const int* rows, int S) {
+    if (!fuse_acommit_on()) return;
+    const int64_t CB = 2 + max_t_;
+    for (int t = 0; t < S; ++t)
+        if (t == 0 || rows[t] != rows[t - 1])
+            strata::kernels::copy_i32_from_mapped(commitb_ + (size_t) rows[t] * CB, m_commitb_ + (size_t) rows[t] * CB, CB, cs_);
+    // STRATA_FUSE_GDNDEFER: every slot's (n_state, n_pend) - the host's words always mirror the device's (flush_pend
+    // zeroes both), so one copy of all of them
+    if (defer_on()) strata::kernels::copy_i32_from_mapped(pendw_, m_pendw_, (int64_t) slots_.size() * 2, cs_);
+    (void) cudaEventRecord(ev_cbcopy_, cs_);
+}
+
+void Verifier::echo_record(const int* rows, int S) {
+    if (!strata::core::AcommitDbg::on() || h_echo_ == nullptr) return;
+    const int64_t CB = 2 + max_t_;
+    const size_t NS = slots_.size();
+    (void) cudaMemcpyAsync(h_echo_, commitb_, (NS * CB + 2 * NS) * 4, cudaMemcpyDeviceToHost, cs_);
+    echo_slots_.clear();
+    echo_want_.clear();
+    for (int t = 0; t < S; ++t)
+        if (t == 0 || rows[t] != rows[t - 1]) {
+            echo_slots_.push_back(rows[t]);
+            echo_want_.insert(echo_want_.end(), h_commitb_ + (size_t) rows[t] * CB, h_commitb_ + (size_t) (rows[t] + 1) * CB);
+            echo_want_.insert(echo_want_.end(), h_pendw_ + 2 * rows[t], h_pendw_ + 2 * rows[t] + 2);
+        }
+    static long long n = 0;
+    if (strata::core::AcommitDbg::level() == 2 && ++n % 100 == 0) echo_want_[0] += 1000;   // the check's own test
+    if (strata::core::AcommitDbg::level() == 3 && ++n % 100 == 0) echo_want_[CB + 1] += 1000;   // (its pending word)
+    echo_live_ = true;
+}
+
+// called where the commit and the echo behind it have run: the next commit (its window synchronized) and wait_commit
+void Verifier::echo_check() {
+    if (!echo_live_) return;
+    echo_live_ = false;
+    const int64_t CB = 2 + max_t_;
+    strata::core::AcommitDbg& d = strata::core::acommit_dbg();
+    const size_t NS = slots_.size(), W = (size_t) CB + 2;
+    for (size_t i = 0; i < echo_slots_.size(); ++i) {
+        ++d.echo_checked;
+        const int32_t* dev_w = h_echo_ + NS * CB + 2 * (size_t) echo_slots_[i];
+        if ((std::memcmp(h_echo_ + (size_t) echo_slots_[i] * CB, echo_want_.data() + i * W, (size_t) CB * 4) != 0 ||
+             std::memcmp(dev_w, echo_want_.data() + i * W + CB, 8) != 0) &&
+            ++d.echo_bad <= 8)
+            std::fprintf(stderr, "strata: DBG_ACOMMIT: slot %d's batch commit read keep %d (state %d, pending %d), the "
+                                 "host wrote %d (%d, %d)\n", echo_slots_[i], h_echo_[(size_t) echo_slots_[i] * CB], dev_w[0],
+                         dev_w[1], echo_want_[i * W], echo_want_[i * W + CB], echo_want_[i * W + CB + 1]);
+    }
+}
+
 bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
     const OnDevice on_device(device_);
     if (!last_batch_ || last_t_ < 1) { err = "verify: commit_slots without a batch window"; return false; }
     const int S = last_t_;
     const Clock::time_point t0 = Clock::now();
     const int64_t CB = 2 + max_t_;
+    cudaEvent_t after = commit_after_;
+    commit_after_ = nullptr;
+    echo_check();   // (the last commit and its echo ran before this window)
+    b2check_compare();
+    // STRATA_FUSE_GDNDEFER: this commit's graph leaves the rows of a slot that goes on pending (when it can)
+    const bool b2c = defer_on() && !batch_self_commits(last_rows_, S) && [&] {
+        const auto it = b2_commit_.find(bkey(last_rows_, S, row_base_));
+        return it != b2_commit_.end() && it->second;
+    }();
     // One prefix per slot: rejected draft rows must not enter recurrent state.
     for (int t = 0; t < S;) {
         const int first = t;
@@ -3923,13 +4788,46 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
         c[1] = n - 1;
         for (int j = 0; j < max_t_; ++j)
             c[2 + j] = j < n ? (int32_t) last_pos_b_[first + j] : -1;
+        const int b = last_rows_[first];
+        const bool p = b2c && pend_want_[(size_t) b];
+        h_pendw_[2 * b] = p ? 0 : n;
+        h_pendw_[2 * b + 1] = p ? n : 0;
+        pend_live_[(size_t) b] = p;
     }
+    std::fill(pend_want_.begin(), pend_want_.end(), 0);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (!batch_self_commits(last_rows_, S)) {   // (else the window has kept its rows)
+        strata::core::TailProf& tp = strata::core::tail_prof();
+        const bool tpo = strata::core::TailProf::on() && next_ == nullptr;   // (one stage: the main card's)
+        const auto tp0 = tpo ? tp.now() : std::chrono::steady_clock::time_point{};
+        stage_commit_words(last_rows_, S);   // (STRATA_FUSE_ACOMMIT: the copies need not wait for the drafts)
+        if (after != nullptr && cudaStreamWaitEvent(cs_, after, 0) != cudaSuccess) {
+            err = "verify: batch commit: waiting for the drafts";
+            return false;
+        }
         const cudaError_t le = cudaGraphLaunch(commit_bm_[bkey(last_rows_, S, row_base_)], cs_);
         if (le != cudaSuccess) { err = std::string("verify: batch commit launch: ") + cudaGetErrorString(le); return false; }
-        const cudaError_t se = cudaStreamSynchronize(cs_);
-        if (se != cudaSuccess) { err = std::string("verify: batch commit: ") + cudaGetErrorString(se); return false; }
+        echo_record(last_rows_, S);
+        b2check_record();
+        const auto tp1 = tpo ? tp.now() : tp0;
+        if (fuse_acommit_on() && g_commit_async && next_ == nullptr) {
+            // STRATA_FUSE_ACOMMIT=1: no wait, commit()'s set_commit_async contract - the next window follows it on cs_, the
+            // drafts ran before it (DRAFTEARLY) or wait for it (batch_step), and whoever touches a slot's session from
+            // another stream or the host calls wait_commit() first (the command loop, the slot copies, a capture)
+            const cudaError_t re = cudaEventRecord(commit_done_, cs_);
+            if (re != cudaSuccess) { err = std::string("verify: batch commit event: ") + cudaGetErrorString(re); return false; }
+            (void) cudaStreamQuery(cs_);
+            commit_pending_ = true;
+            if (strata::core::AcommitDbg::on())
+                for (int t = 0, k = 0; t < S; ++t)
+                    if (t == 0 || last_rows_[t] != last_rows_[t - 1])
+                        strata::core::acommit_dbg().set(k++, (const void*) &*slots_[(size_t) last_rows_[t]]);
+            if (tpo) tp.add(tp.kCommitLaunch, tp0, tp1);
+        } else {
+            const cudaError_t se = cudaStreamSynchronize(cs_);
+            if (se != cudaSuccess) { err = std::string("verify: batch commit: ") + cudaGetErrorString(se); return false; }
+            if (tpo) { tp.add(tp.kCommitLaunch, tp0, tp1); tp.add(tp.kCommitSync, tp1, tp.now()); }
+        }
     }
     if (ple_stage())
         for (int t = 0; t < S;) {
@@ -3968,8 +4866,10 @@ bool Verifier::batch_launch(int base, int S, const int32_t* tokens, const int64_
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, base, tokens, pos, err)) return false;
     cudaError_t le = cudaGraphLaunch(exec_bm_[bkey(rows, S, base)], cs_);
-    if (le == cudaSuccess && !batch_self_commits(rows, S))   // (else the window has kept its rows itself)
+    if (le == cudaSuccess && !batch_self_commits(rows, S)) {   // (else the window has kept its rows itself)
+        stage_commit_words(rows, S);
         le = cudaGraphLaunch(commit_bm_[bkey(rows, S, base)], cs_);   // right behind it: every row is kept
+    }
     if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
     if (ple_stage())   // the host's side of the commit (the hash's last two tokens)

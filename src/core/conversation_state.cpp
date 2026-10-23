@@ -1,6 +1,7 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
+#include "strata/core/tail_prof.hpp"
 
 #include <algorithm>
 #include <array>
@@ -164,6 +165,7 @@ namespace strata::core {
 
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
+    acommit_dbg().check(&ss, "conversation_checkpoint_save");
 #if defined(STRATA_GPU_METAL)
     (void) ss; (void) g;
     return strata::metal_engine::window_checkpoint_save(c, error);
@@ -186,6 +188,7 @@ bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState&
 
 bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionState& ss,
                                      const ModelGeometry& g, std::string& error) {
+    acommit_dbg().check(&ss, "conversation_checkpoint_restore");
 #if defined(STRATA_GPU_METAL)
     (void) g;
     if (!strata::metal_engine::window_checkpoint_restore(c, error)) return false;
@@ -217,6 +220,8 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
 
 bool conversation_checkpoint_copy(const SessionState& from, SessionState& to, const std::vector<int32_t>& ids,
                                   const ModelGeometry& g, std::string& error, bool queued) {
+    acommit_dbg().check(&from, "conversation_checkpoint_copy (from)");
+    acommit_dbg().check(&to, "conversation_checkpoint_copy (to)");
     // conversation_checkpoint_save(from) + conversation_checkpoint_restore(to) without the host image, for two
     // sessions carved alike on the same device (a stage's own session and its batch slots): the same bytes into
     // the same places, through copy() like the restore (the private non-blocking stream, complete on return unless
@@ -302,6 +307,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const SessionState& ss, const ModelGeometry& g,
                                 const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse, size_t* reused_bytes) {
+    acommit_dbg().check(&ss, "conversation_snapshot_save");
     size_t estimate = 0;
     if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error) || !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.

@@ -68,13 +68,12 @@ __global__ void apply(const float* x, float* out, int rows, int width,
 }
 
 template <bool TAB>
-__global__ void norm_rope_kernel(const float* x, int in_stride, const float* __restrict__ gamma, float* out,
-                                 int n_cols, int n_rot, float epsilon, float theta_scale,
-                                 float freq_scale, float corr_low, float corr_high,
-                                 float ext_factor, float mscale, const int* positions,
-                                 const int32_t* mtab, RopeTab rt) {
+__device__ __forceinline__ void norm_rope_body(const float* x, int in_stride, const float* __restrict__ gamma, float* out,
+                                               int n_cols, int n_rot, float epsilon, float theta_scale,
+                                               float freq_scale, float corr_low, float corr_high,
+                                               float ext_factor, float mscale, const int* positions,
+                                               const int32_t* mtab, const RopeTab& rt, int row) {
     const int tid = threadIdx.x;
-    const int row = blockIdx.x;
     const float* in_row = x + size_t(row) * in_stride;
     float* out_row = out + size_t(row) * n_cols;
     float partial = 0.0f;
@@ -120,8 +119,38 @@ __global__ void norm_rope_kernel(const float* x, int in_stride, const float* __r
         asm volatile("mov.f32 %0, %1;" : "=f"(bc) : "f"(bc));
 #endif
         out_row[pair] = fmaf(a, c, -bs);
+#if defined(__HIP_DEVICE_COMPILE__)
+        // fuse-gdn: ROCm clang contracts apply's `a * s + b * c` as fma(b, c, a * s) (gfx1201 ISA: v_mul a*s, then
+        // v_fmac with c*b) - the same contraction here, so the pair is the apply kernel's bits (rope_parity check 6)
+        (void) bc;
+        out_row[pair + half_rot] = fmaf(b, c, a * s);
+#else
         out_row[pair + half_rot] = fmaf(a, s, bc);
+#endif
     }
+}
+
+template <bool TAB>
+__global__ void norm_rope_kernel(const float* x, int in_stride, const float* __restrict__ gamma, float* out,
+                                 int n_cols, int n_rot, float epsilon, float theta_scale,
+                                 float freq_scale, float corr_low, float corr_high,
+                                 float ext_factor, float mscale, const int* positions,
+                                 const int32_t* mtab, RopeTab rt) {
+    norm_rope_body<TAB>(x, in_stride, gamma, out, n_cols, n_rot, epsilon, theta_scale, freq_scale, corr_low, corr_high,
+                        ext_factor, mscale, positions, mtab, rt, (int) blockIdx.x);
+}
+
+// fuse-gdn (STRATA_FUSE_NR3): up to NormRopeSegs::kMax native_qsa_rms_norm_rope calls in one launch - block b runs row
+// b - start[g] of the segment g whose blocks [start[g], start[g + 1]) hold it, with that call's arguments
+template <bool TAB>
+__global__ void norm_rope_segs_kernel(NormRopeSegs sg, int n_rot, float epsilon, float theta_scale, float freq_scale,
+                                      float corr_low, float corr_high, float ext_factor, float mscale,
+                                      const int32_t* mtab, RopeTab rt) {
+    int g = 0;
+    while (g + 1 < sg.n && (int) blockIdx.x >= sg.start[g + 1]) ++g;
+    norm_rope_body<TAB>(sg.x[g], sg.in_stride[g], sg.gamma[g], sg.out[g], sg.head_dim[g], n_rot, epsilon, theta_scale,
+                        freq_scale, corr_low, corr_high, ext_factor, mscale, sg.positions[g], mtab, rt,
+                        (int) blockIdx.x - sg.start[g]);
 }
 }
 // one table per device (a layer split runs the rope kernels on several): set and read for the current device
@@ -213,6 +242,38 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
     else
         apply<false><<<grid, threads, 0, static_cast<cudaStream_t>(stream)>>>(x, out, rows, head_dim, n_rot, theta_scale,
             k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_table(), rt);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+
+void native_qsa_rms_norm_rope_segs(const NormRopeSegs& segs, int n_rot, float epsilon, const RopeScaling& scaling,
+                                   void* stream) {
+    if (segs.n < 1 || segs.n > NormRopeSegs::kMax || !stream || n_rot != 64 || !std::isfinite(epsilon) || epsilon < 0.0f ||
+        rope_scaling_invalid(scaling) != nullptr)
+        throw std::invalid_argument("native_qsa_rms_norm_rope_segs: invalid arguments");
+    NormRopeSegs sg = segs;
+    int blocks = 0;
+    for (int g = 0; g < sg.n; ++g) {   // each segment as native_qsa_rms_norm_rope checks its call
+        if (!sg.x[g] || !sg.gamma[g] || !sg.out[g] || !sg.positions[g] || sg.rows[g] < 1 ||
+            (sg.head_dim[g] != 128 && sg.head_dim[g] != 256) || sg.in_stride[g] < sg.head_dim[g] ||
+            reinterpret_cast<uintptr_t>(sg.x[g]) % 4 || reinterpret_cast<uintptr_t>(sg.gamma[g]) % 4 ||
+            reinterpret_cast<uintptr_t>(sg.out[g]) % 4 || reinterpret_cast<uintptr_t>(sg.positions[g]) % 4)
+            throw std::invalid_argument("native_qsa_rms_norm_rope_segs: invalid segment");
+        sg.start[g] = blocks;
+        blocks += sg.rows[g];
+    }
+    if (blocks > 65535) throw std::invalid_argument("native_qsa_rms_norm_rope_segs: too many rows");
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / n_rot);
+    const RopeKernelArgs k = scaling.kernel_args(n_rot);
+    const RopeTab rt = rope_table_for(scaling);
+    if (rt.cos != nullptr)
+        norm_rope_segs_kernel<true><<<unsigned(blocks), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+            sg, n_rot, epsilon, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
+            mrope_table(), rt);
+    else
+        norm_rope_segs_kernel<false><<<unsigned(blocks), 256, 0, static_cast<cudaStream_t>(stream)>>>(
+            sg, n_rot, epsilon, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
+            mrope_table(), rt);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

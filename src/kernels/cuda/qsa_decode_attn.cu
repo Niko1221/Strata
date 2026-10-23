@@ -1,5 +1,6 @@
 // src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/kernels/q8_1_finite.hpp"   // fuse-gdn STRATA_FUSE_GATEMERGE_Q8: q8_1_ds
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/geometry.hpp"
@@ -554,20 +555,29 @@ __device__ __forceinline__ float load_v1(const QsaAttnPools& p, long long row, i
     }
 }
 
-template <int KV_MODE, int NC_ = 2, bool DPP_ = false>
-__global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, QsaAttnPools p,
+// fuse-gdn (STRATA_FUSE_QSAWAVE): PT = QsaAttnWave - blockIdx.z attends with its own pools (wave.p[z]) as the window's
+// row wave.row[z] (its q row, selection, step and scratch); PT = QsaAttnPools is the kernel as it was
+__device__ __forceinline__ const QsaAttnPools& wave_pools(const QsaAttnPools& p) { return p; }
+__device__ __forceinline__ unsigned wave_row(const QsaAttnPools&) { return blockIdx.z; }
+__device__ __forceinline__ const QsaAttnPools& wave_pools(const QsaAttnWave& w) { return w.p[blockIdx.z]; }
+__device__ __forceinline__ unsigned wave_row(const QsaAttnWave& w) { return (unsigned) w.row[blockIdx.z]; }
+
+template <int KV_MODE, int NC_ = 2, bool DPP_ = false, typename PT = QsaAttnPools>
+__global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* __restrict__ q, PT pp,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
                                                              int page_size, float scale, float* __restrict__ part_acc,
                                                              float* __restrict__ part_m, float* __restrict__ part_l,
                                                              int n_chunks, int cap = 0, long long scratch_stride = 0) {
-    // batched form: query blockIdx.z, with its own q row, selection, step and scratch
-    q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
-    ids += (size_t) blockIdx.z * (size_t) cap;
-    step += (size_t) blockIdx.z * kStepCount;
-    part_acc += (size_t) blockIdx.z * (size_t) scratch_stride;
-    part_m += (size_t) blockIdx.z * (size_t) scratch_stride;
-    part_l += (size_t) blockIdx.z * (size_t) scratch_stride;
+    const QsaAttnPools& p = wave_pools(pp);
+    const unsigned z = wave_row(pp);
+    // batched form: query z, with its own q row, selection, step and scratch
+    q += (size_t) z * (size_t) (n_kv_heads * G) * HD;
+    ids += (size_t) z * (size_t) cap;
+    step += (size_t) z * kStepCount;
+    part_acc += (size_t) z * (size_t) scratch_stride;
+    part_m += (size_t) z * (size_t) scratch_stride;
+    part_l += (size_t) z * (size_t) scratch_stride;
     __shared__ __align__(16) float sq[G][HD];     // 12 KB: this KV head's query heads (dead once the scores are done)
     __shared__ float sp[G][CHUNK];                // scores
     __shared__ long long srow[CHUNK];             // pool row of each cell (page, kv head, slot)
@@ -783,16 +793,14 @@ __device__ __forceinline__ void merge_sum_block(const float* __restrict__ pm, co
     }
 }
 
+// query blockIdx.y, head blockIdx.x, dimension threadIdx.x: its merged attention
 template <int U>
-__global__ void __launch_bounds__(HD) attn_merge_v2_kernel(const float* __restrict__ part_acc,
-                                                           const float* __restrict__ part_m,
-                                                           const float* __restrict__ part_l, int n_chunks,
-                                                           const int32_t* __restrict__ steps,
-                                                           float* __restrict__ attn, long long scratch_stride = 0) {
+__device__ __forceinline__ float merge_v2_value(const float* __restrict__ part_acc, const float* __restrict__ part_m,
+                                                const float* __restrict__ part_l, int n_chunks,
+                                                const int32_t* __restrict__ steps, long long scratch_stride) {
     part_acc += (size_t) blockIdx.y * (size_t) scratch_stride;
     part_m += (size_t) blockIdx.y * (size_t) scratch_stride;
     part_l += (size_t) blockIdx.y * (size_t) scratch_stride;
-    attn += (size_t) blockIdx.y * (size_t) gridDim.x * HD;
     // the step record the chunk kernel read for this query (attn_chunk_kernel: step + blockIdx.z * kStepCount)
     const int width = __ldg(steps + (size_t) blockIdx.y * kStepCount + kStepWidth);
     const int n_act = width > 0 ? min(n_chunks, (width - 1) / CHUNK + 1) : 0;
@@ -811,7 +819,55 @@ __global__ void __launch_bounds__(HD) attn_merge_v2_kernel(const float* __restri
     float L = 0.0f, acc = 0.0f;
     for (int c0 = 0; c0 < n_full; c0 += U) merge_sum_block<U, false>(pm, pl, pa, c0, n_act, M, L, acc);
     if (n_full < n_act) merge_sum_block<U, true>(pm, pl, pa, n_full, n_act, M, L, acc);
-    attn[(size_t) h * HD + d] = L > 0.0f ? acc / L : 0.0f;
+    return L > 0.0f ? acc / L : 0.0f;
+}
+
+template <int U>
+__global__ void __launch_bounds__(HD) attn_merge_v2_kernel(const float* __restrict__ part_acc,
+                                                           const float* __restrict__ part_m,
+                                                           const float* __restrict__ part_l, int n_chunks,
+                                                           const int32_t* __restrict__ steps,
+                                                           float* __restrict__ attn, long long scratch_stride = 0) {
+    attn += (size_t) blockIdx.y * (size_t) gridDim.x * HD;
+    attn[(size_t) blockIdx.x * HD + threadIdx.x] = merge_v2_value<U>(part_acc, part_m, part_l, n_chunks, steps,
+                                                                     scratch_stride);
+}
+
+// fuse-gdn (STRATA_FUSE_GATEMERGE_Q8): the q8_1 image of a 32-value block, written by the warp that holds it with
+// native_quantize_q8_1_kernel's quantizer - verify_kernels.cu's gdn_q8_1_store (the same XOR-tree max and sum,
+// no contraction of the product into the first sum)
+struct AttnQ81 { half2 ds; int8_t qs[32]; };
+__device__ __forceinline__ void attn_q8_1_store(AttnQ81* __restrict__ xq, size_t idx, float xi) {
+#pragma clang fp contract(off)
+    float amax = fabsf(xi), sum = xi;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+    const float d = q8_1_finite(amax / 127.0f);
+    const int8_t q = q8_1_quant(xi, d, amax);
+    xq[idx / 32].qs[idx % 32] = q;
+    if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);
+}
+
+// fuse-gdn (STRATA_FUSE_GATEMERGE): attn_merge_v2_kernel, then native_qsa_gate_apply's gate on the value it wrote -
+// q_full the query's q|gate rows (the gate half at + HD), gated[i] = attn[i] * (1 / (1 + expf(-raw))) as that kernel;
+// Q8 (STRATA_FUSE_GATEMERGE_Q8): also gated's q8_1 image (native_quantize_q8_1 over the n_q rows)
+template <int U, bool Q8>
+__global__ void __launch_bounds__(HD) attn_merge_v2_gate_kernel(const float* __restrict__ part_acc,
+                                                                const float* __restrict__ part_m,
+                                                                const float* __restrict__ part_l, int n_chunks,
+                                                                const int32_t* __restrict__ steps,
+                                                                float* __restrict__ attn, long long scratch_stride,
+                                                                const float* __restrict__ q_full,
+                                                                float* __restrict__ gated, AttnQ81* __restrict__ xq) {
+    const size_t i = ((size_t) blockIdx.y * gridDim.x + blockIdx.x) * HD + threadIdx.x;
+    const float a = merge_v2_value<U>(part_acc, part_m, part_l, n_chunks, steps, scratch_stride);
+    attn[i] = a;
+    const float raw = q_full[((size_t) blockIdx.y * gridDim.x + blockIdx.x) * 2 * HD + HD + threadIdx.x];
+    const float sigmoid = 1.0f / (1.0f + expf(-raw));
+    gated[i] = a * sigmoid;
+    if constexpr (Q8) attn_q8_1_store(xq, i, a * sigmoid);
 }
 
 #if defined(STRATA_HIP_GFX906)
@@ -1094,6 +1150,116 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         std::fprintf(stderr, "qsa_decode_attn_batch: %s\n", cudaGetErrorString(e));
         std::exit(1);
     }
+}
+
+void qsa_decode_attn_batch_chunks(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                  int64_t cap, const QsaShapes& s, float* scratch, int64_t n_q, void* stream) {
+    if (n_q <= 0) return;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
+        !pools.page_table || n_q > 65535) {
+        std::fprintf(stderr, "qsa_decode_attn_batch_chunks: unsupported geometry or missing buffers\n");
+        std::exit(1);
+    }
+    launch_chunks_batch(q, pools, ids, steps, cap, s, scratch, n_q, (cudaStream_t) stream, -1);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_decode_attn_batch_chunks: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+}
+
+bool qsa_decode_attn_batch_merge_gate(const int32_t* steps, int64_t cap, const QsaShapes& s, const float* scratch,
+                                      float* attn, const float* q_full, float* gated, int64_t n_q, void* stream,
+                                      void* xq_out) {
+    if (n_q <= 0) return true;
+#if defined(__HIPCC__)
+    // HIP only: on CUDA native_qsa.cu (the gate) is built with --use_fast_math and this file is not
+    if (!attn_merge_v2()) return false;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !steps || !attn ||
+        !q_full || !gated || n_q > 65535) {
+        std::fprintf(stderr, "qsa_decode_attn_batch_merge_gate: unsupported geometry or missing buffers\n");
+        std::exit(1);
+    }
+    const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
+    const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
+    const float* part_acc = scratch;
+    const float* part_m = scratch + (size_t) n_chunks * s.n_head * HD;
+    const float* part_l = part_m + (size_t) n_chunks * s.n_head;
+    const dim3 grid((unsigned) s.n_head, (unsigned) n_q);
+    if (xq_out != nullptr)
+        attn_merge_v2_gate_kernel<kMergeU, true><<<grid, HD, 0, (cudaStream_t) stream>>>(
+            part_acc, part_m, part_l, n_chunks, steps, attn, stride, q_full, gated, static_cast<AttnQ81*>(xq_out));
+    else
+        attn_merge_v2_gate_kernel<kMergeU, false><<<grid, HD, 0, (cudaStream_t) stream>>>(
+            part_acc, part_m, part_l, n_chunks, steps, attn, stride, q_full, gated, nullptr);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_decode_attn_batch_merge_gate: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+    return true;
+#else
+    (void) steps; (void) cap; (void) s; (void) scratch; (void) attn; (void) q_full; (void) gated; (void) stream;
+    (void) xq_out;
+    return false;
+#endif
+}
+
+void qsa_decode_attn_batch_merge(const int32_t* steps, int64_t cap, const QsaShapes& s, const float* scratch, float* attn,
+                                 int64_t n_q, void* stream) {
+    if (n_q <= 0) return;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !steps || !attn ||
+        n_q > 65535) {
+        std::fprintf(stderr, "qsa_decode_attn_batch_merge: unsupported geometry or missing buffers\n");
+        std::exit(1);
+    }
+    launch_merge_batch(steps, cap, s, scratch, attn, n_q, attn_merge_v2(), (cudaStream_t) stream);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_decode_attn_batch_merge: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+}
+
+bool qsa_decode_attn_wave_chunks(const float* q, const QsaAttnWave& wave, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, float* scratch, void* stream) {
+    if (wave.n <= 0) return true;
+    if (wave.n > kAttnRowsMax || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch ||
+        !ids || !steps || !q) {
+        std::fprintf(stderr, "qsa_decode_attn_wave_chunks: unsupported geometry or missing buffers\n");
+        std::exit(1);
+    }
+#if defined(__HIPCC__) && defined(STRATA_ATTN_PRE75_BUILT) && !defined(STRATA_HIP_GFX906)
+    // only where launch_chunks_batch (kernel -1) would run attn_chunk_kernel_pre75<M, 8, true>
+    if (lane_cell_attn() || !pre75_attn()) return false;
+    const int kv_mode = attn_kv_mode(wave.p[0]);
+    for (int z = 0; z < wave.n; ++z)
+        if (!wave.p[z].page_table || attn_kv_mode(wave.p[z]) != kv_mode || wave.row[z] < 0) return false;
+    const int n_chunks = (int) ((cap + CHUNK - 1) / CHUNK);
+    const long long stride = (long long) qsa_decode_attn_scratch_floats(cap, s);
+    float* part_acc = scratch;
+    float* part_m = scratch + (size_t) n_chunks * s.n_head * HD;
+    float* part_l = part_m + (size_t) n_chunks * s.n_head;
+    const float scale = 1.0f / sqrtf((float) HD);
+    const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv, (unsigned) wave.n);
+    cudaStream_t st = (cudaStream_t) stream;
+#define STRATA_ATTN_WAVE(M) attn_chunk_kernel_pre75<M, 8, true, QsaAttnWave><<<grid, THREADS, 0, st>>>(q, wave, ids, \
+        steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride)
+    if (kv_mode == 3) STRATA_ATTN_WAVE(3);
+    else if (kv_mode == 2) STRATA_ATTN_WAVE(2);
+    else if (kv_mode == 1) STRATA_ATTN_WAVE(1);
+    else STRATA_ATTN_WAVE(0);
+#undef STRATA_ATTN_WAVE
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_decode_attn_wave_chunks: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+    return true;
+#else
+    (void) stream;
+    return false;
+#endif
 }
 
 bool qsa_decode_attn_slots(const float* q, const QsaAttnSlotPools& pools, const int32_t* ids, const int32_t* steps,

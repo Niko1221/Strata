@@ -222,6 +222,8 @@ public:
     /// Commit an accepted prefix in each contiguous slot group of the last window. `keep` has
     /// one entry per slot (indexed by slot ID), each in 1..that slot's group length.
     bool commit_slot_prefixes(const int* keep, std::string& err);
+    /// STRATA_FUSE_DRAFTEARLY: the next commit_slot_prefixes' graph waits for `ev` on its stream (once)
+    void set_commit_after(cudaEvent_t ev) { commit_after_ = ev; }
     /// --batch-mtp: slot rotation makes many row layouts, so bound the captured batch graph pairs (LRU). 0 = unbounded.
     void set_batch_graph_limit(size_t n) { batch_graph_limit_ = n; }
 
@@ -258,7 +260,12 @@ public:
     static void set_commit_async(bool on);
     /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device);
     /// false with `err` when it failed.  Free when nothing is pending.
-    bool wait_commit(std::string& err);
+    bool wait_commit(std::string& err, bool flush = true);
+    /// STRATA_FUSE_GDNDEFER: slot `slot` goes on into the next window (its batch commit may leave its GDN recurrence rows
+    /// to that window); read by the next commit_slot_prefixes, then cleared
+    void set_commit_pend(int slot, bool on) {
+        if (slot >= 0 && slot < (int) pend_want_.size()) pend_want_[(size_t) slot] = on;
+    }
 
     // ---- PIPELINED WINDOWS (--pipeline-windows, a layer split on two GPUs).  One conversation's windows with the
     // stages overlapped: stage 0 runs window K+1 while stage 1 still runs window K.  The same window as `run`, driven
@@ -442,7 +449,20 @@ private:
     int32_t pl_prev_[2] = {-1, -1};
     std::vector<uint32_t> pl_ple_rows_;   ///< the window's PLE rows (T x PLE_N_HEADS), gathered when layer 0 is served
     bool capture_commit_batch(const int* rows, int S, int hbase, std::string& err);
-    bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err);
+    bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err,
+                     bool defer_ple = false);
+    // STRATA_FUSE_PLELATE: stage_batch(defer_ple)'s PLE rows, gathered by run_slot_rows after the window's launch
+    // (ple_late_n_ tokens, 0 = none pending)
+    std::vector<uint32_t> ple_late_rows_;
+    int ple_late_n_ = 0;
+    cudaEvent_t commit_after_ = nullptr;
+    bool gather_ple_late(std::string& err);
+public:
+    /// STRATA_FUSE_PLEPF: prefetch the PLE rows of slot `slot`'s next batch window row, keyed as stage_batch keys it:
+    /// row 0 (tok1 < 0) is token tok0 after the slot's committed history, row 1 is tok1 after (history[1], tok0).
+    /// A hint only (gather_batch reads every row a prefetch does not match).  False: nothing to prefetch here.
+    bool ple_prefetch_slot(int slot, int32_t tok0, int32_t tok1);
+private:
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;
@@ -600,6 +620,34 @@ private:
     void pcie_balance_window(int64_t steps, int G);
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
+    // STRATA_FUSE_ACOMMIT: the batch commit's keep words leave the mapped staging (h_commitb_) by copies launched ahead of
+    // its graph; ev_cbcopy_ follows them and stage_batch waits for it before it writes the staging again
+    cudaEvent_t ev_cbcopy_ = nullptr;
+    void stage_commit_words(const int* rows, int S);
+    // STRATA_DBG_ACOMMIT: the device keep words after the last batch commit (h_echo_) against the host's (echo_want_)
+    int32_t* h_echo_ = nullptr;
+    std::vector<int32_t> echo_want_;
+    std::vector<int> echo_slots_;
+    bool echo_live_ = false;
+    void echo_record(const int* rows, int S);
+    void echo_check();
+    // STRATA_FUSE_GDNDEFER: per slot the GDN rows its last batch commit left pending (pend_: pend_layers_ layers of
+    // pend_pl_ floats, pend_pm_ rows of h then of gate then of beta), the device words (n_state, n_pend) per slot at
+    // pendw_ (staged in h_pendw_, after h_commitb_'s words), and which slots hold rows / which graphs take part
+    float* pend_ = nullptr;
+    int64_t pend_layers_ = 0, pend_pl_ = 0, pend_pm_ = 0, pend_gdn0_ = 0;
+    int32_t* pendw_ = nullptr;
+    int32_t* h_pendw_ = nullptr;
+    const int32_t* m_pendw_ = nullptr;
+    std::vector<char> pend_live_, pend_want_;
+    std::map<std::vector<int>, bool> b2_win_, b2_commit_;   // window graphs that run the rows / commits that leave them
+    bool cap_defer_ = false, cap_defer_bad_ = false;
+    bool defer_on() const;
+    bool flush_pend(std::string& err);
+    float* b2_shadow_ = nullptr;   // STRATA_DBG_B2CHECK
+    int b2chk_slot_ = -1;
+    void b2check_record();
+    void b2check_compare();
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
@@ -634,6 +682,8 @@ private:
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
     int32_t* plan_ = nullptr;                                     // device copy of the plan block
     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
+    unsigned long long* staged_ptr_ = nullptr;                    // STRATA_FUSE_FETCH: the staged copies' pointers, per group
+    uint32_t* sw_cnt_ = nullptr;                                  // STRATA_FUSE_SWIGLU_GU: native_expert_grouped's counters, 4096 a group
     static constexpr int64_t kStagingBlobs = 16;
     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;

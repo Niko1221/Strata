@@ -25,6 +25,18 @@ void native_moe_combine_multi_hits_added(const float* parts, const float* hits, 
                                          int n_tok, void* stream);
 void native_moe_combine_multi(const float* parts, const float* weights, const float* shared, float* output,
                               int64_t n_embd, int64_t k, int n_tok, void* stream);
+/// STRATA_FUSE_COMBINE: native_moe_combine_multi_hits_added with the CPU share's wait and copy folded in - the parts are
+/// read from `mapped_parts` (the pool's mapped rows, device alias) once every block has seen *flag >= value:
+///   skip == nullptr: as copy_rows_from_mapped_after(flag, value, parts, mapped_parts, n * k, n_embd, dst, count) then
+///                    the combine (a hit row's part +0.0, the others the mapped row);
+///   skip != nullptr: as wait_flag_ge_or + copy_or_zero_from_mapped(parts, mapped_parts, .., skip, value) then the
+///                    combine (*skip == value: every part +0.0, no wait; else every part the mapped row).
+/// shared_gate != nullptr (STRATA_FUSE_SHGATE): `shared` unscaled, scaled by sigmoid(shared_gate[t]) as
+/// shared_expert_multi's sigmoid_scale_rows did.  Bitwise the launches it replaces; one kernel node for two or three.
+void native_moe_combine_multi_hits_mapped(const float* mapped_parts, const float* hits, const int32_t* dst,
+                                          const int32_t* count, const float* weights, const float* shared, float* output,
+                                          int64_t n_embd, int64_t k, int n_tok, const uint32_t* flag, uint32_t value,
+                                          const uint32_t* skip, const float* shared_gate, void* stream);
 /// STRATA_VERIFY_RESIDENT: the same, reading every part as `0.0f + hit[i]` - bitwise what a zeroed part row plus
 /// moe_hit_add (parts += hit) gave, without the zero fill and the add launch.
 void native_moe_combine_multi_hits(const float* hits, const float* weights, const float* shared, float* output,

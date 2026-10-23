@@ -7,11 +7,12 @@
 // (18), IQ3_S (21), IQ2_S (22); down IQ4_NL (20), Q2_0 (42).  `pairs` is a comma list of gu/down type ids ("21/20,16/42")
 // or "all" (the 10 pairs).  `choices` is a comma list of kernel choices:
 //   def                     the default kernels (STRATA_EXPDEC off); the reference for the bitwise check
-//   dec[:r<n>][:d<n>][:b<n>][:w<n>][:x<n>][:g<n>][:h<n>][:m<n>]
+//   dec[:r<n>][:d<n>][:b<n>][:w<n>][:x<n>][:g<n>][:h<n>][:m<n>][:v<n>]
 //                           EXPDEC with r = gate/up rows per lane (1, 2), d = down rows per lane (1, 2, 4), b = the
 //                           gate/up kernel's min blocks per SM (2 | 4), w = 1 EXPDEC for the down too (the engine's
 //                           default is the gate/up only), x = 1 also for the IQ4_NL down, g / h = gate/up / down rows
-//                           per block (0 = auto), m = the auto rule's minimum blocks; a missing field takes the
+//                           per block (0 = auto), m = the auto rule's minimum blocks, v = 1 the V2 kernels
+//                           (STRATA_EXPDEC_V2); a missing field takes the
 //                           engine's value (the environment's STRATA_EXPDEC_* or its default)
 // `shape`: real = every token picks 10 experts out of `groups` distinct ones (as fp_expert_bench: T=1 10 groups x 1
 // entry, T=2 20 x 1, T=4 20 groups with 40 entries); single = 10 T groups of one entry each (the same entries as `real`
@@ -78,10 +79,11 @@ K::NativeExpertExpdecParams resolve_choice_params(const K::NativeExpertExpdecPar
     if (c.p.gu_rows_per_block >= 0) p.gu_rows_per_block = c.p.gu_rows_per_block;
     if (c.p.down_rows_per_block >= 0) p.down_rows_per_block = c.p.down_rows_per_block;
     if (c.p.min_blocks > 0) p.min_blocks = c.p.min_blocks;
+    if (c.p.v2 >= 0) p.v2 = c.p.v2;
     return p;
 }
 
-// "def" | "dec[:r<n>][:d<n>][:b<n>][:x<n>][:g<n>][:h<n>][:m<n>]"; false on anything else
+// "def" | "dec[:r<n>][:d<n>][:b<n>][:x<n>][:g<n>][:h<n>][:m<n>][:v<n>]"; false on anything else
 bool parse_choice(const std::string& s, Choice& c) {
     c = Choice{};
     c.name = s;
@@ -105,6 +107,7 @@ bool parse_choice(const std::string& s, Choice& c) {
             case 'g': if (v < 0) return false; c.p.gu_rows_per_block = v; break;
             case 'h': if (v < 0) return false; c.p.down_rows_per_block = v; break;
             case 'm': if (v <= 0) return false; c.p.min_blocks = v; break;
+            case 'v': if (v != 0 && v != 1) return false; c.p.v2 = v; break;   // STRATA_EXPDEC_V2
             default: return false;
         }
         i = j;
@@ -267,7 +270,9 @@ bool run_device(int dev, const K::NativeExpertExpdecParams& dev_params, int reps
 
     std::mt19937 rng(20261012u);
     bool ok = true;
+    const char* ts_env = std::getenv("STRATA_BENCH_TS");   // the T values to run (digits), default all
     for (int T = 1; T <= kMaxT && ok; ++T) {
+        if (ts_env != nullptr && std::strchr(ts_env, '0' + T) == nullptr) continue;
         for (const std::string& shape : shapes) {
             if (!ok) break;
             const Window w = shape == "single" ? build_single(T) : build_real(T, groups_req, rng);

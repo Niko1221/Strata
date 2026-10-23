@@ -24,6 +24,23 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
 void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma, float* out,
                               int rows, int head_dim, int n_rot, float epsilon,
                               const RopeScaling& scaling, const int* positions, void* stream);
+/// fuse-gdn (STRATA_FUSE_NR3): up to kMax native_qsa_rms_norm_rope calls (segment g: x, in_stride, gamma, out, rows,
+/// head_dim, positions) with one n_rot, epsilon and scaling in one launch - per row the same kernel code, so the same
+/// bits; the segments must not overlap (a QSA layer's q, k and indexer query).  `start` is the launcher's.
+struct NormRopeSegs {
+    static constexpr int kMax = 4;
+    const float* x[kMax] = {};
+    int in_stride[kMax] = {};
+    const float* gamma[kMax] = {};
+    float* out[kMax] = {};
+    int rows[kMax] = {};
+    int head_dim[kMax] = {};
+    const int* positions[kMax] = {};
+    int start[kMax] = {};
+    int n = 0;
+};
+void native_qsa_rms_norm_rope_segs(const NormRopeSegs& segs, int n_rot, float epsilon, const RopeScaling& scaling,
+                                   void* stream);
 /// Whether callers should take the fused kernel (and the in-place rope's 32-thread launch) for this geometry. On the
 /// CUDA build it is on unless STRATA_NO_NORM_ROPE=1; on the HIP build it is off until the AMD parity check passes there
 /// (rope_parity check 6) and only STRATA_NORM_ROPE=1 turns it on.

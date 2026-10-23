@@ -50,6 +50,8 @@ void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_i
 /// x must be 8-byte aligned, w 4-byte aligned, and y 4-byte aligned. Throws on invalid geometry/pointers.
 /// The device buffers must not overlap; allocation bounds remain the caller's responsibility.
 /// No allocations or synchronization, including when stream is null (the CUDA default stream).
+/// STRATA_MMVF_ROWS at one token (tests): 0 = the one-row-per-block kernel, -1 = the default (the rows kernel)
+void bf16_mmvf_set_rows_one(int v);
 void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
                          int64_t n_in, int64_t n_out, void* stream);
 /// `ncols` columns at once: x is [ncols][n_in], y is [ncols][n_out]; each column bitwise equal to a
@@ -63,8 +65,21 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
 /// S26 STRATA_LFUSE: bf16_gemv_fp32_mmvf_multi(x, ldx, w, y, ldy, n_in, n_out, n_tok) plus the 1-row
 /// bf16_gemv_fp32_mmvf_multi(x, ldx, w_aux, y_aux, ldy_aux, n_in, 1, n_tok) in ONE launch, every output bitwise the
 /// two calls'. Returns false (nothing launched) unless the rows path applies (STRATA_MMVF_ROWS=1, n_out >= 64, 2-8 rows).
+/// fuse-gdn (STRATA_FUSE_IDXPAIR): bf16_gemv_fp32_mmvf_multi(x, ldx, w1, y1, ldy1, n_in, n_out1, n_tok) and the same
+/// with w2 / y2 / ldy2 / n_out2 in ONE launch, every output bitwise the two calls'.  Returns false (nothing launched)
+/// unless both would take the rows kernel without STRATA_TSUM (STRATA_MMVF_ROWS=1, n_out >= 64, 2-8 rows).
+bool bf16_gemv_fp32_mmvf_multi_pair(const float* x, int64_t ldx, const uint16_t* w1, float* y1, int64_t ldy1,
+                                    int64_t n_out1, const uint16_t* w2, float* y2, int64_t ldy2, int64_t n_out2,
+                                    int64_t n_in, int n_tok, void* stream);
 bool bf16_gemv_fp32_mmvf_multi_aux(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy,
                                    int64_t n_in, int64_t n_out, int n_tok, const uint16_t* w_aux, float* y_aux,
                                    int64_t ldy_aux, void* stream);
+/// STRATA_FUSE_QGEMV=1: bf16_gemv_fp32_mmvf_multi(_aux) and native_quantize_q8_1(x, q_out, n_in, n_tok) in ONE launch;
+/// the GEMV's blocks first, then the quantizer's.  Every GEMV output and every q8_1 byte is the two calls'.  Both read
+/// x and neither depends on the other.  Returns false (nothing launched) unless the rows kernel at 256 threads without
+/// STRATA_TSUM would run the GEMV (STRATA_MMVF_ROWS=1, n_out >= 64, 2-8 rows).
+bool bf16_gemv_fp32_mmvf_multi_quant(const float* x, int64_t ldx, const uint16_t* w, float* y, int64_t ldy,
+                                     int64_t n_in, int64_t n_out, int n_tok, const uint16_t* w_aux, float* y_aux,
+                                     int64_t ldy_aux, const float* q_x, void* q_out, int64_t q_elems, void* stream);
 
 }  // namespace strata::kernels

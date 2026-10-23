@@ -88,6 +88,29 @@ void kv_stream_reset(const KvStreamMap& m, void* stream);
 void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const KvHostPools& host, int fmt,
                        const int32_t* ids, const int32_t* steps, int64_t n_q, int64_t cap, const QsaShapes& s,
                        void* stream);
+/// As kv_stream_resolve with the copy named: `fused_copy` = the resolve block copies the missed blocks itself (one
+/// launch, no inter-block wait; STRATA_FUSE_KVRESOLVE=1 picks it in kv_stream_resolve), else the copy kernel.  The
+/// same map and the same slot bytes either way (kv_stream_parity).
+/// STRATA_FUSE_KVRESOLVE=1: kv_stream_resolve's (and the engine's kv_stream_resolve_rows calls') `fused_copy`.
+bool kv_stream_fuse_copy_on();
+void kv_stream_resolve_with(const KvStreamMap& m, const QsaAttnPools& slots, const KvHostPools& host, int fmt,
+                            const int32_t* ids, const int32_t* steps, int64_t n_q, int64_t cap, const QsaShapes& s,
+                            void* stream, bool fused_copy);
+
+/// fuse-gdn (STRATA_FUSE_QSAWAVE): kv_stream_resolve (n_q = 1) for `n` rows of a batch window in one launch (one
+/// resolve block per row, `fused_copy` as kv_stream_resolve_with), each row its own map m[z] - every map at most once -
+/// its pools slots[z] / host[z] and its selection at ids + row[z] * cap, step at steps + row[z] * kStepCount.
+/// The maps are independent, so this is the per-row calls' work in any order between them.
+struct KvResolveRows {
+    static constexpr int kMax = 8;
+    KvStreamMap m[kMax];
+    QsaAttnPools slots[kMax];
+    KvHostPools host[kMax];
+    int row[kMax] = {};
+    int n = 0;
+};
+void kv_stream_resolve_rows(const KvResolveRows& rows, int fmt, const int32_t* ids, const int32_t* steps, int64_t cap,
+                            const QsaShapes& s, void* stream, bool fused_copy);
 
 /// The static ring table `block -> block % n_slots`.
 void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void* stream);

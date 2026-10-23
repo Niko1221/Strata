@@ -17,6 +17,7 @@
 
 #include "strata/platform/memory.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/tail_prof.hpp"
 #include "strata/core/nv_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/batch_telemetry.hpp"
@@ -5824,6 +5825,31 @@ int main(int argc, char** argv) {
         else if (pin_wddm_cap)
             std::fprintf(stderr, "strata generate: multi-GPU under WDDM: at most 8 GiB of the expert arena is pinned "
                                  "(STRATA_ARENA_PIN_GIB changes it)\n");
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+        {   // amdgpu KFD's GLOBAL system-memory pin ceiling: it is not per process and not per card, and a code object
+            // (loaded lazily on the first kernel) needs ~1 GiB of it.  Say what it is before anything pins.
+            const uint64_t kfd_limit = strata::core::kfd_system_pin_limit_bytes();
+            const int kfd_nodes = strata::core::kfd_gpu_node_count();
+            if (kfd_limit != 0) {
+                std::fprintf(stderr, "strata generate: KFD system pinned-memory limit ~%.1f GiB (RAM - RAM/64 - 1.5 GiB; "
+                                     "shared by every process and GPU; a code-object load needs ~1 GiB headroom; "
+                                     "STRATA_ARENA_PIN_GIB caps this arena)\n",
+                             (double) (kfd_limit >> 20) / 1024.0);
+                if (kfd_nodes > 1) {
+                    const uint64_t share = kfd_limit > (1ull << 30) ? (kfd_limit - (1ull << 30)) / (uint64_t) kfd_nodes : 0;
+                    if (pin_limit == 0 || pin_limit > share) {
+                        std::fprintf(stderr, "strata generate: WARNING: %d GPU nodes share that ceiling; one replica per node "
+                                             "must fit its arena pin plus its KV/other pinned memory in ~%.1f GiB (and leave "
+                                             "1 GiB for code objects). %s\n",
+                                     kfd_nodes, (double) (share >> 20) / 1024.0,
+                                     pin_limit == 0 ? "The arena pin is uncapped here: set STRATA_ARENA_PIN_GIB."
+                                                    : "Reduce STRATA_ARENA_PIN_GIB, or the first code-object load can fail with "
+                                                      "'invalid device function'.");
+                    }
+                }
+            }
+        }
+#endif
         // ---- STRATA_PIN_BY_NEED=1 (default off: the prefix pinning above, byte-identical).  WDDM does not let the
         // pin grow past ~RAM/2, and the prefix spends it on layers 0-31 whatever the GPU holds: layers 32-47 stay 100 %
         // CPU while ~10 GiB of pinned blobs sit in GPU-resident experts no DMA ever reads.  Pinning is registered
@@ -11394,6 +11420,7 @@ int main(int argc, char** argv) {
             return v != nullptr && v[0] != '\0' && v[0] != '0';
         }();
         auto direct_slot_copy = [&](bool into_slot, int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
+            if (!ver.wait_commit(e)) return false;   // STRATA_FUSE_ACOMMIT: the slot's last batch commit first
             const int64_t upto = (int64_t) ids.size();
             auto sync_all = [&]() {
                 bool ok = true;
@@ -11469,6 +11496,7 @@ int main(int argc, char** argv) {
         // conversation an idle slot holds reads on from there.  Every stage, the same calls.
         // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
         auto copy_from_slot = [&](int b, const ConvCheckpoint* at, std::string& e) -> bool {
+            if (!ver.wait_commit(e)) return false;   // STRATA_FUSE_ACOMMIT: the slot's last batch commit first
             const int64_t upto = at != nullptr ? (int64_t) at->ids.size() : (int64_t) bs[(size_t) b].ids.size();
             if (at != nullptr && at->stage_parts.size() != stages.size()) { e = "a checkpoint without its stage parts"; return false; }
             if (slot_copy_direct && at == nullptr) {
@@ -11516,7 +11544,20 @@ int main(int argc, char** argv) {
         auto stage_verifier = [&](int k) -> strata::core::Verifier& { return k == 0 ? ver : stages[(size_t) k - 1]->ver; };
         // one batch window over the active slots only (row t is the t-th active slot): an idle slot is not touched,
         // so it keeps the conversation it holds
+        // STRATA_FUSE_PLEPF=1: the next window's PLE rows prefetched while the commit and the drafts run (the slot
+        // drafters' PLE sessions have no table, so their own prefetch never runs, and stage_batch read every row cold)
+        static const bool ple_pf = [] { const char* v = std::getenv("STRATA_FUSE_PLEPF"); return v != nullptr && std::atoi(v) != 0; }();
+        // STRATA_FUSE_DRAFTHEAD=1: the two slots' MTP rounds with the draft head read once (run_pending)
+        static const bool draft_head = [] { const char* v = std::getenv("STRATA_FUSE_DRAFTHEAD"); return v != nullptr && std::atoi(v) != 0; }();
+        // STRATA_FUSE_DRAFTEARLY=1 (with DRAFTHEAD): the pair's drafts launched before the commit (early_pair)
+        static const bool draft_early = [] { const char* v = std::getenv("STRATA_FUSE_DRAFTEARLY"); return v != nullptr && std::atoi(v) != 0; }();
+        long long tp_long = 0;   // STRATA_DBG_TAIL: main-loop gaps past 5 ms (a request's prompt read)
         auto batch_step = [&]() -> bool {
+            strata::core::TailProf& tp = strata::core::tail_prof();   // STRATA_DBG_TAIL
+            const bool tpo = strata::core::TailProf::on();
+            const Clock::time_point tp_bs0 = Clock::now();
+            const Clock::time_point tp_prev = tp.last_end;
+            tp.last_end = Clock::time_point{};   // (set again only by a window that runs to its end)
             int S = 0;
             int rows[strata::kernels::kVerifyMaxT] = {};
             int32_t tok[strata::kernels::kVerifyMaxT] = {}, outb[strata::kernels::kVerifyMaxT] = {};
@@ -11580,6 +11621,7 @@ int main(int argc, char** argv) {
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
             }
             const Clock::time_point w0 = Clock::now();
+            if (tpo) tp.add(tp.kPlan, tp_bs0, w0);
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                 return false;
@@ -11607,7 +11649,198 @@ int main(int argc, char** argv) {
                 keep[b] = batch_mtp && outb[i] == tok[i + 1] && !eos && !sl.stop &&
                           sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
             }
+            // slot t's draft (the copy of its two residual rows, then its drafter's round)
+            auto run_draft = [&](int t) -> bool {
+                const int b = active[t];
+                BSlot& sl = bs[(size_t) b];
+                // The slot's two residual rows (the final residuals of the last stage: ver.final_R_all() follows the
+                // chain, so with a layer split they are on the last stage's GPU, where the drafters are).  The copy is
+                // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
+                const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
+                const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
+                if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
+                                    ver.final_R_all() + (size_t) first[t] * stride,
+                                    2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
+                                    slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
+                    !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
+                                                sl.draft.data(), err)) {
+                    std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
+                    return false;
+                }
+                sl.draft_ready = true;
+                if (ple_pf) (void) ver.ple_prefetch_slot(b, sl.x, sl.draft[0]);   // row 1: the draft after sl.x
+                return true;
+            };
+            // STRATA_FUSE_DRAFTHEAD: two slots' rounds on the lower slot's drafter's stream, to their head inputs, then
+            // one pair graph (the head read once for both rows, each slot's select), one sync; else each slot's draft()
+            int pend[strata::kernels::kVerifyMaxT] = {}, n_pend = 0;
+            struct PairRun {
+                bool on = false;
+                int tt[2] = {-1, -1};
+                strata::core::MtpDrafter* D[2] = {};
+                cudaStream_t s0 = nullptr;
+            } pr;
+            // 1: slots t0 and t1 launched as a pair (pr), 0: not a pair (nothing launched), -1: an error
+            auto pair_launch = [&](int t0, int t1) -> int {
+                if (active[t1] < active[t0]) std::swap(t0, t1);
+                strata::core::MtpDrafter* O = slot_mtp[(size_t) active[t0]].get();
+                strata::core::MtpDrafter* P = slot_mtp[(size_t) active[t1]].get();
+                if (!(O->pair_with(*P) && O->pair_ok(2, pos[first[t0]], keep[active[t0]] - 1, 0.0f, nullptr) &&
+                      P->pair_ok(2, pos[first[t1]], keep[active[t1]] - 1, 0.0f, nullptr))) {
+                    static int said = 0;
+                    if (said++ < 2)
+                        std::fprintf(stderr, "strata batch: STRATA_FUSE_DRAFTHEAD declined: pair_with %d, pair_ok %d %d\n",
+                                     (int) O->pair_with(*P), (int) O->pair_ok(2, pos[first[t0]], keep[active[t0]] - 1, 0.0f, nullptr),
+                                     (int) P->pair_ok(2, pos[first[t1]], keep[active[t1]] - 1, 0.0f, nullptr));
+                    return 0;
+                }
+                const strata::core::OnDevice on_mtp(O->device());
+                pr.s0 = O->stream();
+                pr.tt[0] = t0;
+                pr.tt[1] = t1;
+                pr.D[0] = O;
+                pr.D[1] = P;
+                const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
+                // gdn3 STRATA_FUSE_DRAFTPAIR_ROUND=1: both slots' rounds and the head in one graph, one launch.
+                static const bool draft_pair_round = [] {
+                    const char* v = std::getenv("STRATA_FUSE_DRAFTPAIR_ROUND");
+                    return v != nullptr && v[0] == '1';
+                }();
+                if (draft_pair_round && O->pair_round_capable() && P->pair_round_capable()) {
+                    const int b0 = active[t0], b1 = active[t1];
+                    if (!O->draft_pair_round_launch(*P, 2, 2,
+                                                    outb + first[t0], pos[first[t0]], keep[b0] - 1,
+                                                    outb + first[t1], pos[first[t1]], keep[b1] - 1,
+                                                    ver.final_R_all() + (size_t) first[t0] * stride,
+                                                    ver.final_R_all() + (size_t) first[t1] * stride,
+                                                    pr.s0, err)) {
+                        std::printf("ERR batch MTP slots %d+%d: %s\n", b0, b1, err.c_str());
+                        return -1;
+                    }
+                } else {
+                    for (int r = 0; r < 2; ++r) {
+                        const int b = active[pr.tt[r]];
+                        if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(), ver.final_R_all() + (size_t) first[pr.tt[r]] * stride,
+                                            2 * stride * sizeof(float), cudaMemcpyDeviceToDevice, pr.s0) != cudaSuccess ||
+                            !pr.D[r]->draft_pair_launch(*O, r, 2, outb + first[pr.tt[r]], pos[first[pr.tt[r]]], keep[b] - 1,
+                                                        pr.s0, err)) {
+                            std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
+                            return -1;
+                        }
+                    }
+                    if (!O->pair_head_launch(*P, pr.s0, err)) {
+                        std::printf("ERR batch MTP slots %d+%d: %s\n", active[t0], active[t1], err.c_str());
+                        return -1;
+                    }
+                }
+                pr.on = true;
+                ++tp.pair_rounds;
+                return 1;
+            };
+            // after the pair's sync: each slot's draft (STRATA_DBG_DRAFTCHECK: against its own draft() again)
+            auto pair_finish = [&]() -> bool {
+                {
+                    const strata::core::OnDevice on_mtp(pr.D[0]->device());
+                    if (cudaStreamSynchronize(pr.s0) != cudaSuccess) {
+                        std::printf("ERR batch MTP slots %d+%d: the pair's sync\n", active[pr.tt[0]], active[pr.tt[1]]);
+                        return false;
+                    }
+                }
+                pr.on = false;
+                static const bool dcheck = [] { const char* v = std::getenv("STRATA_DBG_DRAFTCHECK"); return v != nullptr && v[0] == '1'; }();
+                std::vector<float> lg[2];
+                int32_t dr[2] = {};
+                for (int r = 0; r < 2; ++r) {
+                    BSlot& sl = bs[(size_t) active[pr.tt[r]]];
+                    pr.D[r]->draft_pair_finish(sl.draft.data());
+                    dr[r] = sl.draft[0];
+                    if (dcheck) {   // (both rows before a rerun: the owner's rerun writes its row 0)
+                        lg[r].resize((size_t) pr.D[0]->head_vocab());
+                        cudaMemcpy(lg[r].data(), pr.D[0]->head_logits_row(r), lg[r].size() * sizeof(float), cudaMemcpyDeviceToHost);
+                    }
+                }
+                for (int r = 0; r < 2; ++r) {
+                    const int t = pr.tt[r];
+                    BSlot& sl = bs[(size_t) active[t]];
+                    if (!sl.active) continue;   // (DRAFTEARLY mispredicted: counted where its lines ended it)
+                    if (dcheck) {   // STRATA_DBG_DRAFTCHECK: the slot's own draft() again (same inputs, same K/V cells)
+                        if (!run_draft(t)) return false;
+                        std::vector<float> ref((size_t) pr.D[r]->head_vocab());
+                        cudaMemcpy(ref.data(), pr.D[r]->head_logits_row(0), ref.size() * sizeof(float), cudaMemcpyDeviceToHost);
+                        ++tp.draft_checked;
+                        if (sl.draft[0] != dr[r] || std::memcmp(ref.data(), lg[r].data(), ref.size() * sizeof(float)) != 0) {
+                            ++tp.draft_bad;
+                            if (tp.draft_bad <= 4)
+                                std::fprintf(stderr, "strata batch: DRAFTCHECK slot %d differs: pair %d, draft() %d\n",
+                                             active[t], dr[r], sl.draft[0]);
+                        }
+                        continue;
+                    }
+                    sl.draft_ready = true;
+                    if (ple_pf) (void) ver.ple_prefetch_slot(active[t], sl.x, sl.draft[0]);
+                }
+                return true;
+            };
+            auto run_pending = [&]() -> bool {
+                if (n_pend == 2) {
+                    const int r = pair_launch(pend[0], pend[1]);
+                    if (r < 0) return false;
+                    if (r == 1) return pair_finish();
+                }
+                for (int k = 0; k < n_pend; ++k) if (!run_draft(pend[k])) return false;
+                return true;
+            };
+            // STRATA_FUSE_DRAFTEARLY: slot t goes on past this window's lines (the BT loop's own tests, before it runs)
+            auto goes_on = [&](int t) -> bool {
+                const int b = active[t];
+                const BSlot& sl = bs[(size_t) b];
+                if (!sl.active) return false;
+                for (int r = first[t]; r < first[t] + 2; ++r) if (ver.nonfinite_in(r)) return false;
+                for (int j = 0; j < keep[b]; ++j) {
+                    const int32_t y = outb[first[t] + j];
+                    if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end() || sl.stop ||
+                        sl.produced + j + 1 >= sl.max_new || sl.p + j + 2 > o.max_context)
+                        return false;
+                }
+                return true;
+            };
+            auto early_pair = [&]() -> bool {
+                if (!(draft_head && draft_early && batch_mtp && stages.empty())) return true;
+                int eg[2] = {-1, -1}, n = 0;
+                for (int t = 0; t < A; ++t)
+                    if (goes_on(t)) { if (n < 2) eg[n] = t; ++n; }
+                if (n != 2) return true;
+                const int r = pair_launch(eg[0], eg[1]);
+                if (r < 0) return false;
+                if (r == 0) return true;
+                static cudaEvent_t ev = nullptr;
+                const strata::core::OnDevice on_mtp(pr.D[0]->device());
+                if (ev == nullptr && cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) != cudaSuccess) {
+                    std::printf("ERR batch MTP: the early drafts' event\n");
+                    return false;
+                }
+                if (cudaEventRecord(ev, pr.s0) != cudaSuccess) {
+                    std::printf("ERR batch MTP: the early drafts' event\n");
+                    return false;
+                }
+                ver.set_commit_after(ev);
+                ++tp.early_rounds;
+                return true;
+            };
+            // STRATA_FUSE_DRAFTEARLY=1: the two slots that go on (as the BT lines below will find) draft before the
+            // commit, which waits for them on its stream: the window's commit and drafts in one host sync
+            if (!early_pair()) return false;
+            const Clock::time_point tp_c0 = Clock::now();
+            if (tpo) { tp.add(tp.kRunTotal, w0, w1); tp.add(tp.kPreCommit, w1, tp_c0); }
+            // STRATA_FUSE_GDNDEFER: the slots that go on (their GDN rows may wait for the next window)
+            if (batch_mtp) for (int t = 0; t < A; ++t) ver.set_commit_pend(active[t], goes_on(t));
             if (!(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
+                std::printf("ERR %s\n", err.c_str());
+                return false;
+            }
+            // STRATA_FUSE_ACOMMIT: drafts not launched before the commit run after it (one stream at a time; the GDN
+            // rows a commit left pending stay so - the drafter reads none of them)
+            if (!pr.on && !ver.wait_commit(err, false)) {
                 std::printf("ERR %s\n", err.c_str());
                 return false;
             }
@@ -11615,12 +11848,21 @@ int main(int argc, char** argv) {
             auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
             bt_run += msd(w0, w1);
             bt_commit += msd(w1, w2);
+            if (tpo) tp.add(tp.kCommitTotal, tp_c0, w2);
             ++bt_windows;
             for (int a = 0; a < A; ++a) {
                 bt_rows += keep[active[a]];
                 bt_accepted += keep[active[a]] - 1;
             }
             for (int t = 0; t < A; ++t) {
+                const Clock::time_point tp_e0 = Clock::now();
+                if (ple_pf && batch_mtp && t == 0)   // row 0 of every slot that goes on: its last kept pick
+                    for (int u = 0; u < A; ++u) {
+                        const int bu = active[u];
+                        const BSlot& su = bs[(size_t) bu];
+                        if (!su.active || su.stop || ver.nonfinite_in(first[u])) continue;
+                        (void) ver.ple_prefetch_slot(bu, outb[first[u] + keep[bu] - 1], -1);
+                    }
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
                 bool nf = false;   // #879: a row of this slot held non-finite logits: the slot ends, nothing emitted
@@ -11655,26 +11897,30 @@ int main(int argc, char** argv) {
                     sl.x = y;
                     sl.p += 1;
                 }
-                if (batch_mtp && sl.active) {
-                    // The slot's two residual rows (the final residuals of the last stage: ver.final_R_all() follows the
-                    // chain, so with a layer split they are on the last stage's GPU, where the drafters are).  The copy is
-                    // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
-                    const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
-                    const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
-                    if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
-                                        ver.final_R_all() + (size_t) first[t] * stride,
-                                        2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
-                                        slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
-                        !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
-                                                    sl.draft.data(), err)) {
-                        std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
-                        return false;
+                const Clock::time_point tp_d0 = Clock::now();
+                if (tpo) tp.add(tp.kEmitPrint, tp_e0, tp_d0);
+                if (pr.on && (t == pr.tt[0] || t == pr.tt[1])) {   // drafted before the commit
+                    if (!sl.active) {
+                        ++tp.early_bad;
+                        std::fprintf(stderr, "strata batch: DRAFTEARLY drafted slot %d, which ended\n", b);
                     }
-                    sl.draft_ready = true;
+                } else if (batch_mtp && sl.active) {
+                    if (draft_head) pend[n_pend++] = t;   // STRATA_FUSE_DRAFTHEAD: after every slot's lines
+                    else if (!run_draft(t)) return false;
                 }
+                if (tpo) tp.add(tp.kDraftTotal, tp_d0, Clock::now());
             }
+            if (pr.on || n_pend > 0) {
+                const Clock::time_point tp_d0 = Clock::now();
+                if (pr.on && !pair_finish()) return false;
+                if (n_pend > 0 && !run_pending()) return false;
+                if (tpo) tp.add(tp.kDraftTotal, tp_d0, Clock::now());
+            }
+            const Clock::time_point tp_f0 = Clock::now();
             std::fflush(stdout);
+            if (tpo) tp.add(tp.kFlush, tp_f0, Clock::now());
             bt_emit += msd(w2, Clock::now());
+            const Clock::time_point tp_a0 = Clock::now();
             if (adapt_run.th.joinable()) {
                 const Clock::time_point wa = Clock::now();
                 adapt_run.th.join();
@@ -11687,7 +11933,9 @@ int main(int argc, char** argv) {
                 apply_pending(true);   // the copies land and the tables follow (the next window plans from them)
                 bt_adapt_wait += msd(wa, Clock::now());
             }
+            if (tpo) tp.add(tp.kAdapt, tp_a0, Clock::now());
             strata::core::progress().busy.store(was_busy);
+            const Clock::time_point tp_r0 = Clock::now();
             report_batch_window(S, A, !batch_on(), w0);
             if (!batch_on() && bt_windows > 0) {
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
@@ -11731,8 +11979,38 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata batch: MTP proposals accepted %lld of %lld (%.1f%%)\n",
                                  (long long) bt_accepted, (long long) (bt_rows - bt_accepted),
                                  100.0 * (double) bt_accepted / (double) std::max<int64_t>(bt_rows - bt_accepted, 1));
+                if (tpo && tp.windows > 0) {   // STRATA_DBG_TAIL: the host's tail, per window
+                    const double n = (double) tp.windows;
+                    auto M = [&](int i) { return tp.ms[i] / n; };
+                    std::fprintf(stderr, "strata batch tail (STRATA_DBG_TAIL, ms/window over %lld windows): loop %.3f "
+                                         "(%lld gaps > 5 ms left out) + plan %.3f + run %.3f [prep %.3f, launch call %.3f] + "
+                                         "pre-commit %.3f + commit %.3f [launch call %.3f, sync %.3f] + BT lines %.3f + "
+                                         "copy+draft %.3f [prep %.3f, launch calls %.3f, wait %.3f] + fflush %.3f + adapt "
+                                         "%.3f + report %.3f; run prep: pre_launch %.3f, checks+refresh_ar %.3f, graphs %.3f, "
+                                         "records %.3f, PLE gather %.3f; PLE check %lld rows, %lld differ; pair drafts %lld (early %lld, ended %lld), checked %lld, %lld differ; acommit hits %lld, keep echoes %lld, %lld differ; gdn defer flushes %lld, checks %lld, %lld differ\n", (long long) tp.windows, M(tp.kLoop), (long long) tp_long,
+                                 M(tp.kPlan), M(tp.kRunTotal), M(tp.kRunPrep), M(tp.kRunLaunch), M(tp.kPreCommit),
+                                 M(tp.kCommitTotal), M(tp.kCommitLaunch), M(tp.kCommitSync), M(tp.kEmitPrint),
+                                 M(tp.kDraftTotal), M(tp.kDraftPrep), M(tp.kDraftLaunch), M(tp.kDraftWait), M(tp.kFlush),
+                                 M(tp.kAdapt), M(tp.kReport), M(tp.kRunPreLaunch), M(tp.kSbRefresh), M(tp.kSbCapture),
+                                 M(tp.kSbRecords), M(tp.kSbPle), tp.ple_checked, tp.ple_bad,
+                                 tp.pair_rounds, tp.early_rounds, tp.early_bad, tp.draft_checked, tp.draft_bad,
+                                 strata::core::acommit_dbg().hits.load(), strata::core::acommit_dbg().echo_checked,
+                                 strata::core::acommit_dbg().echo_bad, tp.b2_flushes, tp.b2_checked, tp.b2_bad);
+                    tp = strata::core::TailProf{};
+                    tp_long = 0;
+                }
                 bt_run = bt_commit = bt_emit = bt_adapt_wait = 0;
                 bt_windows = bt_rows = bt_tokens = bt_accepted = bt_adapt_rounds = bt_adapt_swaps = 0;
+            }
+            if (tpo) {
+                const Clock::time_point e = Clock::now();
+                tp.add(tp.kReport, tp_r0, e);
+                if (tp_prev != Clock::time_point{}) {   // the main loop between the last window and this one
+                    if (tp_bs0 - tp_prev < std::chrono::milliseconds(5)) tp.add(tp.kLoop, tp_prev, tp_bs0);
+                    else ++tp_long;
+                }
+                ++tp.windows;
+                tp.last_end = e;
             }
             return true;
         };
@@ -11968,6 +12246,13 @@ int main(int argc, char** argv) {
                 }
             } else if (!next_line(line)) {
                 break;
+            }
+            {   // STRATA_FUSE_ACOMMIT: every command after the last batch commit has run (Verifier::wait_commit)
+                std::string werr;
+                if (!ver.wait_commit(werr)) {
+                    std::printf("ERR %s\n", werr.c_str());
+                    return 1;
+                }
             }
             // --batch: BSTOP <slot> ends that slot at its next batch window; BGEN <slot> <max_new> ... reads the
             // request's prompt and first token as a GEN 1, then continues it in that slot

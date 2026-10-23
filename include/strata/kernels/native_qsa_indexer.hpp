@@ -66,4 +66,24 @@ void native_qsa_indexer_append_steps_layers(const float* raw0, int64_t raw_strid
                                             const QsaIndexerLayers& layers, int n_layers, const QsaShapes& shapes,
                                             int64_t max_cells, const RopeScaling& scaling, void* stream);
 
+// fuse-gdn (STRATA_FUSE_IDXAPP): a batch window's appends for several slots in one launch, one block per slot group.
+// Group i appends its n_steps[i] rows raw[i] + j * 128 at positions pos[i][j * pos_stride] into its own buffers, in row
+// order, as native_qsa_indexer_append_steps would; with snap[i] set its tail is first copied there (the window's
+// copy_from_mapped snapshot).  Every group's buffers must be its own.  Bitwise the per-row native_qsa_indexer_append calls.
+struct QsaIndexerSlots {
+    static constexpr int kMax = 8;
+    const float* raw[kMax] = {};
+    const int32_t* pos[kMax] = {};
+    int n_steps[kMax] = {};
+    float* snap[kMax] = {};
+    float* tail[kMax] = {};
+    float* dead[kMax] = {};
+    float* pooled[kMax] = {};
+    int32_t* block_pos[kMax] = {};
+    int max_cells[kMax] = {};
+    int n = 0;
+};
+void native_qsa_indexer_append_slots(const QsaIndexerSlots& slots, int pos_stride, int32_t pos_base, const float* gamma,
+                                     float epsilon, const QsaShapes& shapes, const RopeScaling& scaling, void* stream);
+
 } // namespace strata::kernels

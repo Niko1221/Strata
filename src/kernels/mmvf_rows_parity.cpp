@@ -42,11 +42,13 @@ int main() {
         ck(cudaMemcpy(dw,w.data(),w.size()*2,cudaMemcpyHostToDevice));
         ck(cudaMemset(ref,0xff,count*4)); ck(cudaMemset(got,0xff,count*4));
         ck(cudaMemset(aux,0xff,(size_t)nt*12)); ck(cudaMemset(aref,0xff,(size_t)nt*12));
+        k::bf16_mmvf_set_rows_one(0);   // the reference: one-row-per-block calls
         for (int t = 0; t < nt; ++t) {
             k::bf16_gemv_fp32_mmvf(dx+(size_t)t*ldx,dw,ref+(size_t)t*ldy,ni,no,s);
             k::bf16_gemv_fp32_mmvf(dx+(size_t)t*ldx,dw+(size_t)no*ni,aref+t*3,ni,1,s);
         }
         ck(cudaStreamSynchronize(s));
+        k::bf16_mmvf_set_rows_one(-1);
         cudaGraph_t graph; cudaGraphExec_t exec;
         ck(cudaStreamBeginCapture(s,cudaStreamCaptureModeThreadLocal));
         k::bf16_gemv_fp32_mmvf_multi(dx,ldx,dw,got,ldy,ni,no,nt,s);

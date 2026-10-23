@@ -3,6 +3,7 @@
 #include "strata/core/pin_budget.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/core/tail_prof.hpp"
 
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -147,6 +148,7 @@ namespace strata::core {
 #endif
 
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
+    acommit_dbg().check(&s, "session_zero");
 #if defined(STRATA_GPU_METAL)
     // the running state lives in the Metal decode window; the session's own device buffers are not read there
     (void) g; (void) R_init; (void) stream;

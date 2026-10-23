@@ -28,6 +28,10 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
             {"STRATA_GDN_CONVL2", "1"},
             {"STRATA_GDN_NOY", "1"},
             {"STRATA_CVEC_FUSE", "1"},
+            // decode, both bitwise (b6_mmvq_bench / mmvf_rows_parity), measured on an R9700 with Qwen3.8-Flash-Next IQ3_S,
+            // --batch 4 --batch-mtp: solo +1%, 4-stream window -1 to -4%
+            {"STRATA_DENSE_LDS", "1"},   // multi-column dense GEMV with the columns staged in LDS (B7)
+            {"STRATA_MMVF_ROWS", "1"},   // bf16 GEMV 4 rows per block, one token included: the router 25.8 -> 10.2 us
         };
         return t;
     }

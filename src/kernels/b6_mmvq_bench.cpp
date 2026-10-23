@@ -125,14 +125,15 @@ int main(int argc, char** argv) {
     if (!ck(cudaGetDeviceCount(&n_dev), "device count")) return 1;
     const int only = argc > 2 ? std::atoi(argv[2]) : -1;
     const int bmode = argc > 3 ? std::atoi(argv[3]) : -1;
+    const int bv2 = [] { const char* v = std::getenv("STRATA_BENCH_V2"); return v != nullptr ? std::atoi(v) : 0; }();   // B: STRATA_Q6K_V2
     long long bad = 0;
     for (int dev = 0; dev < n_dev; ++dev) {
         if (only >= 0 && dev != only) continue;
         cudaSetDevice(dev);
         cudaDeviceProp pr{};
         cudaGetDeviceProperties(&pr, dev);
-        std::printf("\n=== device %d: %s (sm_%d%d, L2 %d KB), %d reps, median ms per call, B = rows mode %d ===\n", dev, pr.name,
-                    pr.major, pr.minor, pr.l2CacheSize / 1024, reps, bmode);
+        std::printf("\n=== device %d: %s (sm_%d%d, L2 %d KB), %d reps, median ms per call, B = rows mode %d%s ===\n", dev, pr.name,
+                    pr.major, pr.minor, pr.l2CacheSize / 1024, reps, bmode, bv2 ? " + STRATA_Q6K_V2" : "");
         std::printf("%-18s %4s %9s %9s %8s %8s  %s\n", "case", "cols", "A ms", "B ms", "A +col", "B +col",
                     "bitwise B=A, A=1col, B=1col");
         cudaStream_t s;
@@ -187,13 +188,16 @@ int main(int argc, char** argv) {
             for (int T : WIDTHS) {
                 std::vector<uint32_t> ha((size_t) T * c.n_out), hb(ha.size()), h1(ha.size());
                 K::native_mmvq_set_b6_rows(0);
+                K::native_mmvq_set_q6k_v2(0);
                 const double ta = median_ms(c, b, T, reps, s, ev);
                 call(c, b, 0, T, ya, s);
                 for (int j = 0; j < T; ++j) call_col(c, b, j, y1, s);
                 K::native_mmvq_set_b6_rows(bmode);
+                K::native_mmvq_set_q6k_v2(bv2);
                 const double tb = median_ms(c, b, T, reps, s, ev);
                 call(c, b, 0, T, yb, s);
                 K::native_mmvq_set_b6_rows(0);
+                K::native_mmvq_set_q6k_v2(0);
                 if (!ck(cudaStreamSynchronize(s), "run")) return 1;
                 cudaMemcpy(ha.data(), ya, ha.size() * 4, cudaMemcpyDeviceToHost);
                 cudaMemcpy(hb.data(), yb, hb.size() * 4, cudaMemcpyDeviceToHost);
@@ -205,9 +209,11 @@ int main(int argc, char** argv) {
                 for (uint32_t u : ha) { float f; std::memcpy(&f, &u, 4); if (!std::isfinite(f)) ++nonfinite; }
                 if (!ba || !b_1 || nonfinite) ++bad;
                 if (T == 1) { a1 = ta; b1 = tb; }
-                std::printf("%-18s %4d %9.4f %9.4f %8.4f %8.4f  %s %s %s%s\n", c.name, T, ta, tb,
+                uint64_t hsh = 1469598103934665603ull;   // FNV-1a of A's outputs: equal across builds = bitwise across builds
+                for (uint32_t u : ha) hsh = (hsh ^ u) * 1099511628211ull;
+                std::printf("%-18s %4d %9.4f %9.4f %8.4f %8.4f  %s %s %s%s  hash %016llx\n", c.name, T, ta, tb,
                             T > 1 ? (ta - a1) / (T - 1) : 0.0, T > 1 ? (tb - b1) / (T - 1) : 0.0, ba ? "ok" : "DIFF",
-                            a_1 ? "ok" : "diff", b_1 ? "ok" : "DIFF", nonfinite ? " NONFINITE" : "");
+                            a_1 ? "ok" : "diff", b_1 ? "ok" : "DIFF", nonfinite ? " NONFINITE" : "", (unsigned long long) hsh);
             }
             for (void* d : b.w) cudaFree(d);
             cudaFree(b.xq); cudaFree(b.xf); cudaFree(b.y); cudaFree(ya); cudaFree(yb); cudaFree(y1);

@@ -16,6 +16,12 @@ bool native_router_enabled();
 void native_router_top10(const float* logits, int32_t* ids, float* weights, void* stream);
 /// n_tok rows at once (logits [n,512], ids/weights [n,10]); each row exactly as the single call.
 void native_router_top10_multi(const float* logits, int32_t* ids, float* weights, int n_tok, void* stream);
+/// STRATA_FUSE_ROUTEBELL: native_router_top10_multi and then doorbell_publish_res (elementwise.hpp, its arguments
+/// x .. seq) in one launch; the same bytes in ids, weights, x_out, ids_out and the ring.  n_tok 1..8 and k = 10 n_tok,
+/// else false and nothing launched (the caller makes the two calls).
+bool native_router_top10_multi_bell(const float* logits, int32_t* ids, float* weights, int n_tok, const float* x,
+                                    const int32_t* d_res, int n_expert, int64_t n, int64_t k, float* x_out, int32_t* ids_out,
+                                    uint32_t* seq, void* stream);
 /// The same contract for a model family's (experts, top-k): 512 / 10 (Flash-Next: the two calls above, unchanged) and
 /// 256 / 8 (Qwen3.6-35B-A3B).  logits [n_tok, n_expert], ids / weights [n_tok, k].  CUDA / HIP.
 bool native_router_topk_supported(int n_expert, int k);

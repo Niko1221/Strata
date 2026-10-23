@@ -27,6 +27,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
@@ -71,6 +72,8 @@ public:
     static bool top2_env();
     int32_t top2(int j) const { return j >= 0 && j < (int) top2_.size() ? top2_[(size_t) j] : -1; }
     int max_t() const { return max_t_; }
+    /// STRATA_FUSE_DRAFTPAIR_ROUND needs the four-row pair front's lane capacity in this drafter's buffers.
+    bool pair_round_capable() const { return max_t_ >= 4; }
     uint64_t vram_bytes() const { return vram_; }
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
@@ -123,6 +126,32 @@ public:
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
     void set_ple_session(SessionState* s) { ple_ss_ = s; }
     std::function<bool(int, float)> chain_rule_;
+
+    // ---- STRATA_FUSE_DRAFTHEAD (--batch-mtp): two slots' rounds with the draft head read once.  Each slot's round
+    // runs to its head input (`draft_pair_launch`: the owner's q8_1 row r), then the owner's pair graph runs the head
+    // over both rows (one native_mmvq, 2 columns: each bitwise the 1-column call) and each slot's argmax and select
+    // as its own round does (`pair_head_launch`), on one stream; after its sync `draft_pair_finish` reads each draft.
+    /// The pair path can take this round (else draft()): greedy one-draft rounds, no chain, no coupled sampling.
+    bool pair_ok(int T, int64_t p, int a, float min_p, const float* probs) const;
+    /// The owner (this) and `peer` share one head the pair graph can read for both.
+    bool pair_with(const MtpDrafter& peer) const;
+    bool draft_pair_launch(MtpDrafter& owner, int r, int T, const int32_t* tokens, int64_t p, int a, cudaStream_t s,
+                           std::string& err);
+    bool pair_head_launch(MtpDrafter& peer, cudaStream_t s, std::string& err);
+    /// STRATA_FUSE_DRAFTPAIR_ROUND=1 (--batch-mtp): both slots' one-draft rounds as ONE graph and one launch.
+    /// The two catch-up fronts are batched where the shared weights make that bitwise (fc_embedding, fc_hidden,
+    /// k/v, q, o); each slot keeps its own K/V state, positions, attention and PLE.  `final_R_own/peer` point at the
+    /// slot's two verifier residual rows; both are copied into the owner's four-row front buffer on `s` before the
+    /// graph.  The owner's pair graph also runs the head over both rows and the two selects.
+    bool draft_pair_round_launch(MtpDrafter& peer, int T_own, int T_peer,
+                                 const int32_t* tokens_own, int64_t p_own, int a_own,
+                                 const int32_t* tokens_peer, int64_t p_peer, int a_peer,
+                                 const float* final_R_own, const float* final_R_peer,
+                                 cudaStream_t s, std::string& err);
+    void draft_pair_finish(int32_t* drafts, int* n_drafts = nullptr);
+    /// STRATA_DBG_DRAFTCHECK: the head's logits of row r (r = 0: this drafter's own round's row)
+    const float* head_logits_row(int r) const { return head_logits_ + (size_t) r * (size_t) head_vocab(); }
+    int64_t head_vocab() const { return dhead_ != nullptr ? n_dvocab_ : n_vocab_; }
     bool coupled() const { return coupled_active_; }
     /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): this request's drafts are SAMPLED from
     /// q and each draft j's distribution is in spec_q() + j * kSpecQStride (ids, -1 terminated; then float bits),
@@ -180,7 +209,25 @@ private:
     bool record_front(int T, int row0, cudaStream_t cs, std::string& err);
     /// The rest for row 0 at step row `step_row`: the attention from the q projection, the MLP, the final mixer,
     /// the head, the draft and its probability.  Needs row 0's R_, inj_ and mixed_ (its q8_1 rows in xq_).
-    bool record_rest(int step_row, cudaStream_t cs, std::string& err);
+    // stop_at_head: the head's q8_1 input to head_xq (nullptr: xq_), and no head (STRATA_FUSE_DRAFTHEAD's rounds)
+    bool record_rest(int step_row, cudaStream_t cs, std::string& err, bool stop_at_head = false,
+                     uint8_t* head_xq = nullptr);
+    cudaGraphExec_t round_pre_exec_[9] = {};   // STRATA_FUSE_DRAFTHEAD: the round to the head input, per pair row
+    const uint8_t* round_pre_xq_[9] = {};     // (the head input row each was captured for)
+    cudaGraphExec_t pair_exec_ = nullptr;      // the owner's: the head over both rows, both slots' selects
+    const MtpDrafter* pair_peer_ = nullptr;
+    std::chrono::steady_clock::time_point pair_t0_{};
+    // STRATA_FUSE_DRAFTPAIR_ROUND: one graph for both slots' rounds and the pair head, keyed by (T_own, T_peer).
+    cudaGraphExec_t pair_round_exec_[9][9] = {};
+    const MtpDrafter* pair_round_peer_[9][9] = {};
+    const float* pair_round_src0_[9][9] = {};
+    const float* pair_round_src1_[9][9] = {};
+    bool capture_round_pre(int T, MtpDrafter& owner, int r, std::string& err);
+    bool capture_pair_round(MtpDrafter& peer, int T_own, int T_peer, const float* src_own, const float* src_peer,
+                            std::string& err);
+    bool pair_round_front(int T_own, int T_peer, MtpDrafter& peer, const float* src_own, const float* src_peer,
+                          cudaStream_t cs, std::string& err);
+    bool pair_round_rest(int T_own, int T_peer, MtpDrafter& peer, cudaStream_t cs, std::string& err);
     void norm_rope(float* data, const float* gamma, int rows, int cols, const int32_t* p, cudaStream_t cs);
     bool capture_prefill(int T, std::string& err);
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
@@ -298,6 +345,15 @@ private:
     void* hit_scratch_ = nullptr;
     float* sh_scratch_ = nullptr;
     uint16_t* x_bf16_ = nullptr;
+    // STRATA_FUSE_DRAFTPAIR_ROUND: the pair's selected step/position rows, contiguous for the batched QSA calls
+    int32_t* pair_step_ = nullptr;
+    int32_t* pair_pos_ = nullptr;
+    int32_t* pair_tok_ = nullptr;
+    int32_t* pair_kpos_ = nullptr;
+    // STRATA_FUSE_DRAFTPAIR_EXPERT: the two slots' shared-expert gate/up rows and scalar gates
+    float* sh_gate2_ = nullptr;
+    float* sh_up2_ = nullptr;
+    float* sh_g2_ = nullptr;
     float* head_logits_ = nullptr;
     float* dummy_inj_ = nullptr;
     int64_t cap_ = 0, attn_scratch_floats_ = 0;

@@ -36,6 +36,21 @@ void kv_append_q8_steps(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v
 void kv_append_q8_step(int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale, const int32_t* page_table,
                        const int32_t* step, const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
                        const KvHostPools* host = nullptr);
+/// fuse-gdn (STRATA_FUSE_KVROWS): kv_append_q8_step for `rows.n` rows in one launch, row j into its own pools, page
+/// table and host copy (none: a null k_q) with step + j * step_stride and kcur / vcur + j * cur_stride - bitwise the
+/// per-row calls (every row's cells are its own).
+struct KvQ8Rows {
+    static constexpr int kMax = 8;
+    int8_t* k_q[kMax] = {};
+    int8_t* v_q[kMax] = {};
+    uint16_t* k_scale[kMax] = {};
+    uint16_t* v_scale[kMax] = {};
+    const int32_t* table[kMax] = {};
+    KvHostPools host[kMax] = {};
+    int n = 0;
+};
+void kv_append_q8_rows(const KvQ8Rows& rows, const int32_t* step, int step_stride, const float* kcur, const float* vcur,
+                       int cur_stride, const QsaShapes& s, void* stream);
 
 /// Gather step[kStepWidth] cells named by `ids` into FP16 scratch `[id][kv_head][head_dim]`; the grid is sized by
 /// `max_ids` (capacity), the kernel reads the real count from `step`.

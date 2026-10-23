@@ -29,6 +29,14 @@ enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
 /// -2 for "auto" (Windows: the sliced pin stays below the GPU's shared-memory budget).
 int arena_pin_cap_gib();
 
+/// HIP on Linux: the amdgpu KFD's GLOBAL limit on GPU-accessible system memory (userptr registrations), estimated as
+/// RAM - RAM/64 - 1.5 GiB (the driver's own max_system_mem_limit; it is not exposed through sysfs).  It is shared by
+/// every process and every GPU on the host, and the same /dev/shm page registered by two replicas counts twice.  Code
+/// objects load lazily and need ~1 GiB of headroom.  0 when unknown or not a HIP/Linux build.
+uint64_t kfd_system_pin_limit_bytes();
+/// How many KFD GPU nodes this host reports (0 when unknown).  Separate replica processes divide the one KFD budget.
+int kfd_gpu_node_count();
+
 /// 153-igpu, UMA mode: the engine sets this on an integrated GPU whose firmware cannot survive a KFD queue eviction (the Radeon
 /// 780M, gfx1103).  The expert arena is then NOT registered with the GPU driver: a registered range is a userptr that the
 /// kernel's page migration (compaction, reclaim) invalidates, and every invalidation evicts the process's GPU queues (MES

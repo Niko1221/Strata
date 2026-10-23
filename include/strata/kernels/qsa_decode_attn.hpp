@@ -39,6 +39,14 @@ struct QsaAttnPoolsRows {
     int n = 0;
 };
 
+/// fuse-gdn (STRATA_FUSE_QSAWAVE): rows of a batch window that attend over different slots' pools at once - row
+/// wave.row[z] of the window (its q, selection, step and scratch at the window's bases + row strides) with pools wave.p[z].
+struct QsaAttnWave {
+    QsaAttnPools p[kAttnRowsMax];
+    int row[kAttnRowsMax] = {};
+    int n = 0;
+};
+
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);
 
@@ -64,6 +72,27 @@ struct QsaAttnSlotPools {
 /// (n_q > kQsaAttnMaxSlots, mixed formats, the pre-sm_75 / gfx103x or gfx906 variants): the caller loops instead.
 bool qsa_decode_attn_slots(const float* q, const QsaAttnSlotPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+/// fuse-gdn (STRATA_FUSE_ATTNMERGE): qsa_decode_attn_batch's two passes apart, each the kernels qsa_decode_attn_batch
+/// picks (the environment's): `chunks` writes the n_q queries' partials into `scratch` (one
+/// qsa_decode_attn_scratch_floats(cap, s) stride each), `merge` turns them into `attn`.  A batch window runs the
+/// chunks of its rows one by one (each between its row's resolve) and merges them all in one launch: per query the
+/// same kernels on the same bytes as qsa_decode_attn_batch.
+void qsa_decode_attn_batch_chunks(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                  int64_t cap, const QsaShapes& s, float* scratch, int64_t n_q, void* stream);
+/// fuse-gdn (STRATA_FUSE_QSAWAVE): qsa_decode_attn_batch_chunks for the wave's rows in one launch - per row the same
+/// kernel on the same bytes.  Only where that kernel is HIP's attn_chunk_kernel_pre75 (gfx103x / gfx12); elsewhere it
+/// launches nothing and returns false (the caller runs the per-row calls).
+bool qsa_decode_attn_wave_chunks(const float* q, const QsaAttnWave& wave, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, float* scratch, void* stream);
+/// fuse-gdn (STRATA_FUSE_GATEMERGE): qsa_decode_attn_batch_merge, then native_qsa_gate_apply(attn, q_full, gated,
+/// n_q * n_head, head_dim) in the same launch - the same bits in attn and gated.  HIP with the v2 merge only; elsewhere
+/// it launches nothing and returns false.  `xq_out` non-null (STRATA_FUSE_GATEMERGE_Q8): also gated's q8_1 image, row r
+/// at xq_out's row r - native_quantize_q8_1(gated, xq_out, n_head * head_dim, n_q)'s bytes.
+bool qsa_decode_attn_batch_merge_gate(const int32_t* steps, int64_t cap, const QsaShapes& s, const float* scratch,
+                                      float* attn, const float* q_full, float* gated, int64_t n_q, void* stream,
+                                      void* xq_out = nullptr);
+void qsa_decode_attn_batch_merge(const int32_t* steps, int64_t cap, const QsaShapes& s, const float* scratch, float* attn,
+                                 int64_t n_q, void* stream);
 /// For src/kernels/qsa_merge_daily_parity.cpp only: qsa_decode_attn_batch's two passes apart, whatever the environment
 /// says.  `chunks_only` runs the chunk pass into `scratch` with `daily_chunk` 0: attn_chunk_kernel (upstream's default),
 /// 1: the Daily's (attn_chunk_kernel_pre75, what STRATA_ATTN_DAILY=1 picks on CUDA).  `merge_only` merges those

@@ -21,6 +21,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include "strata/kernels/native_moe.hpp"
+#include "strata/kernels/dp4a.hpp"   // strata_spin_pause
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cstddef>
@@ -138,6 +139,82 @@ __global__ void combine_k10_vec4_hits(const float4* __restrict__ parts4, const f
     sum.w += sh.w;
     output4[c4] = sum;
 }
+// STRATA_FUSE_COMBINE: the CPU share's wait and copy folded into combine_k10_vec4_hits.  The parts are read where the
+// copy put them from: the mapped rows `src4` (the pool's), after thread 0 of every block has seen *flag >= value.
+//   !DP (copy_rows_from_mapped_after): a hit row's part is +0.0 (the copy wrote zeros there), the others the mapped row;
+//   DP (wait_flag_ge_or + copy_or_zero_from_mapped): *skip == value - every part +0.0, nothing waited for or read -
+//       else every part the mapped row.
+// Then a hit's part gets its hit added and the combine is combine_k10_vec4_hits' (the same ops in the same order).
+// GATED (STRATA_FUSE_SHGATE): `shared` is unscaled and sg[t] the raw gate logit: the row is scaled as
+// sigmoid_scale_rows_vec4_kernel did (the same gate expression, one rounded multiply) before it is added.
+template<bool DP, bool GATED>
+__global__ void combine_k10_vec4_hits_mapped(const float4* src4, const float4* __restrict__ hits4,
+                                             const int32_t* __restrict__ dst, const int32_t* __restrict__ count,
+                                             const float* __restrict__ weights, const float4* __restrict__ shared4,
+                                             float4* __restrict__ output4, int64_t n4, const volatile uint32_t* flag,
+                                             uint32_t value, const uint32_t* skip, const float* __restrict__ sg) {
+#pragma clang fp contract(off)
+    const int64_t tk = blockIdx.y;
+    __shared__ int hit_mask, zero;
+    if (threadIdx.x == 0) {
+        hit_mask = 0;
+        const bool z = DP && *(const volatile uint32_t*) skip == value;
+        zero = z;
+        if (!z) {
+            while (*flag < value) strata_spin_pause();
+            __threadfence_system();
+        }
+    }
+    __syncthreads();
+    const int nh = *count;
+    for (int h = threadIdx.x; h < nh; h += blockDim.x) {
+        const int r = dst[h];
+        if (r / 10 == (int) tk) atomicOr(&hit_mask, 1 << (r % 10));
+    }
+    __syncthreads();
+    const int mask = hit_mask;
+    const bool z = zero;
+    src4 += tk * 10 * n4;
+    hits4 += tk * 10 * n4;
+    weights += tk * 10;
+    shared4 += tk * n4;
+    output4 += tk * n4;
+    const int64_t c4 = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (c4 >= n4) return;
+    float4 p[10];
+#pragma unroll
+    for (int e = 0; e < 10; ++e) {   // every mapped load first, so they are in flight together
+        const bool hit = (mask >> e) & 1;
+        if (DP ? z : hit) p[e] = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        else p[e] = src4[int64_t(e) * n4 + c4];
+    }
+    const float w0 = __ldg(weights + 0);
+    if (mask & 1) { const float4 hh = hits4[c4]; p[0].x += hh.x; p[0].y += hh.y; p[0].z += hh.z; p[0].w += hh.w; }
+    float4 sum = make_float4(p[0].x * w0, p[0].y * w0, p[0].z * w0, p[0].w * w0);
+#pragma unroll
+    for (int expert = 1; expert < 10; ++expert) {
+        const float w = __ldg(weights + expert);
+        float4 q = p[expert];
+        if ((mask >> expert) & 1) { const float4 hh = hits4[int64_t(expert) * n4 + c4]; q.x += hh.x; q.y += hh.y; q.z += hh.z; q.w += hh.w; }
+        sum.x = fmaf(q.x, w, sum.x);
+        sum.y = fmaf(q.y, w, sum.y);
+        sum.z = fmaf(q.z, w, sum.z);
+        sum.w = fmaf(q.w, w, sum.w);
+    }
+    float4 sh = shared4[c4];
+    if constexpr (GATED) {
+        const float gt = __fdividef(1.0f, 1.0f + __expf(-__ldg(sg + tk)));
+        sh.x *= gt;
+        sh.y *= gt;
+        sh.z *= gt;
+        sh.w *= gt;
+    }
+    sum.x += sh.x;
+    sum.y += sh.y;
+    sum.z += sh.z;
+    sum.w += sh.w;
+    output4[c4] = sum;
+}
 bool valid_span(const void* p, size_t bytes) {
     const auto address = reinterpret_cast<uintptr_t>(p);
     return p && address % alignof(float) == 0 && bytes <= UINTPTR_MAX - address;
@@ -187,6 +264,26 @@ void native_moe_combine_multi_hits_added(const float* parts, const float* hits, 
     combine_k10_vec4_hits<<<dim3(unsigned((n4 + 127) / 128), (unsigned) n_tok), 128, 0, static_cast<cudaStream_t>(stream)>>>(
         reinterpret_cast<const float4*>(parts), reinterpret_cast<const float4*>(hits), dst, count, weights,
         reinterpret_cast<const float4*>(shared), reinterpret_cast<float4*>(output), n4);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
+void native_moe_combine_multi_hits_mapped(const float* mapped_parts, const float* hits, const int32_t* dst,
+                                          const int32_t* count, const float* weights, const float* shared, float* output,
+                                          int64_t n_embd, int64_t k, int n_tok, const uint32_t* flag, uint32_t value,
+                                          const uint32_t* skip, const float* shared_gate, void* stream) {
+    if (!stream || !flag || !native_moe_combine_hits_supported(mapped_parts, shared, output, n_embd, k, n_tok) ||
+        ((uintptr_t) hits & 15u) != 0)
+        throw std::invalid_argument("native MoE combine (mapped parts) requires k = 10, aligned spans, 1..8 tokens");
+    const int64_t n4 = n_embd >> 2;
+    const dim3 grid(unsigned((n4 + 127) / 128), (unsigned) n_tok);
+    const auto st = static_cast<cudaStream_t>(stream);
+#define STRATA_CMB(DP, G) combine_k10_vec4_hits_mapped<DP, G><<<grid, 128, 0, st>>>( \
+        reinterpret_cast<const float4*>(mapped_parts), reinterpret_cast<const float4*>(hits), dst, count, weights, \
+        reinterpret_cast<const float4*>(shared), reinterpret_cast<float4*>(output), n4, (const volatile uint32_t*) flag, value, skip, \
+        shared_gate)
+    if (skip != nullptr) { if (shared_gate != nullptr) STRATA_CMB(true, true); else STRATA_CMB(true, false); }
+    else { if (shared_gate != nullptr) STRATA_CMB(false, true); else STRATA_CMB(false, false); }
+#undef STRATA_CMB
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

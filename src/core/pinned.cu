@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <linux/mman.h>
 #ifndef MAP_HUGE_2MB
@@ -40,6 +41,69 @@
 #endif
 
 namespace strata::core {
+
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+namespace {
+constexpr uint64_t kKfdCodeObjectReserve = 1ull << 30;   // what a lazy code-object load needs; keep this much free
+int count_kfd_nodes() {
+    DIR* d = opendir("/sys/class/kfd/kfd/topology/nodes");
+    if (d == nullptr) return 0;
+    int n = 0;
+    while (dirent* e = readdir(d))
+        if (e->d_name[0] != '.') ++n;
+    closedir(d);
+    return n;
+}
+}  // namespace
+#endif
+
+uint64_t kfd_system_pin_limit_bytes() {
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+    static const uint64_t v = [] {
+        const uint64_t ram = strata::platform::total_physical_memory();
+        const uint64_t reserve = ram / 64 + (3ull << 29);   // RAM/64 + 1.5 GiB, as the driver computes it
+        return ram > reserve ? ram - reserve : 0;
+    }();
+    return v;
+#else
+    return 0;
+#endif
+}
+
+int kfd_gpu_node_count() {
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+    static const int v = [] {
+        const int n = count_kfd_nodes();
+        return n > 1 ? n - 1 : 0;   // node 0 is the host's system-memory node
+    }();
+    return v;
+#else
+    return 0;
+#endif
+}
+
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+namespace {
+// The sentence a refusal prints: the shared ceiling, this arena's use, what was given back and the cap to try.
+std::string kfd_pin_note(uint64_t pinned_bytes, uint64_t freed_bytes) {
+    const uint64_t limit = kfd_system_pin_limit_bytes();
+    const int nodes = kfd_gpu_node_count();
+    const uint64_t per = nodes > 1 && limit > kKfdCodeObjectReserve ? (limit - kKfdCodeObjectReserve) / (uint64_t) nodes : limit;
+    const uint64_t kept = pinned_bytes > freed_bytes ? pinned_bytes - freed_bytes : 0;
+    // Prefer what this arena can keep (the refusal happened after it filled the budget); otherwise the per-replica share.
+    const unsigned sugg = kept >= (2ull << 30) ? (unsigned) (kept >> 30) : (unsigned) (per >> 30);
+    char b[640];
+    std::snprintf(b, sizeof b,
+                  "the driver refused the next registration; KFD system pin limit ~%.1f GiB (RAM - RAM/64 - 1.5 GiB, shared "
+                  "by every process and GPU), this arena pinned %.1f GiB, backed off %.1f GiB for code objects; suggested "
+                  "STRATA_ARENA_PIN_GIB=%u%s",
+                  (double) (limit >> 20) / 1024.0, (double) (pinned_bytes >> 20) / 1024.0,
+                  (double) (freed_bytes >> 20) / 1024.0, sugg,
+                  nodes > 1 ? " (that share already divides by the host's GPU nodes; one replica per node)" : "");
+    return b;
+}
+}  // namespace
+#endif
 
 namespace {
 
@@ -461,11 +525,29 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             // 64 GB PC pins 30 GiB past that budget without trouble, and capping it at 26 cost ~20% prompt speed.
             if (!capped && env_gib == -2) limited = sliced_pin_limit(limit, limit_why);
 #endif
+            std::string refusal_note;
             for (size_t i = 0; i + 1 < bounds.size(); ++i) {
                 const uint64_t off = bounds[i], n = bounds[i + 1] - bounds[i];
                 if (limited && (off > limit || n > limit - off)) break;
                 if (pin_register((uint8_t*) base + off, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
                     (void) cudaGetLastError();
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+                    // KFD's system pin limit is shared with every process and GPU; a code object loads lazily later
+                    // and needs room.  Give back ~1 GiB of the slices just registered, then say what the ceiling is.
+                    const uint64_t pinned_before = registered_bytes;
+                    uint64_t freed = 0;
+                    while (registered_slices > 0 && freed < kKfdCodeObjectReserve) {
+                        const size_t j = (size_t) registered_slices - 1;
+                        const uint64_t o = slice_starts.back();
+                        const uint64_t len = bounds[j + 1] - o;
+                        (void) pin_unregister((uint8_t*) base + o);
+                        slice_starts.pop_back();
+                        --registered_slices;
+                        registered_bytes = o;
+                        freed += len;
+                    }
+                    refusal_note = kfd_pin_note(pinned_before, freed);
+#endif
                     break;
                 }
                 slice_starts.push_back(off);
@@ -480,6 +562,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                                         "; STRATA_ARENA_PIN_GIB=auto; N sets a cap; #243); " : std::string())) +
                    std::to_string(registered_slices) + " slices pinned (" + std::to_string(registered_bytes >> 30) +
                    " GiB); " + note;
+            if (!refusal_note.empty()) note = refusal_note + "; " + note;
             if (registered_bytes < bytes) {
                 const char* env = std::getenv("STRATA_ARENA_LOCK");
                 if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
@@ -554,6 +637,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     uint64_t total = 0;
     int refused = 0;
     bool capped = false;
+    std::string refusal_note;
     const bool none = arena_no_register();   // 153-igpu UMA mode: register no range at all; every byte is a locked "hole" below
     for (const auto& rg : ranges) {
         if (none) break;
@@ -576,6 +660,20 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
             cudaSuccess) {
             (void) cudaGetLastError();
             refused = 1;
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+            // KFD's shared system pin limit: give ~1 GiB back for the code objects loaded after the arena.
+            const uint64_t pinned_before = total;
+            uint64_t freed = 0;
+            while (!done.empty() && freed < kKfdCodeObjectReserve) {
+                auto last = std::prev(done.end());
+                const uint64_t o = last->first, len = last->second - o;
+                (void) pin_unregister((uint8_t*) base + o);
+                total -= len;
+                freed += len;
+                done.erase(last);
+            }
+            refusal_note = kfd_pin_note(pinned_before, freed);
+#endif
             break;
         }
         done[a] = b;
@@ -595,6 +693,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     note = "pin by need: " + std::to_string(pin_ranges.size()) + " ranges registered (" + std::to_string(total >> 20) +
            " MiB)" + (refused ? ", the driver refused the next one" : capped ? ", the cap was reached" : "") +
            "; " + note;
+    if (!refusal_note.empty()) note = refusal_note + "; " + note;
     const char* env = std::getenv("STRATA_ARENA_LOCK");
     if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
         note = "large pages are resident without a lock; " + note;
@@ -626,11 +725,29 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, De
 void PinnedArena::register_slices(std::atomic<int>& ready) {
     const int n = (int) bounds_.size() - 1;
     int i = 0;
+    std::string refusal_note;
     for (; base != nullptr && i < n; ++i) {
         const uint64_t off = bounds_[(size_t) i], len = bounds_[(size_t) i + 1] - off;
         if (pin_register((uint8_t*) base + off, (size_t) len, cudaHostRegisterPortable | cudaHostRegisterMapped) !=
             cudaSuccess) {
             (void) cudaGetLastError();
+#if defined(STRATA_USE_HIP) && !defined(_WIN32)
+            // KFD's shared system pin limit: give ~1 GiB back for the code objects loaded after the arena.
+            const uint64_t pinned_before = registered_bytes;
+            uint64_t freed = 0;
+            while (registered_slices > 0 && freed < kKfdCodeObjectReserve) {
+                const size_t j = (size_t) registered_slices - 1;
+                const uint64_t o = slice_starts.back();
+                const uint64_t l = bounds_[(size_t) j + 1] - o;
+                (void) pin_unregister((uint8_t*) base + o);
+                slice_starts.pop_back();
+                --registered_slices;
+                registered_bytes = o;
+                freed += l;
+            }
+            ready.store(registered_slices, std::memory_order_release);
+            refusal_note = kfd_pin_note(pinned_before, freed);
+#endif
             break;
         }
         slice_starts.push_back(off);
@@ -640,6 +757,7 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
     }
     note = "cudaHostRegister per layer, pipelined with the load: " + std::to_string(registered_slices) + " of " +
            std::to_string(n) + " slices pinned; " + note;
+    if (!refusal_note.empty()) note = refusal_note + "; " + note;
     if (i < n && base != nullptr) {   // the rest stays resident through the working-set lock, as the sliced fallback does
         const char* env = std::getenv("STRATA_ARENA_LOCK");
         if (backing == PageBacking::LargePages) {           // #779: large pages cannot be paged out: nothing to lock

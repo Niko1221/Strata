@@ -145,6 +145,22 @@ __global__ void append_layers(const float* __restrict__ raw0, long long raw_stri
                      L.dead[i], L.pooled[i], L.block_pos[i], max_cells, theta_scale, freq_scale, corr_low, corr_high,
                      ext_factor, mscale, mtab, rt);
 }
+// fuse-gdn: a batch window's appends, one block per slot group (blockIdx.x): the tail's snapshot first when asked
+// (copy_from_mapped's copy), then append's body over the group's rows
+template <bool TAB>
+__global__ void append_slots(QsaIndexerSlots G, int pos_stride, int pos_base, const float* __restrict__ gamma,
+                             float epsilon, float theta_scale, float freq_scale, float corr_low, float corr_high,
+                             float ext_factor, float mscale, const int32_t* __restrict__ mtab, RopeTab rt) {
+    const int i = blockIdx.x;
+    float* tail = G.tail[i];
+    if (G.snap[i] != nullptr) {
+        for (int j = threadIdx.x; j < (R - 1) * D; j += blockDim.x) G.snap[i][j] = tail[j];
+        __syncthreads();
+    }
+    append_body<TAB>(G.raw[i], G.pos[i], pos_stride, G.n_steps[i], pos_base, gamma, epsilon, tail, G.dead[i], G.pooled[i],
+                     G.block_pos[i], G.max_cells[i], theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale, mtab,
+                     rt);
+}
 // ---- C-2: the batched append.  The pooled key of a completed block b (its last cell pos = 4b+3), computed with
 // the single append's arithmetic: keys rounded through F16, summed tail[0]+tail[1]+tail[2]+incoming in that order,
 // the RMS norm, gamma, the rotation at pos_base + 4b.  `k(j)` is the key of the block's cell j: a row of this batch
@@ -332,6 +348,47 @@ void native_qsa_indexer_append_steps_layers(const float* raw0, int64_t raw_strid
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
 
+void native_qsa_indexer_append_slots(const QsaIndexerSlots& g, int pos_stride, int32_t pos_base, const float* gamma,
+                                     float epsilon, const QsaShapes& s, const RopeScaling& scaling, void* stream) {
+    if (g.n <= 0) return;
+    if (!stream || g.n > QsaIndexerSlots::kMax || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT || pos_base < 0 ||
+        pos_base % R || !std::isfinite(epsilon) || epsilon <= 0.0f || rope_scaling_invalid(scaling) != nullptr)
+        throw std::invalid_argument("native QSA indexer (slots): bad geometry, group count or parameters");
+    for (int i = 0; i < g.n; ++i) {   // append_steps' checks, group by group, and no two groups sharing a buffer
+        const int n_steps = g.n_steps[i];
+        const int64_t max_cells = g.max_cells[i];
+        if (n_steps < 1 || max_cells < 1 || int64_t(pos_base) + max_cells > INT32_MAX)
+            throw std::invalid_argument("native QSA indexer (slots): bad rows or capacity");
+        const std::size_t pos_span = (n_steps == 1 || pos_stride <= 0) ? 4 : (std::size_t(n_steps - 1) * pos_stride + 1) * 4;
+        const Span spans[] = {{g.raw[i],std::size_t(n_steps)*D*4},{g.pos[i],pos_span},{gamma,D*4},{g.tail[i],(R-1)*D*4},
+            {g.dead[i],D*4},{g.pooled[i],std::size_t(max_cells/R+1)*D*4},{g.block_pos[i],4}};
+        for (const auto& span : spans) validate(span);
+        for (int a = 0; a < 7; ++a) for (int b = a + 1; b < 7; ++b)
+            if (overlaps(spans[a], spans[b])) throw std::invalid_argument("native QSA indexer buffers overlap");
+        if (g.snap[i] != nullptr) {
+            const Span sn{g.snap[i], (R-1)*D*4};
+            validate(sn);
+            for (const auto& span : spans)
+                if (overlaps(sn, span)) throw std::invalid_argument("native QSA indexer (slots): the snapshot overlaps");
+        }
+        for (int j = 0; j < i; ++j)
+            if (g.tail[j] == g.tail[i] || g.dead[j] == g.dead[i] || g.pooled[j] == g.pooled[i] ||
+                g.block_pos[j] == g.block_pos[i])
+                throw std::invalid_argument("native QSA indexer (slots): two groups share a slot's buffers");
+    }
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / ROT);
+    const RopeKernelArgs k = scaling.kernel_args(ROT);
+    const RopeTab rt = rope_table_for(scaling);
+    const cudaStream_t st = static_cast<cudaStream_t>(stream);
+    if (rt.cos != nullptr)
+        append_slots<true><<<g.n, THREADS, 0, st>>>(g, pos_stride, pos_base, gamma, epsilon, theta_scale, k.freq_scale,
+                                                    k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, mrope_table(), rt);
+    else
+        append_slots<false><<<g.n, THREADS, 0, st>>>(g, pos_stride, pos_base, gamma, epsilon, theta_scale, k.freq_scale,
+                                                     k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, mrope_table(), rt);
+    const auto error = cudaGetLastError();
+    if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
+}
 void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_device, int32_t pos_base,
                                const float* gamma, float epsilon, const QsaIndexerBuffers& b,
                                const QsaShapes& s, int64_t max_cells, const RopeScaling& scaling, void* stream) {

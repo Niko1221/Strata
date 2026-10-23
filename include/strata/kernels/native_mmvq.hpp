@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace strata::kernels {
 
@@ -37,6 +38,9 @@ bool native_mmvq_multi_exact();
 // Supported specializations include Q4_K, Q5_K, Q6_K, IQ4_XS, IQ4_NL and Q8_0. Set before graph capture.
 void native_mmvq_set_b6_rows(int mode);
 int native_mmvq_b6_rows();
+// STRATA_Q6K_V2=1 (AMD): Q6_K's 1-4 column calls (from 1024 inputs) where B6, the exact rows kernel or the one-column
+// kernel would run, by a kernel issuing all of a thread's loads first; every output bitwise the same.  -1 = the environment's.  Set before graph capture.
+void native_mmvq_set_q6k_v2(int on);
 
 // One quantization may serve multiple weight matrices sharing the same input.
 // Q8_1 stores FP16 scale and FP16 warp sum of the ORIGINAL float inputs; it does
@@ -142,8 +146,41 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
                  int n_in, int n_out, int ncols, void* stream);
 /// S26 STRATA_LFUSE: native_mmvq(w1 -> y1) and native_mmvq(w2 -> y2), same type / shape / input, in ONE launch,
 /// bitwise the two calls. Returns false (nothing launched) where that is not the case (Q8_0, 2-8 columns only).
+/// STRATA_FUSE_SHPAIR=1: also Q4_K / Q5_K / Q6_K / IQ4_XS, 2-8 columns, where both calls would run b6_mmvq_rows_kernel
+/// or the exact native_mmvq_multi_kernel (not B7).
 bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
                       int n_in, int n_out, int ncols, void* stream);
+/// native_mmvq_pair with the K-quant / IQ4_XS pairs whatever STRATA_FUSE_SHPAIR says (the caller's own switch decides).
+bool native_mmvq_pair_any(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
+                          int n_in, int n_out, int ncols, void* stream);
+/// STRATA_FUSE_SHPAIR=1 (HIP): native_mmvq(type1, w1 -> y1) and native_mmvq(type2, w2 -> y2) of two formats (Q4_K /
+/// Q5_K / Q6_K / IQ4_XS), one shape and input, in one launch where each would run b6_mmvq_rows_kernel<F, n, 2> or the
+/// exact native_mmvq_multi_kernel<F, n, 4, 2>; bitwise the two calls.  false: nothing launched.
+bool native_mmvq_pair_mixed(int type1, int type2, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
+                            int n_in, int n_out, int ncols, void* stream);
+/// STRATA_FUSE_SHBEL=1 (HIP): the shared expert's gate/up pair (native_mmvq_pair's one launch) and the window's
+/// native_router_top10_multi_bell (native_router.hpp: its arguments logits .. seq) in ONE launch.  Block 0 is the router
+/// and fires the bell as soon as its top-10 is done; the pair's blocks (block prefix 1, 2 * ceil(n_out / 2) of them) never
+/// wait for it.  The same bytes as the two calls: y1/y2, ids/weights, the published rows and ids, and the ring.  The pair
+/// must be the one native_mmvq_pair / native_mmvq_pair_mixed would launch (2-8 columns, n_out even, the same rows-mode
+/// and pair-kind conditions); false: nothing launched, the caller makes the two calls.
+bool native_mmvq_pair_router_bell(int type1, int type2, const void* w1, const void* w2, const void* x_q8_1, float* y1,
+                                  float* y2, int n_in, int n_out, int ncols, const float* logits, int32_t* ids,
+                                  float* weights, int n_tok, const float* x, const int32_t* d_res, int n_expert, int64_t n,
+                                  int64_t k, float* x_out, int32_t* ids_out, uint32_t* seq, void* stream);
+/// STRATA_FUSE_PROJ=1 (native_mmvq_proj_on(); HIP): native_mmvq(seg.type, seg.w -> seg.y, n_in, seg.n_out, ncols) for
+/// 2-4 matrices of one input in one launch, bitwise those calls.  Each segment may be Q4_K (12), Q5_K (13), Q6_K (14)
+/// or IQ4_XS (23), any mix, 1-4 columns: the block runs the kernel that matrix's own call would (the Q6K_V2 body for an
+/// all-Q6_K set, b6_mmvq_rows_kernel's body for the other formats and mixes).  false: nothing launched (the caller
+/// makes the calls).
+struct MmvqSeg {
+    int type;
+    const void* w;
+    float* y;
+    int n_out;
+};
+bool native_mmvq_proj_on();
+bool native_mmvq_proj(const MmvqSeg* segs, int n_segs, const void* x_q8_1, int n_in, int ncols, void* stream);
 
 // Fork F4 (Eddoursul): 2..4 columns also INTERLEAVED, so one 16-byte load reads a position of every column: CP = 2 (2
 // columns) or 4 (3-4), zero-padded; nb = n_in / 32 blocks; int32 bm[nb][8][CP] (block-major), int32 pm[8][nb][CP]

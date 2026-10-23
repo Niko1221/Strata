@@ -81,6 +81,9 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                          const uint16_t* gate_inp_bf16, float* gate, float* up, float* g, float* out, int64_t n_embd,
                          int64_t n_ff, void* stream, const void* x_q8_1_ready = nullptr,
                          int lfuse = 0);   // S26 STRATA_LFUSE: bit 0 gate computed + applied by the caller, bit 1 gate/up pair
+/// The row scale shared_expert_multi applies after its gate GEMV: out[t] *= sigmoid(g[t]) (the parity checks'
+/// reference for the combines that apply it instead).
+void shared_expert_sigmoid_scale_rows(float* out, const float* g, int64_t n_embd, int n_tok, void* stream);
 
 /// The MoE block's final combination, `ref/moe.py::moe` L156:
 ///
