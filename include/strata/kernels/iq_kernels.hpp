@@ -93,9 +93,12 @@ void native_grouped_set_v1(bool v1);
 /// The bench / parity only: the 4-bit gate/up kernel of every format (-1 = expert_nibble.hpp's gu_skeleton, the
 /// default; 0 = the S skeleton; 1 = the P skeleton).  Bitwise the same results; set before graph capture.
 void native_expert_nib_set_variant(int v);
+/// gu-proto (nib_gu_proto.cuh): variant v's registers, local bytes and resident 256-thread blocks per SM for gu_type;
+/// false when v is not a gu-proto id (>= 10) or the type has none.
+bool native_expert_nib_variant_attr(int v, int gu_type, int* regs, int* local_bytes, int* blocks_per_sm);
 
 /// The bench only: the AMD kernel layout (STRATA_EXP_MODE values; -1 = the environment's) and the phase
-/// (0 all, 1 gate/up + SwiGLU + quantize, 2 down).
+/// (0 all, 1 gate/up + SwiGLU + quantize, 2 down, 3 gate/up only).
 void native_expert_set_mode(int mode, int phase);
 
 /// APR (prism.hadamard): y = H_block (signs * x) per block of `block` values of each of `rows` rows of `width`

@@ -299,6 +299,7 @@ int nibble_main(int argc, char** argv) {
     const std::vector<int> layers = nb_ints(argv[3]);
     std::vector<int> Ts = { 1, 2, 3, 4, 5, 6 }, shares = { 0, 50 };
     int plans = 200, trials = 7, mode = -1, variant = -1;
+    std::vector<int> vs;   // gu-proto: the nibble gate/up kernels compared with the production one (-1), gate/up only
     for (int i = 4; i + 1 < argc; i += 2) {
         const std::string a = argv[i];
         if (a == "--t") Ts = nb_ints(argv[i + 1]);
@@ -307,6 +308,7 @@ int nibble_main(int argc, char** argv) {
         else if (a == "--trials") trials = std::atoi(argv[i + 1]);
         else if (a == "--mode") mode = std::atoi(argv[i + 1]);
         else if (a == "--variant") variant = std::atoi(argv[i + 1]);
+        else if (a == "--vs") vs = nb_ints(argv[i + 1]);
         else {
             std::fprintf(stderr, "unknown option %s\n", a.c_str());
             return 2;
@@ -465,6 +467,91 @@ int nibble_main(int argc, char** argv) {
             }
             return diff;
         };
+        if (!vs.empty()) {   // gu-proto: nibble production (-1) against each id in --vs, gate/up only (phase 3)
+            std::vector<int> arms = { -1 };
+            arms.insert(arms.end(), vs.begin(), vs.end());
+            for (int v : vs) {
+                int regs = 0, loc = 0, occ = 0;
+                if (K::native_expert_nib_variant_attr(v, f.gu_type, &regs, &loc, &occ))
+                    std::printf("  variant %d: %d registers, %d B local, %d blocks/SM\n", v, regs, loc, occ);
+            }
+            const size_t fsz = (size_t) cap * FF * 4, fa = (fsz + 255) & ~(size_t) 255;
+            for (int tt : Ts) {
+                if (tt < 1 || tt > kTokMax) continue;
+                for (int share : shares) {
+                    std::vector<NbPlan> ps;
+                    double G = 0;
+                    for (int i = 0; i < plans; ++i) {
+                        ps.push_back(nb_route(rng, tt, share));
+                        G += ps.back().ng;
+                    }
+                    std::vector<NbDev> dn(ps.size());
+                    for (size_t i = 0; i < ps.size(); ++i) dn[i] = nb_upload(ps[i], slots, V.slot_bytes);
+                    const int64_t cp = std::max<int64_t>((int64_t) tt * 10, 1);
+                    auto launch = [&](int v, size_t i) {
+                        K::native_expert_nib_set_variant(v);
+                        K::native_expert_grouped(Ln, dn[i].ptr, dn[i].start, dn[i].ng, dn[i].dst, dn[i].tok,
+                                                 std::max<int64_t>(cp, ps[i].ng), std::max<int64_t>(cp, ps[i].ne), dxq, dscr,
+                                                 dout, s, 0);
+                    };
+                    K::native_expert_set_mode(mode, 3);
+                    // every plan: each arm's gate and up rows (the plan's entries) byte for byte the production arm's
+                    std::vector<long long> drows(arms.size(), 0);
+                    std::vector<uint8_t> ref(2 * fsz), got(2 * fsz);
+                    for (size_t i = 0; i < ps.size(); ++i) {
+                        const size_t n = (size_t) ps[i].ne * FF * 4;
+                        // native_expert_grouped's up rows start after cap_entries gate rows (256-aligned)
+                        const size_t fi = (size_t) std::max<int64_t>(cp, ps[i].ne) * FF * 4, fai = (fi + 255) & ~(size_t) 255;
+                        for (size_t a = 0; a < arms.size(); ++a) {
+                            NB_CK(cudaMemsetAsync(dscr, a == 0 ? 0xFF : 0x00, 2 * fa, s));
+                            launch(arms[a], i);
+                            std::vector<uint8_t>& o = a == 0 ? ref : got;
+                            NB_CK(cudaMemcpyAsync(o.data(), dscr, n, cudaMemcpyDeviceToHost, s));
+                            NB_CK(cudaMemcpyAsync(o.data() + fsz, (const uint8_t*) dscr + fai, n, cudaMemcpyDeviceToHost, s));
+                            NB_CK(cudaStreamSynchronize(s));
+                            if (a == 0) continue;
+                            for (size_t r = 0; r < (size_t) ps[i].ne; ++r) {
+                                drows[a] += std::memcmp(ref.data() + r * FF * 4, got.data() + r * FF * 4, FF * 4) != 0;
+                                drows[a] += std::memcmp(ref.data() + fsz + r * FF * 4, got.data() + fsz + r * FF * 4, FF * 4) != 0;
+                            }
+                        }
+                    }
+                    long long rows = 0;
+                    for (const NbPlan& p : ps) rows += 2LL * p.ne;
+                    std::vector<std::vector<float>> tm(arms.size());
+                    for (size_t a = 0; a < arms.size(); ++a)
+                        for (size_t i = 0; i < std::min<size_t>(ps.size(), 20); ++i) launch(arms[a], i);
+                    for (int tr = 0; tr < trials; ++tr)
+                        for (size_t a = 0; a < arms.size(); ++a) {
+                            NB_CK(cudaEventRecord(e0, s));
+                            for (size_t i = 0; i < ps.size(); ++i) launch(arms[a], i);
+                            NB_CK(cudaEventRecord(e1, s));
+                            NB_CK(cudaEventSynchronize(e1));
+                            float ms = 0;
+                            NB_CK(cudaEventElapsedTime(&ms, e0, e1));
+                            tm[a].push_back(1e3f * ms / (float) ps.size());
+                        }
+                    K::native_expert_set_mode(mode, 0);
+                    K::native_expert_nib_set_variant(variant);
+                    std::printf("  T=%d share %2d%% (G %.2f, %lld gate/up rows a plan set), gate/up us per launch (median, min..max of %d):\n",
+                                tt, share, G / plans, rows, trials);
+                    double base = 0;
+                    for (size_t a = 0; a < arms.size(); ++a) {
+                        std::sort(tm[a].begin(), tm[a].end());
+                        const double med = tm[a][tm[a].size() / 2];
+                        if (a == 0) base = med;
+                        std::printf("    %4d: %8.2f  (%7.2f..%7.2f)  x%.3f  %s\n", arms[a], med, tm[a].front(), tm[a].back(),
+                                    base / med, a == 0 ? "reference" : drows[a] ? ("rows differ: " + std::to_string(drows[a])).c_str() : "bitwise equal");
+                    }
+                    for (size_t i = 0; i < ps.size(); ++i) nb_free(dn[i]);
+                }
+            }
+            cudaFree(raw);
+            cudaFree(slots);
+            cudaFree(dp);
+            cudaFree(dbad);
+            continue;
+        }
         for (int tt : Ts) {
             if (tt < 1 || tt > kTokMax) continue;
             for (int share : shares) {

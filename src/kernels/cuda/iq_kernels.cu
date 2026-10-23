@@ -4198,12 +4198,46 @@ __global__ void __launch_bounds__(256) nib_gu_kernel(const unsigned long long* _
     }
 }
 
+#include "nib_gu_proto.cuh"   // STRATA_NIB_GU_PROTO: the staged-once 4-bit gate/up kernel (id 31)
+
 int g_nib_variant = -1;   // native_expert_nib_set_variant (the bench / parity); -1 = expert_nibble.hpp's gu_skeleton
+
+// STRATA_NIB_GU_PROTO: unset / 0 = off (the S / P skeleton per format); 1 (or 31) = gu-proto 31 (the activations staged
+// once per two row blocks with 16-byte loads, the production row dot).  Read once.
+int nib_gu_proto_env() {
+    static const int v = [] {
+        const char* e = std::getenv("STRATA_NIB_GU_PROTO");
+        int id = e != nullptr ? std::atoi(e) : 0;
+        if (id == 1) id = 31;
+        if (id != 31) id = 0;
+        if (id != 0) std::fprintf(stderr, "native_expert_grouped: STRATA_NIB_GU_PROTO: 4-bit gate/up kernel gu-proto %d\n", id);
+        return id;
+    }();
+    return v;
+}
 
 // The gate/up of a converted layer's VRAM groups: native_gu_multi_kernel's grid and outputs.
 void launch_gu_nib(const NativeExpertLayout& L, dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr,
                    const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_tok, const block_q8_1* X,
                    float* gate, float* up) {
+    if (g_nib_variant >= 10) {   // gu-proto (nib_gu_proto.cuh), forced by the bench / parity
+        if (((uintptr_t) X & 15) != 0 ||
+            !nibx_launch(L.gu_type, g_nib_variant, grid, s, grp_ptr, grp_start, n_groups, ent_tok, X, gate, up)) {
+            std::fprintf(stderr, "native_expert_grouped: gu-proto variant %d for type %d is not built (or x is not 16-aligned)\n",
+                         g_nib_variant, L.gu_type);
+            std::exit(1);
+        }
+        return;
+    }
+    // STRATA_NIB_GU_PROTO (opt-in, default off): the gu-proto kernel in place of the S / P skeleton - bitwise the
+    // same gate / up (iq_nibble_parity (7), native_expert_bench --nibble --vs).  The 16-byte staging needs x 16-aligned
+    // (verify's nat_xq_ rows are: a 256-aligned buffer, 2,880 B a token); otherwise the production kernel runs.
+    if (g_nib_variant < 0) {
+        const int pv = nib_gu_proto_env();
+        if (pv != 0 && ((uintptr_t) X & 15) == 0 &&
+            nibx_launch(L.gu_type, pv, grid, s, grp_ptr, grp_start, n_groups, ent_tok, X, gate, up))
+            return;
+    }
     const int skel = g_nib_variant >= 0 ? (g_nib_variant == 1 ? nibk::kSkelP : nibk::kSkelS) : nibk::gu_skeleton(L.gu_type);
 #define STRATA_NIB_GU(TG, S) \
     case TG * 2 + S: nib_gu_kernel<TG, S><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, gate, up); break;
@@ -4762,6 +4796,20 @@ void native_expert_nib_set_variant(int v) {
     g_nib_variant = v;
 #else
     (void) v;
+#endif
+}
+
+bool native_expert_nib_variant_attr(int v, int gu_type, int* regs, int* local_bytes, int* blocks_per_sm) {
+#if STRATA_EXPERT_NIBBLE_BUILT
+    cudaFuncAttributes a{};
+    if (!nibx_launch(gu_type, v, dim3(80, 1), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &a)) return false;
+    *regs = a.numRegs;
+    *local_bytes = (int) a.localSizeBytes;
+    *blocks_per_sm = g_nibx_occ;
+    return true;
+#else
+    (void) v; (void) gu_type; (void) regs; (void) local_bytes; (void) blocks_per_sm;
+    return false;
 #endif
 }
 
@@ -5399,7 +5447,7 @@ int exp_mode() {
 #endif
 }
 #endif
-int g_exp_phase = 0;   // the bench: 0 all, 1 gate/up + swiglu + quantize only, 2 down only
+int g_exp_phase = 0;   // the bench: 0 all, 1 gate/up + swiglu + quantize only, 2 down only, 3 gate/up only
 #if STRATA_EXP_LAYOUTS && !defined(__HIPCC__)
 // The down projection's mode on Turing's default: mode 4 is slower than the CUDA layout once groups have 3+ entries
 // (12 x 3: 36.5 -> 40.8 us, 16 x 4: 56.9 -> 68.9) - windows of 4+ tokens (cap_groups > 30) keep mode 0 there.
@@ -5635,6 +5683,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
 #endif
     check("native_expert_grouped/gu");
+    if (g_exp_phase == 3) return;   // the bench: gate/up only
     const long long nh = (long long) cap_entries * L.n_ff;
 #if defined(STRATA_HIP_GFX906)
     // gfx906: the separate SwiGLU and q8_1 passes stay the default (the A/B baseline); the RDNA one-pass
