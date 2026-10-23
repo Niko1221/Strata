@@ -63,6 +63,10 @@ on an RTX 5080 with DDR5-6400 dual channel, two long agent sessions with a Qwen3
 - `--snapshots 2` in the config's `args` keeps two copies of the recurrent state per session (62.8 MiB each for Qwen3.6-35B-A3B),
   taken at the end of reading a prompt of 4,096 tokens or more (`--snapshot-min N`): a prompt that parts from the held tokens after
   one restores it and reads only the rest.
+- `--snapshot-host` (with `--snapshots K`; it says so when K is missing) keeps the snapshots in pinned host memory instead of VRAM, so the
+  expert slots get K x 62.8 MiB. A snapshot is then a copy to the host and a restore a copy back; the restored bytes are the same.
+  RTX 5080 16 GB, PCIe 5.0 x16, `--max-context 262144 --kv int8`, one snapshot of 62.8 MiB: 1.6 ms to the host and 1.2 ms back (0.15 ms
+  and 0.16 ms in VRAM). The memory it frees goes to the expert slots (a few per layer with `--snapshots 2`); the decode gain is measured per branch for the pull request.
 
 `STRATA_REUSE_DIAG=1` (off by default: it logs a few of the conversation's tokens) makes the engine log the token where a prompt parts
 from a session's held tokens, and the server say it in text.
@@ -335,6 +339,7 @@ on the `strata-q36` command line.
   The main path has its own sampled drafting (`STRATA_SPEC_PROB`, `--coupled-draft`, docs/DETAILS.md "Sampled drafting"); `STRATA_SPEC_MIN_TEMP`
   and the rule in `spec_prob.hpp` are that path's, reused here. With this option the host's top-k breaks exact ties between logits by id (as
   `--sample-gpu` does); without either option a sampled request is unchanged.
+- **`--snapshot-host`**: the snapshots of `--snapshots K` in pinned host memory (see below).
 - **`--snapshots K`**, **`--snapshot-min N`**: see "A conversation that parts from the held tokens" (K up to 4).
 - **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
   hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
