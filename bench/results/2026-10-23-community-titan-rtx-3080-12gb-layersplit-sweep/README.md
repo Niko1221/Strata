@@ -235,3 +235,22 @@ but note the direction: these are agent turns with ~99% prefix reuse, and my swe
   win, measured +14.5% on a 210W-capped TITAN + 3080 pair" would have saved an hour of wondering.
 * §"How to read a report that disagrees with your hardware": the ~0-1% to ~19% engine-line vs client-chunk
   calibration band is a concrete instance of "measure with the ruler you ship".
+
+## Follow-up, same day: standard-v1 cross-check and the same-box single-card baseline
+
+After the sweep finished, the K=32 live config was re-measured with the official protocol — `strata bench run --url http://127.0.0.1:8000 --suite standard-v1` (frozen corpus `e75eff8b9feea04f...`) — with the concurrent bulk model **download paused** for a clean measurement (see the limitation below). The runner's own report, results.json and per-request outputs are committed as [`2026-10-23-community-titan-3080-standard-v1/`](../2026-10-23-community-titan-3080-standard-v1/README.md).
+
+| Case (median) | TITAN RTX 24 GB alone, 2026-10-20 (engine 0.1.46.1, 250 W cap) | TITAN RTX + RTX 3080 layer split K=32, 2026-10-23 (engine 0.1.48, 210+280 W) | Delta |
+| --- | --- | --- | --- |
+| short decode tok/s | 62.6 | **94.1** | +50% |
+| 4K decode tok/s | 60.0 | **88.2** | +47% |
+| 16K decode tok/s | 54.6 | **82.3** | +51% |
+| 4K prompt tok/s | 900.6 | 846.0 | -6% |
+| 16K prompt tok/s | 1,270.3 | **1,507.3** | +19% |
+| TTFT s (short/4K/16K) | 1.5 / 4.6 / 12.9 | 1.3 / 4.9 / 10.9 | improved |
+
+The single-card column is the same machine's own official-suite run six days earlier (new engine defaults, TITAN only, before the 3080 was fitted), so the before/after isolates "add the 3080 and split K=32" from machine differences — but it does **not** isolate it from the engine bump (0.1.46.1 -> 0.1.48) nor from the TITAN power-cap change (250 -> 210 W): the +47-51% decode gain and the -6% 4K-prompt cell carry both confounds and should be read as "this box, before vs after", not as the layer split alone.
+
+Sanity: 11/12 (I2 JSON-value fail, engine 0.1.48). Concurrency (capacity 1): 74.4 / 71.1 / 69.7 tok/s aggregate across three four-request rounds.
+
+Measurement hazard found the hard way: a 1.7 MB/s bulk download writing its 97 GB file through the page cache evicted the expert pool from RAM and crushed decode run-over-run 87.9 -> 36.5 -> 9.2 -> 1.9 tok/s while prompt rates stayed flat within 1%. On a box that streams experts from the page cache, **any bulk file write must be paused during measurement** — and not just the process: also the flock watchdog that restarts it (killing it without muting its cron is not enough).
