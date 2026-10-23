@@ -20,6 +20,27 @@ struct Sampling {
     bool needs_logits() const { return temperature > 0.f || repeat != 1.f || freq != 0.f || present != 0.f; }
 };
 
+/// The tie rule of the top-k on the GPU shortlist (k_topk_cand) and, with --mtp-sampled or --sample-gpu (tie_by_id()), on the host
+/// too: the higher logit first, then the lower id.  Without those options the host's top-k keeps the comparator it always had
+/// (lg[a] > lg[b]; std::partial_sort leaves equal logits in an unspecified order), so a sampled request's text is unchanged.
+inline bool before(float a, int ia, float b, int ib) { return a > b || (a == b && ia < ib); }
+/// A process-wide switch, written once in run() before any request (the solo, batch and serve paths all read it); tests set it themselves.
+inline bool& tie_by_id() { static bool on = false; return on; }
+
+inline bool penalised(const Sampling& s) {
+    return s.last_n != 0 && (s.repeat != 1.f || s.freq != 0.f || s.present != 0.f);
+}
+/// the counts of the ids among the last last_n tokens of hist
+inline void penalty_counts(const Sampling& s, const std::vector<int32_t>& hist, std::map<int, int>& cnt) {
+    const size_t from = s.last_n < 0 || (size_t) s.last_n >= hist.size() ? 0 : hist.size() - (size_t) s.last_n;
+    for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
+}
+/// one id's penalty (the same float operations wherever it runs)
+inline void penalise(float& v, int count, const Sampling& s) {
+    if (s.repeat != 1.f) v = v > 0 ? v / s.repeat : v * s.repeat;
+    v -= (float) count * s.freq + s.present;
+}
+
 /// The sampling chain up to the draw: penalties (in place on lg, over the last last_n tokens of hist; an id past lg's
 /// end, a history token outside a --draft-vocab row, is not in the row and takes none), top_k, the softmax at the
 /// temperature, min_p, top_p.  The kept ids are c.idx[0 .. c.keep), their unnormalised weights c.p,
@@ -30,30 +51,14 @@ struct Chain {
     size_t keep = 0;
     double tot = 0;
 };
-inline int chain(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>& hist, Chain& c) {
-    if (s.last_n != 0 && (s.repeat != 1.f || s.freq != 0.f || s.present != 0.f)) {
-        std::map<int, int> cnt;
-        const size_t from = s.last_n < 0 || (size_t) s.last_n >= hist.size() ? 0 : hist.size() - (size_t) s.last_n;
-        for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
-        for (const auto& [id, c] : cnt) {
-            if (id < 0 || (size_t) id >= lg.size()) continue;
-            float& v = lg[(size_t) id];
-            if (s.repeat != 1.f) v = v > 0 ? v / s.repeat : v * s.repeat;
-            v -= (float) c * s.freq + s.present;
-        }
-    }
-    if (s.temperature <= 0.f) return (int) (std::max_element(lg.begin(), lg.end()) - lg.begin());
-    const int kk = std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, (int) lg.size()));
+/// the chain after the top_k: c.idx the kept ids (best first, the tie rule), vals[i] the penalised logit of c.idx[i]
+inline void chain_tail(const std::vector<float>& vals, const Sampling& s, Chain& c) {
     std::vector<int>& idx = c.idx;
-    idx.resize(lg.size());
-    for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int) i;
-    std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(), [&](int a, int b) { return lg[a] > lg[b]; });
-    idx.resize((size_t) kk);
     std::vector<double>& p = c.p;
     p.resize(idx.size());
-    const double mx = lg[(size_t) idx[0]];
+    const double mx = vals[0];
     double sum = 0;
-    for (size_t i = 0; i < idx.size(); ++i) sum += (p[i] = std::exp((lg[(size_t) idx[i]] - mx) / s.temperature));
+    for (size_t i = 0; i < idx.size(); ++i) sum += (p[i] = std::exp((vals[i] - mx) / s.temperature));
     size_t keep = idx.size();
     double cum = 0;
     for (size_t i = 0; i < idx.size(); ++i) {
@@ -66,6 +71,88 @@ inline int chain(std::vector<float>& lg, const Sampling& s, const std::vector<in
     for (size_t i = 0; i < keep; ++i) tot += p[i];
     c.keep = keep;
     c.tot = tot;
+}
+inline int chain(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>& hist, Chain& c) {
+    if (penalised(s)) {
+        std::map<int, int> cnt;
+        penalty_counts(s, hist, cnt);
+        for (const auto& [id, n] : cnt) {
+            if (id < 0 || (size_t) id >= lg.size()) continue;
+            penalise(lg[(size_t) id], n, s);
+        }
+    }
+    if (s.temperature <= 0.f) return (int) (std::max_element(lg.begin(), lg.end()) - lg.begin());
+    const int kk = std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, (int) lg.size()));
+    std::vector<int>& idx = c.idx;
+    idx.resize(lg.size());
+    for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int) i;
+    if (tie_by_id())
+        std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(),
+                          [&](int a, int b) { return before(lg[(size_t) a], a, lg[(size_t) b], b); });
+    else
+        std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(), [&](int a, int b) { return lg[a] > lg[b]; });
+    idx.resize((size_t) kk);
+    std::vector<float> vals(idx.size());
+    for (size_t i = 0; i < idx.size(); ++i) vals[i] = lg[(size_t) idx[i]];
+    chain_tail(vals, s, c);
+    return -1;
+}
+
+/// SHORTLIST (--sample-gpu): the GPU hands back the K highest RAW logits of a row (k_cand_part / k_cand_merge, the tie rule, any order)
+/// instead of the 1 MB row.  Penalties here only lower a logit (repeat >= 1, freq >= 0, present >= 0), so with
+/// K = top_k + the number of penalised ids no outside id can reach the penalised top_k: the shortlist holds the same
+/// top_k as the whole row, and chain_c gives chain()'s bits.
+struct Cand {
+    std::vector<int32_t> id;
+    std::vector<float> v;
+};
+/// K for a row whose history is hist followed by `extra` (the drafts before it, or a window's drafts): 0 when the
+/// shortlist cannot be used (a penalty that raises a logit, an unbounded window, K past kMax) and the row is copied whole.
+constexpr int kCandMax = 160;
+/// the GPU kernels split a row in kCandBlocks slices of at most kCandSlice logits, each holding at least K
+constexpr int kCandBlocks = 32, kCandSlice = 8192;
+/// a row of n logits is cut in slices of ceil(n / 32); every slice, the last (shorter) one too, must hold K of them
+inline bool cand_rows_ok(size_t n, int K) {
+    const size_t S = (n + kCandBlocks - 1) / kCandBlocks;
+    return n <= (size_t) kCandBlocks * kCandSlice && n > (size_t) (kCandBlocks - 1) * S && n - (size_t) (kCandBlocks - 1) * S >= (size_t) K;
+}
+inline int cand_need(const Sampling& s, const std::vector<int32_t>& hist, const int32_t* extra, int n_extra, size_t n_row) {
+    int kk = s.temperature <= 0.f ? 1 : std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, (int) n_row));
+    int P = 0;
+    if (penalised(s)) {
+        if (!(s.repeat >= 1.f) || !(s.freq >= 0.f) || !(s.present >= 0.f) || s.last_n < 0) return 0;   // (NaN too)
+        std::map<int, int> seen;
+        const size_t want = (size_t) s.last_n + (size_t) n_extra;
+        const size_t tot = hist.size() + (size_t) n_extra;
+        for (size_t i = tot > want ? tot - want : 0; i < tot; ++i)
+            seen[i < hist.size() ? hist[i] : extra[i - hist.size()]] = 1;
+        P = (int) seen.size();
+    }
+    const int K = kk + P;
+    return K > kCandMax || !cand_rows_ok(n_row, K) ? 0 : K;
+}
+inline int chain_c(Cand& cd, size_t n_row, const Sampling& s, const std::vector<int32_t>& hist, Chain& c) {
+    if (penalised(s)) {
+        std::map<int, int> cnt;
+        penalty_counts(s, hist, cnt);
+        for (const auto& [id, n] : cnt)
+            for (size_t j = 0; j < cd.id.size(); ++j)
+                if (cd.id[j] == id) { penalise(cd.v[j], n, s); break; }
+    }
+    std::vector<int>& idx = c.idx;
+    idx.resize(cd.id.size());
+    for (size_t j = 0; j < idx.size(); ++j) idx[j] = (int) j;
+    const auto better = [&](int a, int b) { return before(cd.v[(size_t) a], cd.id[(size_t) a], cd.v[(size_t) b], cd.id[(size_t) b]); };
+    if (s.temperature <= 0.f) return cd.id[(size_t) *std::min_element(idx.begin(), idx.end(), better)];
+    const int kk = std::max(1, std::min(s.top_k > 0 ? s.top_k : 64, (int) n_row));
+    std::partial_sort(idx.begin(), idx.begin() + kk, idx.end(), better);
+    idx.resize((size_t) kk);
+    std::vector<float> vals(idx.size());
+    for (size_t i = 0; i < idx.size(); ++i) {
+        vals[i] = cd.v[(size_t) idx[i]];
+        idx[i] = cd.id[(size_t) idx[i]];
+    }
+    chain_tail(vals, s, c);
     return -1;
 }
 
@@ -82,6 +169,11 @@ inline int draw(const Chain& c, std::mt19937_64& rng) {
 inline int sample(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
     Chain c;
     const int g = chain(lg, s, hist, c);
+    return g >= 0 ? g : draw(c, rng);
+}
+inline int sample_c(Cand& cd, size_t n_row, const Sampling& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
+    Chain c;
+    const int g = chain_c(cd, n_row, s, hist, c);
     return g >= 0 ? g : draw(c, rng);
 }
 
@@ -142,6 +234,22 @@ struct SpecJudge {
         hist.insert(hist.end(), prev, prev + d);
         const int g = chain(lg, s, hist, c);
         hist.resize(h0);
+        return draft_pick(d, g, prob);
+    }
+    /// draft() from a shortlist of the block's row (n_row ids wide)
+    int32_t draft_c(int d, const int32_t* prev, Cand& cd, size_t n_row, float* prob) {
+        const size_t h0 = hist.size();
+        hist.insert(hist.end(), prev, prev + d);
+        const int g = chain_c(cd, n_row, s, hist, c);
+        hist.resize(h0);
+        return draft_pick(d, g, prob);
+    }
+    /// K of draft d's shortlist (0: copy the whole row), and of a window whose drafts are `drafts`
+    int draft_k(int d, const int32_t* prev, size_t n_row) const { return cand_need(s, hist, prev, d, n_row); }
+    int window_k(const std::vector<int32_t>& drafts, size_t n_row) const {
+        return cand_need(s, hist, drafts.data(), (int) drafts.size(), n_row);
+    }
+    int32_t draft_pick(int d, int g, float* prob) {
         if (g >= 0) {   // (not reached: q runs for temperature > 0 only)
             qid[d].assign(1, g);
             qp[d].assign(1, 1.f);
@@ -169,15 +277,26 @@ struct SpecJudge {
     /// the window's rows in order, each judged under the history with the drafts kept before it; returns a.
     /// row(r, lg): the target's logits of window row r (the engine's host_logits_row).
     template <class Row> int judge(Row&& row, int D, const std::vector<int32_t>& drafts, int32_t* picks) {
+        return judge_rows([&](int a) { row(a, lg); return chain(lg, s, hist, c); },
+                          [&](int a) { row(a, lg); return sample(lg, s, hist, rng); }, D, drafts, picks);
+    }
+    /// judge() over shortlists: row(r, cd) fills row r's (--sample-gpu); n_row the width of the target's row
+    template <class Row> int judge_c(Row&& row, size_t n_row, int D, const std::vector<int32_t>& drafts, int32_t* picks) {
+        return judge_rows([&](int a) { row(a, cd); return chain_c(cd, n_row, s, hist, c); },
+                          [&](int a) { row(a, cd); return sample_c(cd, n_row, s, hist, rng); }, D, drafts, picks);
+    }
+    Cand cd;
+    /// chn(a): row a's chain (fills c; returns the greedy pick or -1); smp(a): row a's plain sample
+    template <class Chn, class Smp>
+    int judge_rows(Chn&& chn, Smp&& smp, int D, const std::vector<int32_t>& drafts, int32_t* picks) {
         const size_t h0 = hist.size();
         int a = 0;
         for (;; ++a) {
-            row(a, lg);
             if (rule == SpecRule::match || a == D) {
-                picks[a] = sample(lg, s, hist, rng);
+                picks[a] = smp(a);
                 if (a == D || picks[a] != drafts[(size_t) a]) break;
             } else {
-                const int g = chain(lg, s, hist, c);
+                const int g = chn(a);
                 if (g >= 0) {   // (greedy with penalties: the rule is the compare)
                     picks[a] = g;
                     if (g != drafts[(size_t) a]) break;

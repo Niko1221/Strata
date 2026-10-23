@@ -293,6 +293,20 @@ on the `strata-q36` command line.
   the new expert enters the tables only once its copy has landed (checked at the start of the next forward), so no slot is read before its
   bytes arrived. `--async-swaps` takes the decode ones, `--async-after-prompt` the after-prompt ones too (see "Slot swaps" below). They need
   the pinned expert copy.
+- **`--sample-gpu`** (env `STRATA_Q36_SAMPLE_GPU=1`): a sampled row comes to the host as a shortlist, not as 1 MB of logits. A GPU
+  kernels (`k_cand_part`, `k_cand_merge`) return the K highest raw logits of each row (K = `top_k` + the number of distinct ids the penalties touch,
+  at most 160; ties: the higher logit, then the lower id), and the host applies the penalties to them and runs the rest of the chain.
+  Penalties only lower a logit, so the shortlist holds the same top_k as the whole row and the token, the rng use and the text
+  are the same as with the whole row (a request with a penalty that raises a logit, K past 160, or a row too narrow for the 32
+  slices copies the row whole). With this option (and with `--mtp-sampled`) ids with exactly equal logits sort by id in the host's top-k too, so the
+  shortlist and the whole row agree; without either option the host keeps the comparator it had and a sampled request's text is unchanged
+  (`q36_sampling_test` compares `sample()` with the old function on 8,000 random rows). Measured (RTX 5080, Core Ultra 9 285K,
+  Q4_K_M ssmbf16, 32K context, 10 short prompts x 160 tokens, card sampling, seed 7, same text): sampled decode 183 -> 189 tok/s
+  (+3%), sampled `--mtp 2 --mtp-sampled q --spec-min-p 0.5` 210 -> 229 tok/s (+9%, one run; another run of the build gave 215).
+  The saving is a fixed host time per sampled row, so it is a smaller share at long context. A
+  speculative window's rows and the drafts of `--mtp-sampled q` use it too, one copy of a few KB per window instead of one MB
+  per row. `STRATA_Q36_SAMPLE_PROFILE=1` logs the sampler's host time per request; `STRATA_Q36_SAMPLE_CHECK=1` checks every
+  shortlist against the whole row (slow; a test aid).
 - **`--mtp-sampled match | q`** (with `--mtp N`): sampled requests draft with the MTP block too (without it only greedy ones do).
   `match` drafts the block's greedy pick and keeps each window row's token as a plain decode step samples it, so a fixed seed gives the
   same text as without drafts (until a near tie falls the other way in the last bits); `q` samples the drafts from the block's own
@@ -301,6 +315,9 @@ on the `strata-q36` command line.
   the block's top probability, which keeps the rule exact). `q` needs `top_k` <= 64 and a temperature above 0 and at least
   `STRATA_SPEC_MIN_TEMP`; other sampled requests use `match`. With `--draft-vocab N` the drafts come from the first N ids, and the
   penalties apply to the ids the draft row has.
+  The main path has its own sampled drafting (`STRATA_SPEC_PROB`, `--coupled-draft`, docs/DETAILS.md "Sampled drafting"); `STRATA_SPEC_MIN_TEMP`
+  and the rule in `spec_prob.hpp` are that path's, reused here. With this option the host's top-k breaks exact ties between logits by id (as
+  `--sample-gpu` does); without either option a sampled request is unchanged.
 - **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
   hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
   end the experts in the slots then, ranked by the routing counted since the warm-up, are saved to F (a `.tmp` beside it renamed over
@@ -402,6 +419,7 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
 - `q36_attn_parity` (built with the tests or `-DSTRATA_PARITY_Q36_ATTN=ON`, GPU, no model): the grouped-query attention kernels (fp32,
   fp16, int8 and k8v4 cells) against a double-precision reference.
 - `q36_sampling_test` (CPU): `--mtp-sampled`'s rules on a toy model: `match` gives the plain sampler's text seed for seed, `match` and
-  `q` give the exact joint of four tokens (with `--spec-min-p` and a `--draft-vocab` row too), and three wrong rules fail.
+  `q` give the exact joint of four tokens (with `--spec-min-p` and a `--draft-vocab` row too), and three wrong rules fail; the
+  shortlist of `--sample-gpu` gives the whole row's chain, token and rng state on random rows with ties and penalties.
 - `q36_spec_sampled.py`: `--mtp-sampled` on the real model (the distribution of short continuations against `off`, and the speed).
 - `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.

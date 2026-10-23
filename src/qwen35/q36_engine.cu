@@ -72,6 +72,7 @@ namespace {
 
 namespace K = strata::kernels;
 namespace MMQ = strata::prefill::mmq;
+namespace sampling = strata::qwen35::sampling;
 
 #define CK(x)                                                                                                          \
     do {                                                                                                               \
@@ -695,6 +696,108 @@ __global__ void k_pick_prob(const float* x, int n, const int32_t* pick, float* o
         __syncthreads();
     }
     if (threadIdx.x == 0) *out = 1.f / bs[0];
+}
+
+/// --sample-gpu: the SHORTLIST of a sampled row (q36_sampling.hpp, Cand): the K highest raw logits of each row, the tie
+/// rule (higher logit, then lower id), in any order, as (id, logit) pairs, K per row packed.  Two kernels: k_cand_part, a
+/// block per 1/32 of the row, keeps its slice's K highest (the global K highest are among them); k_cand_merge, a block
+/// per row, takes the K highest of those 32 K.  Both select with cand_select: a radix select of the K-th key over
+/// shared memory (4 passes of 8 bits), then the elements above it and the ties at it, the lowest ids first.  The host
+/// applies the penalties and runs the rest of the chain on them.
+struct Cand2 { int32_t id; float v; };
+using sampling::kCandBlocks;
+using sampling::kCandSlice;
+__device__ __forceinline__ uint32_t cand_key(float x) {
+    uint32_t u = __float_as_uint(x);
+    if ((u << 1) == 0) u = 0;   // -0 == +0 (the host compares floats)
+    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+}
+/// the K highest of n keys (kf(i)) into sidx[0 .. K) (indices i, any order); ties at the K-th key: the lowest idf(i).
+/// kOrdered: idf grows with i.  One block; the caller syncs before and after.
+template <bool kOrdered, class KF, class IDF>
+__device__ __forceinline__ void cand_select(int n, int K, KF kf, IDF idf, int* sidx) {
+    __shared__ unsigned hist[256];
+    __shared__ unsigned s_prefix, s_rem, s_eq, s_cnt;
+    const int tid = threadIdx.x;
+    if (tid == 0) { s_prefix = 0; s_rem = (unsigned) K; s_cnt = 0; }
+    for (int pass = 0; pass < 4; ++pass) {
+        const int shift = 24 - 8 * pass;
+        if (tid < 256) hist[tid] = 0;
+        __syncthreads();
+        const unsigned pre = s_prefix;
+        for (int base = 0; base < n; base += blockDim.x) {   // (all lanes of a warp take every turn: __match_any_sync)
+            const int i = base + tid;
+            const uint32_t u = i < n ? kf(i) : 0u;
+            const bool in = i < n && (pass == 0 || (u >> (shift + 8)) == (pre >> (shift + 8)));
+            const unsigned bin = (u >> shift) & 255u;
+#if !defined(__HIPCC__) && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+            if (pass == 0) {   // the top byte holds few values: one add per distinct bin of the warp (sm_70+)
+                const unsigned m = __match_any_sync(0xffffffffu, in ? bin : 256u);
+                if (in && (tid & 31) == __ffs(m) - 1) atomicAdd(&hist[bin], (unsigned) __popc(m));
+            } else
+#endif
+            if (in) {
+                atomicAdd(&hist[bin], 1u);
+            }
+        }
+        __syncthreads();
+        if (tid == 0) {
+            unsigned rem = s_rem;
+            int b = 255;
+            for (; b > 0; --b) {
+                if (hist[b] >= rem) break;
+                rem -= hist[b];
+            }
+            s_prefix = pre | ((unsigned) b << shift);
+            s_rem = rem;
+            s_eq = hist[b];
+        }
+        __syncthreads();
+    }
+    const unsigned thr = s_prefix, need = s_rem, eq = s_eq;
+    for (int i = tid; i < n; i += blockDim.x) {
+        const uint32_t u = kf(i);
+        if (u > thr || (u == thr && eq == need)) sidx[atomicAdd(&s_cnt, 1u)] = i;
+    }
+    __syncthreads();
+    if (eq != need && tid == 0) {   // ties across the K-th place: the lowest ids (rare)
+        unsigned c = s_cnt;
+        if (kOrdered) {
+            for (int i = 0, taken = 0; i < n && taken < (int) need; ++i)
+                if (kf(i) == thr) { sidx[c++] = i; ++taken; }
+        } else {
+            int last = -1;
+            for (unsigned t = 0; t < need; ++t) {
+                int best = -1;
+                for (int i = 0; i < n; ++i)
+                    if (kf(i) == thr && idf(i) > last && (best < 0 || idf(i) < idf(best))) best = i;
+                sidx[c++] = best;
+                last = idf(best);
+            }
+        }
+    }
+    __syncthreads();
+}
+__global__ void __launch_bounds__(1024) k_cand_part(const float* __restrict__ lg, int ld, int n, int K, Cand2* part) {
+    const float* row = lg + (size_t) blockIdx.y * ld;
+    const int S = (n + kCandBlocks - 1) / kCandBlocks, lo = blockIdx.x * S, m = min(n, lo + S) - lo;
+    __shared__ uint32_t keys[kCandSlice];
+    __shared__ int sidx[sampling::kCandMax];
+    for (int i = threadIdx.x; i < m; i += blockDim.x) keys[i] = cand_key(row[lo + i]);
+    __syncthreads();
+    cand_select<true>(m, K, [&](int i) { return keys[i]; }, [&](int i) { return lo + i; }, sidx);
+    Cand2* o = part + ((size_t) blockIdx.y * kCandBlocks + blockIdx.x) * K;
+    for (int j = threadIdx.x; j < K; j += blockDim.x) o[j] = Cand2{lo + sidx[j], row[lo + sidx[j]]};
+}
+__global__ void __launch_bounds__(1024) k_cand_merge(const Cand2* __restrict__ part, int K, Cand2* out) {
+    const int m = kCandBlocks * K;
+    const Cand2* in = part + (size_t) blockIdx.x * m;
+    __shared__ uint32_t keys[kCandBlocks * sampling::kCandMax];
+    __shared__ int sidx[sampling::kCandMax];
+    for (int i = threadIdx.x; i < m; i += blockDim.x) keys[i] = cand_key(in[i].v);
+    __syncthreads();
+    cand_select<false>(m, K, [&](int i) { return keys[i]; }, [&](int i) { return in[i].id; }, sidx);
+    for (int j = threadIdx.x; j < K; j += blockDim.x) out[(size_t) blockIdx.x * K + j] = in[sidx[j]];
 }
 
 unsigned grid1(int64_t n, int b = kThreads) { return (unsigned) ((n + b - 1) / b); }
@@ -1345,6 +1448,13 @@ struct Engine {
     float* hlast = nullptr;   // [N] that of the last processed position (zeros before the first): the current session's
     void *q8, *xq, *escr;
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
+    // --sample-gpu: a sampled row comes to the host as a shortlist (k_cand_part, k_cand_merge), not as 1 MB of logits
+    bool sample_gpu = false;
+    Cand2 *d_cand = nullptr, *h_cand = nullptr, *d_part = nullptr;   // [kVerify + 1][K] the shortlists (device, pinned host)
+    int cand_K = 0;   // the K of the LAST cand_launch: cand_row reads with it (call it before the next launch)
+    bool smp_prof = false, smp_check = false;     // STRATA_Q36_SAMPLE_PROFILE / STRATA_Q36_SAMPLE_CHECK
+    double smp_ms = 0;                            // the sampler's host time of the request (copies, shortlists, chain)
+    long long smp_calls = 0, smp_chk_n = 0, smp_chk_bad = 0;
     int32_t* hpin = nullptr;   // pinned staging: [0] decode token, [1] position, [2..9] picks, [10] max rows, [16..] tokens
     unsigned long long* grp_ptr;
     float *pacc, *pm, *pl, *amv;
@@ -3667,6 +3777,12 @@ struct Engine {
     struct SpecSampled {
         std::function<int32_t(int d, const int32_t* prev, const float* lg, int n, float* prob)> draft;
         std::function<int(int D, const std::vector<int32_t>& drafts, int32_t* picks)> judge;
+        // --sample-gpu: the same over shortlists.  kdraft(d, prev) / kwindow(drafts): the K of draft d's / the window's
+        // shortlists (0: the row comes whole); draft_c, judge_c: draft and judge from the shortlists (cand_row)
+        std::function<int(int d, const int32_t* prev)> kdraft;
+        std::function<int(const std::vector<int32_t>& drafts)> kwindow;
+        std::function<int32_t(int d, const int32_t* prev, sampling::Cand& cd, size_t n_row, float* prob)> draft_c;
+        std::function<int(int D, const std::vector<int32_t>& drafts, int32_t* picks)> judge_c;
     };
     std::vector<float> lg_draft;   // (the block's logits row on the host, for SpecSampled::draft)
     /// the token ids the draft head scores (head_draft's subset, or the whole vocabulary)
@@ -3680,16 +3796,32 @@ struct Engine {
     /// draft d after its MTP call (pick_m and, with --spec-min-p, prob_m on the device): the block's pick, or sp's
     /// choice; *prob its probability (1 without the gate)
     int32_t take_draft(const SpecSampled* sp, int d, const std::vector<int32_t>& drafts, float* prob) {
+        if (sample_gpu && sp != nullptr && sp->draft_c) {   // the shortlist of the block's row, not 1 MB of it
+            const int K = sp->kdraft(d, drafts.data());
+            if (K > 0) {
+                const auto t0 = Clock::now();
+                const int n = draft_cols();
+                cand_fetch(logits_m, n, n, 1, K);
+                sampling::Cand cd;
+                cand_row(0, cd);
+                const int32_t r = sp->draft_c(d, drafts.data(), cd, (size_t) n, prob);
+                if (smp_prof) smp_ms += ms_since(t0);
+                return r;
+            }
+        }
         CK(cudaMemcpyAsync(hpin + 2, pick_m, 4, cudaMemcpyDeviceToHost, st));
         if (spec_min_p > 0.f) CK(cudaMemcpyAsync(hpin + 12, prob_m, 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         *prob = 1.f;
         if (spec_min_p > 0.f) std::memcpy(prob, hpin + 12, 4);
         if (sp == nullptr || !sp->draft) return hpin[2];
+        const auto t0 = Clock::now();
         lg_draft.resize((size_t) draft_cols());
         CK(cudaMemcpyAsync(lg_draft.data(), logits_m, lg_draft.size() * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
-        return sp->draft(d, drafts.data(), lg_draft.data(), (int) lg_draft.size(), prob);
+        const int32_t r = sp->draft(d, drafts.data(), lg_draft.data(), (int) lg_draft.size(), prob);
+        if (smp_prof) smp_ms += ms_since(t0);
+        return r;
     }
     int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks,
                   const std::atomic<bool>* cancel = nullptr, const SpecSampled* sp = nullptr) {
@@ -3742,11 +3874,21 @@ struct Engine {
         rows_deferred = true;
         graph_run(gs().gv[T], [&] { forward(T, pos, T, use_graph, true); });
         rows_deferred = false;
+        // --sample-gpu: the window's rows as shortlists, copied with the picks (one sync)
+        const int Kw = sample_gpu && sp != nullptr && sp->judge_c ? sp->kwindow(drafts) : 0;
+        if (Kw > 0) cand_launch(logits, (int) m->g.n_vocab, (int) m->g.n_vocab, T, Kw);
         CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
         int a = 0;
-        if (sp != nullptr && sp->judge) {
+        if (Kw > 0) {
+            const auto t0 = Clock::now();
+            if (smp_check) cand_check(logits, (int) m->g.n_vocab, (int) m->g.n_vocab, T, Kw);
+            a = sp->judge_c(D, drafts, picks);
+            if (smp_prof) smp_ms += ms_since(t0);
+        } else if (sp != nullptr && sp->judge) {
+            const auto t0 = Clock::now();
             a = sp->judge(D, drafts, picks);
+            if (smp_prof) smp_ms += ms_since(t0);
         } else {
             while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
             for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
@@ -3812,6 +3954,102 @@ struct Engine {
         out.resize((size_t) m->g.n_vocab);
         CK(cudaMemcpyAsync(out.data(), logits, out.size() * 4, cudaMemcpyDeviceToHost, st));
         CK(cudaStreamSynchronize(st));
+    }
+    // ---- --sample-gpu: shortlists (k_cand_part, k_cand_merge)
+    /// the shortlists of `rows` rows (stride ld, n wide) on the device and on their way to h_cand (no sync)
+    cudaEvent_t ce0 = nullptr, ce1 = nullptr;
+    double smp_kernel_ms = 0;   // STRATA_Q36_SAMPLE_PROFILE: the shortlist kernel's own time (plain and draft rows)
+    void cand_launch(const float* lg, int ld, int n, int rows, int K) {
+        if (!d_cand) {   // (only with --sample-gpu: the buffers are not made otherwise)
+            d_cand = dalloc_t<Cand2>((size_t) (kVerify + 1) * sampling::kCandMax);
+            d_part = dalloc_t<Cand2>((size_t) (kVerify + 1) * kCandBlocks * sampling::kCandMax);
+            CK(cudaHostAlloc((void**) &h_cand, (size_t) (kVerify + 1) * sampling::kCandMax * sizeof(Cand2), cudaHostAllocDefault));
+        }
+        if (smp_prof) {
+            if (!ce0) { CK(cudaEventCreate(&ce0)); CK(cudaEventCreate(&ce1)); }
+            CK(cudaEventRecord(ce0, st));
+        }
+        k_cand_part<<<dim3(kCandBlocks, rows), 1024, 0, st>>>(lg, ld, n, K, d_part);
+        k_cand_merge<<<rows, 1024, 0, st>>>(d_part, K, d_cand);
+        if (smp_prof) CK(cudaEventRecord(ce1, st));
+        CK(cudaMemcpyAsync(h_cand, d_cand, (size_t) rows * K * sizeof(Cand2), cudaMemcpyDeviceToHost, st));
+        cand_K = K;
+    }
+    /// STRATA_Q36_SAMPLE_CHECK: the shortlists against the whole rows by the tie rule (set of ids and their logits)
+    void cand_check(const float* lg, int ld, int n, int rows, int K) {
+        std::vector<float> row((size_t) n);
+        std::vector<int> o((size_t) n);
+        for (int r = 0; r < rows; ++r) {
+            CK(cudaMemcpy(row.data(), lg + (size_t) r * ld, (size_t) n * 4, cudaMemcpyDeviceToHost));
+            for (int i = 0; i < n; ++i) o[(size_t) i] = i;
+            std::partial_sort(o.begin(), o.begin() + K, o.end(), [&](int a, int b) { return sampling::before(row[(size_t) a], a, row[(size_t) b], b); });
+            std::vector<int> want(o.begin(), o.begin() + K), got;
+            bool ok = true;
+            for (int j = 0; j < K; ++j) {
+                const Cand2& c = h_cand[(size_t) r * K + j];
+                got.push_back(c.id);
+                ok = ok && c.id >= 0 && c.id < n && row[(size_t) c.id] == c.v;
+            }
+            std::sort(want.begin(), want.end());
+            std::sort(got.begin(), got.end());
+            ++smp_chk_n;
+            if (!ok || want != got) {
+                ++smp_chk_bad;
+                if (smp_chk_bad <= 3) std::fprintf(stderr, "strata-q36 SAMPLE CHECK MISMATCH: row %d of %d, K %d, n %d\n", r, rows, K, n);
+            }
+        }
+    }
+    void cand_row(int r, sampling::Cand& cd) {
+        cd.id.resize((size_t) cand_K);
+        cd.v.resize((size_t) cand_K);
+        for (int j = 0; j < cand_K; ++j) {
+            const Cand2& c = h_cand[(size_t) r * cand_K + j];
+            cd.id[(size_t) j] = c.id;
+            cd.v[(size_t) j] = c.v;
+        }
+    }
+    /// STRATA_Q36_SAMPLE_CHECK at start: the kernels on synthetic rows full of exact ties (coarse values, +-0) against the
+    /// host's tie rule, for several K
+    void cand_selftest() {
+        const int n = (int) m->g.n_vocab, rows = 4;
+        std::vector<float> h((size_t) rows * n);
+        std::mt19937_64 r(11);
+        for (int row = 0; row < rows; ++row)
+            for (int i = 0; i < n; ++i) {
+                float v = (float) (r() % 4096) / 512.f - 4.f;   // 4096 distinct values over 248K entries
+                if (row == 1) v = std::round(v);                // only ~9 distinct values: ties across every boundary
+                if (row == 2) v = (i % 3) ? 0.f : -0.f;         // all equal (+-0)
+                if (row == 3 && i % 1000 == 0) v = 50.f + (float) (i % 7);
+                h[(size_t) row * n + i] = v;
+            }
+        float* d = dalloc((size_t) rows * n);
+        CK(cudaMemcpy(d, h.data(), h.size() * 4, cudaMemcpyHostToDevice));
+        const long long bad0 = smp_chk_bad;
+        for (int K : {1, 20, 21, 70, 135, sampling::kCandMax}) {
+            cand_launch(d, n, n, rows, K);
+            CK(cudaStreamSynchronize(st));
+            cand_check(d, n, n, rows, K);
+        }
+        // narrow rows: widths 32 K + r where the last (shorter) slice still holds K (the rows' start is the same data)
+        for (int K : {1, 20, 91, 135, sampling::kCandMax})
+            for (int r : {0, 1, 3, 17, 100, 333, 700, 1000, 1500, 3000}) {
+                const int w = 32 * K + r;
+                if (!sampling::cand_rows_ok((size_t) w, K)) continue;
+                cand_launch(d, n, w, rows, K);
+                CK(cudaStreamSynchronize(st));
+                cand_check(d, n, w, rows, K);
+            }
+        CK(cudaFree(d));
+        std::fprintf(stderr, "strata-q36: sample selftest: %lld shortlists on tie-heavy rows, %lld mismatches\n", smp_chk_n,
+                     smp_chk_bad - bad0);
+        smp_chk_n = smp_chk_bad = 0;
+    }
+    /// shortlists of the rows on the device, waited for
+    void cand_fetch(const float* lg, int ld, int n, int rows, int K) {
+        cand_launch(lg, ld, n, rows, K);
+        CK(cudaStreamSynchronize(st));
+        if (smp_prof) { float ms = 0; CK(cudaEventElapsedTime(&ms, ce0, ce1)); smp_kernel_ms += ms; }
+        if (smp_check) cand_check(lg, ld, n, rows, K);
     }
 };
 
@@ -4726,6 +4964,9 @@ struct Serve {
         std::mt19937_64 rng(smp.seed);
         std::vector<int32_t> hist = ids;
         const auto d0 = Clock::now();
+        E.smp_ms = 0;
+        E.smp_kernel_ms = 0;
+        E.smp_calls = E.smp_chk_n = E.smp_chk_bad = 0;
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
         // greedy requests alone with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
@@ -4743,6 +4984,24 @@ struct Serve {
         int32_t picks[16];
         int nx = smp.needs_logits() ? -1 : E.greedy();
         SpecJudge sj{rule, smp, hist, rng};
+        const size_t n_vocab = (size_t) E.m->g.n_vocab;
+        // the next token of a sampled request from the logits on the device: the shortlist (--sample-gpu) or the whole row
+        auto sample_next = [&]() -> int {
+            const auto t0 = Clock::now();
+            int t;
+            const int K = E.sample_gpu ? cand_need(smp, hist, nullptr, 0, n_vocab) : 0;
+            if (K > 0) {
+                E.cand_fetch(E.logits, (int) n_vocab, (int) n_vocab, 1, K);
+                Cand cd;
+                E.cand_row(0, cd);
+                t = sample_c(cd, n_vocab, smp, hist, rng);
+            } else {
+                E.host_logits(lg);
+                t = sample(lg, smp, hist, rng);
+            }
+            if (E.smp_prof) { E.smp_ms += ms_since(t0); ++E.smp_calls; }
+            return t;
+        };
         Engine::SpecSampled ssp;
         if (rule == SpecRule::q)
             ssp.draft = [&](int d, const int32_t* prev, const float* row, int n, float* prob) {
@@ -4752,12 +5011,21 @@ struct Serve {
             ssp.judge = [&](int D, const std::vector<int32_t>& dr, int32_t* pk) {
                 return sj.judge([&](int r, std::vector<float>& row) { E.host_logits_row(r, row); }, D, dr, pk);
             };
+        if (E.sample_gpu && rule != SpecRule::off) {   // the same over shortlists (the engine falls back per row set: K == 0)
+            ssp.kwindow = [&](const std::vector<int32_t>& dr) { return sj.window_k(dr, n_vocab); };
+            ssp.judge_c = [&](int D, const std::vector<int32_t>& dr, int32_t* pk) {
+                return sj.judge_c([&](int r, Cand& cd) { E.cand_row(r, cd); }, n_vocab, D, dr, pk);
+            };
+            if (rule == SpecRule::q) {
+                ssp.kdraft = [&](int d, const int32_t* prev) { return sj.draft_k(d, prev, (size_t) E.draft_cols()); };
+                ssp.draft_c = [&](int d, const int32_t* prev, Cand& cd, size_t n, float* prob) {
+                    return sj.draft_c(d, prev, cd, n, prob);
+                };
+            }
+        }
         bool decided = false;   // nx is a sampled speculative step's pick (the logits on the device are not its row's)
         if (adm) {
-            if (smp.needs_logits()) {
-                E.host_logits(lg);
-                nx = sample(lg, smp, hist, rng);
-            }
+            if (smp.needs_logits()) nx = sample_next();
             std::printf("T %d\n", nx);
             ++produced;
             hist.push_back(nx);
@@ -4788,10 +5056,7 @@ struct Serve {
             return;
         }
         for (;;) {
-            if (smp.needs_logits() && !decided) {
-                E.host_logits(lg);
-                nx = sample(lg, smp, hist, rng);
-            }
+            if (smp.needs_logits() && !decided) nx = sample_next();
             decided = false;
             auto emit = [&](int t) {   // false: the answer ends here
                 std::printf("T %d\n", t);
@@ -4840,6 +5105,14 @@ struct Serve {
                      "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld (%s)\n", s, ids.size(), reuse,
                      (long long) fresh, prompt_ms, prompt_ms > 0 ? 1000.0 * (double) fresh / prompt_ms : 0.0, produced,
                      decode_ms, decode_ms > 0 ? 1000.0 * (double) produced / decode_ms : 0.0, accepted, offered, finish);
+        if (E.smp_prof)
+            std::fprintf(stderr, "strata serve: session %d: sampler host time %.1f ms over %lld generated (%.0f us per token)%s\n", s,
+                         E.smp_ms, produced, produced > 0 ? 1000.0 * E.smp_ms / (double) produced : 0.0,
+                         E.sample_gpu ? " (--sample-gpu)" : "");
+        if (E.smp_prof && E.sample_gpu)
+            std::fprintf(stderr, "strata serve: session %d: shortlist kernel (plain and draft rows) %.2f ms in all\n", s, E.smp_kernel_ms);
+        if (E.smp_check)
+            std::fprintf(stderr, "strata serve: session %d: sample check: %lld shortlists, %lld mismatches\n", s, E.smp_chk_n, E.smp_chk_bad);
     }
 
     int run() {
@@ -4905,6 +5178,7 @@ int strata::qwen35::run(int argc, char** argv) {
     double expert_vram = -1.0;
     bool warm = true;
     int expert_slots = 0, batch = 0, draft_vocab = -1, mtp_sampled = 0;
+    bool sample_gpu = false;
     float spec_min_p = 0.f;
     bool serve_mode = false, graph = true, vision = false, batch_mtp = false;
     // the opt-ins of this engine path (docs/QWEN36.md): off, they leave the default path as it was
@@ -4950,6 +5224,7 @@ int strata::qwen35::run(int argc, char** argv) {
             mtp_sampled = v == "match" ? 1 : v == "q" ? 2 : v == "off" ? 0 : -1;
             if (mtp_sampled < 0) { std::fprintf(stderr, "strata-q36: --mtp-sampled takes off, match or q\n"); return 2; }
         }
+        else if (a == "--sample-gpu") sample_gpu = true;       // sampled rows come to the host as GPU shortlists (K highest logits)
         else if (a == "--spec-min-p") spec_min_p = (float) std::atof(next().c_str());   // the main path's name: the gate
         else if (a == "--draft-vocab") draft_vocab = std::atoi(next().c_str());   // the MTP drafts pick among the first N token ids
         else if (a == "--vision") vision = true;                                  // pictures (GENI): the encoder is strata-vision's
@@ -4999,7 +5274,7 @@ int strata::qwen35::run(int argc, char** argv) {
                          "--bench-pp N --bench-tg N)\n"
                          "       opt-ins (docs/QWEN36.md): [--kv fp32|fp16|int8|k8v4] [--gqa-attn] [--mtp-sampled off|match|q] [--attn-mma] [--fused-prompt-attn] [--chunked-gdn]\n"
                          "       [--side-stream] [--split-stage-copy] [--async-swaps] [--async-after-prompt] [--lend-staging] [--expert-profile F] [--expert-profile-save F] [--spec-min-p P]\n"
-                         "       [--expert-prefetch P] [--prefetch-copies 0|1] [--pool-warm K] [--hybrid-zero-copy] [--decode-swaps N]\n");
+                         "       [--expert-prefetch P] [--prefetch-copies 0|1] [--pool-warm K] [--hybrid-zero-copy] [--decode-swaps N] [--sample-gpu]\n");
             return 2;
         }
     }
@@ -5219,6 +5494,13 @@ int strata::qwen35::run(int argc, char** argv) {
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
     E.mtp_sampled = mtp_sampled;
+    sampling::tie_by_id() = mtp_sampled > 0;   // (--sample-gpu sets it where it is parsed)
+    const auto env_on = [](const char* k) { const char* v = std::getenv(k); return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0; };
+    E.sample_gpu = sample_gpu || env_on("STRATA_Q36_SAMPLE_GPU");
+    if (E.sample_gpu) sampling::tie_by_id() = true;   // the shortlists use the tie rule, so the host rows do too
+    E.smp_prof = env_on("STRATA_Q36_SAMPLE_PROFILE");
+    E.smp_check = env_on("STRATA_Q36_SAMPLE_CHECK");
+    if (E.sample_gpu && E.smp_check) E.cand_selftest();
     E.spec_min_p = std::clamp(spec_min_p, 0.f, 1.f);   // (before the warm-up: the draft step's graph holds the gate's kernel)
     if (draft_vocab < 0 && std::getenv("STRATA_Q36_DRAFT_VOCAB") != nullptr) draft_vocab = std::atoi(std::getenv("STRATA_Q36_DRAFT_VOCAB"));
     E.draft_n = std::max(0, draft_vocab);
