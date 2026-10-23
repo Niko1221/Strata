@@ -337,3 +337,6 @@ DN_SET(T_IQ4_NL)
 // Gyro (agentionai's trellis experts): TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down (the CUDA engine's STRATA_GU_FMTS / D_FMTS)
 GU_SET(T_TQK6) GU_SET(T_TQ2T)
 DN_SET(T_TQK7) DN_SET(T_TQ2T)
+// Gyro-Coder-L: the pair-trellis experts (TQP5 / TQP6 / TQP7), any of the three in a gate/up or down position
+GU_SET(T_TQP5) GU_SET(T_TQP6) GU_SET(T_TQP7)
+DN_SET(T_TQP5) DN_SET(T_TQP6) DN_SET(T_TQP7)
