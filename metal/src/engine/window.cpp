@@ -775,6 +775,13 @@ void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const A
             if (it == gemv_has_.end()) it = gemv_has_.emplace(f, cx_->has_function(lib_, f)).first;
             return it->second;
         };
+        // wide loads need 16-byte alignment
+        if (g.wide && ((uintptr_t) wbuf.ptr + t.offset) % 16 != 0) g.wide = false;
+        if (g.wide && !has(g)) g.wide = false;
+        if (g.x && has(g)) {   // must fit threadgroup memory
+            const std::string f = gemv_fn(ty, g);
+            const mtl::Pipeline* px = P(lib_, f, mtl::Constants().i(0, ntok), f + "#" + std::to_string(ntok));
+            if (tgm + (uint64_t) (px->static_tg_mem + 15) / 16 * 16 > cx_->max_threadgroup_memory()) g.x = false;
         }
         if (!has(g)) g = gemv_untuned(ty, n_in, n_out, ntok);
     }
