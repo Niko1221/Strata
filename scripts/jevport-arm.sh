@@ -133,6 +133,8 @@ LIVE_ALL=$($DOCKER exec llama-swap sh -c 'for p in /proc/[0-9]*; do
   case "$e" in *STRATA_JEV_MODES*) echo "$e" | grep -E "^STRATA_JEV_(ROWS|HYBRID|LABELS)=" ;; esac
 done' 2>/dev/null || true)
 LIVE=$(echo "$LIVE_ALL" | grep -E "^STRATA_JEV_(ROWS|HYBRID)=" || true)   # arm flags only
+LIVE_LABELS=$(echo "$LIVE_ALL" | grep -E "^STRATA_JEV_LABELS=" || true)   # label flag only: the arm filter above
+# dropped LABELS, so asking for digit-lower always ended in a false "MISMATCH" after setting it correctly
 echo "  ${LIVE_ALL:-<no arm/label flags>}"
 case "$ARM" in
   c) [ -z "$LIVE" ] || { echo "MISMATCH: asked for arm c, live has: $LIVE" >&2; exit 1; } ;;
@@ -140,7 +142,7 @@ case "$ARM" in
   h) echo "$LIVE" | grep -q 'HYBRID=1' || { echo "MISMATCH: asked for arm h, live has: $LIVE" >&2; exit 1; } ;;
 esac
 case "${LABELS:-upper}" in
-  digit-lower) echo "$LIVE" | grep -q 'LABELS=digit-lower' || { echo "MISMATCH: asked for digit-lower labels, live has: $LIVE" >&2; exit 1; } ;;
-  upper) echo "$LIVE" | grep -q 'LABELS' && { echo "MISMATCH: asked for upper labels, live has: $LIVE" >&2; exit 1; } ;;
+  digit-lower) echo "$LIVE_LABELS" | grep -q 'LABELS=digit-lower' || { echo "MISMATCH: asked for digit-lower labels, live has: $LIVE_LABELS" >&2; exit 1; } ;;
+  upper) echo "$LIVE_LABELS" | grep -q 'LABELS' && { echo "MISMATCH: asked for upper labels, live has: $LIVE_LABELS" >&2; exit 1; } ;;
 esac
 echo "arm $ARM labels=${LABELS:-upper} confirmed live"
