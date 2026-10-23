@@ -2369,15 +2369,55 @@ llama.cpp's `json_schema` send. A root that also allows an array, string, number
 "jsonschema>=4.23,<5"`; setup does not add it); without it the answer is only checked to be one JSON object, and the
 server says so once.
 
-This is **schema prompting followed by server validation**, not grammar-constrained decoding. One generation
-is made per request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
+On a grammar-capable engine (0.2.3+, `INFO grammar=1`) the format is **constrained decoding**: the schema is
+converted to a GBNF grammar (`grammar_schema` CLI, built from the vendored llama.cpp converter) and the sampler
+bans every token that cannot extend a valid answer. The prompt carries no output-format directive, streams are
+**not** buffered, and one generation is made per request. The schema check rides along as an end-of-stream
+canary: a constrained stream that fails its own schema is reported as **502** `structured_output_failed` with a
+"grammar engine bug" message, because the grammar made it impossible. On engines that never said `grammar=1` the
+old path runs byte for byte: **schema prompting followed by server validation** - one generation is made per
+request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
 duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with
 `error.code: structured_output_failed`; invalid request schemas return **400**. JSON formats combined with
 tools/MCP are refused explicitly. Without `response_format`, ordinary text and tool behavior stays the same.
 
-Structured SSE buffers the answer while sending keep-alive comments. It emits content only after validation,
-then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
-`/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
+Structured SSE on the prompt path buffers the answer while sending keep-alive comments. It emits content only
+after validation, then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid
+content deltas. The grammar path streams unbuffered.
+`/v1/status.structured_output` advertises the formats, the method in use (`grammar` or `prompt_and_validate`),
+`constrained_decoding`, and whether streaming is buffered.
+
+### Constrained decoding (GBNF grammars)
+
+The engine can restrict generation, token by token, to the text a GBNF grammar accepts. Grammars are
+per-request and opt-in; a request that names no grammar runs exactly as before (the sampler mask is a null
+pointer: no allocation, no upload, byte-identical sampling).
+
+- `response_format` (above) is the schema path: `json_object` runs under the vendored `json.gbnf`,
+  `json_schema` is converted through `grammar_schema`.
+- A bare `grammar` parameter on `POST /v1/chat/completions` is the client's own GBNF text (up to 1 MiB). It
+  requires a grammar-capable engine (400 without one) and refuses to combine with tools/MCP.
+- Tool calls (OpenAI, Responses and Anthropic routes) ride the grammar when the engine is capable and MCP is
+  off: the grammar spells the chat template's exact call serialization, so a constrained model cannot write a
+  broken call, invent a tool, or drop a required parameter. `tool_choice` "required" and a named function allow
+  only calls; "auto" adds a prose branch whose grammar refuses the literal call opener `\n<tool_call>`:
+  the opening `\n` is the template's, so prose may start a call only to finish it. Parallel calls and the
+  `\n</think>` prologue are carried. The forced-prefix
+  mechanism is skipped on this path: the grammar opens the call. MCP requests stay on the prompt path (the
+  hosted tools' schemas are not validated here) and the reply declares the method under
+  `strata.structured_output.method`.
+
+Registration: the server sends each grammar text once per engine generation (`GRAMMAR <sha16> <len> <text>`),
+keyed by the SHA-256 of the text; the engine keeps at most 64 parsed grammars and a mask cache per grammar.
+A restart clears both sides. The grammar vocabulary is read from the model GGUF itself; a server that cannot
+read it says so at start and keeps the prompt paths.
+
+Limits: constrained requests run without speculative decoding - MTP, `--spec` and `spec_min_p` are refused
+when combined with a grammar, and suffix/n-gram drafting is silently off for a constrained request (a drafted
+window would sample masks built for a prefix that was never accepted). The mask lives in the CUDA/HIP sampler
+kernels (the SYCL tree mirrors the fields); Metal/CPU engines report no capability and keep the old paths. The
+GBNF feature surface is exactly the vendored llama.cpp converter's (commit `3cf03257`). The per-step mask cost
+on the RTX 4090 rig: TBD-acceptance (filled in by the acceptance run).
 
 ### API request monitor
 

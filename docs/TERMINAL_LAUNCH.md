@@ -4,6 +4,9 @@ One command for the whole path: choose a model, tune it, start serving, and watc
 in the Terminal's look, with presets, an Advanced table, an access choice and a Connect view for your coding apps. Text previews of every screen are in
 [docs/terminal-previews/](terminal-previews/) (`launch-*.txt`).
 
+Constrained decoding (grammar-constrained JSON and tool calls) needs no launch setting: it is per-request, and the engine announces the capability when it starts.
+See [DETAILS.md](DETAILS.md).
+
 ## Install (one line)
 
 ```sh
