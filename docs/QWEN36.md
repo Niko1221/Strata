@@ -185,10 +185,18 @@ were not attempted.
 All off by default; with none of them the engine runs as before. They go in the config's `args` (`strata-qwen36-<size>.json`) or
 on the `strata-q36` command line.
 
-- **`--kv int8`**: the keys and values as q8_0 rows, in less VRAM than the default fp32: 12.7 KB per token and session instead of
-  45 KB. The main path's `fp16`, `q4_0` and `k8v4` are not on this path: in serve mode they are said and skipped (the fp32 cache),
-  elsewhere refused. Before this option a config's `--kv` was skipped by this engine; a config that carries `--kv int8` now gets
-  that cache.
+- **`--kv fp16 | int8 | k8v4`**: the keys and values in less VRAM than the default fp32: 22.5 / 12.7 / 9.5 KB per token and session
+  instead of 45 KB (fp16 is #3641's; int8 is q8_0 rows; k8v4 is int8 keys and rotated q4_0 values, as the main path's `--kv k8v4`). fp16 and k8v4
+  always decode with the grouped-query kernel below. The main path's `q4_0` is not on this path: in serve mode it is said and
+  skipped (the fp32 cache), elsewhere refused. Before this option a config's `--kv` was skipped by this engine; a config that
+  carries one now gets that cache.
+- **`--gqa-attn`**: the grouped-query decode attention (#3641's kernel) for the fp32 and int8 caches: a block per KV head reads
+  each cache cell once for all its query heads (the default kernel reads it once per query head). fp32 switches to it from 8,192
+  cells, int8 at every cell: with the int8 cache (a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080) it decodes at 184 tok/s (the default kernel 179) at 4K and 165
+  (155) at 8K.
+
+Test settings: `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
+`STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`).
 
 ## Not done / limits
 
@@ -211,4 +219,6 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
   `GENI` / `BGENI` (solo, in a batch, the conversation cache); `q36_vision_serve.py` and `q36_serve_par.py` / `q36_serve_handoff.py`:
   the same through the server.
 - `q36_par_bench.py`: the aggregate-throughput A/B against `llama-server -np N`.
+- `q36_attn_parity` (built with the tests or `-DSTRATA_PARITY_Q36_ATTN=ON`, GPU, no model): the grouped-query attention kernels (fp32,
+  fp16, int8 and k8v4 cells) against a double-precision reference.
 - `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.
