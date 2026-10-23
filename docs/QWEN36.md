@@ -355,6 +355,12 @@ on the `strata-q36` command line.
   host memory the GPU reads and writes in place instead of four copies per layer (each costs the stream 2-3 us). The same bytes.
 - **`--decode-swaps N`** (hybrid mode): how many experts move into VRAM slots every 32 decode tokens, over all layers (8 by
   default; the main path's `--adapt-swaps` counts another round, so the name differs).
+- **The CPU half's buffers** (hybrid mode, always on). The rows the CPU pool computes (`hybrid_t`, 128 by default) have their buffers
+  sized for those rows, not for a whole prompt chunk: 8 MiB of VRAM instead of 128 MiB at `--prefill 2048`. The room goes to the expert
+  slots, so the default slot count rises (a few slots per layer; the log says "VRAM left after the experts' buffers") with the same
+  headroom left; an explicit `--expert-vram` budget names the experts' VRAM itself and keeps its slot pool as it was. Measured on an RTX 5080 (Sage-A1.5
+  Q4_K_M, 262,144 cells, int8 K / V, `--snapshots 2`, `--expert-prefetch 2`): 78 -> 80 cache slots per layer, forced-text decode
+  193.1 / 169.7 / 183.0 -> 194.8 / 171.0 / 183.2 tok/s at 4K / 16K / 40K (one run each, noise under 1%).
 - **`--pool-warm K`** (hybrid mode with `--expert-prefetch P`; off by default; env alias `STRATA_Q36_POOL_WARM=K`) and **`--prefetch-copies 0|1`** (0 keeps the lookahead and drops the PCIe copies; env alias `STRATA_Q36_PREFETCH_COPIES`): the router lookahead that feeds the prefetch also names the next layer's
   likely experts. The K best that have no VRAM slot and no copy are posted to the CPU pool: its parked workers load, into their own caches, the rows they will compute
   (the same row split by worker id), and when the layer's real call comes a warmed expert's rows go to the worker that loaded them. A warm call of one expert takes about
@@ -417,6 +423,7 @@ Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q
 `STRATA_Q36_PF_CHECK=1` (the host's slot tables against the device's at every forward, the host's against its own bookkeeping, and four
 cache slots per layer plus every prefetch slot in the table byte for byte against the host copy; the log's `table check:` line counts the
 mismatches; it synchronizes the stream and copies about 0.5 GB a forward, so it is slow; not with the MTP-only placement), `STRATA_Q36_ASYNC_SWAPS=1/2/3` (the two async bits, as the two flags),
+`STRATA_Q36_PLACE_DEBUG=1` (the placement's arithmetic on stderr: free VRAM, the budget, the staging pair, the CPU half's buffers and the credit for the old ones, the size of a slot),
 `STRATA_Q36_SNAPSHOT_TEST=L[,J]` (`--tokens` mode: read L tokens, take a snapshot, read J others, restore it, read the rest; its
 logits against a plain read).
 

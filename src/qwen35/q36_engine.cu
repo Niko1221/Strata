@@ -4277,12 +4277,22 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
     if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
     const size_t staging = E.use_mmq && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
-    size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
+    // the CPU half (moe_hybrid_cpu) sees a batch of up to hybrid_t rows when the main layers are hybrid, else (only the MTP
+    // block is) every batch up to tmax; its device rows and the host staging are sized by that, not by tmax
+    const size_t cpu_rows = (size_t) (E.main_hybrid ? E.hybrid_t : E.tmax);
+    const size_t cpu_dev = cpu_rows * (size_t) m.top_k * ((size_t) g.n_embd + 1) * 4;   // ecpu + d_miss
+    // the reserve holds the CPU half's device rows of tmax rows (128 MiB at --prefill 2048); they are counted here by the rows
+    // that can reach them (cpu_dev), and the difference is given back to the slots: the same headroom, a few more slots.  Only the
+    // reserve-derived budget has that room to give back: an explicit --expert-vram budget names the experts' VRAM itself and keeps
+    // its old slot pool (cpu_dev_b is 0 there)
+    const size_t cpu_credit = vram_gib < 0 ? (size_t) E.tmax * m.top_k * ((size_t) g.n_embd + 1) * 4 : 0;
+    const size_t cpu_dev_b = vram_gib < 0 ? cpu_dev : 0;
+    size_t slot_bytes = budget2 + cpu_credit > staging + cpu_dev_b ? budget2 + cpu_credit - staging - cpu_dev_b : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
     int S = slots > 0 ? (int) std::min<int64_t>(ne, slots) : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
     if (mtp_only) {   // the main layers all, the MTP block what is left
-        const size_t left = budget2 > total_main ? budget2 - total_main : 0;
+        const size_t left = budget2 + cpu_credit > total_main + cpu_dev_b ? budget2 + cpu_credit - total_main - cpu_dev_b : 0;
         S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
     }
     // --expert-prefetch P: P of each main hybrid layer's slots become prefetch slots (the same VRAM; the MTP block
@@ -4293,8 +4303,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     S -= P;
     {   // what the hybrid mode allocates next (the staging pair, the CPU part's outputs, the slots) against the VRAM the
         // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
-        const size_t Tn = (size_t) E.tmax, Nn = (size_t) g.n_embd, Kn = (size_t) m.top_k;
-        size_t need = staging + Tn * Kn * Nn * 4 + Tn * Kn * 4;
+        size_t need = staging + cpu_dev;
         for (Layer* L : all) {
             if (mtp_only && L != &m.mtp) need += L->stride * (size_t) ne + kMmqTail;
             else {
@@ -4429,7 +4438,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             return false;
         }
     }
-    const size_t T = (size_t) E.tmax, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;
+    const size_t T = cpu_rows, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;   // (rows moe_hybrid_cpu can see)
     CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.cpu_out, T * Kp * N * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
@@ -4540,6 +4549,12 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                      S + P, E.pf_topk);
     }
     CK(cudaDeviceSynchronize());
+    {   // (said: the headroom the reserve is meant to leave, after the slots, the staging pair and the CPU half's rows)
+        size_t fr_after = 0, tot_after = 0;
+        CK(cudaMemGetInfo(&fr_after, &tot_after));
+        std::fprintf(stderr, "strata-q36: VRAM left after the experts' buffers: %.2f GiB (CPU half: %zu rows)\n",
+                     (double) fr_after / (1 << 30), cpu_rows);
+    }
     if (mtp_only)
         std::fprintf(stderr, "strata-q36: every main layer's routed experts in VRAM (%.2f GiB); the MTP block's: %d of "
                      "%lld in VRAM, the rest on the CPU pool (its drafts only)\n", (double) total_main / (1 << 30), S,
