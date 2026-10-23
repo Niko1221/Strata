@@ -212,8 +212,9 @@ ActSet& unpack_all(const void* const* act, int n, int nt) {
 void rows_on(TqIsa isa, int type, const uint8_t* w, size_t row_bytes, int n, const tq_detail::TqAct* const* a, int nt,
              float* const* out, int r0, int r1) {
     const int kb = tq_kbits(type);
-    if (type >= 147 && type <= 149) {   // TQP: no SIMD kernel yet, the scalar pair kernel is exact
-        tq_detail::tq_rows_scalar_tqp(kb, w, row_bytes, n, a, nt, out, r0, r1);
+    if (type >= 147 && type <= 149) {   // TQP: the AVX2 pair kernel (AVX-512 falls back to it too)
+        if (isa == TqIsa::scalar) tq_detail::tq_rows_scalar_tqp(kb, w, row_bytes, n, a, nt, out, r0, r1);
+        else tq_detail::tq_rows_avx2_tqp(kb, w, row_bytes, n, a, nt, out, r0, r1);
         return;
     }
     switch (isa) {

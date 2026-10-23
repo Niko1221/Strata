@@ -21,11 +21,15 @@ namespace strata::prefill::mmq {
 namespace {
 // The Gyro trellis types (ids 144-146) are outside the type table of an upstream ggml (indexed by the id): their block
 // geometry is known here (128 weights; 34 / 26 / 30 bytes), everything else asks ggml.
-inline bool is_tq(int t) { return t >= 144 && t <= 146; }
+inline bool is_tq(int t) { return t >= 144 && t <= 149; }   // 144-146 TQ/TQK, 147-149 the pair trellis (Gyro-L)
 inline int64_t type_blck(int t) { return is_tq(t) ? 128 : (int64_t) ggml_blck_size((ggml_type) t); }
-inline size_t type_bytes(int t) { return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : ggml_type_size((ggml_type) t); }
+inline size_t type_bytes(int t) {
+    return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : t == 147 ? 42 : t == 148 ? 50 : t == 149 ? 58
+                                                                                     : ggml_type_size((ggml_type) t);
+}
 inline const char* type_label(int t) {
-    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7" : ggml_type_name((ggml_type) t);
+    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7"
+         : t == 147 ? "tqp5" : t == 148 ? "tqp6" : t == 149 ? "tqp7" : ggml_type_name((ggml_type) t);
 }
 }  // namespace
 #if defined(STRATA_KQ_DSO)

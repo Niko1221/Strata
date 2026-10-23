@@ -82,6 +82,10 @@ void tq_rows_scalar(int kb, const uint8_t* w, size_t row_bytes, int n, const TqA
                     float* const* out, int r0, int r1);
 void tq_rows_avx2(int kb, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
                   float* const* out, int r0, int r1);
+/// The TQP pair layout (types 147-149) on AVX2.  AVX-512 also takes this kernel: the pair layout has no
+/// AVX-512 form yet (no AVX-512 machine has verified one), and the AVX2 path is exact.
+void tq_rows_avx2_tqp(int kb, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
+                      float* const* out, int r0, int r1);
 void tq_rows_avx512(int kb, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
                     float* const* out, int r0, int r1);
 }  // namespace tq_detail

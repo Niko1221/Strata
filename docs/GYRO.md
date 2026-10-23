@@ -22,8 +22,15 @@ divergence (0.159 against 0.312 on 128 chunks) and is level with IQ3_XXS (0.157)
 card (RTX 3060, measured before engine 0.2.2: 16% since) and an R9700, and its reasoning set scored lower than Q2_0's (49/60 against 57/60). Gyro-S is 13% worse
 in KL than IQ2_XS (0.268 against 0.236) with 24% fewer bytes. So: pick Gyro-S where nothing bigger fits, Gyro-M when
 the 20% memory saving over IQ3_XXS matters. Setup and the MCP server mention them only where the other sizes do not
-fit the PC; they warn, never refuse. Gyro-L (agentionai's 50 GiB file, 2026-10-12) is not supported: it uses another
-trellis family (types 147-149) that the engine does not have.
+fit the PC; they warn, never refuse.
+
+**Gyro-L** (agentionai's 50 GiB file, 2026-10-12) uses the **pair trellis** (ggml types TQP5/TQP6/TQP7, 147-149): 128
+values per block, 64 steps of 2 weights, the first pair of the same TQ2_T codebook.  The engine reads it like the
+others - `--pack` from `tools/iq_pack.py`, the file's own n-gram table (or an FP8 one, `tools/ple_fp8_pack.py`, via
+`--ple-gguf`), `--mmap-experts` on a PC whose RAM cannot hold the experts.  On a source build the prompt path's MMQ
+instances come from the trellis overlay (cmake/strata_ggml_tq_overlay.cmake) like Gyro-S/M's; with a ggml that carries
+the types natively (the agentionai llama.cpp) they are used directly.  Measured on the CMP 170HX (48 layers, all
+24,576 experts in VRAM, 262144 context, int8 KV, MTP): 32K prompt 1955 tok/s, decode 71 tok/s.
 
 ## Install
 
@@ -349,7 +356,7 @@ Single RTX 4090 smoke run (Gyro-S, MTP draft, greedy): code 107.5, prose 84.3, J
 
 - **Not in this port** (rc2 has them; see the list at the end of this page): the prompt helper on a second GPU for a Gyro
   pack. Setup of two cards still runs the layer split and the decode peer; the prompt peer says it is not used for a
-  Hadamard-folded pack and the prompt stays on the first card. Gyro-L is not supported.
+  Hadamard-folded pack and the prompt stays on the first card. Gyro-L (types 147-149) runs on the same path.
 - **Source builds:** the SYCL tree has the trellis kernels (Intel Arc, above), and so has the Metal engine (On a Mac, below).
 
 - **Not measured yet:** token parity against llama.cpp.
