@@ -346,6 +346,13 @@ when the answer is shorter than about 600 tokens. A bigger `--decode-swaps` (128
 with or without `--async-swaps`.
 `STRATA_Q36_AFTER_SWAPS_PER_KTOK=f` limits the after-prompt swaps to f per 1000 tokens read (default: no limit below 2048).
 
+In the hybrid mode the engine's exit report has a second line, `strata-q36: pool: ...`. For each layer call that had CPU experts it gives the host plan, the
+gate/up rows, the h quantization and the down rows in us, the expert bytes read, and GB/s over the row phases (overall, and gate/up and down on their own).
+It also gives, per phase, the wait for the workers to park before and after and the drain.
+Measured on an RTX 5080, Core Ultra 9 285K, DDR5-6800 (2 channels), Sage-A1.5 Q4_K_M, the production flags with `--mtp 0`, forced text, 256 tokens:
+at a 4K prompt a call takes 50 us for 4.0 MB (82-83 GB/s); the park waits are 0.02 and 0.07 us per phase; at 16K and 40K the rate is the same (83 and 82 GB/s).
+The pool unit tests `pool_test` and `expert_multi_test` skip on CPUs without AVX-512 VNNI (this one); the other pool tests run.
+
 Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
 `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
 `STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`),

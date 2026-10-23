@@ -252,6 +252,15 @@ public:
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
     int64_t multi_bytes = 0;
+    /// run_phase's split (host thread only, plain doubles, not atomic), accumulated ms and calls of any mode: wait for the
+    /// workers to park before the batch, publish..wait_done (the drain), wait for them to re-park.  `bytes_gu` / `bytes_down`:
+    /// run_split_multi_native's weight bytes per phase (distinct experts).
+    double ms_ph_pre = 0, ms_ph_drain = 0, ms_ph_post = 0;
+    int64_t ph_calls = 0, ph_tasks = 0, bytes_gu = 0, bytes_down = 0;
+    void reset_phase_stats() {
+        ms_multi_gu = ms_multi_q = ms_multi_down = ms_ph_pre = ms_ph_drain = ms_ph_post = 0;
+        multi_bytes = ph_calls = ph_tasks = bytes_gu = bytes_down = 0;
+    }
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
     /// atomics below.  It was a LOCKED read-modify-write in the park loop, so measuring the contention added to

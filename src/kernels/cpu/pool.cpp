@@ -1278,13 +1278,22 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
 }
 
 void ExpertPool::run_phase(int mode, int n_tasks) {
+    const auto p0 = std::chrono::steady_clock::now();
     wait_parked("before a phase");
+    const auto p1 = std::chrono::steady_clock::now();
     mode_ = mode;
     njobs_ = n_tasks;
     const uint32_t e = begin_batch(n_tasks);
     if (host_works_) drain(-1, host_scratch_, e);
     wait_done(n_tasks);
+    const auto p2 = std::chrono::steady_clock::now();
     wait_parked("after a phase");
+    const auto p3 = std::chrono::steady_clock::now();
+    ms_ph_pre += std::chrono::duration<double, std::milli>(p1 - p0).count();
+    ms_ph_drain += std::chrono::duration<double, std::milli>(p2 - p1).count();
+    ms_ph_post += std::chrono::duration<double, std::milli>(p3 - p2).count();
+    ++ph_calls;
+    ph_tasks += n_tasks;
     // Each slice's stamp is stored after its last `done` increment, so `wait_done` can return before it lands; the
     // thread that stored it has parked again since (it left the park to claim), and that re-park is what the wait
     // above acquired.  So the stamps are read here, not in `wait_done`.
@@ -1383,6 +1392,8 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         ms_multi_down += std::chrono::duration<double, std::milli>(d - c).count();
     }
     multi_bytes += (int64_t) n * (int64_t) f.bytes;
+    bytes_gu += (int64_t) n * (int64_t) (2 * f.up_off);
+    bytes_down += (int64_t) n * (int64_t) (f.d_row * (size_t) f.n_embd);
     mode_ = 0;
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }

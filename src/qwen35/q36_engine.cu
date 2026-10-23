@@ -1505,7 +1505,8 @@ struct Engine {
     // the rebalance calls' own cost (the log's "rebalance:" line): [0] decode / verify rows, [1] after a prompt read
     long long rb_calls[2] = {0, 0}, rb_swaps[2] = {0, 0};
     double rb_ms[2] = {0, 0};
-    double hy_cpu_ms = 0;
+    double hy_cpu_ms = 0, hy_plan_ms = 0;   // (hy_cpu_ms: the whole CPU half; hy_plan_ms: its host plan before the pool call)
+    long long hy_layers = 0;                // layer calls with at least one pool entry
     // --expert-profile (the main path's file, include/strata/core/expert_cache.hpp; set before place_experts): each
     // hybrid layer's first slots take its most-routed experts from it.  Here a "layer" is the engine's state index (the
     // main layers, then the MTP block).  `profile_ranked`: its pairs as read (--expert-profile-save's prior).
@@ -2847,6 +2848,8 @@ struct Engine {
             pf_join();
             return;
         }
+        hy_plan_ms += ms_since(t0);
+        ++hy_layers;
         pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
         hy_cpu_ms += ms_since(t0);
         pf_join();
@@ -3708,7 +3711,11 @@ struct Engine {
         hy_cpu = hy_gpu = hy_swaps = 0;
         rb_calls[0] = rb_calls[1] = rb_swaps[0] = rb_swaps[1] = 0;
         rb_ms[0] = rb_ms[1] = 0;
-        hy_cpu_ms = 0;
+        hy_cpu_ms = hy_plan_ms = 0;
+        hy_layers = 0;
+#if defined(STRATA_Q36_CPU_POOL)
+        if (pool) pool->reset_phase_stats();
+#endif
         pf_preds = pf_copies = pf_hits = pf_late = 0;
         lend_swaps = lend_evicts = lend_fills = 0;
         lend_evict_ms = 0;
@@ -5088,6 +5095,24 @@ int strata::qwen35::run(int argc, char** argv) {
             if (E.pf_check)
                 std::fprintf(stderr, "strata-q36: table check: %lld forwards compared, %lld table mismatches; %lld slots compared byte for byte, %lld differ\n",
                              E.chk_calls, E.chk_bad, E.chk_bytes, E.chk_bytes_bad);
+#if defined(STRATA_Q36_CPU_POOL)
+            if (E.hy_layers && E.pool) {
+                const auto& P = *E.pool;
+                std::fprintf(stderr, "strata-q36: pool: %lld layer calls, %.1f us each (plan %.2f, gate/up %.2f, h-quant %.2f, "
+                             "down %.2f); %.1f MB read (%.1f GB/s over gate/up + down; gate/up %.1f, down %.1f); %lld phases, "
+                             "%.1f tasks each, park-before %.2f drain %.2f park-after %.2f us per phase\n", E.hy_layers,
+                             1e3 * E.hy_cpu_ms / E.hy_layers, 1e3 * E.hy_plan_ms / E.hy_layers,
+                             1e3 * P.ms_multi_gu / E.hy_layers, 1e3 * P.ms_multi_q / E.hy_layers,
+                             1e3 * P.ms_multi_down / E.hy_layers, (double) P.multi_bytes / 1e6,
+                             (double) P.multi_bytes / 1e6 / std::max(1e-9, P.ms_multi_gu + P.ms_multi_down),
+                             (double) P.bytes_gu / 1e6 / std::max(1e-9, P.ms_multi_gu),
+                             (double) P.bytes_down / 1e6 / std::max(1e-9, P.ms_multi_down), (long long) P.ph_calls,
+                             P.ph_calls ? (double) P.ph_tasks / (double) P.ph_calls : 0.0,
+                             P.ph_calls ? 1e3 * P.ms_ph_pre / (double) P.ph_calls : 0.0,
+                             P.ph_calls ? 1e3 * P.ms_ph_drain / (double) P.ph_calls : 0.0,
+                             P.ph_calls ? 1e3 * P.ms_ph_post / (double) P.ph_calls : 0.0);
+            }
+#endif
             if (E.pf_slots)
                 std::fprintf(stderr, "strata-q36: prefetch: %lld predictions, %lld copies, %lld entries hit a prefetch slot, "
                              "%lld routings found a copy still in flight\n", E.pf_preds, E.pf_copies, E.pf_hits, E.pf_late);
