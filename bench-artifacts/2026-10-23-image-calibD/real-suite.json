@@ -1,0 +1,96 @@
+{
+ "noul-pope": {
+  "dataset": "POPE adversarial",
+  "mode": "direct",
+  "served_calib": [
+   "platt_v1"
+  ],
+  "raw": {
+   "acc": 0.8833,
+   "nll": 0.2018,
+   "ece15": 0.0918,
+   "flips": 0,
+   "n": 60
+  },
+  "cal": {
+   "acc": 0.8833,
+   "nll": 0.2018,
+   "ece15": 0.0918,
+   "flips": 0,
+   "n": 60
+  },
+  "fit": {
+   "a": 1.0,
+   "c": 0.0,
+   "nll": 0.26696143099258257,
+   "nll_identity": 0.26696143099258257,
+   "improvement": 0.0,
+   "flat": true,
+   "boundary": false,
+   "candidate": {
+    "a": 1.065751,
+    "c": -0.002993
+   }
+  }
+ },
+ "choice-cvb": {
+  "dataset": "CV-Bench",
+  "mode": "direct",
+  "served_calib": [
+   "T_choice_v1"
+  ],
+  "raw": {
+   "acc": 0.65,
+   "nll": 0.8527,
+   "ece15": 0.1947,
+   "flips": 0,
+   "n": 20
+  },
+  "cal": {
+   "acc": 0.65,
+   "nll": 0.8527,
+   "ece15": 0.1947,
+   "flips": 0,
+   "n": 20
+  },
+  "fit": {
+   "T": 1.0,
+   "nll": 0.881184665904019,
+   "nll_identity": 0.881184665904019,
+   "improvement": 0.0,
+   "flat": true,
+   "boundary": false,
+   "candidate": 0.984527
+  }
+ },
+ "score-countbench": {
+  "dataset": "CountBenchQA",
+  "mode": "direct",
+  "served_calib": [
+   "T_score_v1"
+  ],
+  "raw": {
+   "acc": 1.0,
+   "nll": 0.0456,
+   "ece15": 0.041,
+   "flips": 0,
+   "n": 20
+  },
+  "cal": {
+   "acc": 1.0,
+   "nll": 0.0456,
+   "ece15": 0.041,
+   "flips": 0,
+   "n": 20
+  },
+  "fit": {
+   "T": 1.0,
+   "nll": 0.3584870188384191,
+   "nll_identity": 0.3584870188384191,
+   "improvement": 0.0,
+   "flat": true,
+   "boundary": false,
+   "candidate": 0.983811
+  }
+ }
+}
