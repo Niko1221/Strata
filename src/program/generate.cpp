@@ -11916,7 +11916,9 @@ int main(int argc, char** argv) {
             }
             // #3862: "GRAMMAR <sha16> <byte_len> <text to end of line>" parses a grammar once and caches it
             // under the hash the server computed (the engine treats it as an opaque key); the reply names
-            // the key, and a message carries no spaces so the server can split the line on them
+            // the key, and a message carries no spaces so the server can split the line on them.  The grammar
+            // text is one wire line: the server escapes backslash as \\ and newline as \n, and byte_len counts
+            // the unescaped bytes, which is what the GBNF parser is handed.
             if (line.rfind("GRAMMAR ", 0) == 0) {
                 std::string gerr;
                 const char* sp = std::strchr(line.c_str() + 8, ' ');
@@ -11925,7 +11927,15 @@ int main(int argc, char** argv) {
                 char* ge = nullptr;
                 long long blen = sp ? std::strtoll(sp + 1, &ge, 10) : -1;
                 if (ge == sp + 1) blen = -1;
-                const std::string text = (sp && ge && *ge == ' ') ? std::string(ge + 1) : std::string();
+                std::string text;
+                if (sp && ge && *ge == ' ') {
+                    const std::string wire(ge + 1);
+                    for (size_t i = 0; i < wire.size(); ++i)
+                        if (wire[i] == '\\' && i + 1 < wire.size() && (wire[i + 1] == 'n' || wire[i + 1] == '\\')) {
+                            text.push_back(wire[i + 1] == 'n' ? '\n' : '\\');
+                            ++i;
+                        } else text.push_back(wire[i]);
+                }
                 if (sha.empty() || blen < 0 || (size_t) blen != text.size())
                     gerr = "bad GRAMMAR line: expected GRAMMAR <sha16> <byte_len> <text>";
                 else if (!grammar_registry.register_grammar(sha, text, gerr))

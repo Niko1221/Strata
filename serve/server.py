@@ -80,6 +80,8 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
+from serve import grammar as grammar_api  # noqa: E402
+from serve import grammar_schema as grammar_conv  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -353,9 +355,22 @@ class MockEngine:
         # reply, so a run looks like a model that simply chose differently.
         self.cycle = bool(cycle)
         self.last_prompt: list[int] = []
+        # a harness sets info["grammar"] = 1 to exercise the constrained path; the mock records the grammars a
+        # request registered (the engine's own registry is content-hashed, so ensure_grammar is a memo here)
+        self.info: dict = {}
+        self.grammars: list[str] = []
+        self.grammar_registered: set[str] = set()
+
+    def ensure_grammar(self, text: str) -> str:
+        sha = grammar_api.grammar_sha16(text)
+        if sha not in self.grammar_registered:
+            self.grammar_registered.add(sha)
+            self.grammars.append(text)
+        return sha
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_prompt = list(ids)
+        self.last_sampling = dict(sampling or {})
         self.last_embeddings = embeddings
         if len(self.scripts) > 1:
             if self.cycle:
@@ -1159,12 +1174,17 @@ class StrataEngine:
         self._ctl_erred = False                         # #1059: the control lines ended on an ERR
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
         self.wlock = threading.Lock()                   # stdin writes from several request threads
+        # #3862: GRAMMAR registration replies ride the pump.  The registry lives inside the engine
+        # process and dies with it, so this body (which restart() runs again) clears both sides.
+        self.grammar_q: queue.Queue = queue.Queue()
+        self.grammar_registered: set[str] = set()
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
 
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
+        grammar_q = self.grammar_q                      # #3862: registration replies, by content hash
         line = None
         for line in proc.stdout:
             # checked before batch routing: a fatal line is never a slot's own
@@ -1179,6 +1199,9 @@ class StrataEngine:
                 except OSError:
                     pass
                 break                           # publish EOF, never the trailing DONE
+            if line.startswith("GRAMMAR "):     # #3862: a registration reply names its content hash
+                grammar_q.put(line)
+                continue
             if line.startswith("BSTAT"):
                 sample = parse_batch_window_sample(line)
                 if sample is not None and self.proc is proc:
@@ -1203,6 +1226,7 @@ class StrataEngine:
         lines.put(None)
         for q in slot_q:
             q.put(None)
+        grammar_q.put(None)
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -1434,6 +1458,10 @@ class StrataEngine:
             pn = prefix.get("tokens")
             if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
                 keys += f" pin={pn}"
+        # #3862: "grammar" is the content hash the engine was fed by GRAMMAR (ensure_grammar), not the text
+        gs = sampling.get("grammar")
+        if isinstance(gs, str) and gs:
+            keys += f" grammar={gs}"
         return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
 
     @staticmethod
@@ -1451,6 +1479,40 @@ class StrataEngine:
                 self.proc.stdin.flush()
         except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+
+    def ensure_grammar(self, text: str) -> str:
+        """#3862: register a GBNF grammar with the engine under the hash the engine will key it by, and
+        return that hash (the request's `grammar=` value).  The text is escaped to one wire line; the
+        reply is routed by the pump to grammar_q.  A grammar registered this process's engine is not
+        re-sent (content-hash memo); restart clears grammar_registered, so a restarted engine re-registers
+        on the next request that needs the grammar."""
+        sha = grammar_api.grammar_sha16(text)
+        if sha in self.grammar_registered:
+            return sha
+        line = f"GRAMMAR {sha} {len(text.encode('utf-8'))} {grammar_api.wire(text)}"
+        with self.wlock:
+            try:
+                self.proc.stdin.write(line + "\n")
+                self.proc.stdin.flush()
+            except (OSError, AttributeError):
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+            deadline = time.monotonic() + 10.0
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise ValueError("grammar registration timed out")
+                try:
+                    resp = self.grammar_q.get(timeout=left)
+                except queue.Empty:
+                    raise ValueError("grammar registration timed out") from None
+                if resp is None:
+                    raise ValueError("the engine ended while registering the grammar")
+                f = resp.split()                       # "GRAMMAR OK <sha>" / "GRAMMAR ERR <sha> <msg with _>"
+                if len(f) >= 3 and f[2] == sha:
+                    if f[1] == "OK":
+                        self.grammar_registered.add(sha)
+                        return sha
+                    raise ValueError("grammar rejected: " + (f[3].replace("_", " ") if len(f) > 3 else "rejected"))
 
     def _control(self, cancel, on_token, stop_when=None, on_quiet=None):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
@@ -4528,8 +4590,14 @@ class Service:
         return {
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
-            "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
-                                  "constrained_decoding": False, "stream_buffered": True},
+            # #3862: a grammar-capable engine constrains decoding (streams unbuffered, the validator is the
+            # canary); an engine without it takes the answer, prompts for the shape, and buffers to validate
+            "structured_output": (
+                {"formats": ["json_object", "json_schema"], "method": "grammar",
+                 "constrained_decoding": True, "stream_buffered": False}
+                if grammar_conv.grammar_ok(self.engine) else
+                {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
+                 "constrained_decoding": False, "stream_buffered": True}),
             "engine": (getattr(self.engine, "info", {}) or {}).get("version"),
             "started": int(self.started_at), "uptime_s": int(time.time() - self.started_at),
             "cache_max_tokens": ctx,
@@ -6926,9 +6994,18 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
-            messages, validator = prepare_format(req.get("response_format"), messages)
+            # #3862: a grammar-capable engine constrains response_format in the sampler; the prompt directive
+            # and the buffered validation ride along only when it cannot (the prompt path is the fallback).
+            grammar_text, messages, validator = grammar_conv.plan_response_format(
+                svc.engine, req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
+            if req.get("grammar") is not None:      # a bare GBNF text: the client's own grammar, no validator
+                if not grammar_conv.grammar_ok(svc.engine):
+                    raise ValueError("grammar: this engine does not support constrained decoding")
+                if tools or req.get("strata_mcp"):
+                    raise ValueError("grammar with tools is not supported")
+                grammar_text = grammar_api.check_param(req["grammar"])
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
@@ -6946,6 +7023,8 @@ def make_handler(svc: Service):
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
             check_request_sampling(req)                       # ... and a sampling field of the wrong type
+            if grammar_text is not None:                      # #3862: register once per engine generation; the
+                req["grammar"] = svc.engine.ensure_grammar(grammar_text)    # request carries the hash
             cancel = threading.Event()
             self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
             ids, thinking, max_new = svc.prepare(messages, tools, kw, max_new, force=force, req=req, cancel=cancel)
@@ -6953,7 +7032,9 @@ def make_handler(svc: Service):
             run = run_with_mcp(svc, svc.mcp, messages, tools, kw, ids, thinking, max_new, max_req, req, cancel,
                                {t["name"] for t in extra}) if use_mcp else None
             chunks = openai_chunks(svc, req, ids, thinking, tools, max_new, cancel, run=run, force=force)
-            if validator is not None:
+            if grammar_text is not None:
+                chunks = grammar_api.grammar_canary(chunks, validator)
+            elif validator is not None:
                 chunks = structured_chunks(chunks, validator)
             chunks = self._capture(chunks, "openai")
             if not req.get("stream"):
@@ -7026,7 +7107,15 @@ def make_handler(svc: Service):
                 return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
 
             def check(text, finish):
-                return validated_json(text, validator, finish)
+                try:
+                    return validated_json(text, validator, finish)
+                except StructuredOutputError as e:
+                    # #3862: on the grammar path the schema was enforced token by token; a stream that
+                    # fails its own schema is the engine's bug, and it is said as one
+                    if validator is not None and req.get("grammar"):
+                        raise StructuredOutputError(
+                            f"grammar engine bug: a constrained stream failed its own schema: {e}") from e
+                    raise
 
             def events():
                 yield from asm.start()
@@ -7111,7 +7200,11 @@ def make_handler(svc: Service):
             except ValueError as e:
                 raise ResponsesError(str(e), "input") from None
             try:
-                messages, validator = prepare_format(responses_api.text_format(req), messages, with_tools=bool(tools))
+                # #3862: a grammar-capable engine constrains text.format in the sampler (a turn with tools
+                # stays on the prompt path: a tool call is not JSON); the assembler's end-of-stream check is
+                # the canary that says a constrained stream conformed, and it streams unbuffered.
+                grammar_text, messages, validator = grammar_conv.plan_response_format(
+                    svc.engine, responses_api.text_format(req), messages, with_tools=bool(tools))
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
             noted = svc.__dict__.setdefault("hosted_tools_noted", set())   # said once per tool, not per request
@@ -7134,6 +7227,8 @@ def make_handler(svc: Service):
             except ValueError as e:                           # its message starts with the field's name: the param
                 raise ResponsesError(str(e), str(e).partition(":")[0]) from None
             svc.load()
+            if grammar_text is not None:                      # #3862: register once per engine generation
+                req["grammar"] = svc.engine.ensure_grammar(grammar_text)
             # #924 (opt-in): a Codex compaction request is rendered with its conversation's tools, so its prompt
             # starts as the cached one did; the parser and the response keep the request's own tools
             shown = responses_api.prompt_tools(req, tools) if svc.codex_compaction_cache else tools
