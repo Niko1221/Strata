@@ -1452,7 +1452,7 @@ class Runner:
 
         def go() -> None:
             try:
-                box["r"] = runtime.start(name, wait=600)
+                box["r"] = runtime.start(name, wait=runtime.ready_wait(600))
             except Exception as e:                           # noqa: BLE001
                 box["e"] = e
             finally:
