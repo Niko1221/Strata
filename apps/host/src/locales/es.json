@@ -3530,5 +3530,8 @@
   "s9038": "Abrir Ajustes del modelo",
   "s9039": "Abrir Servicio",
   "s9040": "Abrir Modelos",
-  "s9041": "Abrir Habilidades"
+  "s9041": "Abrir Habilidades",
+  "s9042": "Pide al asistente que escriba primero un plan; no se ejecuta nada hasta que lo apruebes",
+  "s9043": "Busca en la web, lee las páginas y responde con fuentes",
+  "s9044": "Inicia una conversación nueva y conserva esta"
 }

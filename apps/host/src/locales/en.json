@@ -3530,5 +3530,8 @@
   "s9038": "Open Model settings",
   "s9039": "Open Serving",
   "s9040": "Open Models",
-  "s9041": "Open Skills"
+  "s9041": "Open Skills",
+  "s9042": "Have the assistant write a plan first; nothing runs until you approve it",
+  "s9043": "Search the web, read the pages and answer with sources",
+  "s9044": "Start a new conversation; keep this one"
 }
