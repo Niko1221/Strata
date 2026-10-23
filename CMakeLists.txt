@@ -336,7 +336,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 
 # ---- strata_grammar (host-only GBNF core, GPU-independent) -----------------
 # The ported llama.cpp grammar (src/grammar/): the parser, the stacks, the accept chain.
-add_library(strata_grammar STATIC src/grammar/grammar.cpp)
+add_library(strata_grammar STATIC src/grammar/grammar.cpp src/grammar/grammar_vocab.cpp src/grammar/grammar_mask.cpp)
 target_include_directories(strata_grammar PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
