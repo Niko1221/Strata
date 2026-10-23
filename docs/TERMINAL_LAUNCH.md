@@ -66,12 +66,15 @@ strata launch --model q2_0 --pool-cores 2-14:2 --no-tui               # experime
 strata launch --plan --model q2_0                                      # what would happen; nothing changes
 strata launch --model q2_0 --yes --no-tui                              # no questions (for one: download on a computer with no engine yet)
 strata launch --model q2_0 --open                                      # also open the server's page in your browser once it serves
+strata launch --model q2_0 --context 64k --restart --no-tui           # a model is already serving other choices (or holds the port): stop it and start these
 strata launch --list-presets | --delete-preset NAME | --status | --stop [--preset NAME] | --show-key
 ```
 
 `strata launch --help` lists everything with examples. An unknown model or flag gets a plain message with the closest match. Presets are small files in `launch-presets/` beside the profiles
 folder; the run uses the shared profile `launch-<name>` and the shared tuning presets (`strata presets`), so the app sees them too. Flags next to `--preset` change that start only
-(add `--save-preset` to keep them). `--plan` shows the model (also for your own files, which it recognises), the context, the picture setting and what would be downloaded and how big (0 when everything is already here). A model that was tuned before for the same choices on the same computer is not measured again by `--tune quick`; the stored result is used and the run says so. Add `--retune` to measure again.
+(add `--save-preset` to keep them). `--plan` shows the model (also for your own files, which it recognises), the context, the picture setting and what would be downloaded and how big (0 when everything is already here). A model that was tuned before for the same choices on the same computer is not measured again by `--tune quick`; the stored result is used and the run says so. Add `--retune` to measure again (the model of the same launch is stopped for the measuring and starts again with the result).
+
+**A launch while a model is already serving.** The same choices: nothing restarts, the running addresses are printed. Different choices (another context, pictures, access, or another model on the same port): the screens ask once, "Restart the model with these settings? Answers in progress stop.", with Restart and Cancel; `--no-tui` refuses with one line naming the running model, its port and settings, and says to add `--restart` or run `strata launch --stop` first. `--yes` alone never restarts. With `--restart` the old server is stopped first and the new one starts on the same port. A different port given with `--port` runs beside the first one; two big models may not fit in the graphics memory together, and the launch says so.
 
 ## Connect your apps: `strata connect`
 

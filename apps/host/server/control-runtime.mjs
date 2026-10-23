@@ -244,6 +244,22 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.json?.ok) return result.json;
       throw Object.assign(failure(result, 'The partial copies could not be removed.'), { code: result.json?.error?.code ?? 'leave_failed', details: result.json?.error?.details ?? '' });
     },
+    /**
+     * The DFlash2 drafter for a model's run config and the drafting choice (`strata drafting plan`): { needed, gb, line, note, drafter }. Control decides
+     * (the table of strata_control/drafting.py); the app never reads it. Nothing is downloaded.
+     */
+    async draftingPlan({ configPath = null, mode = null, family = null, dataDir = null } = {}) {
+      const result = await call(['drafting', 'plan', ...(configPath ? ['--config', configPath] : []), ...(mode ? ['--mode', mode] : []), ...(family ? ['--family', family] : []), ...(dataDir ? ['--data-dir', dataDir] : []), '--output', 'json'], { timeoutMs: 30_000 });
+      if (result.json?.ok) return result.json;
+      throw failure(result, 'The drafter could not be checked.');
+    },
+    /** Fetch and pack the drafter when the choice would use it and it is not here (`strata drafting fetch --if-needed`); `onEvent` gets {step, done, total}. */
+    async draftingFetch({ configPath, mode = null, onEvent = null, signal = null } = {}) {
+      const args = ['drafting', 'fetch', '--config', configPath, ...(mode ? ['--mode', mode] : []), '--if-needed', '--output', 'jsonl'];
+      const result = await call(args, { timeoutMs: 3 * 3600_000, acquire: true, onLine: onEvent ?? (() => {}), signal });
+      if (result.json?.ok) return result.json;
+      throw Object.assign(new ControlError(result.json?.error?.message ?? (result.stderr.split(/\r?\n/).filter(Boolean).pop() || 'The DFlash2 drafter could not be downloaded.'), { exitCode: result.code, output: result.json }), { code: 'drafting_failed' });
+    },
     async saveProfile(name, configPath) {
       const listed = await call(['profile', 'list', '--output', 'json'], { timeoutMs: 20_000 });
       const known = (listed.json?.profiles ?? []).some(p => p.id === name);

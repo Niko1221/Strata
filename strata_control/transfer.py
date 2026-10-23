@@ -25,6 +25,10 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from strata_control import tls
+
+tls.install()      # #3722: the operating system's certificates, like the browser
+
 CHUNK = 1 << 20
 SMALL_LIMIT = 8 << 20
 ENV_ALLOW_HTTP = "STRATA_UPDATE_ALLOW_HTTP"
@@ -175,9 +179,8 @@ def read_small(location: str, *, limit: int = SMALL_LIMIT, timeout: float = 30) 
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         reason = getattr(exc, "reason", exc)
         hint = ""
-        if "CERTIFICATE_VERIFY_FAILED" in str(reason):
-            hint = (". This computer did not accept the update server's certificate: check that its date and time are right, "
-                    "or that a company proxy is not replacing the certificate")
+        if tls.is_certificate_error(exc):
+            raise TransferError(tls.explain(tls.host_of(location))) from None
         raise TransferError(f"could not read {location} ({type(exc).__name__}: {reason}){hint}") from None
     if len(data) > limit:
         raise TransferError(f"{location} is larger than {limit} bytes")
@@ -249,6 +252,8 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
                                 resumable=False) from None
         raise TransferError(f"the update server answered {exc.code} for {location}") from None
     except (urllib.error.URLError, OSError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
+        if tls.is_certificate_error(exc):
+            raise TransferError(tls.explain(tls.host_of(location)), resumable=True) from None
         got = partial.stat().st_size if partial.exists() else 0
         reason = getattr(exc, "reason", exc)
         raise TransferError(f"the download of {location} was interrupted after {got} of {size} bytes "

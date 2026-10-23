@@ -10,11 +10,7 @@ Intel GPU and every result on Arc hardware came from the community. Since 0.1.40
 (32 GB, `xe`) and an Arc A750 (8 GB, `i915`); the results from those two cards are marked in the table below. Other cards
 are still community reports. The NVIDIA and AMD engines are unchanged: the Intel build is a separate CMake target, off by default.
 
-**Where the engine comes from.** There is **no Intel engine in the release zips** (the ones `START-HERE.bat` and `setup.sh`
-use): you build it from source on Linux, as described below. The Docker route is a ready-made image,
-`ghcr.io/niko1221/strata:0.2.2-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build
-the image yourself](DOCKER.md#build-it-yourself) from the engine you built (the image needs prepared model files; see
-[Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
+**Where the engine comes from.** On Linux, `strata update` (Terminal) and Settings > Update (app) download the Intel engine package, `linux-x86_64-sycl`, for a PC whose graphics card is made by Intel, when the release feed lists one (`strata update --check` shows what it would install). One package serves Alchemist (A-series) and Battlemage (B-series) cards: the GPU code is compiled from SPIR-V at the first start, because the A-series cards have no FP64 units and the engine's FP64 kernels cannot be built ahead of time for them. It carries oneAPI's runtime libraries; the Level Zero loader and the compute runtime stay the PC's own (see "What you need" below), and the user must be in the `render` group (`strata doctor` says so). The package is built by `packaging/build_sycl_linux.sh`. It was tested on an Arc A750 only. The release zips (the ones `START-HERE.bat` and `setup.sh` use) have no Intel engine; to build one from source, follow the steps below. The Docker route is a ready-made image, `ghcr.io/niko1221/strata:0.2.3-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build the image yourself](DOCKER.md#build-it-yourself) from the engine you built (the image needs prepared model files; see [Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
 
 ## What has been run, and by whom
 

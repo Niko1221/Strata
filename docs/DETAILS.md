@@ -1069,6 +1069,11 @@ print(r.choices[0].message.content)
   Claude Code ask for 32,000 on every request); the thinking budget follows the shortened cap. For the strict llama.cpp
   behaviour (400) set `"fit_max_tokens": false` in `strata-<model>.json` or pass `--no-fit-max-tokens` to
   `serve/server.py`. A prompt that leaves no room at all is always refused.
+- **`max_tokens` and the `model` field.** `max_tokens`, `max_completion_tokens` and `max_output_tokens` of `-1` or `0`, like a
+  field that is left out, mean "no cap": the answer may use the room left in the context (clients send `-1` for that). The `model` field is not matched
+  against the loaded model on purpose: one server serves one model, and OpenAI clients often send a name of their own (`gpt-4o`, `local`),
+  so any name is answered by the loaded model (a name from `aliases` and the model's own name work the same). Only `GET /v1/models` says what
+  is loaded.
 - **Model aliases** (0.1.32). `"aliases": ["qwen", "local-model"]` in `strata-<model>.json` lists the model under
   those names too in `/v1/models` (each with its own `id`, and in the model's `aliases`), like llama-server's
   `--alias`; a request naming one is answered under that name. Any other name is still served, as before.
@@ -1177,7 +1182,7 @@ without it. The engine's own key is `pin=N` on the `GEN` line.
 in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories when
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
-The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
+Without `--conversation-cache-mib` the budget is sized from the RAM that is free once the model is loaded (0.2.3, #3493): 40% of what is left above `--conversation-cache-min-free-mib`, at most 8192, in steps of 256, and off when that is under 1024; the engine log says which in one line. An agent Harness that alternates a long main conversation with shorter ones (sub-agents, summaries) used to read every prompt again (`Reused` 0); with the cache on, the next turn of each one reuses its prompt. `--conversation-cache-mib N` sets it and `--conversation-cache-mib 0` turns it off; `--prompt-cache 0` also disables parking.
 With `--layer-split`, a parked conversation holds one image per stage (each later stage's
 session and its share of the conversation checkpoints), every image is validated before
 anything is overwritten, and each is restored on its own GPU. Verified on a 4-GPU split:

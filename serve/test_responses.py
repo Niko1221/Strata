@@ -517,6 +517,22 @@ class ToolRoundTrip(Server):
         self.assertIn("<tool_response>\nbefore\n</tool_response>", second_prompt)
         self.assertEqual(r["output"][-1]["content"][0]["text"], "The file says before.")
 
+    def test_quoted_incomplete_wrapper_is_not_a_completed_call(self):
+        text = "Format: " + CALL[CALL.index("<tool_call>"):].removesuffix("</tool_call>") + "and then I explain it."
+        self.engine.scripts = [self.tok.encode("</think>\n\n" + text + "<|im_end|>", parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        for stream in (False, True):
+            code, result = self.post({"model": "m", "input": "explain the format", "tools": TOOLS, "stream": stream})
+            self.assertEqual(code, 200, result)
+            final = result[-1]["response"] if stream else result
+            calls = [item for item in final["output"] if item["type"] == "function_call"]
+            self.assertFalse(any(item["status"] == "completed" for item in calls))
+            for call in calls:
+                with self.assertRaises(ValueError):
+                    json.loads(call["arguments"])
+            self.assertEqual("".join(item["content"][0]["text"] for item in final["output"]
+                                     if item["type"] == "message"), text)
+
     def test_namespace_call_written_with_double_underscore(self):
         # Qwen writes Codex's MCP tools in their flat `mcp__server__tool` form; Codex only
         # runs the call when it comes back with its namespace.
@@ -532,6 +548,36 @@ class ToolRoundTrip(Server):
         call, = r["output"]
         self.assertEqual((call["namespace"], call["name"], json.loads(call["arguments"])),
                          ("mcp__websearch", "web_search", {"query": "strata"}))
+
+        # Two canonical names share this alias. It must not invoke the first namespace.
+        self.engine.scripts = [self.tok.encode(
+            "</think>\n\n<tool_call>\n<function=a__b__c>\n</function>\n</tool_call><|im_end|>",
+            parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        tools = [{"type": "namespace", "name": "a", "tools": [{"type": "function", "name": "b__c"}]},
+                 {"type": "namespace", "name": "a__b", "tools": [{"type": "function", "name": "c"}]}]
+        for stream in (False, True):
+            code, r = self.post({"model": "m", "input": "go", "tools": tools, "stream": stream})
+            self.assertEqual(code, 200, r)
+            output = r[-1]["response"]["output"] if stream else r["output"]
+            # not an alias of either: with tools declared (the 0.2.2 rule, #3075) a call for an undeclared name stays text
+            self.assertFalse([item for item in output if item.get("type") == "function_call"], output)
+            self.assertIn("a__b__c", json.dumps(output))
+
+        # A declared exact name wins over alias spellings and keeps its string schema.
+        tools.append({"type": "function", "name": "a__b__c", "parameters": {
+            "type": "object", "properties": {"path": {"type": "string"}}}})
+        self.engine.scripts = [self.tok.encode(
+            "</think>\n\n<tool_call>\n<function=a__b__c>\n<parameter=path>\n123\n</parameter>\n"
+            "</function>\n</tool_call><|im_end|>", parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
+        for stream in (False, True):
+            code, r = self.post({"model": "m", "input": "go", "tools": tools, "stream": stream})
+            self.assertEqual(code, 200, r)
+            output = r[-1]["response"]["output"] if stream else r["output"]
+            call, = output
+            self.assertNotIn("namespace", call)
+            self.assertEqual((call["name"], json.loads(call["arguments"])), ("a__b__c", {"path": "123"}))
 
     def test_namespace_and_custom_calls_come_back_under_their_own_names(self):
         self.engine.scripts = [self.tok.encode(

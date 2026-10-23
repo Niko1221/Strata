@@ -59,10 +59,17 @@ class UpdateError(RuntimeError):
         self.exit_code = exit_code
 
 
+LAUNCH_NEXT_STEP = "Stop the model first (`strata launch --stop`), then run `strata update` again. Nothing was changed."
+
+
 class Busy(UpdateError):
     """An engine is serving, so nothing was installed or switched."""
 
     def __init__(self, serving: list[dict]):
+        if any(str(item.get("profile", "")).startswith("launch-") for item in serving):
+            super().__init__("Strata's own launch is using the graphics card. " + LAUNCH_NEXT_STEP, 7)
+            self.serving = serving
+            return
         names = ", ".join(item.get("profile", "an engine") for item in serving) or "an engine"
         super().__init__(f"{names} is serving. Stop it (or wait until it is idle) and run the update again; "
                          "the update never replaces or tests an engine while one is serving.", 7)
@@ -76,12 +83,43 @@ class TestStartFailed(UpdateError):
     BUSY = re.compile(r"timed?[ -]?out|out of memory|\boom\b|not enough (gpu |video |free )?memory|vram|memory allocation|"
                       r"cudaerrormemory|device (is )?(busy|in use)|resource busy|no free (gpu|memory)", re.I)
 
-    def __init__(self, label: str, reason: str):
-        self.busy = bool(self.BUSY.search(reason))
-        super().__init__(f"The new engine {label} did not pass its test start ({reason}). It was not installed; "
-                         "your current engine is unchanged."
-                         + (" The graphics card or memory looks busy: close programs that use the card (games, video, other models) "
-                            "and run `strata update` again." if self.busy else ""), 6)
+    @staticmethod
+    def plain(label: str, reason: str, busy: bool, hint: str | None) -> str:
+        """The one text of a failed test start (X01): what did not work in plain words, that nothing was changed, and one next step. The engine's
+        own words stay in ``reason`` (the state file, the JSON output and the kept log), never in this sentence."""
+        what = "Control" if label.startswith("Control") else "engine"
+        head = (f"The new {label} did not start correctly on this computer, so it was not installed. Your current {what} is unchanged."
+                if what == "Control" else
+                f"The new engine {label} did not start correctly on this computer, so it was not installed. Your current engine is unchanged.")
+        low = reason.lower()
+        if what == "Control":
+            cause = f"It answered `--version` with: {reason.split('--version said', 1)[1].strip()}" if "--version said" in low else \
+                "It did not answer `--version` in time or at all."
+        elif "one-token probe" in low:
+            cause = "The engine started but stopped before it answered a test question."
+        elif "--version exited" in low or "could not run" in low:
+            cause = "The engine program did not run on this computer."
+        elif "no installed model" in low:
+            cause = "There is no installed model to test the engine with."
+        elif low.startswith("it "):                      # Strata's own plain sentences ("it was still loading the model after 10 minutes")
+            cause = reason[:1].upper() + reason[1:].rstrip(".") + "."
+        elif busy:
+            cause = "The graphics card or memory was in use."
+        else:
+            cause = "The engine reported a problem while it started."
+        if hint is None:
+            hint = ("Run `strata update --force` to try again; if it fails again, report it with the log." if not busy and what == "engine"
+                    else "Run `strata update` again.")
+        return f"{head} {cause} {hint}"
+
+    def __init__(self, label: str, reason: str, *, busy: bool | None = None, hint: str | None = None):
+        # busy: True/False says outright whether the card or memory was busy (the wait-expired reasons carry the engine's log tail, which
+        # mentions VRAM on every healthy start and must not be read as a busy card, #3683); None reads it from the words of the reason
+        self.busy = bool(self.BUSY.search(reason)) if busy is None else busy
+        if hint is None and self.busy:
+            hint = ("The graphics card or memory looks busy: close programs that use the card (games, video, other models) "
+                    "and run `strata update` again.")
+        super().__init__(self.plain(label, reason, self.busy, hint), 6)
         self.label = label
         self.reason = reason
 
@@ -221,7 +259,8 @@ def detect_hardware(environ=None) -> dict:
         environ = {**environ, ec.ENV_BACKEND: "hip"}
     backend, how = ec.detect_backend(environ)
     hw = {"platform": host_platform(), "backend": backend, "backend_source": how, "runtime": ec.runtime_version(),
-          "nvidia_driver": None, "cuda_archs": [], "gfx": [], "gpu_names": [], "variant_wanted": prefer}
+          "nvidia_driver": None, "cuda_archs": [], "gfx": [], "gpu_names": [], "variant_wanted": prefer,
+          "makes": sorted(ec.gpu_makes_present())}
     if backend == "cuda":
         hw["nvidia_driver"] = ec.nvidia_driver_version()
         hw["cuda_archs"] = ec.cuda_archs_present()
@@ -305,11 +344,22 @@ def require_acquisition(what: str) -> None:
     acquisition.require(what, "`strata update` from a terminal")
 
 
+def downgrade_words(sequence, accepted, state_file: Path) -> str:
+    """A feed older than the one already accepted (A01b/A05), in plain words: both numbers, the folder that remembers the newer one, and one next step.
+    The sentence keeps "older than the one already accepted" so a log search for the old text still finds it."""
+    return (f"this update source is older than the one already accepted on this computer (its sequence is {sequence}, the accepted one is "
+            f"{accepted}; refusing a replayed feed). The newer one is remembered in {state_file.parent}. Use the newest release folder; "
+            f"if you really want this older one, delete {state_file} and run this again.")
+
+
 def open_feed(ctx: Context, state: State) -> feedmod.Feed:
     require_acquisition("the update feed")
     last = (state.data.get("feed") or {}).get("sequence")
     ctx.say("feed", "Reading the signed update feed")
-    loaded = feedmod.fetch(ctx.source, ctx.trusted, last_sequence=last, channel=ctx.channel, now=ctx.now)
+    try:
+        loaded = feedmod.fetch(ctx.source, ctx.trusted, last_sequence=last, channel=ctx.channel, now=ctx.now)
+    except feedmod.FeedDowngrade as exc:
+        raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
     info = state.section("feed")
     info.update({"sequence": loaded.sequence, "key_id": loaded.key_id, "source": ctx.source, "channel": loaded.channel,
                  "checked_at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()})
@@ -474,7 +524,52 @@ def decide_engine(feed: feedmod.Feed, ctx: Context, state: State) -> dict:
     return _choose_engine(feed, ctx, state)[0]
 
 
+GPU_MAKES = ("cuda", "hip", "sycl")
+
+
+def installed_gpu_makes(root: Path, platform: str | None) -> set[str]:
+    """The GPU makes (cuda / hip / sycl) of the engines installed for this platform, whatever their state."""
+    try:
+        found, _ = ec.scan(root)
+    except OSError:
+        return set()
+    return {item.backend for item in found if item.platform == platform and item.backend in GPU_MAKES}
+
+
+def make_guard(ctx: Context) -> str | None:
+    """Never cross GPU makes (#3688). An update replaces the engine; it does not convert the PC from one make of card to another,
+    and a package for the wrong make can only fail its test start. When the engine already installed is for a different make
+    than the one detected:
+      - if this PC really has a card of the installed make too (the display adapters / PCI vendors say so), the update stays
+        on the installed make (a PC with an NVIDIA card and an AMD card keeps the engine it was set up with);
+      - otherwise nothing is chosen and the returned sentence says why.
+    An explicit ask (``--backend``, ``STRATA_ENGINE_BACKEND``) is the person's decision and passes. Returns None when the update
+    may go on."""
+    hw = ctx.hardware
+    want = hw.get("backend")
+    if want not in GPU_MAKES or hw.get("backend_source") in ("environment", "requested", "installed engine"):
+        return None
+    have = installed_gpu_makes(ctx.components, hw.get("platform"))
+    if not have or want in have:
+        return None
+    here = set(hw.get("makes") or [])
+    keep = [make for make in GPU_MAKES if make in have and make in here]
+    if keep:
+        ctx.hardware = {**detect_hardware({**ctx.environ, ec.ENV_BACKEND: keep[0]}), "backend_source": "installed engine"}
+        return None
+    mine = " and ".join(ec.MAKE_NAMES[m] for m in GPU_MAKES if m in have)
+    return (f"The engine installed here is for {mine} cards, but this update would give your PC {ec.MAKE_NAMES[want]} one. "
+            f"Nothing was changed. If you really changed your graphics card, download the {ec.MAKE_NAMES[want]} version "
+            f"from {ec.RELEASES_URL}.")
+
+
 def _choose_engine(feed: feedmod.Feed, ctx: Context, state: State) -> tuple[dict, feedmod.EnginePackage | None]:
+    refusal = make_guard(ctx)
+    if refusal:
+        installed, _ = installed_engine(ctx.components, {**ctx.hardware, "backend": next(iter(sorted(installed_gpu_makes(ctx.components, ctx.hardware.get("platform")))), None)})
+        return {"installed": _engine_view(installed), "offered": None, "reasons": [refusal], "status": "wrong-make", "note": refusal,
+                "download_bytes": 0, "previous": state.section("engine").get("previous"), "pinned": state.section("engine").get("pinned"),
+                "problem": None}, None
     installed, missing_reason = installed_engine(ctx.components, ctx.hardware)
     sticky = {**ctx.hardware, "installed_variant": installed.variant if installed is not None and installed.backend == "hip" else ""}
     offered, reasons = feedmod.select_engine([p for p in feed.engine], sticky)
@@ -702,6 +797,48 @@ def _warn_if_deep(ctx: Context, folder: Path, longest_inside: int) -> None:
         ctx.say("warn", words, component="engine")
 
 
+def _test_progress(ctx: Context, component: ec.EngineComponent):
+    """What the person sees while the staged engine is test-started: a line when the phase changes and one about every 30 seconds,
+    so a long load or a stuck probe is never a silent wait (#3683: 10 minutes of nothing, then a timeout)."""
+    began = time.monotonic()
+    seen = {"phase": None, "at": 0.0}
+    words = {"loading": "is loading the model",
+             "verifying_generation": "has loaded the model; waiting for it to answer one token",
+             "ready_file_not_matched": "says it is ready; checking that it is the engine Strata started"}
+
+    def progress(status: dict) -> None:
+        phase = status.get("phase") if status.get("state") == "starting" else None
+        if phase not in words:
+            return
+        now = time.monotonic()
+        if phase != seen["phase"] or now - seen["at"] >= 30:
+            seen["phase"], seen["at"] = phase, now
+            ctx.say("test", f"Engine {component.version} {words[phase]} ({int(now - began)} s)", component="engine")
+
+    return progress
+
+
+def _test_start_failure(component: ec.EngineComponent, started: dict, ctx: Context, tail: str) -> TestStartFailed:
+    """The plain reason a test start did not pass, in the words of what the engine was doing when it ran out of time."""
+    error = started.get("error")
+    minutes = max(1, int(min(ctx.test_timeout, 600) // 60))
+    log = updates_dir(ctx.components) / "logs" / f"test-start-{component.version}.log"
+    if error == "startup_wait_expired":
+        phase = started.get("phase")
+        kept = f" The engine's log from this test is in {log}."
+        if phase == "verifying_generation":
+            return TestStartFailed(component.version, f"it loaded the model but did not answer one token within {minutes} minutes",
+                                   busy=False, hint="Nothing was changed. Run `strata update` again; if it happens again, report it with the log." + kept)
+        if phase == "ready_file_not_matched":
+            return TestStartFailed(component.version, f"it reported that it was ready, but Strata could not match it to the engine process it "
+                                   f"started", busy=False,
+                                   hint="This looks like a problem in Strata, not in your engine or card. Nothing was changed; report it with the log." + kept)
+        return TestStartFailed(component.version, f"it was still loading the model after {minutes} minutes", busy=True,
+                               hint="Nothing was changed. A slow disk or a card that other programs are using can do this: close them and run "
+                                    "`strata update` again." + kept)
+    return TestStartFailed(component.version, f"it did not answer a one-token probe ({error or started.get('state')}){tail}")
+
+
 def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Context) -> dict:
     """Start the staged engine through the real start path (owner runtime, `component:strata-engine`, a saved model), wait for
     the one-token generation probe, and stop it. Everything runs in an isolated runtime, profile and component folder, so a
@@ -732,15 +869,16 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
             profiles.create(name, str(config_path))
             started = None
             try:
-                started = runtime.start(name, wait=min(ctx.test_timeout, 600), shutdown_timeout=20)
+                started = runtime.start(name, wait=min(ctx.test_timeout, 600), shutdown_timeout=20,
+                                        on_status=_test_progress(ctx, component))
                 if started.get("ok") and started.get("state") == "ready" and started.get("generation_ready") is not True:
                     # a server that loads its model on the first request is "ready" without having generated anything:
                     # force the load and the one-token probe, because that is what the new engine has to be able to do
+                    ctx.say("test", f"Engine {component.version} is up; asking it for one token", component="engine")
                     started = {**started, **runtime.verify(name, timeout=min(ctx.test_timeout, 600), load=True)}
                 if not started.get("ok") or started.get("state") != "ready" or started.get("generation_ready") is not True:
-                    raise TestStartFailed(component.version,
-                                          f"it did not answer a one-token probe ({started.get('error') or started.get('state')})"
-                                          + _log_tail(sandbox, component))
+                    _keep_log(sandbox, component, ctx)
+                    raise _test_start_failure(component, started, ctx, _log_tail(sandbox, component))
                 _keep_log(sandbox, component, ctx)
                 return {"mode": "full", "model": cfg.get("model_name") or source.stem, "state": started["state"],
                         "generation_ready": True, "detail": "started, answered a one-token probe, stopped"}
@@ -798,6 +936,9 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
             result["reasons"] = decision["reasons"]
         return result
     root = ctx.components
+    have_makes = installed_gpu_makes(root, pkg.platform)
+    if pkg.backend in GPU_MAKES and have_makes and pkg.backend not in have_makes and ctx.hardware.get("backend_source") not in ("environment", "requested"):
+        raise UpdateError(f"the {pkg.label} engine is for another make of graphics card than the installed one; nothing was staged", 5)
     _warn_if_deep(ctx, ec.engine_dir(root) / folder_name(pkg), longpath.LONGEST_IN_PACKAGE.get(pkg.backend, longpath.LONGEST_IN_PACKAGE_DEFAULT) + 1)
     _free_space_check(root, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, "engine")
     archive = _download(ctx, "engine", pkg.url, pkg.size, pkg.sha256, f"engine {pkg.label}", feed)
@@ -817,6 +958,12 @@ def update_engine(ctx: Context, feed: feedmod.Feed, state: State) -> dict:
         try:
             smoke = runner(stage_root, staged, ctx)
         except TestStartFailed as exc:
+            try:                                             # a model of Strata's own launch holds the card: one next step, not the engine's words
+                own = [s for s in ctx.serving() if str(s.get("profile", "")).startswith("launch-")]
+            except Exception:                                # noqa: BLE001
+                own = []
+            if own:
+                raise Busy(own) from None
             section = state.section("engine")
             at = (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()
             if not exc.busy:                                 # a busy card says nothing about the engine: the next update tries again
@@ -901,6 +1048,10 @@ def rollback_engine(ctx: Context) -> dict:
         except (ec.ComponentProblem, OSError) as exc:
             raise UpdateError(f"the previous engine ({previous}) can no longer be used: {exc}", 5) from None
         current, _ = installed_engine(ctx.components, ctx.hardware)
+        if current is not None and current.root.name == previous:
+            # an earlier rollback is still in force (S3: the text said "0.1.45.3 -> 0.1.45.3"): there is nothing to leave behind
+            raise UpdateError(f"the engine is already the previous one ({current.version}); there is nothing older to return to. "
+                              "Run `strata update --force` to try the newer version again.", 2)
         leaving = current.root.name if current else None
         before_identity = preset_marks.identity_of(current, _manifest_sha(current.root)) if current else None
         section["pinned"] = previous
