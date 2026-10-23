@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -545,6 +546,86 @@ int main(int argc, char** argv) {
     }
     int bad = 0;
     const int NV = 512, NT = 4;
+
+    // The grammar mask (a per-row device bitmask, bit=1 bans) rides the logit read, BEFORE penalties.
+    // Parity against a pre-banned input through each ctest sampler path; banned ids never appear across seeds;
+    // a null mask leaves the plain result; the mask buffer is read-only.  (Mirror of the CUDA tree's block.)
+    {
+        std::vector<float> l(NV * NT), adjusted;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v) l[t * NV + v] = float(v % 17) / 4;
+        l[0] = 50;
+        const int words = (NV + 31) / 32;
+        std::vector<uint32_t> mask((size_t) NT * words, 0xFFFFFFFFu);
+        for (int t = 0; t < NT; ++t)
+            for (int v : {1, 3, 5}) mask[(size_t) t * words + (v >> 5)] &= ~(1u << (v & 31));
+        adjusted = l;
+        for (int t = 0; t < NT; ++t)
+            for (int v = 0; v < NV; ++v)
+                if (!(v == 1 || v == 3 || v == 5)) adjusted[t * NV + v] = -std::numeric_limits<float>::infinity();
+        auto upload = [&](const std::vector<uint32_t>& m) {
+            uint32_t* d = (uint32_t*) sycl::malloc_device<uint32_t>(m.size(), dpct::get_in_order_queue());
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(d, m.data(), m.size() * sizeof(uint32_t))
+                                       .wait()),
+                  "mask upload");
+            return d;
+        };
+        uint32_t* dm = upload(mask);
+        std::vector<int> hist(NT * 4, 7);
+        DeviceRows raw(l, NT, hist, 4), expected(adjusted, NT, hist, 4);
+        for (bool greedy : {true, false}) for (bool penalty : {false, true}) {
+            strata::kernels::SamplerParams p;
+            p.greedy = greedy; p.temperature = greedy ? 0 : 0.8f; p.seed = 71; p.top_k = 16;
+            if (penalty) { p.penalty_last_n = 4; p.penalty_freq = 3; p.penalty_repeat = 1.1f; }
+            const auto want = expected.sample(p, nullptr);   // banned ids absent by construction
+            p.grammar_mask = dm; p.mask_stride_words = words;
+            if (raw.sample(p, nullptr) != want) ++bad;
+            for (unsigned seed : {1u, 2u, 3u}) {
+                strata::kernels::SamplerParams q = p; q.seed = seed;
+                for (const int v : raw.sample(q, nullptr))
+                    if (v != 1 && v != 3 && v != 5) { ++bad; break; }   // a banned id must never surface
+            }
+            p.grammar_mask = nullptr; p.mask_stride_words = 0;
+            DeviceRows plain(l, NT, hist, 4);
+            if (raw.sample(p, nullptr) != plain.sample(p, nullptr)) ++bad;
+        }
+        std::vector<uint32_t> unchanged(mask.size());
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(unchanged.data(), dm, mask.size() * sizeof(uint32_t))
+                                   .wait()),
+              "mask readback");
+        if (unchanged != mask) ++bad;
+        sycl::free(dm, dpct::get_in_order_queue());
+        // the reporter's vocabulary scale: all banned except 109266, greedy and sampled both land on it
+        const int vocab = 248320, w = (vocab + 31) / 32;
+        std::vector<float> large(vocab, 100.0f);
+        std::vector<uint32_t> big((size_t) w, 0xFFFFFFFFu);
+        big[109266 >> 5] &= ~(1u << (109266 & 31));
+        dm = upload(big);
+        DeviceRows many(large, 1, {}, 0);
+        for (bool greedy : {true, false}) {
+            strata::kernels::SamplerParams p; p.greedy = greedy; p.grammar_mask = dm; p.mask_stride_words = w;
+            if (many.sample(p, nullptr) != std::vector<int>{109266}) ++bad;
+        }
+        sycl::free(dm, dpct::get_in_order_queue());
+        // the mask acts at the read: ban the order fixture's clear leader and the pick moves to the second
+        {
+            strata::kernels::SamplerParams p; p.top_k = 0; p.top_p = 0.5f; p.temperature = 0.5f;
+            p.min_keep = 1; p.greedy = true;
+            std::vector<float> l2((size_t) NV, -1000.0f);
+            l2[0] = 3.0f;
+            for (int v = 1; v < 8; ++v) l2[v] = 2.6f - 0.05f * (float) v;
+            std::vector<uint32_t> m2((size_t) words, 0u);
+            m2[0] |= 1u;   // ban id 0, the leader (bit=1 bans; the rest ride free)
+            dm = upload(m2);
+            DeviceRows one(l2, 1, {}, 0);
+            if (one.sample(p, nullptr) != std::vector<int>{0}) ++bad;
+            p.grammar_mask = dm; p.mask_stride_words = words;
+            if (one.sample(p, nullptr) != std::vector<int>{1}) ++bad;
+            sycl::free(dm, dpct::get_in_order_queue());
+        }
+    }
 
     // ---- fixture 1: plain greedy.  top_k = 0 (disabled), top_p = 1 (disabled), T = 1 -> argmax.
     {
