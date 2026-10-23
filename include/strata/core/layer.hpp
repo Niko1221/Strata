@@ -376,6 +376,10 @@ int qsa_kv_win_b();
 /// Size the ring for the prompt chunk the engine settled on (generate.cpp, before the state is carved). An
 /// explicit STRATA_KV_WINDOW_BATCH wins over this, and it only ever grows the ring (never shrinks an explicit one).
 void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk);
+/// Freeze the window grid (S/R/B): after generate.cpp settles the prompt chunk and calls
+/// qsa_set_kv_win_batch, the grid must not move, so every state carved later (main, MTP
+/// drafter, MTP twin) reads one grid. A later qsa_set_kv_win_batch is a no-op with a warning.
+void qsa_kv_win_freeze();
 /// True when the ring's size came from STRATA_KV_WINDOW_BATCH (the user sized it). Then the engine does not grow
 /// it, and the 6,144-cell cap that keeps setup.py's 152 MiB figure does not apply either: a chunk that does not
 /// fit the ring is refused by the append, which says what to change.

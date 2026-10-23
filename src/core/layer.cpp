@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <cuda_runtime.h>
 #include <cmath>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -215,6 +216,11 @@ int64_t g_kv_win_s = 128, g_kv_win_r = 8, g_kv_win_b = 512;
 /// the guard. Without it the ring follows the prompt chunk (qsa_set_kv_win_batch from generate.cpp), because a
 /// ring smaller than one chunk would refuse that chunk loudly.
 bool g_kv_win_b_env = false;
+// WP-2a window grid frozen after the prompt chunk is settled (qsa_kv_win_freeze, called from
+// generate.cpp once qsa_set_kv_win_batch has run): after that the grid must not move, so every
+// state carved later (main, MTP drafter, MTP twin) sees one grid. A late caller is a no-op
+// with a warning instead of silently changing the reader's row mapping.
+bool g_kv_win_frozen = false;
 /// The window wants side pools: the overlay is on, on a q4-**Lloyd** state (its reader mixes exact fp16 with
 /// quantized cells, and only the Lloyd q4 paths carry that reader: `--kv q4_0` maps to kv_mode 2, whose fused
 /// decode ignores the window while the gather would honour it - so a pool is never attached there, see the
@@ -851,6 +857,12 @@ bool qsa_kv_win_batch_is_explicit() { return g_kv_win && g_kv_win_b_env; }
 // the chunk's whole window span (see the header). generate.cpp calls this with the chunk it settled on (which is
 // only known there) - an explicit STRATA_KV_WINDOW_BATCH always wins, and this only ever grows the ring.
 void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk) {
+    if (g_kv_win_frozen) {
+        assert(!"qsa_set_kv_win_batch called after the window grid was frozen");
+        std::fprintf(stderr, "strata: qsa_set_kv_win_batch called after the window grid was frozen "
+                            "(%lld cells): ignored\n", (long long) chunk);
+        return;
+    }
     if (g_kv_win_b_env || chunk <= g_kv_win_b) return;
     const int64_t was = g_kv_win_b;
     g_kv_win_b = chunk;
@@ -861,6 +873,7 @@ void qsa_set_kv_win_batch(const ModelGeometry& g, int64_t chunk) {
                  "%lld (%.1f MiB per QSA layer, always resident)\n",
                  (long long) chunk, (long long) was, (long long) g_kv_win_b, mib);
 }
+void qsa_kv_win_freeze() { g_kv_win_frozen = true; }
 // The overlay switch itself: a caller that must build a state the window never reads (the MTP drafter, mtp.cpp)
 // turns it off around the init, so `qsa_win_wanted()` is false and no side pool is carved at all - instead of
 // carving one and dropping the pointers afterwards (R6). S/R keep their values, so switching back restores the

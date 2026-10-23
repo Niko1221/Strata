@@ -4005,6 +4005,7 @@ int main(int argc, char** argv) {
             if (o.prefill_auto) o.prefill_auto_max = std::min(o.prefill_auto_max, kKvWinBatchMax);
         }
         strata::core::qsa_set_kv_win_batch(g, chunk);
+        strata::core::qsa_kv_win_freeze();
     }
 
     strata::core::SessionState ss;
