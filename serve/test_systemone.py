@@ -224,6 +224,33 @@ class BrowWire(unittest.TestCase):
         except Exception as e:
             self.assertIn("BROWD", str(e))
 
+    # ---- M3.1: BROWCAP reports how many rows the last request kept (the guard the row path verifies) ----
+
+    def test_browcap_roundtrip(self):
+        self.eng.script = ["BROWCAPD 2\n"]
+        self.assertEqual(self.eng.captured_rows(), 2)
+        self.assertEqual(self.eng.proc.sent[-1], "BROWCAP\n")
+
+    def test_browcap_zero_means_no_capture(self):
+        self.eng.script = ["BROWCAPD 0\n"]
+        self.assertEqual(self.eng.captured_rows(), 0)
+
+    def test_browcap_unexpected_answer_fails_closed(self):
+        self.eng.script = ["BROWD 1 78:0.5\n"]           # an answer to a different op
+        try:
+            self.eng.captured_rows()
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWCAP", str(e))
+
+    def test_browcap_malformed_answer_fails_closed(self):
+        self.eng.script = ["BROWCAPD two\n"]
+        try:
+            self.eng.captured_rows()
+            self.fail("expected EngineDied")
+        except Exception as e:
+            self.assertIn("BROWCAPD", str(e))
+
     # ---- M3.1: BROWAT reads any row of the same window, not only the final one ----
 
     def test_browat_roundtrip_names_the_row(self):
@@ -400,7 +427,6 @@ class RowReadout(unittest.TestCase):
         self.engine.window_rows = None
         self.engine.final_reads = 0
         self.engine.capture_ok = True
-        self.engine.__dict__.pop("brow_rows", None)   # a test may shadow the method; unshadow it
 
     def tearDown(self):
         if self._old is None:
@@ -560,7 +586,6 @@ class Hybrid(unittest.TestCase):
         self.engine.window_rows = None
         self.engine.final_reads = 0
         self.engine.capture_ok = True
-        self.engine.__dict__.pop("brow_rows", None)   # a test may shadow the method; unshadow it
         self.engine.max_news.clear()
 
     def tearDown(self):

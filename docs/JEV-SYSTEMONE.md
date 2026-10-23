@@ -60,11 +60,20 @@ paths exist; the default is the one that ships.
 
 | path | env | what it changes | measured (N fields, RTX 3090, same states) |
 |---|---|---|---|
-| **C — state parking (default)** | `STRATA_JEV_PIN=0` disables | prompts stay byte-identical to M3.0; the engine is told where the shared prefix ends, reads it once and pins its checkpoint, so each later field reads only its own question turn | 1/2/3/5 fields 918/1232/1185/1667 ms; field 1 readout byte-identical; order-insensitive (199/200 argmax agreement when the fields are reversed) |
+| **C — state parking (default, ON unless disabled)** | `STRATA_JEV_PIN=0` disables | prompts stay byte-identical to M3.0; the engine is told where the shared prefix ends, reads it once and pins its checkpoint, so each later field reads only its own question turn | 1/2/3/5 fields 918/1232/1185/1667 ms; field 1 readout byte-identical; order-insensitive (199/200 argmax agreement when the fields are reversed) |
 | **B — one prompt, N rows (opt-in)** | `STRATA_JEV_ROWS=1` | one consolidated prompt; the request names every field's cue position (`jevpos=`), the engine copies those head rows out of whichever verify window covers them while the prompt is read, and `BROWAT` reads them back **by absolute position**, so one prefill answers N questions | 1.33× faster at 2 fields (981 vs 1232 ms), parity at 3+; but fields 2..N see the earlier questions, \|Δp\| grows .187 → .507 by N=5, field order matters (167/200 agreement), and at N=1 it disagrees with C on 17/600 GQA items (−1.8 points) — hence opt-in |
 | **H — pin + row capture (opt-in, rejected)** | `STRATA_JEV_HYBRID=1` | per-field prompts, pinned prefix, cue row captured from the shared read | 1.15× at 2 fields but 20–28% *slower* than C at N≥3 (one serial read per field); kept in the tree as a measured negative |
 
 Route by field count: N=1 either, N=2 B if the Δp shift is acceptable to the caller, N≥3 C.
+
+**Two changes are on by default, not behind a flag**, and both are deliberate: the single-token label
+refusal (above) and **state parking** (`STRATA_JEV_PIN`, on unless set to 0), which is the M3.1 fix
+itself. Pinning does not change the prompt — every field's prompt is byte-identical to M3.0, and the
+readout position with it — but it does make the engine park a checkpoint at the shared prefix, so answer
+identity rests on checkpoint-resume exactness rather than on a full re-read. Measured on the live box,
+field 1's probabilities move by ≤.008 between pinned and unpinned runs (the same order as run-to-run
+variation), and a 200-item field-order test agrees 199/200; `STRATA_JEV_PIN=0` restores the fully
+unpinned read if a caller wants to rule the cache out entirely.
 
 The engine ops behind these are `BROWAT <row> <tokens>` → `BROWATD <n> <tok>:<logit>…` and
 `BROWROWS` → `BROWROWSD <n>`. `BROWAT` has **two addressings**, and the difference matters:
@@ -94,9 +103,9 @@ read from. The option list and the readout always use the same alphabet.
 
 Every rendered label must be **exactly one token**; a request whose label encodes to more than one
 is refused with `422` on `questions.<qid>.criteria` rather than scored on a truncated path. This check
-runs on **every** request, including the default `upper` scheme — it is the one behaviour change on the
-default path (a label that is not one token used to score on its first token). With `A`-`Z` and
-`0`-`9`/`a`-`z` every label is one token in the shipped tokenizer, so no valid request changes status.
+runs on **every** request, including the default `upper` scheme. It applies to `choice` **and** `score`
+labels, which are rendered and read the same way. With `A`-`Z` and `0`-`9`/`a`-`z` every label is one
+token in the shipped tokenizer, so no valid request changes status.
 
 Changing the alphabet moves the readout slightly (`mean |Δp| = .0034` per option on ARC, 0/160
 identical vectors) but it did not change any decision on 160 items and the two alphabets' own
