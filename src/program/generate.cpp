@@ -75,6 +75,7 @@
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
+#include "strata/program/jevpos.hpp"
 #include "strata/prefill/share_rules.hpp"
 #include "strata/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
@@ -12310,26 +12311,12 @@ int main(int argc, char** argv) {
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
                     else if (key == "jevpos") {   // jev fix B: absolute prompt positions to keep rows for
-                        req_jevpos.clear();
-                        const std::string list = tok.substr(eq + 1);
-                        size_t at = 0;
-                        bool bad = false;
-                        while (at <= list.size() && !bad) {
-                            const size_t comma = list.find(',', at);
-                            const std::string one = list.substr(at, comma == std::string::npos ? std::string::npos
-                                                                                              : comma - at);
-                            if (!one.empty()) {
-                                // every character, not just the first: "12x" used to pass as 12 because
-                                // atoll stops at the junk, i.e. a guessed position wearing a valid one
-                                for (const char ch : one)
-                                    if (ch < '0' || ch > '9') bad = true;
-                                else if (req_jevpos.size() >= 32) bad = true;   // more than the cap: refuse the
-                                else req_jevpos.push_back((int64_t) std::atoll(one.c_str()));   // list, never truncate
-                            }
-                            if (comma == std::string::npos) break;
-                            at = comma + 1;
-                        }
-                        if (bad) req_jevpos.clear();   // a malformed list is no list: never a guessed position
+                        // The parse is a rule of its own (include/strata/program/jevpos.hpp, tested by
+                        // tests/program/jevpos_test.cpp).  A malformed list, a field that is not all digits, more
+                        // than the entry cap, or a field too long for int64 leaves the list EMPTY: never a guessed
+                        // position, and never a truncated list - jev.py compares the count it named against
+                        // captured_rows(), so a shorter list would be caught there but a DUPLICATED one would not.
+                        strata::program::jevpos::parse(tok.substr(eq + 1), req_jevpos);
                     }
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
