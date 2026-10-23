@@ -6122,6 +6122,15 @@ int strata::qwen35::run(int argc, char** argv) {
             chunk = fr_gib >= 7.5 ? 2048 : fr_gib >= 5.5 ? 1024 : 512;
         }
         if (const char* cv = std::getenv("STRATA_Q36_CHUNK")) chunk = std::max(256, std::min(4096, std::atoi(cv)));   // force a chunk (512: the old default)
+        // A CHUNK NEVER EXCEEDS THE CONTEXT.  The chunk is the number of prompt tokens one forward carries, and the
+        // context is how many cells the KV cache has (one per token, plus the MTP block's own and the decode steps').
+        // The chunk rule above reads the FREE VRAM and never looks at the context, so a small context on a big card
+        // got the biggest chunk: `--max-context 512` on a 12 GB card asked for a 2048-token chunk and wrote past
+        // the 512 cells of KV - "cudaStreamSynchronize(st) failed: an illegal memory access" instead of a clear
+        // refusal.  Measured on 192.168.1.98 (2026-10-22): `--bench-pp 256 --max-context 512` runs clean
+        // (79.4 tok/s), `--bench-pp 512 --max-context 512` faults.  A default run (ctx 32768) is unaffected: the
+        // chunk is 512/1024/2048 there, all below the context, so this line changes nothing.
+        chunk = std::min(chunk, ctx);
         if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
             std::fprintf(stderr, "strata-q36: chunk rule: free %.2f GiB (raw %.2f, with %.2f packed), main experts %.2f GiB, chunk %d\n",
                          fr / 1073741824.0, fr_raw / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0, chunk);
@@ -6247,6 +6256,25 @@ int strata::qwen35::run(int argc, char** argv) {
     if (serve_mode) return serve(E);
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
+        // THE PROMPT MUST FIT THE CONTEXT.  The KV cache has one cell per token (`ctx` cells, q36_engine.cu's
+        // alloc_session), and the cells after the prompt are the MTP drafts' (`forward_mtp(T, pos, ...)` writes at
+        // `pos + d`) and the decode steps'.  A prompt as long as the context therefore does not fit, and the engine
+        // used to find that out by writing past the KV: "cudaStreamSynchronize(st) failed: an illegal memory
+        // access".  Measured on 192.168.1.98 (2026-10-22): `--bench-pp 256 --max-context 512` runs clean
+        // (79.4 tok/s), `--bench-pp 512 --max-context 512` faults.  Say so instead of faulting.  The default context
+        // (32768) is far above any bench shape, so this line changes nothing for a default run.
+        //
+        // The room the drafts and the decode steps need: `mtp_d` drafts plus one decode cell.  With no MTP that is
+        // one cell - a prompt of exactly `ctx` tokens leaves no room for the token the answer is.
+        const int64_t need = bench_pp + (int64_t) std::max(mtp_d, 0) + 1;
+        if (need > ctx) {
+            std::fprintf(stderr, "strata-q36: --bench-pp %d does not fit --max-context %d (the KV cache holds one "
+                                  "cell per token; %lld more %s needed for the %s and the decode steps); use a "
+                                  "shorter prompt or a bigger --max-context\n",
+                         bench_pp, ctx, (long long) (need - bench_pp), need - bench_pp == 1 ? "cell is" : "cells are",
+                         mtp_d > 0 ? "MTP drafts" : "answer");
+            return 2;
+        }
         std::vector<int32_t> toks((size_t) std::max(bench_pp, 1));
         std::mt19937 rng(1234);
         for (auto& t : toks) t = (int32_t) (rng() % 200000u);
@@ -6390,6 +6418,18 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     const std::vector<int32_t> prompt = parse_ids(tokens.c_str()), forced = parse_ids(force.c_str());
     if (prompt.empty()) { std::fprintf(stderr, "strata-q36: --tokens, --serve or --bench-pp is required\n"); return 2; }
+    // The same fit check as the bench path above, for a real prompt: the prompt's tokens are the context's cells,
+    // and the MTP drafts and the answer need cells after them.
+    {
+        const int64_t need = (int64_t) prompt.size() + (int64_t) std::max(mtp_d, 0) + 1;
+        if (need > ctx) {
+            std::fprintf(stderr, "strata-q36: the prompt (%lld tokens) does not fit --max-context %d (the KV cache "
+                                  "holds one cell per token; %lld more %s needed for the %s and the decode steps)\n",
+                         (long long) prompt.size(), ctx, (long long) (need - prompt.size()),
+                         need - prompt.size() == 1 ? "cell is" : "cells are", mtp_d > 0 ? "MTP drafts" : "answer");
+            return 2;
+        }
+    }
     if (!forced.empty()) n_gen = (int) forced.size() + 1;
     FILE* ff = dump_full.empty() ? nullptr : std::fopen(dump_full.c_str(), "wb");
     std::vector<float> lg;
