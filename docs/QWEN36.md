@@ -102,7 +102,7 @@ tokens in the window. Same prompts, 5 interleaved pairs, R9700:
 The text is the same with and without it (every slot equal to its solo tokens).
 
 **What a slot costs.** Each slot keeps its own cache in VRAM: 1.5 GB at a context of 32K (fp32 keys and values of the 10 attention layers
-and the MTP block, 45 KB per token) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
+and the MTP block, 45 KB per token; `--kv` below takes less) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
 that from the room the experts would have: on a card that does not hold every expert (12 and 16 GB, the hybrid mode) that is room the
 expert slots lose, and a batch reads more distinct experts from RAM. Setup **offers `--parallel`** where the sessions do not eat the experts' room: up to 3-4 where every expert still fits (3 on a 32 GB card at
 32K), and on a card that does not (the hybrid mode) the count whose sessions take at most 35% of the room the experts would have, so it
@@ -179,6 +179,16 @@ changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% 
 prompt's token ids are above 65,536), and a candidate list built from the tokens seen so far loses on both. The shared expert on a second
 stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. Chunked (WY) GDN and the PCIe-assisted hybrid decode
 were not attempted.
+
+## Opt-ins of this engine path
+
+All off by default; with none of them the engine runs as before. They go in the config's `args` (`strata-qwen36-<size>.json`) or
+on the `strata-q36` command line.
+
+- **`--kv int8`**: the keys and values as q8_0 rows, in less VRAM than the default fp32: 12.7 KB per token and session instead of
+  45 KB. The main path's `fp16`, `q4_0` and `k8v4` are not on this path: in serve mode they are said and skipped (the fp32 cache),
+  elsewhere refused. Before this option a config's `--kv` was skipped by this engine; a config that carries `--kv int8` now gets
+  that cache.
 
 ## Not done / limits
 
