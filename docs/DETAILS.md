@@ -715,7 +715,7 @@ server, three server options (all off by default; also as keys in `strata-<model
 | Option | Config key | What it does |
 | --- | --- | --- |
 | `--idle-unload 600` | `"idle_unload_s": 600` | unload the model after 600 s without requests; the next request loads it again |
-| `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it checks the first one) |
+| `--min-free-vram-mib 11000` | `"min_free_vram_mib": 11000` | load an unloaded model only when that much VRAM is free (it waits up to 15 s for memory being given back), else answer **503** "the GPU is in use by another program" instead of starting into what a game left (with several GPUs it reads every card the run will use and names the busy ones) |
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | a command run before the model is loaded again, e.g. one that unloads another server's model |
 | | `"before_load_timeout_s": 120` | how long that command may run (default 120 s). When it exits non-zero or times out (a peer that is not running makes `curl` exit 7), the free VRAM decides: with `min_free_vram_mib` set and not enough free, the model is **not** loaded and the request gets **503** with `Retry-After`; with room (or no limit set) it loads, with a warning in the log. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads |
 
@@ -728,7 +728,7 @@ the OS file cache, so loading again takes seconds while that RAM is not needed e
 16 GB with Q2_0 in the low-RAM mode: unloading takes ~0.3 s, and a request to an unloaded model answered after
 4.6 s (text) or 14.7 s (a picture, image encoder on the CPU).
 
-**Giving part of the VRAM back while it keeps serving (#533, opt-in, one NVIDIA GPU; every request and answer:
+**Giving part of the VRAM back while it keeps serving (#533, opt-in, NVIDIA; every request and answer:
 [VRAM_ELASTIC.md](VRAM_ELASTIC.md)).** With `"vram_elastic": true`
 in the config (the engine flag `--vram-elastic`), the expert cache is allocated in 512 MiB segments
 (`"vram_segment_mib"`), and `POST /v1/vram` with `{"reserve_mib": 8000}` shrinks it between requests until that much
@@ -736,10 +736,23 @@ VRAM is free for another program; `{"reserve_mib": null}` grows it back towards 
 the engine started with (`--vram-reserve-mib`), and `{"reserve_mib": 0}` takes all of it back. A request that is
 running finishes first. The experts of the segments given back are computed on the CPU, like any expert outside the
 cache, so answers keep coming, slower; growing back puts the same experts in the same slots. Nothing resizes on its
-own. Not with a layer split, the helper caches, `--peer-device` or the resident low-RAM mode. Measured on an RTX 5070
+own. Not with the helper caches, `--peer-device` or the resident low-RAM mode. Measured on an RTX 5070
 12 GB with Q2_0 (4.8 GiB cache): `{"reserve_mib": 6000}` took 78 ms and freed 4.3 GiB (the cache keeps 0.5 GiB for
 the prompt path), decode 44 -> 33 tok/s; growing back took 92 ms and the answers were token for token the ones before
 the shrink. Without the flag nothing changes (the same answers as without it).
+
+**One card at a time on a layer split (0.1.39).** A split runs with one expert cache per card, so the reserve is per
+card: `POST /v1/vram {"reserve_mib": 16000, "gpu": 1}` shrinks only the cache of GPU 1 - the engine's numbering,
+0 = the main card, the same numbers as `--split-device`, so with `"gpu": [0, 1]` its 1 is the card `nvidia-smi -i 1`
+shows - and leaving `"gpu"` out moves every card of the run. The answer carries one entry per card in `"gpus"` plus
+the totals over the cards it moved; the engine's own stdin line is `VRAM <reserve_mib|- [device]`, the dash standing
+for the reserve the engine started with - a number in that slot IS the reserve, so `VRAM 1` is a 1 MiB reserve on
+every card, not device 1. Only that card's
+layers lose their cached experts, so its decodes fall to the CPU for them and the other cards are untouched. The
+cache keeps 128 slots plus what the smallest prompt chunk needs, and the chunk drops to the largest one every card
+can still lend (`--prefill auto`'s share cap applies to each card as it is now). A card's dense weights, session and
+KV - and, on the last card, the draft layer and head - stay put: the split itself never moves and nothing is
+reloaded. Not measured on a split yet; the numbers above are the one-card case.
 
 **Keep what the expert cache learned across restarts (opt-in, engine 0.1.36, #477):** a start fills the GPU's expert
 cache from the shipped profile, and the adaptive tier (`--adapt-every`) then moves in the experts your requests use.

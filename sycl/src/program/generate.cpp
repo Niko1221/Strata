@@ -825,8 +825,9 @@ void usage() {
                  "                       session file (default 2560)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
-                 "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
-                 "                       give VRAM back to other programs between requests and take it back later\n"
+                 "                       default 512), so the command `VRAM <reserve_mib> [device]` (the server's POST\n"
+                 "                       /v1/vram) can give VRAM back to other programs between requests and take it back\n"
+                 "                       later; the segmented cache is CUDA-only, so this port refuses it\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
@@ -8822,14 +8823,37 @@ int main(int argc, char **argv) try {
         };
         auto vram_command = [&](const std::string &cmd,
                                 std::string &e) -> bool {
-            // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib)
             try {
-        char *end = nullptr;
+            // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib), on every GPU of the run;
+            // `VRAM <reserve_mib> [device]`: that reserve on one GPU (the engine's number, 0 = the main card, the
+            // same numbers as --split-device).  The syntax is the CUDA engine's; the resize itself is CUDA-only.
+            char *end = nullptr;
             const bool bare = cmd.find_first_not_of(' ', 4) == std::string::npos;
             const long long reserve = bare ? (long long) o.vram_reserve_mib : std::strtoll(cmd.c_str() + 4, &end, 10);
-            if (!bare && (end == cmd.c_str() + 4 || reserve < 0)) { e = "expected: VRAM [reserve_mib]"; return false; }
+            if (!bare && (end == cmd.c_str() + 4 || reserve < 0)) { e = "expected: VRAM [reserve_mib [device]]"; return false; }
+            int want_dev = -1;   // -1: every GPU of this run
+            if (!bare && end != nullptr) {
+                const char* p = end;
+                while (*p == ' ') ++p;
+                if (*p != '\0') {
+                    char* q = nullptr;
+                    const long long d = std::strtoll(p, &q, 10);
+                    while (q != nullptr && *q == ' ') ++q;
+                    if (q == p || q == nullptr || *q != '\0' || d < 0) {
+                        e = "expected: VRAM [reserve_mib [device]]";
+                        return false;
+                    }
+                    want_dev = (int) d;
+                }
+            }
+            std::vector<int> vram_devs{0};
+            for (auto& st : stages) vram_devs.push_back(st->dev);
+            if (want_dev >= 0 && std::find(vram_devs.begin(), vram_devs.end(), want_dev) == vram_devs.end()) {
+                e = "VRAM: this run has no GPU " + std::to_string(want_dev);
+                return false;
+            }
             if (!xcache.segmented()) {
-                e = "VRAM needs an engine started with --vram-elastic (one NVIDIA GPU, --serve)";
+                e = "VRAM needs an engine started with --vram-elastic (NVIDIA, --serve)";
                 return false;
             }
             if (src.complement_ready()) {
@@ -8932,11 +8956,12 @@ int main(int argc, char **argv) try {
                          (double) xcache.mapped_bytes() / 1073741824.0, (double) xcache.full_bytes() / 1073741824.0,
                          (long long) (free_b >> 20), (long long) o.prefill_chunk,
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), note.c_str());
-            std::printf("VRAM reserve_mib=%lld expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
+            std::printf("VRAM reserve_mib=%lld gpu=0 expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
                         "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve,
                         (long long) xcache.slots(), (long long) xcache.full_slots(),
                         (long long) (xcache.mapped_bytes() >> 20), (long long) (xcache.full_bytes() >> 20),
                         (long long) (free_b >> 20), (long long) o.prefill_chunk);
+            std::printf("VRAM-DONE\n");
             return true;
         }
         catch (sycl::exception const &exc) {

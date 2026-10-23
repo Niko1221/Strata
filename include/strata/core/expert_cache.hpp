@@ -140,6 +140,10 @@ public:
     /// slots wholly inside what stays.  Waits for the device first.  False with `err` when not segmented or a driver
     /// call failed.
     bool shrink(int64_t keep_bytes, std::string& err);
+    /// The largest sum of whole segments that is at most `bytes` (#533).  `shrink` keeps whole segments and rounds
+    /// its `keep_bytes` UP, so a keep inside a segment keeps that segment: a reserve asked for arrives up to one
+    /// segment short.  Rounding the keep DOWN to this before the shrink takes the whole segments the reserve needs.
+    int64_t segment_floor(int64_t bytes) const;
     /// Maps segments again up to `want_bytes` (rounded DOWN to a segment, at most the arena; the last, shorter
     /// segment only when `want_bytes` covers the arena).  Stops at the first segment the driver cannot back (false,
     /// `err`: what was mapped by then stays).  The new slots are empty until the caller fills them.

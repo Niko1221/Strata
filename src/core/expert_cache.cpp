@@ -414,6 +414,14 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
     return true;
 #endif
 }
+int64_t ExpertCache::segment_floor(int64_t bytes) const {
+    if (segs_.empty() || bytes <= 0) return bytes > 0 ? bytes : 0;
+    int64_t at = 0;
+    for (int64_t i = 0; i < (int64_t) seg_size_.size() && at + seg_size_[(size_t) i] <= bytes; ++i)
+        at += seg_size_[(size_t) i];
+    return at;
+}
+
 
 bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
     if (segs_.empty()) {

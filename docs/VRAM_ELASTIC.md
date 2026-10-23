@@ -1,4 +1,4 @@
-# POST /v1/vram: what it does and what it answers (opt-in, one NVIDIA GPU, #533, #1034)
+# POST /v1/vram: what it does and what it answers (opt-in, NVIDIA, one or several GPUs, #533, #1034)
 
 This page is written from `serve/server.py` and the engine's `VRAM` command (`src/program/generate.cpp`,
 `src/core/expert_cache.cpp`), and the cases the unit tests in `serve/test_vram.py` pin. A line marked **(code)** is
@@ -14,16 +14,19 @@ them again when more is free. Nothing resizes on its own. Only the expert cache 
 MTP head, the CUDA context and the prompt buffers stay, so Strata never gives back "everything".
 
 The engine switches the feature off at start, with one line in its log (`--vram-elastic is off: ...`), when it is not
-a `--serve` engine, with a layer split, with helper caches on other GPUs, with a segment below 64 MiB, and on HIP
-(NVIDIA only). If the driver offers no virtual memory management the start fails with an error naming it **(code)**.
-Without the flag nothing changes: the same answers as without it.
+a `--serve` engine, with helper caches on other GPUs, with a segment below 64 MiB, and on HIP (NVIDIA only). If the
+driver offers no virtual memory management the start fails with an error naming it **(code)**. Without the flag
+nothing changes: the same answers as without it. On a layer split every card of the run has its own segmented cache,
+and a request that names a `gpu` moves only that card's; without a `gpu` every card moves together
+(the engine's line `VRAM <reserve_mib> <device>`, and the dash for the start's reserve: [MULTI_GPU.md](MULTI_GPU.md)).
 
 ## The request
 
 ```
 POST /v1/vram
 Content-Type: application/json          (anything else: 415)
-{"reserve_mib": 8000}                    (a whole number of MiB, 0 or more; null = the reserve the engine started with)
+{"reserve_mib": 8000, "gpu": 1}       (a whole number of MiB, 0 or more; null = the reserve the engine started with;
+                                      `gpu`: that card alone, the engine's own numbering — omitted: every card)
 ```
 
 - The server's API key applies as for the other `/v1` routes. A request that carries a foreign `Origin` is refused
@@ -37,7 +40,7 @@ Content-Type: application/json          (anything else: 415)
 
 | Case | Status | Body |
 |---|---|---|
-| Done (or nothing to do) | 200 | `{"status": "ok", "reserve_mib", "expert_slots", "expert_slots_full", "expert_cache_mib", "expert_cache_full_mib", "vram_free_mib", "prompt_chunk"}` |
+| Done (or nothing to do) | 200 | the figures of the caches it moved: `{"status": "ok", "reserve_mib", "expert_slots", "expert_slots_full", "expert_cache_mib", "expert_cache_full_mib", "vram_free_mib", "prompt_chunk"}`; on a layer split there is one entry per card in `"gpus"` and the fields above are the totals over them (`vram_free_mib` the smallest of the cards) |
 | The model is unloaded | 200 | `{"status": "not loaded", "reserve_mib": N, "note": "applied when the model loads"}` |
 | Bad `reserve_mib` | 400 | `invalid_request_error` |
 | The engine refuses the command | 400 | `invalid_request_error`, the engine's reason in `message`. The engine stays up. |

@@ -457,6 +457,28 @@ what the 4 tokens cost one after the other (`strata batch:` in the engine log: 5
 1-row window). This is why setup leaves a 12 GB card at one at a time. Cards that hold most experts in VRAM, and a
 layer split, are where the slots also add speed (below).
 
+On 2x RTX 3090 (both links running x8), the Swift 1.5 IQ3_S build with the native pack, `--expert-cache auto` (most
+experts not resident), 262K context, `--kv int8 --kv-resident 32768`, `--mtp --spec 4`: the same tool and protocol as
+the table above, median of 3 rounds, the same requests in every arm, one engine start per arm:
+
+| Concurrent | Setting | Total tok/s | vs one at a time | Per request tok/s | First token: median / last of the round |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | `"parallel": 1` | 90.4 | - | 103.3 | 0.35 s / 0.37 s |
+| 1 | `"parallel": 2` | 90.6 | +0 % | 104.9 | 0.41 s / 0.45 s |
+| 1 | `"parallel": 4` | 86.6 | -4 % | 100.5 | 0.41 s / 0.57 s |
+| 2 | `"parallel": 1` | 95.4 | - | 108.6 | 1.67 s / 3.08 s |
+| 2 | `"parallel": 2` | 114.5 | +20 % | 65.2 | 0.57 s / 0.80 s |
+| 2 | `"parallel": 4` | 113.7 | +19 % | 64.0 | 0.58 s / 0.82 s |
+| 4 | `"parallel": 1` | 97.0 | - | 110.9 | 4.31 s / 8.32 s |
+| 4 | `"parallel": 2` | 112.3 | +16 % | 61.5 | 2.89 s / 5.46 s |
+| 4 | `"parallel": 4` | 148.0 | +53 % | 42.8 | 1.04 s / 1.72 s |
+
+Two cards and a partly-resident cache land between the 12 GB row and the all-resident ones: the slots do add speed
+(+16-20 % at two requests, +53 % at four with four slots) and they cut the wait (the fourth request starts after
+1.0 s instead of 4.3 s), while a request alone pays 4 % for four slots and nothing for two. `--batch-mtp` on the
+same box measured **slower solo** (-8 % at four slots, one engine start per arm, `tools/ab_engine.py`'s greedy
+6000-word tier, two rounds): the published aggregate gain was not re-measured here, and no arm isolated the draft.
+
 A 4-GPU layer split (4 x 16 GB, PCIe Gen3), IQ3_S, `--batch 8 --batch-groups 4 --trim-stage-weights`, through
 the HTTP server, 400 tokens per answer, temperature 0.7 (PR #559):
 

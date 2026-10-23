@@ -1091,6 +1091,44 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     return true;
 }
 
+// #533: the VRAM command mapped/unmapped expert-cache segments, so the residency table changed under a verifier
+// that decided its fast path from that table at init.  The zero-doorbell graph is exactly the case that must not
+// survive a shrink: with it, no CPU doorbell is rung, and an expert that stopped being resident is never computed.
+void Verifier::refresh_residency(const VerifyHits& hits) {
+    if (g_ == nullptr) return;
+    hits_ = hits;   // the cache's base, offsets and live slot count as they are now
+    const char* v_ar = std::getenv("STRATA_VERIFY_ALL_RESIDENT");
+    all_resident_ = false;
+    if ((v_ar == nullptr || std::atoi(v_ar) != 0) &&
+        hits.h_res != nullptr && hits.d_res != nullptr && hits.cache_base != nullptr) {
+        bool all_ok = true;
+        for (int64_t l = lb_; l < le_ && all_ok; ++l) {
+            for (int64_t e = 0; e < g_->n_expert; ++e) {
+                if (hits.h_res[l * g_->n_expert + e] < 0) { all_ok = false; break; }
+            }
+        }
+        all_resident_ = all_ok;
+    }
+    // The fast paths read the slot offsets from the device copy made at init, which covers every slot `open`
+    // made - a grow cannot pass it, a shrink needs nothing.  A stage that never made the copy cannot take a
+    // fast path, exactly as in `init`.
+    if ((all_resident_ || device_plan_) && slot_off_d_ == nullptr && hits.slot_off != nullptr && hits.n_slots > 0) {
+        const bool ok = cudaMalloc((void**) &slot_off_d_, (size_t) hits.n_slots * sizeof(unsigned long long)) == cudaSuccess &&
+                        cudaMemcpy(slot_off_d_, hits.slot_off, (size_t) hits.n_slots * sizeof(unsigned long long),
+                                   cudaMemcpyHostToDevice) == cudaSuccess;
+        if (!ok) { cudaGetLastError(); slot_off_d_ = nullptr; all_resident_ = false; device_plan_ = false; }
+    }
+    // A window graph bakes in which doorbells it rings: the zero-doorbell capture has no per-layer plan waits at
+    // all, and the doorbell capture has them.  So a residency change has to throw the captured windows away -
+    // `capture` rebuilds the next one from the residency as it is now.
+    if (all_resident_ != graphs_resident_) {
+        for (cudaGraphExec_t& e : exec_) {
+            if (e != nullptr) { cudaGraphExecDestroy(e); e = nullptr; }
+        }
+        graphs_resident_ = all_resident_;
+    }
+}
+
 const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
 
 // ================================ THE WINDOW, AS CAPTURED ================================
@@ -2436,7 +2474,9 @@ std::string Verifier::profile_report() {
 // (the host table is the one the device copy was uploaded from; a loan, a VRAM shrink or a swap in flight has
 // marked some -1).  Not: the doorbell graph, which asks the pool for what the device does not hold.
 void Verifier::refresh_ar() {
-    if (!all_resident_ || h_res_ == nullptr || g_ == nullptr) return;
+// not gated on all_resident_: a shrink that takes a resident expert flips that flag in refresh_residency, and
+// ar_off_ has to follow it - the batch graphs are keyed on it, and the host only serves doorbells when ar_on().
+    if (h_res_ == nullptr || g_ == nullptr) return;
     const int64_t ne = g_->n_expert;
     const int32_t* r = h_res_ + lb_ * ne;
     const int64_t n = (le_ < 0 ? g_->n_layers : le_) * ne - lb_ * ne;
@@ -2582,6 +2622,7 @@ bool Verifier::capture(int T, std::string& err) {
     const cudaError_t us = cudaStreamSynchronize(cs_);
     std::fprintf(stderr, "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
                  cudaGetErrorString(ue), cudaGetErrorString(us));
+    graphs_resident_ = all_resident_;   // what this capture baked in (#533: a residency change discards them)
     return true;
 }
 

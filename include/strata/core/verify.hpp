@@ -187,6 +187,11 @@ public:
     void set_handoff_flags(uint32_t* in_host, uint32_t* in_dev, uint32_t* out_host, uint32_t* out_dev) {
         hflag_in_h_ = in_host; hflag_in_d_ = in_dev; hflag_out_h_ = out_host; hflag_out_d_ = out_dev;
     }
+    /// #533: the expert cache's live slots changed (a `VRAM` shrink/grow).  Re-check the 100%-resident fast path
+    /// against the residency table and take the cache's current slots/offsets: a shrink that takes the last
+    /// resident expert of this stage's range MUST leave the zero-doorbell graph, or the CPU pool is never told
+    /// about the misses.  Call it on every stage whose cache moved, with that stage's own hits.
+    void refresh_residency(const VerifyHits& hits);
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
     void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
@@ -473,6 +478,7 @@ private:
     void refresh_ar();
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
+    bool graphs_resident_ = false;      ///< the residency the captured window graphs were built with (#533)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)

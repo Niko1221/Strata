@@ -257,6 +257,41 @@ request; with less spare page cache it would be disk traffic. Not measured: both
 The card that drives the monitors needs more headroom than one that drives none; with the display on the last card,
 `--vram-reserve-mib 300 --vram-reserve-later-mib 1800` gives the first card's cache that VRAM.
 
+**Giving one card's VRAM to another program (#533, opt-in, 0.1.39).** With `"vram_elastic": true` every card's expert
+cache is allocated in 512 MiB segments, so `POST /v1/vram {"reserve_mib": 16640, "gpu": 1}` (the engine's own line is
+`VRAM 16640 1`) shrinks GPU 1's cache between requests until that much VRAM is free on that card.  Measured on 2x RTX
+3090 with ComfyUI's Qwen-Image 2.1 on the second card: it took GPU 1 from 16380 to 1024 MiB of cache (559 of 8833
+experts, the prompt chunk 8192 -> 512) and left 15200 MiB free, where the image model's measured peak at 1024x1024
+with DynamicVRAM is 15240 MiB.  `{"reserve_mib": null, "gpu": 1}` takes it back - the line `VRAM - 1`, the dash
+standing for the start's reserve, because a number in that slot IS the reserve: `VRAM 1` is a 1 MiB reserve on every
+card of the run, not device 1.  Without `"gpu"` every card of the run moves together. The layers of a card whose
+cache shrank compute their experts on the CPU, so that card's decode slows and the others run as before; a cache
+never goes below 128 slots plus the smallest prompt chunk's buffers, and the chunk drops to the largest one every
+card can still lend. The split itself never moves: the card keeps its dense weights, its session and its KV, and
+nothing is reloaded. `min_free_vram_mib` reads every card the run will use, so a split is not started into a card
+another program has filled. Measured on the 2x 3090 split: with ComfyUI holding 15240 MiB on GPU 1 and that card's
+cache at 3072 MiB, the engine answered a request in 1.1 s.  With the cache whole on both cards, `"vram_elastic":
+true` and `false` give the same cache (20 091 slots, 33 037 MiB) and 106.6 vs 106.4 tok/s (512-token greedy decode,
+`"parallel": 2`) - the segments cost nothing while nothing is handed away.
+
+The same split on the IQ3_S build with the native pack, `"parallel": 2`, one request at a time (`tools/serve_load.py`,
+256 tokens per answer, greedy, median of 3 rounds, the same requests in every arm, the arms run in the order named):
+asking GPU 1 to keep 8000 MiB free took its cache from 14 848 to 7 680 MiB (7 259 -> 3 742 slots) and left its decode
+where it was (88.9 against 89.9 tok/s, the arms' spreads overlap); doing both cards at once (GPU 0 15 872 -> 8 704
+MiB as well) read 5 % lower (85.7), which is inside the swing this tool shows at one request, so call it unseparated.
+`{"reserve_mib": null}` put both caches back to the slot counts they started with (8 613 and 7 259); the calls took
+55 ms to shrink and about 1.1 s to grow back.  The first arm is the coldest and the
+last the warmest, so read the first two as upper bounds on what handing that much away costs on this box.
+
+**Sizing the reserve for a CUDA program on the other card (measured on 2x RTX 3090, driver 595.71.05).** A second
+CUDA client costs 305 MiB before it allocates anything: `torch.cuda.init()` and its first tensor took the card from
+23505 to 23810 MiB used.  It fails in `cuDevicePrimaryCtxRetain` with CUDA_ERROR_OUT_OF_MEMORY at 80 MiB free and
+attaches at 613.  A reserve that lands under that cannot host a program at all, and the reserve under-arrives by up
+to one segment (the cache unmaps whole segments, so a keep inside a segment keeps it), so size it above what the
+other program peaks at: ComfyUI's Qwen-Image 2.1 needs 15240 MiB and `{"reserve_mib": 16640}` is what delivered it.
+`nvidia-smi` reports 450 MiB `memory.reserved` on a 3090, so a card has 24126 MiB to share: free is total - used -
+reserved, not total - used.
+
 **auto** tries every placement (all of them for two, three or, since 0.1.40, four cards; proportional to the free VRAM beyond that) and
 keeps the one whose caches would hold the most of the expert profile, hottest pairs weighted most; ties go to the
 placement that leaves the fullest card the most room. The startup log prints the choice:
