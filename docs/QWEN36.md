@@ -174,6 +174,11 @@ file (4.2e-3), not a quality loss. Greedy 64 tokens after those six documents: t
 `--prefill 512` for 6 of 6. A prompt shorter than the chunk (every chat turn after the first) is one chunk either way: unchanged.
 The maintainers keep the new default's reference outputs (six documents, greedy 64) and check later changes against them.
 
+**Expert-streaming staging (the hybrid mode).** A prompt chunk streams each layer's experts into a staging buffer, double-buffered so
+one layer copies while the other computes. `STRATA_Q36_SINGLE_STAGE=1` uses one buffer instead of two, halving that VRAM (the stream then
+alternates copy and compute on the one buffer). `STRATA_Q36_NO_MMQ` is now numeric: unset or `=0` keeps the MMQ prompt path on (the
+default), `=1` turns it off.
+
 **Tried and dropped.** The MTP drafts' head over a subset of the vocabulary (`--draft-vocab N`, kept as an opt-in; the answer never
 changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% on Chinese / Russian / Arabic / Hindi (70% of a Chinese
 prompt's token ids are above 65,536), and a candidate list built from the tokens seen so far loses on both. The shared expert on a second
