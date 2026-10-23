@@ -51,6 +51,9 @@ class FeedError(RuntimeError):
 
 class FeedDowngrade(FeedError):
     """A feed or a package older than what this PC already has."""
+    # .sequence is the feed's, .accepted the last one this PC took (the updater adds the folder that holds it)
+    sequence: int | None = None
+    accepted: int | None = None
 
 
 def version_key(value: str) -> tuple[int, ...]:
@@ -314,8 +317,10 @@ def verify_and_parse(payload: bytes, signature_bytes: bytes, *, source: str, tru
     if feed.expires_at and _time(feed.expires_at, "expires_at") < now:
         raise FeedError(_expired_words(feed.expires_at, now, server_now))
     if last_sequence is not None and feed.sequence < last_sequence:
-        raise FeedDowngrade(f"the update feed is older than the one already accepted (sequence {feed.sequence} < {last_sequence}); "
-                            "refusing a replayed feed")
+        down = FeedDowngrade(f"the update feed is older than the one already accepted (sequence {feed.sequence} < {last_sequence}); "
+                             "refusing a replayed feed")
+        down.sequence, down.accepted = feed.sequence, last_sequence
+        raise down
     return feed
 
 

@@ -303,14 +303,14 @@ public:
     _saved_queue_ptr = q_ptr;
   }
   static inline sycl::queue &get_saved_queue() noexcept {
+    if (!_saved_queue_ptr) _saved_queue_ptr = &::dpct::cs::get_default_queue();
     return *_saved_queue_ptr;
   }
 
 private:
   ::dpct::cs::queue_ptr _queue_ptr = &::dpct::cs::get_default_queue();
   math_mode _mm = math_mode::mm_default;
-  static inline ::dpct::cs::queue_ptr _saved_queue_ptr =
-      &::dpct::cs::get_default_queue();
+  static inline ::dpct::cs::queue_ptr _saved_queue_ptr = nullptr;
 };
 
 using descriptor_ptr = descriptor *;

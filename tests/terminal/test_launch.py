@@ -353,6 +353,26 @@ class SetupArgs(unittest.TestCase):
             off = Runner(S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="off"), catalog=catalog(NV))
             self.assertEqual(off.setup_args()[off.setup_args().index("--vision") + 1], "no")
 
+    def test_an_arc_b_series_card_is_allowed_with_pictures_on_the_cpu_reader_and_one_plain_line(self):
+        """Owner decision 2026-10-22: Arc B-series (Battlemage) runs like any Arc. An Arc Pro B70 (32 GB) gets pictures on, with the CPU reader (the GPU
+        reader has not run on a 24 GB+ Arc), and a warn-level note that it is new and how to report a problem. An A-series card gets no such note."""
+        from strata_cli.launch import cmd
+        for name, vram, note in (("Intel Arc Pro B70", 32.0, True), ("Intel Arc B580", 12.0, True), ("Intel Arc A750", 8.0, False)):
+            hw = {"ram_gb": 64.0, "os": "Linux", "cpu": {"avx2": True, "name": "x"},
+                  "gpus": [{"index": 0, "name": name, "vendor": "intel", "vram_gb": vram, "usable": True}]}
+            with Home():
+                from strata_cli.launch.catalog import Computer
+                cat = catalog(hw)
+                comp = Computer(ram_gb=64.0, gpus=hw["gpus"], disk_free_gb=500.0, os="Linux", avx2=True, raw=hw, engine_vendor="intel")
+                with mock.patch.object(type(cat), "reader_state", lambda self: "present"), mock.patch.object(type(cat), "computer", lambda self, fresh=False: comp):
+                    self.assertEqual(cat.picture_default(True), "cpu", name)
+                self.assertEqual(bool(comp.new_card_note), note, name)
+                if note:
+                    text, nxt = comp.new_card_note
+                    self.assertIn("new to Strata", text)
+                    self.assertIn("--vision off", nxt)
+                    self.assertIn("github.com/Niko1221/Strata/issues", nxt)
+
     def test_a_mac_defaults_pictures_to_the_metal_reader_whatever_its_memory(self):
         for gb in (16.0, 32.0, 128.0):
             hw = {"ram_gb": gb, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"},
@@ -506,9 +526,10 @@ class AdoptRules(unittest.TestCase):
             self.assertIsNone(cfg)
             self.assertTrue(any("prepared pack" in p for p in problems))
             self.assertTrue(any("tokenizer" in p for p in problems))
-            cfg, problems = adopt.plan(family="gyro", model="Gyro-S", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
+            cfg, problems = adopt.plan(family="unsloth", model="UD-Q4_K_XL", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
+            self.assertNotIn("..", problems[0] + ".")                           # round 8, N11: the caller adds the full stop
 
     def test_pictures_on_is_setups_yes_and_setup_picks_the_encoder(self):
         with Home() as h:
@@ -787,10 +808,10 @@ class FlagsCommand(unittest.TestCase):
         self.assertTrue(any("picked" in w for w in p["warnings"]))
 
     def test_family_and_kv_and_gpu_and_data_dir_and_set(self):
-        p = self.plan("--model", "iq3_xxs", "--family", "swift", "--kv", "q4_0", "--gpu", "0,1", "--data-dir", "/data/x",
+        p = self.plan("--model", "iq3_xxs", "--family", "swift", "--kv", "q4_0", "--gpu", "0,1", "--data-dir", str(self.home.base / "data-x"),
                       "--set", "prefill=65536", "--set", "STRATA_PIN_BY_NEED=1", "--tune-allow-small")
         s = p["settings"]
-        self.assertEqual((s["family"], s["kv"], s["gpus"], s["data_dir"], s["tune_allow_small"]), ("swift", "q4_0", [0, 1], "/data/x", True))
+        self.assertEqual((s["family"], s["kv"], s["gpus"], s["data_dir"], s["tune_allow_small"]), ("swift", "q4_0", [0, 1], str(self.home.base / "data-x"), True))
         self.assertEqual(s["extra"], {"--prefill": "65536", "STRATA_PIN_BY_NEED": "1"})
         self.assertIn("--set prefill=65536", p["flags"])
 

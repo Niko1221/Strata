@@ -797,8 +797,8 @@ the fix).
 ## Not done
 
 - Images on the llama.cpp config: not wired. On the SYCL port they are wired, see "Pictures on an Arc" below. Open there: a
-  Battlemage card (the B-series) keeps pictures opt-in because of the Arc Pro B70 fault, and nobody has run the SYCL picture reader
-  on a card of 24 GB or more.
+  nobody has run the SYCL picture reader on a card of 24 GB or more. Pictures are on for a Battlemage card too since 2026-10-22 (see "Default" below),
+  with the CPU reader.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 
@@ -816,12 +816,13 @@ the card from 24 GB. `strata_control/vision_reader.py` is the one place for it. 
   start, the server falls back to the CPU reader with one log line. On the A750: 0.16 s per picture instead of 1.73 s (after a 30 s
   first start that compiles the kernels), and the embeddings match the CPU reader's (cosine 0.9959 to 0.9999 over 8 pictures). It takes
   VRAM the experts would use, which is why the rule gives it to 24 GB cards only.
-- **Default.** On for an Alchemist card (A750, A770, ...) with the CPU reader. An Arc of 24 GB or more also keeps the CPU reader by
-  default: the SYCL reader has not run on such a card (the B70 is gone), so `--vision gpu` asks for it and
-  `vision_reader.INTEL_GPU_READER_BY_DEFAULT` is the switch to flip once one has. A Battlemage card (B580, B70, ...) keeps pictures
-  **off** by default: the first picture on the Arc Pro B70 (engine 0.1.45, IQ3_S, 2026-10-19, CPU reader) logged an xe engine reset
-  (ccs + bcs) and `Fault response: Unsuccessful -EINVAL`, and the request ended 503. The CPU reader was in use, so the fault is in the engine on xe, not in a GPU reader; it
-  has not been looked at since. `--vision yes` turns pictures on there; setup says so.
+- **Default.** On for every Arc card with the CPU reader, a B-series (Battlemage) card included. An Arc of 24 GB or more also keeps the CPU reader by
+  default: the SYCL reader has not run on such a card, so `--vision gpu` asks for it and `vision_reader.INTEL_GPU_READER_BY_DEFAULT` is the switch to
+  flip once one has. **B-series cards are supported and untested by us** (the owner decision of 2026-10-22: users will report failures). One known
+  risk: the first picture on the Arc Pro B70 (engine 0.1.45, IQ3_S, 2026-10-19, CPU reader) logged an xe engine reset (ccs + bcs) and
+  `Fault response: Unsuccessful -EINVAL`, and the request ended 503. The CPU reader was in use, so the fault is in the engine on xe, not in a GPU
+  reader; it has not been looked at since. It is not a refusal: setup and `strata launch` print one plain line that the card is new to Strata and
+  how to report a problem, and `--vision no` (setup) or `--vision off` (`strata launch`) turns pictures off.
 
 Tested on the A750 (IQ3_XXS, 8K context, engine from f-021-int, JIT build, 2026-10-19): a picture with a red circle, a blue square and the
 words "STRATA 42", 8 variants, answered correctly by the CPU reader 10 of 10 (a first set with smaller text read "42" as "412"), and

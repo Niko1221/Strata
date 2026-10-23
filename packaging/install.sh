@@ -108,9 +108,9 @@ if [ "${STRATA_INSTALL_TEST_TRUST:-}" = 1 ]; then
 fi
 say "Checking the release's signature…"
 if ! "$dest.incoming/bin/strata" update --check --no-engine --feed "$FEED" >"$work/check.txt" 2>&1; then
-  sed -e 's/^/    /' "$work/check.txt" | head -6 >&2
+  sed -e 's/^/    /' "$work/check.txt" >&2
   rm -rf "$dest.incoming"
-  die "the release folder's signed feed could not be verified, so nothing was installed. If you trust this source, ask its owner to publish a signed feed."
+  die "the release folder's signed feed could not be verified, so nothing was installed. The reason is printed above; if it names a newer feed already accepted here, use the newest release folder, or follow the step it gives. If you trust this source and see no such reason, ask its owner to publish a signed feed."
 fi
 say "  Signature ok."
 

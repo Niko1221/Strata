@@ -37,7 +37,7 @@ GPU_MIN_VRAM_GB = 23.5
 
 #: The one exception to that rule.  An Intel Arc of 24 GB or more keeps the CPU reader by default: the SYCL GPU reader works (tested on an A750,
 #: forced with --vision gpu: 0.16 s a picture against 1.7 s on the CPU, embeddings cosine >= 0.995 to the CPU reader's) but it needs the oneAPI
-#: runtime on the PC and has not run on a 24 GB+ card (the B70 is gone).  --vision gpu asks for it.  Set True when a 24 GB+ Arc has run it.
+#: runtime on the PC and has not run on a 24 GB+ card (an Arc Pro B70 is allowed since 2026-10-22; the CPU reader is what it gets).  --vision gpu asks for it.  Set True when a 24 GB+ Arc has run it.
 INTEL_GPU_READER_BY_DEFAULT = False
 
 

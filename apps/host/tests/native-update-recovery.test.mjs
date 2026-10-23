@@ -42,6 +42,14 @@ for(const component of ['NativeOperations','SettingsUpdates']){
   assert.ok(html.includes(message),'The original interruption remains readable');
   assert.equal(JSON.stringify(jobs),before,'Rendering never changes job state or history');
  });
+ test(`${component}: recovered Engine history does not hide an unresolved App update`,()=>{
+  const jobs=structuredClone([failed,{...failed,id:'interrupted-engine-update',kind:'update-engine'},
+   {...done,id:'later-engine-update',kind:'update-engine'}]);
+  const before=JSON.stringify(jobs),html=render(component,jobs);
+  assert.equal((html.match(/role="alert"/g)??[]).length,1,'Only the unresolved App interruption remains an alert');
+  assert.match(html,/Recovered Update History/);assert.match(html,/Engine Update/);
+  assert.equal(JSON.stringify(jobs),before,'Shared classification and rendering never rewrite the jobs');
+ });
  for(const [name,success] of [
   ['no completed retry',null],['running retry',{...done,state:'running'}],['cancelled retry',{...done,state:'cancelled'}],
   ['success before interruption',{...done,startedAt:'2026-10-19T00:00:00.000Z'}],['same timestamp',{...done,startedAt:failed.startedAt}],

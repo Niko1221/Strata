@@ -1,0 +1,81 @@
+{
+  "recordedAtUtc": "2026-10-23T08:28:03.6357640Z",
+  "platform": "Windows x64",
+  "node": "v24.18.0",
+  "npm": "12.0.2",
+  "appVersion": "0.2.3",
+  "originalPrHead": "a3b2e54e564ee4e4ce31c653dd5b4fcebb31a55c",
+  "upstreamMain": "5c8dd322528cc84f68f461ad54a506b9da8fa8d4",
+  "testedResolvedWorkingTreeBeforeCommit": true,
+  "sources": {
+    "apps/host/src/components/NativeOperations.tsx": {
+      "gitBlob": "83d4733d8286fcedbd56857e26c7d44db2511d0c",
+      "workingTreeSha256": "213b542e7c644cd766b649b7c9a125ce42cbb70fcb7146115b2be753b0ec5b26"
+    },
+    "apps/host/src/components/SettingsUpdates.tsx": {
+      "gitBlob": "d6a22e1c728eafdb3ddc2d0660622d399f2ac4e2",
+      "workingTreeSha256": "4aa7a0164f29230780bb6f9f5d21efabfcb8b04e57aa887b97ec38348ab03620"
+    },
+    "apps/host/src/components/RecoveredUpdateHistory.tsx": {
+      "gitBlob": "1220a1f20cfdb1eb28bb49ed672b93a843a143ae",
+      "workingTreeSha256": "af0378c07e3e4965dcf315f508cd901cdda00426b876f260262268fb4affa946"
+    },
+    "apps/host/src/lib/native-job-diagnostics.ts": {
+      "gitBlob": "8c80c7f430333515af113d22aa2c746f7232599e",
+      "workingTreeSha256": "e5bb981e1ffe07119fce8262acefb55d9e53d78b322902b1b3b47b6dc6203ea5"
+    },
+    "apps/host/tests/native-update-recovery.test.mjs": {
+      "gitBlob": "f5128dbab93f5676f390ed34fa7fc238f82a3850",
+      "workingTreeSha256": "c532512d13a6d22f8ffa415836e7eac2027ae4859f258653866c74394dcb50e9"
+    },
+    "apps/host/tests/native-job-diagnostics.test.mjs": {
+      "gitBlob": "57bbef92119abe108fc0e50af706016cd3b73d95",
+      "workingTreeSha256": "6aa004def60481bc5bf5ca112dd4080d0e20204ae3ffaf99b060c3c0b0591384"
+    },
+    "apps/host/tests/update-cache.test.mjs": {
+      "gitBlob": "426ca63190a4282011ac07dba3feaaaa7b9b35b4",
+      "workingTreeSha256": "9447d77e723f5e842ac736b8bdccb83aa545bda4d611b2ea54945a5a64eba101"
+    },
+    "apps/host/tests/ui4-fixes.test.mjs": {
+      "gitBlob": "04ec8304a845d997e1bb10b421b58733b355defa",
+      "workingTreeSha256": "cf6815e637910a64200a248bb068121ef7d29584218b7a7ee18f525d39a92d32"
+    },
+    "apps/host/tests/component-updates.test.mjs": {
+      "gitBlob": "6a2ed9e52274f0435f4a085281b225794225f0a3",
+      "workingTreeSha256": "ee7632f3b595535467c089d59137ca999f42755b0144c8374e49a1785b9e5033"
+    },
+    "apps/host/package.json": {
+      "gitBlob": "17452d23b500c88f076f1fac338b91d4cdbf7c96",
+      "workingTreeSha256": "40225f9f330c0fc61a58cab665a1a33ae5e4b10182cb9c8b2e671550fa6b9422"
+    },
+    "apps/host/package-lock.json": {
+      "gitBlob": "a4c77520cd52b2700b2feffc7000255696c03cc2",
+      "workingTreeSha256": "54a3d405e7f264c38481baf0ad36ec14b4fcf2c33583c6eb92a16ca79146c433"
+    }
+  },
+  "tests": {
+    "command": "node --test --test-reporter=tap --test-isolation=none tests/native-update-recovery.test.mjs tests/native-job-diagnostics.test.mjs tests/update-cache.test.mjs tests/ui4-fixes.test.mjs tests/component-updates.test.mjs",
+    "exitCode": 0,
+    "passed": 56,
+    "failed": 0,
+    "skipped": 0,
+    "tap": "validation-app-0.2.3.tap",
+    "tapSha256": "d44a7ed2791aebae8ebd02ee4a79b2483551a0ffbfbd6843830c62a32d745d80"
+  },
+  "typecheck": {
+    "command": "npm run typecheck",
+    "exitCode": 0
+  },
+  "productionBuild": {
+    "command": "npm run build",
+    "exitCode": 0,
+    "advisory": "Existing large-chunk advisory retained"
+  },
+  "notRun": [
+    "Interactive browser capture on App 0.2.3",
+    "Native desktop shell or real installer/update restart",
+    "GPU/model execution",
+    "Signed packages or releases/deployments"
+  ],
+  "limitations": "Source-bound working-tree validation; no claim of revalidating unrelated upstream backend changes or a real installed App."
+}

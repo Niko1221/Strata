@@ -1,17 +1,29 @@
 import type { NativeJob } from './native';
 
-const interrupted = 'The host restarted before completion. Check diagnostics, then retry; completed files are kept.';
+/** What the host says about a job a restart cut short. */
+export const INTERRUPTED = 'The host restarted before completion. Check diagnostics, then retry; completed files are kept.';
 const updateKinds = new Set(['update-strata', 'update-engine']);
 
-/** A confirmed later update resolves only the restart interruption of that same component.
- * Keep the original records: a running retry, another component or an ordinary failure
- * must never turn into a successful update just because Settings was reopened.
+/**
+ * A later finished update of the same component settles the restart interruption of an earlier one (ported from #3578 by medking82).
+ * The records are never changed: a running retry, another component or an ordinary failure stays a plain failure.
  */
+export function recoveredInterruptions(jobs: readonly NativeJob[]): Set<string> {
+  const time = (job: NativeJob) => Date.parse(job.startedAt);
+  return new Set(jobs.filter(job => job.state === 'error' && updateKinds.has(job.kind) && job.error === INTERRUPTED && Number.isFinite(time(job))
+    && jobs.some(later => later.state === 'done' && later.kind === job.kind && Number.isFinite(time(later)) && time(later) > time(job))).map(job => job.id));
+}
+
+/** The text of a failed job's alert. The alert stays red; an interruption a later update has settled says so in plain words. */
+export function jobErrorText(job: NativeJob, jobs: readonly NativeJob[]): string {
+  return recoveredInterruptions(jobs).has(job.id)
+    ? 'This update was cut short when the app restarted. A later update finished, so nothing needs doing.'
+    : job.error ?? job.summary;
+}
+
+/** Present confirmed recovery as retained history, using the host's shared classification. */
 export function nativeJobDiagnostics(jobs: readonly NativeJob[]) {
-    const recovered = jobs.filter(job => job.state === 'error' && updateKinds.has(job.kind)
-        && job.error === interrupted && Number.isFinite(Date.parse(job.startedAt))
-        && jobs.some(later => later.state === 'done' && later.kind === job.kind
-            && Number.isFinite(Date.parse(later.startedAt)) && Date.parse(later.startedAt) > Date.parse(job.startedAt)));
-    const recoveredIds = new Set(recovered.map(job => job.id));
-    return { errors: jobs.filter(job => job.state === 'error' && !recoveredIds.has(job.id)), recovered };
+  const recoveredIds = recoveredInterruptions(jobs);
+  return { errors: jobs.filter(job => job.state === 'error' && !recoveredIds.has(job.id)),
+    recovered: jobs.filter(job => recoveredIds.has(job.id)) };
 }
