@@ -39,6 +39,23 @@ import numpy as np
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+# #3227: llama.cpp's converter (conversion/base.py: `from transformers import AutoConfig`) and the MXFP8 / NVFP4 decoding below need
+# these; setup installs them from requirements-nvfp4-local.txt before a prepare, and a run by hand says which one is missing.
+NEEDED_PACKAGES = ("torch", "transformers", "safetensors")
+MARKS = ("ple-nvfp4.gguf.done", "dense.gguf.done", "pack.done", "draft.done")
+
+
+def require_packages() -> None:
+    import importlib.util
+    missing = [m for m in NEEDED_PACKAGES if importlib.util.find_spec(m) is None]
+    if missing:
+        req = HERE.parent / "requirements-nvfp4-local.txt"
+        sys.exit("tools/nvfp4_local_pack.py needs the Python package%s %s, which %s not installed for %s.\n"
+                 "Install %s with:  %s -m pip install -r %s" % ("s" if len(missing) > 1 else "", ", ".join(missing),
+                                                                "are" if len(missing) > 1 else "is", sys.executable,
+                                                                "them" if len(missing) > 1 else "it", sys.executable, req))
+
+
 CSF_FIXED = ".nvfp4_csf_fixed"
 CSF_EXC = ".nvfp4_csf_exceptions"
 PLE_ROW_BYTES = 90          # 80 B of E2M1 codes + 10 E4M3 block scales, per 160-value row
@@ -251,6 +268,7 @@ def install(ck: Checkpoint, stats: dict, dense_only: bool = False):
 
 
 def cmd_convert(a) -> int:
+    require_packages()
     model = pathlib.Path(a.model)
     ck = Checkpoint(model)
     stats: dict = {}
@@ -556,6 +574,8 @@ def cmd_prepare(a) -> int:
     The checkpoint is read, never changed; it can be deleted afterwards (the pack and the two GGUFs hold everything)."""
     import subprocess
     model, out = pathlib.Path(a.model), pathlib.Path(a.out)
+    if not all((out / m).is_file() for m in MARKS):
+        require_packages()                          # before the 20 minutes of the n-gram table, not after them (#3227)
     out.mkdir(parents=True, exist_ok=True)
     me = [sys.executable, str(pathlib.Path(__file__).resolve())]
     tools = pathlib.Path(__file__).resolve().parent

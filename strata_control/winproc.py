@@ -45,6 +45,10 @@ if WINDOWS:
     _k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
     _k32.GetProcessTimes.restype = wintypes.BOOL
 
+    _k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                ctypes.POINTER(wintypes.DWORD)]
+    _k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+
     _LOCKFILE_FAIL_IMMEDIATELY = 0x1
     _LOCKFILE_EXCLUSIVE_LOCK = 0x2
     _ERROR_LOCK_VIOLATION = 33
@@ -93,6 +97,22 @@ if WINDOWS:
         finally:
             _k32.CloseHandle(handle)
 
+    def process_image(pid: int) -> str | None:
+        """The executable path of a running process, or None when it cannot be read."""
+        if type(pid) is not int or pid <= 0:
+            return None
+        handle = _k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not _k32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return None
+            return buffer.value
+        finally:
+            _k32.CloseHandle(handle)
+
     def pid_alive(pid: int, started: int | None = None) -> bool:
         """Whether `pid` is a running process, and, when `started` is given, the one created at that time."""
         if type(pid) is not int or pid <= 0:
@@ -114,6 +134,9 @@ else:
         raise OSError("Windows only")
 
     def process_started(pid: int) -> int | None:
+        return None
+
+    def process_image(pid: int) -> str | None:
         return None
 
     def pid_alive(pid: int, started: int | None = None) -> bool:

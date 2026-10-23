@@ -23,7 +23,7 @@ STUB = r"""#!/bin/sh
 # records every call; answers the few read-only queries the entrypoint makes
 echo "$*" >> "$STUB_LOG"
 case "$1 $2" in
-  "components engine") if [ "${STUB_ENGINE:-ok}" = ok ]; then echo '{"usable": true}'; else echo '{"usable": false}'; echo "no engine for this card" >&2; fi; exit 0 ;;
+  "components engine") if [ "${STUB_ENGINE:-ok}" = ok ]; then echo "{\"usable\": true, \"backend\": \"${STUB_BACKEND:-}\"}"; else echo '{"usable": false}'; echo "no engine for this card" >&2; fi; exit 0 ;;
 esac
 case "$*" in
   *"--list-presets --output json"*) if [ -n "${STUB_PRESET:-}" ]; then echo '{"presets": [{"name": "docker"}]}'; fi; exit 0 ;;
@@ -79,11 +79,13 @@ class Entrypoint(unittest.TestCase):
         return next(line for line in log.splitlines() if line.startswith("launch --no-tui"))
 
     def test_settings_become_flags_and_sigterm_stops_cleanly(self):
+        (self.tmp / "models").mkdir()
+        (self.tmp / "models" / "m-00001-of-00002.gguf").write_text("x")
         p = self.start(MODEL="IQ3_XXS", CONTEXT="64k", PARALLEL="2", VISION="yes", TUNE="quick", GPUS="0,1", PORT="8123", PRESET="office",
-                       API_KEY="a-long-enough-key-123456", MODEL_PATH="/models", STRATA_SET="prefill=65536 STRATA_PIN_BY_NEED=1")
+                       API_KEY="a-long-enough-key-123456", MODEL_PATH=str(self.tmp / "models"), STRATA_SET="prefill=65536 STRATA_PIN_BY_NEED=1")
         log = self.wait_for("--show-key")
         line = self.launch_line(log)
-        for want in ("--access lan", "--port 8123", "--model IQ3_XXS", "--model-path /models", "--context 64k", "--parallel 2",
+        for want in ("--access lan", "--port 8123", "--model IQ3_XXS", "--model-path " + str(self.tmp / "models"), "--context 64k", "--parallel 2",
                      "--vision on", "--gpu 0,1", "--tune quick", "--set prefill=65536", "--set STRATA_PIN_BY_NEED=1",
                      "--save-preset office", "--api-key-env STRATA_LAUNCH_KEY"):
             self.assertIn(want, line)
@@ -165,6 +167,101 @@ class Entrypoint(unittest.TestCase):
         self.wait_for("--show-key")
         self.stop(p)
         self.assertTrue((install / "strata-q2_0.json").exists())
+
+    def test_a_volume_of_the_older_image_is_moved_not_downloaded_again(self):
+        data = self.tmp / "data"
+        (data / "models" / "Qwen3.8-Flash-Next-IQ3_XXS").mkdir(parents=True)
+        shard = data / "models" / "Qwen3.8-Flash-Next-IQ3_XXS" / "a-00001-of-00002.gguf"
+        shard.write_text("weights")
+        (data / "models" / "Qwen3.8-Flash-Next-IQ3_XXS" / "a-00001-of-00002.gguf.done").write_text("x")
+        (data / "packs" / "qwen3.8-flash-next-iq3_xxs").mkdir(parents=True)
+        (data / "packs" / "qwen3.8-flash-next-iq3_xxs" / "experts.bin").write_text("pack")
+        (data / "mtp" / "rt").mkdir(parents=True)
+        (data / "mtp" / "rt" / "experts.bin").write_text("mtp")
+        ino = shard.stat().st_ino
+        p = self.start(MODEL="IQ3_XXS")
+        self.wait_for("--show-key")
+        code, out, err = self.stop(p)
+        new = data / "Strata-data"
+        moved = new / "models" / "Qwen3.8-Flash-Next-IQ3_XXS" / "a-00001-of-00002.gguf"
+        self.assertEqual(moved.read_text(), "weights")
+        self.assertEqual(moved.stat().st_ino, ino)                          # renamed, not copied
+        self.assertTrue((moved.parent / "a-00001-of-00002.gguf.done").exists())
+        self.assertTrue((new / "packs" / "qwen3.8-flash-next-iq3_xxs" / "experts.bin").exists())
+        self.assertTrue((new / "mtp" / "rt" / "experts.bin").exists())
+        self.assertFalse((data / "models").exists())
+        self.assertIn("moved them into", out)
+
+    def test_a_file_already_in_the_new_place_is_never_overwritten(self):
+        data = self.tmp / "data"
+        (data / "models" / "t").mkdir(parents=True)
+        (data / "models" / "t" / "f.gguf").write_text("old")
+        (data / "Strata-data" / "models" / "t").mkdir(parents=True)
+        (data / "Strata-data" / "models" / "t" / "f.gguf").write_text("new")
+        p = self.start(MODEL="IQ3_XXS")
+        self.wait_for("--show-key")
+        self.stop(p)
+        self.assertEqual((data / "Strata-data" / "models" / "t" / "f.gguf").read_text(), "new")   # never overwritten
+        self.assertEqual((data / "models" / "t" / "f.gguf").read_text(), "old")
+
+    def test_run_settings_that_name_another_images_engine_folder_are_made_again(self):
+        install = self.tmp / "data" / "install"
+        install.mkdir(parents=True)
+        here = self.tmp / "opt" / "components" / "engine" / "0.1.46-cuda12"
+        here.mkdir(parents=True)
+        (here / "strata-vision").write_text("x")
+        gone = self.tmp / "opt" / "components" / "engine" / "0.1.46-cuda13"
+        (install / "strata-a.json").write_text('{"exe": "component:strata-engine", "vision": {"exe": "%s/strata-vision"}}' % gone)
+        (install / "strata-b.json").write_text('{"exe": "component:strata-engine", "vision": {"exe": "%s/strata-vision"}}' % here)
+        (install / "strata-c.json").write_text('{"exe": "component:strata-engine", "args": []}')
+        (install / "strata-bad.json").write_text("not json")
+        p = self.start(MODEL="IQ3_XXS")
+        self.wait_for("--show-key")
+        code, out, err = self.stop(p)
+        self.assertFalse((install / "strata-a.json").exists())
+        self.assertTrue((install / "strata-b.json").exists())
+        self.assertTrue((install / "strata-c.json").exists())
+        self.assertTrue((install / "strata-bad.json").exists())
+        self.assertIn("strata-a.json", out)
+        self.assertIn("does not have", out)
+
+    def test_nvidia_card_without_gpu_access_ends_before_any_work(self):
+        dev = self.tmp / "dev"
+        dev.mkdir()
+        r = subprocess.run([SH, str(self.script)], env=self.env(STUB_BACKEND="cuda", STRATA_DEV_DIR=str(dev), MODEL="Q2_0"),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("--gpus all", r.stderr)
+        self.assertNotIn("launch --no-tui", self.log.read_text())
+        (dev / "nvidia0").write_text("")                                  # with the device files the start goes on
+        p = self.start(STUB_BACKEND="cuda", STRATA_DEV_DIR=str(dev), MODEL="Q2_0")
+        self.wait_for("launch --no-tui")
+        self.stop(p)
+
+    def test_model_path_that_is_not_there_or_empty_ends_the_start_in_plain_words(self):
+        missing = self.tmp / "nothing-mounted"
+        r = subprocess.run([SH, str(self.script)], env=self.env(MODEL="IQ3_XXS", MODEL_PATH=str(missing)), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("is not in the container", r.stderr)
+        self.assertIn("-v /srv/gguf/IQ3_XXS:", r.stderr)
+        empty = self.tmp / "empty"
+        (empty / "IQ3_XXS").mkdir(parents=True)
+        r = subprocess.run([SH, str(self.script)], env=self.env(MODEL="IQ3_XXS", MODEL_PATH=str(empty)), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("holds no .gguf files", r.stderr)
+        (empty / "IQ3_XXS" / "a-00001-of-00002.gguf").write_text("x")
+        r = subprocess.run([SH, str(self.script)], env=self.env(MODEL="IQ3_XXS", MODEL_PATH=str(empty)), capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("Set MODEL_PATH=" + str(empty / "IQ3_XXS"), r.stderr)
+        self.assertNotIn("launch --no-tui", self.log.read_text() if self.log.exists() else "")
+
+    def test_own_files_without_a_model_name_do_not_say_recommended_model(self):
+        (self.tmp / "g").mkdir()
+        (self.tmp / "g" / "m-00001-of-00001.gguf").write_text("x")
+        p = self.start(MODEL_PATH=str(self.tmp / "g"))
+        self.wait_for("--show-key")
+        code, out, err = self.stop(p)
+        self.assertIn("Starting Strata: the model files in " + str(self.tmp / "g"), out)
 
     def test_other_commands_run_instead_of_the_server(self):
         r = subprocess.run([SH, str(self.script), "strata", "launch", "--plan", "--model", "q2_0"], env=self.env(), capture_output=True,

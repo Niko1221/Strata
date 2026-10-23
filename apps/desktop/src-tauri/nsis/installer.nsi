@@ -168,7 +168,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_LANGDLL_REGISTRY_KEY "${MANUPRODUCTKEY}"
 !define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
 
-; Strata's look and words: the app's light surface and ink, short copy, no directory page, straight on to the progress.
+; Strata's look and words: the app's light surface and ink, short copy. The install folder page is shown on a first or manual install (#3186 #3190: C: can be short on space) and
+; skipped in an update (passive), which goes on into the folder the earlier install wrote to the registry.
 !define MUI_BGCOLOR "F9FAFB"
 !define MUI_TEXTCOLOR "171B1E"
 !define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
@@ -421,8 +422,19 @@ Function PageLeaveReinstall
   reinst_done:
 FunctionEnd
 
-; 5. Choose install directory page
-!define MUI_PAGE_CUSTOMFUNCTION_PRE Skip
+; 5. Choose install directory page. The app is installed for this user only (no administrator), so the folder must be one the
+; user can write to: another drive (D:\Strata) or a folder in the profile, not Program Files. An update (passive: the app's own
+; updater) and a silent install skip it and keep the earlier folder (RestorePreviousInstallLocation).
+!ifdef MUI_PAGE_HEADER_TEXT
+  !undef MUI_PAGE_HEADER_TEXT
+!endif
+!ifdef MUI_PAGE_HEADER_SUBTEXT
+  !undef MUI_PAGE_HEADER_SUBTEXT
+!endif
+!define MUI_PAGE_HEADER_TEXT "Choose where to install Strata"
+!define MUI_PAGE_HEADER_SUBTEXT "Pick another drive if C: is short on space."
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Strata is installed into this folder, for your user only (no administrator needed). Models and chats are stored separately, in the data folder you choose inside Strata."
+!define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_DIRECTORY
 
 ; 6. Start menu shortcut page
@@ -435,7 +447,15 @@ Var AppStartMenuFolder
 !endif
 !insertmacro MUI_PAGE_STARTMENU Application $AppStartMenuFolder
 
-; 7. Installation page
+; 7. Installation page (a page macro uses up the header texts, so they are set again here)
+!ifdef MUI_PAGE_HEADER_TEXT
+  !undef MUI_PAGE_HEADER_TEXT
+!endif
+!ifdef MUI_PAGE_HEADER_SUBTEXT
+  !undef MUI_PAGE_HEADER_SUBTEXT
+!endif
+!define MUI_PAGE_HEADER_TEXT "Installing Strata"
+!define MUI_PAGE_HEADER_SUBTEXT "Copying the app. You can keep working meanwhile."
 !insertmacro MUI_PAGE_INSTFILES
 
 ; 8. Finish page

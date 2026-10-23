@@ -223,11 +223,11 @@ export interface ServeRequest {
   finishReason?: string | null;
 }
 
-export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
+export interface TunnelState { status: 'idle' | 'starting' | 'connected' | 'stopping' | 'error'; mode: 'quick' | 'domain' | null; url: string | null; error: string | null; warning?: string | null; installed: boolean; originUrl: string; connector?: { path: string; version: string | null; source: string; label: string; summary: string } | null; external?: { kind: 'service' | 'process'; others: number[]; own: number[]; message: string } | null; }
 
 export interface ServingState {
   tunnel?: TunnelState;
-  sharing?: { active: boolean; url: string | null };
+  sharing?: { active: boolean; url: string | null; warning?: string | null };
   revision?: number;
   running: boolean;
   baseUrl: string;
@@ -355,8 +355,13 @@ export interface ChatMessage {
   reasoningOpen?: boolean;
   tokens?: number;
   tps?: number;
+  promptTps?: number;
   durationMs?: number;
   error?: string;
+  /** What went wrong, as a code the page acts on (a context error offers its own recovery buttons). */
+  errorCode?: string;
+  /** The engine's own text of the error, kept behind Details. */
+  errorDetail?: string;
   tools?: ToolCall[];
 }
 
@@ -406,7 +411,30 @@ export interface SessionAgent {
 
 export type ChatMode = 'auto' | 'manual' | 'accept-edits' | 'plan' | 'bypass';
 
+/**
+ * What the board needs to know about a /loop after the window closes: loops live in memory, so the chat keeps a small record of the
+ * last one (running, or how it ended). A record that says `running` with no loop behind it is a loop the window closed on.
+ */
+export interface LoopRecord {
+  prompt: string;
+  everyMs: number;
+  startedAt: number;
+  state: 'running' | 'ended';
+  answers: number;
+  maxRuns?: number;
+  /** When the next answer is due (ms), while running. */
+  nextAt?: number;
+  endedAt?: number;
+  /** count, said-done, time, failures, cap; `stopped` when the person typed /loop stop; `closed` when the window closed on it. */
+  endedWhy?: 'count' | 'said-done' | 'time' | 'failures' | 'cap' | 'stopped' | 'closed';
+  /** The last answer's first words, for the card. */
+  lastText?: string;
+}
+
 export interface Session {
+  /** The person dismissed this chat's (or its loop's) card on the board at this time. A later problem brings it back. */
+  ackedAt?: string;
+  loop?: LoopRecord;
   timeSkips?: import('./time-skip').TimeSkipRun[];
   showcase?: boolean;
   agents?: SessionAgent[];
@@ -471,7 +499,7 @@ export interface SetupState {
   step: number;
   completedAt?: string;
   history: { step: number; at: string }[];
-  app: { version: string; modelsDir: string; dataDir: string };
+  app: { version: string; modelsDir: string; dataDir: string; modelsDirNotice?: string };
 }
 
 export interface EngineEvent {

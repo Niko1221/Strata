@@ -16,7 +16,7 @@ import { installProgress, installStage, stageText, useDownloadEta } from '../lib
 import { VersionPicker } from './VersionPicker';
 import { DownloadParts } from './DownloadParts';
 import { EngineWarning } from './EngineWarning';
-import { recommendedVersions } from '../lib/native-fit';
+import { OTHER_NOTE, PICK_NOTE, recommendedVersions } from '../lib/native-fit';
 import { nativeCatalogModels, catalogVersionLabel } from '../lib/native-catalog';
 type Choices = NonNullable<NonNullable<SetupState['choices']>['onboarding']>;
 function radioKeys(event: KeyboardEvent<HTMLDivElement>) { if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key))
@@ -72,6 +72,19 @@ export function GuidedSetup() {
             }
             else
                 go(manual || preparing ? 'models' : 'chat');
+        }
+        catch (e) {
+            leaving.current = false;
+            throw e;
+        } });
+    }
+    /* Files the person already has are checked and adopted by the "Use a local GGUF" page, not made the data folder (that downloaded them again, #3507). */
+    async function ownModel(path?: string) {
+        await perform(async () => { leaving.current = true; if (saveTimer.current)
+            clearTimeout(saveTimer.current); try {
+            await persist(step, { manual: true }, true);
+            openSetup(false);
+            navigate('models', 'local', path ? { path } : undefined);
         }
         catch (e) {
             leaving.current = false;
@@ -165,12 +178,14 @@ export function GuidedSetup() {
         } });
         return () => { cancelled = true; };
     }, [step, plan, preparing, native?.available, version?.id, context, directory]);
-    const recommendedCards = recommendedVersions(selectedFamily?.sizes ?? []).map(x => x.v);
+    const recommendedRows = recommendedVersions(selectedFamily?.sizes ?? [], native?.catalog?.recommendation);
+    const recommendedCards = recommendedRows.map(x => x.v);
+    const pickNote = (v: { id: string }) => recommendedRows.find(x => x.v.id === v.id && [PICK_NOTE, OTHER_NOTE].includes(x.r.note))?.r.note ?? '';
     // The recommended four first, then a list with every other version (the Models page's version list); a family without a recommended set shows them all.
     const cards = recommendedCards.length ? recommendedCards : selectedFamily?.sizes ?? [];
     const others = recommendedCards.length ? (selectedFamily?.sizes ?? []).filter(v => !recommendedCards.includes(v)) : [];
     const readyIds = new Set((native?.installed?.models ?? []).filter(m => m.ready).map(m => m.model));
-    const versionCard = (v: NonNullable<typeof version>) => <button key={v.id} type="button" role="radio" tabIndex={version?.id === v.id ? 0 : -1} aria-checked={version?.id === v.id} data-selected={version?.id === v.id} onClick={() => { setSize(v.id); setPlan(null); }}><span className="onboard-version-top"><span className="onboard-version-copy"><strong>{tr(catalogVersionLabel(v))}</strong><small>{tr(v.model)}</small></span><span className="onboard-version-radio">{tr(version?.id === v.id ? <Icon name="check" size={12}/> : null)}</span></span><span className="onboard-version-bottom"><span className="onboard-version-size"><Icon name="download" size={15}/>{tr(v.download_gb.toFixed(1))} <small>{tr("GB")}</small></span><span className="onboard-version-fit">{tr(v.on_this_pc === 'does not fit' || v.on_this_pc === 'tight' || v.on_this_pc?.includes('slower') || v.on_this_pc?.startsWith('experimental:') ? <><Icon name="clock" size={13}/>{tr("May run slower")}</> : v.installed ? <><Icon name="check" size={13}/>{tr("On this computer")}</> : <>{tr("Download size")}</>)}</span></span></button>;
+    const versionCard = (v: NonNullable<typeof version>) => <button key={v.id} type="button" role="radio" tabIndex={version?.id === v.id ? 0 : -1} aria-checked={version?.id === v.id} data-selected={version?.id === v.id} onClick={() => { setSize(v.id); setPlan(null); }}><span className="onboard-version-top"><span className="onboard-version-copy"><strong>{tr(catalogVersionLabel(v))}</strong><small>{tr(v.model)}{tr(pickNote(v) ? <> · {tr(pickNote(v))}</> : null)}</small></span><span className="onboard-version-radio">{tr(version?.id === v.id ? <Icon name="check" size={12}/> : null)}</span></span><span className="onboard-version-bottom"><span className="onboard-version-size"><Icon name="download" size={15}/>{tr(v.download_gb.toFixed(1))} <small>{tr("GB")}</small></span><span className="onboard-version-fit">{tr(v.on_this_pc === 'does not fit' || v.on_this_pc === 'tight' || v.on_this_pc?.includes('slower') || v.on_this_pc?.startsWith('experimental:') ? <><Icon name="clock" size={13}/>{tr("May run slower")}</> : v.installed ? <><Icon name="check" size={13}/>{tr("On this computer")}</> : <>{tr("Download size")}</>)}</span></span></button>;
     const counter = downloadCounter(plan?.plan?.download_gb ?? version?.download_gb, progress, preparing);
     const eta = useDownloadEta(preparing ? progress : undefined, installJob?.id);
     const title = step === 1 ? 'State of the art. At home.' : step === 2 ? 'Select the model you want to run.' : step === 3 ? 'Downloading the model...' : tuneJob?.state === 'running' ? 'A little tuning. A better fit.' : 'How you would like to work with Strata?';
@@ -190,9 +205,9 @@ export function GuidedSetup() {
      <OnboardingMemory hardware={hardware} native={native?.hardware}/>{tr(!version || version.needsNewerEngine ? <p className="small muted">{tr("This model needs a newer engine. Update your engine or import a local GGUF for this model.")}</p> : null)}
      <div className="onboard-version-heading"><strong>{tr("Choose a version")}</strong><span>{tr(version ? `${catalogVersionLabel(version)} selected` : '')}</span></div>
      <div className="onboard-versions" role="radiogroup" aria-label={tr("Model version")} onKeyDown={radioKeys}>{tr(cards.map(v => versionCard(v)))}</div>
-     {tr(others.length ? <div className="onboard-more-versions"><VersionPicker versions={others} selectedId={version?.id ?? ''} hardware={hardware ? { ram_gb: native?.hardware?.ram_gb ?? hardware.memory.totalGb, vram_gb: Math.max(0, ...(native?.hardware?.gpus ?? []).filter(g => g.usable !== false).map(g => g.vram_gb)) } : null} downloaded={readyIds} showRecommended={false} moreLabel="More versions" onSelect={id => { setSize(id); setPlan(null); }} onOwnGguf={() => setFolderOpen(true)}/></div> : null)}
+     {tr(others.length ? <div className="onboard-more-versions"><VersionPicker versions={others} selectedId={version?.id ?? ''} hardware={hardware ? { ram_gb: native?.hardware?.ram_gb ?? hardware.memory.totalGb, vram_gb: Math.max(0, ...(native?.hardware?.gpus ?? []).filter(g => g.usable !== false).map(g => g.vram_gb)) } : null} downloaded={readyIds} showRecommended={false} moreLabel="More versions" onSelect={id => { setSize(id); setPlan(null); }} onOwnGguf={() => void ownModel()}/></div> : null)}
      <div className="onboard-folder"><Icon name="folder" size={20}/><div><strong>{tr(directory ? 'Your model folder' : 'Already downloaded the model?')}</strong><small>{tr(directory || "Choose the folder and we'll start your models with Strata.")}</small></div><Btn size="sm" onClick={() => setFolderOpen(v => !v)}>{tr(folderOpen ? 'Close' : directory ? 'Change' : 'Choose folder')}</Btn></div>
-     {tr(folderOpen ? <OnboardingFolder directory={folder} onChoose={path => void perform(async () => { await nativeAction('directory', { directory: path }); setDirectory(path); setFolderOpen(false); setPlan(null); })}/> : null)}
+     {tr(folderOpen ? <OnboardingFolder directory={folder} onChoose={(path, ggufFiles) => ggufFiles > 0 && !/strata/i.test(path.split(/[\\/]/).filter(Boolean).pop() ?? '') ? void ownModel(path) : void perform(async () => { await nativeAction('directory', { directory: path }); setDirectory(path); setFolderOpen(false); setPlan(null); })}/> : null)}
     </> : <div className="onboard-engine-connect"><Icon name="models" size={24}/><strong>{tr("Connect your Strata installation")}</strong><Btn onClick={() => void skip(false, 'Engine')}>{tr("Connect engine")}</Btn></div>)}
    </div> : step === 3 ? <div className="onboard-prepare-stage">
     <section className="onboard-download"><EngineWarning native={native}/><div className="onboard-download-identity"><Icon name="models" size={19}/><strong>{tr(selectedFamily?.title)}</strong><span>{tr(version ? catalogVersionLabel(version) : '')}</span><small>{tr(version?.model)}</small></div><OnboardingArt kind="download" progress={progress?.percent ?? 0} counter={counter}/><div className="onboard-download-info">
@@ -226,7 +241,7 @@ function OnboardingError({ message, onFolder }: {
 }
 function OnboardingFolder({ directory, onChoose }: {
     directory: string;
-    onChoose: (path: string) => void;
+    onChoose: (path: string, ggufFiles: number) => void;
 }) {
     const [path, setPath] = useState(directory), [folder, setFolder] = useState<LocalModelFolder | null>(null), [pending, setPending] = useState(false), [error, setError] = useState('');
     async function browse(input: string, initial = false) { setPending(true); setError(''); try {
@@ -250,5 +265,5 @@ function OnboardingFolder({ directory, onChoose }: {
         setPending(false);
     } }
     useEffect(() => { void browse(directory, true); }, []);
-    return <section className="onboard-folder-browser" aria-label={tr("Choose your model folder")}><form onSubmit={e => { e.preventDefault(); void browse(path); }}><input className="st-input" aria-label={tr("Existing model folder")} value={path} onChange={e => { setPath(e.target.value); setFolder(null); }} placeholder={tr("Full folder path")} spellCheck={false}/><Btn type="submit" size="sm" disabled={pending || !path.trim()}>{tr(pending ? 'Checking…' : 'Open')}</Btn></form><p>{tr("Choose the Strata data folder that holds your model downloads. Matching files are reused; missing files are prepared automatically.")}</p><div className="onboard-folder-shortcuts">{folder?.shortcuts?.map(item => <Btn key={item.path} size="sm" disabled={pending} onClick={() => void browse(item.path)}>{tr(item.name)}</Btn>)}</div><div className="onboard-folder-files">{tr(folder?.parent ? <button onClick={() => void browse(folder.parent!)}><Icon name="folder" size={16}/>{tr(" Up a folder")}</button> : null)}{folder?.entries.filter(e => e.kind === 'folder').slice(0, 30).map(e => <button key={e.path} onClick={() => void browse(e.path)}><Icon name="folder" size={16}/>{tr(e.name)}<Icon name="chevron" size={12}/></button>)}{tr(folder ? <small>{tr(folder.entries.filter(e => e.kind === 'model').length)}{tr(" GGUF files in this folder. Nested downloads are checked by the installer.")}</small> : null)}</div>{tr(folder ? <Btn variant="primary" size="sm" disabled={pending} onClick={() => onChoose(folder.directory)}>{tr("Use this folder")}</Btn> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>;
+    return <section className="onboard-folder-browser" aria-label={tr("Choose your model folder")}><form onSubmit={e => { e.preventDefault(); void browse(path); }}><input className="st-input" aria-label={tr("Existing model folder")} value={path} onChange={e => { setPath(e.target.value); setFolder(null); }} placeholder={tr("Full folder path")} spellCheck={false}/><Btn type="submit" size="sm" disabled={pending || !path.trim()}>{tr(pending ? 'Checking…' : 'Open')}</Btn></form><p>{tr("Choose the Strata data folder that holds your model downloads. Matching files are reused; missing files are prepared automatically.")}</p><div className="onboard-folder-shortcuts">{folder?.shortcuts?.map(item => <Btn key={item.path} size="sm" disabled={pending} onClick={() => void browse(item.path)}>{tr(item.name)}</Btn>)}</div><div className="onboard-folder-files">{tr(folder?.parent ? <button onClick={() => void browse(folder.parent!)}><Icon name="folder" size={16}/>{tr(" Up a folder")}</button> : null)}{folder?.entries.filter(e => e.kind === 'folder').slice(0, 30).map(e => <button key={e.path} onClick={() => void browse(e.path)}><Icon name="folder" size={16}/>{tr(e.name)}<Icon name="chevron" size={12}/></button>)}{tr(folder ? <small>{tr(folder.entries.filter(e => e.kind === 'model').length)}{tr(" GGUF files in this folder. Nested downloads are checked by the installer.")}</small> : null)}</div>{tr(folder ? <Btn variant="primary" size="sm" disabled={pending} onClick={() => onChoose(folder.directory, folder.entries.filter(e => e.kind === 'model').length)}>{tr("Use this folder")}</Btn> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}</section>;
 }

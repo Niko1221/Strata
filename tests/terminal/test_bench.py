@@ -394,7 +394,7 @@ class BenchTests(unittest.TestCase):
         out = self.root / "cli-baseline"
         output = io.StringIO()
         with mock.patch.dict(os.environ, {"STRATA_API_KEY": self.service.api_key}), redirect_stdout(output):
-            code = main(["bench", "run", "--url", self.url, "--condition", "baseline",
+            code = main(["bench", "run", "--suite", "serving-smoke", "--url", self.url, "--condition", "baseline",
                          "--concurrency", "1", "--out", str(out), "--output", "json"])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue())["summary"]["condition"], "baseline")
@@ -454,7 +454,7 @@ class BenchTests(unittest.TestCase):
     def test_managed_match_flag_requires_a_saved_profile(self):
         output = io.StringIO()
         with redirect_stdout(output):
-            code = main(["bench", "run", "--url", self.url, "--require-managed-match",
+            code = main(["bench", "run", "--suite", "serving-smoke", "--url", self.url, "--require-managed-match",
                          "--out", str(self.root / "unused"), "--output", "json"])
         self.assertEqual(code, 2)
         self.assertFalse(json.loads(output.getvalue())["ok"])

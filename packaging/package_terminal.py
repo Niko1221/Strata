@@ -99,6 +99,7 @@ PAYLOAD = (
     "docs/MANAGEMENT_PROTOCOL.md",
     "docs/TERMINAL_LAUNCH.md",         # the README below points at it (`strata launch`); it used to be missing from the archive
     "data/gguf_fingerprints.json",     # `strata models import --plan` names a known file set from this table
+    "bench/prompts/standard-v1",       # `strata bench run` (the standard benchmark) sends these frozen requests; hashed byte for byte
 )
 
 #: `tools/` modules the terminal paths import. Adding one here is a deliberate act: this list is what keeps
@@ -106,6 +107,7 @@ PAYLOAD = (
 TOOLS_SUBSET = (
     "strata_tokenizer.py",
     "gguf_reader.py",
+    "dflash2_pack.py",     # the DFlash2 drafter: strata_control/drafting_fetch.py packs the download with it (numpy only)
 )
 
 #: What `strata launch` and the desktop app's installer need on top of the read-only terminal: the model catalog and GPU probe
@@ -114,8 +116,11 @@ TOOLS_SUBSET = (
 #: (STRATA_CONTROL_INSTALL=1: no pip, no engine fetch, no compiler). Entry points; their local imports under tools/ come with them.
 #: The same list the app's Control component stages (apps/desktop/scripts/stage-control.py uses these names).
 INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
+#: calibrate: setup.py imports it after a tune (calibrate_config, and the earlier tuning that a rerun applies); it was missing from this
+#: list in 0.1.47, so every launch after a tune failed (#3613, #3467). setup_tool_imports() below also reads setup.py itself, so a tools/
+#: module it starts to import is never forgotten again; tests/terminal/test_bundle_imports.py checks the staged bundle.
 INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
-                   "strata_tokenizer", "gguf_reader")
+                   "strata_tokenizer", "gguf_reader", "calibrate")
 INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
 
 #: packages the bundle must import after the install (the API server's and the CLI's).
@@ -246,9 +251,22 @@ def local_imports(folder: Path, entry: tuple[str, ...]) -> list[str]:
     return sorted(seen)
 
 
+def setup_tool_imports(source: Path = ROOT) -> list[str]:
+    """The `tools/<name>.py` modules that the installer files import (any import statement, at any depth: setup.py imports most of them
+    inside functions after putting tools/ on sys.path). tools/hip and tools/image hold engine-install code that Control's mode never runs."""
+    import ast
+    found: set[str] = set()
+    for name in INSTALLER_FILES:
+        for node in ast.walk(ast.parse((source / name).read_text(encoding="utf-8-sig"))):
+            names = [a.name.split(".")[0] for a in node.names] if isinstance(node, ast.Import) else \
+                [node.module.split(".")[0]] if isinstance(node, ast.ImportFrom) and node.module and node.level == 0 else []
+            found.update(m for m in names if (source / "tools" / f"{m}.py").exists())
+    return sorted(found)
+
+
 def add_installer(folder: Path, source: Path = ROOT) -> dict:
     """Copy the installer's files from the source tree into a staged terminal folder (after the terminal payload is in place)."""
-    tools = local_imports(source, INSTALLER_TOOLS)
+    tools = local_imports(source, tuple(sorted(set(INSTALLER_TOOLS) | set(setup_tool_imports(source)))))
     copied = []
     for name in INSTALLER_FILES:
         (folder / name).parent.mkdir(parents=True, exist_ok=True)
@@ -280,6 +298,25 @@ def write_archive(root: Path, name: str, out_dir: Path, kind: str) -> Path:
     return path
 
 
+def build_commit(explicit: str | None = None) -> str | None:
+    """The full commit this archive is built from: --commit, the STRATA_COMMIT variable, STRATA_BUILD_COMMIT (a Docker build
+    copies the files without .git and without git), or `git rev-parse HEAD` of the source tree. None when none of them gives
+    40 hex digits (a tree copy without .git)."""
+    for candidate in (explicit, os.environ.get("STRATA_COMMIT"), os.environ.get("STRATA_BUILD_COMMIT")):
+        if candidate and re.fullmatch(r"[0-9a-fA-F]{40}", candidate.strip()):
+            return candidate.strip().lower()
+    try:
+        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip().lower()
+    except OSError:                     # no git installed
+        return None
+    return out if re.fullmatch(r"[0-9a-f]{40}", out) else None
+
+
+def source_commit() -> str:
+    """`build_commit()` without an explicit value, as a string (empty when unknown)."""
+    return build_commit() or ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="directory to write the archive into")
@@ -288,6 +325,9 @@ def main() -> int:
     ap.add_argument("--version", default=None, help="version label (default: read from the source)")
     ap.add_argument("--skip-deps", action="store_true",
                     help="skip the locked install (layout checks only; the result is NOT distributable)")
+    ap.add_argument("--commit", default=None, metavar="SHA",
+                    help="the full commit the sources come from, for a tree copy that has no .git (or set STRATA_COMMIT); "
+                         "`strata bench run` records it, and a standard benchmark without it is nonconforming")
     ap.add_argument("--keep-staging", action="store_true")
     ap.add_argument("--no-installer", action="store_true",
                     help="leave out setup.py, tools/strata_mcp.py and data/ (the read-only terminal of earlier releases; "
@@ -301,6 +341,13 @@ def main() -> int:
     if not args.skip_deps and target != host_target():
         raise SystemExit(f"{target} must be built on {target} (this is {host_target()}): the locked install runs the "
                          "bundled interpreter. Use --skip-deps for a layout check.")
+    commit = build_commit(args.commit)
+    if commit is None:
+        message = ("the commit of these sources is unknown (no .git here, no --commit, no STRATA_COMMIT): the archive would carry "
+                   "no COMMIT file, and every `strata bench run` on it would be nonconforming")
+        if not args.skip_deps:
+            raise SystemExit(message)
+        print("warning: " + message)
     pin = PYTHON_PINS[target]
     version = args.version or _source_version()
     out_dir = Path(args.out).resolve()
@@ -343,6 +390,9 @@ def main() -> int:
             shutil.copy2(src, tools_dir / item)
         installer = None if args.no_installer else add_installer(root)
         (root / "VERSION").write_text(version + "\n", encoding="utf-8")
+        # the commit the archive was built from: `strata bench run` records it (an archive has no .git to ask)
+        if commit:
+            (root / "COMMIT").write_text(commit + "\n", encoding="utf-8")
 
         bin_dir = root / "bin"
         bin_dir.mkdir(exist_ok=True)

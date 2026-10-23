@@ -122,6 +122,11 @@ test('the Settings update check maps the feed to the existing result shape', asy
   assert.equal(result.engine.status, 'unavailable');
   assert.doesNotMatch(result.engine.message, /windows-x86_64/);
   assert.match(result.engine.details, /windows-x86_64/, 'the technical reason is kept for the Details disclosure');
+  result = await checkComponentUpdates({ control: make(report({ engine: { installed: { version: '0.1.46', backend: 'hip' }, offered: null, status: 'wrong-make', note: 'The engine installed here is for AMD cards, but this update would give your PC NVIDIA one. Nothing was changed.', reasons: ['x'] } })) });
+  assert.equal(result.engine.status, 'unavailable');
+  assert.equal(result.engine.canInstall, false);
+  assert.match(result.engine.message, /Nothing was changed/, 'the app says why in plain words, not that no engine exists for the card');
+  assert.doesNotMatch(result.engine.message, /isn't an engine for this PC/);
   result = await checkComponentUpdates({ control: make(new Error('this build trusts no update key')) });
   assert.equal(result.strata.status, 'error');
   assert.equal(result.engine.status, 'error');
@@ -310,4 +315,24 @@ test('a failed update job shows plain words and keeps the technical reason as de
     assert.doesNotMatch(job.error, /http|bytes|Reset/);
     assert.match(job.details, /ConnectionResetError/);
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('offline, the signed-feed check says there is no internet connection in plain words and keeps the reason in details', async () => {
+  for (const raw of ['fetch failed', '<urlopen error [Errno 11001] getaddrinfo failed>', 'getaddrinfo ENOTFOUND updates.example']) {
+    const control = { version: '0.1.45', async updateCheck() { throw new Error(raw); } };
+    const result = await checkComponentUpdates({ control, appVersion: '0.2.0' });
+    assert.equal(result.strata.status, 'error', raw);
+    assert.equal(result.strata.message, "No internet connection. Try again when you're online.", raw);
+    assert.equal(result.engine.message, "No internet connection. Try again when you're online.", raw);
+    assert.equal(result.strata.details, raw);
+  }
+});
+
+test('the app updater and the host never reach the network by themselves: only check() does', async () => {
+  const calls = [];
+  const updater = createAppUpdater({ env: { STRATA_SHELL_BRIDGE: 'http://127.0.0.1:4000', STRATA_SHELL_TOKEN: 'tok' }, fetcher: async url => { calls.push(url); return Response.json({ available: false }); } });
+  assert.ok(updater);
+  assert.equal(calls.length, 0, 'creating the updater makes no call');
+  await updater.check();
+  assert.equal(calls.length, 1);
 });

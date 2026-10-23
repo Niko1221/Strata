@@ -1,5 +1,5 @@
-"""The owner's multi-GPU rule in setup (strata_control/gpu_fit.py): the model goes on the LARGEST card + RAM first; the second card is
-offered as a layer split and is the default only when the model does not fit one card (with RAM) or would be too tight.
+"""Graphics card roles in setup (strata_control/gpu_roles.py): the best card is Main, the others start as Helper, a card with 8 GB or less
+starts Off; one question, "Use these roles?"; --gpu-roles names them.
 
     python tools/test_setup_gpu_fit.py
 """
@@ -28,28 +28,42 @@ class SetupFitRule(unittest.TestCase):
         self.assertEqual(cfg["gpu"], 0) if "gpu" in cfg else None
         self.assertFalse(any("Which GPUs" in q for q in asked), asked)
 
-    def test_two_unequal_cards_and_the_model_fits_one_defaults_to_the_largest_card_and_offers_the_split(self):
+    def test_two_unequal_cards_the_big_one_is_main_and_a_card_with_8_gb_or_less_starts_off(self):
         found = [card(0, "NVIDIA GeForce RTX 3060 Ti", 8.0, "86"), card(1, "NVIDIA GeForce RTX 3070 Ti", 16.0, "86")]
         code, out, cfg, asked = run(62.0, found, "IQ3_XXS")
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["gpu"], 1)                                   # the 16 GB card, alone
+        self.assertEqual(cfg["gpu_roles"], {"0": "off", "1": "main"})
         self.assertNotIn("layer_split", cfg)
-        self.assertIn("layer split", out)                                 # the split was offered
-        self.assertIn("1) RTX 3070 Ti + RAM", out.replace("NVIDIA GeForce ", ""))
-        self.assertTrue(any("Which GPUs" in q and "[1]" in q for q in asked), asked)
-        # choosing the split is one answer away
-        code, out, cfg, _ = run(62.0, found, "IQ3_XXS", answers={"Which GPUs?": "2"})
+        self.assertTrue(any("Use these roles?" in q and "[y]" in q for q in asked), asked)
+        # one answer away: the 8 GB card as a Helper
+        code, out, cfg, _ = run(62.0, found, "IQ3_XXS", answers={"Use these roles?": "n", "Roles, e.g.": "1=main,0=helper"})
         self.assertEqual(code, 0, out)
-        self.assertEqual(sorted(cfg["gpu"]), [0, 1])
+        self.assertEqual(cfg["gpu"], [0, 1])                              # Main LAST: the engine's stage order
+        self.assertEqual(cfg["gpu_order"], "as_given")
+        self.assertEqual(cfg["gpu_roles"], {"0": "helper", "1": "main"})
         self.assertEqual(cfg["layer_split"], "auto")
 
-    def test_two_small_cards_and_the_model_does_not_fit_one_defaults_to_the_split(self):
+    def test_two_equal_cards_start_with_the_highest_number_as_main(self):
         found = [card(0, "NVIDIA GeForce RTX 3060", 12.0, "86"), card(1, "NVIDIA GeForce RTX 3060", 12.0, "86")]
         code, out, cfg, asked = run(26.0, found, "IQ3_XXS")
         self.assertEqual(code, 0, out)
-        self.assertEqual(sorted(cfg["gpu"]), [0, 1])
+        self.assertEqual(cfg["gpu"], [0, 1])
+        self.assertEqual(cfg["gpu_roles"], {"0": "helper", "1": "main"})
+        self.assertEqual(cfg["gpu_order"], "as_given")
         self.assertEqual(cfg["layer_split"], "auto")
-        self.assertTrue(any("Which GPUs" in q and "[2]" in q for q in asked), asked)
+
+    def test_gpu_roles_flag(self):
+        found = [card(0, "NVIDIA GeForce RTX 3060", 12.0, "86"), card(1, "NVIDIA GeForce RTX 3070 Ti", 16.0, "86")]
+        code, out, cfg, _ = run(62.0, found, "IQ3_XXS", extra=("--gpu-roles", "0=main,1=helper"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["gpu"], [1, 0])                              # the slower card is Main on purpose: it goes last
+        self.assertEqual(cfg["gpu_roles"], {"0": "main", "1": "helper"})
+        code, out, cfg, _ = run(62.0, found, "IQ3_XXS", extra=("--gpu-roles", "1=main,0=off"))
+        self.assertEqual((cfg["gpu"], cfg["gpu_roles"]), (1, {"0": "off", "1": "main"}))
+        self.assertNotIn("layer_split", cfg)
+        code, out, cfg, _ = run(62.0, found, "IQ3_XXS", extra=("--gpu-roles", "0=off,1=off"))
+        self.assertNotEqual(code, 0)
 
     def test_naming_the_cards_still_wins(self):
         found = [card(0, "NVIDIA GeForce RTX 3070 Ti", 16.0, "86"), card(1, "NVIDIA GeForce RTX 3060 Ti", 8.0, "86")]

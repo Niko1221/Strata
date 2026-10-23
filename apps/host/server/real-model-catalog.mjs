@@ -1,4 +1,8 @@
-/** Verified file identities for the optional real engine. Never relabel these as demo weights. */
+/**
+ * The starter list shown with the optional real engine. It is display only: nothing downloads from it (models.install refuses when the real
+ * engine is on), because these files are named without a hash. Models come from the Models screen of the native engine, which pins them.
+ * Never relabel these as demo weights.
+ */
 export const REAL_VARIANTS = [
   {
     id: 'qwen2.5-0.5b-q4km',

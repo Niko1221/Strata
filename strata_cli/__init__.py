@@ -6,8 +6,8 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 
 #: The version people are told: the Strata app's own (apps/desktop/src-tauri/Cargo.toml `version`; tests/terminal/test_tuiqa_version.py keeps the
-#: two equal). `version()` below is the files' build number, which the engine-compatibility checks compare, so it stays numeric.
-PRODUCT_VERSION = "0.2.0-beta"
+#: two equal, except for a Terminal-only hotfix such as 0.2.3.1, whose app stays 0.2.3). `version()` below is the files' build number, which the engine-compatibility checks compare, so it stays numeric.
+PRODUCT_VERSION = "0.2.3.1"
 
 
 def version() -> str:

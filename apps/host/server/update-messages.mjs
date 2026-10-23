@@ -13,6 +13,13 @@ export const PHASE_TEXT = {
   done: 'Done.',
 };
 
+/** True when the failure looks like a computer with no internet (no DNS, no route, refused), not a slow or broken server. */
+export function looksOffline(error) {
+  const text = [error?.message, error?.cause?.message, error?.cause?.code, error?.code, error].filter(x => typeof x === 'string').join(' ');
+  return /ENOTFOUND|EAI_AGAIN|ENETUNREACH|ENETDOWN|EHOSTUNREACH|ECONNREFUSED|getaddrinfo|fetch failed|network is unreachable|name or service not known|temporary failure in name resolution|nodename nor servname|No address associated|URLError/i.test(text);
+}
+export const OFFLINE_MESSAGE = "No internet connection. Try again when you're online.";
+
 /** { message, details, next } for an error thrown by Control's update calls (or the shell bridge). `subject` is "engine" or "Strata". */
 export function plainUpdateError(error, subject = 'engine') {
   const raw = String(error?.message ?? error ?? '');
@@ -28,8 +35,11 @@ export function plainUpdateError(error, subject = 'engine') {
   } else if (/another update is already running/i.test(raw)) {
     message = 'An update is already running.';
     next = `Wait a moment, then press ${button} in Settings.`;
-  } else if (/test start|did not answer a one-token|did not become ready/i.test(raw)) {
+  } else if (/test start|did not start correctly|did not answer a one-token|did not become ready/i.test(raw)) {
     message = `The new ${subject} didn't start correctly, so nothing was changed. ${keep}`;
+  } else if (looksOffline(error) || looksOffline(raw)) {
+    message = 'No internet connection.';
+    next = "Try again when you're online.";
   } else if (/could not be read|interrupted|timed out|timeout|ECONN|ENOTFOUND|fetch failed|could not reach|server answered|not answer within/i.test(raw)) {
     message = "Couldn't reach the update server.";
     next = `Check your internet connection, then press ${button} in Settings.`;

@@ -60,7 +60,7 @@ test('routeFor picks the chat\'s own choice', () => {
 
 test('the agent environment keeps what a shell needs and drops ambient credentials', () => {
   const env = agentEnvironment({ PATH: '/bin', HOME: '/h', OPENAI_API_KEY: 'x', GITHUB_TOKEN: 'y', AWS_SECRET_ACCESS_KEY: 'z', SSH_AUTH_SOCK: 's', SystemRoot: 'C:\\Windows' }, { STRATA_API_KEY_X: 'k' });
-  assert.deepEqual(Object.keys(env).sort(), ['DSH_PERMISSION_MODE', 'DSH_TELEMETRY_DISABLED', 'HOME', 'PATH', 'STRATA_API_KEY_X', 'SystemRoot']);
+  assert.deepEqual(Object.keys(env).sort(), ['DSH_PERMISSION_MODE', 'DSH_TELEMETRY_DISABLED', 'HOME', 'NODE_USE_SYSTEM_CA', 'PATH', 'STRATA_API_KEY_X', 'SystemRoot']);
 });
 
 test('redact removes secret values and launch tokens from log text', () => {

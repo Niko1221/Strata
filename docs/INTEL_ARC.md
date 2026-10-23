@@ -10,10 +10,7 @@ Intel GPU and every result on Arc hardware came from the community. Since 0.1.40
 (32 GB, `xe`) and an Arc A750 (8 GB, `i915`); the results from those two cards are marked in the table below. Other cards
 are still community reports. The NVIDIA and AMD engines are unchanged: the Intel build is a separate CMake target, off by default.
 
-**Where the engine comes from.** There is **no Intel engine in the release zips** (the ones `START-HERE.bat` and `setup.sh`
-use): you build it from source on Linux, as described below. A ready-made Intel engine does exist as a Docker image,
-`ghcr.io/niko1221/strata:0.2.0-sycl`, built for the 0.2.0 release (the image needs prepared model files; see
-[Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
+**Where the engine comes from.** On Linux, `strata update` (Terminal) and Settings > Update (app) download the Intel engine package, `linux-x86_64-sycl`, for a PC whose graphics card is made by Intel, when the release feed lists one (`strata update --check` shows what it would install). One package serves Alchemist (A-series) and Battlemage (B-series) cards: the GPU code is compiled from SPIR-V at the first start, because the A-series cards have no FP64 units and the engine's FP64 kernels cannot be built ahead of time for them. It carries oneAPI's runtime libraries; the Level Zero loader and the compute runtime stay the PC's own (see "What you need" below), and the user must be in the `render` group (`strata doctor` says so). The package is built by `packaging/build_sycl_linux.sh`. It was tested on an Arc A750 only. The release zips (the ones `START-HERE.bat` and `setup.sh` use) have no Intel engine; to build one from source, follow the steps below. The Docker route is a ready-made image, `ghcr.io/niko1221/strata:0.2.3-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build the image yourself](DOCKER.md#build-it-yourself) from the engine you built (the image needs prepared model files; see [Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac and Windows builds have no Intel engine.
 
 ## What has been run, and by whom
 
@@ -53,8 +50,9 @@ Full flags, per-request timings and engine logs are in the report linked in the 
   The HIP build is not affected (the option is off by default).
 
 **Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, integrated Arc
-GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and images (not wired on Intel: there
-is no picture reader for the Arc engine). The Alchemist A-series was tested later, on an A750 (rows above and
+GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and pictures on a Battlemage card
+(the first picture on the Arc Pro B70 reset the GPU; they are off by default there, [INTEL.md](INTEL.md#pictures-on-an-arc-2026-10-19-branch-f-021-arcvis)).
+Pictures work on the A750 (on by default, read on the CPU). The Alchemist A-series was tested later, on an A750 (rows above and
 [INTEL.md](INTEL.md), "Arc A750 and the other Alchemist cards").
 
 ## What you need
@@ -80,7 +78,7 @@ called `Strata` here:
 
 ```sh
 cd Strata
-docker build -t strata-sycl-dev sycl/tools            # once: ~6 minutes, a 13 GB image
+docker build --pull -t strata-sycl-dev sycl/tools     # once: ~6 minutes, a 13 GB image (--pull: INTEL.md says why)
 H=$(basename "$PWD")
 # Arc B-series: bmg-g31 (Pro B70), bmg-g21 (B580, B570, Pro B60). Arc A-series (Alchemist): leave out AOT (JIT) and use build-sycl
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e AOT=bmg-g31 -e REPO=/work/$H \

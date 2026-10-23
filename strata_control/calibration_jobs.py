@@ -14,6 +14,7 @@ from pathlib import Path
 
 from strata_control import calibration, journal, profiles
 from strata_control.profiles import ProfileError
+from strata_control import posix_owner
 
 
 KINDS = {"measure": "engine.calibrate.measure", "apply": "engine.calibrate.apply",
@@ -43,9 +44,9 @@ def _open_lease(profile: str, *, create: bool) -> int | None:
     details = os.fstat(descriptor)
     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size > 32 or \
             (os.name == "posix" and
-             (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
+             (posix_owner.owner_only_wrong(_lease_path(profile), details))):
         os.close(descriptor)
-        raise ProfileError("calibration worker lease must be owner-only", 5)
+        raise ProfileError(posix_owner.owner_only_text("calibration worker lease must be owner-only", _lease_path(profile)), 5)
     return descriptor
 
 
@@ -129,7 +130,7 @@ def _cancel_requested(profile: str, job_id: str) -> bool:
         return False
     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size != 1 or \
             (os.name == "posix" and
-             (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
+             (posix_owner.owner_only_wrong(path, details))):
         raise ProfileError("calibration cancellation marker is invalid", 5)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -187,8 +188,8 @@ def _load_progress(profile: str, job_id: str) -> dict | None:
         return None
     if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_size > 1024 or \
             (os.name == "posix" and
-             (details.st_uid != os.getuid() or stat.S_IMODE(details.st_mode) & 0o077)):
-        raise ProfileError("calibration progress file must be owner-only", 5)
+             (posix_owner.owner_only_wrong(path, details))):
+        raise ProfileError(posix_owner.owner_only_text("calibration progress file must be owner-only", path), 5)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):

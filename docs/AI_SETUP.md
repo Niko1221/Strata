@@ -13,10 +13,11 @@ Work through the steps in order. Tell the user what you are doing in plain words
 
 ## 0. Ground rules
 
-- **Never expose the server without an API key.** Keep the default (`--access local`, the server listens on
-  `127.0.0.1` only). Only if the user asks for access from other devices, use `--access lan`. Strata makes a long
-  random key for you then and will not start on a network without one. Give the user the key
-  (`strata launch --show-key`). Never put a tunnel or port forward in front of a server without a key.
+- **Recommend an API key beyond this computer; do not force it.** Keep the default (`--access local`, the server listens on
+  `127.0.0.1` only, no key needed). Only if the user asks for access from other devices, use `--access lan`. Strata makes a long
+  random key for you then. Give the user the key (`strata launch --show-key`). If the user says they do not want a key, use
+  `--no-api-key`: it starts and warns that anyone who can reach the port can use the model and its tools. Tell the user so.
+  Do not put a tunnel or port forward in front of a server without a key unless the user asks for it.
 - Do not change the user's system beyond what Strata does. The Terminal installs into the user's home folder and needs
   no administrator rights. It does not install drivers, Python packages or compilers. Ask before installing drivers.
 - The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with
@@ -105,7 +106,7 @@ The flags (all of them, with examples: `strata launch --help`):
 | `--model NAME` | the size: `q2_0`, `iq2_xs`, `iq3_xxs`, `iq3_s`, `iq1_m`, `ud-iq4_xs`, `ud-q4_k_xl`, ... (the error message for a wrong name lists them) |
 | `--family NAME` | the model version when several have that size: `qwen`, `swift`, `coder`, `unsloth` |
 | `--model-path PATH` | files the user already has: a folder of shards or one `.gguf` file |
-| `--data-dir DIR` | where the 70-120 GB of model files go |
+| `--data-dir DIR` | where new model files go. Models you already have stay where they are and stay usable; add `--move-data` to move them into DIR |
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens |
 | `--vision off\|on\|gpu\|cpu` | read pictures. On by default when the model can read them: the reader runs on the CPU for a card under 24 GB and on the GPU from 24 GB, on NVIDIA and AMD cards. `off` turns it off |
 | `--parallel N` | requests answered at the same time, 1 to 8 (default: fit to the card) |
@@ -114,6 +115,7 @@ The flags (all of them, with examples: `strata launch --help`):
 | `--access local\|lan\|cloudflare\|tailscale` | who can connect; beyond `local` a key is made for you |
 | `--port N` | the server port (default 8080) |
 | `--api-key KEY`, `--api-key-env NAME`, `--new-key` | the key clients must send |
+| `--no-api-key` | share without a key (a warning, not a refusal; recommended only on a network you trust) |
 | `--save-preset NAME` | keep these choices; `strata launch --preset NAME` starts them again |
 | `--plan` | show what would happen and exit |
 | `--yes`, `--no-tui` | no questions, no screens |
@@ -130,7 +132,7 @@ Notes:
   whether to allow Strata on the network if you used `--access lan`.
 - **AMD on Windows:** only the AMD driver is needed. The AMD engine is a ready-made download. It has not been run with a
   model on a real AMD card on Windows by us: ask the user to report how it runs ([AMD_HIP.md](AMD_HIP.md)).
-- **Mac:** the Metal engine is fetched like any other. There is no picture reader on the Mac yet.
+- **Mac:** the Metal engine is fetched like any other. Pictures are on by default and read on the Mac's GPU ([MAC.md](MAC.md)).
 
 ## 5. While it downloads, tell the user
 
@@ -228,7 +230,7 @@ The flags (all of them: `START-HERE.bat --help`):
 | `--vision yes\|no\|gpu\|cpu` | read pictures. Pass `yes` to get the best reader for the card (the CPU under 24 GB, the GPU from 24 GB, any make); `no` turns them off |
 | `--gpu N` / `--gpus 0,1` / `--gpus all` | one card, or several sharing the model (default: the card with the most VRAM) |
 | `--backend cuda\|hip` | NVIDIA or AMD engine; chosen by itself on a PC with only one kind of card |
-| `--data-dir PATH` | where the 70-120 GB of model files go |
+| `--data-dir PATH` | where new model files go. Nothing is moved unless you add `--move-data`; the saved default folder changes only with `--move-data` or `--set-default-data-dir` |
 | `--port N` | the server port (default 8080) |
 | `--host H --api-key K` | listen beyond this PC; only together with a key |
 | `--no-start` | install only, do not start the server |

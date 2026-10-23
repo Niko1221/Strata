@@ -1,4 +1,4 @@
-import { plainUpdateError } from './update-messages.mjs';
+import { OFFLINE_MESSAGE, looksOffline, plainUpdateError } from './update-messages.mjs';
 
 /** Read-only release checks. Installing/rolling back needs a managed installer. */
 const RELEASES = 'https://api.github.com/repos/Niko1221/Strata/releases?per_page=30';
@@ -33,7 +33,7 @@ export async function checkUpdates({ appVersion, engineVersion }, fetcher = fetc
       strata = { status: newer ? 'available' : 'current', latestVersion: latest.tag_name, releaseUrl, message: newer ? `Strata ${latest.tag_name} is available.` : 'Strata is up to date.' };
     }
   } catch (error) {
-    strata = { status: 'error', message: error.name === 'TimeoutError' ? 'The release check timed out. Try again.' : error.message ?? 'Could not check for updates.' };
+    strata = { status: 'error', message: looksOffline(error) ? OFFLINE_MESSAGE : error.name === 'TimeoutError' ? 'The release check timed out. Try again.' : error.message ?? 'Could not check for updates.' };
   }
   return {
     checkedAt: new Date().toISOString(),
@@ -56,7 +56,7 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
     report = await control.updateCheck({ appVersion });
   } catch (error) {
     const plain = plainUpdateError(error, 'Strata');
-    const message = /update server|aren't available/.test(plain.headline) ? plain.message : `Couldn't check for updates. Try again in a moment.`;
+    const message = /update server|aren't available|No internet/.test(plain.headline) ? plain.message : `Couldn't check for updates. Try again in a moment.`;
     return { checkedAt, strata: { installedVersion: appVersion ?? control.version ?? null, status: 'error', message, details: plain.details, canInstall: false }, engine: { installedVersion: null, status: 'error', message, details: plain.details, canInstall: false } };
   }
   const mib = bytes => `${Math.round((bytes ?? 0) / (1 << 20))} MB`;
@@ -67,6 +67,7 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
   if (engine.status === 'available') Object.assign(engineView, { status: 'available', message: `A new engine is available (${mib(engine.download_bytes)}).` });
   else if (engine.status === 'install') Object.assign(engineView, { status: 'available', message: `This PC needs an engine to run models. Press Update engine to download it (${mib(engine.download_bytes)}).` });
   else if (engine.status === 'current' || engine.status === 'failed-before' || engine.status === 'skipped') Object.assign(engineView, { status: 'current', message: 'The engine is up to date.', details: engine.note });
+  else if (engine.status === 'wrong-make') Object.assign(engineView, { status: 'unavailable', message: engine.note ?? 'Nothing was changed: the update was for another make of graphics card.', details: (engine.reasons ?? []).join('\n') || undefined });
   else if (engine.status === 'not-in-feed') Object.assign(engineView, { status: 'current', message: 'No engine update is listed right now.' });
   else Object.assign(engineView, { status: 'unavailable', message: "There isn't an engine for this PC's graphics card yet.", details: (engine.reasons ?? []).join('\n') || undefined });
   const control_ = report.control ?? {};

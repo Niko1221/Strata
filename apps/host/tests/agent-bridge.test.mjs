@@ -178,6 +178,7 @@ test('A08 two chats run independently, each with its own session and approval', 
   assert.notEqual(r.bridge.sessionOf('chat-a08-a'), r.bridge.sessionOf('chat-a08-b'));
   assert.equal(r.bridge.pendingFor('chat-a08-b').length, 0);
   assert.equal(r.bridge.pendingFor('chat-a08-a').length, 1);
+  assert.deepEqual(r.bridge.pendingAll().map(c => c.chatId), ['chat-a08-a'], 'the board lists every chat that waits, and only those');
   const callId = a.frames.find(f => f.type === 'agent-tool').tool.id;
   // An approval cannot be answered through the wrong chat.
   await assert.rejects(r.bridge.approve({ chatId: 'chat-a08-b', callId, decision: 'approve' }), /no longer waiting/);

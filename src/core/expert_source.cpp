@@ -15,11 +15,13 @@
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/kq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
+#include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -55,6 +57,7 @@
 #if defined(__linux__)
 #include <cerrno>
 #include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
+#include <sched.h>
 #include <sys/syscall.h>
 #endif
 
@@ -124,6 +127,24 @@ uint64_t numa_pin_free(uint64_t global_free, const std::vector<uint64_t>& node_f
     if (node_free.size() < 2) return global_free;
     const uint64_t smallest = *std::min_element(node_free.begin(), node_free.end());
     return std::min<uint64_t>(global_free, smallest * (uint64_t) node_free.size());
+}
+
+std::array<std::pair<uint64_t, uint64_t>, 3> numa_slice_ranges(uint64_t slot_off, const uint64_t role_bytes[3],
+                                                               int slice, uint64_t page) {
+    assert(slice == 0 || slice == 1);
+    std::array<std::pair<uint64_t, uint64_t>, 3> out{};
+    uint64_t start = slot_off;
+    for (int r = 0; r < 3; ++r) {
+        const uint64_t mid = start + role_bytes[r] / 2, end = start + role_bytes[r];
+        if (slice == 0) {
+            out[r] = {start / page * page, (mid + page - 1) / page * page};
+        } else {
+            const uint64_t lo = (mid + page - 1) / page * page, hi = end / page * page;
+            out[r] = hi > lo ? std::make_pair(lo, hi) : std::make_pair(lo, lo);
+        }
+        start = end;
+    }
+    return out;
 }
 
 std::string page_cache_hint(const std::string& meminfo_text) {
@@ -502,6 +523,218 @@ void log_complement_memory(const char* stage, uint64_t requested) {
 #endif
 }
 
+#if defined(__linux__)
+/// STRATA_NUMA_SPLIT step B: each NUMA slice of every complement slot (numa_slice_ranges) is first-touched by a helper
+/// thread pinned to one core of that slice's node, so the default local policy puts its pages there (no mbind: ~113k
+/// ranges would split the arena into more VMAs than vm.max_map_count allows).  Inactive (`place` false) unless the
+/// live pool split on real nodes; then the paced fault loop hands it each step to touch.
+struct NumaComplementPlacement {
+    bool place = false;
+    int nodes[2] = {-1, -1};
+    int core[2] = {-1, -1};
+    std::vector<std::pair<uint64_t, uint64_t>> ranges[2];   ///< page-aligned, sorted, coalesced, arena offsets
+    uint64_t slice_bytes[2] = {0, 0};
+    std::vector<uint64_t> free_before;                      ///< MemFree per node before the allocation
+    std::vector<uint64_t> free_after;                       ///< the same after the model files' pages are released
+    std::atomic<bool> pin_failed{false};
+    std::chrono::steady_clock::time_point t0;
+
+    static std::vector<uint64_t> node_free() {
+        // CBA: stops at the first missing node directory (as free_memory_bytes does), sparse node ids give a false
+        // "at risk 0.00" line only; list the node directory if a sparse-id host ever shows it
+        std::vector<uint64_t> out;
+        for (int n = 0; n < 64; ++n) {
+            std::ifstream node("/sys/devices/system/node/node" + std::to_string(n) + "/meminfo");
+            if (!node) break;
+            std::string line;
+            uint64_t kb = 0;
+            while (std::getline(node, line)) {
+                std::istringstream f(line);
+                std::string a, id, key;
+                if (f >> a >> id >> key >> kb && key == "MemFree:") break;
+                kb = 0;
+            }
+            out.push_back(kb * 1024);
+        }
+        return out;
+    }
+    static std::string free_text(const std::vector<uint64_t>& free) {
+        std::string s;
+        char buf[64];
+        for (size_t n = 0; n < free.size(); ++n) {
+            std::snprintf(buf, sizeof buf, "%snode %zu %.2f GiB", n ? ", " : "", n, (double) free[n] / 1073741824.0);
+            s += buf;
+        }
+        return s;
+    }
+
+    /// Decides from the live pool's plan; false with a logged reason when the split is on but placement cannot run.
+    void init(const std::vector<uint64_t>& offsets, int64_t n_expert, const std::vector<uint64_t>& blob_bytes,
+              const std::vector<uint64_t>& role_bytes) {
+        // relies on the pool being built first (generate.cpp: the ExpertPool at ~5632, the complement at ~7690)
+        const auto& plan = strata::kernels::cpu::active_numa_split();
+        if (!plan.on || plan.test) return;
+        free_before = node_free();
+        const char* why = nullptr;
+        if (role_bytes.size() != 3 * blob_bytes.size()) why = "this pack has no per-role byte sizes (not a GGUF-mapped native pack)";
+        for (size_t l = 0; why == nullptr && l < blob_bytes.size(); ++l)
+            if (role_bytes[3 * l] + role_bytes[3 * l + 1] + role_bytes[3 * l + 2] != blob_bytes[l])
+                why = "the role sizes do not add up to the expert blob";
+        for (int k = 0; why == nullptr && k < 2; ++k)
+            if (plan.cores[k].empty()) why = "a slice has no core";
+            else if (plan.nodes[k] < 0 || plan.nodes[k] >= 64) why = "a node id is out of range";
+        if (why != nullptr) {
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: %s; the complement is placed by "
+                                 "first touch as usual (the split runs with remote reads)\n", why);
+            return;
+        }
+        for (int k = 0; k < 2; ++k) {
+            nodes[k] = plan.nodes[k];
+            core[k] = plan.cores[k].front();   // workers come before the host core in the plan
+            std::vector<std::pair<uint64_t, uint64_t>> all;
+            for (size_t i = 0; i < offsets.size(); ++i) {
+                if (offsets[i] == detail::kNoCacheComplement) continue;
+                const size_t l = i / (size_t) n_expert;
+                for (const auto& r : detail::numa_slice_ranges(offsets[i], &role_bytes[3 * l], k))
+                    if (r.second > r.first) all.push_back(r);
+            }
+            std::sort(all.begin(), all.end());
+            for (const auto& r : all) {   // coalesce: ends become monotonic, so a step finds its first range by bisection
+                if (!ranges[k].empty() && r.first <= ranges[k].back().second)
+                    ranges[k].back().second = std::max(ranges[k].back().second, r.second);
+                else ranges[k].push_back(r);
+            }
+            for (const auto& r : ranges[k]) slice_bytes[k] += r.second - r.first;
+        }
+        place = true;
+        t0 = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "FileExpertSource: NUMA placement of the complement: slice 0 -> node %d (%.2f GiB, toucher "
+                             "CPU %d), slice 1 -> node %d (%.2f GiB, toucher CPU %d), 4 KiB pages; free before: %s\n",
+                     nodes[0], (double) slice_bytes[0] / 1073741824.0, core[0], nodes[1],
+                     (double) slice_bytes[1] / 1073741824.0, core[1], free_text(free_before).c_str());
+    }
+
+    /// Touches one byte per page of each slice's ranges clipped to [lo, hi), one pinned thread per slice; then the
+    /// calling thread touches the step's other pages (outside every slice: slot tails, the arena end).  The caller
+    /// must not re-touch slice pages: with automatic NUMA balancing on, its access faults would migrate them to its node.
+    void touch_step(uint8_t* arena, uint64_t lo, uint64_t hi) {
+        // CBA: two threads spawned per 1 GiB step (~50 spawns per start); long-lived touchers if the spawn ever shows
+        auto touch = [&](int k) {
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            CPU_SET(core[k], &set);
+            if (sched_setaffinity(0, sizeof set, &set) != 0) pin_failed = true;
+            const auto& rs = ranges[k];
+            auto it = std::partition_point(rs.begin(), rs.end(), [&](const auto& r) { return r.second <= lo; });
+            for (; it != rs.end() && it->first < hi; ++it)
+                for (uint64_t at = std::max(it->first, lo); at < std::min(it->second, hi); at += 4096)
+                    ((volatile uint8_t*) arena)[at] = 0;
+        };
+        // CBA: a failed spawn terminates; fall back to an unpinned touch if it ever happens
+        std::thread a(touch, 0), b(touch, 1);
+        a.join();
+        b.join();
+        size_t c[2] = {0, 0};   // the pages no slice holds, as the default loop touches them
+        for (uint64_t at = lo; at < hi; at += 4096) {
+            bool covered = false;
+            for (int k = 0; k < 2; ++k) {
+                while (c[k] < ranges[k].size() && ranges[k][c[k]].second <= at) ++c[k];
+                covered = covered || (c[k] < ranges[k].size() && ranges[k][c[k]].first <= at);
+            }
+            if (!covered) ((volatile uint8_t*) arena)[at] = 0;
+        }
+    }
+
+    /// After the drop: a node whose free memory cannot take its slice plus `reserve_share` will spill to the other node
+    /// (no local reclaim); named up front, the 95 % check stays the verdict.
+    void check_room(uint64_t reserve_share) const {
+        for (int k = 0; k < 2; ++k) {
+            const uint64_t room = (size_t) nodes[k] < free_after.size() ? free_after[(size_t) nodes[k]] : 0;
+            if (room < slice_bytes[k] + reserve_share)
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement at risk: node %d has %.2f GiB free for its "
+                                     "%.2f GiB slice plus %.2f GiB of reserve\n",
+                             nodes[k], (double) room / 1073741824.0, (double) slice_bytes[k] / 1073741824.0,
+                             (double) reserve_share / 1073741824.0);
+        }
+    }
+
+    /// Samples one page in 64 of each slice with move_pages (null node list: returns each page's node) and logs the
+    /// share on the intended node, once the arena is registered (its final state); `got < bytes` means the paced loop
+    /// stopped early, `registered < bytes` that the driver did not page-lock all of it: the placement then fails.
+    void report(const uint8_t* arena, uint64_t got, uint64_t registered, uint64_t bytes, const char* stop) const {
+        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        uint64_t on_node[2] = {0, 0}, sampled[2] = {0, 0}, per_node[2][64] = {}, absent[2] = {0, 0};
+        constexpr int kNotSampled = -100000;   // outside any per-page status (a node id, or -errno)
+        int sys_errno[2] = {0, 0};              // first errno of a failed move_pages batch, per slice
+        size_t batches[2] = {0, 0}, failed[2] = {0, 0};
+        std::vector<void*> pages;
+        std::vector<int> status;
+        for (int k = 0; k < 2; ++k) {
+            uint64_t n = 0;
+            pages.clear();
+            for (const auto& r : ranges[k])
+                for (uint64_t at = r.first; at < r.second; at += 4096, ++n)
+                    if (n % 64 == 0) pages.push_back((void*) (arena + at));
+            status.assign(pages.size(), -1);
+            for (size_t b = 0; b < pages.size(); b += 4096) {
+                const size_t cnt = std::min<size_t>(4096, pages.size() - b);
+                ++batches[k];
+                if (syscall(SYS_move_pages, 0, (unsigned long) cnt, pages.data() + b, nullptr, status.data() + b, 0) != 0) {
+                    if (sys_errno[k] == 0) sys_errno[k] = errno;
+                    ++failed[k];
+                    for (size_t i = b; i < b + cnt; ++i) status[i] = kNotSampled;   // the syscall failed: no sample, unlike a page's own -errno
+                }
+            }
+            for (int s : status) {
+                if (s == kNotSampled) continue;
+                ++sampled[k];
+                if (s >= 0 && s < 64) ++per_node[k][s];
+                else ++absent[k];
+            }
+            on_node[k] = nodes[k] >= 0 && nodes[k] < 64 ? per_node[k][nodes[k]] : 0;
+        }
+        double share[2];
+        for (int k = 0; k < 2; ++k) share[k] = sampled[k] > 0 ? 100.0 * (double) on_node[k] / (double) sampled[k] : 0.0;
+        char what[2][96];   // a slice whose move_pages batches all failed has no share to print
+        for (int k = 0; k < 2; ++k) {
+            if (batches[k] > 0 && failed[k] == batches[k]) std::snprintf(what[k], sizeof what[k], "not verified");
+            else std::snprintf(what[k], sizeof what[k], "%.2f GiB (%.1f %% of its slices)",
+                               share[k] / 100.0 * (double) slice_bytes[k] / 1073741824.0, share[k]);
+        }
+        std::fprintf(stderr, "FileExpertSource: NUMA placement: node %d %s, node %d %s; free before: %s; after the drop: %s; "
+                             "pages taken and page-locked in %.1f s since the placement started\n",
+                     nodes[0], what[0], nodes[1], what[1], free_text(free_before).c_str(), free_text(free_after).c_str(), secs);
+        if (got < bytes)
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the paced loop stopped at %.2f of %.2f "
+                                 "GiB (%s); the rest is first-touched by unpinned copy threads (memory not placed on its node: the split runs with remote reads)\n",
+                         (double) got / 1073741824.0, (double) bytes / 1073741824.0, stop != nullptr ? stop : "?");
+        else if (registered < bytes)
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: only %.2f of %.2f GiB page-locked (%s); "
+                                 "the unregistered pages can be migrated by NUMA balancing (memory not placed on its node: the split runs with remote reads)\n",
+                         (double) registered / 1073741824.0, (double) bytes / 1073741824.0, stop != nullptr ? stop : "?");
+        if (pin_failed)
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement: a toucher could not be pinned to its core\n");
+        for (int k = 0; k < 2; ++k) {
+            if (batches[k] > 0 && failed[k] == batches[k]) {
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement could not be verified: move_pages failed "
+                                     "(errno %d: %s) for slice %d (node %d)\n", sys_errno[k], std::strerror(sys_errno[k]), k, nodes[k]);
+                continue;
+            }
+            if (failed[k] > 0)
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement: move_pages failed (errno %d: %s) for %zu of %zu "
+                                     "batches of slice %d; judged on the other samples\n", sys_errno[k],
+                             std::strerror(sys_errno[k]), failed[k], batches[k], k);
+            if (share[k] < 95.0)
+                std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: slice %d has %.1f %% of its pages "
+                                     "on node %d (< 95 %%; of %llu sampled: node %d %llu, node %d %llu, not present %llu)\n",
+                             k, share[k], nodes[k], (unsigned long long) sampled[k], nodes[0],
+                             (unsigned long long) per_node[k][nodes[0]], nodes[1], (unsigned long long) per_node[k][nodes[1]],
+                             (unsigned long long) absent[k]);
+        }
+    }
+};
+#endif
+
 /// #286: an unbuffered file handle - a HANDLE on Windows, an O_DIRECT descriptor (as a pointer-sized integer) on Linux.
 void close_direct(void* h) {
 #if defined(_WIN32)
@@ -510,6 +743,120 @@ void close_direct(void* h) {
     ::close((int) (intptr_t) h);
 #endif
 }
+
+#if defined(__linux__)
+/// #3237: how fast this drive serves the experts' reads the two ways the file tier can take them - O_DIRECT preads of
+/// 1 MiB at random places on 8 threads (the unbuffered tier's I/O threads) against first touches of the pages of random
+/// 1 MiB pieces of a mapping on 3 threads (the cached tier: the pool's threads faulting the page cache in).  Regions the
+/// page cache already holds are skipped, and the probed ranges are dropped from the cache again.  The best of two
+/// rounds each; a few hundred MiB read, under two seconds per pass.  Done once per process.  false: not measurable.
+struct TierProbeResult { bool done = false, ok = false; double direct_bps = 0, cached_bps = 0; };
+
+bool file_tier_probe(const std::vector<std::string>& paths, double& direct_bps, double& cached_bps) {
+    static std::mutex mu;
+    static TierProbeResult memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (memo.done) { direct_bps = memo.direct_bps; cached_bps = memo.cached_bps; return memo.ok; }
+    memo.done = true;
+    const std::string* best = nullptr;
+    uint64_t size = 0;
+    for (const std::string& p : paths) {
+        struct stat st{};
+        if (::stat(p.c_str(), &st) == 0 && (uint64_t) st.st_size > size) { size = (uint64_t) st.st_size; best = &p; }
+    }
+    constexpr uint64_t kRegion = 1ull << 20;
+    constexpr int kPerPass = 96, kRounds = 2;
+    constexpr int kDirectThreads = 8, kCachedThreads = 3;
+    if (best == nullptr || size < 8ull * kPerPass * kRegion * 2) return false;
+    const int fd_d = ::open(best->c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC);
+    const int fd_b = ::open(best->c_str(), O_RDONLY | O_CLOEXEC);
+    void* map = fd_b >= 0 ? mmap(nullptr, (size_t) size, PROT_READ, MAP_SHARED, fd_b, 0) : MAP_FAILED;
+    auto cleanup = [&] {
+        if (map != MAP_FAILED) munmap(map, (size_t) size);
+        if (fd_d >= 0) ::close(fd_d);
+        if (fd_b >= 0) ::close(fd_b);
+    };
+    if (fd_d < 0 || map == MAP_FAILED) { cleanup(); return false; }
+    const uint8_t* base = static_cast<const uint8_t*>(map);
+    uint64_t seed = (uint64_t) std::chrono::steady_clock::now().time_since_epoch().count() * 6364136223846793005ull + 1442695040888963407ull;
+    std::vector<uint64_t> used;
+    auto pick = [&](std::vector<uint64_t>& out) {   // kPerPass distinct 1 MiB pieces the page cache does not hold
+        out.clear();
+        std::vector<unsigned char> vec(kRegion / 4096);
+        for (int tries = 0; (int) out.size() < kPerPass && tries < kPerPass * 40; ++tries) {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            const uint64_t off = ((seed >> 20) % (size / kRegion)) * kRegion;
+            if (std::find(used.begin(), used.end(), off) != used.end()) continue;
+            if (mincore((void*) (base + off), (size_t) kRegion, vec.data()) != 0) continue;
+            int res = 0;
+            for (unsigned char c : vec) res += c & 1;
+            if (res * 4 > (int) vec.size()) continue;
+            used.push_back(off);
+            out.push_back(off);
+        }
+        return (int) out.size() >= kPerPass / 2;
+    };
+    auto preadn = [&](uint8_t* dst, uint64_t off) {
+        uint64_t done = 0;
+        while (done < kRegion) {
+            const ssize_t r = ::pread(fd_d, dst + done, (size_t) (kRegion - done), (off_t) (off + done));
+            if (r < 0) { if (errno == EINTR) continue; return false; }
+            if (r == 0) return false;
+            done += (uint64_t) r;
+        }
+        return true;
+    };
+    double best_d = 0, best_c = 0;
+    bool ok = true;
+    for (int round = 0; round < kRounds && ok; ++round) {
+        for (int mode = 0; mode < 2 && ok; ++mode) {   // 0: direct, 1: cached
+            std::vector<uint64_t> offs;
+            if (!pick(offs)) { ok = false; break; }
+            std::atomic<size_t> next{0};
+            std::atomic<uint64_t> bytes{0};
+            std::atomic<int> failed{0};
+            const auto t0 = std::chrono::steady_clock::now();
+            const auto deadline = t0 + std::chrono::milliseconds(1500);
+            std::vector<std::thread> th;
+            const int nthreads = mode == 0 ? kDirectThreads : kCachedThreads;
+            for (int t = 0; t < nthreads; ++t) {
+                th.emplace_back([&] {
+                    void* buf = nullptr;
+                    if (mode == 0 && posix_memalign(&buf, 4096, kRegion) != 0) { failed = 1; return; }
+                    volatile uint8_t sink = 0;
+                    for (;;) {
+                        const size_t i = next.fetch_add(1);
+                        if (i >= offs.size() || std::chrono::steady_clock::now() > deadline) break;
+                        if (mode == 0) {
+                            if (!preadn((uint8_t*) buf, offs[i])) { failed = 1; break; }
+                        } else {
+                            for (uint64_t pg = 0; pg < kRegion; pg += 4096) sink = (uint8_t) (sink + base[offs[i] + pg]);
+                        }
+                        bytes.fetch_add(kRegion);
+                    }
+                    std::free(buf);
+                });
+            }
+            for (std::thread& x : th) x.join();
+            const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (failed.load() != 0 || bytes.load() == 0 || secs <= 0) { ok = false; break; }
+            const double bps = (double) bytes.load() / secs;
+            (mode == 0 ? best_d : best_c) = std::max(mode == 0 ? best_d : best_c, bps);
+            for (uint64_t off : offs) {   // leave the page cache as it was
+                (void) madvise((void*) (base + off), (size_t) kRegion, MADV_DONTNEED);
+                (void) posix_fadvise(fd_b, (off_t) off, (off_t) kRegion, POSIX_FADV_DONTNEED);
+            }
+        }
+    }
+    cleanup();
+    memo.ok = ok && best_d > 0 && best_c > 0;
+    memo.direct_bps = best_d;
+    memo.cached_bps = best_c;
+    direct_bps = best_d;
+    cached_bps = best_c;
+    return memo.ok;
+}
+#endif
 
 /// #286/#577: whether the file tier reads its `read_bytes` unbuffered, beside `arena_bytes` of RAM copy still to be
 /// taken.  Windows times probe reads too (experts_unbuffered); on Linux the same rule as its `cache_counts = false`
@@ -551,6 +898,30 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
                   (double) avail / (1ull << 30), (double) arena_bytes / (1ull << 30), (double) read_bytes / (1ull << 30),
                   keepable ? "can" : "cannot");
     why = msg;
+    // #3237: the room rule says the cache can keep the experts that come back, but when it holds under half of the read
+    // set, whether it pays depends on the drive: on a PCIe 5 NVMe (8 GB/s direct) the cached path read prompts at half
+    // the speed and decoded 3-4x slower than unbuffered reads, on a 1.7-2.5 GB/s NVMe the cache decodes faster.  So time
+    // both paths once at start and read unbuffered only when the drive is fast and serves direct reads clearly faster
+    // (platform::file_tier_prefers_direct).  STRATA_FILE_TIER_PROBE=0 keeps the room rule alone.
+    if (keepable && !old_rule && read_bytes > 0) {
+        const char* pe = std::getenv("STRATA_FILE_TIER_PROBE");
+        const uint64_t margin = 1ull << 30;
+        const double room = avail > arena_bytes + margin ? (double) (avail - arena_bytes - margin) : 0.0;
+        const double held = room / (double) read_bytes;
+        if (!(pe != nullptr && pe[0] == '0') && held < 0.5) {
+            double d = 0, c = 0;
+            char pm[256];
+            if (file_tier_probe(paths, d, c)) {
+                const bool direct = strata::platform::file_tier_prefers_direct(held, d, c);
+                std::snprintf(pm, sizeof pm, "; the cache holds %.0f%% of the read set, direct reads %.2f GB/s, cached-path reads "
+                              "%.2f GB/s (%.2fx): %s", held * 100.0, d / 1e9, c / 1e9, d / c,
+                              direct ? "the file tier reads unbuffered" : "the file cache stays");
+                why += pm;
+                return direct;
+            }
+            why += "; the drive probe could not run, the file cache stays";
+        }
+    }
     return !keepable;
 #else
     (void) paths; (void) arena_bytes; (void) read_bytes;
@@ -828,6 +1199,7 @@ void FileExpertSource::io_enqueue(int64_t layer, int64_t expert, bool ahead) {
 // A read-ahead worker: takes a predicted (layer, expert), skips it when its pages are cached or it is already
 // staged, and otherwise reads the whole blob into a staging buffer (copy_from_files preads what is not cached).
 void FileExpertSource::io_worker() {
+    strata::platform::name_this_thread("strata-io");
     for (;;) {
         int32_t layer, expert;
         bool ahead = true;   // a prediction (marked for the used / unused count), not a layer's own demand read
@@ -1594,6 +1966,11 @@ uint64_t gate_cache_room() {
     return 0;
 #endif
 }
+}
+
+double FileExpertSource::cache_room_ratio() const {
+    const uint64_t total = expert_bytes(), room = gate_cache_room();
+    return total == 0 || room == 0 ? 0.0 : (double) room / (double) total;
 }
 
 void FileExpertSource::gate_capacity() {
@@ -2656,6 +3033,7 @@ bool RouterLookahead::start(std::vector<std::vector<uint16_t>> routers, int64_t 
     src_ = src;
     x_.assign((size_t) (8 * n_embd), 0.f);
     thread_ = std::thread([this] {
+        strata::platform::name_this_thread("strata-lookahead");
         strata::aux_cpus::pin_current_thread();
         run();
     });
@@ -3306,6 +3684,9 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
     std::string note;
+#if defined(__linux__)
+    NumaComplementPlacement numa;   ///< STRATA_NUMA_SPLIT step B; inert unless the live pool split on real nodes
+#endif
     auto release = [&]() {
         if (arena == nullptr) return;
         if (pinned_ok) (void) cudaFreeHost(arena);
@@ -3325,6 +3706,17 @@ bool FileExpertSource::pin_cache_complement(
         };
         if (maps_.empty()) drop(base_, mapped_bytes_, fd_);
         else for (const Map& m : maps_) drop(m.closed ? nullptr : m.base, m.bytes, m.fd);
+        // the files read at start outside this source (set_extra_drop_files): their pages are already copied to VRAM
+        // or RAM, and they sat on whichever node read them (~2.2 GiB on node 0 measured on the 3090 box)
+        // CBA: whole files by path; a file read at start but not listed stays cached (the per-node free line shows
+        // it), a registry of the files the loaders open if that ever bites
+        for (const std::string& p : extra_drop_files_) {
+            const int fd = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                (void) posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+                ::close(fd);
+            }
+        }
     };
 #endif
     if (bytes > 0) {
@@ -3338,6 +3730,7 @@ bool FileExpertSource::pin_cache_complement(
         // does not cover the complement, register it in steps, each only while the RAM left stays above the reserve.
         // STRATA_PIN_GUARD=0 pages-locks in one go as before, =2 always registers in steps (a test); STRATA_PIN_RESERVE_GIB
         // is the RAM that must stay above every step (default: the resident headroom, at least 2 GiB)
+        // STRATA_NUMA_SPLIT placement forces the drop and the paced path whatever the guard (STRATA_PIN_GUARD=0 included)
         const uint64_t pace_reserve = [&] {
             const char* v = std::getenv("STRATA_PIN_RESERVE_GIB");
             return v != nullptr && std::atof(v) > 0 ? (uint64_t) (std::atof(v) * 1073741824.0)
@@ -3350,9 +3743,26 @@ bool FileExpertSource::pin_cache_complement(
                 return v == nullptr ? 1 : std::atoi(v);
             }();
             uint64_t free_now = 0;
-            if (guard == 2) {
+            numa.init(offsets, n_expert_, layer_blob_bytes_, role_bytes_);   // STRATA_NUMA_SPLIT: placed by the paced loop
+            if (numa.place) {
+                // the engine's own mapped model pages sit on whichever node read them, and a toucher on a full node
+                // gets its pages from the other one (no local reclaim): give them back first, as the guard=1 path does
+                drop_file_cache();
+                numa.free_after = NumaComplementPlacement::node_free();
+                std::fprintf(stderr, "FileExpertSource: NUMA placement: the model files' cached pages were released; "
+                                     "free after the drop: %s\n",
+                             NumaComplementPlacement::free_text(numa.free_after).c_str());
+                // CBA: half the pace reserve as each node's share of the headroom; a per-node reserve if one node
+                // carries the host's other allocations
+                numa.check_room(pace_reserve / 2);
+                if (guard == 0)
+                    std::fprintf(stderr, "FileExpertSource: STRATA_PIN_GUARD=0 overridden: NUMA placement needs the "
+                                         "paced path\n");
+            }
+            if (guard == 2 || numa.place) {
                 paced = true;
-                std::fprintf(stderr, "FileExpertSource: STRATA_PIN_GUARD=2: page-locking the complement in steps\n");
+                std::fprintf(stderr, "FileExpertSource: %s: page-locking the complement in steps\n",
+                             guard == 2 ? "STRATA_PIN_GUARD=2" : "STRATA_NUMA_SPLIT");
             } else if (guard != 0 && free_memory_bytes(free_now) &&
                        detail::pin_depends_on_reclaim(free_now, bytes, pace_reserve)) {
                 drop_file_cache();
@@ -3367,6 +3777,9 @@ bool FileExpertSource::pin_cache_complement(
                     std::fprintf(stderr, "FileExpertSource: the rest comes from reclaimed cache of other files: "
                                          "page-locking it in steps, as far as the RAM allows (#1250)\n");
             }
+        } else if (strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test) {
+            std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the complement is not page-locked, "
+                                 "nothing placed\n");
         }
 #endif
         if (pin && !paced) {
@@ -3405,6 +3818,15 @@ bool FileExpertSource::pin_cache_complement(
                 void* aligned = nullptr;
                 const uint64_t page = 4096;
                 if (posix_memalign(&aligned, (size_t) page, (size_t) ((bytes + page - 1) / page * page)) == 0) arena = aligned;
+#endif
+#if defined(__linux__)
+                // STRATA_NUMA_SPLIT: a 2 MiB huge page would put several slices on its toucher's node, so the arena
+                // takes 4 KiB pages (one call, no VMA split)
+                if (arena != nullptr && numa.place) {
+                    if (madvise(arena, (size_t) ((bytes + page - 1) / page * page), MADV_NOHUGEPAGE) != 0)
+                        std::fprintf(stderr, "FileExpertSource: WARNING: madvise(MADV_NOHUGEPAGE) on the complement "
+                                             "failed (errno %d)\n", errno);
+                }
 #endif
             } else {
                 arena = std::malloc((size_t) bytes);
@@ -3453,7 +3875,11 @@ bool FileExpertSource::pin_cache_complement(
                             stop = "the RAM left would fall under the reserve";
                             break;
                         }
-                        for (uint64_t at = got; at < got + step; at += kPage) ((volatile uint8_t*) arena)[at] = 0;
+#if defined(__linux__)
+                        if (numa.place) numa.touch_step((uint8_t*) arena, got, got + step);   // slices on their nodes
+                        else
+#endif
+                            for (uint64_t at = got; at < got + step; at += kPage) ((volatile uint8_t*) arena)[at] = 0;
                         got += step;
                     }
                     // cut at an expert boundary: a blob that runs past the registered range would be refused by a
@@ -3492,6 +3918,10 @@ bool FileExpertSource::pin_cache_complement(
                                       (double) partial_pin / 1073741824.0);
                     note += std::string(note.empty() ? "" : "; ") + msg;
                     if (stop != nullptr) std::fprintf(stderr, "FileExpertSource: %s\n", msg);
+#if defined(__linux__)
+                    // judged on the final state: registered pages no longer move; before the copy fills them
+                    if (numa.place) numa.report((const uint8_t*) arena, got, partial_pin, bytes, stop);
+#endif
                 } else if (budget_bytes > 0 && partial_on) {
                     const uint64_t step = 2ull << 30;
                     for (uint64_t want = std::min(bytes, pin_cap); want >= step; want = want > step ? want - step : 0) {
@@ -3970,6 +4400,7 @@ bool FileExpertSource::ram_queued(int64_t layer, int64_t expert) const {
 }
 
 void FileExpertSource::ram_worker() {
+    strata::platform::name_this_thread("strata-ram");
     for (;;) {
         RamJob* job = nullptr;
         {
@@ -5767,6 +6198,7 @@ ForesightSwap::~ForesightSwap() {
 }
 
 void ForesightSwap::fill_loop() {
+    strata::platform::name_this_thread("strata-fill");
     int cur_dev = -1;
     for (;;) {
         int64_t idx;

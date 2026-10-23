@@ -77,6 +77,23 @@ test('a typed path must be an absolute existing directory', async () => {
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('the model page takes a folder or one .gguf file, with or without quotes around the path', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'strata-gguf-typed-'));
+  try {
+    await writeFile(join(dir, 'model-00001-of-00002.gguf'), 'x');
+    await writeFile(join(dir, 'notes.txt'), 'x');
+    const only = { isAbsolute, fileType: /\.gguf$/i };
+    assert.equal(await typedFolder(dir, only), dir);
+    assert.equal(await typedFolder(join(dir, 'model-00001-of-00002.gguf'), only), join(dir, 'model-00001-of-00002.gguf'));
+    assert.equal(await typedFolder(`"${join(dir, 'model-00001-of-00002.gguf')}"`, only), join(dir, 'model-00001-of-00002.gguf'));
+    assert.equal(await typedFolder(`  "${dir}"  `, only), dir);
+    await assert.rejects(typedFolder(join(dir, 'notes.txt'), only), /folder, or a \.gguf file/);
+    await assert.rejects(typedFolder(join(dir, 'missing.gguf'), only), /does not exist/);
+    // the other pickers still refuse a file
+    await assert.rejects(typedFolder(join(dir, 'model-00001-of-00002.gguf'), { isAbsolute }), /not a file/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 async function startHost() {
   const home = await mkdtemp(join(tmpdir(), 'strata-folder-home-'));
   const net = await import('node:net');

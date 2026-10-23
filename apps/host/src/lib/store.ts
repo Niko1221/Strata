@@ -16,9 +16,10 @@ import { photoData, uploadChatPhotos, photoHistorySlots, pendingChatPhotos, take
 import { applyNativeEvent, nativeState } from './native';
 import { pictureStatus } from './pictures';
 import { noModelNotice } from './no-model';
-import { taskHandoverMessage, taskHandoverTitle } from './task-handover';
+import { taskHandoverMessage, taskHandoverTitle, chatHandoverMessage, chatHandoverTitle } from './task-handover';
 import type { Task } from './tasks';
 import { postWithFolderFallback } from './folder-pick';
+import { createSessionWriter } from './session-persist';
 import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
@@ -1008,12 +1009,33 @@ export async function scopeSkill(id: string, workspaceId: string | null) {
 
 /* ---------------------------------------------------------------- sessions */
 
-function persistSessions(sessions: Session[]) {
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
-  } catch {
-    /* quota — sessions are a cache, not the source of truth */
-  }
+const sessionWriter = createSessionWriter({
+  write: (json) => {
+    try {
+      localStorage.setItem(SESSION_KEY, json);
+    } catch {
+      /* quota — sessions are a cache, not the source of truth */
+    }
+  },
+});
+
+/**
+ * Save the chat list. A one-off change (new, rename, delete, pin) is written now; `soon` is for the streaming
+ * path, where a write per token grew the renderer to gigabytes (#3604, #3603): those are coalesced to one a second.
+ */
+function persistSessions(sessions: Session[], soon = false) {
+  sessionWriter.schedule(sessions);
+  if (!soon) sessionWriter.flush();
+}
+
+/** Write the newest chat list now: a turn ended, or the page is going away. */
+export function flushSessions() {
+  sessionWriter.flush();
+}
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && window.addEventListener) {
+  window.addEventListener('pagehide', flushSessions);
+  document.addEventListener?.('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSessions(); });
 }
 
 export function newSession(): Session {
@@ -1120,7 +1142,7 @@ export function renameSession(id: string, title: string) {
 
 function patchSession(id: string, fn: (s: Session) => Session) {
   const sessions = state.sessions.map((s) => (s.id === id ? fn(s) : s));
-  persistSessions(sessions);
+  persistSessions(sessions, true);
   set({ sessions });
 }
 
@@ -1366,6 +1388,55 @@ export async function retryLast(messageId?: string) {
   }
 }
 
+/** The open chat's last question and the answer that failed under it (null when the chat does not end that way). */
+function failedExchange(): { prompt: string; sessionId: string } | null {
+  const sessionId = state.activeSession;
+  const chat = state.sessions.find(s => s.id === sessionId);
+  if (!sessionId || !chat || state.streaming) return null;
+  const reply = chat.messages[chat.messages.length - 1], ask = chat.messages[chat.messages.length - 2];
+  return reply?.role === 'assistant' && reply.error && ask?.role === 'user' ? { prompt: ask.content, sessionId } : null;
+}
+/** Takes the failed question and its error out of the transcript, so asking again does not show the question twice. */
+function dropFailedExchange(sessionId: string) {
+  patchSession(sessionId, s => ({ ...s, messages: s.messages.slice(0, -2) }));
+}
+
+/**
+ * The error card of a conversation that no longer fits the model's window: summarise the older messages (the same as typing /compact), then
+ * ask the assistant to answer. The refused question is already in the assistant's conversation (it is the newest message, and a summary keeps
+ * the newest message as it is), so it is not sent a second time: a large one twice would not fit either.
+ */
+export async function summarizeAndContinue() {
+  if (!failedExchange()) return;
+  await sendMessage('/compact');
+  await sendMessage('Please answer my last message now.');
+}
+
+/**
+ * The error card of a message that is too large to send: the host makes it small enough (its text as a file in the chat's folder that the
+ * assistant reads in parts, or a shortened preview), and that is sent in its place.
+ */
+export async function sendOversized(mode: 'file' | 'preview') {
+  const failed = failedExchange();
+  if (!failed) return;
+  let reply: { message?: string };
+  try {
+    reply = await api.post<{ message?: string }>('/api/chat/oversize', { sessionId: failed.sessionId, mode, text: failed.prompt, nativeModelId: nativeState()?.instances.length ? nativeState()?.defaultId : undefined });
+  } catch {
+    pushToast('error', 'The message could not be prepared. Try a shorter message.');
+    return;
+  }
+  if (!reply.message) return;
+  dropFailedExchange(failed.sessionId);
+  await sendMessage(reply.message);
+}
+
+/** A new, empty chat, opened. */
+export function startNewChat() {
+  const session = newSession();
+  go('chat', session.id);
+}
+
 /**
  * Forks a conversation at a message, leaving the original untouched.
  *
@@ -1475,9 +1546,54 @@ const loopScheduler = new LoopScheduler({
   now: () => Date.now(),
   setTimer: (fn, ms) => setTimeout(fn, ms),
   clearTimer: handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  track: (sessionId, loop) => patchSession(sessionId, s => ({ ...s, loop })),
 });
 
 export function loopIsRunning(sessionId: string | null): boolean { return loopScheduler.isRunning(sessionId); }
+
+/* ------------------------------------------------------------- task board */
+
+/** The chats with a turn going, and the chats with a loop going: what the board needs besides the sessions themselves. */
+export function liveChatIds(): string[] { return [...liveTurns.keys()]; }
+export function loopChatIds(): string[] { return loopScheduler.ids(); }
+
+/** Stop any chat's turn, not only the open one (the board's Stop). Same two-step as stopStreaming. */
+export function stopChat(id: string) {
+  const turn = liveTurns.get(id);
+  if (!turn) return;
+  const abort = () => { turn.abort.abort(); };
+  void api.post<{ stopped: boolean }>('/api/chat/stop', { sessionId: id }).then(
+    result => { if (!result.stopped) abort(); else setTimeout(() => { if (liveTurns.get(id) === turn) abort(); }, 30000); },
+    abort,
+  );
+}
+
+/** Stop a chat's loop from the board. The chat gets the same line /loop stop writes. */
+export function stopLoop(id: string) {
+  if (loopScheduler.stop(id)) addNote(id, tr('The loop is stopped.'));
+}
+
+/** Dismiss a chat's (or its loop's) card: it leaves the board until something newer goes wrong. The chat itself is untouched. */
+export function dismissChat(id: string) {
+  const sessions = state.sessions.map(s => (s.id === id ? { ...s, ackedAt: new Date().toISOString() } : s));
+  persistSessions(sessions);
+  set({ sessions });
+}
+
+/** Answer a waiting tool card in any chat (the board's Approve and Deny). Only a live card has an approval behind it. */
+export function answerChatTool(sessionId: string, messageId: string, toolId: string, approved: boolean) {
+  const tool = state.sessions.find(s => s.id === sessionId)?.messages.find(m => m.id === messageId)?.tools?.find(t => t.id === toolId);
+  if (tool?.live && tool.state === 'proposed') answerAgentTool(sessionId, messageId, tool, approved);
+}
+
+/** "Continue in a new chat" on a chat or a loop that went wrong: a new chat that starts from what happened (src/lib/task-handover.ts). */
+export function continueChatInNewChat(sessionId: string) {
+  const old = state.sessions.find(s => s.id === sessionId);
+  if (!old) return;
+  const session = newSession();
+  go('chat', session.id);
+  void sendMessage(chatHandoverMessage(old), { title: chatHandoverTitle(old), markdown: true });
+}
 
 async function runLoopCommand(command: LoopCommand) {
   const sessionId = state.activeSession ?? newSession().id;
@@ -1526,6 +1642,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
   }
   // Whatever sent this (the box, a loop, a plan): with no model to answer, say so in plain words and start nothing.
   if (state.connection === 'live') {
+    // The first read of the engine's state has not come back yet: do not say "no model" about something not known yet, and do not send.
+    if (!nativeState() && !state.remoteModel && !state.library?.loaded) { pushToast('info', 'Still starting up', 'Strata is still checking your models. Try again in a moment.'); return; }
     const why = noModelNotice(nativeState(), { remote: !!state.remoteModel, libraryLoaded: !!state.library?.loaded });
     if (why) { pushToast('info', why.title, why.message); return; }
   }
@@ -1684,10 +1802,17 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             ...m,
             tokens: typeof frame.tokensOut === 'number' ? frame.tokensOut : m.tokens,
             tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
+            promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,
           }));
+        } else if (type === 'context') {
+          // What the context holds after each model request of an agent turn: the meter follows the turn instead of waiting for its end.
+          const used = Number(frame.contextTokens), max = Number(frame.contextMax);
+          if (Number.isFinite(used) && used > 0) patchAssistant((m) => ({ ...m, contextUsed: used, ...(Number.isFinite(max) && max > 0 ? { contextMax: max } : {}) }));
         } else if (type === 'error') {
           clearStatus(sessionId);
-          patchAssistant((m) => ({ ...m, error: plainFailure(String(frame.message ?? 'Engine error')).message, streaming: false }));
+          // A sentence the host wrote for the person (it carries its catalog key) is shown in their language as it is; anything else is made plain here.
+          const said = typeof frame.key === 'string' ? tr(frame.key, Array.isArray(frame.values) ? frame.values : undefined) : plainFailure(String(frame.message ?? 'Engine error')).message;
+          patchAssistant((m) => ({ ...m, error: said, streaming: false, ...(typeof frame.code === 'string' ? { errorCode: frame.code } : {}), ...(typeof frame.details === 'string' && frame.details ? { errorDetail: frame.details } : {}) }));
         } else if (type === 'done') {
           clearStatus(sessionId);
           patchSession(sessionId, (sess) => ({
@@ -1705,8 +1830,11 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
             inputTokens: typeof frame.tokensIn === 'number' ? frame.tokensIn : undefined,
             contextUsed: typeof frame.contextTokens === 'number' ? frame.contextTokens : undefined,
             usageSource: frame.usageSource === 'reported' || frame.usageSource === 'demo' ? frame.usageSource : 'unavailable',
-            tps: typeof frame.tps === 'number' ? frame.tps : undefined,
+            tps: typeof frame.tps === 'number' ? frame.tps : m.tps,
+            promptTps: typeof frame.promptTps === 'number' ? frame.promptTps : m.promptTps,
           }));
+          // The final text is in `state`: write it once now instead of waiting for the coalescing timer.
+          flushSessions();
         }
       },
       turnAbort.signal,
@@ -1723,6 +1851,8 @@ export async function sendMessage(text: string, options: { fromLoop?: boolean; g
       patchAssistant((m) => ({ ...m, streaming: false }));
     }
   } finally {
+    // A cancelled or failed turn is still worth keeping.
+    flushSessions();
     clearStatus(sessionId);
     markTurn(sessionId, null);
     const next = releasedMessages.get(sessionId)?.shift();
@@ -1803,6 +1933,12 @@ export function bootOnce() {
   if ((globalThis as { __strataBooted?: boolean }).__strataBooted) return;
   (globalThis as { __strataBooted?: boolean }).__strataBooted = true;
   for (const session of state.sessions) for (const run of session.timeSkips ?? []) { scheduleTimeSkip(session.id, run); if (run.job && !run.completedAt) { markTurn(session.id, { abort: new AbortController(), agent: false }); void followTimeSkip(session.id, run.id); } }
+  // A loop lives in the window: one the last window left "running" has ended, and the board says so.
+  if (state.sessions.some(s => s.loop?.state === 'running')) {
+    const sessions = state.sessions.map(s => s.loop?.state === 'running' ? { ...s, loop: { ...s.loop, state: 'ended' as const, endedWhy: 'closed' as const, endedAt: Date.parse(s.updatedAt) || Date.now() } } : s);
+    persistSessions(sessions);
+    set({ sessions });
+  }
   void bootstrap();
   void reconcileAgentTools();
 }

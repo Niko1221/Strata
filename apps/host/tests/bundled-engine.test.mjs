@@ -5,8 +5,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdi
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installBundledEngine, compareVersions } from '../server/bundled-engine.mjs';
+import { installBundledEngine, compareVersions, wrongMakeNotice } from '../server/bundled-engine.mjs';
 
+// the make of card is read from this computer unless a test names it; the existing tests are written for an NVIDIA PC
+process.env.STRATA_ENGINE_BACKEND = 'cuda';
 const sha = buffer => createHash('sha256').update(buffer).digest('hex');
 function makePackage(root, version, { body = 'engine-' + version, backend = 'cuda', platform = 'windows-x86_64', variant = 'cuda13', minDriver = null } = {}) {
   const name = `${version}-${platform}-${backend}-${variant}`;
@@ -149,4 +151,37 @@ test('why the update carries no engine: a CUDA installer on an AMD PC would copy
     assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components, driver: null })).action, 'installed');
     assert.deepEqual(readdirSync(t.engine).sort(), [amd, cuda].sort(), 'the AMD engine stays; a useless CUDA engine is added');
   } finally { t.cleanup(); }
+});
+
+test('an AMD build on an NVIDIA PC is not unpacked and the sentence names the right download', async () => {
+  const t = setup();
+  try {
+    const name = makePackage(t.bundle, '0.2.0', { platform: 'linux-x86_64', backend: 'hip', variant: 'rx9070' });
+    const manifest = JSON.parse(readFileSync(join(t.bundle, name, 'engine-component.json'), 'utf8'));
+    manifest.archs = ['gfx1201'];
+    writeFileSync(join(t.bundle, name, 'engine-component.json'), JSON.stringify(manifest));
+    const result = await installBundledEngine({ bundleDir: t.bundle, components: t.components, backend: 'cuda' });
+    assert.equal(result.action, 'wrong-make');
+    assert.equal(result.notice, 'This Strata is for AMD RX 9000 cards. Your PC has an NVIDIA card: download the NVIDIA version from https://github.com/Niko1221/Strata/releases');
+    assert.equal(existsSync(t.engine), false, 'nothing was copied');
+    // the same build on an AMD PC is unpacked; an unknown card is not a reason to refuse
+    assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components, backend: 'hip' })).action, 'installed');
+    assert.equal((await installBundledEngine({ bundleDir: t.bundle, components: t.components, backend: null })).action, 'kept');
+  } finally { t.cleanup(); }
+});
+
+test('wrongMakeNotice names the make, not a list of reasons', () => {
+  assert.equal(wrongMakeNotice({ backend: 'cuda', archs: ['sm_86'] }, 'hip'), 'This Strata is for NVIDIA cards. Your PC has an AMD card: download the AMD version from https://github.com/Niko1221/Strata/releases');
+});
+
+test('Windows: the display adapters decide the make, and a leftover nvidia-smi does not outvote them (#3688)', async () => {
+  const { gpuBackendHere, windowsDisplayVendors } = await import('../server/bundled-engine.mjs');
+  assert.equal(gpuBackendHere({}, { vendors: new Set(['1002']) }), 'hip');
+  assert.equal(gpuBackendHere({}, { vendors: new Set(['10de', '1002']) }), 'cuda');
+  assert.equal(gpuBackendHere({}, { vendors: new Set(['8086']) }), 'sycl');
+  assert.equal(gpuBackendHere({ STRATA_ENGINE_BACKEND: 'cuda' }, { vendors: new Set(['1002']) }), 'cuda', 'an explicit choice wins');
+  const out = 'MatchingDeviceId    REG_SZ    PCI/VEN_1002&DEV_7551&SUBSYS_0' + String.fromCharCode(10) + 'MatchingDeviceId    REG_SZ    PCI/VEN_8086&DEV_46A6';
+  assert.deepEqual([...windowsDisplayVendors({ platform: 'win32', run: () => out })].sort(), ['1002', '8086']);
+  assert.equal(windowsDisplayVendors({ platform: 'linux', run: () => { throw new Error('must not run'); } }).size, 0);
+  assert.equal(windowsDisplayVendors({ platform: 'win32', run: () => { throw new Error('no registry'); } }).size, 0);
 });
