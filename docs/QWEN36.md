@@ -161,6 +161,14 @@ token is the dense Q8_0 at the card's bandwidth (6 ms of the 17) and the rest wa
 kernels' share is gained: decode tg128 58.5 -> 59.7 tok/s (+2%), pp2048 1,958 -> 2,022 (+3.3%), 10/10 identical, plain and `--mtp 2`
 (84.3 -> 84.7). llama.cpp 972b5fc CUDA (`-ncmoe 26 -t 8 -ub 2048`): pp2048 1,328, tg128 48-52.
 
+**Norm and combine kernels in registers.** `k_add_rms_q` (add + norm + q8_1, 40 per token) and `k_moe_out_s8` (the MoE end for 8
+experts and a 2048-wide hidden state, 40 per token) keep their values in registers instead of re-reading `h` through a `volatile` load, and
+sum the 256 per-thread partials with one barrier instead of nine (or ten) in the same pairing, so every result keeps the old bits
+(`STRATA_Q36_VERIFY=1 --no-graph` 0 mismatches in 92,263 comparisons; `--dump-full-logits` identical at 4K and 14K). Per launch, nsys,
+RTX 5080 16 GB, Sage-A1.5 Q4_K_M, 4K prompt, forced text: `k_add_rms_q` 6.9 -> 2.3 us, the MoE end 5.4 -> 3.5 us (259 us less per token).
+Decode, CLI in the serving shape (262K context reserved, 78 experts per layer in VRAM, `--mtp 0`, forced text, 256 tokens, two interleaved
+runs each): 4K 193.4 -> 199.9 tok/s (+3.4%), 16K 169.7 -> 173.9 (+2.5%), 40K 182.8 -> 189.9 (+3.9%). Prompt reading is untouched.
+
 **Prompt chunk (the default changed).** The MoE prompt kernels read every expert once per chunk, so a bigger chunk feeds them more rows per
 expert: R9700 pp4096 at chunk 512 / 1024 / 2048 / 4096 = 3,453 / 4,786 / 5,766 / 6,223 tok/s. With every expert in VRAM the engine now takes the
 largest of 4096 / 2048 / 1024 that fits beside the experts, the 0.77 GiB reserve and the sessions' caches without giving the packed decode

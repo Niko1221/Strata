@@ -2029,8 +2029,12 @@ struct Engine {
         }
         if (small) {
             const bool mkq = wn != nullptr && hout == h;   // the next layer's input, quantized here
-            q36k::k_moe_out_small<<<T, 1024, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps,
+            if (Kp == 8 && N == 2048)   // 8 experts, 2048 wide: 256 threads, the values in registers (same bits)
+                q36k::k_moe_out_s8<<<T, 256, 0, st>>>(x, eparts, prow, ewts, shared, sgate, sgs, wn, hout, N, m->eps,
                                                       mkq ? (q36k::QB*) xq : nullptr);
+            else
+                q36k::k_moe_out_small<<<T, 1024, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps,
+                                                          mkq ? (q36k::QB*) xq : nullptr);
             xq_ready = mkq;
             if (verify_k) {
                 if (mkq) verify_q8("moe_out q8", hout, T, " T " + std::to_string(T));
