@@ -1,0 +1,75 @@
+{
+ "arms": [
+  {
+   "k": 28,
+   "n": 49,
+   "errors": 0,
+   "tps_med": 110.7,
+   "tps_min": 94.2,
+   "ttft_med": 2.52,
+   "hit_rate_med": 96.2,
+   "placement": [
+    "0-27",
+    "28-47"
+   ],
+   "titan_gpu": {
+    "power_max_w": 235.4,
+    "power_avg_w": 158.4,
+    "temp_max_c": 76.0
+   },
+   "gpu3080": {
+    "power_max_w": 269.5,
+    "power_avg_w": 208.9,
+    "temp_max_c": 74.0
+   }
+  },
+  {
+   "k": 30,
+   "n": 46,
+   "errors": 0,
+   "tps_med": 112.7,
+   "tps_min": 92.3,
+   "ttft_med": 2.62,
+   "hit_rate_med": 95.5,
+   "placement": [
+    "0-29",
+    "30-47"
+   ],
+   "titan_gpu": {
+    "power_max_w": 222.7,
+    "power_avg_w": 152.4,
+    "temp_max_c": 76.0
+   },
+   "gpu3080": {
+    "power_max_w": 275.5,
+    "power_avg_w": 218.9,
+    "temp_max_c": 72.0
+   }
+  },
+  {
+   "k": 32,
+   "n": 48,
+   "errors": 0,
+   "tps_med": 115.7,
+   "tps_min": 97.4,
+   "ttft_med": 2.75,
+   "hit_rate_med": 94.7,
+   "placement": [
+    "0-31",
+    "32-47"
+   ],
+   "titan_gpu": {
+    "power_max_w": 218.0,
+    "power_avg_w": 156.7,
+    "temp_max_c": 76.0
+   },
+   "gpu3080": {
+    "power_max_w": 278.4,
+    "power_avg_w": 229.0,
+    "temp_max_c": 73.0
+   }
+  }
+ ],
+ "best_k": 30,
+ "note": "SWEEP2 DONE winner K=30 tps=112.7"
+}

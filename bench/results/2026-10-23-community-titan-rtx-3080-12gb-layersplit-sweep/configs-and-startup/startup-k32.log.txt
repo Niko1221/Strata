@@ -1,0 +1,66 @@
+[strata] 2026-10-23 15:42:06 engine started: ~/Strata/engine/strata --serve --pack ~/Strata-data/packs/unsloth-ud-iq4_xs --native ~/gguf/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile ~/Strata-data/profile-learned.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.7 --mtp ~/Strata-data/mtp/rt --max-context 262144 --kv int8 --kv-resident 32768 --vision --vram-reserve-mib 1000 --expert-profile-save ~/Strata-data/profile-learned.bin --layer-split 32 --pipeline-windows 2
+strata generate: memory guard: limit 125.7 GiB (source: meminfo), current 3.5 GiB, reclaimable cache credited 0.0 GiB; available 122.2 GiB (MemAvailable 122.2 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 32)
+strata generate: PCIe probe: 12.4 GB/s host->device (best of 12.4 12.4 12.4 12.4) -> pcie_frac 0.34 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: ~/Strata-data/packs/unsloth-ud-iq4_xs experts (largest blob 3.48 MB), token embedding Q8_0 in mapped host memory (644 MiB, 0.6 s)
+strata generate: layer split: CUDA0 loads the dense weights of layers 0-31 only
+strata generate: 952 MiB of weights loaded from ~/Strata-data/packs/unsloth-ud-iq4_xs in 0.3 s (559 canonical tensors skipped: served natively)
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 399 native projection matrices, 2636.33 MiB of weights, in 0.7 s
+strata generate: PLE direct read probe: 101131 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: note: --pipeline-windows 2 on a layer split of two stages without the draft layer on the first card (STRATA_MTP_STAGE0=1 asks for it): the draft chain then shares the last card with its window and the pipeline lost to the serial loop on 2x R9700 before 0.1.44 (docs/MULTI_GPU.md); kept as asked, --pipeline-windows 0 turns it off
+strata generate: layer split: CUDA1 loads the dense weights of layers 32-47 only
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: layer split: CUDA1 PCIe probe 12.1 GB/s (best of 12.1 12.0 12.1 12.1) -> pcie_frac 0.33
+strata generate: layer split: CUDA1 holds its weights; 20.77 GiB free (its session follows the split search)
+strata generate: profile ~/Strata-data/profile-learned.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 2.06 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of ~/gguf/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+strata generate: layer split: CUDA1 holds its weights, session [32, 48) and the head; 19.91 GiB free
+strata mtp: draft layer loaded, 837 MiB of VRAM (experts 675, dense 111), files read in 0.46 s (1698 MiB/s)
+strata generate: GPU 0: NVIDIA GeForce RTX 3080, compute capability 8.6
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 28383 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested
+strata generate: loaded 55.43 GiB at 8.61 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 48 (automatic), participating threads: 16
+strata generate: CPU pool: 15 workers by default (16 physical cores, 32 logical processors; bounded by every physical core but the host's)
+strata generate: 15 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 1-15 (15 workers, one per physical core; host on 0)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 16 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: --pipeline-windows 2: 309 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 5.54 GiB free, 1000 MiB reserved (+0 MiB for the draft head) -> 1312 slots
+strata generate: expert cache 1887 slots, 4.25 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 1887 of 1887 slots from the profile in 0.4 s (12025 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 18.98 GiB free of 23.46, room for experts 17.75 GiB
+strata generate: layer split: CUDA1 runs layers 32-47, expert cache 7837 slots (17.75 GiB), 7837 of its 8192 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-31
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 15 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.48)
+strata generate: token graph hit path: 9724 resident experts, decided on the device
+strata serve: prompt chunk auto: 7680 tokens, a 152-slot ring
+strata serve: the prompt path borrows 1659 CUDA0 cache slots (3.74 GiB)
+strata serve:   CUDA1 prompt path borrows 1653 of its 7837 slots (3.74 GiB)
+strata hc: CUDA1: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 88.4 MiB of device buffers
+strata serve: layer split: layers 0-31 (CUDA0), 32-47 (CUDA1), one hand-off per window
+strata verify: window up to 6 tokens, 88.4 MiB of device buffers
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 88.4 MiB of device buffers
+strata verify: window up to 6 tokens, 88.4 MiB of device buffers
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows (decode too; the GDN snapshots beside the window)
+strata serve: conversation cache sized from the free RAM: 8192 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: STRATA_ROUTE_TAIL_SKIP=1 is ON: a missed expert that every token of a verify window routes at rank 1 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 810 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 699 MiB of VRAM free with everything loaded
+strata serve: draft layer prompt K/V batched on CUDA1 (E-9 on the layer split, K/V mode 2)
+strata serve: prompt 83 tokens = 0 reused + 83 read in 1748 ms (47.5 tok/s), 200 generated in 1662 ms (120.3 tok/s), drafts accepted 128 of 162, 1 checkpoints

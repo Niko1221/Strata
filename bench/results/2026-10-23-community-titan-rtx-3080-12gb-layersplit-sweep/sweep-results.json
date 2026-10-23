@@ -1,0 +1,75 @@
+{
+ "arms": [
+  {
+   "k": 20,
+   "n": 30,
+   "errors": 0,
+   "tps_med": 101.1,
+   "tps_min": 86.0,
+   "ttft_med": 2.41,
+   "hit_rate_med": 97.8,
+   "placement": null,
+   "titan_free_mib": null,
+   "titan_gpu": {
+    "power_max_w": 220.1,
+    "power_avg_w": 176.2,
+    "temp_max_c": 79.0
+   },
+   "gpu3080": {
+    "power_max_w": 270.4,
+    "power_avg_w": 195.8,
+    "temp_max_c": 73.0
+   }
+  },
+  {
+   "k": 24,
+   "n": 31,
+   "errors": 0,
+   "tps_med": 103.7,
+   "tps_min": 89.5,
+   "ttft_med": 2.44,
+   "hit_rate_med": 97.5,
+   "placement": [
+    "0-23",
+    "24-47"
+   ],
+   "titan_free_mib": 699,
+   "titan_gpu": {
+    "power_max_w": 216.2,
+    "power_avg_w": 174.6,
+    "temp_max_c": 80.0
+   },
+   "gpu3080": {
+    "power_max_w": 264.9,
+    "power_avg_w": 213.5,
+    "temp_max_c": 74.0
+   }
+  },
+  {
+   "k": 26,
+   "n": 35,
+   "errors": 0,
+   "tps_med": 108.6,
+   "tps_min": 95.3,
+   "ttft_med": 2.41,
+   "hit_rate_med": 97.0,
+   "placement": [
+    "0-25",
+    "26-47"
+   ],
+   "titan_free_mib": 699,
+   "titan_gpu": {
+    "power_max_w": 230.0,
+    "power_avg_w": 189.3,
+    "temp_max_c": 78.0
+   },
+   "gpu3080": {
+    "power_max_w": 269.8,
+    "power_avg_w": 216.3,
+    "temp_max_c": 72.0
+   }
+  }
+ ],
+ "final_k": 26,
+ "decision": "SWEEP DONE"
+}
