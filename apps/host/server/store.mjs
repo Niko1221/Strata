@@ -88,10 +88,21 @@ export let MODELS_DIR = MODELS_PICK.directory;
 
 /** Native setup writes weights to data_dir/models. Keep its data root one level up. */
 export function nativeDataDirectory(input) {
- if(!input||process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY))return input;
+ if(!input||!existsSync(input))return input;
  if(MODELS_DIR_NOTICE)return input;
- const root=realpathSync(DEFAULT_MODELS_DIRECTORY);
- if(resolve(input)!==resolve(DEFAULT_MODELS_DIRECTORY)&&realpathSync(input)!==root)return input;
+ const root=realpathSync(input),legacy=realpathSync(join(HOME,'models'));
+ // Retained legacy libraries are model folders too, not native data roots.
+ // A named data root satisfies the installer's guard; its alias leaves weights in place.
+ if(root===legacy){
+  const data=join(HOME,'Strata-data'),nativeModels=join(data,'models');
+  mkdirSync(data,{recursive:true});
+  // Unlike a fresh default, a retained library must not fall back to an empty folder if linking fails.
+  if(!existsSync(nativeModels))symlinkSync(process.platform==='win32'?root:relative(data,root),nativeModels,process.platform==='win32'?'junction':'dir');
+  const a=statSync(nativeModels),b=statSync(root);
+  if(realpathSync(nativeModels)!==root&&!(a.ino&&a.ino===b.ino&&a.dev===b.dev))throw new Error('The model folder conflicts with another library. Choose a different folder.');
+  return data;
+ }
+ if(process.env.STRATA_MODELS_DIR||!existsSync(DEFAULT_MODELS_DIRECTORY)||root!==realpathSync(DEFAULT_MODELS_DIRECTORY))return input;
  const data=dirname(root);
  // `models` and `Models` are one folder on Windows and macOS; where they are not (Linux) a link makes them one, and where no link can be made (exFAT, a share) models go in `models`.
  alignModels(data,root);

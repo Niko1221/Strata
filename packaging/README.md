@@ -22,7 +22,7 @@ A backend name alone is not a target. Each row is an OS x CPU ABI x backend tupl
 | `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | **built; never run on a real AMD card.** |
 | `linux-x86_64-cuda` | AppImage (Tauri) | `setup.py`; built in a glibc 2.35 chroot | **cuda13 built and tested** (RTX 3060 and RTX A4000: app in the browser, a real model, a picture). cuda12 built. |
 | `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | **RX 9000 (gfx1200 / gfx1201) built and tested** on a Radeon AI PRO R9700. **RX 7000 (gfx1100 / 1101 / 1102) built; not run on an RX 7000 card.** **RX 6000 (gfx1030 / 1031, 0.2.2, engine package `rx6000` only) built; not tested on a real RX 6000 card.** |
-| `linux-x86_64-sycl` | | `sycl/setup_intel.py` | Documented as experimental ([INTEL.md](../docs/INTEL.md)). |
+| `linux-x86_64-sycl` | | `packaging/build_sycl_linux.sh` (one JIT package for Alchemist and Battlemage) | **engine package built; tested on an Arc A750** (Intel Arc is an official platform since 0.1.40.2, docs/INTEL_ARC.md). Arc B-series (Battlemage) cards are supported and untested by us: no B-series card was available for the package (the B70 tests of 2026-10 were with the source build), and the Terminal says so once and tells the person how to report a problem. `sycl/setup_intel.py` (Docker) remains the source-build route. |
 | `windows-x86_64-sycl` | none | none | **gated.** No native Windows SYCL path exists upstream; it needs a separate feasibility gate, not a recipe. |
 | `macos-x86_64-*` | none | none | **unsupported.** The macOS engine is Apple-Silicon only (`metal/CMakeLists.txt` requires Apple Silicon for the Metal runtime). |
 

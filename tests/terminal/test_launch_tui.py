@@ -315,14 +315,14 @@ class FolderStep(Base):
             await press(pilot, "enter", "enter")
             t = text_of(app)
             self.assertIn("Where should the model files be stored?", t)
-            self.assertIn("Not downloaded yet: about 84 GB", t)
+            self.assertIn("Not downloaded yet: about 90 GB", t)
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
-            await typed(pilot, "D:/Strata-data")
-            self.assertEqual(f.value, "D:/Strata-data")
+            await typed(pilot, str(self.home.base / "Strata-data"))
+            self.assertEqual(f.value, str(self.home.base / "Strata-data"))
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.data_dir, "D:/Strata-data")
+            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Strata-data"))
             self.assertIn("How much text should it remember at once?", text_of(app))
         self.run_app(case)
 
@@ -333,13 +333,14 @@ class FolderStep(Base):
             (old / "models" / "Q2_0" / "x.gguf").write_text("x")
             with mock.patch.object(type(ctx.catalog), "data_dir", return_value=old):
                 await press(pilot, "enter", "enter")
-                self.assertNotIn("are moved into this folder", text_of(app))
+                self.assertNotIn("stay there and keep working", text_of(app))
                 f = app.screen.query_one("#folderpath")
                 f.value = ""
                 await typed(pilot, str(self.home.base / "new-data"))
                 t = " ".join(text_of(app).replace("\n", " ").split())
             self.assertIn("Model files Strata already keeps in", t)
-            self.assertIn("are moved into this folder when you start", t)
+            self.assertIn("stay there and keep working", t)
+            self.assertNotIn("are moved into this folder", t)
         self.run_app(case)
 
     def test_keeping_the_default_stores_nothing(self):

@@ -14,6 +14,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from strata_control import tls  # noqa: E402
+
+tls.install()       # #3722: the operating system's certificates
+
 
 def tree(repo: str, revision: str) -> dict:
     """{path: (size, sha256)} of the repository's LFS files at `revision` (the API pages its answer with Link headers)."""
