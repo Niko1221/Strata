@@ -6412,6 +6412,10 @@ int main(int argc, char** argv) {
                     if (cudaGetDeviceProperties(&dp, 0) == cudaSuccess) {
 #if defined(STRATA_USE_HIP)
                         const bool uma = strata::kernels::gfx_arch_is_gfx1151(dp.gcnArchName);
+#elif defined(STRATA_HYBRID)
+                        // The CUDA-side properties of a HIP ordinal carry no gcnArchName; ask the HIP runtime for the name.
+                        const bool uma = strata_hybrid_is_hip_device(0) != 0 &&
+                                         strata::kernels::gfx_arch_is_gfx1151(strata_hybrid_arch(0));
 #else
                         const bool uma = false;
 #endif
@@ -6427,7 +6431,11 @@ int main(int argc, char** argv) {
                             o.spec = cap;
                         }
 #if !defined(STRATA_USE_HIP)
-                        if (o.draft_cap == 0 && strata::core::dflash2_small_nvidia(true, dp.totalGlobalMem))
+                        bool small_nvidia = strata::core::dflash2_small_nvidia(true, dp.totalGlobalMem);
+#if defined(STRATA_HYBRID)
+                        if (strata_hybrid_is_hip_device(0) != 0) small_nvidia = false;   // an AMD card in a hybrid build is not an NVIDIA card
+#endif
+                        if (o.draft_cap == 0 && small_nvidia)
                             std::fprintf(stderr, "strata generate: --draft dflash2: on a 12 GB NVIDIA card the MTP drafter was faster in most measurements "
                                                  "(code prompts at a window of 6 gained 3%%); continuing as asked\n");
 #endif
