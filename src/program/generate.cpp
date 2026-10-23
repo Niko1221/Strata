@@ -3886,11 +3886,14 @@ int main(int argc, char** argv) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
             // may put any layer in any shard (Swift's GGUFs: layers 13-47 in shard 2, the PLE table in shard 1)
             o.native_dense_gguf = o.native_shards;
-            // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections
+            // a PLE-only table (tools/ple_fp8_pack.py: architecture strata-ple) holds no projections; nor does a split
+            // shard holding the table alone (another GGUF of the same model, e.g. a Q8_0 table beside IQ4_NL weights),
+            // whose split metadata would not match the --native shards'
             bool ple_only = false;
             try {
                 strata::GgufFile pg(o.ple_gguf);
                 if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
+                if (pg.tensors().size() == 1 && pg.find("per_layer_token_embd.weight") != nullptr) ple_only = true;
             } catch (const std::exception&) {}
             if (!ple_only &&
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
