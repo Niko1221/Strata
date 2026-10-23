@@ -62,11 +62,25 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
         const auto& st = owned(ss, j);
         const auto block = strata::kernels::qsa_real_shapes().idx_block;
         size_t pooled_bytes = 0;
+#if defined(STRATA_GPU_METAL)
+        // Metal (upstream 8311d8af): the session's QSA states carry no K/V pools and no pooled indexer keys -
+        // the decode window (or one of the batch regions) keeps its own, sized by the same max cells - so
+        // `idx_pooled` is null and `idx_pooled_rows` is 0 here by design.  The clauses that read pooled rows
+        // describe bytes a Metal park never touches: the copy side (conversation_snapshot.cpp `valid`)
+        // replaces them with the window's own pools and re-checks every payload against the window's capacity,
+        // and window_checkpoint_restore revalidates every buffer size.  The tail, the spare dead key and the
+        // block position DO live in the session, so their presence and extent checks stand.
+        (void) block; (void) pooled_bytes;
+        if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos ||
+            st.max_cells < 0 || tokens > (uint64_t) st.max_cells)
+            return fail(error, "invalid indexer running-state target");
+#else
         if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos || !st.idx_pooled ||
             st.max_cells < 0 || tokens > (uint64_t) st.max_cells ||
             (tokens && tokens / (uint64_t) block >= (uint64_t) std::max<int64_t>(0, st.idx_pooled_rows)) ||
             !product(pooled_bytes, {tokens / (uint64_t) block + 1, (uint64_t) g.idx_key_dim, sizeof(float)}))
             return fail(error, "invalid indexer running-state target");
+#endif
     }
     return true;
 }

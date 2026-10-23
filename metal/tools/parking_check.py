@@ -14,6 +14,8 @@ alone are ~24-44% of the prompt, so cold turn 1 is excluded: both arms prefill i
 
 Stop the other model servers first (needs ~40 GB free or it waits).  Run detached:
     nohup python3 metal/tools/parking_check.py > /tmp/parking_harness.log 2>&1 &
+`--quick` runs only the parking-ON arm (the faster check that parking works: it gates on
+prefix reuse across side turns plus parks/restores > 0; no OFF comparison).
 Results land in gap/results/<stamp>/parking_check.md (raw JSON beside it).
 """
 import json, os, random, re, signal, subprocess, sys, time, urllib.request
@@ -150,14 +152,16 @@ def conversation(mib, tag):
     return rows, cc, w
 
 def main():
+    quick = "--quick" in sys.argv
     wait_headroom()
     stamp = time.strftime("%m%d-%H%M")
     outdir = os.path.join(REPO, "gap", "results", stamp)
     os.makedirs(outdir, exist_ok=True)
     print(f"free-ish now: {free_bytes() >> 30} GB", flush=True)
     off, on = {}, {}
+    arms = ((8192, "on"),) if quick else ((0, "off"), (8192, "on"))
     try:
-        for mib, tag in ((0, "off"), (8192, "on")):
+        for mib, tag in arms:
             rows, cc, w = conversation(mib, tag)
             (off if mib == 0 else on)["rows"] = rows
             (off if mib == 0 else on)["cache"] = cc
@@ -165,10 +169,12 @@ def main():
             json.dump({"rows": rows, "cache": cc, "warm_s": w}, open(f"{outdir}/arm_{tag}.json", "w"), indent=1)
     finally:
         stop_serve(SERVE)
-    lines = ["# conversation parking A/B", "",
+    lines = ["# conversation parking A/B" + (" (quick: ON arm only)" if quick else ""), "",
              f"engine config: {BASE_CFG}; {TURNS} main turns, {SIDES} side requests between each, "
              f"+{GROW:.0f} tokens/turn; parking ON = 8192 MiB, min-tokens 2048.", ""]
     for tag, arm in (("OFF", off), ("ON", on)):
+        if not arm.get("rows"):
+            continue
         lines += [f"## parking {tag}", "", "| turn | prompt | reused | prompt_ms | wall s |", "|---|---|---|---|---|"]
         lines += [f"| {i + 1} | {r['prompt_tokens']} | {r['reused']} | {r['prompt_ms']:.0f} | {r['wall']:.1f} |"
                   for i, r in enumerate(arm["rows"])]
@@ -177,16 +183,21 @@ def main():
                       f"bytes={c.get('bytes')}", ""]
     ok_reuse = all(on["rows"][i]["reused"] >= 0.8 * on["rows"][i - 1]["prompt_tokens"]
                    for i in range(1, len(on["rows"])))
-    pairs = [(r_on["prompt_ms"], r_off["prompt_ms"]) for r_on, r_off in zip(on["rows"], off["rows"])
-             if r_on["reused"] > 0 and r_off["prompt_ms"] > 0]
-    worst = max((a / b for a, b in pairs), default=None)
-    lines += ["## verdict", "",
-              f"- reuses the prefix after every side turn (ON, turns 2-{TURNS}): {'PASS' if ok_reuse else 'FAIL'}",
-              f"- worst ON/OFF prefill ratio on reused turns: {'n/a' if worst is None else f'{worst:.1%}'}"
-              f" (gate: 45%); {'PASS' if worst is not None and worst <= 0.45 else 'FAIL'}", ""]
+    ok_parks = on["cache"].get("parks", 0) > 0 and on["cache"].get("restores", 0) > 0
+    if quick:
+        lines += ["## verdict", "",
+                  f"- reuses the prefix after every side turn (ON, turns 2-{TURNS}): {'PASS' if ok_reuse else 'FAIL'}",
+                  f"- parked and restored at least once: {'PASS' if ok_parks else 'FAIL'}", ""]
+    else:
+        pairs = [(r_on["prompt_ms"], r_off["prompt_ms"]) for r_on, r_off in zip(on["rows"], off["rows"])
+                 if r_on["reused"] > 0 and r_off["prompt_ms"] > 0]
+        worst = max((a / b for a, b in pairs), default=None)
+        lines += ["## verdict", "",
+                  f"- reuses the prefix after every side turn (ON, turns 2-{TURNS}): {'PASS' if ok_reuse else 'FAIL'}",
+                  f"- worst ON/OFF prefill ratio on reused turns: {'n/a' if worst is None else f'{worst:.1%}'}"
+                  f" (gate: 45%); {'PASS' if worst is not None and worst <= 0.45 else 'FAIL'}", ""]
     md = "\n".join(lines)
     open(f"{outdir}/parking_check.md", "w").write(md)
     print("\n" + md, flush=True)
-
 if __name__ == "__main__":
     main()
