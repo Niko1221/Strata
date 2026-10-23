@@ -286,6 +286,8 @@ on the `strata-q36` command line.
   1.20e-2, median 2.0e-3, p99 0.078, max 0.97 (the 14K prompt: mean 2.3e-2, max 0.97, top-1 58 of 65 steps; the controls are
   `--prefill 1024` with mean 8.9e-3 and max 0.51, and the accepted prefetch opt-ins with mean 2.2e-2 and max 1.95). Chunks of 9-33
   rows are a few microseconds per layer slower than the default kernel. Measured on a Core Ultra 9 285K with 61 GB DDR5-6800.
+- **`--lend-staging`**: the prompt staging buffers (0.97 GiB, idle while decoding) hold 13 more expert slots per layer in decode
+  (see "Lent staging" below). Off unless given. It is off with `--batch`.
 - **`--async-swaps`**, **`--async-after-prompt`**: the expert slots' swaps (every 32 decode rows, `--decode-swaps`; and after a prompt read, up to
   2048) copy on a copy stream instead of stopping the engine stream and the host, into the slot of an expert that already left the table;
   the new expert enters the tables only once its copy has landed (checked at the start of the next forward), so no slot is read before its
@@ -305,8 +307,33 @@ on the `strata-q36` command line.
   host memory the GPU reads and writes in place instead of four copies per layer (each costs the stream 2-3 us). The same bytes.
 - **`--decode-swaps N`** (hybrid mode): how many experts move into VRAM slots every 32 decode tokens, over all layers (8 by
   default; the main path's `--adapt-swaps` counts another round, so the name differs).
-**Slot swaps.** The log's `rebalance:` line says how many calls, swaps and milliseconds the slot swaps took (RTX 5080, DDR5-6800 (this box now; the DDR5-6400 figures above are older runs), production
-flags, 256 forced tokens after a 4K / 16K / 40K prompt): decode 8 calls, 456 / 369 / 227 swaps, 20.8 / 16.7 / 10.8 ms (0.08 / 0.07 /
+**Lent staging.** A prompt chunk longer than `--hybrid-rows` streams each layer's experts through two staging buffers of a whole layer each
+(0.97 GiB in all, 2 x 498 MiB), which decode never touches. `--lend-staging` puts 13 more expert slots per layer in that memory while decoding
+(a third slot class after the cache and prefetch slots, numbered from `L.n_reg`; the grouping kernels take a second base pointer). When the
+stream starts, the lent slots go out of the tables (no copy: 0.07 ms), and after the prompt the rebalance fills them again with the experts
+the prompt routed most, the expert profile's order standing in for experts not routed yet (`STRATA_Q36_LEND_PRIOR=0`: counts only). At load, and
+after the warm-up, they take each layer's next experts in the profile's order that are not resident. A lent slot never holds an expert that is
+resident elsewhere. RTX 5080, `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64`, an expert profile and `--snapshots 2`, forced text, 256 tokens, `--mtp 0`, one run each: GPU share 86.4 / 75.5 / 89.3% to
+89.2 / 77.5-78.9 / 91.3% at 4K / 16K / 40K and decode 194.8 / 170.9 / 183.5 to 200.3 / 170.0 and 176.6 / 186.2 tok/s (+2.8% / -0.5% and +3.4% / +1.5%;
+the 16K runs disagree, the sync controls repeat within 0.5%); prompt speed unchanged (5,605 / 5,766 / 4,566 to 5,661 / 5,778 / 4,576 tok/s).
+The refill is 533 copies (0.95 GiB), which the copy stream does while decoding starts. The log's `lent slots:` line counts evictions and fills.
+**Class.** C by default: the 533 lent copies after a prompt go to the swap copy stream and a lent expert is used once its copy has landed, which can
+be a forward or two after the first decode token (a repeat of the same run gave the same logits in every KL run, which is not a guarantee).
+`STRATA_Q36_LEND_SETTLE=1` makes it B: the lent copies of the synchronous rebalance run on the engine stream and the engine waits for the swap
+stream before the first decode forward, so the same input gives the same tokens (two runs, same `--dump-full-logits`). It costs the copy time
+after every prompt read (a prompt of 4K tokens reads 2% slower, 16K and 40K 0.5% and 0.2%) and measured about the same decode gain at 16K and 40K but
+almost none at 4K (195.0 against 200.1 tok/s), so it is an opt-in. With `--async-swaps` the swaps are timing-dependent (not reproducible run to run) either way.
+**What it costs when every request streams a prompt.** Each streamed prompt takes the lent slots out (0.07 ms) and, after it, the usual ~1,100-1,500 cache swaps
+(40-45 ms on the engine stream, as without the flag) plus 533 lent copies (0.95 GiB, about 20 ms on the copy stream). A prompt of up to `--hybrid-rows` rows never streams and keeps the lent slots.
+**The expert profile.** At load and after the warm-up the lent slots take each layer's next experts of the `--expert-profile` file that are not resident; after a
+prompt the routing counts decide and the profile's rank breaks ties (`STRATA_Q36_LEND_PRIOR=0`: counts only). In the CLI runs the two gave the same
+speed and GPU share (every run reads a prompt first, so the counts overwrite the profile's choice before the first token); the profile matters between load and the first
+streamed prompt. `--expert-profile-save` counts the lent experts as resident. A lent slot never holds an expert that is resident elsewhere.
+**Staging tail.** MMQ reads up to `kMmqTail` bytes past the last blob of a streamed layer; the lent slots stay inside the first `max_layer` bytes of each buffer, so the zero tail the
+buffers are allocated with is not touched (`STRATA_Q36_STAGE_TAIL_CHECK=1` reads both tails at every stream start and counts those that are not zero: 0 in the runs). Bytes after a smaller layer's last blob are
+the previous bigger layer's data both with and without lending; nothing relies on them being zero.
+**Slot swaps.** The log's `rebalance:` line says how many calls, swaps and milliseconds the slot swaps took (RTX 5080, DDR5-6800 (the DDR5-6400 figures above are older runs), `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64`, an expert profile and `--snapshots 2`,
+256 forced tokens after a 4K / 16K / 40K prompt): decode 8 calls, 456 / 369 / 227 swaps, 20.8 / 16.7 / 10.8 ms (0.08 / 0.07 /
 0.04 ms per token, 1.5% / 1.2% / 0.8% of it); after the prompt 1100 / 990 / 960 swaps, 44.6 / 40.3 / 39.3 ms (about 40 us a swap).
 With `--async-swaps` the same decode calls take 2.0 / 2.4 / 2.8 ms of host time and forced-text decode goes 194.8 / 171.5 / 183.9 to
 196.6 / 172.1 / 184.5 tok/s (+0.9% / +0.4% / +0.3%; the sync runs repeat within +-0.4%, so only the 4K gain is outside the noise).
@@ -322,7 +349,8 @@ with or without `--async-swaps`.
 Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
 `STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
 `STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`),
-`STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap),
+`STRATA_Q36_LEND_PRIOR=0` (lent slots by the routing counts only), `STRATA_Q36_LEND_SETTLE=1` (settle the lent copies before the first decode forward),
+`STRATA_Q36_STAGE_TAIL_CHECK=1` (the staging buffers' zero tail, counted in the `lent slots:` neighbour line), `STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap),
 `STRATA_Q36_PF_CHECK=1` (the host's slot tables against the device's at every forward, the host's against its own bookkeeping, and four
 cache slots per layer plus every prefetch slot in the table byte for byte against the host copy; the log's `table check:` line counts the
 mismatches; it synchronizes the stream and copies about 0.5 GB a forward, so it is slow; not with the MTP-only placement), `STRATA_Q36_ASYNC_SWAPS=1/2/3` (the two async bits, as the two flags).
