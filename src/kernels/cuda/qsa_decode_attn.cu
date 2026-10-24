@@ -694,6 +694,181 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
 }
+
+#if defined(__HIPCC__)   // the two prompt kernels below: HIP only (qsa_prompt_attn_rdna2 is a stub elsewhere)
+// STRATA_PROMPT_ATTN_RDNA2=1 (opt-in, HIP gfx103x, INT8 K/V): a prompt's queries with attn_chunk_kernel_pre75's score
+// phase, but one block per (query, KV head) walking all its chunks with an online softmax, so there is no per-chunk
+// scratch and no merge pass, and a value phase with 4 dimensions per thread.  The decode path splits a query's cells
+// over many blocks because one query has nothing else to fill the card with; a prompt has thousands of queries.  Not bit-identical to the split path: the
+// chunks are folded into one running maximum instead of the merge's two passes (FP32-level differences).
+template <int NC_, bool DPP_>
+__global__ void __launch_bounds__(THREADS) attn_prompt_rdna2_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                                    const int32_t* __restrict__ ids,
+                                                                    const int32_t* __restrict__ step, int n_kv_heads,
+                                                                    int page_size, float scale, float* __restrict__ attn,
+                                                                    int cap) {
+    constexpr int KV_MODE = 1;
+    const int kvh = blockIdx.x, qi = blockIdx.y;
+    q += (size_t) qi * (size_t) (n_kv_heads * G) * HD;
+    attn += (size_t) qi * (size_t) (n_kv_heads * G) * HD;
+    ids += (size_t) qi * (size_t) cap;
+    step += (size_t) qi * kStepCount;
+    __shared__ __align__(16) float sq[G][HD];     // this KV head's query heads, kept for every chunk
+    __shared__ float sp[G][CHUNK];                // scores of the chunk
+    __shared__ __align__(16) float spt[CHUNK][G]; // the chunk's weights, cell-major (the value loop reads 3 float4)
+    __shared__ long long srow[CHUNK];
+    __shared__ float s_m[G], s_l[G], s_a[G];      // running maximum and sum per head, and this chunk's rescale
+    const int n_ids = __ldg(step + kStepWidth);
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    for (int i = t; i < G * HD; i += THREADS) sq[i / HD][i % HD] = q[(size_t) (kvh * G) * HD + i];
+    if (t < G) { s_m[t] = -FLT_MAX; s_l[t] = 0.0f; }
+    // the value phase: 4 consecutive dimensions per thread (one 4-byte load of codes), the block's 256 threads in 4
+    // groups of 64 that take every 4th cell; the groups' sums are added at the end (E496: 0.74-0.78x the one dimension
+    // per thread, which spent a load and three weight reads on 12 FMAs)
+    constexpr int DPT = 4, TPG = HD / DPT;
+    const int grp = t / TPG, d0 = (t % TPG) * DPT;
+    float acc[G * DPT];
+#pragma unroll
+    for (int i = 0; i < G * DPT; ++i) acc[i] = 0.0f;
+    constexpr int NC = NC_;
+    const int hd = head_of_lane(lane);
+    for (int c0 = 0; c0 < n_ids; c0 += CHUNK) {
+        const int n_here = min(CHUNK, n_ids - c0);
+        __syncthreads();   // the previous chunk's value loop is done with srow / spt
+        if (t < CHUNK) {
+            long long r = -1;
+            if (t < n_here) {
+                const int cell = ids[c0 + t];
+                const long long page = (long long) p.page_table[cell / page_size];
+                if (page >= 0) r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            }
+            srow[t] = r;
+        }
+        __syncthreads();
+        // scores: attn_chunk_kernel_pre75's phase, unchanged
+        for (int i = 0; i < CHUNK / WARPS; i += NC) {
+            int cc[NC];
+            bool all_ok = true;
+#pragma unroll
+            for (int j = 0; j < NC; ++j) {
+                cc[j] = warp + WARPS * (i + j);
+                all_ok = all_ok && cc[j] < n_here && srow[cc[j]] >= 0;
+            }
+            if (all_ok) {
+                float kk[NC][8];
+#pragma unroll
+                for (int j = 0; j < NC; ++j) load8<KV_MODE>(p, false, srow[cc[j]], lane * 8, kk[j]);
+                float pp[NC][16];
+#pragma unroll
+                for (int h = 0; h < G; ++h) {
+                    const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8]);
+                    const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + 4]);
+#pragma unroll
+                    for (int j = 0; j < NC; ++j)
+                        pp[j][h] = kk[j][0] * qa.x + kk[j][1] * qa.y + kk[j][2] * qa.z + kk[j][3] * qa.w +
+                                   kk[j][4] * qb.x + kk[j][5] * qb.y + kk[j][6] * qb.z + kk[j][7] * qb.w;
+                }
+#pragma unroll
+                for (int j = 0; j < NC; ++j) {
+#pragma unroll
+                    for (int h = G; h < 16; ++h) pp[j][h] = 0.0f;
+                    const float sj = reduce12<DPP_>(pp[j], lane);
+                    if ((lane & 1) == 0 && hd < G) sp[hd][cc[j]] = sj * scale;
+                }
+            } else {
+                for (int k = 0; k < NC; ++k) {
+                    const int c = cc[k];
+                    if (c >= n_here || srow[c] < 0) {
+                        if (lane < G) sp[lane][c] = -FLT_MAX;
+                        continue;
+                    }
+                    float k8[8];
+                    load8<KV_MODE>(p, false, srow[c], lane * 8, k8);
+                    float part[16];
+#pragma unroll
+                    for (int h = 0; h < G; ++h) {
+                        const float4 qa = *reinterpret_cast<const float4*>(&sq[h][lane * 8]);
+                        const float4 qb = *reinterpret_cast<const float4*>(&sq[h][lane * 8 + 4]);
+                        part[h] = k8[0] * qa.x + k8[1] * qa.y + k8[2] * qa.z + k8[3] * qa.w +
+                                  k8[4] * qb.x + k8[5] * qb.y + k8[6] * qb.z + k8[7] * qb.w;
+                    }
+#pragma unroll
+                    for (int h = G; h < 16; ++h) part[h] = 0.0f;
+                    const float s = reduce12<DPP_>(part, lane);
+                    if ((lane & 1) == 0 && hd < G) sp[hd][c] = s * scale;
+                }
+            }
+        }
+        __syncthreads();
+        // online softmax: warp w handles heads w and w+8
+        for (int h = warp; h < G; h += WARPS) {
+            const float a = sp[h][lane], b = sp[h][lane + 32];
+            const bool va = lane < n_here && srow[lane] >= 0, vb = lane + 32 < n_here && srow[lane + 32] >= 0;
+            const float mc = warp_max_x<DPP_>(fmaxf(va ? a : -FLT_MAX, vb ? b : -FLT_MAX));
+            const float m_old = s_m[h];
+            const float m_new = fmaxf(m_old, mc);
+            const float ea = (va && m_new != -FLT_MAX) ? __expf(a - m_new) : 0.0f;
+            const float eb = (vb && m_new != -FLT_MAX) ? __expf(b - m_new) : 0.0f;
+            spt[lane][h] = ea;
+            spt[lane + 32][h] = eb;
+            const float lc = warp_sum_x<DPP_>(ea + eb);
+            if (lane == 0) {
+                const float al = m_old == -FLT_MAX ? 0.0f : __expf(m_old - m_new);
+                s_a[h] = al;
+                s_l[h] = fmaf(s_l[h], al, lc);
+                s_m[h] = m_new;
+            }
+        }
+        __syncthreads();
+        // values: the running sums rescaled, then this group's cells (every DPT-th), DPT dimensions each
+        // the chunk's cells summed from zero, then folded in with one fma (acc = acc * rescale + chunk), as the split
+        // path sums 64 cells per block before its merge: rescaling one running sum every chunk instead left 1.2-1.4x
+        // the split path's RMS error against FP64 (hip_prompt_attn_rdna2); this way it is 0.93-0.94x, for ~1.6% time
+        float part[G * DPT];
+#pragma unroll
+        for (int i = 0; i < G * DPT; ++i) part[i] = 0.0f;
+        for (int c = grp; c < n_here; c += DPT) {
+            const long long r = srow[c];
+            if (r < 0) continue;   // masked above, weight 0
+            const float vs = __half2float(__ushort_as_half(p.v_scale[r * (HD / KV_Q8_GROUP) + d0 / KV_Q8_GROUP]));
+            const uint32_t raw = *reinterpret_cast<const uint32_t*>(p.v_q + r * HD + d0);
+            float v[DPT];
+#pragma unroll
+            for (int j = 0; j < DPT; ++j) v[j] = (float) (int8_t) (raw >> (8 * j)) * vs;
+            const float4* w4 = reinterpret_cast<const float4*>(spt[c]);
+            const float4 w0 = w4[0], w1 = w4[1], w2 = w4[2];
+            const float w[G] = {w0.x, w0.y, w0.z, w0.w, w1.x, w1.y, w1.z, w1.w, w2.x, w2.y, w2.z, w2.w};
+#pragma unroll
+            for (int h = 0; h < G; ++h)
+#pragma unroll
+                for (int j = 0; j < DPT; ++j) part[h * DPT + j] = fmaf(w[h], v[j], part[h * DPT + j]);
+        }
+#pragma unroll
+        for (int i = 0; i < G * DPT; ++i) acc[i] = fmaf(acc[i], s_a[i / DPT], part[i]);
+    }
+    // the DPT groups' partial sums added through sq (dead now), R heads a round
+    __syncthreads();
+    constexpr int R = G / DPT;
+    float* red = &sq[0][0];   // [R][DPT][HD]
+#pragma unroll
+    for (int h0 = 0; h0 < G; h0 += R) {
+#pragma unroll
+        for (int hr = 0; hr < R; ++hr)
+#pragma unroll
+            for (int j = 0; j < DPT; ++j) red[(hr * DPT + grp) * HD + d0 + j] = acc[(h0 + hr) * DPT + j];
+        __syncthreads();
+#pragma unroll
+        for (int hr = 0; hr < R; ++hr) {
+            float sum = 0.0f;
+#pragma unroll
+            for (int g2 = 0; g2 < DPT; ++g2) sum += red[(hr * DPT + g2) * HD + t];
+            const int h = h0 + hr;
+            attn[(size_t) (kvh * G + h) * HD + t] = s_l[h] > 0.0f ? sum / s_l[h] : 0.0f;
+        }
+        __syncthreads();
+    }
+}
+#endif  // __HIPCC__
 #endif  // STRATA_ATTN_PRE75_BUILT
 
 __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
@@ -1050,6 +1225,37 @@ void launch_merge_batch(const int32_t* steps, int64_t cap, const QsaShapes& s, c
 }
 
 }  // namespace
+
+// STRATA_PROMPT_ATTN_RDNA2=1: a prompt's attention on gfx103x without the decode path's split and merge (see
+// attn_prompt_rdna2_kernel).  True when it ran; false (the caller keeps its path) when it does not apply here.
+bool qsa_prompt_attn_rdna2(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                           int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
+#if defined(STRATA_ATTN_PRE75_BUILT) && defined(__HIPCC__)
+    static const int mode = [] { const char* v = std::getenv("STRATA_PROMPT_ATTN_RDNA2"); return v == nullptr ? 0 : std::atoi(v); }();
+    if (mode != 1 || n_q <= 0 || !pre75_attn()) return false;
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table ||
+        !pools.k_q || !pools.v_q || !pools.k_scale || !pools.v_scale || pools.k_q4 || pools.v_q4 || n_q > 65535)
+        return false;
+    static bool said = false;
+    if (!said) {
+        said = true;
+        std::fprintf(stderr, "strata prefill: STRATA_PROMPT_ATTN_RDNA2=1: the prompt's attention runs one block per (query, KV head) "
+                             "with an online softmax (no split, no merge)\n");
+    }
+    const dim3 grid((unsigned) s.n_head_kv, (unsigned) n_q);
+    attn_prompt_rdna2_kernel<8, true><<<grid, THREADS, 0, (cudaStream_t) stream>>>(
+        q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, 1.0f / sqrtf((float) HD), attn, (int) cap);
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_prompt_attn_rdna2: launch failed: %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+    return true;
+#else
+    (void) q; (void) pools; (void) ids; (void) steps; (void) cap; (void) s; (void) attn; (void) n_q; (void) stream;
+    return false;
+#endif
+}
 
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
