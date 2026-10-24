@@ -6,6 +6,7 @@ import unittest
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -260,6 +261,94 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
 
+
+    def assert_concurrent_reads_once(self, log, cache, read):
+        first_read, release = threading.Event(), threading.Event()
+        second_started, second_finished = threading.Event(), threading.Event()
+        read_lock = threading.Lock()
+        reads = 0
+        real_open = open
+
+        @contextmanager
+        def paused_open(path, *args, **kwargs):
+            with real_open(path, *args, **kwargs) as f:
+                if str(path) != str(log):
+                    yield f
+                    return
+
+                def paused_read(size):
+                    nonlocal reads
+                    data = f.read(size)
+                    with read_lock:
+                        reads += 1
+                        first = reads == 1
+                    if first:
+                        first_read.set()
+                        if not release.wait(5):
+                            raise TimeoutError("the first log reader was not released")
+                    return data
+
+                wrapped = mock.Mock(wraps=f)
+                wrapped.read.side_effect = paused_read
+                yield wrapped
+
+        def second_read():
+            second_started.set()
+            try:
+                return read()
+            finally:
+                second_finished.set()
+
+        with mock.patch("serve.server.open", side_effect=paused_open, create=True), \
+                ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(read)
+            try:
+                self.assertTrue(first_read.wait(5))
+                second = pool.submit(second_read)
+                self.assertTrue(second_started.wait(5))
+                # Without serialization the second reader finishes using the first reader's old cursor.
+                # With serialization it waits here until the first read and state update finish.
+                second_finished.wait(0.5)
+            finally:
+                release.set()
+            states = [first.result(timeout=5), second.result(timeout=5)]
+        for state in states:
+            self.assertEqual((state["parks"], state["restores"]), (1, 0))
+        self.assertEqual(cache.pos, log.stat().st_size)
+        self.assertEqual(read()["parks"], 1)  # a cursor past EOF would rewind and replay the same park
+        with log.open("a", encoding="utf-8") as f:
+            f.write(self.RESTORE)
+        state = read()
+        self.assertEqual((state["parks"], state["restores"]), (1, 1))
+
+    def test_concurrent_log_readers_count_each_event_once(self):
+        import tempfile
+        from serve.server import ConvCacheLog
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK, encoding="utf-8")
+            cache = ConvCacheLog()
+            self.assert_concurrent_reads_once(log, cache, lambda: cache.poll(str(log), 0))
+
+    def test_concurrent_metrics_requests_count_each_event_once(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK, encoding="utf-8")
+            tok = ByteTokenizer()
+            engine = MockEngine(tok, "Hello.", max_context=4096)
+            engine.log_path, engine.log_start = str(log), 0
+            svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+            httpd = serve(svc, port=0)
+            try:
+                def read():
+                    with urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_address[1]}/metrics", timeout=5) as r:
+                        return json.loads(r.read())["conversation_cache"]
+                self.assert_concurrent_reads_once(log, svc.conv_log, read)
+                self.assertEqual(svc.totals["requests"], 0)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
 
 if __name__ == "__main__":
     unittest.main()
