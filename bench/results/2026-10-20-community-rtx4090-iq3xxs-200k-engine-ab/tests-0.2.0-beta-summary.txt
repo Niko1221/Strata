@@ -1,0 +1,70 @@
+версия: git=v0.2.0-beta-12-ge88ee39d build=0.1.45.3
+== число тестов по группам
+tools: 1012 тестов, 78 модулей
+serve: 869 тестов, 50 модулей
+== прогон: 78 модулей
+   итог: Ran 1012 tests in 125.257s FAILED (failures=54, errors=2, skipped=2) 
+   падения:
+     ERROR: test_nvfp4_local_pack (unittest.loader._FailedTest.test_nvfp4_local_pack)
+     ERROR: test_never_kills_an_unrelated_process (tools.test_strata_mcp.StartStop.test_never_kills_an_unrelated_process)
+     FAIL: test_a_first_install_stops_because_there_is_nothing_to_fall_back_to (tools.test_setup_engine_hash.WhatARefusalDoesToTheCaller.test_a_first_install_stops_because_there_is_nothing_to_fall_back_to)
+     FAIL: test_updating_keeps_the_installed_engine_instead_of_stopping (tools.test_setup_engine_hash.WhatARefusalDoesToTheCaller.test_updating_keeps_the_installed_engine_instead_of_stopping)
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [64GB-1x32GB qwen recommended]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [64GB-1x32GB qwen Q2_0]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [64GB-1x32GB qwen IQ3_XXS]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [64GB-1x32GB qwen IQ3_S]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [64GB-1x32GB unsloth UD-Q4_K_XL]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [32GB-2x24GB qwen recommended]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [32GB-2x24GB qwen Q2_0]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [32GB-2x24GB qwen IQ3_XXS]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [32GB-2x24GB qwen IQ3_S]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [47GB-2x16GB qwen recommended]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [47GB-2x16GB qwen Q2_0]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [47GB-2x16GB qwen IQ3_XXS]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [47GB-2x16GB qwen IQ3_S]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [96GB-1x16GB qwen recommended]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [96GB-1x16GB qwen Q2_0]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [96GB-1x16GB qwen IQ3_XXS]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [96GB-1x16GB qwen IQ3_S]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [96GB-1x16GB unsloth UD-Q4_K_XL]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [128GB-1x24GB qwen recommended]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [128GB-1x24GB qwen Q2_0]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [128GB-1x24GB qwen IQ3_XXS]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [128GB-1x24GB qwen IQ3_S]
+     FAIL: test_enter_for_every_question (tools.test_setup_golden.Golden.test_enter_for_every_question) [128GB-1x24GB unsloth UD-Q4_K_XL]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [64GB-1x32GB qwen recommended]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [64GB-1x32GB qwen Q2_0]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [64GB-1x32GB qwen IQ3_XXS]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [64GB-1x32GB qwen IQ3_S]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [64GB-1x32GB unsloth UD-Q4_K_XL]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [32GB-2x24GB qwen recommended]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [32GB-2x24GB qwen Q2_0]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [32GB-2x24GB qwen IQ3_XXS]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [32GB-2x24GB qwen IQ3_S]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [32GB-2x24GB unsloth UD-Q4_K_XL]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [47GB-2x16GB qwen recommended]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [47GB-2x16GB qwen Q2_0]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [47GB-2x16GB qwen IQ3_XXS]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [47GB-2x16GB qwen IQ3_S]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [47GB-2x16GB unsloth UD-Q4_K_XL]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [96GB-1x16GB qwen recommended]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [96GB-1x16GB qwen Q2_0]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [96GB-1x16GB qwen IQ3_XXS]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [96GB-1x16GB qwen IQ3_S]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [96GB-1x16GB unsloth UD-Q4_K_XL]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [128GB-1x24GB qwen recommended]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [128GB-1x24GB qwen Q2_0]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [128GB-1x24GB qwen IQ3_XXS]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [128GB-1x24GB qwen IQ3_S]
+     FAIL: test_yes (tools.test_setup_golden.Golden.test_yes) [128GB-1x24GB unsloth UD-Q4_K_XL]
+     FAIL: test_paths_names_ips_and_keys (tools.test_strata_bench.RedactionTests.test_paths_names_ips_and_keys)
+     FAIL: test_loading_then_ready (tools.test_strata_mcp.StartStop.test_loading_then_ready)
+     FAIL: test_start_status_bench_stop (tools.test_strata_mcp.StartStop.test_start_status_bench_stop)
+     FAIL: test_status_sees_other_programs_on_the_port (tools.test_strata_mcp.StartStop.test_status_sees_other_programs_on_the_port)
+   полный вывод: /home/<user>/logs/strata-tests-20261020-014602-tools.raw.log
+== прогон: 50 модулей
+   итог: Ran 869 tests in 301.121s FAILED (failures=1, skipped=8) 
+   падения:
+     FAIL: test_service_holds_for_the_whole_request_including_early_close (serve.test_keepawake.KeepAwakeTests.test_service_holds_for_the_whole_request_including_early_close)
+   полный вывод: /home/<user>/logs/strata-tests-20261020-014602-serve.raw.log
+ТЕСТЫ ЗАВЕРШЕНЫ
