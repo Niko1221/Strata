@@ -3022,6 +3022,7 @@ int sample(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>
         const size_t from = s.last_n < 0 || (size_t) s.last_n >= hist.size() ? 0 : hist.size() - (size_t) s.last_n;
         for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
         for (const auto& [id, c] : cnt) {
+            if (id < 0 || (size_t) id >= lg.size()) continue;   // (a history token past a --draft-vocab row is not in it)
             float& v = lg[(size_t) id];
             if (s.repeat != 1.f) v = v > 0 ? v / s.repeat : v * s.repeat;
             v -= (float) c * s.freq + s.present;
