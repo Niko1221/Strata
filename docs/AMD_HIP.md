@@ -1098,6 +1098,13 @@ The published performance table explicitly identifies the measured development
 snapshot; it must not be read as a benchmark of every subsequent rebase. Vision, long-context stress, broad answer-quality
 equivalence, other AMD cards, and mixed-vendor inference are not validated here.
 
+## Experimental gfx12 grid padding
+
+Set `STRATA_GRID_PAD=1` before starting the engine to add empty workgroups to selected single-token (T=1)
+decode matvecs on gfx12 near full-die wave-slot boundaries. Padding is off by default; `=0` also disables it.
+T>1 launches, CUDA and other AMD architectures keep their original grid sizes, even with `=1`.
+Historic R9700 timings from #2492 are archival; they do not establish a speedup on a later revision or another card.
+
 ## Strix Halo: 8-bit hyper-connection weights (default on gfx1151)
 
 On a Strix Halo (gfx1151) the hyper-connection down / up projections are read as Q8_0 by default (quantized at load from the pack, or the GGUF's own Q8_0),

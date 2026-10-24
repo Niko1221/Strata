@@ -1,0 +1,80 @@
+// include/strata/kernels/grid_pad.hpp - empty workgroups past the RDNA4 "fill stall".
+//
+// On a gfx12 card a launch whose waves land at, or just below, a whole multiple of the card's wave slots (WGPs x 64:
+// 2 CUs x 2 SIMD32 x 16 waves; 2048 on the 32-WGP R9700 / 9070 XT) runs ~8-14 us longer than one a few waves
+// bigger (ROCm legacy-rocm-build#6689; reproduced on an R9700 with ROCm 7.14.1 and 7.2.4: 125-128 blocks of 512
+// threads 16.4 us, 124 or 129 blocks 2.2 us). Measured on Strata's T=1 decode matvecs (one launch, hipGraph):
+// ssm_out/attn_output 6144->2560 at 1 column 41 -> 31 us,
+// the 512-row projections at 1 column 16.6 -> 5.7 us. A few extra workgroups that return at once take it away.
+//
+// grid_pad(blocks, threads, ncols) is the grid to launch: `blocks` plus that padding where the rule asks for it; the
+// kernel returns at once in a block past its real grid, so every output is the unpadded launch's, bit for bit.
+// Opt-in with STRATA_GRID_PAD=1, only on gfx12 and only for one token column. Other launches keep `blocks`.
+#pragma once
+
+#include "strata/kernels/gfx_arch.hpp"
+
+#include <algorithm>
+#include <climits>
+#include <cstdlib>
+
+namespace strata::kernels {
+
+/// The rule alone (host, no device query): `waves_per_block` waves a block, `slots` wave slots on the card. A launch
+/// within the last max(16, 4 x waves a block) waves below a multiple of `slots`, or within 16 x k waves past the k-th
+/// multiple (at most 256), gets empty blocks up to 16 x k waves past it. Fitted to the measurements above: the
+/// 10240-wave T=1 launch needed 16 waves past it, 2048 waves 4; ROCm's report has 6144 one-wave blocks needing 32-64.
+inline unsigned grid_pad_rule(unsigned blocks, unsigned waves_per_block, unsigned slots, unsigned ncols = 1) {
+    if (ncols != 1 || slots == 0 || waves_per_block == 0 || blocks == 0) return blocks;
+    const unsigned long long waves = (unsigned long long) blocks * waves_per_block;
+    unsigned long long k = waves / slots;
+    long long past = (long long) (waves % slots);
+    if (past + (long long) std::max(16u, 4 * waves_per_block) > (long long) slots) {   // just below the next multiple
+        ++k;
+        past -= (long long) slots;
+    }
+    if (k == 0) return blocks;
+    const long long want = (long long) std::min<unsigned long long>(256, 16 * k);
+    if (past >= want) return blocks;
+    const unsigned long long padded = blocks + (want - past + waves_per_block - 1) / waves_per_block;
+    // The launchers use signed row indices; keep padding within that range.
+    return padded <= INT_MAX ? unsigned(padded) : blocks;
+}
+
+#if defined(__HIPCC__)
+/// The current device's wave slots and wave size, 0 slots where the padding is off (cached per device ordinal).
+struct GridPadDevice { unsigned slots = 0, wave = 32; };
+inline GridPadDevice grid_pad_device() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_GRID_PAD");
+        return v && std::strcmp(v, "1") == 0;
+    }();
+    if (!enabled) return {};
+    static thread_local GridPadDevice cache[16];
+    static thread_local bool known[16] = {};
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 16) return {};
+    if (!known[dev]) {
+        hipDeviceProp_t p;
+        GridPadDevice d;
+        if (hipGetDeviceProperties(&p, dev) == hipSuccess && gfx_arch_is_gfx12(p.gcnArchName) &&
+            p.multiProcessorCount > 0 && p.warpSize > 0) {
+            d.slots = unsigned(p.multiProcessorCount) * 64u;   // HIP counts WGPs on gfx12: 32 on the R9700 -> 2048
+            d.wave = unsigned(p.warpSize);
+        }
+        cache[dev] = d;
+        known[dev] = true;
+    }
+    return cache[dev];
+}
+
+inline unsigned grid_pad(unsigned blocks, unsigned threads_per_block, unsigned ncols) {
+    if (ncols != 1) return blocks;   // no device query or changed launch geometry for multi-token decode
+    const GridPadDevice d = grid_pad_device();
+    return d.slots ? grid_pad_rule(blocks, (threads_per_block + d.wave - 1) / d.wave, d.slots, ncols) : blocks;
+}
+#else
+inline unsigned grid_pad(unsigned blocks, unsigned, unsigned) { return blocks; }
+#endif
+
+}  // namespace strata::kernels
