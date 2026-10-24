@@ -1,0 +1,75 @@
+{
+  "base_commit": "2103f3e4b7fc56cfa3231ecc001ebe0a931a7db9",
+  "source_files": {
+    "include/strata/kernels/native_mmvq.hpp": "8655ae94849a653d2e380f6a5930c1aed233286168213021c6585fe5db11cbec",
+    "src/core/dflash_runtime.cpp": "e8cdce30aae05a2ec743482b0a57a63e4718b90e6ceb516bfad414504a3c94ae",
+    "src/kernels/cuda/dflash2.cu": "eeafcf4e17cb075c68737f4534ed8c02949857acbf32f2fb300c96d8efa35ca4",
+    "src/kernels/cuda/native_mmvq.cu": "9a1814f0d56d4778926cbc6143da440996246e1be340c1c3642f04a11fd4390d",
+    "src/kernels/dflash2_parity.cpp": "d8b98c079173875aac0b81aa58071ed9e3fef0fed3b75f777be09c3d687501c7",
+    "src/kernels/mmvq_il_parity.cpp": "e63b05d2628367a0544f5afe3df6584157e60b79efc1dd5c1b654abee96f9de6",
+    "src/program/generate.cpp": "394d1b30050938d27cd46eecc3924a0d1d93f877afc04be22773b3704b0f0eaa"
+  },
+  "head": {
+    "name": "output.weight",
+    "shape": [
+      2560,
+      248320
+    ],
+    "type": 8,
+    "type_name": "Q8_0",
+    "bytes": 675430400
+  },
+  "expert_profile_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+  "drafts": {
+    "Q4_0": {
+      "sha256": "f8ca73fc3749a061af19eec1c7d798c60e61f49d079df6671b9034866a6fd3d5",
+      "bytes": 546681536
+    },
+    "Q8_0": {
+      "sha256": "64d0595a29479701a432f857439069358ca74bfadb513962ea45cd7d63e8be6e",
+      "bytes": 776057536
+    }
+  },
+  "platform": "Linux-6.12.113+deb13-amd64-x86_64-with-glibc2.41",
+  "compiler": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0\n",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04, 16376 MiB\n",
+  "date": "2026-10-20",
+  "cpu": "AMD Ryzen 9 5900X",
+  "ram_gib": 125.7,
+  "executable_sha256": "7eb8b4c9e9ddbe1a305ce34f6f5bcc5cf8edb7d1f8fb225614ef7f171c92bdb1",
+  "extension_off_sha256": "4f34e4686de1a46461d54f66dca2d66099046c8851fd28f2c73ef0e99cc04f3d",
+  "source_note": "Built from base_commit plus the source files identified above, before committing the patch; embedded build metadata retains the parent. No executable, weights or binary dumps are committed.",
+  "target_artifacts_note": "Existing local NVFP4 pack, BF16 embedding and FP8 PLE; exact paths/argv are in command JSON. The full target expert pack was not rehashed.",
+  "commands": [
+    "cmake --build build-dflash2 --target strata dflash2_parity mmvq_il_parity -j 4",
+    "python3 bench/results/2026-10-20-dflash2-long-tuned/run.py dflash2-il --draft-quant Q8_0 --block 7 --floor 0.7 --expert-cache 3188 --reserve 480 --only-selected --output ../Strata-data/dflash2-long-win/final-q8",
+    "python3 bench/results/2026-10-20-dflash2-long-tuned/run.py mtp --floor 0.5 --expert-cache 3143 --reserve 480 --q8-head-il --only-selected --output ../Strata-data/dflash2-long-win/final-q8",
+    "cmake --build build-dflash2 --target dflash2_parity mmvq_il_parity dflash_taps_test dflash_head_bf16_test dflash_rope_parity dflash_owned_kv_test dflash_policy_test dflash_load_test -j 4",
+    "cmake --build build --target strata mmvq_il_parity dflash_policy_test dflash_load_test -j 4",
+    "STRATA_MMVQ_IL_Q8_HEAD=0 ctest --test-dir build-dflash2 -R 'dflash|^mmvq_il_parity$' --output-on-failure",
+    "STRATA_MMVQ_IL_Q8_HEAD=1 ctest --test-dir build-dflash2 -R 'dflash|^mmvq_il_parity$' --output-on-failure",
+    "STRATA_MMVQ_IL_Q8_HEAD=0 ctest --test-dir build -R '^(mmvq_il_parity|dflash_policy_test|dflash_load_test)$' --output-on-failure"
+  ],
+  "passed": [
+    "CUDA extension ON and OFF builds",
+    "8 ON CTests with Q8 option off; 8 ON CTests with it on; 3 OFF CTests",
+    "All warmed/measured final fixture outputs match target-only controls at the DFlash2 placement",
+    "Three Q8_0 MMVQ bitwise parity/timing trials",
+    "Three expanded attention binary-dump comparisons"
+  ],
+  "failed": [
+    "Initial wide-head integration aborted before a completed request: fused quantize/interleave accepts only 2..4 columns; fixed by separate quantization/interleave for 5..8. Raw failed log retained."
+  ],
+  "not_run": [
+    "HIP compilation/execution",
+    "SYCL compilation/execution",
+    "Metal",
+    "Windows",
+    "multiple GPUs",
+    "concurrent requests",
+    "full 128K prompt",
+    "MTP forward-width sweep",
+    "held-out long-context workload suite"
+  ],
+  "engine_source_commit": "aab69ad03f8c225402ff0972e5b5a4bc0147fec1"
+}

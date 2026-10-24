@@ -56,6 +56,10 @@ struct Case {
 
 // the types a head or a projection can have in this model
 const Case CASES[] = {
+    {"Q5_0", 6, 2048, 512, 32, 22, {0, -1}},
+    {"IQ4_NL", 20, 2048, 512, 32, 18, {0, -1}},
+    {"Q3_K", 11, 4096, 512, 256, 110, {108, -1}},
+    {"Q2_0", 42, 4096, 512, 64, 18, {0, -1}},
     {"Q4_0", 2, 2048, 512, 32, 18, {0, -1}},          // Q40Block: half d
     {"Q8_0", 8, 2048, 512, 32, 34, {0, -1}},          // Q80Block: half d
     {"Q4_K", 12, 2048, 512, 256, 144, {0, 2}},        // Q4KBlock: half2 dm
@@ -72,7 +76,7 @@ uint16_t sane_half(std::mt19937& rng) {
 }
 
 // T = 4 is the last width where the two layouts coincide, T = 5 the first where they differ
-const int WIDTHS[] = {1, 2, 3, 4, 5, 6, 8};
+const int WIDTHS[] = {1, 2, 3, 4, 5, 6, 7, 8};
 constexpr int COINCIDE_MAX_T = 4;
 
 bool ck(cudaError_t e, const char* what) {
@@ -162,6 +166,28 @@ long long compare(const Case& c, int T, cudaStream_t s, long long& nonfinite, lo
             ++diff;
             if (both_finite) ++diff_finite;
         }
+    }
+    if (strata::kernels::native_mmvq_multi_exact()) {
+        // Odd row count, non-contiguous/permuted indices, first and last source
+        // rows, and a duplicate. Check every selected bit plus an output guard.
+        std::vector<int32_t> ids{c.n_out - 1, 0, 7, 7};
+        while (ids.size() < 19) ids.push_back((int32_t) (rng() % c.n_out));
+        int32_t* di = nullptr; float* dy = nullptr;
+        const size_t count = ids.size() * T;
+        if (!ck(cudaMalloc(&di, ids.size() * 4), "indexed ids") ||
+            !ck(cudaMalloc(&dy, (count + 8) * 4), "indexed output") ||
+            !ck(cudaMemcpy(di, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "indexed upload") ||
+            !ck(cudaMemset(dy, 0xa5, (count + 8) * 4), "indexed guard")) return -1;
+        strata::kernels::native_mmvq_indexed(c.type, dw, xq, dy, c.n_in, (int) ids.size(), T, di, s);
+        if (!ck(cudaStreamSynchronize(s), "indexed sync")) return -1;
+        std::vector<uint32_t> selected(count + 8);
+        if (!ck(cudaMemcpy(selected.data(), dy, selected.size() * 4, cudaMemcpyDeviceToHost), "indexed read")) return -1;
+        for (int j = 0; j < T; ++j)
+            for (size_t r = 0; r < ids.size(); ++r)
+                if (selected[j * ids.size() + r] != b[(size_t) j * c.n_out + ids[r]]) ++diff;
+        for (size_t i = count; i < selected.size(); ++i)
+            if (selected[i] != 0xa5a5a5a5u) ++diff;
+        cudaFree(di); cudaFree(dy);
     }
     cudaFree(dw); cudaFree(xq); cudaFree(dx); cudaFree(dmulti); cudaFree(dsingle);
     ran = true;

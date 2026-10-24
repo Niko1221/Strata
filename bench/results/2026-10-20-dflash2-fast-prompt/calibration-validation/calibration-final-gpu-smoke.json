@@ -1,0 +1,951 @@
+{
+  "settings": {},
+  "report": {
+    "objective": "balanced short/long normalized fresh-request time",
+    "profiles": {
+      "baseline": {
+        "args": [
+          "--pack",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+          "--native",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+          "--native-dense-gguf",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+          "--ple-gguf",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+          "--embd-gguf",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+          "--expert-profile",
+          "<repo>/data/expert-profile.bin",
+          "--kv",
+          "int8",
+          "--vram-reserve-mib",
+          "480",
+          "--pcie-frac",
+          "0",
+          "--prefill",
+          "512",
+          "--adapt-every",
+          "0",
+          "--adapt-swaps",
+          "0",
+          "--spec",
+          "8",
+          "--spec-min-p",
+          "0.85",
+          "--suffix-draft",
+          "0",
+          "--lookup-chain",
+          "0",
+          "--short-read",
+          "64",
+          "--max-context",
+          "8192",
+          "--kv-resident",
+          "8192",
+          "--dflash",
+          "<data>/dflash2-official/dflash2-Q8_0.gguf",
+          "--dflash-block",
+          "6",
+          "--expert-cache",
+          "2700",
+          "--prompt-cache",
+          "0",
+          "--conversation-cache-mib",
+          "0"
+        ],
+        "info": {
+          "version": "0.1.45.3",
+          "logit_bias": 1,
+          "context": 8192,
+          "kv": "int8",
+          "kv_resident": 0,
+          "expert_slots": 2700,
+          "expert_cache_mib": 7119,
+          "expert_slots_primary": 2700,
+          "expert_cache_primary_mib": 7119,
+          "spec": 8,
+          "mtp_max": 0,
+          "lookup": 0,
+          "vram_free_mib": 1508,
+          "cvec": 0,
+          "arena_mib": 64800,
+          "pool_workers": 11,
+          "pcie_frac": "0.00",
+          "spec_min_p": "0.85",
+          "dflash_block": 6,
+          "dflash_max": 7,
+          "conversation_cache_mib": 0,
+          "conversation_cache_slots": 4,
+          "conversation_cache_min_free_mib": 2560,
+          "conversation_cache_min_tokens": 0,
+          "tail_role_token": -1,
+          "vram_elastic": 0,
+          "prefill_cap": 512,
+          "prefill_stages": 1,
+          "stream_all_min": 1024,
+          "prefill_pipe": 0,
+          "engine": "0.1.45.3"
+        },
+        "tune": {},
+        "screen": {
+          "score": 0.5051997313692049,
+          "samples": [
+            {
+              "kind": "short",
+              "input_tokens": 27,
+              "output_tokens": 32,
+              "prompt_ms": 446.7,
+              "decode_ms": 632.9,
+              "client_wall_ms": 1079.6958219980297,
+              "normalized_request_ms": 1079.6,
+              "decode_tok_s": 50.56091009638174
+            },
+            {
+              "kind": "long",
+              "input_tokens": 792,
+              "output_tokens": 32,
+              "prompt_ms": 2928.9,
+              "decode_ms": 700.3,
+              "client_wall_ms": 3629.4955279990972,
+              "normalized_request_ms": 3629.2,
+              "decode_tok_s": 45.69470227045552
+            }
+          ]
+        },
+        "grid": [
+          {
+            "tune": {
+              "dflash_block": 3,
+              "spec_min_p": 0.7
+            },
+            "score": 0.4965637416502137,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 446.1,
+                "decode_ms": 652.4,
+                "client_wall_ms": 1098.743481998099,
+                "normalized_request_ms": 1098.5,
+                "decode_tok_s": 49.049662783568365
+              },
+              {
+                "kind": "long",
+                "input_tokens": 792,
+                "output_tokens": 32,
+                "prompt_ms": 2936.9,
+                "decode_ms": 755.0,
+                "client_wall_ms": 3692.270018000272,
+                "normalized_request_ms": 3691.9,
+                "decode_tok_s": 42.384105960264904
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 3,
+              "spec_min_p": 0.85
+            },
+            "score": 0.4871303042292352,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 448.0,
+                "decode_ms": 688.9,
+                "client_wall_ms": 1137.1306700020796,
+                "normalized_request_ms": 1136.9,
+                "decode_tok_s": 46.45086369574685
+              },
+              {
+                "kind": "long",
+                "input_tokens": 792,
+                "output_tokens": 32,
+                "prompt_ms": 2933.3,
+                "decode_ms": 773.4,
+                "client_wall_ms": 3706.9966460003343,
+                "normalized_request_ms": 3706.7000000000003,
+                "decode_tok_s": 41.37574347039048
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 6,
+              "spec_min_p": 0.7
+            },
+            "score": 0.4936341480773326,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 448.2,
+                "decode_ms": 671.2,
+                "client_wall_ms": 1119.6127279981738,
+                "normalized_request_ms": 1119.4,
+                "decode_tok_s": 47.67580452920143
+              },
+              {
+                "kind": "long",
+                "input_tokens": 792,
+                "output_tokens": 32,
+                "prompt_ms": 2935.3,
+                "decode_ms": 730.8,
+                "client_wall_ms": 3666.490072999295,
+                "normalized_request_ms": 3666.1000000000004,
+                "decode_tok_s": 43.78762999452655
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 6,
+              "spec_min_p": 0.85
+            },
+            "score": 0.5040290376718887,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 449.1,
+                "decode_ms": 632.6,
+                "client_wall_ms": 1081.8700389972946,
+                "normalized_request_ms": 1081.7,
+                "decode_tok_s": 50.58488776478027
+              },
+              {
+                "kind": "long",
+                "input_tokens": 792,
+                "output_tokens": 32,
+                "prompt_ms": 2938.1,
+                "decode_ms": 700.9,
+                "client_wall_ms": 3639.3770479990053,
+                "normalized_request_ms": 3639.0,
+                "decode_tok_s": 45.65558567556
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 7,
+              "spec_min_p": 0.7
+            },
+            "score": 0.4907169988666801,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 445.7,
+                "decode_ms": 668.3,
+                "client_wall_ms": 1114.2324379979982,
+                "normalized_request_ms": 1114.0,
+                "decode_tok_s": 47.882687415831214
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 2935.5,
+                "decode_ms": 792.3,
+                "client_wall_ms": 3728.1177939985355,
+                "normalized_request_ms": 3727.8,
+                "decode_tok_s": 40.388741638268336
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 7,
+              "spec_min_p": 0.85
+            },
+            "score": 0.5071044537040758,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 447.8,
+                "decode_ms": 618.3,
+                "client_wall_ms": 1066.2311810010578,
+                "normalized_request_ms": 1066.1,
+                "decode_tok_s": 51.7548115801391
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 2935.6,
+                "decode_ms": 712.0,
+                "client_wall_ms": 3647.9289759990934,
+                "normalized_request_ms": 3647.6,
+                "decode_tok_s": 44.943820224719104
+              }
+            ]
+          }
+        ]
+      },
+      "prefill-256": {
+        "args": [
+          "--pack",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+          "--native",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+          "--native-dense-gguf",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+          "--ple-gguf",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+          "--embd-gguf",
+          "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+          "--expert-profile",
+          "<repo>/data/expert-profile.bin",
+          "--kv",
+          "int8",
+          "--vram-reserve-mib",
+          "480",
+          "--spec",
+          "8",
+          "--suffix-draft",
+          "0",
+          "--lookup-chain",
+          "0",
+          "--max-context",
+          "8192",
+          "--kv-resident",
+          "8192",
+          "--dflash",
+          "<data>/dflash2-official/dflash2-Q8_0.gguf",
+          "--expert-cache",
+          "2700",
+          "--pcie-frac",
+          "0",
+          "--spec-min-p",
+          ".7",
+          "--adapt-every",
+          "0",
+          "--adapt-swaps",
+          "0",
+          "--dflash-block",
+          "7",
+          "--prefill",
+          "256",
+          "--short-read",
+          "64",
+          "--prompt-cache",
+          "0",
+          "--conversation-cache-mib",
+          "0"
+        ],
+        "info": {
+          "version": "0.1.45.3",
+          "logit_bias": 1,
+          "context": 8192,
+          "kv": "int8",
+          "kv_resident": 0,
+          "expert_slots": 2700,
+          "expert_cache_mib": 7119,
+          "expert_slots_primary": 2700,
+          "expert_cache_primary_mib": 7119,
+          "spec": 8,
+          "mtp_max": 0,
+          "lookup": 0,
+          "vram_free_mib": 1510,
+          "cvec": 0,
+          "arena_mib": 64800,
+          "pool_workers": 11,
+          "pcie_frac": "0.00",
+          "spec_min_p": "0.70",
+          "dflash_block": 7,
+          "dflash_max": 7,
+          "conversation_cache_mib": 0,
+          "conversation_cache_slots": 4,
+          "conversation_cache_min_free_mib": 2560,
+          "conversation_cache_min_tokens": 0,
+          "tail_role_token": -1,
+          "vram_elastic": 0,
+          "prefill_cap": 256,
+          "prefill_stages": 1,
+          "stream_all_min": 1024,
+          "prefill_pipe": 0,
+          "engine": "0.1.45.3"
+        },
+        "tune": {},
+        "screen": {
+          "score": 0.42120091592283854,
+          "samples": [
+            {
+              "kind": "short",
+              "input_tokens": 27,
+              "output_tokens": 32,
+              "prompt_ms": 445.3,
+              "decode_ms": 667.3,
+              "client_wall_ms": 1112.7854049991583,
+              "normalized_request_ms": 1112.6,
+              "decode_tok_s": 47.954443278885066
+            },
+            {
+              "kind": "long",
+              "input_tokens": 792,
+              "output_tokens": 32,
+              "prompt_ms": 4270.9,
+              "decode_ms": 795.3,
+              "client_wall_ms": 5066.514105998067,
+              "normalized_request_ms": 5066.2,
+              "decode_tok_s": 40.23638878410663
+            }
+          ]
+        },
+        "grid": [
+          {
+            "tune": {
+              "dflash_block": 3,
+              "spec_min_p": 0.7
+            },
+            "score": 0.42190840136185614,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 448.3,
+                "decode_ms": 667.0,
+                "client_wall_ms": 1115.5852750016493,
+                "normalized_request_ms": 1115.3,
+                "decode_tok_s": 47.976011994002995
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 4298.5,
+                "decode_ms": 738.5,
+                "client_wall_ms": 5037.371164999058,
+                "normalized_request_ms": 5037.0,
+                "decode_tok_s": 43.331076506431955
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 3,
+              "spec_min_p": 0.85
+            },
+            "score": 0.41822322957234975,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 445.6,
+                "decode_ms": 683.1,
+                "client_wall_ms": 1128.889515002811,
+                "normalized_request_ms": 1128.7,
+                "decode_tok_s": 46.84526423656858
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 4289.9,
+                "decode_ms": 775.4,
+                "client_wall_ms": 5065.679029998137,
+                "normalized_request_ms": 5065.299999999999,
+                "decode_tok_s": 41.26902244003095
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 6,
+              "spec_min_p": 0.7
+            },
+            "score": 0.42043425927429573,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 451.7,
+                "decode_ms": 668.1,
+                "client_wall_ms": 1119.9725530022988,
+                "normalized_request_ms": 1119.8,
+                "decode_tok_s": 47.89702140398144
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 4287.7,
+                "decode_ms": 764.3,
+                "client_wall_ms": 5052.298167000117,
+                "normalized_request_ms": 5052.0,
+                "decode_tok_s": 41.868376292031925
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 6,
+              "spec_min_p": 0.85
+            },
+            "score": 0.4317933543226371,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 445.4,
+                "decode_ms": 630.7,
+                "client_wall_ms": 1076.232256997173,
+                "normalized_request_ms": 1076.1,
+                "decode_tok_s": 50.73727604249247
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 4291.6,
+                "decode_ms": 692.6,
+                "client_wall_ms": 4984.607147001952,
+                "normalized_request_ms": 4984.200000000001,
+                "decode_tok_s": 46.202714409471554
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 7,
+              "spec_min_p": 0.7
+            },
+            "score": 0.41938027391270666,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 448.0,
+                "decode_ms": 670.0,
+                "client_wall_ms": 1118.187334999675,
+                "normalized_request_ms": 1118.0,
+                "decode_tok_s": 47.76119402985075
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 4293.3,
+                "decode_ms": 792.3,
+                "client_wall_ms": 5085.896493998007,
+                "normalized_request_ms": 5085.6,
+                "decode_tok_s": 40.388741638268336
+              }
+            ]
+          },
+          {
+            "tune": {
+              "dflash_block": 7,
+              "spec_min_p": 0.85
+            },
+            "score": 0.4337625784169655,
+            "samples": [
+              {
+                "kind": "short",
+                "input_tokens": 27,
+                "output_tokens": 32,
+                "prompt_ms": 446.7,
+                "decode_ms": 617.9,
+                "client_wall_ms": 1064.7384320000128,
+                "normalized_request_ms": 1064.6,
+                "decode_tok_s": 51.788315261369156
+              },
+              {
+                "kind": "long",
+                "input_tokens": 793,
+                "output_tokens": 32,
+                "prompt_ms": 4292.4,
+                "decode_ms": 700.0,
+                "client_wall_ms": 4992.798696999671,
+                "normalized_request_ms": 4992.4,
+                "decode_tok_s": 45.714285714285715
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "failed": {},
+    "confirmation": {
+      "baseline": [
+        {
+          "score": 0.5029363198644047,
+          "samples": [
+            {
+              "kind": "short",
+              "input_tokens": 27,
+              "output_tokens": 32,
+              "prompt_ms": 446.8,
+              "decode_ms": 638.8,
+              "client_wall_ms": 1085.7337349989393,
+              "normalized_request_ms": 1085.6,
+              "decode_tok_s": 50.09392611145899
+            },
+            {
+              "kind": "long",
+              "input_tokens": 793,
+              "output_tokens": 32,
+              "prompt_ms": 2941.2,
+              "decode_ms": 700.5,
+              "client_wall_ms": 3642.1551480016205,
+              "normalized_request_ms": 3641.7,
+              "decode_tok_s": 45.68165596002855
+            }
+          ]
+        }
+      ],
+      "candidate": [
+        {
+          "score": 0.49475192968988024,
+          "samples": [
+            {
+              "kind": "short",
+              "input_tokens": 27,
+              "output_tokens": 32,
+              "prompt_ms": 479.8,
+              "decode_ms": 636.1,
+              "client_wall_ms": 1116.0908839992771,
+              "normalized_request_ms": 1115.9,
+              "decode_tok_s": 50.30655557302311
+            },
+            {
+              "kind": "long",
+              "input_tokens": 793,
+              "output_tokens": 32,
+              "prompt_ms": 2944.1,
+              "decode_ms": 716.9,
+              "client_wall_ms": 3661.3420089997817,
+              "normalized_request_ms": 3661.0,
+              "decode_tok_s": 44.63662993443995
+            }
+          ]
+        }
+      ]
+    },
+    "selected": "baseline",
+    "paired_gains": [
+      -0.01627321362818057
+    ]
+  },
+  "starts": [
+    [
+      "--pack",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "<repo>/data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "480",
+      "--pcie-frac",
+      "0",
+      "--prefill",
+      "512",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--spec",
+      "8",
+      "--spec-min-p",
+      "0.85",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--short-read",
+      "64",
+      "--max-context",
+      "8192",
+      "--kv-resident",
+      "8192",
+      "--dflash",
+      "<data>/dflash2-official/dflash2-Q8_0.gguf",
+      "--dflash-block",
+      "6",
+      "--expert-cache",
+      "2700",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0"
+    ],
+    [
+      "--pack",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "<repo>/data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "480",
+      "--spec",
+      "8",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--max-context",
+      "8192",
+      "--kv-resident",
+      "8192",
+      "--dflash",
+      "<data>/dflash2-official/dflash2-Q8_0.gguf",
+      "--expert-cache",
+      "2700",
+      "--pcie-frac",
+      "0",
+      "--spec-min-p",
+      ".7",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--dflash-block",
+      "7",
+      "--prefill",
+      "256",
+      "--short-read",
+      "64",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0"
+    ],
+    [
+      "--pack",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "<repo>/data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "480",
+      "--pcie-frac",
+      "0",
+      "--prefill",
+      "512",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--spec",
+      "8",
+      "--spec-min-p",
+      "0.85",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--short-read",
+      "64",
+      "--max-context",
+      "8192",
+      "--kv-resident",
+      "8192",
+      "--dflash",
+      "<data>/dflash2-official/dflash2-Q8_0.gguf",
+      "--dflash-block",
+      "6",
+      "--expert-cache",
+      "2700",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0"
+    ],
+    [
+      "--pack",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "<repo>/data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "480",
+      "--spec",
+      "8",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--max-context",
+      "8192",
+      "--kv-resident",
+      "8192",
+      "--dflash",
+      "<data>/dflash2-official/dflash2-Q8_0.gguf",
+      "--expert-cache",
+      "2700",
+      "--pcie-frac",
+      "0",
+      "--spec-min-p",
+      ".7",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--dflash-block",
+      "7",
+      "--prefill",
+      "256",
+      "--short-read",
+      "64",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0"
+    ],
+    [
+      "--pack",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "<repo>/data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "480",
+      "--pcie-frac",
+      "0",
+      "--prefill",
+      "512",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--spec",
+      "8",
+      "--spec-min-p",
+      "0.85",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--short-read",
+      "64",
+      "--max-context",
+      "8192",
+      "--kv-resident",
+      "8192",
+      "--dflash",
+      "<data>/dflash2-official/dflash2-Q8_0.gguf",
+      "--dflash-block",
+      "6",
+      "--expert-cache",
+      "2700",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0"
+    ],
+    [
+      "--pack",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "<data>/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "<repo>/data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--vram-reserve-mib",
+      "480",
+      "--pcie-frac",
+      "0",
+      "--prefill",
+      "512",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--spec",
+      "8",
+      "--spec-min-p",
+      "0.85",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--short-read",
+      "64",
+      "--max-context",
+      "8192",
+      "--kv-resident",
+      "8192",
+      "--dflash",
+      "<data>/dflash2-official/dflash2-Q8_0.gguf",
+      "--dflash-block",
+      "6",
+      "--expert-cache",
+      "2700",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0"
+    ]
+  ],
+  "seconds": 391.0106282730012,
+  "source_hashes": {
+    "tools/calibrate.py": "abede76400648c3e9562110756c0cee041d0ccf84be7d695e29bbbe1b12a5fa7",
+    "tools/calibrate_dflash2.py": "84f7d0faefa78b88f718a69b10542efa6a2382f6fd3904793d4805421ebc728a"
+  },
+  "limits": "smoke only: 32 output tokens, 768-token document, one confirmation round; full defaults not run"
+}

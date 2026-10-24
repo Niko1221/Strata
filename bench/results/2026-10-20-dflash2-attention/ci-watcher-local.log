@@ -1,0 +1,9 @@
+test_the_portable_watcher_ends_the_child_when_the_server_is_killed (serve.test_lifeline.Lifeline.test_the_portable_watcher_ends_the_child_when_the_server_is_killed) ... /usr/lib/python3.13/unittest/case.py:686: ResourceWarning: unclosed file <_io.TextIOWrapper name=3 encoding='UTF-8'>
+  function, args, kwargs = self._cleanups.pop()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.172s
+
+OK

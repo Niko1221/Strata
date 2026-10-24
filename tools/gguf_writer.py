@@ -31,7 +31,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from gguf_reader import GGUF_MAGIC, GGUFFile  # noqa: E402
 
 # ggml_type ids we can write. Values match GGML_TYPES in gguf_reader.py.
-TYPE_IDS = {"F32": 0, "F16": 1, "Q2_0": 42}
+TYPE_IDS = {"F32": 0, "F16": 1, "BF16": 30, "Q2_0": 42}
 DEFAULT_ALIGNMENT = 32
 
 _META_IDS = {"u8": 0, "i8": 1, "u16": 2, "i16": 3, "u32": 4, "i32": 5, "f32": 6,
@@ -74,6 +74,20 @@ def dequantize_q2_0(raw: bytes) -> np.ndarray:
     return out
 
 
+def to_bf16(a: np.ndarray) -> np.ndarray:
+    """float32 -> bf16, round to nearest even (the engine's own conversion), as little-endian u16."""
+    u = np.ascontiguousarray(a, dtype="<f4").reshape(-1).view("<u4")
+    nan = (u & np.uint32(0x7FFFFFFF)) > np.uint32(0x7F800000)
+    r = (u + np.uint32(0x7FFF) + ((u >> np.uint32(16)) & np.uint32(1))) >> np.uint32(16)
+    r[nan] = (u[nan] >> np.uint32(16)) | np.uint32(0x40)   # preserve sign/payload and quiet NaNs, like the engine
+    return r.astype("<u2")
+
+
+def bf16_to_f32(raw: np.ndarray) -> np.ndarray:
+    """u16 halves -> float32 (exact widening)."""
+    return (raw.astype("<u4") << np.uint32(16)).view("<f4")
+
+
 # ------------------------------------------------------------------ writer
 @dataclasses.dataclass
 class _Tensor:
@@ -107,6 +121,19 @@ class GGUFWriter:
     def add_f32(self, name: str, arr: np.ndarray) -> None:
         a = np.ascontiguousarray(arr, dtype="<f4")
         self.tensors.append(_Tensor(name, list(a.shape), "F32", a.tobytes()))
+
+    def add_bf16(self, name: str, arr: np.ndarray, shape: list[int] | None = None) -> None:
+        """A 2-D tensor (rows, in_features) row-major, written as GGUF shape [in_features, rows]
+        (dim 0 varies fastest) of BF16 - the layout every row-major [out, in] torch weight wants.
+        `shape` overrides the emitted GGUF shape (a 1-D norm is [dim], not [dim, 1])."""
+        a = np.asarray(arr, dtype=np.float32)
+        if shape is None:
+            if a.ndim != 2:
+                raise ValueError(f"{name}: add_bf16 expects a 2-D tensor, got {a.shape}")
+            shape = [a.shape[1], a.shape[0]]
+        if int(np.prod(shape)) != a.size:
+            raise ValueError(f"{name}: {a.shape} does not cover shape {shape}")
+        self.tensors.append(_Tensor(name, list(shape), "BF16", to_bf16(a).tobytes()))
 
     def add_q2_0(self, name: str, arr: np.ndarray, shape: list[int]) -> None:
         """`arr` is (rows, in_features) row-major with every row `shape[0]` long; `shape` is the FULL

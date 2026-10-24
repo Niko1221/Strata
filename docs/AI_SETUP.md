@@ -286,3 +286,19 @@ https://github.com/Niko1221/Strata/issues.
 Strata also has an MCP server, so an AI tool can check, install, start and stop Strata through tool calls
 (`strata_status`, `strata_models`, `strata_install`, `strata_start`, `strata_stop`, `strata_logs`) instead of the
 shell commands above. See [MCP_SERVER.md](MCP_SERVER.md).
+
+### Selecting the drafter
+
+Setup offers MTP (default), DFlash2, or Off (no model drafter; prompt lookup stays on).
+Use `--setup --yes --drafter none` to skip both draft models and keep suffix/prompt lookup enabled.
+Use `--drafter dflash2 --dflash2-quant bf16|q8|q4` with `--setup --yes` for non-interactive DFlash2 setup.
+The pinned official checkpoint is downloaded and converted automatically; DFlash2 replaces MTP and uses the
+target model's full shared output head. It has no separate lm_head, so there is no independent DFlash2 head to
+quantize or download. Q8_0 is the recommended balanced option from the local comparison; Q4_0 is smaller and
+left more VRAM for target experts. Norms, convolutions and selector tensors stay BF16 in both quantized files.
+
+Setup builds the experimental CUDA engine with DFlash2 enabled. It is currently limited to one NVIDIA GPU and
+one request at a time. The optional hardware calibration measures PCIe share, draft probability and DFlash2 block
+length on the selected quantized artifact; later, run ./setup.sh --calibrate to tune it again.
+--draft-vocab applies to MTP and plain DFlash only; DFlash2's selector needs the full shared head.
+See [DFLASH2.md](DFLASH2.md) for the measured quantization comparison and runtime limits.

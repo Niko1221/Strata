@@ -25,6 +25,7 @@ struct Kv {
     uint32_t elem = 4;                 ///< arrays: 4 u32 (`arr`) or 8 string (`sarr`)
     std::vector<uint64_t> arr;
     std::vector<std::string> sarr;
+
 };
 // fields set by name: a braced Kv{...} that stops short warns under -Wmissing-field-initializers (clang -Wextra)
 inline Kv make_kv(const std::string& k, uint32_t type) {
@@ -45,6 +46,7 @@ inline Kv strs(const std::string& k, std::vector<std::string> v) {
     r.sarr = std::move(v);
     return r;
 }
+inline Kv arr_u32(const std::string& k, const std::vector<uint64_t>& v) { return u32s(k, v); }
 inline Kv str_array(const std::string& k, std::vector<std::string> v) { return strs(k, std::move(v)); }
 
 struct Tensor {
@@ -86,8 +88,10 @@ inline Written write(const std::filesystem::path& path, const std::vector<Kv>& k
         else if (k.type == 2) { const uint16_t v = (uint16_t) k.u; put(&v, 2); }
         else if (k.type == 4 || k.type == 5) { const uint32_t v = (uint32_t) k.u; put(&v, 4); }
         else if (k.type == 6) put(&k.f, 4);
-        else if (k.type == 9 && k.elem == 4) {
-            put32(4);
+        else if (k.type == 10 || k.type == 11 || k.type == 12) put64(k.u);
+        else if (k.type == 9 && k.elem != 8) {
+            put32(k.elem);
+
             put64(k.arr.size());
             for (uint64_t x : k.arr) put32((uint32_t) x);
         } else if (k.type == 9 && k.elem == 8) {

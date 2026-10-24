@@ -192,6 +192,16 @@ public:
     void clear_taps();
     std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
+    /// DFlash feature taps (docs/DFLASH.md): at each listed boundary layer, capture the ATTN-HALF HC
+    /// read's contracted residual (n_embd BF16 per row - the fusion's input precision) for every row
+    /// of each chunk.  Before init.  Buffer: [n_taps x chunk x n_embd] bf16, rows [0, T) of the last
+    /// chunk; delivered by on_dflash_taps right after on_chunk (same synchronization).
+    /// hc_mean=true captures the completed raw HC stream mean before the learned HC read.
+    void set_tap_layers(const int* layers, int n, bool hc_mean = false);
+    /// Rows per tap in the device buffer (the chunk capacity); the per-tap stride of `taps`.
+    int64_t tap_stride_rows() const;
+    std::function<bool(const uint16_t* taps, int n_taps, int64_t T, int64_t pos0, std::string& err)> on_dflash_taps;
+
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
     /// earlier stage is a chunk or more ahead of the last one by the time `on_chunk` runs, so this is where a

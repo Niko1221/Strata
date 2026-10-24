@@ -1,0 +1,18 @@
+bf16 warm code 3 37.569
+bf16 warm math 3 42.463
+bf16 warm prose 3 36.214
+bf16 warm long 3 41.406
+bf16 0 code 3 43.15 66 87
+bf16 0 math 3 43.164 69 78
+bf16 0 prose 3 36.562 58 111
+bf16 0 long 3 40.837 62 99
+bf16 1 code 3 43.247 66 87
+bf16 1 math 3 43.14 69 78
+bf16 1 prose 3 36.402 58 111
+bf16 1 long 3 41.79 62 99
+bf16 2 code 3 43.315 66 87
+bf16 2 math 3 43.376 69 78
+bf16 2 prose 3 36.353 58 111
+bf16 2 long 3 41.774 62 99
+bf16 QUALITY prose same-placement target match True auto-AR match False
+bf16 QUALITY long same-placement target match True auto-AR match False

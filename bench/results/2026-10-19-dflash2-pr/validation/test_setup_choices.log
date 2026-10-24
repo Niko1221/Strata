@@ -1,0 +1,12 @@
+./setup.py:1182: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..................../setup.py:1182: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..........  [!]  the finish mark of x.gguf cannot be written ([Errno 13] read-only): the next run does this step again
+.....................
+----------------------------------------------------------------------
+Ran 50 tests in 0.880s
+
+OK

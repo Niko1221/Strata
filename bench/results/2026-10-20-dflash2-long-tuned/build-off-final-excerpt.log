@@ -1,0 +1,21 @@
+# Last 20 lines of the full local build log
+11840 |                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+      |                              ^
+[65/79] Building CXX object CMakeFiles/mmvq_il_parity.dir/src/kernels/mmvq_il_parity.cpp.o
+[66/79] Building CXX object CMakeFiles/dflash_policy_test.dir/src/spec/dflash_policy_test.cpp.o
+[67/79] Building CXX object CMakeFiles/dflash_load_test.dir/src/core/dflash_load_test.cpp.o
+[68/79] Building CXX object CMakeFiles/strata_engine.dir/src/core/dflash.cpp.o
+[69/79] Linking CXX executable mmvq_il_parity
+[70/79] Linking CXX executable dflash_policy_test
+[71/79] Building CXX object CMakeFiles/strata_engine.dir/src/core/dflash_runtime.cpp.o
+[72/79] Building CXX object CMakeFiles/dflash_load_test.dir/src/core/dflash.cpp.o
+[73/79] Linking CXX executable dflash_load_test
+[74/79] Building CXX object CMakeFiles/strata_engine.dir/src/core/verify.cpp.o
+<repo>/src/core/verify.cpp: In static member function ‘static void strata::core::Verifier::raise_flag(uint32_t*, uint32_t)’:
+<repo>/src/core/verify.cpp:3082:20: warning: unused variable ‘f’ [-Wunused-variable]
+ 3082 |     volatile long* f = (volatile long*) flag;
+      |                    ^
+[75/79] Linking CXX static library libstrata_engine.a
+[76/79] Linking CXX static library libstrata_prefill.a
+[77/79] Linking CXX static library libstrata_qwen35.a
+[78/79] Linking CXX executable strata

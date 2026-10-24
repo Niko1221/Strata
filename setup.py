@@ -3,10 +3,10 @@
 
     START-HERE.bat  (Windows)   /   ./setup.sh  (Linux)      - they install Python if needed and run this file
 
-The first time it asks four questions - which model (the original Qwen3.8-Flash-Next or the Swift 1.5 fine-tune),
-which size, how much context, and whether the model should also read images - then installs everything and starts the model on http://127.0.0.1:8080 (OpenAI- and Anthropic-compatible
-API; a small page there shows that it runs). Every later start skips straight to running the model: nothing that
-is already downloaded, installed or prepared is done again.
+The first time it asks which model, size, drafter, context and image support to use. DFlash2 also asks for
+its weight quantization. It then installs everything and starts the model on http://127.0.0.1:8080
+(OpenAI- and Anthropic-compatible API; a small page there shows that it runs). Later starts reuse the
+saved choices and files.
 
 What the first run does (each step is skipped when it is already done):
 
@@ -17,7 +17,7 @@ What the first run does (each step is skipped when it is already done):
      it installs the missing build tools (asks first) and compiles the engine for your GPU.  AMD (--backend hip, chosen by
      itself on a PC with no usable NVIDIA card): the ready-made HIP engine on Windows, compiled here on Linux
   5. downloads the model from Hugging Face (resumable), and the vision encoder if you want images
-  6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
+  6. prepares the model and the selected drafter: MTP (~5 GB) or official DFlash2 (~1.2 GB, optional Q8_0/Q4_0)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
 Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
@@ -29,7 +29,7 @@ answers, no questions), --setup (install another model / change settings instead
 (EXPERIMENTAL, off by default),
 --models-dir DIR, --gguf-dir DIR (use GGUF files you already have), --build (compile instead of the ready-made
 engine), --check (only check this PC), --resident-budget-gib N (UD-Q4_K_XL's or UD-IQ4_XS's experts in RAM),
---kv-streaming on|off|auto.
+--kv-streaming on|off|auto, --drafter mtp|dflash2|none, --dflash2 [GGUF], --dflash2-quant bf16|q8|q4.
 
 Setup recommends, it never forces: the recommended answers are the defaults (--yes, or Enter), and a bigger choice
 than it recommends - a longer context, more GPUs, a bigger RAM budget, a size it thinks will not fit - is kept, with
@@ -92,6 +92,8 @@ WIN = os.name == "nt"
 # day.  Every file has a fixed size and SHA-256 too (REPO_PINS); a revision the repository no longer has stops the
 # download (download()), unless a tester sets STRATA_ALLOW_UNPINNED=1.
 HF_REVISIONS = {
+    "PixelML/Qwen3.8-Flash-Next-NVFP4-DFlash": "9cd660f9050c92fedc88cbe547bd53af0392abe1",
+    "incoai/Qwen3.8-Flash-Next-DFlash2": "a22a1744e85c17364dcc54a6a420af7135d4c7f6",
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",        # 2026-09-29
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "99bb8f7f95c7aa7b24a36a7786a4f657b30f5d3d",   # 2026-10-07 (adds IQ3_S)
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
@@ -249,6 +251,12 @@ ENGINE12_DIR = "engine-cuda12"
 MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
+# DFlash2's official geometry: 5 FP16 K/V pools (20 KiB/token) and the eight-row
+# decode-attention scratch (4,128 bytes/token: the allocator retains the compiled
+# 256-wide scratch stride even for the official 128-wide attention). Weight sizes are the measured
+# official GGUF artifacts; these are conservative setup estimates, not allocator limits.
+DFLASH2_WEIGHT_GB = {"bf16": 1.206, "q8": 0.776, "q4": 0.547}
+DFLASH2_CONTEXT_BYTES_PER_TOKEN = 5 * 2 * 8 * 128 * 2 + 8 * 32 * (256 + 2) * 4 // 64
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
 REQUIREMENTS = ROOT / "requirements.txt"   # the same packages and their dependencies, pinned (#214)
 BUILD_PACKAGES = ["cmake", "ninja"]
@@ -780,6 +788,8 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
 # checks the file against it as soon as it is whole (a wrong file is deleted and setup stops), and stops before the
 # download when the server's size is not the pinned one.  The files are fetched from the commits in HF_REVISIONS.
 REPO_PINS = {
+    "incoai/Qwen3.8-Flash-Next-DFlash2": {
+        "model.safetensors": (1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f")},
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF": ISTA_FILES,
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": SWIFT_FILES,
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": CODER_FILES,
@@ -5567,7 +5577,7 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
-def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
+def build_engine(gpu, vision, yes, llama, toolkit=None, dflash2=False) -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/.  A compiled
     engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes.
     toolkit 12 (default: 12 for a card older than CUDA 13 supports): the experimental CUDA 12 engine, in
@@ -5590,6 +5600,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     new_arch = local and not set(archs) <= built
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
+        (not dflash2 or meta.get("dflash2") is True) and \
         (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
     vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
@@ -5607,6 +5618,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
+                     *(["-DSTRATA_ENABLE_DFLASH2=ON"] if dflash2 else []),
                      f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
@@ -5635,6 +5647,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,
                                  "vision": vision, **({"toolkit": 12} if t12 else {}),
+                                 **({"dflash2": True} if dflash2 else {}),
                                  "cuda_dirs": dirs, "src": src, "vision_src": vsrc if want_vision else None,
                                  **({"isa_floor": floor} if floor else {})}, indent=1))
     ok(f"engine compiled: {eng / EXE}")
@@ -5672,25 +5685,33 @@ def low_ram_needed(model, ram) -> bool:
 MTP_VRAM_GB = 1.0
 
 
-def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8", mtp=True) -> float:
+def dflash2_vram_estimate_gb(ctx, quant="q8") -> float:
+    """Conservative maximum DFlash2 VRAM estimate for this context and selected GGUF."""
+    return DFLASH2_WEIGHT_GB.get(quant, DFLASH2_WEIGHT_GB["q8"]) + \
+        max(0, int(ctx)) * DFLASH2_CONTEXT_BYTES_PER_TOKEN / 1e9 + 0.05  # metadata, widened norms and allocator slack
+
+
+def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8", mtp=True, *, dflash2_quant=None) -> float:
     """About how many GB of the model's experts the GPU's cache holds: its VRAM minus ~5 GB for the dense weights,
     buffers and a 32K context's KV cache, minus the KV cache of a longer context (in VRAM in the low-RAM mode: its RAM
-    has no room for KV streaming), minus ~1 GB for the draft layer (MTP) when it is on."""
-    kv_tok = 13 * KV_CELL_BYTES.get(kv, 1056)           # bytes per context token: 12 QSA layers + the draft layer
+    has no room for KV streaming), minus the selected drafter's weights and memory."""
+    kv_tok = (12 + int(bool(mtp))) * KV_CELL_BYTES.get(kv, 1056)  # target QSA layers plus MTP's draft layer when used
     longer = max(0, ctx - 32768) * kv_tok / 1e9
-    return max(0.0, min(MODELS[model]["arena_gb"], vram_gb - 5 - (MTP_VRAM_GB if mtp else 0.0) - longer))
+    mtp_gb = MTP_VRAM_GB if mtp else 0.0
+    dflash2_gb = dflash2_vram_estimate_gb(ctx, dflash2_quant) if dflash2_quant else 0.0
+    return max(0.0, min(MODELS[model]["arena_gb"], vram_gb - 5 - mtp_gb - longer - dflash2_gb))
 
 
-def low_ram_gpu_share(model, vram_gb, ctx=32768, kv="int8", mtp=True) -> float:
+def low_ram_gpu_share(model, vram_gb, ctx=32768, kv="int8", mtp=True, *, dflash2_quant=None) -> float:
     """About how much of the model's experts the GPU holds."""
-    return low_ram_gpu_gb(model, vram_gb, ctx, kv, mtp) / MODELS[model]["arena_gb"]
+    return low_ram_gpu_gb(model, vram_gb, ctx, kv, mtp=mtp, dflash2_quant=dflash2_quant) / MODELS[model]["arena_gb"]
 
 
-def low_ram_resident(model, ram, vram_gb, ctx=32768, kv="int8", mtp=True) -> bool:
+def low_ram_resident(model, ram, vram_gb, ctx=32768, kv="int8", mtp=True, *, dflash2_quant=None) -> bool:
     """In the low-RAM mode: the experts the GPU does not hold fit the RAM with the usual room beside them, so they are
     copied into RAM once (the resident variant, `--resident-experts`) instead of being read through the OS file cache
     (plain `--mmap-experts`, which a PC this short of RAM keeps re-reading from the SSD)."""
-    rest = MODELS[model]["arena_gb"] - low_ram_gpu_gb(model, vram_gb, ctx, kv, mtp)
+    rest = MODELS[model]["arena_gb"] - low_ram_gpu_gb(model, vram_gb, ctx, kv, mtp=mtp, dflash2_quant=dflash2_quant)
     return ram >= rest + LOW_RAM_HEADROOM_GB
 
 
@@ -6164,7 +6185,9 @@ def write_config(path: Path, cfg: dict):
 # "args_written" (strata_control/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
 # then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written"})
+                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "drafter", "dflash",
+                        "dflash2", "dflash2_quant", "dflash2_source", "dflash_quant", "dflash_source",
+                        "dflash_head", "vision", "args_written"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -6418,7 +6441,19 @@ def choices_from_config(cfg_path: Path) -> dict:
     vis = cfg.get("vision")
     esp = val("--control-vector-scaled")
     esp_path = esp.rsplit(":", 1)[0] if esp else None
-    return {"family": family, "model": model if model in MODELS else None,
+    drafter = cfg.get("drafter")
+    if drafter == "dflash":                           # the setup no longer offers the old DeepSpec artifact
+        drafter = "mtp"
+    if drafter not in ("mtp", "dflash2", "none"):
+        drafter = "dflash2" if cfg.get("dflash2") or val("--dflash2") else "mtp"
+    dflash2_source = None
+    if drafter == "dflash2":
+        dflash2_source = cfg.get("dflash2_source") or (
+            val("--dflash") if cfg.get("dflash2_quant", "q8") == "bf16" else "auto")
+    return {"drafter": drafter,
+            "dflash2": dflash2_source,
+            "dflash2_quant": cfg.get("dflash2_quant", "q8") if drafter == "dflash2" else None,
+            "family": family, "model": model if model in MODELS else None,
             "context": int(val("--max-context")) if val("--max-context") else None,
             "kv": val("--kv") if val("--kv") in ("int8", "q4_0") else None,
             "vision": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "none",
@@ -6583,7 +6618,8 @@ def gpu_sel(value) -> list:
 def hardware_key(cfg: dict) -> str:
     """What a calibration is valid for: this GPU, CPU and RAM, and the model with its context and images setting
     (the context's KV cache and the image encoder take VRAM from the expert cache).  #566: a HIP config's cards are
-    AMD's (hip_config_cards) - nvidia-smi's list named them "?" (or another card with that number) before."""
+    AMD's (hip_config_cards) - nvidia-smi's list named them "?" (or another card with that number) before.
+    DFlash also keys its artifact, head vocabulary and draft capacity; off has its own key."""
     sel = cfg.get("gpu")
     if isinstance(sel, str):
         sel = gpu_sel(sel)
@@ -6594,8 +6630,27 @@ def hardware_key(cfg: dict) -> str:
     g = {"name": " + ".join(x.get("name", "?") for x in gl), "vram_gb": sum(x.get("vram_gb", 0) for x in gl)}
     a = cfg.get("args", [])
     ctx = a[a.index("--max-context") + 1] if "--max-context" in a else "?"
-    return "|".join([g.get("name", "?"), f"{g.get('vram_gb', 0):.0f}GB", cpu_info()[0], f"{ram_gb():.0f}GB",
-                     cfg.get("model_name", "?"), ctx, "images" if "--vision" in a else "text"])
+    key = "|".join([g.get("name", "?"), f"{g.get('vram_gb', 0):.0f}GB", cpu_info()[0], f"{ram_gb():.0f}GB",
+                    cfg.get("model_name", "?"), ctx, "images" if "--vision" in a else "text"])
+    # Keep existing MTP calibrations valid; DFlash2 artifacts and block capacity need their own calibration.
+    if cfg.get("drafter") == "dflash2":
+        def value(flag):
+            return str(a[a.index(flag) + 1]) if flag in a and a.index(flag) + 1 < len(a) else ""
+        performance_env = {k: (cfg.get("env") or {}).get(k) for k in
+                           ("STRATA_DFLASH_HEAD_IL", "STRATA_MMVQ_IL_Q8_HEAD", "STRATA_DFLASH_GRAPH_BUCKET",
+                            "STRATA_PREFILL_CPU_SHARE")}
+        return key + "|dflash2-profile-v2|" + str(cfg.get("dflash2_quant", "q8")) + "|" + "|".join(
+            value(f) for f in ("--dflash", "--mtp", "--spec", "--dflash-window")) + "|" + json.dumps(
+                performance_env, sort_keys=True, separators=(",", ":"))
+    if "--dflash" in a:
+        def value(flag):
+            return str(a[a.index(flag) + 1]) if flag in a and a.index(flag) + 1 < len(a) else ""
+        # The artifact fingerprint/quantization and vocabulary change draft cost and confidence.
+        return key + "|dflash|" + "|".join(value(f) for f in
+                                         ("--dflash", "--dflash-head", "--dflash-vocab", "--spec", "--dflash-window"))
+    if cfg.get("drafter") in ("none", "off"):
+        return key + "|off"
+    return key
 
 
 def calibrate_config(cfg_path: Path) -> bool:
@@ -6606,8 +6661,11 @@ def calibrate_config(cfg_path: Path) -> bool:
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
     say()
     say("  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the")
-    say("  draft depth, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes")
+    say("  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes")
     say("  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.")
+    if cfg.get("drafter") == "dflash2":
+        say("  DFlash2 also compares fresh short/long requests, prefill chunks, VRAM headroom and joint block/floor")
+        say("  profiles, with separate restarts for confirmation. Allow roughly 30-90 minutes in total.")
     try:
         since = os.path.getsize(cfg["log"]) if cfg.get("log") and os.path.isfile(cfg["log"]) else 0
     except OSError:
@@ -6627,7 +6685,7 @@ def calibrate_config(cfg_path: Path) -> bool:
     st = load_settings()
     st.setdefault("calibration", {})[hardware_key(cfg)] = {"settings": res["settings"], "env": res.get("env") or {},
                                                            "tok_s": res["report"].get("tok_s"),
-                                                           "date": time.strftime("%Y-%m-%d")}
+                                                           "date": time.strftime("%Y-%m-%d"), "report": res["report"]}
     save_settings(st)
     chosen = {**res["settings"], **(res.get("env") or {})}
     if chosen:
@@ -6674,6 +6732,7 @@ def upgrade_config(cfg_path: Path, cfg: dict) -> dict:
         del a[i:i + 2]
         changed = True
         ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
+    changed = sync_dflash_vocab(cfg) or changed
     if changed:
         write_config(cfg_path, cfg)
     return cfg
@@ -6765,6 +6824,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
         ok(f"saved for this model: {reserve} MiB of VRAM kept free for other programs (--vram-reserve-mib)")
     if keep and any(cfg.get(k) != v for k, v in keep.items()):   # #179: a --host/--api-key on a start was ignored
         cfg.update(keep)
+        sync_dflash_vocab(cfg)
         write_config(cfg_path, cfg)
         ok("saved for this model: " + ", ".join(
             "api key" if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
@@ -6886,6 +6946,165 @@ DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin", "cyrillic"
                 "fr": "draft_vocab_fr.bin"}
 
 
+DFLASH2_REPO = "incoai/Qwen3.8-Flash-Next-DFlash2"
+DFLASH2_SHA256 = "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"
+# Q8_0 was the most even quantized option in the same-day RTX 4070 Ti SUPER comparison.
+# Q4_0 remains available when fitting more target experts in VRAM matters more.
+DFLASH2_QUANTS = {"bf16": None, "q8": "Q8_0", "q4": "Q4_0"}
+
+
+def choose_drafter(method, path, quant, yes):
+    """The same numbered menus and --yes defaults as the other setup choices."""
+    if method in ("mtp", "none") and (path or quant):
+        fail(f"--drafter {method} cannot be combined with --dflash2 or --dflash2-quant")
+    method = method or ("dflash2" if path or quant else None)
+    if method is None:
+        say()
+        say("  Speculative decoding = a small drafter proposes tokens which the target checks.")
+        say("  1) MTP (default)")
+        say("  2) DFlash2 (experimental; uses the target model's shared output head)")
+        say("  3) Off (no MTP/DFlash2; prompt lookup stays on)")
+        method = {"1": "mtp", "2": "dflash2", "3": "none"}[ask("Drafter?", ["1", "2", "3"], "1", yes)]
+    if method == "dflash2" and quant is None:
+        say()
+        say("  DFlash2 drafter weights (the output head is shared with the target):")
+        say("  1) Q8_0 (recommended; best balanced result measured)")
+        say("  2) Q4_0 (smaller; more target experts fit in VRAM)")
+        say("  3) Original BF16")
+        quant = {"1": "q8", "2": "q4", "3": "bf16"}[ask("DFlash2 quantization?", ["1", "2", "3"], "1", yes)]
+    return method, (quant or "q8") if method == "dflash2" else quant
+
+
+def drafter_args(dflash2, rt, draft_vocab=None):
+    if dflash2:
+        # The official DFlash2 artifact has no lm_head; its selector uses the full shared target head.
+        # Four rows are anchor + three proposals, the best balanced block measured on the local GPU.
+        # 0 means the selected --max-context, rather than the engine's conservative 32K CLI default.
+        return ["--spec", "8", "--spec-min-p", "0.5", "--dflash", str(dflash2), "--dflash-block", "3",
+                "--dflash-window", "0"]
+    if rt:
+        return ["--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt)]
+    # Leave the engine's prompt-lookup defaults in place without loading a model
+    # drafter. --spec reserves verifier capacity for any suffix proposals.
+    return ["--spec", "2"]
+
+
+def sync_dflash_vocab(cfg):
+    """Apply a saved --draft-vocab choice to an indexed DFlash head on start/update."""
+    args = cfg.get("args", [])
+    choice = cfg.get("draft_vocab")
+    if choice not in DRAFT_VOCABS or "--dflash-vocab" not in args[:-1]:
+        return False
+    at = args.index("--dflash-vocab") + 1
+    path = str(ROOT / "data" / DRAFT_VOCABS[choice])
+    if args[at] == path:
+        return False
+    args[at] = path
+    return True
+
+
+def prepare_dflash2(data, roots, source, quant, env):
+    """Fetch the pinned official DFlash2 checkpoint, convert once, then reuse a validated quantized GGUF."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    folder = data / "dflash2"
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        if source != "auto":
+            original = Path(source).expanduser().resolve()
+            dflash2_artifact_note(original)
+        else:
+            original = find_in(roots, "dflash2/dflash2-bf16.gguf") or folder / "dflash2-bf16.gguf"
+            good = False
+            if original.is_file():
+                try:
+                    g = GGUFFile(original)
+                    good = (g.metadata.get("general.architecture") == "dflash" and
+                            g.metadata.get("dflash.source.sha256") == DFLASH2_SHA256 and
+                            g.metadata.get("dflash.selector_top_k") is not None and
+                            len(g.tensors) == 81 and all(t.type_id == 30 and
+                            g.data_start + t.offset + t.expected_bytes() <= original.stat().st_size for t in g.tensors))
+                except (OSError, ValueError):
+                    pass   # regenerate an interrupted/corrupt cached export from the checked checkpoint
+            if not good:
+                checkpoint = folder / "model.safetensors"
+                download(hf(DFLASH2_REPO) + "model.safetensors", checkpoint, "official DFlash2 checkpoint (~1.2 GB)")
+                digest = hashlib.sha256()
+                with checkpoint.open("rb") as f:
+                    for chunk in iter(lambda: f.read(8 << 20), b""):
+                        digest.update(chunk)
+                if digest.hexdigest() != DFLASH2_SHA256:
+                    checkpoint.with_name(checkpoint.name + ".done").unlink(missing_ok=True)
+                    checkpoint.unlink()
+                    fail("DFlash2 checkpoint SHA-256 does not match the pinned source; rerun setup to download it again")
+                config = folder / "config.json"
+                download(hf(DFLASH2_REPO) + "config.json", config, "DFlash2 configuration")
+                original = folder / "dflash2-bf16.gguf"
+                tmp = original.with_suffix(".gguf.part")
+                run([sys.executable, str(ROOT / "tools/dflash_gguf.py"), str(checkpoint),
+                     "--config", str(config), "-o", str(tmp)], env=env)
+                dflash2_artifact_note(tmp)
+                tmp.replace(original)
+        if quant == "bf16":
+            return original
+        # Manual paths may contain a user's BF16 export. Its hash separates their cache from
+        # the pinned download and invalidates quantizations when that file changes.
+        digest = hashlib.sha256()
+        with original.open("rb") as f:
+            for chunk in iter(lambda: f.read(8 << 20), b""):
+                digest.update(chunk)
+        sha = digest.hexdigest()
+        kind = DFLASH2_QUANTS[quant]
+        output = folder / f"dflash2-{sha[:16]}-{kind}.gguf"
+        if output.is_file():
+            try:
+                g = GGUFFile(output)
+                if (g.metadata.get("strata.dflash.source_sha256") == sha and
+                        g.metadata.get("strata.dflash.quantization") == kind and
+                        g.metadata.get("general.architecture") == "dflash" and
+                        g.metadata.get("dflash.selector_top_k") is not None and
+                        [(t.name, t.shape, t.type_id) for t in g.tensors] ==
+                        [(t.name, t.shape, {"Q8_0": 8, "Q5_0": 6, "Q4_0": 2}[kind] if len(t.shape) == 2 and not any(part in t.name for part in
+                             ("selector", "conv_base", "conv_proj", "base_kernel", "kernel_projection")) else 30)
+                         for t in GGUFFile(original).tensors] and
+                        all(g.data_start + t.offset + t.expected_bytes() <= output.stat().st_size for t in g.tensors)):
+                    ok(f"DFlash2 {kind} already prepared")
+                    return output
+            except (OSError, ValueError):
+                pass   # the atomic conversion below replaces the broken cache entry
+        run([sys.executable, str(ROOT / "tools/dflash_quantize.py"), str(original),
+             "--type", kind, "-o", str(output)], env=env)
+        dflash2_artifact_note(output)
+        return output
+    except (OSError, ValueError) as e:
+        fail(f"DFlash2: {e}")
+
+
+def dflash2_artifact_note(path: Path) -> str:
+    """Validate and summarize a DFlash2 artifact; its selector and convolution metadata distinguish it from old DFlash."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    from gguf_reader import GGUFFile
+    try:
+        md = GGUFFile(str(path)).metadata
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{path.name} is not readable as GGUF ({e})") from e
+    if (md.get("general.architecture") != "dflash" or md.get("dflash.selector_top_k") is None or
+            md.get("dflash.conv_kernel_size") is None or md.get("dflash.sample_from_anchor") != "false"):
+        raise ValueError(f"{path.name} is not a DFlash2 artifact (general.architecture = "
+                         f"{md.get('general.architecture')!r})")
+    def num(key: str) -> int | None:
+        v = md.get(f"dflash.{key}")
+        return int(v) if isinstance(v, (int, float)) else None
+    line = (f"{path.name}: DFlash2, {num('block_count') or '?'} layers, trained block "
+            f"{num('block_size') or '?'}, selector top-{num('selector_top_k') or '?'}")
+    if num("attention.sliding_window"):
+        line += f", local window {num('attention.sliding_window')}"
+    taps = md.get("dflash.target_layers")
+    if isinstance(taps, list) and taps:
+        line += f", taps [{', '.join(str(int(t)) for t in taps)}]"
+    return line
+
+
 def saved_draft_vocab(cfg_path: Path) -> str | None:
     """The draft subset a model's config chose earlier (--draft-vocab), or None: a setup run again without the flag
     rewrites the config, and would otherwise put the default subset back."""
@@ -6943,7 +7162,7 @@ def draft_vocab_note(vram_gb: float, chosen: str | None) -> list[str]:
 SMALL_CARD_GB = 7.5            # #496: a card under 8 GB gets a tip (an 8 GB card lists 7.99)
 
 
-def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
+def small_card_note(ctx: int, draft_vocab: str | None, mtp: bool = True) -> list[str]:
     """#496: what frees VRAM on a card under 8 GB when the start stops with "no VRAM is left for the expert cache"
     (the engine already lowers its own reserve on such a card) - a recommendation, setup changes none of it.  (The
     draft layer stays: the server needs it.)"""
@@ -6951,7 +7170,7 @@ def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
     tips = []
     if ctx > 8192:
         tips.append("an 8K context (a smaller KV cache)")
-    if draft_vocab != "en":
+    if mtp and draft_vocab != "en":
         tips.append(f"--draft-vocab en (a draft head of ~{DRAFT_VOCAB_MIB['en']} MiB instead of "
                     f"~{DRAFT_VOCAB_MIB[draft_vocab or 'cjk']})")
     lines = ["If the start stops with \"no VRAM is left for the expert cache\" (the engine's log says how much is "
@@ -7396,7 +7615,7 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
     else:
-        eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
+        eng = None if a.build or a.dflash2 or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
                                                                                     else {}))
     if eng is not None and not hip and json.loads((eng / "BUILD.json").read_text(encoding="utf-8")).get("source") != "local":
         pip_cuda_libs(cuda_tk)
@@ -7406,7 +7625,8 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
         else:
             vision = prebuilt_vision(json.loads((eng / "BUILD.json").read_text(encoding="utf-8")), gpu, vision)
     if eng is None:
-        eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
+        eng = build_engine_hip(gpu, llama, vision) if hip else build_engine(gpu, vision, a.yes, llama,
+                                                                            toolkit=cuda_tk, dflash2=a.dflash2)
     meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
     if hip and WIN:                                    # the ready-made engine's rocm/bin, first on the engine's PATH
         lib_dirs = [str(d) for d in hip_lib_dirs(eng)]
@@ -8474,10 +8694,16 @@ def main() -> int:
     ap.add_argument("--calibrate", action="store_true",
                     help="tune the engine's settings for this PC (about 15-30 minutes, longer on a slow card), then start the model")
     ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
-                    help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
+                    help="draft head tokens (the memory/speed figures below apply to MTP): cjk = with Chinese, Japanese and Korean (default), en = English "
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted)")
+    ap.add_argument("--drafter", choices=["mtp", "dflash2", "none"],
+                    help="model drafter: MTP (default), DFlash2 or none (prompt lookup remains enabled)")
+    ap.add_argument("--dflash2", metavar="GGUF", nargs="?", const="auto",
+                    help="select the pinned official DFlash2 drafter; optionally pass a compatible GGUF")
+    ap.add_argument("--dflash2-quant", choices=["bf16", "q8", "q4"],
+                    help="DFlash2 backbone weights: BF16, Q8_0 (recommended) or Q4_0 (smaller); target head stays shared")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
                     help="read the model's experts from one file in its folder instead of copying them all into RAM "
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
@@ -8519,6 +8745,8 @@ def main() -> int:
     if sys.platform == "darwin" and CONTROL:           # the app on a Mac: model files only; the Metal engine is a component
         return mac_control_setup(a)
     if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
+        if a.drafter == "dflash2" or a.dflash2 or a.dflash2_quant:
+            fail("DFlash2 currently requires the CUDA engine; choose MTP for SYCL")
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
@@ -8575,8 +8803,28 @@ def main() -> int:
     # ---- 0. already installed: just start it
     if a.update:                                       # #475: UPDATE.bat / update.sh - never starts the model
         return update_install(have, a)
-    explicit = a.setup or a.model or a.family or a.check or a.no_start
+    explicit = a.setup or a.model or a.family or a.check or a.no_start or a.drafter or a.dflash2 or a.dflash2_quant
     adopted = None                                     # #629: the earlier install this copy is set up like
+    if have and (a.drafter or a.dflash2 or a.dflash2_quant) and not (a.model or a.family):
+        ch = choices_from_config(have[0])
+        a.family, a.model = ch["family"], ch["model"]
+        a.context = a.context or ch["context"]
+        a.kv, a.vision = a.kv or ch["kv"], a.vision or ch["vision"]
+        a.experimental_speed_projection = a.experimental_speed_projection or ch["esp"]
+        a.host, a.api_key = a.host or ch["host"], a.api_key or ch["api_key"]
+        a.port = a.port or ch["port"]
+        if a.vram_reserve_mib is None:
+            a.vram_reserve_mib = ch.get("vram_reserve_mib")
+        if a.cuda is None and ch.get("cuda") == 12:
+            a.cuda = "12"
+        if isinstance(ch.get("gpu"), list):
+            a.gpus = a.gpus or ",".join(str(g) for g in ch["gpu"])
+            a.layer_split = a.layer_split or ch.get("layer_split")
+        else:
+            a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
+        if a.drafter in (None, "dflash2") and not a.dflash2 and ch["drafter"] == "dflash2":
+            a.dflash2 = ch["dflash2"]
+            a.dflash2_quant = a.dflash2_quant or ch.get("dflash2_quant")
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
         if prev is not None:
@@ -8586,6 +8834,9 @@ def main() -> int:
                     "copy the same way - the model files are reused, nothing big is downloaded.")
                 a.family, a.model, a.context = ch["family"], ch["model"], a.context or ch["context"]
                 adopted = prev
+                a.drafter = a.drafter or ch["drafter"]
+                a.dflash2 = a.dflash2 or ch["dflash2"]
+                a.dflash2_quant = a.dflash2_quant or ch.get("dflash2_quant")
                 a.kv = a.kv or ch["kv"]
                 a.vision = a.vision or ch["vision"]
                 a.experimental_speed_projection = a.experimental_speed_projection or ch["esp"]
@@ -8634,6 +8885,7 @@ def main() -> int:
                            "vram_reserve_mib": a.vram_reserve_mib, "open_browser": a.browser})
     if have and not (a.setup or a.model or a.family or a.check or a.no_start):
         engine_update_note()
+    if have and not explicit:
         if len(have) == 1:
             return start(have[0], a.port, run_gpu, yes=a.yes, layer_split=a.layer_split,
                      keep={"host": a.host, "api_key": a.api_key, "draft_vocab": a.draft_vocab,
@@ -9004,6 +9256,19 @@ def main() -> int:
     if MODELS[model].get("license"):                   # the ready-made packs: each size has its own license
         say(f"  Its license: {MODELS[model]['license']}")
     tag = fam["tag"] + model                           # names of the pack, config and start script
+    a.drafter, a.dflash2_quant = choose_drafter(a.drafter, a.dflash2, a.dflash2_quant, a.yes)
+    if a.drafter == "dflash2":
+        a.dflash2 = a.dflash2 or "auto"
+        if multi or (a.parallel is not None and a.parallel > 1):
+            fail("DFlash2 currently needs one GPU and --parallel 1; choose MTP for batched or split inference")
+        if hip or a.backend == "sycl":
+            fail("DFlash2 currently requires the CUDA backend; choose MTP for HIP or SYCL")
+        if CONTROL:
+            fail("DFlash2 requires a locally compiled CUDA engine; it is not available through the app component")
+        a.build = True
+        ok(f"drafter: DFlash2 ({DFLASH2_QUANTS[a.dflash2_quant] or 'BF16'}, shared target head)")
+    else:
+        ok("model drafter: off (prompt lookup stays on)" if a.drafter == "none" else "drafter: MTP")
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
@@ -9101,13 +9366,17 @@ def main() -> int:
     if low_ram and not fam.get("ready"):               # NVFP4's packs: the RAM-budget mode instead (step 7)
         arena = MODELS[model]["arena_gb"]
         vram = low_ram_vram(gpu) - (VISION[vision]["reserve_mib"] / 1024 if vision != "none" else 0)
-        with_mtp = a.mtp != "off"                       # the draft layer's ~1 GB comes out of the expert cache
-        share = low_ram_gpu_share(model, vram, ctx, kv, with_mtp)
-        rest = arena - low_ram_gpu_gb(model, vram, ctx, kv, with_mtp)
-        resident = a.low_ram == "resident" or (a.low_ram != "mmap" and low_ram_resident(model, ram, vram, ctx, kv, with_mtp))
+        with_mtp = a.drafter == "mtp" and a.mtp != "off"
+        dflash2_quant = a.dflash2_quant if a.drafter == "dflash2" else None
+        share = low_ram_gpu_share(model, vram, ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant)
+        rest = arena - low_ram_gpu_gb(model, vram, ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant)
+        resident = a.low_ram == "resident" or (a.low_ram != "mmap" and
+                                                 low_ram_resident(model, ram, vram, ctx, kv,
+                                                                  mtp=with_mtp, dflash2_quant=dflash2_quant))
         if multi:      # every chosen card's share (the image encoder on the main one); #364 #384: the mapped variant
-            held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv, with_mtp) +
-                       sum(low_ram_gpu_gb(model, low_ram_vram(x), ctx, kv, with_mtp) for x in chosen[1:]))
+            held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant) +
+                       sum(low_ram_gpu_gb(model, low_ram_vram(x), ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant)
+                           for x in chosen[1:]))
             share, rest = held / arena, arena - held
             # #642: the resident variant on a split, by the same rule as on one card - what no card holds fits the RAM
             resident = resident_split() and (a.low_ram == "resident" or
@@ -9198,8 +9467,13 @@ def main() -> int:
     q2_avx = model == "Q2_0" and avx512 and family == "qwen"
     prep_gb = MODELS[model].get("prepare_gb", 0.0) if ready and MODELS[model].get("prepare") and \
         not prepared_done(model, models_dir) else 0.0
-    margin = 2 if mtp_have else 8                      # working room: a guess, not bytes that will be written
-    mtp_fetch = 5.2 if (not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
+    if a.drafter == "none":
+        margin = 0
+    elif a.dflash2:
+        margin = 4                                # DFlash2 artifact and conversion working space
+    else:
+        margin = 2 if mtp_have else 8
+    mtp_fetch = 5.2 if (a.drafter != "none" and not a.dflash2 and not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
     real = to_fetch + prep_gb + mtp_fetch + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
@@ -9229,9 +9503,19 @@ def main() -> int:
         # a ready-made engine from before NVFP4 / Gyro cannot read these experts: one compiled from this source can
         warn(f"the ready-made engine {meta.get('version')} has no {'NVFP4' if ready else 'Gyro'} experts yet: compiling "
              "the engine from this source")
-        eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk)
+        eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk, dflash2=bool(a.dflash2))
         meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
         lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
+    if a.dflash2:
+        probe_env = dict(os.environ)
+        dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or []
+        key = "PATH" if WIN else "LD_LIBRARY_PATH"
+        probe_env[key] = os.pathsep.join([*(str(d) for d in dirs), probe_env.get(key, "")])
+        probe = subprocess.run([str(eng / EXE), "--help"], capture_output=True, text=True, env=probe_env, timeout=30)
+        if meta.get("dflash2") is not True or "--dflash" not in probe.stdout + probe.stderr:
+            fail("the locally built engine does not advertise DFlash2 support",
+                 "check that STRATA_ENABLE_DFLASH2 was enabled for this CUDA build")
+
     engine_ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     need_engine = MODELS[model].get("engine", UNSLOTH_ENGINE)
     # checked before the 94-188 GB download
@@ -9332,30 +9616,47 @@ def main() -> int:
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              "--experts-bin", *fam.get("pack_args", [])], env=env)       # #3193: Gyro needs --compat-bf16 here too
     ok(f"model prepared: {pack}")
-    mtp = ready_paths(model, models_dir)["mtp"] if prepared else \
-        (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
-    rt = mtp / "rt"
-    corrupt = (rt / "experts.bin").exists() and not prepared and mtp_corrupt(mtp, env)
-    if corrupt:
-        warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
-             "fetching them again and rebuilding the draft layer")
-    if a.mtp == "off" and not (rt / "experts.bin").exists():
-        ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")   # round 8, N3
-    elif corrupt or not (rt / "experts.bin").exists():
-        say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
-        say("  only its ~5 GB of MTP tensors are downloaded.")
-        fetch_mtp(mtp, env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
-             "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
-            env=env)
-    # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
-    draft_vocab = a.draft_vocab or saved_draft_vocab(home() / f"strata-{tag.lower()}.json")
-    if (rt / "experts.bin").exists():
-        refresh_draft_vocab(rt, draft_vocab or "cjk")
-        ok(f"MTP draft layer: {rt}")
-    for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
-        say("  " + line)
+    dflash2 = prepare_dflash2(data, roots, a.dflash2, a.dflash2_quant, env) if a.dflash2 else None
+    draft_vocab = None
+    rt = None
+    if dflash2 is not None:
+        # DFlash2 computes candidates through the full target output head; its checkpoint has no lm_head.
+        try:
+            note = dflash2_artifact_note(dflash2)
+        except ValueError as e:
+            fail(f"--dflash2 {dflash2}: {e}")
+        ok(f"DFlash2 block drafter: {note}")
+        if a.draft_vocab:
+            warn("--draft-vocab applies to MTP or plain DFlash only; DFlash2 uses the full shared target head")
+    elif a.drafter == "mtp":
+        mtp = ready_paths(model, models_dir)["mtp"] if prepared else \
+            (find_in(roots, "mtp/rt/experts.bin") or data / "mtp/rt/experts.bin").parent.parent
+        rt = mtp / "rt"
+        corrupt = (rt / "experts.bin").exists() and not prepared and mtp_corrupt(mtp, env)
+        if corrupt:
+            warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
+                 "fetching them again and rebuilding the draft layer")
+        if a.mtp == "off" and not (rt / "experts.bin").exists():
+            ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")
+        elif corrupt or not (rt / "experts.bin").exists():
+            say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
+            say("  only its ~5 GB of MTP tensors are downloaded.")
+            fetch_mtp(mtp, env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
+                 "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
+                env=env)
+        draft_vocab = a.draft_vocab or saved_draft_vocab(home() / f"strata-{tag.lower()}.json")
+        if (rt / "experts.bin").exists():
+            refresh_draft_vocab(rt, draft_vocab or "cjk")
+            ok(f"MTP draft layer: {rt}")
+        for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):
+            say("  " + line)
+
+    else:
+        ok("model drafter off: no draft model to download or load; prompt lookup stays on")
+        if a.draft_vocab:
+            warn("--draft-vocab applies to MTP; ignored without an MTP drafter")
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -9375,7 +9676,8 @@ def main() -> int:
                       *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
     args = [*model_args,
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            "--prefill", "auto",
+            *drafter_args(dflash2, rt, draft_vocab),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
@@ -9534,7 +9836,7 @@ def main() -> int:
     if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
         # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
         # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.
-        for line in small_card_note(ctx, draft_vocab):   # a recommendation: nothing changes
+        for line in small_card_note(ctx, draft_vocab, mtp=rt is not None):   # a recommendation: nothing changes
             say("  " + line)
     elif hip and a.vram_reserve_mib is None and linux_desktop():
         for line in desktop_reserve_note():              # #560 #516: a recommendation: nothing changes
@@ -9630,6 +9932,19 @@ def main() -> int:
         cfg["api_key"] = a.api_key
     if draft_vocab:
         cfg["draft_vocab"] = draft_vocab
+    if dflash2:
+        cfg["dflash2"] = str(dflash2)
+        cfg["dflash2_quant"] = a.dflash2_quant
+        cfg["dflash2_source"] = a.dflash2
+        cfg["parallel"] = 1
+        previous = ROOT / f"strata-{tag.lower()}.json"
+        source = previous if previous.is_file() else adopted
+        try:
+            old_sampling = json.loads(source.read_text(encoding="utf-8-sig")).get("sampling", {}) if source else {}
+        except (OSError, ValueError, AttributeError):
+            old_sampling = {}
+        cfg["sampling"] = {"temperature": 0.0, **(old_sampling if isinstance(old_sampling, dict) else {})}
+    cfg["drafter"] = a.drafter
     if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
         cfg["open_browser"] = a.browser
     if a.mtp is not None:                              # written only when given (else an earlier choice is carried over)
@@ -9668,6 +9983,8 @@ def main() -> int:
     if a.images:                                       # only when given: else an earlier "images" is carried over
         cfg["images"] = setup_images(a, gpu, hip, Path(a.models_dir))
     cfg_path = home() / f"strata-{tag.lower()}.json"
+    if dflash2:
+        ok("DFlash2 server: greedy requests use the selected drafter; the target verifies every proposal")
     cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
     if cal is not None:
         sys.path.insert(0, str(ROOT / "tools"))
@@ -9707,7 +10024,8 @@ def main() -> int:
         say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
     if cfg.get("images"):
         say(f"  Image generation: POST http://127.0.0.1:{port}/v1/images/generations (OpenAI's images API)")
-    if a.parallel is None:                             # #465: the opt-in, said once (nothing changes)
+    if a.parallel is None and not dflash2:                            # #465: the opt-in, said once (nothing changes)
+
         for line in parallel_note(None, [g.get("vram_gb", 0.0) for g in chosen], MODELS[model]["arena_gb"], ctx, kv,
                                   "--kv-resident" in cfg["args"]):
             say("  " + line)

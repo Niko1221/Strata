@@ -1,0 +1,61 @@
+{
+  "official": {
+    "cases": 8,
+    "tokens": 256,
+    "all_fresh_equal": true,
+    "all_target_equal": true,
+    "expert_slots": {
+      "cached": "2000",
+      "fresh": "2000",
+      "target": "2000"
+    },
+    "reused": {
+      "initial": 0,
+      "live_continuation": 55,
+      "other_conversation": 0,
+      "parked_continuation": 88,
+      "parked_prompt": 16,
+      "rewind": 16,
+      "sampled": 16,
+      "sampled_to_greedy": 72
+    },
+    "sampled_offered": 0,
+    "greedy_after_sampled_offered": 16
+  },
+  "qfuse-before": {
+    "decode_and_teacher_state_equal": false,
+    "continuation_state_equal": false
+  },
+  "qfuse-after": {
+    "decode_and_teacher_state_equal": true,
+    "continuation_state_equal": true
+  },
+  "plain": {
+    "cases": 8,
+    "tokens": 256,
+    "all_fresh_equal": true,
+    "all_target_equal": true,
+    "expert_slots": {
+      "cached": "2000",
+      "fresh": "2000",
+      "target": "2000"
+    },
+    "reused": {
+      "initial": 0,
+      "live_continuation": 55,
+      "other_conversation": 0,
+      "parked_continuation": 88,
+      "parked_prompt": 16,
+      "rewind": 16,
+      "sampled": 16,
+      "sampled_to_greedy": 72
+    },
+    "sampled_offered": 0,
+    "greedy_after_sampled_offered": 17
+  },
+  "tests": {
+    "python": 39,
+    "cpp_cuda": 10,
+    "build": "passed"
+  }
+}

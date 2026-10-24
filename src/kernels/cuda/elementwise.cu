@@ -169,6 +169,18 @@ void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
     sync_if_needed(stream, "f32_to_f16_bulk");
 }
 
+__global__ void from_bf16_bulk_kernel(const uint16_t* x, float* y, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = __uint_as_float((uint32_t) x[i] << 16);
+}
+
+void bf16_to_f32_bulk(const uint16_t* x, float* y, int64_t n, void* stream) {
+    if (n <= 0) return;
+    from_bf16_bulk_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);
+    check_launch("bf16_to_f32_bulk");
+    sync_if_needed(stream, "bf16_to_f32_bulk");
+}
+
 void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
     if (n <= 0) return;
     to_bf16_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, y, n);
@@ -181,6 +193,63 @@ void silu_inplace(float* x, int64_t n, void* stream) {
     silu_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(x, n);
     check_launch("silu_inplace");
     sync_if_needed(stream, "silu_inplace");
+}
+
+__global__ void swiglu_kernel(float* gate, const float* up, int64_t n) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) gate[i] = gate[i] / (1.0f + expf(-gate[i])) * up[i];
+}
+
+void swiglu_inplace(float* gate, const float* up, int64_t n, void* stream) {
+    if (n <= 0) return;
+    swiglu_kernel<<<grid_for(n), THREADS, 0, (cudaStream_t) stream>>>(gate, up, n);
+    check_launch("swiglu_inplace");
+    sync_if_needed(stream, "swiglu_inplace");
+}
+
+__global__ void bf16_gather_strided_kernel(const uint16_t* src, int64_t src_stride, uint16_t* dst,
+                                           int64_t dst_stride, int n) {
+    const int r = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[(int64_t) r * dst_stride + i] = src[(int64_t) r * src_stride + i];
+}
+
+void bf16_gather_strided(const uint16_t* src, int64_t src_stride, uint16_t* dst, int64_t dst_stride,
+                         int n, int rows, void* stream) {
+    if (n <= 0 || rows <= 0) return;
+    dim3 grid((unsigned) ((n + THREADS - 1) / THREADS), (unsigned) rows);
+    bf16_gather_strided_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(src, src_stride, dst, dst_stride, n);
+    check_launch("bf16_gather_strided");
+    sync_if_needed(stream, "bf16_gather_strided");
+}
+
+template<typename T>
+__global__ void dflash_gather_taps_kernel(const T* src, uint16_t* dst, int taps, int hidden,
+                                         int64_t stride, int64_t count) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const int64_t col = i % hidden, tap = (i / hidden) % taps, row = i / ((int64_t) hidden * taps);
+    const auto value = src[tap * stride + row * hidden + col];
+    if constexpr (sizeof(T) == sizeof(float)) dst[i] = bf16_from_f32(value);
+    else dst[i] = value;
+}
+
+template<typename T>
+void gather_taps(const T* src, uint16_t* dst, int taps, int hidden, int rows, int64_t stride, void* stream) {
+    if (rows <= 0 || taps <= 0 || hidden <= 0) return;
+    const int64_t count = (int64_t) rows * taps * hidden;
+    dflash_gather_taps_kernel<<<grid_for(count), THREADS, 0, (cudaStream_t) stream>>>(
+        src, dst, taps, hidden, stride, count);
+    check_launch("dflash_gather_taps");
+    sync_if_needed(stream, "dflash_gather_taps");
+}
+void dflash_gather_taps(const uint16_t* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream) {
+    gather_taps(src, dst, taps, hidden, rows, stride, stream);
+}
+void dflash_gather_taps(const float* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream) {
+    gather_taps(src, dst, taps, hidden, rows, stride, stream);
 }
 
 /// THE DOORBELL.  One thread, one INCREMENT - the cost is the launch, and inside a graph that is paid once.

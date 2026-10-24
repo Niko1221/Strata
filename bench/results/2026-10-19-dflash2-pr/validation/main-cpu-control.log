@@ -1,0 +1,31 @@
+Internal ctest changing into directory: [VALIDATION_ROOT]/main-cpu
+Test project [VALIDATION_ROOT]/main-cpu
+    Start 39: native_hadamard_test
+1/4 Test #39: native_hadamard_test .............***Failed    0.00 sec
+this ggml has no trellis types (build with STRATA_GGML_DIR = the agention fork)
+FWHT vs dense normalized Sylvester matrix: max abs diff 3.35e-07  ok
+
+    Start 40: tq_cpu_parity
+2/4 Test #40: tq_cpu_parity ....................***Failed    0.00 sec
+this ggml has no trellis types (build with STRATA_GGML_DIR = the agention llama.cpp fork)
+
+    Start 41: tq_cpu_parity_avx2
+3/4 Test #41: tq_cpu_parity_avx2 ...............***Failed    0.01 sec
+this ggml has no trellis types (build with STRATA_GGML_DIR = the agention llama.cpp fork)
+
+    Start 46: isa_guard_check
+4/4 Test #46: isa_guard_check ..................***Failed    0.83 sec
+check_isa_guard: [VALIDATION_ROOT]/main-cpu/libstrata_kernels_cpu.a: 482 functions, 70 hold wide-ISA instructions, 1 not allowed
+  VIOLATION strata::kernels::cpu::tq_detail::tq_rows_avx512(int, unsigned char const*, unsigned long, int, strata::kernels::cpu::tq_detail::TqAct const* const*, int, float* (606 wide instructions, first vmovq): wide-ISA code outside the wide-ISA translation units (object tq_avx512.cpp.o) [tq_avx512.cpp.o]
+
+
+0% tests passed, 4 tests failed out of 4
+
+Total Test time (real) =   0.85 sec
+
+The following tests FAILED:
+	 39 - native_hadamard_test (Failed)
+	 40 - tq_cpu_parity (Failed)
+	 41 - tq_cpu_parity_avx2 (Failed)
+	 46 - isa_guard_check (Failed)
+Errors while running CTest

@@ -1,0 +1,79 @@
+{
+  "info": {
+    "logit_bias": "1",
+    "context": "4096",
+    "kv": "int8",
+    "kv_resident": "0",
+    "expert_slots": "2000",
+    "expert_cache_mib": "5273",
+    "expert_slots_primary": "2000",
+    "expert_cache_primary_mib": "5273",
+    "spec": "2",
+    "mtp_max": "0",
+    "lookup": "0",
+    "vram_free_mib": "4407",
+    "cvec": "0",
+    "arena_mib": "64800",
+    "pool_workers": "11",
+    "pcie_frac": "0.00",
+    "spec_min_p": "0.00",
+    "dflash_block": "0",
+    "dflash_max": "0",
+    "conversation_cache_mib": "0",
+    "conversation_cache_slots": "4",
+    "conversation_cache_min_free_mib": "2560",
+    "conversation_cache_min_tokens": "0",
+    "tail_role_token": "-1",
+    "vram_elastic": "0",
+    "prefill_cap": "512",
+    "prefill_stages": "1",
+    "stream_all_min": "1024",
+    "prefill_pipe": "0",
+    "engine": "0.1.45"
+  },
+  "records": {
+    "decode": {
+      "tokens": [7145, 281, 56374, 87, 61, 17, 13, 7145, 281, 56374, 87, 28430, 2007, 471, 561, 30761, 369, 264, 13, 7145, 279, 30761, 281, 56374, 87, 28430, 7, 18, 13, 7145, 281, 56374],
+      "decode_ms": 1361.4,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 32 24 731.7 1361.4 length 0 0 0 880 15360 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+    },
+    "live": {
+      "tokens": [
+        7145
+      ],
+      "decode_ms": 39.3,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 57 41.3 39.3 length 0 0 55 54 480 0 0 0.0 2 0 chunk=0 experts_streamed=0"
+    },
+    "reset": {
+      "tokens": [
+        271
+      ],
+      "decode_ms": 41.8,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 7 173.3 41.8 length 0 0 0 46 480 0 0 0.0 7 0 chunk=0 experts_streamed=0"
+    },
+    "teacher_forced": {
+      "tokens": [
+        56374
+      ],
+      "decode_ms": 40.6,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 55 1546.3 40.6 length 0 0 0 31 480 0 0 0.0 55 0 chunk=0 experts_streamed=0"
+    },
+    "teacher_continuation": {
+      "tokens": [
+        7145
+      ],
+      "decode_ms": 39.0,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 57 40.8 39.0 length 0 0 55 52 480 0 0 0.0 2 0 chunk=0 experts_streamed=0"
+    }
+  }
+}

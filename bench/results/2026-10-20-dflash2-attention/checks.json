@@ -1,0 +1,8 @@
+{
+  "code": true,
+  "long": true,
+  "equal_before_after_expert_slots": true,
+  "attention_dump_bytes": 458752,
+  "attention_dump_all_bits_equal": true,
+  "attention_dump_sha256": "35ff92a7bfec09282dbaa092d2db8de2de4ede70b81a088c412a4ba8724bc62c"
+}

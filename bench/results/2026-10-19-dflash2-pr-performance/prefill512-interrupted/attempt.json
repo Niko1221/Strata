@@ -1,0 +1,5 @@
+{
+  "excluded": true,
+  "orchestrator_exit_code": 143,
+  "reason": "Stopped partial MTP attempt to use prefill=256 consistently for every final arm; final series started after complete process teardown."
+}

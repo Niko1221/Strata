@@ -1,0 +1,50 @@
+diff --git a/src/kernels/cuda/dflash2.cu b/src/kernels/cuda/dflash2.cu
+index be742972..51f464a6 100644
+--- a/src/kernels/cuda/dflash2.cu
++++ b/src/kernels/cuda/dflash2.cu
+@@ -391,7 +391,7 @@ __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_
+     if (out) out[i] = sum;
+     if (out_bf16) out_bf16[i] = bf16_from_f32(sum);
+ }
+-template<bool Canonical, bool Paired, int PageShift = 6>
++template<bool Canonical, bool Paired, int PageShift = 6, bool WarpMax = false>
+ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uint16_t* v,
+                                     const int32_t* table, const int32_t* steps, float* scratch,
+                                     int rows, int heads, int kv_heads, int page_size, int chunks, int window) {
+@@ -425,7 +425,16 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
+     }
+     __syncthreads();
+     float m = -INFINITY;
+-    for (int c = 0; c < 64; ++c) m = fmaxf(m, scores[c]);
++    if constexpr (WarpMax) {
++        // Every warp obtains the same maximum from two cells per lane.
++        // Only the maximum is reassociated; ordered softmax/value sums stay
++        // unchanged so this does not change the attention arithmetic.
++        m = fmaxf(scores[lane], scores[lane + 32]);
++        for (int offset = 16; offset; offset >>= 1)
++            m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, offset));
++    } else {
++        for (int c = 0; c < 64; ++c) m = fmaxf(m, scores[c]);
++    }
+     // Value components share their softmax weights and the address staged
+     // by QK. Compute expf once per cell, keeping the original ordered sums
+     // and masked-cell skip.
+@@ -486,11 +495,17 @@ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, con
+         const char* value = std::getenv("STRATA_DFLASH2_SMALL_PAGE_ATTENTION");
+         return value && value[0] == '1';
+     }();
++    static const bool warp_max = [] {
++        const char* value = std::getenv("STRATA_DFLASH2_WARP_ATTENTION_MAX");
++        return value && value[0] == '1';
++    }();
+     // The official geometry uses power-of-two pages and four Q heads per KV
+     // head. Its addresses need shifts, not runtime integer divisions. Other
+     // geometries keep the general indexing path.
+     if (small_page && heads == 32 && kv_heads == 8 && page_size == 4) {
+-        if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
++        if (warp_max && active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
++            attention128_kernel<true, true, 2, true><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
++        else if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
+             attention128_kernel<true, true, 2><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+         else
+             attention128_kernel<true, false, 2><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);

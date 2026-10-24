@@ -1,0 +1,18 @@
+# Last 20 lines of the full local build log
+[1/13] Building CXX object CMakeFiles/dflash_head_bf16_test.dir/tests/core/dflash_head_bf16_test.cpp.o
+[2/13] Building CXX object CMakeFiles/dflash_rope_parity.dir/src/kernels/dflash_rope_parity.cpp.o
+[3/13] Building CXX object CMakeFiles/dflash_owned_kv_test.dir/tests/core/dflash_owned_kv_test.cpp.o
+<repo>/tests/core/dflash_owned_kv_test.cpp: In function ‘void {anonymous}::append_and_readback(const Owned&, const strata::core::ModelGeometry&, const std::vector<int>&)’:
+<repo>/tests/core/dflash_owned_kv_test.cpp:90:63: warning: unused parameter ‘g’ [-Wunused-parameter]
+   90 | void append_and_readback(const Owned& o, const ModelGeometry& g, const std::vector<int32_t>& table) {
+      |                                          ~~~~~~~~~~~~~~~~~~~~~^
+[4/13] Building CXX object CMakeFiles/dflash_taps_test.dir/src/kernels/dflash_taps_test.cpp.o
+[5/13] Building CXX object CMakeFiles/dflash_policy_test.dir/src/spec/dflash_policy_test.cpp.o
+[6/13] Building CXX object CMakeFiles/dflash_load_test.dir/src/core/dflash_load_test.cpp.o
+[7/13] Linking CXX executable dflash_taps_test
+[8/13] Linking CXX executable dflash_rope_parity
+[9/13] Linking CXX executable dflash_policy_test
+[10/13] Linking CXX executable dflash_head_bf16_test
+[11/13] Linking CXX executable dflash_owned_kv_test
+[12/13] Building CXX object CMakeFiles/dflash_load_test.dir/src/core/dflash.cpp.o
+[13/13] Linking CXX executable dflash_load_test

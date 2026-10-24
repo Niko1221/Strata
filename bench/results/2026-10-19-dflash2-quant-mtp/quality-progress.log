@@ -1,0 +1,5 @@
+START bf16-prose index 95 slots 3040
+PASS bf16-prose exact versus same-placement deterministic target-only
+START bf16-long index 83 slots 3040
+PASS bf16-long exact versus same-placement deterministic target-only
+PASS: all checked requests match a target control or have a measured top-two near-tie.

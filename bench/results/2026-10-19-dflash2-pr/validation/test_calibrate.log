@@ -1,0 +1,25 @@
+..................................
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: --pcie-frac 0.20 (61.2 tok/s)
+.
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: STRATA_SH_STREAM=1 (70.1 tok/s)
+
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [ok] tuned for this PC: the default settings are already the fastest here (65.0 tok/s)
+..
+  Tuning Strata for this PC: the output speed is measured with a few engine settings (the PCIe share, the
+  draft probability/forward length, the CPU threads, the expert cache; on two or more cards also the prompt chunks). It takes
+  roughly 15-30 minutes (3 rounds of each value); the PC is busy meanwhile.
+  [!]  the tuning did not finish (the engine exited before it was ready): the default settings stay
+..
+----------------------------------------------------------------------
+Ran 39 tests in 0.146s
+
+OK

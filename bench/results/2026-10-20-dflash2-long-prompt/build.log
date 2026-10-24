@@ -1,0 +1,6 @@
+[1/2] Building CXX object CMakeFiles/strata.dir/src/program/generate.cpp.o
+./src/program/generate.cpp: In lambda function:
+./src/program/generate.cpp:11839:30: warning: unused variable ‘w’ [-Wunused-variable]
+11839 |                 const double w = (double) bt_windows, wall = std::chrono::duration<double, std::milli>(Clock::now() - bt_start).count();
+      |                              ^
+[2/2] Linking CXX executable strata

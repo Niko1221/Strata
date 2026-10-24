@@ -1,0 +1,17 @@
+Q5_0 warm code 3 43.952
+Q5_0 warm math 3 43.804
+Q5_0 warm prose 3 33.7
+Q5_0 warm long 3 43.357
+Q5_0 0 code 3 45.208 66 87
+Q5_0 0 math 3 44.743 69 78
+Q5_0 0 prose 3 33.714 54 123
+Q5_0 0 long 3 43.686 62 99
+Q5_0 1 code 3 45.187 66 87
+Q5_0 1 math 3 44.868 69 78
+Q5_0 1 prose 3 34.154 54 123
+Q5_0 1 long 3 44.13 62 99
+Q5_0 2 code 3 44.78 66 87
+Q5_0 2 math 3 45.586 69 78
+Q5_0 2 prose 3 32.59 54 123
+Q5_0 2 long 3 43.886 62 99
+Q5_0 QUALITY prose same-placement target match True auto-AR match False

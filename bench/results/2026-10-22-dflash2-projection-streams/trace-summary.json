@@ -1,0 +1,384 @@
+{
+  "trace_sha256": "1cb1e4682153aa8e2db493556c5f8fadb57012e2ddc3dfd9994ef8e133e6eb9b",
+  "graphs": [
+    {
+      "graph_id": 14,
+      "streams": [
+        14,
+        31,
+        32
+      ],
+      "branch_kernel_count": 255,
+      "branch_kernels_overlapping_another_projection": 255,
+      "examples": [
+        {
+          "streams": [
+            31,
+            14
+          ],
+          "overlap_ns": 5184,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)2, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)2, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            32,
+            14
+          ],
+          "overlap_ns": 1216,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)2, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)2, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            31,
+            14
+          ],
+          "overlap_ns": 8224,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)2, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)2, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 17,
+      "streams": [
+        14,
+        35,
+        36
+      ],
+      "branch_kernel_count": 150,
+      "branch_kernels_overlapping_another_projection": 150,
+      "examples": [
+        {
+          "streams": [
+            35,
+            14
+          ],
+          "overlap_ns": 4768,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            36,
+            14
+          ],
+          "overlap_ns": 800,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            35,
+            14
+          ],
+          "overlap_ns": 5440,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)4, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 23,
+      "streams": [
+        14,
+        41,
+        42
+      ],
+      "branch_kernel_count": 75,
+      "branch_kernels_overlapping_another_projection": 75,
+      "examples": [
+        {
+          "streams": [
+            41,
+            14
+          ],
+          "overlap_ns": 4192,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            42,
+            41
+          ],
+          "overlap_ns": 5888,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            41,
+            14
+          ],
+          "overlap_ns": 6176,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 26,
+      "streams": [
+        14,
+        45,
+        46
+      ],
+      "branch_kernel_count": 15,
+      "branch_kernels_overlapping_another_projection": 15,
+      "examples": [
+        {
+          "streams": [
+            45,
+            14
+          ],
+          "overlap_ns": 4224,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            46,
+            45
+          ],
+          "overlap_ns": 6432,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            45,
+            14
+          ],
+          "overlap_ns": 6495,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 29,
+      "streams": [
+        14
+      ],
+      "branch_kernel_count": 0,
+      "branch_kernels_overlapping_another_projection": 0,
+      "examples": []
+    },
+    {
+      "graph_id": 32,
+      "streams": [
+        14
+      ],
+      "branch_kernel_count": 0,
+      "branch_kernels_overlapping_another_projection": 0,
+      "examples": []
+    },
+    {
+      "graph_id": 35,
+      "streams": [
+        14,
+        51,
+        52
+      ],
+      "branch_kernel_count": 75,
+      "branch_kernels_overlapping_another_projection": 75,
+      "examples": [
+        {
+          "streams": [
+            51,
+            14
+          ],
+          "overlap_ns": 4256,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            52,
+            51
+          ],
+          "overlap_ns": 6176,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            51,
+            14
+          ],
+          "overlap_ns": 6688,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 38,
+      "streams": [
+        14,
+        55,
+        56
+      ],
+      "branch_kernel_count": 15,
+      "branch_kernels_overlapping_another_projection": 15,
+      "examples": [
+        {
+          "streams": [
+            55,
+            14
+          ],
+          "overlap_ns": 4352,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            56,
+            55
+          ],
+          "overlap_ns": 6272,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            55,
+            14
+          ],
+          "overlap_ns": 4992,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 41,
+      "streams": [
+        14,
+        59,
+        60
+      ],
+      "branch_kernel_count": 75,
+      "branch_kernels_overlapping_another_projection": 75,
+      "examples": [
+        {
+          "streams": [
+            59,
+            14
+          ],
+          "overlap_ns": 4256,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            60,
+            59
+          ],
+          "overlap_ns": 6432,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            59,
+            14
+          ],
+          "overlap_ns": 6368,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    },
+    {
+      "graph_id": 44,
+      "streams": [
+        14,
+        63,
+        64
+      ],
+      "branch_kernel_count": 15,
+      "branch_kernels_overlapping_another_projection": 15,
+      "examples": [
+        {
+          "streams": [
+            63,
+            14
+          ],
+          "overlap_ns": 4416,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            64,
+            63
+          ],
+          "overlap_ns": 6528,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        },
+        {
+          "streams": [
+            63,
+            14
+          ],
+          "overlap_ns": 4831,
+          "kernels": [
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)",
+            "void strata::kernels::<unnamed>::native_mmvq_multi_kernel<strata::kernels::<unnamed>::SmallTraits<strata::kernels::<unnamed>::Q80Block, (int)8>, (int)8, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const T1::Block *, const strata::kernels::<unnamed>::Q81Block *, float *, int, int, const T1::Block *, float *, const int *)"
+          ]
+        }
+      ]
+    }
+  ],
+  "successful_graph_instantiations": 15
+}

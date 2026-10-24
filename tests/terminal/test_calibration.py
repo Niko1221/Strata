@@ -21,6 +21,17 @@ import setup
 
 
 class CalibrationFlowTests(unittest.TestCase):
+    def test_dflash2_profile_settings_are_bounded(self):
+        values = {"--prefill": "512", "--short-read": "64", "--expert-cache": "2900",
+                  "--vram-reserve-mib": "1024", "--dflash-block": "6"}
+        self.assertEqual(calibration._validate_settings(values), values)
+        self.assertEqual(calibration._validate_settings({"--short-read": "0"}), {"--short-read": "0"})
+        self.assertEqual(calibration._validate_settings({"--prefill": "auto"}), {"--prefill": "auto"})
+        for bad in ({"--dflash-block": "8"}, {"--prefill": "-1"}, {"--expert-cache": "auto"},
+                    {"--vram-reserve-mib": "nan"}, {"--short-read": "999999999999"}):
+            with self.subTest(bad=bad), self.assertRaises(profiles.ProfileError):
+                calibration._validate_settings(bad)
+
     def test_mac_ram_identity_is_available_without_proc_meminfo(self):
         with mock.patch.object(setup, "WIN", False), \
                 mock.patch.object(setup.sys, "platform", "darwin"), \

@@ -1,0 +1,3 @@
+strata generate: memory guard: limit 125.7 GiB (source: meminfo), current 73.5 GiB, reclaimable cache credited 0.0 GiB; available 52.2 GiB (MemAvailable 52.2 GiB), floor 2560 MiB
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native embedding: cannot pin 1212 MiB: out of memory, nor place it in VRAM

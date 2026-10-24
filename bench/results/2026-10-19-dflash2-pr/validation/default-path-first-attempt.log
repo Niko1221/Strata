@@ -1,0 +1,6 @@
+START baseline-ar
+Traceback (most recent call last):
+  File "./bench/results/2026-10-19-dflash2-pr/default_path.py", line 53, in <module>
+    assert 'error' not in r and len(r['tokens']) == 32,r
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'tokens': [248046], 'decode_ms': 42.0, 'accepted': 0, 'offered': 0, 'done': 'DONE 1 512 2237.6 42.0 stop 0 0 0 35 480 0 0 0.0 512 0 chunk=256 experts_streamed=17890'}

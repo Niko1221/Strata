@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace strata::kernels {
 
@@ -140,24 +141,29 @@ bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
+// Project only selected weight rows, with no copied head. ids contains nr valid
+// source row indices on the device; y has nc columns of nr floats. The caller
+// validates the indices before upload. Uses the exact reduction (wave64 on gfx906).
+void native_mmvq_indexed(int type, const void* weights, const void* x, float* y, int ni, int nr, int nc,
+                         const int32_t* ids, void* stream);
 /// S26 STRATA_LFUSE: native_mmvq(w1 -> y1) and native_mmvq(w2 -> y2), same type / shape / input, in ONE launch,
 /// bitwise the two calls. Returns false (nothing launched) where that is not the case (Q8_0, 2-8 columns only).
 bool native_mmvq_pair(int ggml_type, const void* w1, const void* w2, const void* x_q8_1, float* y1, float* y2,
                       int n_in, int n_out, int ncols, void* stream);
 
-// Fork F4 (Eddoursul): 2..4 columns also INTERLEAVED, so one 16-byte load reads a position of every column: CP = 2 (2
-// columns) or 4 (3-4), zero-padded; nb = n_in / 32 blocks; int32 bm[nb][8][CP] (block-major), int32 pm[8][nb][CP]
+// Fork F4 (Eddoursul): 2..8 columns also INTERLEAVED: CP = 2 (2 columns), 4 (3-4) or 8 (5-8), zero-padded; nb = n_in / 32 blocks; int32 bm[nb][8][CP] (block-major), int32 pm[8][nb][CP]
 // (position-major), float d[nb][CP] (each block's scale as the dots read it, __low2float of ds).
 constexpr int native_q8_1_il_cp(int ncols) { return ncols <= 2 ? 2 : ncols <= 4 ? 4 : 8; }
 std::size_t native_q8_1_il_bytes(int n_in, int ncols);
-// Writes the interleaved copy of 2..4 columns of plain q8_1 blocks (native_quantize_q8_1's, or a fused producer's)
+// Writes the interleaved copy of 2..8 columns of plain q8_1 blocks (native_quantize_q8_1's, or a fused producer's)
 // to x_il (native_q8_1_il_bytes): the same values in the same bytes.
-/// native_quantize_q8_1 and native_q8_1_interleave in one launch (CUDA): the same bytes in both buffers.
+/// Two to four columns only: native_quantize_q8_1 and native_q8_1_interleave in one launch (CUDA): the same bytes in both buffers.
 void native_quantize_q8_1_il(const float* x, void* x_q8_1, void* x_il, int n_in, int ncols, void* stream);
 void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols, void* stream);
-// True when native_mmvq_il runs its own kernel for this call (IQ4_XS, Q4_K, Q5_K, Q6_K, 2-4 columns, the exact layout).
+// True when native_mmvq_il runs its own kernel for this call (Q8_0, IQ4_XS and K-quants,
+// 1-8 columns, where enabled by the measured architecture/shape table).
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out);
-// native_mmvq for 2..4 columns whose copy native_q8_1_interleave wrote, bitwise native_mmvq's output: kernels in which a
+// native_mmvq for 1..8 columns whose copy native_q8_1_interleave wrote, bitwise native_mmvq's output: kernels in which a
 // warp takes 1, 2 or 4 rows and reads the columns from the interleaved copy; native_mmvq (x_q8_1) when not supported.
 void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, const void* x_il, float* y, int n_in,
                     int n_out, int ncols, void* stream);

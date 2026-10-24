@@ -1,0 +1,1 @@
+avx2  threads 11  tokens 1  prefetch 2048: 100.5 ms for 1536 experts -> 42.2 GB/s, 720.0 us/expert/thread

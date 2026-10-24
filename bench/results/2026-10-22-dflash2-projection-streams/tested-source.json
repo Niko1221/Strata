@@ -1,0 +1,8 @@
+{
+  "parent_commit": "01ce5b5b7cbe4f4cb1156b7c8a785f5bb18b3662",
+  "source_sha256": {
+    "include/strata/core/dflash.hpp": "f7aa3251de9cab104dc76e38d8a8e530e61e8826aaaac4ffe38fc7c205a15f43",
+    "src/core/dflash_runtime.cpp": "a3a37871bd5a2e3a12cdcf0eb4a0f8a7e3753df437cb49c5f62b27ba80e8bed9"
+  },
+  "engine_sha256": "67377815c48f196d4a1d88e1f970d031fc0d4754b7a8444bcfe76210fa048ee5"
+}

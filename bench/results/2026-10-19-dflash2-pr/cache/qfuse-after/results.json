@@ -1,0 +1,79 @@
+{
+  "info": {
+    "logit_bias": "1",
+    "context": "4096",
+    "kv": "int8",
+    "kv_resident": "0",
+    "expert_slots": "2000",
+    "expert_cache_mib": "5273",
+    "expert_slots_primary": "2000",
+    "expert_cache_primary_mib": "5273",
+    "spec": "2",
+    "mtp_max": "0",
+    "lookup": "0",
+    "vram_free_mib": "4407",
+    "cvec": "0",
+    "arena_mib": "64800",
+    "pool_workers": "11",
+    "pcie_frac": "0.00",
+    "spec_min_p": "0.00",
+    "dflash_block": "0",
+    "dflash_max": "0",
+    "conversation_cache_mib": "0",
+    "conversation_cache_slots": "4",
+    "conversation_cache_min_free_mib": "2560",
+    "conversation_cache_min_tokens": "0",
+    "tail_role_token": "-1",
+    "vram_elastic": "0",
+    "prefill_cap": "512",
+    "prefill_stages": "1",
+    "stream_all_min": "1024",
+    "prefill_pipe": "0",
+    "engine": "0.1.45"
+  },
+  "records": {
+    "decode": {
+      "tokens": [7145, 281, 7, 19, 553, 271, 1206, 1423, 281, 7, 19, 681, 26782, 830, 283, 220, 19, 1083, 279, 709, 25, 281, 7, 19, 8, 283, 220, 18, 7, 19, 28803, 17],
+      "decode_ms": 1364.2,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 32 24 741.7 1364.2 length 0 0 0 1731 15360 0 0 0.0 24 0 chunk=0 experts_streamed=0"
+    },
+    "live": {
+      "tokens": [
+        5339
+      ],
+      "decode_ms": 37.4,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 57 42.6 37.4 length 0 0 55 80 480 0 0 0.0 2 0 chunk=0 experts_streamed=0"
+    },
+    "reset": {
+      "tokens": [
+        271
+      ],
+      "decode_ms": 41.2,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 7 176.1 41.2 length 0 0 0 46 480 0 0 0.0 7 0 chunk=0 experts_streamed=0"
+    },
+    "teacher_forced": {
+      "tokens": [
+        17
+      ],
+      "decode_ms": 39.8,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 55 1586.0 39.8 length 0 0 0 43 480 0 0 0.0 55 0 chunk=0 experts_streamed=0"
+    },
+    "teacher_continuation": {
+      "tokens": [
+        5339
+      ],
+      "decode_ms": 38.2,
+      "accepted": 0,
+      "offered": 0,
+      "done": "DONE 1 57 41.5 38.2 length 0 0 55 80 480 0 0 0.0 2 0 chunk=0 experts_streamed=0"
+    }
+  }
+}

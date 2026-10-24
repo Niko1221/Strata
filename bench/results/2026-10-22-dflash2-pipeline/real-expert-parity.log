@@ -1,0 +1,391 @@
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 3 of 3 jobs claimed, 3 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 1 of 1 jobs claimed, 1 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 41 of 41 jobs claimed, 41 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 2560 of 2560 jobs claimed, 2560 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=parked w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=parked w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=parked w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads]
+  expert pool threads: w0=parked w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 6 of 6 claimed, 6 done, 2 parked, 2 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 2 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked w2=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 2 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 2 parked, 2 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 9 of 9 claimed, 9 done, 3 parked, 3 threads; slice 1: batch epoch 4, 6 of 6 claimed, 6 done, 2 parked, 2 threads]
+  expert pool threads: w0=parked w1=parked w2=parked w3=parked w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 3 parked, 3 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=parked w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 3 parked, 3 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 2 threads]
+  expert pool threads: w0=parked w1=parked w2=parked w3=parked w4=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 3 parked, 3 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 2 parked, 2 threads]
+  expert pool threads: w0=parked w1=sleeping w2=parked w3=sleeping w4=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 0 parked, 1 threads]
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 0 parked, 1 threads]
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 0 parked, 1 threads]
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 0 parked, 1 threads]
+  expert pool threads: w0=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 6 of 6 claimed, 6 done, 1 parked, 2 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 2 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 2 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 2 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 6 of 6 claimed, 6 done, 2 parked, 2 threads; slice 1: batch epoch 4, 6 of 6 claimed, 6 done, 1 parked, 2 threads]
+  expert pool threads: w0=parked w1=parked w2=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 2 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=parked w2=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 2 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 2 threads]
+  expert pool threads: w0=parked w1=parked w2=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 2 parked, 2 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 1 parked, 2 threads]
+  expert pool threads: w0=parked w1=sleeping w2=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 9 of 9 claimed, 9 done, 3 parked, 3 threads; slice 1: batch epoch 4, 9 of 9 claimed, 9 done, 2 parked, 3 threads]
+  expert pool threads: w0=parked w1=parked w2=parked w3=parked w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 4 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 3 parked, 3 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 3 parked, 3 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 3 threads]
+  expert pool threads: w0=parked w1=parked w2=parked w3=parked w4=parked; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1280 of 1280 claimed, 1280 done, 3 parked, 3 threads; slice 1: batch epoch 4, 1280 of 1280 claimed, 1280 done, 2 parked, 3 threads]
+  expert pool threads: w0=parked w1=parked w2=parked w3=parked w4=parked; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 3 of 3 jobs claimed, 3 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 1 of 1 jobs claimed, 1 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 41 of 41 jobs claimed, 41 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 4, batch epoch 4: 4096 of 4096 jobs claimed, 4096 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 1 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 6 of 6 claimed, 6 done, 2 parked, 2 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 2 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 2 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 2 parked, 2 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 9 of 9 claimed, 9 done, 3 parked, 3 threads; slice 1: batch epoch 4, 6 of 6 claimed, 6 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 4 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 3 parked, 3 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 3 parked, 3 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 3 parked, 3 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 0 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 1 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 6 of 6 claimed, 6 done, 1 parked, 2 threads; slice 1: batch epoch 4, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 2 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 2 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 2 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 6 of 6 claimed, 6 done, 2 parked, 2 threads; slice 1: batch epoch 4, 6 of 6 claimed, 6 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 2 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 2 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 2 parked, 2 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 9 of 9 claimed, 9 done, 3 parked, 3 threads; slice 1: batch epoch 4, 9 of 9 claimed, 9 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 1 of 1 claimed, 1 done, 3 parked, 3 threads; slice 1: batch epoch 4, 1 of 1 claimed, 1 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 4 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 20 of 20 claimed, 20 done, 3 parked, 3 threads; slice 1: batch epoch 4, 20 of 20 claimed, 20 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 4, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 4, 2048 of 2048 claimed, 2048 done, 3 parked, 3 threads; slice 1: batch epoch 4, 2048 of 2048 claimed, 2048 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 8, batch epoch 8: 3 of 3 jobs claimed, 3 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 8, batch epoch 8: 1 of 1 jobs claimed, 1 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 8, batch epoch 8: 41 of 41 jobs claimed, 41 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: the pool has 1 thread, the split needs 2 or more
+  expert pool: epoch 8, batch epoch 8: 2560 of 2560 jobs claimed, 2560 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 3 of 3 claimed, 3 done, 1 parked, 1 threads; slice 1: batch epoch 8, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 1 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 1 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 6 of 6 claimed, 6 done, 2 parked, 2 threads; slice 1: batch epoch 8, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 2 parked, 2 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 2 parked, 2 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 2 parked, 2 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 9 of 9 claimed, 9 done, 3 parked, 3 threads; slice 1: batch epoch 8, 6 of 6 claimed, 6 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 3 parked, 3 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 3 parked, 3 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 3 parked, 3 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 2 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 3 of 3 claimed, 3 done, 1 parked, 1 threads; slice 1: batch epoch 8, 3 of 3 claimed, 3 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 1 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 1 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 1 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 1 of 1 workers parked, 1 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 0 parked, 1 threads]
+  expert pool threads: w0=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 6 of 6 claimed, 6 done, 1 parked, 2 threads; slice 1: batch epoch 8, 3 of 3 claimed, 3 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 2 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 2 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 1 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 2 of 2 workers parked, 2 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 2 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 1 threads]
+  expert pool threads: w0=sleeping w1=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 6 of 6 claimed, 6 done, 2 parked, 2 threads; slice 1: batch epoch 8, 6 of 6 claimed, 6 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 2 parked, 2 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 1 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 2 parked, 2 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 2 threads, slice 1 = 2 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 3 of 3 workers parked, 3 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 2 parked, 2 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 1 parked, 2 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 9 of 9 claimed, 9 done, 3 parked, 3 threads; slice 1: batch epoch 8, 9 of 9 claimed, 9 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1 of 1 claimed, 1 done, 3 parked, 3 threads; slice 1: batch epoch 8, 1 of 1 claimed, 1 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 20 of 20 claimed, 20 done, 3 parked, 3 threads; slice 1: batch epoch 8, 20 of 20 claimed, 20 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split on (test, no real nodes): slice 0 = 3 threads, slice 1 = 3 threads
+  expert pool: epoch 8, batch epoch 0: 0 of 0 jobs claimed, 0 done; 5 of 5 workers parked, 5 sleeping; mode 0
+  expert pool NUMA slices: [ slice 0: batch epoch 8, 1280 of 1280 claimed, 1280 done, 3 parked, 3 threads; slice 1: batch epoch 8, 1280 of 1280 claimed, 1280 done, 2 parked, 3 threads]
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping; host idle for 0 ms
+strata cpu pool: NUMA split off: STRATA_EXCHANGE_ROTATE=1 moves experts between slots, the split needs fixed slots
+strata cpu pool: NUMA split off: the pool's threads span 1 NUMA node(s), the NUMA split supports exactly 2
+strata cpu pool: NUMA split off: the pool's threads span 1 NUMA node(s), the NUMA split supports exactly 2
+strata cpu pool: NUMA split off: unknown STRATA_NUMA_SPLIT value 'off' (use 1 or test)
+strata cpu pool: NUMA split off: unknown STRATA_NUMA_SPLIT value 'yes' (use 1 or test)
+strata cpu pool: NUMA pool off (STRATA_NUMA_POOL=0): one NUMA node, the pool runs as before
+strata cpu pool: NUMA pool off (STRATA_NUMA_POOL=0): one NUMA node, the pool runs as before
+strata cpu pool: NUMA pool on: 2 NUMA nodes found, one slice of the pool per node (STRATA_NUMA_POOL=0 turns it off)
+strata cpu pool: NUMA split on: slice 0 = node 0 (5 threads), slice 1 = node 1 (4 threads)
+strata cpu pool: NUMA pool off (STRATA_NUMA_POOL=0): 2 NUMA nodes found, the pool runs as before
+strata cpu pool: NUMA pool off: STRATA_EXCHANGE_ROTATE=1 moves experts between slots, the split needs fixed slots (2 NUMA nodes found), the pool runs as before
+strata cpu pool: NUMA pool off: the pool's threads span 3 NUMA node(s), the NUMA split supports exactly 2 (3 NUMA nodes found), the pool runs as before
+pool tasks: modes 0-4 interleaved under the split SKIPPED (missing AVX512F AVX512BW AVX512VL AVX512-VNNI AVX512-VBMI)
+pool tasks: real split off: the pool's threads span 1 NUMA node(s), the NUMA split supports exactly 2
+pool tasks: default pool under the split: 11 workers on 1 socket(s), split off: the pool's threads span 1 NUMA node(s), the NUMA split supports exactly 2 (every physical core but the host's)
+pool tasks: nothing set: split off
+pool tasks: fake two nodes, nothing set: split on (5 + 4 cores)
+pool tasks: one node: 11 workers and the same cores as with no topology override
+pool tasks: 360 bitwise comparisons passed, 192 of them in NUMA-split mode (0 with modes 0-4 interleaved)

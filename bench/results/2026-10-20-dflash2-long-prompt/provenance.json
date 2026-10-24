@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-20",
+  "base_commit": "86af7286254d1efb148cf0aa8c9a96868d4e9f09",
+  "tested_source": {
+    "src/program/generate.cpp": "dbe79b2d441d3566ddac9d18179baf07e32e5466e68f28de07da4424742066f1"
+  },
+  "before_executable_sha256": "863dea87997647a1179f483fc8c283c6eb6b4d7cd65dd1f1134ce6ec06f99f46",
+  "after_executable_sha256": "385e0436fdeffdf4ea3229ffa35b50bd3ce7dd4be1e4466e7e9b8fc3979296f0",
+  "q4_gguf_sha256": "f8ca73fc3749a061af19eec1c7d798c60e61f49d079df6671b9034866a6fd3d5",
+  "expert_profile_sha256": "8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf",
+  "platform": "Linux 6.12.113+deb13-amd64",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER, 16376 MiB, 610.57.04",
+  "cpu": "AMD Ryzen 9 5900X",
+  "build_commands": [
+    [
+      "cmake",
+      "--build",
+      "build-dflash2",
+      "--target",
+      "strata",
+      "dflash2_parity",
+      "-j",
+      "4"
+    ],
+    [
+      "ctest",
+      "--test-dir",
+      "build-dflash2",
+      "-R",
+      "dflash2_parity|dflash_policy|dflash_load",
+      "--output-on-failure"
+    ],
+    [
+      "cmake",
+      "--build",
+      "build",
+      "--target",
+      "strata",
+      "dflash_policy_test",
+      "dflash_load_test",
+      "-j",
+      "4"
+    ],
+    [
+      "ctest",
+      "--test-dir",
+      "build",
+      "-R",
+      "dflash_policy_test|dflash_load_test",
+      "--output-on-failure"
+    ]
+  ],
+  "off_build_executable_sha256": "7d39b9f2553617ab94f20bf7fbf6a273403f2016bd7ecdb54ec7f9d78dee533c",
+  "validation": {
+    "cuda_on_build": 0,
+    "cuda_off_build": 0,
+    "cuda_on_ctests": {
+      "passed": 3,
+      "failed": 0
+    },
+    "cuda_off_ctests": {
+      "passed": 2,
+      "failed": 0
+    },
+    "native_cli_and_target_controls": "checks.json"
+  }
+}

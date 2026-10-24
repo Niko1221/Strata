@@ -1,0 +1,17 @@
+ar warm code None 27.491
+ar warm math None 27.343
+ar warm prose None 29.677
+ar warm long None 31.894
+ar 0 code None 28.272 0 0
+ar 0 math None 27.614 0 0
+ar 0 prose None 30.724 0 0
+Traceback (most recent call last):
+  File "./bench/results/2026-10-19-dflash2-quant-mtp/run.py", line 81, in <module>
+    r = request(task, block, repeat)
+  File "./bench/results/2026-10-19-dflash2-quant-mtp/run.py", line 63, in request
+    r = e.request(prompts[task], sampling, o.count)
+  File "./tools/dflash_sampling.py", line 88, in request
+    line = self.line()
+  File "./tools/dflash_sampling.py", line 77, in line
+    raise RuntimeError(f"engine exited ({self.p.poll()}); inspect the engine log")
+RuntimeError: engine exited (None); inspect the engine log

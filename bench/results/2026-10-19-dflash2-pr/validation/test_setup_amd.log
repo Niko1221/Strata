@@ -1,0 +1,10 @@
+................../setup.py:1182: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='UTF-8'>
+  txt = open("/proc/cpuinfo").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...............  Compiling the image encoder (for the CPU) ...
+  [ok] engine: /tmp/tmp8bettwdu/engine/strata, image encoder (CPU): /tmp/tmp8bettwdu/engine/strata-vision
+.........
+----------------------------------------------------------------------
+Ran 41 tests in 0.029s
+
+OK

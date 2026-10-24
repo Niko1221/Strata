@@ -1,0 +1,126 @@
+{
+  "baseline-ar": {
+    "command": [
+      "[VALIDATION_ROOT]/main-build/strata",
+      "--pack",
+      "../Strata-data/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/pack",
+      "--native",
+      "../Strata-data/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--native-dense-gguf",
+      "../Strata-data/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/qwen-nvidia-nvfp4-dense.gguf",
+      "--ple-gguf",
+      "../Strata-data/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/ple-fp8.gguf",
+      "--embd-gguf",
+      "../Strata-data/models/Maximilian228--Qwen3.8-Flash-Next-NVIDIA-NVFP4-Strata/token-embd-bf16.gguf",
+      "--expert-profile",
+      "./data/expert-profile.bin",
+      "--kv",
+      "int8",
+      "--expert-cache",
+      "2000",
+      "--max-context",
+      "4096",
+      "--kv-resident",
+      "4096",
+      "--prefill",
+      "256",
+      "--vram-reserve-mib",
+      "700",
+      "--spec",
+      "2",
+      "--spec-min-p",
+      "0.5",
+      "--adapt-every",
+      "0",
+      "--adapt-swaps",
+      "0",
+      "--pcie-frac",
+      "0",
+      "--suffix-draft",
+      "0",
+      "--lookup-chain",
+      "0",
+      "--prompt-cache",
+      "0",
+      "--conversation-cache-mib",
+      "0",
+      "--serve"
+    ],
+    "executable_sha256": "3d4ad89e4b529aaf9fbb40008b583de5c840ecf4b02154c0da90b320a6ce3a28",
+    "env": {
+      "STRATA_PREFILL_CPU_SHARE": "0",
+      "STRATA_SPEC_COUPLED": "0",
+      "STRATA_SPEC_GUMBEL": "0",
+      "STRATA_IQ_MT_MIN": "1"
+    },
+    "requests": {
+      "code:temperature=0 seed=7": {
+        "tokens": [760, 1156, 6587, 264, 12654, 709, 421, 78161, 48142, 26126, 11, 3055, 440, 264, 2708, 15673, 321, 4821, 6813, 13, 6558, 728, 1683, 883, 279, 1786, 5313, 25, 271, 332, 26943, 364],
+        "decode_ms": 1054.0,
+        "accepted": 0,
+        "offered": 0,
+        "done": "DONE 32 27 790.9 1054.0 length 0 0 0 5346 15360 0 0 0.0 27 0 chunk=0 experts_streamed=0"
+      },
+      "code:temperature=0.8 top_k=40 top_p=0.95 min_p=0.05 seed=7": {
+        "tokens": [760, 1156, 6587, 264, 12654, 709, 421, 78161, 48142, 26126, 11, 440, 15673, 321, 4821, 6813, 13, 6558, 728, 1683, 883, 279, 1786, 5313, 25, 271, 760, 11088, 9581, 51586, 11767, 25],
+        "decode_ms": 1044.9,
+        "accepted": 0,
+        "offered": 0,
+        "done": "DONE 32 27 726.7 1044.9 length 0 0 0 5178 15360 0 0 0.0 27 0 chunk=0 experts_streamed=0"
+      },
+      "math:temperature=0 seed=7": {
+        "tokens": [760, 1156, 6587, 728, 310, 11290, 264, 11088, 5289, 4478, 3377, 2923, 539, 2923, 13, 271, 25451, 4478, 283, 10342, 5821, 593, 10342, 854, 271, 9764, 728, 944, 1472, 411, 25, 271],
+        "decode_ms": 1100.6,
+        "accepted": 0,
+        "offered": 0,
+        "done": "DONE 32 54 1513.6 1100.6 length 0 0 0 4519 15360 0 0 0.0 54 0 chunk=0 experts_streamed=0"
+      },
+      "math:temperature=0.8 top_k=40 top_p=0.95 min_p=0.05 seed=7": {
+        "tokens": [760, 1156, 6587, 728, 310, 11290, 264, 11088, 5289, 4478, 3377, 2923, 539, 2923, 13, 6558, 728, 944, 1472, 411, 15060, 13, 271, 25451, 4478, 283, 10342, 5821, 593, 10342, 854, 271],
+        "decode_ms": 1091.9,
+        "accepted": 0,
+        "offered": 0,
+        "done": "DONE 32 54 1499.2 1091.9 length 0 0 0 4530 15360 0 0 0.0 54 0 chunk=0 experts_streamed=0"
+      },
+      "long:temperature=0 seed=7": {
+        "tokens": [
+          248046
+        ],
+        "decode_ms": 42.0,
+        "accepted": 0,
+        "offered": 0,
+        "done": "DONE 1 512 2237.6 42.0 stop 0 0 0 35 480 0 0 0.0 512 0 chunk=256 experts_streamed=17890"
+      }
+    },
+    "info": {
+      "logit_bias": "1",
+      "context": "4096",
+      "kv": "int8",
+      "kv_resident": "0",
+      "expert_slots": "2000",
+      "expert_cache_mib": "5273",
+      "expert_slots_primary": "2000",
+      "expert_cache_primary_mib": "5273",
+      "spec": "2",
+      "mtp_max": "0",
+      "lookup": "0",
+      "vram_free_mib": "4400",
+      "cvec": "0",
+      "arena_mib": "64800",
+      "pool_workers": "11",
+      "pcie_frac": "0.00",
+      "spec_min_p": "0.50",
+      "conversation_cache_mib": "0",
+      "conversation_cache_slots": "4",
+      "conversation_cache_min_free_mib": "2560",
+      "conversation_cache_min_tokens": "0",
+      "tail_role_token": "-1",
+      "vram_elastic": "0",
+      "prefill_cap": "256",
+      "prefill_stages": "1",
+      "stream_all_min": "1024",
+      "prefill_pipe": "0",
+      "engine": "0.1.45.3"
+    }
+  }
+}

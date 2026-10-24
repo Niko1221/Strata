@@ -54,6 +54,9 @@ void add_inplace(float* dst, const float* src, int64_t n, void* stream);
 /// `y[i] = f16(x[i])`, round-to-nearest-even, using the shared conversion in `f16_bits.hpp`.
 void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 
+/// Exact widening of BF16 activations before native Q8_1 activation quantization.
+void bf16_to_f32_bulk(const uint16_t* x, float* y, int64_t n, void* stream);
+
 /// `y[i] = bf16(x[i])`, for the weights whose contract is a bf16 activation - the BF16 `hc_*`, `ssm_alpha`,
 /// `ssm_beta`, `indexer.*` and `ple_value` tensors.
 ///
@@ -65,6 +68,23 @@ void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream);
 
 /// `x[i] = x[i] / (1 + exp(-x[i]))`, in place.
 void silu_inplace(float* x, int64_t n, void* stream);
+
+/// `gate[i] = silu(gate[i]) * up[i]`, in place in `gate` - the SwiGLU pair of one MLP's rows
+/// (the same reading as the shared expert's `silu(gate) @ (up)`, silu on the GATE side).
+/// The DFlash drafter's MLP runs this before its bf16 down projection.
+void swiglu_inplace(float* gate, const float* up, int64_t n, void* stream);
+
+/// `dst[i] = (uint16_t) bf16(src[i])` for strided rows: row r of `dst` (row stride `dst_stride`
+/// values) takes `n` values from `src + r * src_stride`.  The DFlash fusion input's gather.
+void bf16_gather_strided(const uint16_t* src, int64_t src_stride, uint16_t* dst, int64_t dst_stride,
+                         int n, int rows, void* stream);
+
+/// Pack tap-major [tap][stride] into row-major [row][tap][hidden] BF16 in one launch.
+/// The caller validates source plane bounds; stride is measured in elements.
+void dflash_gather_taps(const uint16_t* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream);
+void dflash_gather_taps(const float* src, uint16_t* dst, int taps, int hidden,
+                        int rows, int64_t stride, void* stream);
 
 /// `build_norm`: `y[r][c] = x[r][c] / sqrt(MEAN_c(x[r]^2) + eps) * w[c]`, over the LAST axis.
 ///

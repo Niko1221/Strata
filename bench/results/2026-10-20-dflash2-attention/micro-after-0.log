@@ -1,0 +1,11 @@
+BF16 selector rows=8 rank=256 k=16 confidence=0: 0.060559 ms/pass
+BF16 selector rows=8 rank=256 k=16 confidence=1: 0.060457 ms/pass
+topk rows=8 vocab=248320 k=16 single CTA: 0.996301 ms/pass
+topk rows=8 vocab=248320 k=16 tiled: 0.096044 ms/pass
+attention rows=2 heads=32 end=32: 0.007419 ms/pass bits=aa32e91e321f53ac
+attention rows=2 heads=32 end=2053: 0.058998 ms/pass bits=9316156b1a9a65e6
+attention rows=4 heads=32 end=32: 0.008044 ms/pass bits=5720af05e5ec8e1f
+attention rows=4 heads=32 end=2053: 0.109123 ms/pass bits=62da8a2c9bca9762
+attention rows=8 heads=32 end=32: 0.011069 ms/pass bits=51af8ad963e5e8ef
+attention rows=8 heads=32 end=2053: 0.246989 ms/pass bits=66b3bf50f789711c
+PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal

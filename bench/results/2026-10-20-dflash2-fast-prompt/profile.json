@@ -1,0 +1,20 @@
+{
+  "scope": "RTX 4070 Ti SUPER 16 GiB / Ryzen 9 5900X; selected on the 2425-token long fixture",
+  "draft_quant": "Q8_0",
+  "prefill": 512,
+  "short_read": 64,
+  "expert_cache": 2900,
+  "reserve_mib": 480,
+  "dflash_block": 6,
+  "spec_min_p": 0.85,
+  "context": 8192,
+  "prefill_cpu_share": 0,
+  "pcie_frac": 0,
+  "adapt_every": 0,
+  "adapt_swaps": 0,
+  "prompt_cache": 0,
+  "env": {
+    "STRATA_DFLASH_HEAD_IL": "1",
+    "STRATA_MMVQ_IL_Q8_HEAD": "1"
+  }
+}

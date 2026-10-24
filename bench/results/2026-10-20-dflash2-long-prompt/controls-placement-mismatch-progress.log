@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "./../Strata-data/dflash2-long-prompt/controls.py", line 12, in <module>
+    validate_residency(e.info,slots,prior['info'])
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "./tools/dflash_sampling.py", line 38, in validate_residency
+    raise AssertionError(f"{key}={info.get(key)}; requested {requested}. "
+                         "Reduce --expert-cache so every arm fits without automatic shrinking.")
+AssertionError: expert_slots=3275; requested 3279. Reduce --expert-cache so every arm fits without automatic shrinking.

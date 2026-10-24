@@ -1,0 +1,11 @@
+..Q4_0: /tmp/tmp8lwhusx3/Q4_0.gguf (18048 bytes)
+Q5_0: /tmp/tmp8lwhusx3/Q5_0.gguf (19712 bytes)
+Q8_0: /tmp/tmp8lwhusx3/Q8_0.gguf (24704 bytes)
+Q4_0: /tmp/tmpw61fwe4a/Q4_0.gguf (18048 bytes)
+Q5_0: /tmp/tmpw61fwe4a/Q5_0.gguf (19712 bytes)
+Q8_0: /tmp/tmpw61fwe4a/Q8_0.gguf (24704 bytes)
+.....
+----------------------------------------------------------------------
+Ran 7 tests in 0.404s
+
+OK

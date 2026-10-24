@@ -1,0 +1,9 @@
+{"source": "/tmp/tmp8sgh8ca7/collision.gguf.part", "source_type": "Q8_0", "output": "/tmp/tmp8sgh8ca7/collision.gguf", "output_type": "Q8_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "payload_bytes": 51680, "max_abs": 0.0, "relative_l2": 0.0, "cosine": 1.0}
+{"source": "/tmp/tmp8sgh8ca7/head.gguf", "source_type": "Q8_0", "output": "/tmp/tmp8sgh8ca7/copy.gguf", "output_type": "Q8_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "payload_bytes": 51680, "max_abs": 0.0, "relative_l2": 0.0, "cosine": 1.0}
+{"source": "/tmp/tmp8sgh8ca7/head.gguf", "source_type": "Q8_0", "output": "/tmp/tmp8sgh8ca7/Q8_0.gguf", "output_type": "Q8_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "payload_bytes": 51680, "max_abs": 0.0, "relative_l2": 0.0, "cosine": 1.0}
+{"source": "/tmp/tmp8sgh8ca7/head.gguf", "source_type": "Q8_0", "output": "/tmp/tmp8sgh8ca7/Q4_0.gguf", "output_type": "Q4_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "7ba6c5759c9f067156001d2c60b9d271cc6f6a4d1e8c834aa2f7235d2c06b9dc", "payload_bytes": 27360, "max_abs": 0.01734638214111328, "relative_l2": 0.086006548944549, "cosine": 0.9963111714528191}
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.011s
+
+OK

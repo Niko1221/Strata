@@ -1,0 +1,159 @@
+[0/1] Re-running CMake...
+-- ccache found, compilation results will be cached. Disable with GGML_CCACHE=OFF.
+-- CMAKE_SYSTEM_PROCESSOR: x86_64
+-- GGML_SYSTEM_ARCH: x86
+-- Including CPU backend
+-- x86 detected
+-- Adding CPU backend variant ggml-cpu: -march=native
+-- ggml version: 0.24.0
+-- ggml commit:  bad6ff37
+-- Configuring done (0.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: [VALIDATION_ROOT]/cpu-check
+[1/148] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-threading.cpp.o
+[2/148] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml.cpp.o
+[3/148] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-alloc.c.o
+[4/148] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.c.o
+[5/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ggml-cpu.cpp.o
+[6/148] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend.cpp.o
+[7/148] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-opt.cpp.o
+[8/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/iqp.cpp.o
+[9/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/hbm.cpp.o
+[10/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/repack.cpp.o
+[11/148] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/quants.c.o
+[12/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/traits.cpp.o
+[13/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/amx.cpp.o
+[14/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/amx/mmq.cpp.o
+[15/148] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/ggml-backend-meta.cpp.o
+[16/148] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml-quants.c.o
+[17/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/binary-ops.cpp.o
+[18/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/unary-ops.cpp.o
+[19/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/vec.cpp.o
+[20/148] Building C object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o
+[21/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/ops.cpp.o
+[22/148] Building CXX object CMakeFiles/strata_spec.dir/src/spec/suffix_drafter.cpp.o
+[23/148] Building CXX object CMakeFiles/strata_spec.dir/src/spec/controller.cpp.o
+[24/148] Building CXX object CMakeFiles/strata_spec.dir/src/spec/draft_policy.cpp.o
+[25/148] Building CXX object ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/repack.cpp.o
+[26/148] Building CXX object CMakeFiles/strata_spec.dir/src/spec/draft_source.cpp.o
+[27/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/expert.cpp.o
+[28/148] Building CXX object ggml/src/CMakeFiles/ggml-base.dir/gguf.cpp.o
+[29/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/expert_layout.cpp.o
+[30/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/pool.cpp.o
+[31/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/q2_avx2.cpp.o
+[32/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/hadamard.cpp.o
+[33/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/kq_avx1.cpp.o
+[34/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx512.cpp.o
+[35/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/kq_avx2.cpp.o
+[36/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/native_expert.cpp.o
+[37/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx2.cpp.o
+[38/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/q2_avx1.cpp.o
+[39/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/iq_avx1.cpp.o
+[40/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/tq_avx512.cpp.o
+[41/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/tq_avx2.cpp.o
+[42/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/nvfp4_avx512.cpp.o
+[43/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/tq_cpu.cpp.o
+[44/148] Building CXX object CMakeFiles/strata_kernels_cpu.dir/src/kernels/cpu/nvfp4_avx2.cpp.o
+[45/148] Building CXX object CMakeFiles/logit_bias_test.dir/src/core/logit_bias_test.cpp.o
+[46/148] Building CXX object CMakeFiles/batch_telemetry_test.dir/src/core/batch_telemetry_test.cpp.o
+[47/148] Building CXX object CMakeFiles/strata-gguf.dir/src/artifact/gguf_reader.cpp.o
+[48/148] Building CXX object CMakeFiles/strata-dequant.dir/src/artifact/dequant.cpp.o
+[49/148] Building CXX object CMakeFiles/gguf_reader_test.dir/src/artifact/gguf_reader_test.cpp.o
+[50/148] Building CXX object CMakeFiles/batch_read_test.dir/tests/program/batch_read_test.cpp.o
+[51/148] Building CXX object CMakeFiles/model_family_test.dir/tests/core/model_family_test.cpp.o
+[52/148] Building CXX object CMakeFiles/split_rules_test.dir/tests/program/split_rules_test.cpp.o
+[53/148] Building CXX object CMakeFiles/gguf_split_test.dir/tests/core/gguf_split_test.cpp.o
+[54/148] Building CXX object CMakeFiles/tuning_header_arch_family_test.dir/tests/prefill/tuning_header_arch_family_test.cpp.o
+[55/148] Building CXX object CMakeFiles/share_rules_test.dir/tests/prefill/share_rules_test.cpp.o
+[56/148] Building CXX object CMakeFiles/prefill_plan_test.dir/tests/program/prefill_plan_test.cpp.o
+[57/148] Building CXX object CMakeFiles/host_limits_test.dir/tests/platform/host_limits_test.cpp.o
+[58/148] Building CXX object CMakeFiles/gguf_geometry_test.dir/tests/core/gguf_geometry_test.cpp.o
+[59/148] Building CXX object CMakeFiles/strata-plan.dir/src/plan/plan_main.cpp.o
+[60/148] Building CXX object CMakeFiles/controller_test.dir/src/spec/controller_test.cpp.o
+[61/148] Linking CXX static library libstrata_spec.a
+[62/148] Building CXX object CMakeFiles/arch_defaults_test.dir/src/core/arch_defaults.cpp.o
+[63/148] Building CXX object CMakeFiles/draft_policy_test.dir/src/spec/draft_policy_test.cpp.o
+[64/148] Building CXX object CMakeFiles/arch_defaults_test.dir/src/core/arch_defaults_test.cpp.o
+[65/148] Building CXX object CMakeFiles/suffix_drafter_test.dir/src/spec/suffix_drafter_test.cpp.o
+[66/148] Building CXX object CMakeFiles/draft_kv_plan_test.dir/src/program/draft_kv_plan_test.cpp.o
+[67/148] Building CXX object CMakeFiles/message_boundary_test.dir/src/program/message_boundary_test.cpp.o
+[68/148] Building CXX object CMakeFiles/split_ring_test.dir/src/program/split_ring_test.cpp.o
+[69/148] Building CXX object CMakeFiles/bf16_bits_test.dir/src/kernels/bf16_bits_test.cpp.o
+[70/148] Building CXX object CMakeFiles/dflash_policy_test.dir/src/spec/dflash_policy_test.cpp.o
+[71/148] Building CXX object CMakeFiles/conv_cache_test.dir/src/program/conv_cache_test.cpp.o
+[72/148] Building CXX object CMakeFiles/batch_rows_test.dir/tests/core/batch_rows_test.cpp.o
+[73/148] Building CXX object CMakeFiles/batch_groups_test.dir/src/program/batch_groups_test.cpp.o
+[74/148] Building CXX object CMakeFiles/coupled_draft_test.dir/src/core/coupled_draft_test.cpp.o
+[75/148] Building CXX object CMakeFiles/spec_prob_test.dir/src/core/spec_prob_test.cpp.o
+[76/148] Building CXX object CMakeFiles/router_dot_parity.dir/src/kernels/cpu/router_dot_parity.cpp.o
+[77/148] Building CXX object CMakeFiles/pool_tasks_test.dir/src/kernels/cpu/pool_tasks_test.cpp.o
+[78/148] Building CXX object CMakeFiles/kq_cpu_bench.dir/src/kernels/cpu/kq_cpu_bench.cpp.o
+[79/148] Building CXX object CMakeFiles/dequant_q5_1_test.dir/tests/core/dequant_q5_1_test.cpp.o
+[80/148] Building CXX object CMakeFiles/iq_avx2_parity.dir/src/kernels/cpu/iq_avx2_parity.cpp.o
+[81/148] Building CXX object CMakeFiles/iq_avx1_parity.dir/src/kernels/cpu/iq_avx1_parity.cpp.o
+[82/148] Building CXX object CMakeFiles/q8k_quant_parity.dir/src/kernels/cpu/q8k_quant_parity.cpp.o
+[83/148] Building CXX object CMakeFiles/q2_bitplane_parity.dir/src/kernels/cpu/q2_bitplane_parity.cpp.o
+[84/148] Building CXX object CMakeFiles/pool_affinity_test.dir/src/kernels/cpu/pool_affinity_linux_test.cpp.o
+[85/148] Building CXX object CMakeFiles/expert_multi_test.dir/src/kernels/cpu/expert_multi_test.cpp.o
+[86/148] Building CXX object CMakeFiles/nvfp4_avx512_parity.dir/src/kernels/cpu/nvfp4_avx512_parity.cpp.o
+[87/148] Building CXX object CMakeFiles/expert_parity.dir/src/kernels/cpu/expert_parity.cpp.o
+[88/148] Building CXX object CMakeFiles/pool_plan_test.dir/src/kernels/cpu/pool_plan_test.cpp.o
+[89/148] Building CXX object CMakeFiles/native_hadamard_test.dir/src/kernels/cpu/native_hadamard_test.cpp.o
+[90/148] Building CXX object CMakeFiles/tq_cpu_parity.dir/src/kernels/cpu/tq_cpu_parity.cpp.o
+[91/148] Building CXX object CMakeFiles/direct_file_async_test.dir/tests/platform/direct_file_async.cpp.o
+[92/148] Linking CXX executable strata-gguf
+[93/148] Linking CXX executable strata-dequant
+[94/148] Building CXX object CMakeFiles/pool_test.dir/src/kernels/cpu/pool_test.cpp.o
+[95/148] Linking CXX executable logit_bias_test
+[96/148] Linking CXX executable batch_telemetry_test
+[97/148] Building CXX object CMakeFiles/pool_stress.dir/src/kernels/cpu/pool_stress.cpp.o
+[98/148] Building CXX object CMakeFiles/direct_file_async_test.dir/src/platform/direct_file.cpp.o
+[99/148] Linking CXX executable batch_read_test
+[100/148] Building CXX object CMakeFiles/aux_cpus_test.dir/tests/platform/aux_cpus_test.cpp.o
+[101/148] Linking CXX executable tuning_header_arch_family_test
+[102/148] Linking CXX executable gguf_geometry_test
+[103/148] Linking CXX executable gguf_reader_test
+[104/148] Linking CXX executable split_rules_test
+[105/148] Linking CXX executable gguf_split_test
+[106/148] Linking CXX executable prefill_plan_test
+[107/148] Linking CXX executable model_family_test
+[108/148] Linking CXX executable controller_test
+[109/148] Linking CXX executable draft_policy_test
+[110/148] Linking CXX executable strata-plan
+[111/148] Linking CXX executable host_limits_test
+[112/148] Linking CXX executable share_rules_test
+[113/148] Linking CXX executable dflash_policy_test
+[114/148] Linking CXX executable arch_defaults_test
+[115/148] Linking CXX executable suffix_drafter_test
+[116/148] Linking CXX executable draft_kv_plan_test
+[117/148] Linking CXX executable message_boundary_test
+[118/148] Linking CXX executable conv_cache_test
+[119/148] Linking CXX executable split_ring_test
+[120/148] Linking CXX executable bf16_bits_test
+[121/148] Linking CXX executable batch_rows_test
+[122/148] Linking CXX executable batch_groups_test
+[123/148] Linking CXX executable spec_prob_test
+[124/148] Linking CXX executable coupled_draft_test
+[125/148] Linking CXX executable direct_file_async_test
+[126/148] Linking CXX executable pool_plan_test
+[127/148] Linking CXX executable aux_cpus_test
+[128/148] Building C object ggml/src/CMakeFiles/ggml-base.dir/ggml.c.o
+[129/148] Linking CXX static library ggml/src/libggml-base.a
+[130/148] Linking CXX executable dequant_q5_1_test
+[131/148] Linking CXX static library ggml/src/libggml-cpu.a
+[132/148] Linking CXX static library libstrata_kernels_cpu.a
+[133/148] Linking CXX executable router_dot_parity
+[134/148] Linking CXX executable nvfp4_avx512_parity
+[135/148] Linking CXX executable pool_tasks_test
+[136/148] Linking CXX executable q8k_quant_parity
+[137/148] Linking CXX executable iq_avx1_parity
+[138/148] Linking CXX executable kq_cpu_bench
+[139/148] Linking CXX executable pool_affinity_test
+[140/148] Linking CXX executable iq_avx2_parity
+[141/148] Linking CXX executable expert_multi_test
+[142/148] Linking CXX executable q2_bitplane_parity
+[143/148] Linking CXX executable tq_cpu_parity
+[144/148] Linking CXX executable native_hadamard_test
+[145/148] Linking CXX executable pool_test
+[146/148] Linking CXX executable expert_parity
+[147/148] Linking CXX executable pool_stress

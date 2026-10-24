@@ -366,4 +366,11 @@ void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_tabl
                     const float* kcur, const float* vcur, const QsaShapes& s, void* stream,
                     const KvHostPools* host = nullptr);
 
+/// `kv_append_step` for `n_tok` rows in ONE launch (kv_append_q8_steps' twin, FP16 pools): row r
+/// writes the cell named by `step[r * step_stride + kStepPos]` from the K/V row at
+/// `cur + r * cur_stride`.  One kernel, no per-row host loop.
+void kv_append_f16_steps(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, const int32_t* step,
+                         int step_stride, const float* kcur, const float* vcur, int cur_stride, int n_tok,
+                         const QsaShapes& s, void* stream, const KvHostPools* host = nullptr);
+
 }  // namespace strata::kernels

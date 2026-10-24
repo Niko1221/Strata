@@ -1,0 +1,21 @@
+diff --git a/src/core/dflash_runtime.cpp b/src/core/dflash_runtime.cpp
+index 0faea842..7bb2dd11 100644
+--- a/src/core/dflash_runtime.cpp
++++ b/src/core/dflash_runtime.cpp
+@@ -1435,0 +1436,16 @@
++    if (const char* path = std::getenv("STRATA_DFLASH2_RANK_TRACE")) {
++        if (!dg.is_dflash2() || !probabilities) { err="rank trace needs DFlash2 probabilities"; return false; }
++        std::vector<float> q((size_t)block * dg.selector_rank);
++        if (cudaMemcpyAsync(q.data(), selector_hidden_ + dg.selector_rank, q.size()*4,
++                            cudaMemcpyDeviceToHost, cs_) != cudaSuccess || cudaStreamSynchronize(cs_) != cudaSuccess) {
++            err="rank trace copy failed";return false;
++        }
++        const uint32_t header[]={0x31514644u,(uint32_t)pos,(uint32_t)((uint64_t)pos>>32),
++                                  (uint32_t)block,(uint32_t)dg.selector_rank,(uint32_t)x};
++        FILE* file=std::fopen(path,"ab");
++        const bool ok=file && std::fwrite(header,4,6,file)==6 &&
++            std::fwrite(out,4,block,file)==(size_t)block && std::fwrite(q.data(),4,q.size(),file)==q.size();
++        if(file)std::fclose(file);
++        if(!ok){err="rank trace write failed";return false;}
++        std::fill(probabilities,probabilities+block,0.0f); // diagnostic target-only trajectory
++    }

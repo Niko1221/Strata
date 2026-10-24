@@ -1,0 +1,7 @@
+Source: https://github.com/Niko1221/Strata/actions/runs/39364507987/job/118438117563
+Parent commit: c7bebe215a6feb754e08dfbc02a3ac12d38fa55f
+Observed rendered CI log excerpt:
+FAIL: test_the_portable_watcher_ends_the_child_when_the_server_is_killed (test_lifeline.Lifeline.test_the_portable_watcher_ends_the_child_when_the_server_is_killed)
+AssertionError: False is not true : the child outlived a killed server (watcher)
+Ran 882 tests in 326.847s
+FAILED (failures=1, skipped=14)

@@ -1,0 +1,550 @@
+{
+  "prompt_tokens": 261747,
+  "context_capacity": 262144,
+  "completion_tokens_requested": 96,
+  "prompt_sha256": "90c337eefd41eda2767f8c8f72d76f47161495420659d187106de579bd7c98ce",
+  "method": "Ordered, non-repeating source files from src/, include/, serve/, tools/ tokenized with the shipped Qwen tokenizer. DFlash2/MTP runtime files appear first; the last source is truncated at token boundary.",
+  "source_file_count": 90,
+  "source_files": [
+    {
+      "path": "src/core/dflash_runtime.cpp",
+      "tokens_in_prompt": 22742,
+      "sha256": "8af89c041d036d045fb94ba866c87be24187703a0c9ec4ddd21513848ef6a830",
+      "truncated": false
+    },
+    {
+      "path": "src/core/mtp.cpp",
+      "tokens_in_prompt": 32160,
+      "sha256": "c10f194da86f89a8c0ae3ec9c7cac3dbd9fed17fbfe8c46e6ff0828eb4f8e586",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/spec/controller.hpp",
+      "tokens_in_prompt": 1062,
+      "sha256": "e1c8400792ec87882646c96b22d768e2f62a5cfebf4b415798ef177ea6e60cce",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/spec/dflash_policy.hpp",
+      "tokens_in_prompt": 1012,
+      "sha256": "e73f55772505b640650fc03d0ead03e3c11ac80227977ca04e9c0c41f8063125",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/spec/draft_policy.hpp",
+      "tokens_in_prompt": 1035,
+      "sha256": "f6f1c972a9b80bc6c82c1b24c87335d40852bfd7555b10d8288030b24477ccb9",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/spec/draft_source.hpp",
+      "tokens_in_prompt": 882,
+      "sha256": "6955d5301aeda3a769f919a6b80d95d141f8c3656e821756bdbaf5eaebe80629",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/spec/spec_start.hpp",
+      "tokens_in_prompt": 263,
+      "sha256": "2d281e5772376ce201634c32bafe59ba967df3ed7870bd86c0d2c26508784bc7",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/spec/suffix_drafter.hpp",
+      "tokens_in_prompt": 721,
+      "sha256": "ab154719dd72b23b9e4e540bc2f923be2bbbbad343b21fcf40116966720f963f",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/controller.cpp",
+      "tokens_in_prompt": 1093,
+      "sha256": "9ea393b4d369ddce11315032695899a51deeb697e1a7745dc397724f4db7351f",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/controller_test.cpp",
+      "tokens_in_prompt": 1343,
+      "sha256": "8c7674086900898bb67afced50e76812b5e6848f490c95526397497475a1d7b4",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/dflash_policy_test.cpp",
+      "tokens_in_prompt": 1260,
+      "sha256": "155c2b269fba6d8489e69f04ef9f8b79d320f804aae857cb872dd563e22a2e08",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/draft_policy.cpp",
+      "tokens_in_prompt": 2519,
+      "sha256": "04eba40c79c272043de4bf9d86823e9050ed72f5563f3ca1361faffd66d2992d",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/draft_policy_test.cpp",
+      "tokens_in_prompt": 2439,
+      "sha256": "50f04cfaa280e6fd9df6647979cd860739d31fb5406a5438d9ded48142632a09",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/draft_source.cpp",
+      "tokens_in_prompt": 397,
+      "sha256": "ed2669b4dccf7a1686af56776520b237a50d6244e543078c916c19a6a4660474",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/spec_start_test.cpp",
+      "tokens_in_prompt": 367,
+      "sha256": "ae495a240d0e06ea3e0aba19520110695b096287bc81d25f8a2944b877462951",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/suffix_drafter.cpp",
+      "tokens_in_prompt": 1255,
+      "sha256": "aeee3eb16627642e9e07c9765fd4946938b5c764f51304500403908d75e67325",
+      "truncated": false
+    },
+    {
+      "path": "src/spec/suffix_drafter_test.cpp",
+      "tokens_in_prompt": 3426,
+      "sha256": "b4c205f056eb57778edbbae9e81e8d8c2e205f7cb7db7a089f8fefea0cdc1013",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/artifact/dequant.hpp",
+      "tokens_in_prompt": 6031,
+      "sha256": "084ee6d3cb5056cca5dce6a6c40b9047d01f2560b033afb35eb56c64985a69f1",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/artifact/gguf_reader.hpp",
+      "tokens_in_prompt": 10760,
+      "sha256": "7ffde4a815202cdf5408687c9fc6b08a799e48a9d040314414eefb8211611b35",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/artifact/gguf_split.hpp",
+      "tokens_in_prompt": 790,
+      "sha256": "6280aabf7e4b77447caa5d046d7b7389c82af08b2d02c004897d0d4826a09760",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/artifact/model_family.hpp",
+      "tokens_in_prompt": 859,
+      "sha256": "c9d887c922ef86e26dee155e1e61a7fec3fe43417a0b46a44bd2f98d1cca3186",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/arch_defaults.hpp",
+      "tokens_in_prompt": 1332,
+      "sha256": "3a9a6bd014550af0759fd094647f15dd625f0182e5508da4ec2934925ac52c47",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/batch_rows.hpp",
+      "tokens_in_prompt": 535,
+      "sha256": "cb5189ea66bfc217e8e0f0ec586e147d89893c6f44230a611a4386dcc92a9952",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/batch_telemetry.hpp",
+      "tokens_in_prompt": 1179,
+      "sha256": "27c1d9bab2846ef8e9980f465c119c34a60901a4ef986ef8cb58014fb1c1600d",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/conversation_buffer.hpp",
+      "tokens_in_prompt": 1966,
+      "sha256": "f5114119263033b2bbd9c2a5c59b969b04a17943ed4274f9774ec6d3756faf59",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/conversation_cache.hpp",
+      "tokens_in_prompt": 6173,
+      "sha256": "99d31c76d5ef1ab12750015bf69a67c8536800b7af0c2967aaa8ea657ee56bbd",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/conversation_file.hpp",
+      "tokens_in_prompt": 4147,
+      "sha256": "2c6ddbb2bb1f44331297a2cf970504da67ce501180fe1513aeb59f71cef8f942",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/conversation_memory.hpp",
+      "tokens_in_prompt": 994,
+      "sha256": "b1952a17cb3c4d0a90d47feb3ffe0c8e9d7fc177c80378701e2bf25bc43d82c0",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/conversation_snapshot.hpp",
+      "tokens_in_prompt": 2524,
+      "sha256": "f98575b59fc18a50333e9df3e456fd17723bdc28d741103ffd07c6865233c299",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/coupled_draft.hpp",
+      "tokens_in_prompt": 1769,
+      "sha256": "0a79e0e114e3436af1d44548fab777bdea0f00641606a854910264bf3f98aa3d",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/device.hpp",
+      "tokens_in_prompt": 1382,
+      "sha256": "db3a5cd26fc51a1fb35f4351110d7674897ae54f6beeaba71447ecc65e084081",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/dflash.hpp",
+      "tokens_in_prompt": 4716,
+      "sha256": "635cd439e0b1e602462a354eee3e2c9737f68ed2749e3917cab92822893f7697",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/dma_batch.hpp",
+      "tokens_in_prompt": 1701,
+      "sha256": "9b485734a866bee6ef0c927b838905ab7770cfdc1f7a7b19b97c4dea4fbbb07a",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/emulate.hpp",
+      "tokens_in_prompt": 525,
+      "sha256": "eb3df4efe89642f069420e0f68ec526b33d4cc66f9a6b26de0583492b5758a77",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/exchange_storage.hpp",
+      "tokens_in_prompt": 2880,
+      "sha256": "77e2dc7cab6353d700b5e492d9302d467cd48aa19240e388dc0579b5ac86eb2b",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/expert_cache.hpp",
+      "tokens_in_prompt": 5682,
+      "sha256": "37301cc04f5356c73452ab0bd2eb581036aad6f93434adad3b5e757391f39cec",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/expert_source.hpp",
+      "tokens_in_prompt": 27291,
+      "sha256": "a0ee734d81675e381aaec5002d6ab074b3066a842151f7b01eaabcf364b39cea",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/family_layout.hpp",
+      "tokens_in_prompt": 4325,
+      "sha256": "9906dc7f9dcd7946d8f24e2674ce0c22ea0dd9662eb2fc3b9d96c7d015e700ce",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/foresight_swap.hpp",
+      "tokens_in_prompt": 1781,
+      "sha256": "346bea410ca0be23b588fee24fecf30b4e7aa1f74832474e58b3cdfbdffd3743",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/geometry.hpp",
+      "tokens_in_prompt": 1389,
+      "sha256": "e9869988fbdc9e18ef3d144dd91e9266c18a190e9ec1a7351ce5c7b858bbd838",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/gfx12_platform_defaults.hpp",
+      "tokens_in_prompt": 242,
+      "sha256": "ed22240f7e55c59699459960052efaf82418eedd4e9c73c2fa8902e6faa1406d",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/graph.hpp",
+      "tokens_in_prompt": 1548,
+      "sha256": "21fb807b9c3cbd8665b14145ca19d4d9a93fa897d378042254f4e4cb1f9060a4",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/hit_hook.hpp",
+      "tokens_in_prompt": 711,
+      "sha256": "4c006f473d71a79cf03d9ce07cb246dc8b5ec10269fd335960a27733d51bc033",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/host_graph_launch.hpp",
+      "tokens_in_prompt": 568,
+      "sha256": "1474ae8535d46984f73ad90d199c7e3acc97779ade8d688025383614bfc621a5",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/layer.hpp",
+      "tokens_in_prompt": 12819,
+      "sha256": "14de5936b33c01c6b79c62f91594f3806c1b8c77af9ac989f17cf5840e6df846",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/layout.hpp",
+      "tokens_in_prompt": 952,
+      "sha256": "f0cb5d231b376f01eef62b28b33a7d8c073eb24667f18355f79b6998741d6524",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/logit_bias.hpp",
+      "tokens_in_prompt": 511,
+      "sha256": "a9f2d2bdcbc300622972eabf754cb460cd25794e7b6a72065c50f89a0bc135c4",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/mtp.hpp",
+      "tokens_in_prompt": 5865,
+      "sha256": "77bbb4d7c54a314b38760a8b50607681ed992671b5001451661b23c6f490f0d3",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/native_dense.hpp",
+      "tokens_in_prompt": 1252,
+      "sha256": "18b176524018ae9e1cc3fff92ee1bc277c2d8007f3c39043a56b6109a1df2e6f",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/native_head.hpp",
+      "tokens_in_prompt": 910,
+      "sha256": "fb32885da13b87944f349dca8a90625db25863ce4ecf7a8464c69082637049aa",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/nv_defaults.hpp",
+      "tokens_in_prompt": 562,
+      "sha256": "7a617f67d8072e5d76d15fec998c6b838b1899f4c2d3774eca8e26f24da8f8e3",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/on_device.hpp",
+      "tokens_in_prompt": 240,
+      "sha256": "f9317a4c19eb32924462b8aa9829a97528064f6a8fcdb64a746bb13a60c773a2",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/peer_experts.hpp",
+      "tokens_in_prompt": 1675,
+      "sha256": "66dea1b5ac4bfc2b12a923992a8bab0277e22841631532d536b9cedc9493f658",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/pin_budget.hpp",
+      "tokens_in_prompt": 3097,
+      "sha256": "c4823e1e575d96ed4a2748d802077f87a8eeeb971a014f91ca59cd2fe8d203ae",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/pinned.hpp",
+      "tokens_in_prompt": 4123,
+      "sha256": "8eb299939cb07172ea032531f4fd05eee309a711fcf86b509567c86e6e46dcc1",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/pinned_ring.hpp",
+      "tokens_in_prompt": 2285,
+      "sha256": "47f9cabedf4b4b01ee8f5424695c911b7bfc8e8e17d8fcb33c81bf998de3652d",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/progress.hpp",
+      "tokens_in_prompt": 1045,
+      "sha256": "cf0376eb23e2fd43a062c1fb40d3ac7885ef8283975051af51034f3f7182d622",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/remote_expert_opt.hpp",
+      "tokens_in_prompt": 565,
+      "sha256": "76e7d8de1ab76f1130609bc84edeefcf9ca77952d4448dbd625d8a5c3b36c4df",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/remote_experts.hpp",
+      "tokens_in_prompt": 2579,
+      "sha256": "8f0bb1a3157da557d6556ca5c269606d22000f5bbc5bcca9954876c119201590",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/session.hpp",
+      "tokens_in_prompt": 8263,
+      "sha256": "ffe954333948aee170399252afaad2e8b2b1e81fb31ed9c4358597eba4ca2e3b",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/session_save_reclaim.hpp",
+      "tokens_in_prompt": 564,
+      "sha256": "dc465b9112002ef75296db069d2bdfd4b65c42c99e398f1fd52976baeee00aa8",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/sm120_series.hpp",
+      "tokens_in_prompt": 797,
+      "sha256": "3561da81f6c6e69f9cfdcdc410ee5b5be9bb7f98d09d8b1ad3a5479be9a7455d",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/sm75_series.hpp",
+      "tokens_in_prompt": 751,
+      "sha256": "dcfaaf9e22a15990ad7a8b69b286d8e40e64b80a8170b36e4e0d52120e640cd0",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/spec_prob.hpp",
+      "tokens_in_prompt": 2416,
+      "sha256": "29b4c20d0132403177043d27b15d7368c879184871f5689e5bf77bcc2d67274f",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/tc_sm75.hpp",
+      "tokens_in_prompt": 496,
+      "sha256": "5f29ee7c100a21aa208a75a1d6f16dee74138cb7d284a9eef1b2faa70211e601",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/uma_cache.hpp",
+      "tokens_in_prompt": 620,
+      "sha256": "11205ca6f0975dd82566eb17db3915efd3731dce588203257000d929a8a366e9",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/verify.hpp",
+      "tokens_in_prompt": 13085,
+      "sha256": "f86e977ba6aeee4377313f419ed3417e8cbf3ea36636988da96468c40ff5d3f9",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/vmm.hpp",
+      "tokens_in_prompt": 973,
+      "sha256": "d361386fc8d86716dea83045eb9b85d9ae7fa7decc7469d7facbbe3254bd47cd",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/core/weights.hpp",
+      "tokens_in_prompt": 2662,
+      "sha256": "908c8d583d85c63fabdbf4023f551a824a6e15f538a25c64eb00ef3ba427005e",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/hip_compat/cublas_v2.h",
+      "tokens_in_prompt": 866,
+      "sha256": "cd28bbab24a4623f8dd2cbd1c7b7dc469fc5567c473bc9cca4183d4927754eb6",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/hip_compat/cuda_fp16.h",
+      "tokens_in_prompt": 33,
+      "sha256": "5864a3c6a57debde2e84b83702a1467a01130dd1d2cdb70d75695931ca1582cc",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/hip_compat/cuda_runtime.h",
+      "tokens_in_prompt": 1555,
+      "sha256": "10d633c122397b20b54451a37f2ee3174e2d7fc6c6c94df1a7165de357563d72",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/hip_compat/cuda_runtime_api.h",
+      "tokens_in_prompt": 28,
+      "sha256": "153e9ca18085214f68b95183d5ffac1a247c305144fb217bb6c68f8a4e6e01f3",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/hip_compat/intrinsics.hpp",
+      "tokens_in_prompt": 2740,
+      "sha256": "0a0967f42c3f0ce188ea007e1754502872a46eab39aade3648742c869ef26fb4",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/hip_compat/math_constants.h",
+      "tokens_in_prompt": 55,
+      "sha256": "b72ba65e9a31def2f69a582f159f276dc4fdb1a984433cb2cd299a46a27f522f",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/bf16_bits.hpp",
+      "tokens_in_prompt": 966,
+      "sha256": "813b51f17c5c264d642f4d77b3d6e5f35e7ea7310ba87b18b3a2a5bc9185198f",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/bf16_gemv.hpp",
+      "tokens_in_prompt": 1813,
+      "sha256": "86566abb20ba1bc0567089236b810c475a39f07383f211b796e370381296c9fa",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/expert.hpp",
+      "tokens_in_prompt": 4119,
+      "sha256": "170f278a86e5c9890553bb011b40b7e5d94b6064c8ffb7dea93f8f7fd6d98e49",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/expert_layout.hpp",
+      "tokens_in_prompt": 2206,
+      "sha256": "adfef6e56811d85158ceeb246f80ade8fc003e95b157a025324649b80363be7a",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/hadamard.hpp",
+      "tokens_in_prompt": 892,
+      "sha256": "b367c7957dfdc4be3b301b3803cf045d0af1805f523629226d629226f06cbb48",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/iq_avx1.hpp",
+      "tokens_in_prompt": 811,
+      "sha256": "71ed249250e52d5f3e370becae54d4ac5255d0493bc7dfce513545bbd2a35cc1",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/iq_avx2.hpp",
+      "tokens_in_prompt": 1146,
+      "sha256": "11327d367171ce1cc38d13f473eb6e5c8f405d2fe73605b586e594251f747109",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/iq_avx512.hpp",
+      "tokens_in_prompt": 337,
+      "sha256": "ede01ee7e474f5d816d9bc6ad6b0804cabd924c69b2b3d536d40f2432410841b",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/kq_avx1.hpp",
+      "tokens_in_prompt": 333,
+      "sha256": "af289c2fec6ec8e4946352dbbbcc25df41bb57468953589e4b5b7cfe1d0ddbda",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/kq_avx2.hpp",
+      "tokens_in_prompt": 514,
+      "sha256": "c4cd342ba0f2ffd34f6b5ac9c254c59d0a521370de0d7650f0c28e7a390b55dd",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/native_expert.hpp",
+      "tokens_in_prompt": 1278,
+      "sha256": "f9b2cf827485af6f1fd5024563075ae9a009072a805c2b3fb8812827772a6bc0",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/numa_pool.hpp",
+      "tokens_in_prompt": 2220,
+      "sha256": "c9c32ef40da9867e6c1ec17e3b9b8cd80fb5f36a74163c6e9cdb3bc4c90378b0",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/nvfp4_avx2.hpp",
+      "tokens_in_prompt": 506,
+      "sha256": "d11a3f774ff31cc5b722e5eff8d6b4c708c88051040938efaf12a1a54a8ff9b9",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/nvfp4_avx512.hpp",
+      "tokens_in_prompt": 563,
+      "sha256": "927872a719ecc13e5438563e5da092eb31992c93acf3fd0582e15625e61d6d62",
+      "truncated": false
+    },
+    {
+      "path": "include/strata/kernels/cpu/pool.hpp",
+      "tokens_in_prompt": 1856,
+      "sha256": "509c692d0ec304a2bab28531d6c7bd5a970d3b64dd3813a52d2b1ae637d46579",
+      "truncated": true
+    }
+  ]
+}

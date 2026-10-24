@@ -1,0 +1,87 @@
+{
+  "bf16-code": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "bf16-math": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "bf16-prose": {
+    "status": "PASS",
+    "kind": "exact versus same-placement deterministic target-only",
+    "tokens": 96,
+    "fixture": "quality/bf16-prose/95"
+  },
+  "bf16-long": {
+    "status": "PASS",
+    "kind": "exact versus same-placement deterministic target-only",
+    "tokens": 96,
+    "fixture": "quality/bf16-long/83"
+  },
+  "Q4_0-code": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q4_0-math": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q4_0-prose": {
+    "status": "PASS",
+    "kind": "exact versus same-placement deterministic target-only",
+    "tokens": 96,
+    "auto_ar_first_difference": 18
+  },
+  "Q4_0-long": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q8_0-code": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q8_0-math": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q8_0-prose": {
+    "status": "PASS",
+    "kind": "exact versus same-placement deterministic target-only",
+    "tokens": 96,
+    "auto_ar_first_difference": 48
+  },
+  "Q8_0-long": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q5_0-code": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q5_0-math": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  },
+  "Q5_0-prose": {
+    "status": "PASS",
+    "kind": "exact versus same-placement deterministic target-only",
+    "tokens": 96,
+    "auto_ar_first_difference": 18
+  },
+  "Q5_0-long": {
+    "status": "PASS",
+    "kind": "exact versus maximum-cache target-only",
+    "tokens": 96
+  }
+}

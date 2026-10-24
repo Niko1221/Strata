@@ -1,0 +1,60 @@
+{
+  "bf16": {
+    "file_bytes": 1206137248,
+    "tensor_types": {
+      "30": 81
+    },
+    "payload_bytes": {
+      "30": 1206131200
+    },
+    "extension_bf16_bytes": 288563200,
+    "sha256": "f9f8f5c0fecb49fa6c5a24815a8b76f4c14f868c1e57b198784da96c1b029084"
+  },
+  "Q8_0": {
+    "file_bytes": 776057536,
+    "tensor_types": {
+      "8": 36,
+      "30": 45
+    },
+    "payload_bytes": {
+      "8": 487424000,
+      "30": 288627200
+    },
+    "extension_bf16_bytes": 288563200,
+    "sha256": "64d0595a29479701a432f857439069358ca74bfadb513962ea45cd7d63e8be6e"
+  },
+  "Q5_0": {
+    "file_bytes": 604025536,
+    "tensor_types": {
+      "6": 36,
+      "30": 45
+    },
+    "payload_bytes": {
+      "6": 315392000,
+      "30": 288627200
+    },
+    "extension_bf16_bytes": 288563200,
+    "sha256": "49162981ad6c7224f8a3da0896d8694bea09813482ba28923017ed70e221b851"
+  },
+  "Q4_0": {
+    "file_bytes": 546681536,
+    "tensor_types": {
+      "2": 36,
+      "30": 45
+    },
+    "payload_bytes": {
+      "2": 258048000,
+      "30": 288627200
+    },
+    "extension_bf16_bytes": 288563200,
+    "sha256": "f8ca73fc3749a061af19eec1c7d798c60e61f49d079df6671b9034866a6fd3d5"
+  },
+  "original_safetensors": {
+    "tensors": 81,
+    "dtypes": [
+      "BF16"
+    ],
+    "sha256": "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f",
+    "file_bytes": 1206140008
+  }
+}

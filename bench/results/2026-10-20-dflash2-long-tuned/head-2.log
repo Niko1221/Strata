@@ -1,0 +1,17 @@
+BENCH Q8_0 head 2560x248320      T=1  multi 1090.9 us | il rows1 1106.5 rows2 1104.8 rows4 1107.2 us
+BENCH Q8_0 head 2560x248320      T=2  multi 1104.6 us | il rows1 1103.9 rows2 1100.8 rows4 1109.9 us
+BENCH Q8_0 head 2560x248320      T=3  multi 1249.0 us | il rows1 1113.1 rows2 1125.6 rows4 1113.4 us
+BENCH Q8_0 head 2560x248320      T=4  multi 1332.1 us | il rows1 1117.2 rows2 1115.9 rows4 1127.5 us
+BENCH Q8_0 head 2560x248320      T=5  multi 1517.4 us | il rows1 1350.6 rows2 1135.4 rows4 1138.0 us
+BENCH Q8_0 head 2560x248320      T=6  multi 1690.6 us | il rows1 1378.0 rows2 1220.5 rows4 1148.8 us
+BENCH Q8_0 head 2560x248320      T=7  multi 1813.4 us | il rows1 1438.5 rows2 1310.8 rows4 1211.2 us
+BENCH Q8_0 head 2560x248320      T=8  multi 1902.5 us | il rows1 1499.8 rows2 1327.1 rows4 1249.9 us
+BENCH Q8_0 2560x12288            T=1  multi 57.3 us | il rows1 55.7 rows2 57.1 rows4 58.8 us
+BENCH Q8_0 2560x12288            T=2  multi 56.3 us | il rows1 57.4 rows2 55.5 rows4 57.4 us
+BENCH Q8_0 2560x12288            T=3  multi 57.8 us | il rows1 56.6 rows2 56.7 rows4 56.6 us
+BENCH Q8_0 2560x12288            T=4  multi 56.7 us | il rows1 56.8 rows2 57.0 rows4 59.8 us
+BENCH Q8_0 2560x12288            T=5  multi 57.8 us | il rows1 74.9 rows2 59.5 rows4 57.9 us
+BENCH Q8_0 2560x12288            T=6  multi 60.3 us | il rows1 85.7 rows2 61.9 rows4 59.8 us
+BENCH Q8_0 2560x12288            T=7  multi 70.1 us | il rows1 88.8 rows2 63.5 rows4 63.1 us
+BENCH Q8_0 2560x12288            T=8  multi 80.8 us | il rows1 92.8 rows2 63.7 rows4 63.1 us
+mmvq_il_parity: OK (every case, T 1-8, rows 1/2/4 and the table, bitwise)

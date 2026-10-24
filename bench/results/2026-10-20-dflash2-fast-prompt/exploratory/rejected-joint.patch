@@ -1,0 +1,78 @@
+diff --git a/include/strata/spec/dflash_policy.hpp b/include/strata/spec/dflash_policy.hpp
+index f4b4f9bd..edfd329b 100644
+--- a/include/strata/spec/dflash_policy.hpp
++++ b/include/strata/spec/dflash_policy.hpp
+@@ -28,6 +28,24 @@ inline bool dflash_proposal_fits(int64_t pos, int k, bool dflash2,
+            k + (dflash2 ? 1 : 0) <= draft_capacity - pos;
+ }
+ 
++// The optional joint gate bounds the product of selector confidences over the
++// whole proposed prefix. These scores are a scheduling heuristic, not calibrated
++// acceptance probabilities; the target still verifies every retained proposal.
++inline int dflash_confidence_prefix(const float* p, int n, float floor, bool joint) {
++    float confidence = 1;
++    int prefix = 0;
++    while (prefix < n) {
++        const float value = p[prefix];
++        if (joint) {
++            if (!std::isfinite(value) || value < 0 || value > 1) break;
++            confidence *= value;
++        } else confidence = value;
++        if (!(confidence >= floor)) break;
++        ++prefix;
++    }
++    return prefix;
++}
++
+ // Measure real forwards at each block length: non-causal DFlash logits at K=2
+ // are not a truncated K=7 forward. Score the committed tokens per millisecond,
+ // including the draft that produced this window. K=0 maintains context but
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index 5a0ba1db..06946642 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -14166,6 +14166,9 @@ int main(int argc, char** argv) {
+             bool first_window = true;
+             bool dflash_ready = false;
+             const bool df_auto = req_dflash && o.dflash_block == 0 && !req_dflash_block_set && req_spec_min_p <= 0.0;
++            const char* df_joint_env = std::getenv("STRATA_DFLASH2_JOINT_GATE");
++            const bool df_joint_gate = req_dflash && dflash.artifact().geom().is_dflash2() &&
++                                       df_joint_env && df_joint_env[0] == '1';
+             df_policy.reset();
+             int df_pending_k = 0;
+             double df_pending_ms = 0;
+@@ -15218,8 +15221,8 @@ int main(int argc, char** argv) {
+                                                  req_spec_min_p > 0 ? dprob.data() : nullptr);
+                     if (dflash_ready && drafted && req_spec_min_p > 0) {
+                         const float min_p = (float) req_spec_min_p;
+-                        int prefix = 0;
+-                        while (prefix < df_pending_k && dprob[(size_t) prefix] >= min_p) ++prefix;
++                        const int prefix = strata::spec::dflash_confidence_prefix(
++                            dprob.data(), df_pending_k, min_p, df_joint_gate);
+                         df_pending_k = prefix;
+                         dflash_ready = prefix > 0;
+                     }
+diff --git a/src/spec/dflash_policy_test.cpp b/src/spec/dflash_policy_test.cpp
+index 0ed4068b..126a2cde 100644
+--- a/src/spec/dflash_policy_test.cpp
++++ b/src/spec/dflash_policy_test.cpp
+@@ -6,6 +6,19 @@ static int fails;
+ #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); ++fails; } } while (0)
+ 
+ int main() {
++    using strata::spec::dflash_confidence_prefix;
++    const float conf[] = {0.8f, 0.8f, 0.8f, 0.4f};
++    CHECK(dflash_confidence_prefix(conf, 4, 0.5f, false) == 3);
++    CHECK(dflash_confidence_prefix(conf, 4, 0.5f, true) == 3);
++    CHECK(dflash_confidence_prefix(conf, 4, 0.6f, true) == 2);
++    CHECK(dflash_confidence_prefix(conf, 4, 0.9f, true) == 0);
++    CHECK(dflash_confidence_prefix(conf, 0, 0.5f, true) == 0);
++    const float edge[] = {1, 1, 0, NAN};
++    CHECK(dflash_confidence_prefix(edge, 4, 1, true) == 2);
++    CHECK(dflash_confidence_prefix(edge, 4, 0, false) == 3);
++    CHECK(dflash_confidence_prefix(edge, 4, 0, true) == 3);
++    const float invalid[] = {1, INFINITY};
++    CHECK(dflash_confidence_prefix(invalid, 2, 0.5f, true) == 1);
+     using strata::spec::dflash_attention_bucket;
+     CHECK(dflash_attention_bucket(1, 8192) == 64);
+     CHECK(dflash_attention_bucket(64, 8192) == 64);

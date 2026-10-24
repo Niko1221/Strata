@@ -1,0 +1,26 @@
+{
+  "bf16": {
+    "code": true,
+    "math": true,
+    "prose": true,
+    "long": true
+  },
+  "Q8_0": {
+    "code": true,
+    "math": true,
+    "prose": true,
+    "long": true
+  },
+  "Q5_0": {
+    "code": true,
+    "math": true,
+    "prose": true,
+    "long": true
+  },
+  "Q4_0": {
+    "code": true,
+    "math": true,
+    "prose": true,
+    "long": true
+  }
+}

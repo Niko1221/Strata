@@ -1,6 +1,6 @@
 """Tune the engine's hardware-dependent settings on this PC (setup's --calibrate).
 
-Three settings depend on the machine more than on the model, and the defaults are right for the PC they were
+These settings depend on the machine more than on the model, and the defaults are right for the PC they were
 measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
   --pcie-frac     the share of the experts missing from VRAM that are copied over PCIe and run on the GPU instead of
                   on the CPU.  A fast PCIe link and a slow CPU want more; a laptop's x8 link or a fast CPU want less.
@@ -24,7 +24,14 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   2x RX 6900 XT on Linux, 6-11% faster with it), so it is measured here, per PC, and written into the
                   config's "env" only when it wins.  The output is identical either way (same token ids).
 
-The first two and the prompt chunks are measured through one engine (per-request `strata_tune` keys); the worker
+  --dflash-block   the actual DFlash forward length, capped by the loaded artifact and --spec.
+
+DFlash2 additionally measures fresh-request profiles (calibrate_dflash2.py): prompt chunks,
+startup memory headroom and a joint block/floor grid, with short/long request costs recorded
+separately. This explicit calibration can take 30-90 minutes. It never changes uncalibrated
+MTP/plain-DFlash defaults and does not select a drafter quantization.
+
+The PCIe share, probability floor, DFlash block and prompt chunks are measured through one engine (per-request `strata_tune` keys); the worker
 count, the adaptive tier and the shared-expert stream need a restart per value.  Those are decode speed: the prompt
 path streams every expert whatever they say.
 
@@ -49,6 +56,7 @@ sys.path.insert(0, str(ROOT))
 MIN_GAIN = 0.03                    # a setting must beat the default by this much to be kept
 PCIE_FRACS = (0.0, 0.2, 0.35, 0.55, 0.75, 0.9, 1.0)   # 1.0: every miss over PCIe, the CPU pool gets no expert
 SPEC_MIN_PS = (0.3, 0.5, 0.7)
+DFLASH_BLOCKS = (1, 2, 3, 4, 5, 6, 7)
 SWEEP_ROUNDS = 3                   # how many times the sweep visits each value (see `sweep`)
 # the adaptive tier's candidates (every, swaps, decay) against the engine's own (None): swapping more and remembering
 # longer, the rest of the set as the engine has it
@@ -96,7 +104,7 @@ def arg_value(args: list[str], flag: str) -> str | None:
 def with_arg(args: list[str], flag: str, value: str | None) -> list[str]:
     """`args` with `flag value` set (replaced if present), or removed when value is None."""
     out = list(args)
-    if flag in out:
+    while flag in out:
         i = out.index(flag)
         del out[i:i + 2]
     if value is not None:
@@ -240,11 +248,12 @@ def run(cfg: dict, say=print, start_engine=None, *, progress=None, cancel_event=
     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
                        json.loads((tpath / "token_type.json").read_text()))
     ids_list = [chat_ids(tok, p) for p in PROMPTS]
+    profile_options = {"dflash2": True} if cfg.get("drafter") == "dflash2" else {}
     if progress is None and cancel_event is None:
         return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
-                       hip=cfg.get("backend") == "hip")
+                       hip=cfg.get("backend") == "hip", **profile_options)
     return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
-                   hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event)
+                   hip=cfg.get("backend") == "hip", progress=progress, cancel_event=cancel_event, **profile_options)
 
 
 def engine_args(cfg: dict) -> list[str]:
@@ -301,12 +310,13 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say,
 
 
 def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), long_prompt=None, hip: bool = False,
-            *, progress=None, cancel_event=None) -> dict:
+            *, progress=None, cancel_event=None, dflash2=False) -> dict:
     t0 = time.time()
     report: dict = {}
     _check_cancel(cancel_event)
     _progress(progress, "loading", 0, 1)
     say("  Loading the model for the measurements ...")
+    original_args = list(base_args)
     base_args = apply(base_args, {})                   # the product defaults: what the measurements must beat
     eng = start_engine(base_args)
     try:
@@ -327,31 +337,63 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             say("  Measuring the prompt chunks of the layer split ...")
             pipe, rep_pipe = measure_pipe(eng, long_prompt, say)
             report.update(rep_pipe)
+
+        # DFlash's actual forward width is independent of the confidence-gated verify prefix.
+        # Query the loaded artifact/arena capacity; MTP and older engines have no such tuning key.
+        d_block = int(info.get("dflash_block", 0)) if "--dflash" in base_args else 0
+        max_block = int(info.get("dflash_max", 0)) if d_block else 0
+        blocks = sorted({k for k in DFLASH_BLOCKS if k <= max_block} | {d_block}) if max_block else []
+        best_block = d_block
+        block_sweeps = []
+
+        def tune(f, p, block):
+            out = {"pcie_frac": f, "spec_min_p": p}
+            if blocks:
+                out["dflash_block"] = block
+            return out
+
+        def sweep_blocks(f, p):
+            rates = sweep(s, blocks, {"pcie_frac": f, "spec_min_p": p},
+                          "dflash_block", "DFlash forward block", say)
+            block_sweeps.append({"pcie_frac": f, "spec_min_p": p, "rates": {str(k): v for k, v in rates.items()}})
+            return max(rates, key=lambda k: statistics.median(rates[k]))
+
+        if blocks:
+            best_block = sweep_blocks(d_pcie, d_minp)
         # 1. the PCIe share, at the default draft floor
-        by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}), {"spec_min_p": d_minp}, "pcie_frac",
+        by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}),
+                        ({"spec_min_p": d_minp, "dflash_block": best_block} if blocks else {"spec_min_p": d_minp}), "pcie_frac",
                         "PCIe share", say, progress, "pcie_share")
         best_pcie = max(by_pcie, key=lambda k: statistics.median(by_pcie[k]))
         # 2. the draft floor, at that share
-        by_minp = sweep(s, sorted(set(SPEC_MIN_PS) | {round(d_minp, 2)}), {"pcie_frac": best_pcie}, "spec_min_p",
+        by_minp = sweep(s, sorted(set(SPEC_MIN_PS) | {round(d_minp, 2)}),
+                        ({"pcie_frac": best_pcie, "dflash_block": best_block} if blocks else {"pcie_frac": best_pcie}), "spec_min_p",
                         "draft floor", say, progress, "draft_floor")
         best_minp = max(by_minp, key=lambda k: statistics.median(by_minp[k]))
+        if blocks:
+            best_block = sweep_blocks(best_pcie, best_minp)
         # 3. the winner against the default, interleaved, the same number of rounds
-        dflt, cand = (round(d_pcie, 2), round(d_minp, 2)), (best_pcie, best_minp)
+        dflt, cand = (round(d_pcie, 2), round(d_minp, 2), d_block), (best_pcie, best_minp, best_block)
         confirm = {dflt: [], cand: []}
         confirm_total = SWEEP_ROUNDS * 2 if cand != dflt else 1
         _progress(progress, "confirmation", 0, confirm_total)
         if cand != dflt:
             for _ in range(SWEEP_ROUNDS):
                 for k in (dflt, cand):
-                    confirm[k].append(s.rate({"pcie_frac": k[0], "spec_min_p": k[1]}))
+                    confirm[k].append(s.rate(tune(*k)))
                     _progress(progress, "confirmation", sum(map(len, confirm.values())), confirm_total)
         else:
             _progress(progress, "confirmation", 1, 1)
         chosen = pick(confirm, dflt) if cand != dflt else dflt
+        if blocks:
+            say(f"    Confirmed settings: PCIe share {chosen[0]:.2f}, draft floor {chosen[1]:.2f}, DFlash block {chosen[2]}")
         report.update(default={"pcie_frac": dflt[0], "spec_min_p": dflt[1], "pool_workers": d_workers},
                       pcie_sweep={str(k): v for k, v in by_pcie.items()},
                       min_p_sweep={str(k): v for k, v in by_minp.items()},
-                      confirm={f"{k[0]}/{k[1]}": v for k, v in confirm.items()})
+                      confirm={"/".join(map(str, k if blocks else k[:2])): v for k, v in confirm.items()})
+        if blocks:
+            report["default"]["dflash_block"] = d_block
+            report["dflash_block_sweeps"] = block_sweeps
     finally:
         close(eng)
     settings = {}
@@ -360,10 +402,12 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
     if chosen != dflt:
         settings["--pcie-frac"] = f"{chosen[0]:.2f}"
         settings["--spec-min-p"] = f"{chosen[1]:.2f}"
+        if blocks and chosen[2] != d_block:
+            settings["--dflash-block"] = str(chosen[2])
     base_rate = statistics.median(confirm[chosen]) if confirm.get(chosen) else None
     # 4. fewer CPU workers (a restart each), with the chosen settings
     if d_workers and len(worker_candidates(d_workers, extra_workers)) > 1:
-        tuned = with_arg(with_arg(base_args, "--pcie-frac", f"{chosen[0]:.2f}"), "--spec-min-p", f"{chosen[1]:.2f}")
+        tuned = apply(base_args, settings)
         by_workers = {}
         workers = worker_candidates(d_workers, extra_workers)
         _progress(progress, "cpu_workers", 0, len(workers))
@@ -449,6 +493,22 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
             base_rate = statistics.median(by_fork["1"])
         elif by_fork.get("0"):
             base_rate = statistics.median(by_fork["0"])
+    if dflash2 and not hip and long_prompt is not None and not split:
+        from calibrate_dflash2 import measure_profiles
+        profile_settings, profile_report = measure_profiles(
+            base_args, settings, ids_list, long_prompt, start_engine,
+            say=say, progress=progress, cancel_event=cancel_event, baseline_args=original_args, calibration=sys.modules[__name__])
+        report["dflash2_profiles"] = profile_report
+        if profile_settings:
+            settings = profile_settings
+            # The earlier short-decode rate describes different allocations/settings.
+            base_rate = None
+        elif not profile_report.get("skipped"):
+            # A failed fresh-request confirmation must not replace the user's
+            # previous balanced profile with the short-decode proposal.
+            settings = {flag: value for flag in (*DEFAULTS, "--dflash-block")
+                        if (value := arg_value(original_args, flag)) is not None}
+            base_rate = None
     report["seconds"] = round(time.time() - t0)
     report["tok_s"] = round(base_rate, 1) if base_rate else None
     _check_cancel(cancel_event)
@@ -480,6 +540,7 @@ def close(eng):
         proc.wait(60)
     except Exception:
         proc.kill()
+        proc.wait(timeout=10)  # reap it and release VRAM before a subsequent measurement starts
 
 
 DEFAULTS = {"--pcie-frac": None, "--spec-min-p": "0.5", "--pool-workers": None,   # None: the engine's own choice
@@ -491,8 +552,14 @@ def apply(args: list[str], settings: dict) -> list[str]:
     default (setup's --spec-min-p 0.5, the engine's own PCIe share and worker count), so an older calibration's
     values never linger."""
     out = list(args)
-    for flag, default in DEFAULTS.items():
+    defaults = dict(DEFAULTS)
+    if "--dflash" in args:
+        defaults["--dflash-block"] = None
+    for flag, default in defaults.items():
         out = with_arg(out, flag, settings.get(flag, default))
+    for flag in ("--prefill", "--short-read", "--vram-reserve-mib", "--expert-cache"):
+        if flag in settings:
+            out = with_arg(out, flag, settings[flag])
     return out
 
 

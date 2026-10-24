@@ -19,7 +19,8 @@ public:
     NativeHead(const NativeHead&) = delete;
     NativeHead& operator=(const NativeHead&) = delete;
 
-    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    /// allow_bf16 is for a private DFlash head; other callers retain the quantized-only guard.
+    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err, bool allow_bf16 = false);
     void unload();
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
     uint64_t weight_bytes() const { return bytes_; }

@@ -1,0 +1,8 @@
+ar VRAM None tasks {'code': 32.215, 'math': 30.986, 'prose': 37.266, 'long': 38.618} geo 34.62 mismatches 0
+mtp VRAM None tasks {'code': 36.861, 'math': 44.172, 'prose': 43.191, 'long': 49.589} geo 43.214 mismatches 0
+bf16 VRAM 1354.6 tasks {'code': 43.094, 'math': 43.071, 'prose': 36.399, 'long': 40.929} geo 40.779 mismatches 6
+Q4_0 VRAM 726.2 tasks {'code': 49.269, 'math': 45.42, 'prose': 34.889, 'long': 45.149} geo 43.33 mismatches 3
+Q8_0 VRAM 945.0 tasks {'code': 45.155, 'math': 44.828, 'prose': 39.645, 'long': 43.882} geo 43.319 mismatches 3
+Q5_0 VRAM 780.9 tasks {'code': 45.452, 'math': 43.374, 'prose': 33.489, 'long': 43.682} geo 41.21 mismatches 3
+mtp-final VRAM None tasks {'code': 39.059, 'math': 43.074, 'prose': 42.907, 'long': 46.325} geo 42.763 mismatches 3
+mtp-pooled VRAM None tasks {'code': 38.397, 'math': 43.412, 'prose': 43.073, 'long': 47.428} geo 42.957 mismatches 3
