@@ -93,9 +93,11 @@ SavedConversation sample() {
     return s;
 }
 
-// format v1 golden: the file the fixed sample() gives (size and session_hash64 of all bytes, seed 0)
+// format v1 golden (the frozen predecessor): the fixed sample gave these exact bytes under version 1; the v2
+// golden below is this sample plus its stage-table fields, pinned by the same test.
 constexpr size_t kGoldenSize = 17878535;
 constexpr uint64_t kGoldenHash = 0x70f812b350360d09ull;
+constexpr uint64_t kGoldenV2Hash = 0x945fb826e640580eull;
 
 bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
     return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
@@ -171,7 +173,7 @@ int main() {
         auto u32 = [&](size_t o) { uint32_t v = 0; for (int i = 3; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
         auto u64 = [&](size_t o) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
         check(g.size() >= 80 && std::memcmp(g.data(), "STRSESS\x01", 8) == 0, "golden: magic");
-        check(u32(8) == 1 && u32(12) == 64, "golden: version 1, header 64 bytes (little-endian)");
+        check(u32(8) == 2 && u32(12) == 64, "golden: version 2, header 64 bytes (little-endian)");
         check(u64(16) == id.model && u64(24) == id.config, "golden: fingerprints at offsets 16 and 24");
         check(u64(32) == g.size() - 64 - 16, "golden: payload length at offset 32");
         check(u64(40) == 0 && u64(48) == 0, "golden: reserved fields are zero");
@@ -179,7 +181,8 @@ int main() {
         const uint64_t h = session_hash64(g.data(), g.size(), 0);
         const char* golden = std::getenv("STRATA_SESSION_GOLDEN_PRINT");
         if (golden) std::printf("golden size %zu hash %016llx\n", g.size(), (unsigned long long)h);
-        check(g.size() == kGoldenSize && h == kGoldenHash, "golden: the fixed sample's file bytes are unchanged");
+        check(g.size() == kGoldenSize + 8 && h == kGoldenV2Hash,
+              "golden: the fixed sample's v2 bytes are the v1 bytes plus the empty stage-table count");
     }
     check(written == fs::file_size(good), "write reports the file size");
     check(no_temp(dir), "no temporary left behind");
@@ -244,16 +247,24 @@ int main() {
     // wrong version: header field patched and header hash recomputed so only the version differs
     {
         auto d = image;
-        uint32_t v = 2; std::memcpy(d.data() + 8, &v, 4);
+        uint32_t v = 3; std::memcpy(d.data() + 8, &v, 4);
         const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
         const fs::path p = dir / "ver.bin"; spit(p, d);
         check(rejects(p, id, "version"), "unknown version rejected");
     }
+    // format v2 refuses the frozen v1 file: header patched down to version 1 with the header hash recomputed
+    {
+        auto d = image;
+        uint32_t v = 1; std::memcpy(d.data() + 8, &v, 4);
+        const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
+        const fs::path p = dir / "ver1.bin"; spit(p, d);
+        check(rejects(p, id, "version"), "a v1 file is refused by a v2 engine");
+    }
     // a corrupted element count with a recomputed payload hash must fail on bounds, not allocate
     {
         auto d = image;
-        // payload starts at 64: geometry 18*8, layer_lo, layer_hi, cvec = 21*8 bytes, then live.ids count
-        const size_t at = 64 + 21 * 8;
+        // payload starts at 64: geometry 18*8, layer_lo, layer_hi, cvec, stage-table count = 22*8 bytes, then live.ids count
+        const size_t at = 64 + 22 * 8;
         uint64_t huge = 0x0fffffffffffffffull; std::memcpy(d.data() + at, &huge, 8);
         uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
         const uint64_t h = session_hash64(d.data() + 64, payload, 0);
@@ -418,6 +429,33 @@ int main() {
         check(session_file_read(good.string(), id, back, n, error, l) && admitted && same(back, original),
               "admitted file reads");
     }
+    // format v2: the stage table round-trips, and the live layout must match the file's before anything is read
+    {
+        SavedConversation with_table = original;
+        with_table.stage_table = {{12, 47, 9, 2, false}, {48, 60, 3, 1, true}};
+        const fs::path p = dir / "table.bin";
+        check(session_file_write(p.string(), with_table, id, written, error), "stage table: written");
+        SavedConversation back;
+        size_t n = 0;
+        check(session_file_read(p.string(), id, back, n, error) && back.stage_table == with_table.stage_table &&
+              same(back, original), "stage table: round trip keeps the geometry and the state");
+        SessionReadLimits l;
+        l.stages = with_table.stage_table;                        // a live engine with the same split
+        check(session_file_read(p.string(), id, back, n, error, l) && back.stage_table == with_table.stage_table,
+              "stage table: a matching live layout reads");
+        l.stages = {SessionStageGeom{12, 40, 9, 2, false}};       // a different split
+        check(rejects(p, id, "split", l), "stage table: another live split refused");
+        l.stages = std::vector<SessionStageGeom>{};               // a single-device runtime (an ENGAGED empty vector:
+        // an optional reset would skip the comparison, and `= {}` can mean either — engines must assign the vector)
+        check(rejects(p, id, "split", l), "stage table: a split file on a single-device runtime refused");
+        l.stages = {SessionStageGeom{12, 47, 9, 2, false}};       // one live stage, two in the file
+        check(rejects(p, id, "split", l), "stage table: a shorter live split refused");
+        l.stages = with_table.stage_table;                        // a single-device file on a split runtime
+        check(rejects(good, id, "split", l), "stage table: a single-device file on a split runtime refused");
+        l = {};
+        l.max_stages = 1;                                         // fewer stages than the engine will allow
+        check(rejects(p, id, "limit", l), "stage table: more stages than the runtime limit refused");
+    }
     // free-space reserve: an impossible reserve refuses the write and leaves the existing file untouched
     {
         const fs::path p = dir / "reserve.bin";
@@ -474,6 +512,7 @@ int main() {
         auto exact = [&] {
             SessionReadLimits l;
             l.max_tokens = 1000; l.max_checkpoints = 2; l.max_kv_layers = 3;
+            l.max_stages = 0;   // v2 stage table: this sample is single-device
             l.geometry = original.geometry;
             l.layer_range = std::make_pair(original.layer_lo, original.layer_hi);
             l.max_state_bytes = {4099, 77, 301, 64, 8};
@@ -503,7 +542,7 @@ int main() {
         // a huge count in a state array with a recomputed hash: refused by the bound, nothing allocated
         auto d = image;
         // live: ids count (8) + 1000*4, imgs count (8) + 1*16, then the gdn byte count
-        const size_t at = 64 + 21 * 8 + 8 + 1000 * 4 + 8 + 16;
+        const size_t at = 64 + 22 * 8 + 8 + 1000 * 4 + 8 + 16;
         uint64_t was = 0; std::memcpy(&was, d.data() + at, 8);
         check(was == 4099, "limits: test offset finds the GDN count");
         uint64_t huge = 3ull << 30; std::memcpy(d.data() + at, &huge, 8);
