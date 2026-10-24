@@ -1,0 +1,58 @@
+{
+ "exe": "~/strata-src/engine/strata",
+ "args": [
+  "--pack",
+  "~/Strata-data/packs/coder-iq1_m",
+  "--native",
+  "~/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+  "--ple-gguf",
+  "~/Strata-data/models/coder-IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+  "--expert-profile",
+  "~/strata-src/data/expert-profile-coder.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--mtp",
+  "~/Strata-data/mtp/rt",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--resident-experts",
+  "--vram-reserve-mib",
+  "3072",
+  "--spec-min-p",
+  "0.5",
+  "--adapt-every",
+  "100000",
+  "--adapt-swaps",
+  "160",
+  "--adapt-decay",
+  "0.97"
+ ],
+ "cwd": "~/strata-src",
+ "tokenizer": "~/Strata-data/packs/coder-iq1_m/tokenizer",
+ "model_name": "qwen3.8-flash-next-coder-iq1_m",
+ "log": "~/strata-bench/rocblas-ab/engine-on.log",
+ "lib_dirs": [
+  "/opt/rocm/lib"
+ ],
+ "port": 8096,
+ "backend": "hip",
+ "env": {
+  "STRATA_ROCBLAS_TUNING": "~/strata-src/tools/hip",
+  "STRATA_RESIDENT_PIN": "0",
+  "STRATA_HIP_PROMPT_F16": "1",
+  "STRATA_SELECT_SIMT": "1",
+  "STRATA_PREFILL_TIMING": "1",
+  "STRATA_ROCBLAS_VERBOSE": "1"
+ },
+ "open_browser": false,
+ "user_args": [
+  "--vram-reserve-mib",
+  "3072"
+ ]
+}
