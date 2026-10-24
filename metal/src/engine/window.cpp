@@ -220,6 +220,35 @@ private:
         return (size_t) b;
     }
     int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
+    // ---- batch slots (--batch): Metal has no co-decode, so slots time-share this one window.  Each slot keeps a full
+    // copy of the persistent decode state (GDN, PLE history, QSA K/V), swapped into the live buffers around its step.
+    // The dispatch cache binds the live buffers by their stable handles, so only the bytes behind them change.
+    struct SlotStore {
+        std::vector<std::vector<uint8_t>> buf;   // one image per state buffer, in state_buffers() order
+        int hp = 0;                              // which conv history buffer the image's committed one is
+        int32_t ple_prev[2] = {-1, -1};          // the n-gram window (SessionState::ple_prev) of the slot's conversation
+        int64_t cells = 0;                       // the conversation's length: the K/V and pooled keys are copied up to it
+        bool used = false;                       // a conversation was admitted (slot_step refuses an empty slot)
+    };
+    // a persistent buffer: its whole size, and for the positional ones (K/V, scales, pooled keys) the bytes per cell
+    // and a fixed extra, so a copy can stop at the conversation's extent (cells past it are rewritten before they are read)
+    struct StateBuf { void* ptr; size_t bytes, per_cell, extra; };
+    static size_t state_copy_bytes(const StateBuf& b, int64_t cells);
+    std::vector<SlotStore> slots_bs_;
+    int cur_slot_ = -1;                          // the slot whose state is live now (-1: the solo session's)
+    bool slot_dirty_ = false;                    // the live slot ran since its store was written
+    std::vector<StateBuf> state_buffers();   // every persistent decode buffer
+    uint64_t slot_state_bytes();
+    void slot_capture(SlotStore& s);             // the live state -> s (a pending fold run first)
+    void slot_apply(const SlotStore& s);         // s -> the live state
+public:
+    bool batch_init(int n_slots, std::string& err);
+    void batch_fit(uint64_t free_bytes, int& n, std::string& note);
+    void leave_slot();
+    void slot_admit(int b, int64_t cells);       // the live (just-read) conversation of `cells` tokens -> slot b's store
+    void slot_restore(int b);                    // slot b's store -> the live state (continues a parked read)
+    bool slot_step(int b, int32_t token, int64_t pos, int32_t* out, std::string& err);
+private:
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
     int max_t_ = 1;
@@ -1566,6 +1595,151 @@ bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, s
     return true;
 }
 
+// ---- batch slots (--batch): the persistent decode state as (ptr, bytes), in a fixed order so a saved image maps back.
+// Metal has no co-decode: the slots time-share this one window.  A slot's state is swapped into the live buffers for
+// its step and written back lazily, when another slot or the solo path takes the window (leave_slot): a slot that
+// runs several steps in a row copies nothing.  The dispatch cache binds the live buffers by their stable handles, so
+// only the bytes behind them change.
+std::vector<Window::StateBuf> Window::state_buffers() {
+    std::vector<StateBuf> v;
+    auto add = [&](const mtl::Buffer& b, size_t per_cell = 0, size_t extra = 0) { v.push_back({b.ptr, b.bytes, per_cell, extra}); };
+    for (size_t i = 0; i < gst_.size(); ++i) { add(gst_[i]); add(ghist_[0][i]); add(ghist_[1][i]); }
+    add(pleHist_);
+    for (size_t j = 0; j < kq_.size(); ++j) {   // the sizes of init(): K and V 2 x 256 int8 per cell, their scales 16 B
+        add(kq_[j], 2 * 256); add(vq_[j], 2 * 256); add(ksc_[j], 2 * 2 * 4); add(vsc_[j], 2 * 2 * 4);
+        add(tail_[j]); add(dead_[j]);
+        add(pooled_[j], 4 * 128 / 4, 4 * 128 * 2);   // one 128-float pooled key per block of 4 cells, + 2 blocks
+    }
+    return v;
+}
+
+uint64_t Window::slot_state_bytes() {
+    uint64_t n = 0;
+    for (const StateBuf& b : state_buffers()) n += b.bytes;
+    return n;
+}
+
+// how much of a positional buffer a conversation of `cells` tokens has written: the extent plus a margin (the window
+// in flight and the block reads around it), rounded up
+size_t Window::state_copy_bytes(const StateBuf& b, int64_t cells) {
+    if (b.per_cell == 0) return b.bytes;
+    const uint64_t c = ((uint64_t) std::max<int64_t>(cells, 0) + MAXT + 64 + 63) / 64 * 64;
+    return (size_t) std::min<uint64_t>(b.bytes, c * b.per_cell + b.extra);
+}
+
+static const bool g_batch_trace = std::getenv("STRATA_METAL_BATCH_TRACE") != nullptr;
+
+void Window::slot_capture(SlotStore& s) {
+    if (pend_fold_ > 0) {   // a commit's fold still pending (a solo spec window's): the stored state is the one after it
+        std::vector<mtl::Dispatch> ds;
+        nb_ = false;
+        fold(ds, pend_fold_, 1 - hp_);
+        cx_->run_graph(ds);
+        pend_fold_ = 0;
+    }
+    const auto bufs = state_buffers();
+    s.buf.resize(bufs.size());
+    for (size_t i = 0; i < bufs.size(); ++i) {
+        const size_t n = state_copy_bytes(bufs[i], s.cells);
+        s.buf[i].resize(n);
+        std::memcpy(s.buf[i].data(), bufs[i].ptr, n);
+    }
+    s.hp = hp_;
+    s.ple_prev[0] = ss_->ple_prev[0];
+    s.ple_prev[1] = ss_->ple_prev[1];
+}
+
+void Window::slot_apply(const SlotStore& s) {
+    const auto bufs = state_buffers();
+    for (size_t i = 0; i < bufs.size() && i < s.buf.size(); ++i)
+        std::memcpy(bufs[i].ptr, s.buf[i].data(), std::min(bufs[i].bytes, s.buf[i].size()));
+    hp_ = s.hp;
+    pend_fold_ = 0;   // the stored state has no fold pending (slot_capture ran it)
+    last_T_ = 0;
+    ss_->ple_prev[0] = s.ple_prev[0];
+    ss_->ple_prev[1] = s.ple_prev[1];
+}
+
+// the live window is about to serve something else (the solo path, a reset, a restore, another slot): write the
+// current slot's state back if it ran since it was last saved
+void Window::leave_slot() {
+    if (cur_slot_ >= 0 && cur_slot_ < (int) slots_bs_.size() && slot_dirty_) slot_capture(slots_bs_[(size_t) cur_slot_]);
+    cur_slot_ = -1;
+    slot_dirty_ = false;
+}
+
+bool Window::batch_init(int n_slots, std::string& err) {
+    if (n_slots < 2) { err = "metal batch: it needs 2 or more slots"; return false; }
+    slots_bs_.assign((size_t) n_slots, SlotStore{});
+    cur_slot_ = -1;
+    slot_dirty_ = false;
+    return true;
+}
+
+// once the window is up: the slots that fit beside everything loaded (`free_bytes`: what cudaMemGetInfo reports then),
+// each a copy of the state buffers, with 1 GiB kept.  Fewer than 2: batching is off (n = 0).
+void Window::batch_fit(uint64_t free_bytes, int& n, std::string& note) {
+    const uint64_t per = slot_state_bytes();
+    const uint64_t keep = 1ull << 30;
+    const int fit = per == 0 ? 0 : (int) std::min<uint64_t>((uint64_t) n, free_bytes > keep ? (free_bytes - keep) / per : 0);
+    char buf[256];
+    if (fit < 2) {
+        std::snprintf(buf, sizeof buf, "a slot's state copy is %.2f GiB and %.2f GiB is free: not two slots fit (a smaller "
+                      "--max-context makes them smaller)", per / 1073741824.0, free_bytes / 1073741824.0);
+        n = 0;
+        slots_bs_.clear();
+    } else {
+        std::snprintf(buf, sizeof buf, "%d slot%s, each a %.2f GiB copy of the window's state (%.2f GiB free)", fit,
+                      fit == 1 ? "" : "s", per / 1073741824.0, free_bytes / 1073741824.0);
+        if (fit < n) slots_bs_.resize((size_t) fit);
+        n = fit;
+    }
+    note = buf;
+}
+
+void Window::slot_admit(int b, int64_t cells) {
+    if (b < 0 || b >= (int) slots_bs_.size()) return;
+    // the live state is the conversation the solo path just read: it becomes slot b's (nothing to write back first,
+    // the prompt read left the previous slot)
+    leave_slot();
+    slots_bs_[(size_t) b].cells = cells;
+    slot_capture(slots_bs_[(size_t) b]);
+    slots_bs_[(size_t) b].used = true;
+    cur_slot_ = b;
+    slot_dirty_ = false;
+    if (g_batch_trace) std::fprintf(stderr, "strata metal batch: admit slot %d (ple_prev %d,%d)\n", b,
+                                    ss_->ple_prev[0], ss_->ple_prev[1]);
+}
+
+void Window::slot_restore(int b) {
+    if (b < 0 || b >= (int) slots_bs_.size() || !slots_bs_[(size_t) b].used) return;
+    leave_slot();
+    slot_apply(slots_bs_[(size_t) b]);
+    cur_slot_ = b;
+    slot_dirty_ = false;
+    if (g_batch_trace) std::fprintf(stderr, "strata metal batch: restore slot %d\n", b);
+}
+
+bool Window::slot_step(int b, int32_t token, int64_t pos, int32_t* out, std::string& err) {
+    if (b < 0 || b >= (int) slots_bs_.size() || !slots_bs_[(size_t) b].used) {
+        err = "metal batch: slot_step on an empty slot";
+        return false;
+    }
+    if (cur_slot_ != b) {
+        leave_slot();
+        slot_apply(slots_bs_[(size_t) b]);
+        cur_slot_ = b;
+    }
+    const int32_t tok = token;
+    if (!run(1, &tok, pos, true, out, err)) return false;
+    if (!commit(1, err)) return false;
+    slot_dirty_ = true;
+    slots_bs_[(size_t) b].cells = std::max(slots_bs_[(size_t) b].cells, pos + 1);
+    if (g_batch_trace) std::fprintf(stderr, "strata metal batch: step slot %d tok %d pos %lld -> %d\n", b, tok,
+                                    (long long) pos, out[0]);
+    return true;
+}
+
 bool Window::commit(int n_keep, std::string& err) {
     if (n_keep < 1 || n_keep > last_T_) { err = "metal window: commit count out of range"; return false; }
     using namespace strata::kernels;
@@ -2626,10 +2800,11 @@ bool window_run(void* w, int T, const int32_t* tokens, int64_t pos0, bool head, 
     // STRATA_LOGPOS (the quant yardstick, the KL harness): every window's head logits are read, also the prompt's
     // windows that sample nothing (head_sampling off)
     static const bool logpos = std::getenv("STRATA_LOGPOS") != nullptr;
+    ((Window*) w)->leave_slot();   // the solo path's window: a batch slot's unsaved state goes back to its store first
     return ((Window*) w)->run(T, tokens, pos0, head || logpos, out, err);
 }
 void window_reset() {
-    if (g_the_window != nullptr && g_the_window->ready()) g_the_window->reset();
+    if (g_the_window != nullptr && g_the_window->ready()) { g_the_window->leave_slot(); g_the_window->reset(); }
 }
 bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
@@ -2637,7 +2812,25 @@ bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string
 }
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& err) {
     if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    g_the_window->leave_slot();
     return g_the_window->checkpoint_restore(c, err);
+}
+// ---- batch slots (--batch): generate.cpp's Metal branches call these (the Verifier's slot methods are CUDA's)
+bool window_batch_init(int n_slots, std::string& err) {
+    // called before the first prompt brings the window up: make the singleton and record the slot count; the per-slot
+    // state images are filled at the first admission (by then the window's buffers exist)
+    window_create();
+    return g_the_window->batch_init(n_slots, err);
+}
+void window_batch_fit(uint64_t free_bytes, int& n, std::string& note) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { note = "the decode window is not up"; n = 0; return; }
+    g_the_window->batch_fit(free_bytes, n, note);
+}
+void window_slot_admit(int b, int64_t cells) { if (g_the_window != nullptr) g_the_window->slot_admit(b, cells); }
+void window_slot_restore(int b) { if (g_the_window != nullptr) g_the_window->slot_restore(b); }
+bool window_slot_step(int b, int32_t token, int64_t pos, int32_t* out, std::string& err) {
+    if (g_the_window == nullptr || !g_the_window->ready()) { err = "metal window: not up"; return false; }
+    return g_the_window->slot_step(b, token, pos, out, err);
 }
 bool window_commit(void* w, int n_keep, std::string& err) {
     const double t0 = now_ms();
@@ -2689,6 +2882,7 @@ bool prompt_run(const int64_t* tokens, int64_t n, int64_t pos0, const float* con
 bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,
                      const std::function<bool(const float*, int64_t, int64_t, std::string&)>& on_chunk, std::string& err) {
     if (g_window == nullptr) { err = "metal prompt: the decode window is not up yet"; return false; }
+    g_window->leave_slot();   // the prompt is read into the live window: a batch slot's unsaved state goes back first
     static const bool windows = std::getenv("STRATA_METAL_PROMPT") && std::string(std::getenv("STRATA_METAL_PROMPT")) == "window";
     static const int64_t min_rows = std::getenv("STRATA_METAL_PROMPT_MIN") ? std::atoll(std::getenv("STRATA_METAL_PROMPT_MIN")) : 32;
     if (!windows && !g_window->streaming() && n >= min_rows) return g_window->prompt(tokens, n, pos0, on_chunk, err);

@@ -117,7 +117,15 @@
 
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
-namespace strata::metal_engine { void set_model_shard(const char* shard1); }   // metal/src/engine/window.cpp
+namespace strata::metal_engine {   // metal/src/engine/window.cpp
+void set_model_shard(const char* shard1);
+// batch slots (--batch): the window time-shares its state across slots
+bool window_batch_init(int n_slots, std::string& err);
+void window_batch_fit(uint64_t free_bytes, int& n, std::string& note);
+void window_slot_admit(int b, int64_t cells);
+void window_slot_restore(int b);
+bool window_slot_step(int b, int32_t token, int64_t pos, int32_t* out, std::string& err);
+}
 #endif
 
 #include <array>
@@ -5298,6 +5306,9 @@ int main(int argc, char** argv) {
     };
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0');
+#if defined(STRATA_GPU_METAL)
+    batch_mtp = false;   // Metal batch slots decode one token per step (no per-slot draft layer)
+#endif
     if (batch_mtp) {
         // (--pipeline-windows is already off with --batch slots)
         const char* why = o.batch < 2 ? "it needs --batch 2 or more" : o.mtp.empty() ? "it needs --mtp"
@@ -5383,6 +5394,23 @@ int main(int argc, char** argv) {
                              "one group\n", o.batch_groups, o.batch);
         o.batch_groups = 1;
     }
+#if defined(STRATA_GPU_METAL)
+    // Metal: batch slots time-share the one decode window (metal/src/engine/window.cpp).  Each slot keeps a full copy
+    // of the window's persistent state (GDN, PLE, QSA K/V), swapped in around its step; there is no co-decode and no
+    // per-slot SessionState.  The host keeps empty SessionState placeholders so the shared batch code can index them.
+    if (o.batch > 0) {
+        bslot_ss.resize(1);
+        for (int b = 0; b < o.batch; ++b) bslot_ss[0].push_back(std::make_unique<strata::core::SessionState>());
+        std::string e;
+        if (!strata::metal_engine::window_batch_init(o.batch, e)) {
+            std::fprintf(stderr, "strata generate: --batch is off: %s\n", e.c_str());
+            bslot_ss.clear();
+            o.batch = 0;
+        } else {
+            o.batch_groups = 1;   // how many fit beside the loaded model is decided once the window is up (below)
+        }
+    }
+#else
     if (o.batch > 0) {
         bslot_ss.resize(1 + stages.size());
         int fit = o.batch;   // the slots every stage could carve
@@ -5440,6 +5468,7 @@ int main(int argc, char** argv) {
                          (double) bytes0 * o.batch / 1073741824.0);
         }
     }
+#endif
 
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
     // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
@@ -9196,7 +9225,8 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        // each stage's verifier gets its stage's slot sessions
+        // each stage's verifier gets its stage's slot sessions (Metal owns its slots in the window: nothing to do here)
+#if !defined(STRATA_GPU_METAL)
         if (o.batch > 0) {
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 std::vector<strata::core::SessionState*> ptrs;
@@ -9209,6 +9239,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
+#endif
         for (int st = 0; st < n_stages && n_stages > 1; ++st) {
             split_drive.plan[st] = stage_ver(st).plan_sink();
             if (st > 0) {
@@ -11001,6 +11032,24 @@ int main(int argc, char** argv) {
             // below ~256 MiB a later allocation (a first-used window's buffers, the desktop, another program) can make
             // the driver page GPU memory, and a verify graph spinning on a host flag then never finishes
             const int64_t free_mib = (int64_t) (free_b >> 20);
+#if defined(STRATA_GPU_METAL)
+            if (o.batch > 0) {   // Metal: each slot is a copy of the decode window's state; as many as fit in what is left
+                int n = o.batch;
+                std::string note;
+                strata::metal_engine::window_batch_fit((uint64_t) free_b, n, note);
+                if (n < 2) {
+                    std::fprintf(stderr, "strata serve: WARNING: --batch %d is off: %s\n", o.batch, note.c_str());
+                    bslot_ss.clear();
+                } else {
+                    if (n < o.batch)
+                        std::fprintf(stderr, "strata serve: WARNING: --batch %d: %s\n", o.batch, note.c_str());
+                    else
+                        std::fprintf(stderr, "strata serve: --batch %d: %s\n", o.batch, note.c_str());
+                    bslot_ss[0].resize((size_t) n);
+                }
+                o.batch = n;
+            }
+#endif
             if (free_mib >= 256) {
                 std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded\n", (long long) free_mib);
 #ifdef _WIN32
@@ -11426,6 +11475,11 @@ int main(int argc, char** argv) {
         };
         auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
+#if defined(STRATA_GPU_METAL)
+            (void) e;
+            strata::metal_engine::window_slot_admit(b, upto);   // the live (just-read) conversation -> slot b's state copy
+            return true;
+#endif
             if (slot_copy_direct) {
                 if (!direct_slot_copy(true, b, ids, e)) return false;
             } else
@@ -11470,6 +11524,13 @@ int main(int argc, char** argv) {
         // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
         auto copy_from_slot = [&](int b, const ConvCheckpoint* at, std::string& e) -> bool {
             const int64_t upto = at != nullptr ? (int64_t) at->ids.size() : (int64_t) bs[(size_t) b].ids.size();
+#if defined(STRATA_GPU_METAL)
+            (void) upto;
+            // slot b's state copy -> the live window: its K/V up to the conversation; with `at` (one of the slot's turn
+            // checkpoints) the running state as of that turn, as the CUDA path restores it, so the read goes on from there
+            strata::metal_engine::window_slot_restore(b);
+            return at == nullptr || strata::core::conversation_checkpoint_restore(*at, ss, g, e);
+#endif
             if (at != nullptr && at->stage_parts.size() != stages.size()) { e = "a checkpoint without its stage parts"; return false; }
             if (slot_copy_direct && at == nullptr) {
                 if (!direct_slot_copy(false, b, bs[(size_t) b].ids, e)) return false;
@@ -11580,10 +11641,21 @@ int main(int argc, char** argv) {
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
             }
             const Clock::time_point w0 = Clock::now();
+#if defined(STRATA_GPU_METAL)
+            // Metal has no co-decode: each active slot's one token is run in turn through the shared window, its state
+            // swapped in around the step (metal/src/engine/window.cpp).  rows[t] is slot t's row (no MTP: S == A).
+            for (int t = 0; t < S; ++t) {
+                if (!strata::metal_engine::window_slot_step(rows[t], tok[t], pos[t], &outb[t], err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return false;
+                }
+            }
+#else
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                 return false;
             }
+#endif
             const Clock::time_point w1 = Clock::now();
             // The adaptive VRAM tier, as the solo loop runs it: every --adapt-every windows, on a thread beside the commit and
             // the drafts.  Every stage's window has finished here (run_slot_rows synchronised each stage's stream), and
@@ -11607,10 +11679,13 @@ int main(int argc, char** argv) {
                 keep[b] = batch_mtp && outb[i] == tok[i + 1] && !eos && !sl.stop &&
                           sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
             }
+            // Metal: each slot_step already committed and saved its own state; keep[] is 1 per slot (no MTP)
+#if !defined(STRATA_GPU_METAL)
             if (!(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
                 std::printf("ERR %s\n", err.c_str());
                 return false;
             }
+#endif
             const Clock::time_point w2 = Clock::now();
             auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
             bt_run += msd(w0, w1);

@@ -18,6 +18,9 @@ One GPU: add `"parallel": 2` to the model's config (`strata-<model>.json`) and r
 `--parallel 2`. Setup recommends it only where it does not cost speed (below); any number you ask for is kept as
 asked, with a note when it is more than setup would recommend.
 
+On a Mac the same setting runs on the Metal engine, which has no co-decode: the slots take turns on one decode
+window, each with its own copy of the window's state, so it gives concurrency, not throughput ([MAC.md](MAC.md#limits-this-version)).
+
 ```
 "parallel": 2
 ```
@@ -431,6 +434,8 @@ counter-based draw (Philox(seed, position)).
 - Admissions are one at a time: two new long prompts are read one after the other.
 - `--batch-groups` needs every stage on its own GPU. A pipelined slot is a conversation cache again (0.1.41): a request left alone in its slot goes back to the solo path with its drafts, as on one GPU.
 - The slot sessions take VRAM (above) and, with KV streaming, pinned RAM.
+- On a Mac (Metal) the slots time-share one decode window, one token per step, and a prompt is read in one piece (no
+  `BYIELD` at a chunk boundary); each slot's state copy takes unified memory by the context (MAC.md).
 
 ## Measured
 
