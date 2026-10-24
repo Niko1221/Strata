@@ -102,7 +102,7 @@ tokens in the window. Same prompts, 5 interleaved pairs, R9700:
 The text is the same with and without it (every slot equal to its solo tokens).
 
 **What a slot costs.** Each slot keeps its own cache in VRAM: 1.5 GB at a context of 32K (fp32 keys and values of the 10 attention layers
-and the MTP block, 45 KB per token) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
+and the MTP block, 45 KB per token; `--kv` below takes less) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
 that from the room the experts would have: on a card that does not hold every expert (12 and 16 GB, the hybrid mode) that is room the
 expert slots lose, and a batch reads more distinct experts from RAM. Setup **offers `--parallel`** where the sessions do not eat the experts' room: up to 3-4 where every expert still fits (3 on a 32 GB card at
 32K), and on a card that does not (the hybrid mode) the count whose sessions take at most 35% of the room the experts would have, so it
@@ -161,6 +161,27 @@ token is the dense Q8_0 at the card's bandwidth (6 ms of the 17) and the rest wa
 kernels' share is gained: decode tg128 58.5 -> 59.7 tok/s (+2%), pp2048 1,958 -> 2,022 (+3.3%), 10/10 identical, plain and `--mtp 2`
 (84.3 -> 84.7). llama.cpp 972b5fc CUDA (`-ncmoe 26 -t 8 -ub 2048`): pp2048 1,328, tg128 48-52.
 
+**Norm and combine kernels in registers.** `k_add_rms_q` (add + norm + q8_1, 40 per token) and `k_moe_out_s8` (the MoE end for 8
+experts and a 2048-wide hidden state, 40 per token) keep their values in registers instead of re-reading `h` through a `volatile` load, and
+sum the 256 per-thread partials with one barrier instead of nine (or ten) in the same pairing, so every result keeps the old bits
+(`STRATA_Q36_VERIFY=1 --no-graph` 0 mismatches in 92,263 comparisons; `--dump-full-logits` identical at 4K and 14K). Per launch, nsys,
+RTX 5080 16 GB, Sage-A1.5 Q4_K_M, 4K prompt, forced text: `k_add_rms_q` 6.9 -> 2.3 us, the MoE end 5.4 -> 3.5 us (259 us less per token).
+Decode, CLI in the serving shape (262K context reserved, 78 experts per layer in VRAM, `--mtp 0`, forced text, 256 tokens, two interleaved
+runs each): 4K 193.4 -> 199.9 tok/s (+3.4%), 16K 169.7 -> 173.9 (+2.5%), 40K 182.8 -> 189.9 (+3.9%). Prompt reading is untouched.
+
+**`--side-stream`: a second stream for the independent matrices of a decode layer.** Off by default. In the DeltaNet layers the GDN alpha / beta and the z product, in the
+attention layers the k and v products, run on a second, higher-priority stream beside the layer's first matrix (qkv, q) and join before the
+mixer kernel that reads them: the same kernels on the same inputs, so every bit is unchanged (`--dump-full-logits` identical at 4K and 14K, `--mtp 2`
+text identical, `STRATA_Q36_VERIFY=1` 0 mismatches). Not used with decode graphs or prompt chunks. Perturbation tests (`STRATA_Q36_SIDE_SKEW`, below) at decode and with `--mtp 2`: <<TEST>>.
+RTX 5080 16 GB, Sage-A1.5 Q4_K_M, serving shape, `--mtp 0`, forced text, two interleaved runs each, side stream off -> on: 4K 199.9 -> 202.4 tok/s
+(+1.2%), 16K 173.5 -> 176.0 (+1.4%), 40K 190.1 -> 192.5 (+1.3%).
+The gain depends on the stream priority: with equal priorities (a GPU or driver with one priority level) it measured +0.3%, so the flag only takes
+effect when the driver gives the stream a higher priority (CUDA `hi < lo`; otherwise it says so and is ignored); it is ignored under HIP. It costs about 40 us of host time per token
+(the extra launches and four events per layer), so the host's lead over the GPU is smaller; the host-bound shapes (small CPU, many pool waits)
+may gain less or lose, which is why it is a flag. At 16K one off-run read 166.1 tok/s (GPU share 70.9%): the
+expert prefetch's timing moved that run, not the side stream; the table above is the other runs. `STRATA_Q36_SIDE_SKEW=<us>` /
+`STRATA_Q36_SIDE_SKEW_JOIN=<us>` (tests) add a spin kernel before the side stream's first kernel / before the join wait.
+
 **Prompt chunk (the default changed).** The MoE prompt kernels read every expert once per chunk, so a bigger chunk feeds them more rows per
 expert: R9700 pp4096 at chunk 512 / 1024 / 2048 / 4096 = 3,453 / 4,786 / 5,766 / 6,223 tok/s. With every expert in VRAM the engine now takes the
 largest of 4096 / 2048 / 1024 that fits beside the experts, the 0.77 GiB reserve and the sessions' caches without giving the packed decode
@@ -174,11 +195,165 @@ file (4.2e-3), not a quality loss. Greedy 64 tokens after those six documents: t
 `--prefill 512` for 6 of 6. A prompt shorter than the chunk (every chat turn after the first) is one chunk either way: unchanged.
 The maintainers keep the new default's reference outputs (six documents, greedy 64) and check later changes against them.
 
+**Experts streamed to the prompt (hybrid mode).** A prompt chunk of more than `--hybrid-rows` rows reads each layer's experts from a GPU staging
+buffer, two layers ahead. By default a layer is copied whole from host memory when fewer than half of its experts are resident, and otherwise
+the resident experts are copied from their VRAM slots and only the others cross PCIe (runs of consecutive experts in one copy each).
+`STRATA_Q36_STREAM_ALL=1` always copies the whole layer.
+
+- **`--split-stage-copy`**: take the runs from 1/8 of the experts resident (instead of 1/2) and run the slot copies on a high-priority
+  stream of their own. A device-to-device copy is a kernel: queued behind the PCIe copies on the copy stream it waited for the compute
+  kernels' SMs and held the PCIe copies up. RTX 5080, 78 of 256 experts resident, Sage-A1.5 Q4_K_M, int8 KV, `--max-context 262144`, fresh 16K
+  prompt: 4,570 tok/s with both kinds of copy on one stream, 5,760 whole-layer copies, 6,090 with the slot copies on their own stream;
+  38 of 256 resident: 5,930 against 5,780. Fresh prompt reads (CLI, repeat runs within 0.6%) went from 5,603 / 5,769 / 4,575 to
+  6,583 / 6,145 / 4,681 tok/s at 4K / 16K / 40K; decode is unchanged (193.5 / 169.8 / 182.6 against 193.8 / 169.8 / 183.0 tok/s). The
+  bytes in staging are the same (the logits are bit-identical). It is a flag, not the default, because the old rule came from one RTX 3060
+  measurement (37 of 256 resident, both kinds of copy on one stream: 1,970 whole against 1,540 in runs) that has not been re-run with
+  the slot copies on their own stream: a card with few experts resident may prefer the whole-layer copy, and only one card has been
+  measured with the flag.
+
+Two steps are always on, with the same bytes in the same order: each token's MoE input is quantized once and scattered to its sorted rows,
+and the per-layer wait for the routing counts is an event wait with the shared expert enqueued first. (`STRATA_QUANT_GATHER=1`, the upstream switch, turns the quantization back to one per entry.)
+
 **Tried and dropped.** The MTP drafts' head over a subset of the vocabulary (`--draft-vocab N`, kept as an opt-in; the answer never
 changes): the first 16K-131K rows gain 5-8% on English and code but lose 10-15% on Chinese / Russian / Arabic / Hindi (70% of a Chinese
 prompt's token ids are above 65,536), and a candidate list built from the tokens seen so far loses on both. The shared expert on a second
-stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. Chunked (WY) GDN and the PCIe-assisted hybrid decode
-were not attempted.
+stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. In the hybrid mode, a share of each token's
+missed experts copied over PCIe and run on the GPU beside the CPU pool: slower (a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080, DDR5-6400 dual channel: 155 instead of 184
+tok/s with 30% of them), because the copies read the same RAM the pool already nearly fills (88 of about 96 GB/s); and the CPU's
+experts of the last token copied into the prefetch slots (below) after the pool: those recur 18% of the time, and their copies crowd
+out the predicted ones. Chunked (WY) GDN was not attempted.
+
+## Opt-ins of this engine path
+
+All off by default; with none of them the engine runs as before. They go in the config's `args` (`strata-qwen36-<size>.json`) or
+on the `strata-q36` command line.
+
+- **`--tokens-file F`** (with `--tokens` mode, the main path's name): the prompt ids from a file, commas or whitespace, instead of on the
+  command line (a long prompt does not fit one argument).
+- **`--kv fp16 | int8 | k8v4`**: the keys and values in less VRAM than the default fp32: 22.5 / 12.7 / 9.5 KB per token and session
+  instead of 45 KB (fp16 is #3641's; int8 is q8_0 rows; k8v4 is int8 keys and rotated q4_0 values, as the main path's `--kv k8v4`). fp16 and k8v4
+  always decode with the grouped-query kernel below. The main path's `q4_0` is not on this path: in serve mode it is said and
+  skipped (the fp32 cache), elsewhere refused. Before this option a config's `--kv` was skipped by this engine; a config that
+  carries one now gets that cache.
+- **`--gqa-attn`**: the grouped-query decode attention (#3641's kernel) for the fp32 and int8 caches: a block per KV head reads
+  each cache cell once for all its query heads (the default kernel reads it once per query head). fp32 switches to it from 8,192
+  cells, int8 at every cell: with the int8 cache (a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080) it decodes at 184 tok/s (the default kernel 179) at 4K and 165
+  (155) at 8K. The int8 kernel (`part_q8x`, 8 query heads per KV head) streams the cache through shared memory (`cp.async`, sm_80+;
+  older cards keep the first int8 kernel) and serves all rows of a verify window in one pass over the cache (up to 4 rows a block,
+  one session). Its partials have the same bits as the first int8 kernel's (checked by `q36_attn_parity` and by `cmp` of the logits).
+  `--attn-mma` without `--gqa-attn --kv int8`, or on a card below compute capability 8.0, says so and is ignored.
+  Microbench (not an engine run) of the attention's partial kernel for one layer on an RTX 5080, int8 cache, 16 query / 2 KV
+  heads, L2 flushed before each call: 4K cells 48 -> 24 us, 32K 95 -> 69, 90K 229 -> 142, 262K 554 -> 361 us; a 3-row window at
+  262K 1,550 -> 925 us.
+- **`--attn-mma`** (with `--gqa-attn --kv int8`, sm_80+; `STRATA_Q36_ATTN_MMA` does the same: `1` / `on` / `true` / `yes` turns it on, `0` / `off` / `false` / `no` leaves it off, anything else is said and ignored; the flag wins): the decode attention on tensor cores
+  (`part_q8m`): the window's query rows (8 per row) against the int8 cells as fp16 `mma.sync` products with fp32 accumulation, the cache
+  read once per window. **Not bit-identical** to the default kernel: q, the softmax weights times the V scale, and the products are
+  rounded to fp16 (about 1e-4 relative), K and V enter as their exact int8 values. A row's result does not depend on the other rows of
+  its window, so `--mtp` text equals the plain text. KL against the default kernel over the 14K / 57K / 76K set (65 forced steps each,
+  Sage, RTX 5080): mean 5.7e-3, median 1.1e-3, p99 0.033, max 0.36 (the `--prefill 1024` floor: 8.9e-3, 1.3e-3, 0.09, 0.51).
+  Microbench of the partial kernel for one layer (int8, 16 / 2 heads, L2 flushed): 262K cells 1 row 331 us (the int8 kernel above: 361),
+  a 3-row window 425 us (925), 4 rows 461 us (1,200); 32K cells, 3 rows 76 us (157).
+- **`--fused-prompt-attn`** (the int8 cache, NVIDIA sm_80+, 8 query heads of 256 per KV head; ignored with a message otherwise): a
+  prompt chunk of more than 8 rows runs its attention in one kernel straight from the int8 cells (`q36_pattn.cuh`): a block takes
+  one KV head and 8 tokens x 8 query heads, dequantises 32 cells at a time into shared memory, multiplies on the FP16 tensor cores
+  (`mma.sync`, FP32 sums), keeps the softmax online in registers and splits the cells over blocks when the chunk is small
+  (flash-decoding). The default path converts the whole cache to FP16 for every chunk and layer and writes the FP32 scores and FP16
+  probabilities of each slice to memory and back (at 262K cells a slice holds 16 query rows). With the flag the FP16 K / V copies
+  and the score buffers (896 MiB = 0.875 GiB at 262K cells, less 16 MiB of split partials) are not allocated: the experts get 12
+  more slots per layer (78 -> 90). The sums run in another order, so it is not bit-equal to the default path (not bit-identical).
+  Measured on an RTX 5080 (Sage-A1.5 Q4_K_M, 262K context reserved, int8 KV, `--mtp 0`): one layer's attention, 52 new rows at 262K
+  cells 23.2 -> 2.7 ms, 300 rows 108 -> 20 ms, 2,048 rows 723 -> 125 ms (kernel microbenchmark, `q36_pattn_parity`); fresh prompt
+  read 40K 4,570 -> 5,420 tok/s, 16K 5,768 -> 5,870, 4K unchanged; decode (forced text) +3.5% / +3.6% / +2.1% at 4K / 16K / 40K
+  from the extra slots. Against a double-precision oracle the kernel's error is at or below the default path's on every row of
+  the 14K prompt's last chunk (10 attention layers, 32,768 rows each). KL of the logits against the default path (fixed 56 slots,
+  chunk 2048, 65 forced steps per prompt): 195 steps over the 14K and 57K corpus prompts and the 76K agent prompt: mean 2.06e-2,
+  median 1.63e-3, p99 0.094, **max 2.67** (one step of the 14K prompt, where the top two logits swap; the other 194 steps stay
+  at 0.21 or less); the 4K and 32K prompts have mean 8.3e-3 / 9.7e-3, max 0.048 / 0.063; two more 14K agent prompts: mean 3.0e-3 and
+  1.7e-5, max 0.026 and 6.5e-4. For comparison `--prefill 1024` gives mean 8.9e-3, max 0.51 and the accepted prefetch opt-ins mean
+  2.2e-2, max 1.95.
+- **`--chunked-gdn`** (NVIDIA, any arch): the prompt's gated delta rule in pieces of 16 tokens instead of one token after another
+  (`q36_gdn.cuh`). The recurrence `S_t = g_t S_{t-1} + k_t delta_t^T` is unrolled over a piece: a kernel computes every piece's
+  triangular system `(I + L) delta = b` matrix `L` and the output matrix `P` (they do not depend on the state), then one block per
+  (V head, 32 state columns) walks the pieces: `U = K W`, `Q W` and the state update `W <- e^c W + K^T delta` as FP32 products
+  from shared memory, `delta` by forward substitution (one column per lane, no barrier). The default kernel (`k_gdn_seq_cols`)
+  has two barriers per token for 2,048 tokens in series. The state is left in the engine's layout, so decode and verify steps read
+  it as before. FP32 sums in another order: not bit-identical. Measured on an RTX 5080 (Sage-A1.5 Q4_K_M): one layer of a 2,048-token chunk
+  1.82 -> 0.87 ms (kernel microbenchmark, `q36_gdn_parity`: error against a double-precision recurrence in the outputs 1e-8 .. 1.3e-7 (the default kernel: 5e-9 ..
+  2e-8) and in the state 7e-8 .. 9e-7 (default: 3e-8 .. 2e-7), a few times the default kernel's, far below FP16 rounding); 28 ms less GPU kernel time per chunk (nsys, 16K prompt).
+  The prompt read of this card is bound by the expert copies (PCIe), so the end-to-end gain shows only where kernels are the
+  limit: fresh read 16K 5,760 -> 5,816 tok/s, 40K 4,560 -> 4,705, 4K unchanged (with `--fused-prompt-attn` 16K 5,876, 40K
+  5,424 -> 5,582). Decode is unchanged. KL against the default path (195 steps, 14K and 57K corpus + 76K agent prompt): mean
+  1.20e-2, median 2.0e-3, p99 0.078, max 0.97 (the 14K prompt: mean 2.3e-2, max 0.97, top-1 58 of 65 steps; the controls are
+  `--prefill 1024` with mean 8.9e-3 and max 0.51, and the accepted prefetch opt-ins with mean 2.2e-2 and max 1.95). Chunks of 9-33
+  rows are a few microseconds per layer slower than the default kernel. Measured on a Core Ultra 9 285K with 61 GB DDR5-6800.
+- **`--lend-staging`**: the prompt staging buffers (0.97 GiB, idle while decoding) hold 13 more expert slots per layer in decode
+  (see "Lent staging" below). Off unless given. It is off with `--batch`.
+- **`--async-swaps`**, **`--async-after-prompt`**: the expert slots' swaps (every 32 decode rows, `--decode-swaps`; and after a prompt read, up to
+  2048) copy on a copy stream instead of stopping the engine stream and the host, into the slot of an expert that already left the table;
+  the new expert enters the tables only once its copy has landed (checked at the start of the next forward), so no slot is read before its
+  bytes arrived. `--async-swaps` takes the decode ones, `--async-after-prompt` the after-prompt ones too (see "Slot swaps" below). They need
+  the pinned expert copy.
+- **`--expert-profile F`**, **`--expert-profile-save F`** (the main path's names and file format, `tools/make_profile.py`): in the
+  hybrid mode each layer's first expert slots take its most-routed experts from F instead of experts 0 .. S - 1, and at the engine's
+  end the experts in the slots then, ranked by the routing counted since the warm-up, are saved to F (a `.tmp` beside it renamed over
+  it). A layer here is the engine's: the model's layers, then the MTP block, so a profile of another model or path is refused (and the
+  default order used).
+- **`--expert-prefetch P`** (hybrid mode, P up to 8): P of each layer's VRAM slots hold experts fetched ahead: the next layer's router
+  applied to this layer's MoE input names the experts it will likely pick (64% of its misses are in the top 8: a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080, 4K cells), and
+  the ones not in VRAM are copied there while the GPU works on the next layer's mixer. A copy is used only once it has landed; until
+  then the CPU computes that expert, so which side computes an expert depends on timing and the text can differ from run
+  to run in the last bits (the GPU's and the CPU's rounding). Needs the pinned host copy of the experts (else off, said in the log).
+- **`--hybrid-zero-copy`** (hybrid mode): the routing and the MoE input go to the CPU, and the CPU's rows come back, through pinned
+  host memory the GPU reads and writes in place instead of four copies per layer (each costs the stream 2-3 us). The same bytes.
+- **`--decode-swaps N`** (hybrid mode): how many experts move into VRAM slots every 32 decode tokens, over all layers (8 by
+  default; the main path's `--adapt-swaps` counts another round, so the name differs).
+**Lent staging.** A prompt chunk longer than `--hybrid-rows` streams each layer's experts through two staging buffers of a whole layer each
+(0.97 GiB in all, 2 x 498 MiB), which decode never touches. `--lend-staging` puts 13 more expert slots per layer in that memory while decoding
+(a third slot class after the cache and prefetch slots, numbered from `L.n_reg`; the grouping kernels take a second base pointer). When the
+stream starts, the lent slots go out of the tables (no copy: 0.07 ms), and after the prompt the rebalance fills them again with the experts
+the prompt routed most, the expert profile's order standing in for experts not routed yet (`STRATA_Q36_LEND_PRIOR=0`: counts only). At load, and
+after the warm-up, they take each layer's next experts in the profile's order that are not resident. A lent slot never holds an expert that is
+resident elsewhere. RTX 5080, `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64`, an expert profile and `--snapshots 2`, forced text, 256 tokens, `--mtp 0`, one run each: GPU share 86.4 / 75.5 / 89.3% to
+89.2 / 77.5-78.9 / 91.3% at 4K / 16K / 40K and decode 194.8 / 170.9 / 183.5 to 200.3 / 170.0 and 176.6 / 186.2 tok/s (+2.8% / -0.5% and +3.4% / +1.5%;
+the 16K runs disagree, the sync controls repeat within 0.5%); prompt speed unchanged (5,605 / 5,766 / 4,566 to 5,661 / 5,778 / 4,576 tok/s).
+The refill is 533 copies (0.95 GiB), which the copy stream does while decoding starts. The log's `lent slots:` line counts evictions and fills.
+**Class.** C by default: the 533 lent copies after a prompt go to the swap copy stream and a lent expert is used once its copy has landed, which can
+be a forward or two after the first decode token (a repeat of the same run gave the same logits in every KL run, which is not a guarantee).
+`STRATA_Q36_LEND_SETTLE=1` makes it B: the lent copies of the synchronous rebalance run on the engine stream and the engine waits for the swap
+stream before the first decode forward, so the same input gives the same tokens (two runs, same `--dump-full-logits`). It costs the copy time
+after every prompt read (a prompt of 4K tokens reads 2% slower, 16K and 40K 0.5% and 0.2%) and measured about the same decode gain at 16K and 40K but
+almost none at 4K (195.0 against 200.1 tok/s), so it is an opt-in. With `--async-swaps` the swaps are timing-dependent (not reproducible run to run) either way.
+**What it costs when every request streams a prompt.** Each streamed prompt takes the lent slots out (0.07 ms) and, after it, the usual ~1,100-1,500 cache swaps
+(40-45 ms on the engine stream, as without the flag) plus 533 lent copies (0.95 GiB, about 20 ms on the copy stream). A prompt of up to `--hybrid-rows` rows never streams and keeps the lent slots.
+**The expert profile.** At load and after the warm-up the lent slots take each layer's next experts of the `--expert-profile` file that are not resident; after a
+prompt the routing counts decide and the profile's rank breaks ties (`STRATA_Q36_LEND_PRIOR=0`: counts only). In the CLI runs the two gave the same
+speed and GPU share (every run reads a prompt first, so the counts overwrite the profile's choice before the first token); the profile matters between load and the first
+streamed prompt. `--expert-profile-save` counts the lent experts as resident. A lent slot never holds an expert that is resident elsewhere.
+**Staging tail.** MMQ reads up to `kMmqTail` bytes past the last blob of a streamed layer; the lent slots stay inside the first `max_layer` bytes of each buffer, so the zero tail the
+buffers are allocated with is not touched (`STRATA_Q36_STAGE_TAIL_CHECK=1` reads both tails at every stream start and counts those that are not zero: 0 in the runs). Bytes after a smaller layer's last blob are
+the previous bigger layer's data both with and without lending; nothing relies on them being zero.
+**Slot swaps.** The log's `rebalance:` line says how many calls, swaps and milliseconds the slot swaps took (RTX 5080, DDR5-6800 (the DDR5-6400 figures above are older runs), `--max-context 262144 --kv int8 --gqa-attn --hybrid-zero-copy --expert-prefetch 2 --decode-swaps 64`, an expert profile and `--snapshots 2`,
+256 forced tokens after a 4K / 16K / 40K prompt): decode 8 calls, 456 / 369 / 227 swaps, 20.8 / 16.7 / 10.8 ms (0.08 / 0.07 /
+0.04 ms per token, 1.5% / 1.2% / 0.8% of it); after the prompt 1100 / 990 / 960 swaps, 44.6 / 40.3 / 39.3 ms (about 40 us a swap).
+With `--async-swaps` the same decode calls take 2.0 / 2.4 / 2.8 ms of host time and forced-text decode goes 194.8 / 171.5 / 183.9 to
+196.6 / 172.1 / 184.5 tok/s (+0.9% / +0.4% / +0.3%; the sync runs repeat within +-0.4%, so only the 4K gain is outside the noise).
+Its class is C: a swapped-in expert becomes visible when its copy has landed and the next forward starts, which can be one forward later
+than in the synchronous path; in the 65-step KL runs (two rebalance calls) the logits were identical to the synchronous ones, which does not
+carry over to long decodes.
+`--async-after-prompt` takes the 40-45 ms out of the prompt read (pp4096
+5,609 to 5,937 tok/s) but the 1,000 experts then arrive over the next tokens, and decode of the next 256 tokens is 1.2-1.4% slower: it pays
+when the answer is shorter than about 600 tokens. A bigger `--decode-swaps` (128, 256) raises the GPU share (4K: 86.5 / 86.8 / 87.3%) but not the speed,
+with or without `--async-swaps`.
+`STRATA_Q36_AFTER_SWAPS_PER_KTOK=f` limits the after-prompt swaps to f per 1000 tokens read (default: no limit below 2048).
+
+Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
+`STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
+`STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`),
+`STRATA_Q36_LEND_PRIOR=0` (lent slots by the routing counts only), `STRATA_Q36_LEND_SETTLE=1` (settle the lent copies before the first decode forward),
+`STRATA_Q36_STAGE_TAIL_CHECK=1` (the staging buffers' zero tail, counted in the `lent slots:` neighbour line), `STRATA_Q36_PF_GEN_START=N` (with `--expert-prefetch`: the prefetch copies' counter starts at N, close to 2^31 to test its wrap),
+`STRATA_Q36_PF_CHECK=1` (the host's slot tables against the device's at every forward, the host's against its own bookkeeping, and four
+cache slots per layer plus every prefetch slot in the table byte for byte against the host copy; the log's `table check:` line counts the
+mismatches; it synchronizes the stream and copies about 0.5 GB a forward, so it is slow; not with the MTP-only placement), `STRATA_Q36_ASYNC_SWAPS=1/2/3` (the two async bits, as the two flags).
 
 ## Not done / limits
 
@@ -201,3 +376,6 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
   `GENI` / `BGENI` (solo, in a batch, the conversation cache); `q36_vision_serve.py` and `q36_serve_par.py` / `q36_serve_handoff.py`:
   the same through the server.
 - `q36_par_bench.py`: the aggregate-throughput A/B against `llama-server -np N`.
+- `q36_attn_parity` (built with the tests or `-DSTRATA_PARITY_Q36_ATTN=ON`, GPU, no model): the grouped-query attention kernels (fp32,
+  fp16, int8 and k8v4 cells) against a double-precision reference.
+- `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.
