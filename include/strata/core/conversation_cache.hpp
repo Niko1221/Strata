@@ -9,6 +9,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -166,6 +169,11 @@ struct SavedConversation {
     bool cvec = true;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
+    // Disk-mode only, runtime only: NOT serialized (conversation_file's put_payload/get_payload never see these).
+    // Non-empty disk_path: the payload lives in this session file and RAM holds the index entry only; the budget
+    // accounts disk_bytes instead of bytes().
+    std::string disk_path;
+    size_t disk_bytes = 0;
 
     /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
     bool pinned() const {
@@ -182,6 +190,22 @@ struct SavedConversation {
         return n;
     }
 };
+
+/// The matching index of a conversation without its state: ids/imgs/used/pinned of live and of each checkpoint,
+/// cvec and the geometry / layer range; empty state vectors, empty K/V, no stage parts.
+inline SavedConversation conversation_meta_only(const SavedConversation& s) {
+    SavedConversation m;
+    m.geometry = s.geometry;
+    m.layer_lo = s.layer_lo; m.layer_hi = s.layer_hi;
+    m.cvec = s.cvec;
+    m.live.ids = s.live.ids; m.live.imgs = s.live.imgs; m.live.used = s.live.used; m.live.pinned = s.live.pinned;
+    for (const auto& c : s.checkpoints) {
+        ConversationCheckpoint mc;
+        mc.ids = c.ids; mc.imgs = c.imgs; mc.used = c.used; mc.pinned = c.pinned;
+        m.checkpoints.push_back(std::move(mc));
+    }
+    return m;
+}
 
 template<class Token>
 int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
@@ -210,6 +234,14 @@ public:
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
         : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
+    // the whole budget in bytes (disk mode: the budget across the parked files)
+    size_t budget() const { return budget_; }
+    // Disk mode: entries hold a session-file path and the budget counts its bytes, not the RAM index's.
+    // Unlink rule: evict_oldest, drop_superseded and clear DELETE the entry's disk_path (they created it, on the
+    // park path); take() and remove_at() do NOT - the caller owns the file until its restore succeeds.
+    void enable_disk() { disk_ = true; }
+    bool disk() const { return disk_; }
+    static size_t entry_bytes(const SavedConversation& e) { return e.disk_path.empty() ? e.bytes() : e.disk_bytes; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
@@ -267,9 +299,18 @@ public:
 
     SavedConversation take(size_t index) {
         SavedConversation out = std::move(entries_.at(index));
-        bytes_ -= out.bytes();
+        bytes_ -= entry_bytes(out);
         erase(index);
         return out;
+    }
+
+    // The entry without taking it; take()'s index, same bounds check.
+    const SavedConversation& at(size_t index) const { return entries_.at(index); }
+
+    // Erase the entry and its budget; does NOT delete its file (the caller owns it until its restore succeeds).
+    void remove_at(size_t index) {
+        bytes_ -= entry_bytes(entries_.at(index));
+        erase(index);
     }
 
     // A checkpoint inside a parked conversation that a NEW conversation starts with - a sibling subagent sharing the
@@ -342,7 +383,8 @@ public:
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            bytes_ -= entries_[i].bytes();
+            if (!entries_[i].disk_path.empty()) { std::error_code ec; std::filesystem::remove(entries_[i].disk_path, ec); }
+            bytes_ -= entry_bytes(entries_[i]);
             erase(i);
             ++evictions_;
             return true;
@@ -354,6 +396,8 @@ public:
     // may carry the poison.  Returns how many were parked.
     size_t clear() {
         const size_t n = entries_.size();
+        // a cleared cache's parked files are gone with it; error_code ignores a path that does not exist
+        for (const auto& e : entries_) if (!e.disk_path.empty()) { std::error_code ec; std::filesystem::remove(e.disk_path, ec); }
         entries_.clear();
         serials_.clear();
         bytes_ = 0;
@@ -387,7 +431,8 @@ public:
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
             if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
                 !(guarded_ != 0 && serials_[i] == guarded_)) {
-                bytes_ -= e.bytes();
+                if (!e.disk_path.empty()) { std::error_code ec; std::filesystem::remove(e.disk_path, ec); }
+                bytes_ -= entry_bytes(e);
                 erase(i);
                 ++dropped;
                 continue;
@@ -420,7 +465,7 @@ public:
     }
 
     bool put(SavedConversation&& image, size_t held = 0) {
-        const size_t n = image.bytes();
+        const size_t n = entry_bytes(image);
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
         if (!make_room(n, held)) return false;
@@ -430,12 +475,21 @@ public:
         return true;
     }
 
+    // Park a disk-backed entry: `meta` is the RAM index (see conversation_meta_only), the payload is the
+    // session file at `path` with size `file_bytes` - the budget counts the file, not the index.
+    bool put_disk(SavedConversation&& meta, std::string path, size_t file_bytes) {
+        meta.disk_path = std::move(path);
+        meta.disk_bytes = file_bytes;
+        return put(std::move(meta));
+    }
+
 private:
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
+    bool disk_ = false;   // enable_disk(): budget counts entries' disk_bytes, see the unlink rule at enable_disk
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
     std::deque<SavedConversation> entries_; // least recently active first
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused

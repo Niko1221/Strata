@@ -118,6 +118,52 @@ bool same(const SavedConversation& a, const SavedConversation& b) {
     return true;
 }
 
+// CPU stub K/V sources/sinks over the sample's buffers (the device pools' mirror): the source reads a
+// captured layer, the sink writes into byte vectors sized to each part, with per-layer write/done counters.
+std::vector<SessionKvSource> stub_sources(const std::vector<ConversationKv>& kv) {
+    std::vector<SessionKvSource> out;
+    for (const auto& k : kv) {
+        std::array<ConversationBuffer, 5> bufs = {ConversationBuffer(k.k), ConversationBuffer(k.v),
+                                                  ConversationBuffer(k.k_scale), ConversationBuffer(k.v_scale),
+                                                  ConversationBuffer(k.pooled)};
+        SessionKvSource src;
+        src.format = k.format; src.cells = k.cells; src.heads = k.heads; src.head_dim = k.head_dim;
+        src.page_size = k.page_size; src.pooled_rows = k.pooled_rows; src.idx_dim = k.idx_dim;
+        src.sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(), k.pooled.size()};
+        src.read = [bufs](size_t p, size_t at, void* dst, size_t n) {
+            if (p >= 5 || at + n > bufs[p].size()) return false;
+            return bufs[p].visit(at, n, [&](const uint8_t* s, size_t c, size_t o) {
+                std::memcpy(static_cast<uint8_t*>(dst) + (o - at), s, c); return true; });
+        };
+        out.push_back(std::move(src));
+    }
+    return out;
+}
+std::vector<SessionKvSink> stub_sinks(const std::vector<ConversationKv>& kv, std::vector<std::vector<uint8_t>>& got,
+                                      std::vector<int>& done_count, std::vector<int>& touched) {
+    std::vector<SessionKvSink> out;
+    for (size_t j = 0; j < kv.size(); ++j) {
+        const ConversationKv& k = kv[j];
+        const std::array<size_t, 5> sizes = {k.k.size(), k.v.size(), k.k_scale.size(), k.v_scale.size(),
+                                             k.pooled.size()};
+        for (size_t p = 0; p < 5; ++p) got.push_back(std::vector<uint8_t>(sizes[p]));   // got[j*5+p] = part p
+        SessionKvSink s;
+        s.format = k.format; s.cells = k.cells; s.heads = k.heads; s.head_dim = k.head_dim;
+        s.page_size = k.page_size; s.pooled_rows = k.pooled_rows; s.idx_dim = k.idx_dim;
+        s.sizes = sizes;
+        s.write = [j, &got, &touched](size_t p, size_t at, const void* src, size_t n) {
+            std::vector<uint8_t>& d = got[j * 5 + p];
+            if (at + n > d.size()) d.resize(at + n);
+            std::memcpy(d.data() + at, src, n);
+            touched[j] = 1;
+            return true;
+        };
+        s.done = [j, &done_count]() { ++done_count[j]; return true; };
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
 std::vector<char> slurp(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -768,6 +814,223 @@ int main() {
         check(::stat(link.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the session file is mode 0600");
     }
 #endif
+
+    {   // meta read: identity, tokens, checkpoint metadata, skipping
+        const fs::path mdir = fs::temp_directory_path() / "strata_meta_test";
+        fs::remove_all(mdir);
+        fs::create_directories(mdir);
+        const SessionFileIdentity mid{0x1122334455667788ull, 0x99aabbcc00112233ull};
+        SavedConversation s;
+        for (auto& v : s.geometry) v = 1;
+        s.layer_lo = 0; s.layer_hi = 8; s.cvec = true;
+        s.live.ids = {1, 2, 3, 4}; s.live.gdn.assign(64, 7);
+        ConversationCheckpoint c; c.ids = {1, 2}; c.gdn.assign(16, 9); c.used = 5;
+        s.checkpoints.push_back(c);
+        // one K/V layer so the skip path has something big to pass over
+        ConversationKv kv; kv.format = 1; kv.cells = 8; kv.heads = 1; kv.head_dim = 2;
+        kv.page_size = 1; kv.pooled_rows = 0; kv.idx_dim = 0;
+        kv.k.resize(4096, 3); kv.v.resize(4096, 4);
+        s.kv.push_back(std::move(kv));
+        size_t mwritten = 0; std::string merr;
+        check(session_file_write((mdir / "conv-a.sess").string(), s, mid, mwritten, merr), "meta test file writes");
+        SessionFileMeta m;
+        check(session_file_read_meta((mdir / "conv-a.sess").string(), mid, m, merr, 1024, 8), "meta read accepts");
+        check(m.ids == std::vector<int32_t>({1, 2, 3, 4}), "meta read returns live tokens");
+        check(m.geometry == s.geometry && m.layer_lo == 0 && m.layer_hi == 8 && m.cvec, "meta read carries the geometry");
+        check(m.checkpoints.size() == 1 && m.checkpoints[0].ids == std::vector<int32_t>({1, 2}) &&
+              m.checkpoints[0].used == 5, "meta read returns the checkpoint chain");
+        check(m.checkpoints[0].gdn.empty() && m.checkpoints[0].tails.empty() && m.checkpoints[0].imgs.empty(),
+              "meta read carries no state");
+        SessionFileMeta bad;
+        const SessionFileIdentity other{1, 2};
+        check(!session_file_read_meta((mdir / "conv-a.sess").string(), other, bad, merr, 1024, 8),
+              "meta read refuses a foreign identity");
+        check(bad.ids.empty(), "a refused meta read leaves the output empty");
+        // fail-closed bounds of the seek-skip: live's gdn count patched past the payload (the meta read
+        // must refuse it, not seek or skip out of the file), and a truncated file must fail the header
+        auto all = slurp(mdir / "conv-a.sess");
+        auto corrupt = all;
+        // payload at 64: 21 u64 (geometry, layer_lo, layer_hi, cvec), live's ids count + 4 ids, imgs count, then gdn's
+        const uint64_t huge = 1ull << 40;
+        std::memcpy(corrupt.data() + 64 + 21 * 8 + 8 + 4 * 4 + 8, &huge, 8);
+        spit(mdir / "conv-b.sess", corrupt);
+        check(!session_file_read_meta((mdir / "conv-b.sess").string(), mid, bad, merr, 1024, 8),
+              "meta read refuses a state-array count past the payload end");
+        const std::vector<char> cut(all.begin(), all.end() - 1);
+        spit(mdir / "conv-c.sess", cut);
+        check(!session_file_read_meta((mdir / "conv-c.sess").string(), mid, bad, merr, 1024, 8),
+              "meta read refuses a truncated file");
+        fs::remove_all(mdir);
+    }
+    {   // folder index: prunes foreign, stale and stray files; survivors oldest-first
+        const fs::path idir = fs::temp_directory_path() / "strata_index_test";
+        fs::remove_all(idir);
+        fs::create_directories(idir);
+        const SessionFileIdentity iid{0x1122334455667788ull, 0x99aabbcc00112233ull};
+        SavedConversation s;
+        for (auto& v : s.geometry) v = 1;
+        s.layer_lo = 0; s.layer_hi = 8; s.cvec = true;
+        s.live.ids = {1, 2, 3};
+        size_t iwritten = 0; std::string ierr;
+        const fs::path oldp = idir / "conv-old.sess", newp = idir / "conv-new.sess", forp = idir / "conv-foreign.sess";
+        const SessionFileIdentity foreign{7, 8};
+        check(session_file_write(oldp.string(), s, iid, iwritten, ierr) &&
+              session_file_write(newp.string(), s, iid, iwritten, ierr) &&
+              session_file_write(forp.string(), s, foreign, iwritten, ierr), "index test files write");
+        // explicit mtimes: old is ten days past, new is now
+        const fs::file_time_type now = fs::file_time_type::clock::now();
+        fs::last_write_time(oldp, now - std::chrono::days(10));
+        fs::last_write_time(newp, now - std::chrono::days(1));
+        spit(idir / "stray.txt", std::vector<char>(3, 'x'));
+        std::vector<CachedConversationFile> found;
+        check(conversation_cache_index(idir, "conv-", iid, 7.0, 1024, 8, found, ierr), "index runs");
+        check(found.size() == 1, "index keeps only this model's fresh conv-*.sess");
+        check(found.size() == 1 && found[0].path == newp.string() && found[0].bytes == fs::file_size(newp) &&
+              found[0].meta.ids == std::vector<int32_t>({1, 2, 3}), "index carries the survivor's meta and size");
+        check(!fs::exists(idir / "stray.txt") && !fs::exists(forp) && !fs::exists(oldp),
+              "index removes stray and foreign files");
+        std::vector<CachedConversationFile> none;
+        check(conversation_cache_index(idir, "conv-", iid, 0.0, 1024, 8, none, ierr) && none.empty() &&
+              !fs::exists(newp), "index with 0 days empties the folder");
+        fs::remove_all(idir);
+    }
+
+    check(std::strcmp(session_error_name(SessionError::device), "device") == 0, "the device kind has a name");
+    {   // the streaming restore's RAM preflight: live + max_checkpoints checkpoints + one 16 MiB block
+        SessionReadLimits l;
+        l.max_tokens = 1000;
+        l.max_checkpoints = 1;
+        l.max_state_bytes = {4099, 77, 301, 64, 8};
+        const uint64_t cp = 16 + 1000ull * (sizeof(int32_t) + sizeof(ConversationImageKey))
+                          + 5 * 8 + 4099 + 77 + 301 + 64 + 8 + 8;
+        check(session_restore_peak_bytes(l) == (16ull << 20) + (1ull << 20) + 2 * cp,
+              "restore peak: live state + one checkpoint + the staging block");
+        check(session_restore_peak_bytes(SessionReadLimits{}) == UINT64_MAX, "open limits refuse rather than guess");
+    }
+
+    {   // streaming restore: the meta parses, the K/V streams, byte-identical
+        SavedConversation meta = sample();
+        const std::vector<ConversationKv> kv = meta.kv;   // keep for compare
+        meta.kv.clear();
+        const fs::path sp = dir / "streaming.sess";
+        size_t sb = 0; std::string se;
+        check(session_file_write(sp.string(), meta, stub_sources(kv), id, sb, se), "write the streamed sample");
+        check(slurp(sp) == image, "the streamed write reproduces the sample's file bytes");
+        SessionReadLimits rl;
+        rl.max_tokens = 2000; rl.max_checkpoints = 2; rl.max_kv_layers = 3;
+        rl.max_state_bytes = {4099, 77, 301, 64, 8};
+        rl.geometry = meta.geometry; rl.layer_range = std::make_pair(meta.layer_lo, meta.layer_hi);
+        SavedConversation parsed; size_t pb = 0; std::string pe; SessionStatus pst;
+        check(session_file_restore_meta(sp.string(), id, parsed, pb, pe, rl, &pst), "restore_meta parses the meta");
+        check(pst.error == SessionError::none && parsed.kv.empty() && parsed.checkpoints.size() == 2 &&
+              same_checkpoint(parsed.live, meta.live), "restore_meta: state arrays in, K/V out");
+        check(parsed.geometry == meta.geometry && parsed.layer_lo == meta.layer_lo &&
+              parsed.layer_hi == meta.layer_hi && parsed.cvec == meta.cvec &&
+              same_checkpoint(parsed.checkpoints[0], meta.checkpoints[0]) &&
+              same_checkpoint(parsed.checkpoints[1], meta.checkpoints[1]), "restore_meta carries the full meta");
+        check(pb == sb, "restore_meta reports the file size");
+        uint64_t asked = 0;
+        SessionReadLimits al = rl;
+        al.admit = [&](uint64_t need, std::string&) { asked = need; return true; };
+        check(session_file_restore_meta(sp.string(), id, parsed, pb, pe, al, &pst), "restore_meta with a gate");
+        check(asked == session_restore_peak_bytes(rl) && asked < session_read_peak_bytes(sb),
+              "the gate is asked the restore peak, not the full-read peak");
+        std::vector<std::vector<uint8_t>> got; std::vector<int> done(3, 0), touched(3, 0);
+        std::vector<SessionKvSink> sinks = stub_sinks(kv, got, done, touched);
+        SessionStatus kst; std::string ke;
+        check(session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst), "restore_kv streams");
+        bool bytes_equal = true;
+        for (size_t j = 0; j < kv.size() && bytes_equal; ++j) {
+            const std::array<size_t, 5> sz = {kv[j].k.size(), kv[j].v.size(), kv[j].k_scale.size(),
+                                              kv[j].v_scale.size(), kv[j].pooled.size()};
+            const ConversationBuffer* part[5] = {&kv[j].k, &kv[j].v, &kv[j].k_scale, &kv[j].v_scale, &kv[j].pooled};
+            for (size_t p = 0; p < 5 && bytes_equal; ++p) {
+                if (got[j * 5 + p].size() != sz[p]) { bytes_equal = false; break; }
+                (*part[p]).visit(0, sz[p], [&](const uint8_t* s, size_t c, size_t o) {
+                    bytes_equal = bytes_equal && std::memcmp(got[j * 5 + p].data() + o, s, c) == 0; return true; });
+            }
+        }
+        check(bytes_equal, "the streamed parts are byte-identical to the file");
+        check(done == std::vector<int>{1, 1, 1}, "done() ran once per layer");
+        auto rebuild = [&] {
+            check(session_file_write(sp.string(), meta, stub_sources(kv), id, sb, se), "rebuild the streamed sample");
+            got.clear(); done.assign(3, 0); touched.assign(3, 0);
+            sinks = stub_sinks(kv, got, done, touched);
+        };
+        // foreign layer declaration: refuse BEFORE that layer's bytes move; earlier layers landed
+        auto d = slurp(sp);
+        size_t kv_sec = 0;
+        for (const auto& k : kv) { kv_sec += 56; for (size_t n : {k.k.size(), k.v.size(), k.k_scale.size(),
+            k.v_scale.size(), k.pooled.size()}) kv_sec += 8 + n; }
+        const size_t kv_at = sb - 16 - kv_sec;   // the K/V section starts here (64-byte header, 16-byte trailer)
+        size_t l1 = kv_at + 56 + 8 + kv[0].k.size() + 8 + kv[0].v.size()
+                            + 8 + kv[0].k_scale.size() + 8 + kv[0].v_scale.size() + 8 + kv[0].pooled.size();
+        std::memset(&d[l1], 0xEE, 8);                              // layer 1's format field
+        spit(sp, d);
+        got.clear(); done.assign(3, 0); touched.assign(3, 0);
+        sinks = stub_sinks(kv, got, done, touched);
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst) && kst.error == SessionError::invalid,
+              "a foreign layer header is refused");
+        check(touched[0] == 1 && touched[1] == 0, "only layers before the refused one were written");
+        // a part's declared length differs from the sink's: refused before any byte of that layer moves
+        rebuild();
+        d = slurp(sp);
+        uint64_t part0 = 0; std::memcpy(&part0, &d[kv_at + 56], 8);   // layer 0, part 0's length
+        part0 += 16; std::memcpy(&d[kv_at + 56], &part0, 8);
+        spit(sp, d);
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst) && kst.error == SessionError::invalid &&
+              ke.find("bytes, this runtime needs") != std::string::npos, "a part length mismatch is refused");
+        check(touched[0] == 0 && done[0] == 0, "the length mismatch refused before any byte of that PART moved");
+        // the device-kind refusals, on the intact file: the stream dies mid-file (the trailer is never
+        // reached) - a partial restore, the file must stay for the next start
+        rebuild();
+        sinks[1].write = [&got, &touched](size_t p, size_t at, const void* src, size_t n) {
+            if (p == 1) return false;   // the layer's 2nd part (part 2 is empty in this sample)
+            std::memcpy(got[5 + p].data() + at, src, n);
+            touched[1] = 1;
+            return true;
+        };
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst) &&
+              kst.error == SessionError::device && ke.find("sink write") != std::string::npos,
+              "a sink write refusal is 'device'");
+        check(done[0] == 1 && touched[1] == 1 && done[1] == 0,
+              "layer 0 landed whole, layer 1 died mid-part");
+        rebuild();
+        sinks[2].done = [] { return false; };
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst) &&
+              kst.error == SessionError::device && ke.find("residency") != std::string::npos,
+              "a residency (done) refusal is 'device'");
+        check(done[0] == 1 && done[1] == 1 && done[2] == 0, "only the last layer's residency failed");
+        // bitrot past the meta: caught at the trailer (the file is not trusted after)
+        rebuild();
+        d = slurp(sp);
+        d[kv_at + 56 + 8 + 100] ^= 0x40;                           // a byte inside layer 0's K
+        spit(sp, d);
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst) && kst.error == SessionError::invalid &&
+              ke.find("checksum") != std::string::npos, "a flipped K/V byte fails the payload checksum");
+        // torn publish: cut the file short
+        d = slurp(sp); d.resize(d.size() - 8); spit(sp, d);
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, rl, &kst), "a torn tail is refused");
+        check(kst.error == SessionError::invalid || kst.error == SessionError::io, "the torn tail is file-side");
+        // count refusals on the intact file
+        rebuild();
+        check(!session_file_restore_kv(sp.string(), id, std::vector<SessionKvSink>(sinks.begin(), sinks.end() - 1),
+                                       ke, SessionReadLimits{}, &kst) && kst.error == SessionError::invalid &&
+              ke.find("layer") != std::string::npos, "a mismatched sink count is refused");
+        SessionReadLimits one = rl; one.max_checkpoints = 1;
+        check(!session_file_restore_meta(sp.string(), id, parsed, pb, pe, one, &pst) &&
+              pst.error == SessionError::invalid && pe.find("limit") != std::string::npos,
+              "restore_meta refuses a checkpoint count over the limit");
+        check(!session_file_restore_kv(sp.string(), id, sinks, ke, one, &kst) &&
+              kst.error == SessionError::invalid && ke.find("limit") != std::string::npos,
+              "restore_kv refuses a checkpoint count over the limit");
+        // the RAM preflight: asked the restore peak, and a refusal is 'memory'
+        SessionReadLimits no_room = rl;
+        no_room.admit = [](uint64_t, std::string& why) { why = "no RAM"; return false; };
+        check(!session_file_restore_meta(sp.string(), id, parsed, pb, pe, no_room, &pst) &&
+              pst.error == SessionError::memory && pe.find("no RAM") != std::string::npos,
+              "restore_meta's RAM refusal is 'memory'");
+    }
 
     fs::remove_all(dir);
     std::printf("conversation_file_test: %d checks passed\n", checks);

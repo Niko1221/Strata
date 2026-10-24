@@ -46,6 +46,21 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, 
 // conversation_kv_save).  Caller synchronizes the device first and keeps the state untouched while it is read.
 bool conversation_kv_source(SessionKvSource& source, const QsaState& state, const ModelGeometry& g,
                             int64_t upto, bool include_index, std::string& error);
+// Disk restore without a host image: the mirror of conversation_kv_source, one K/V layer written straight into
+// its authoritative pool.  Caller synchronizes the device after the last write.  A write failure is a device fault.
+// The build captures `pools(st)` and a copy of the state for `done()`: build the sinks after any pool
+// reallocation (kvg_ensure) and keep the state untouched until the last layer's `done()`.
+bool conversation_kv_sink(SessionKvSink& sink, const QsaState& state, const ModelGeometry& g,
+                          int64_t upto, bool include_index, std::string& error);
+// One sink per QSA layer then the draft, exactly the order of conversation_snapshot_sources' K/V parts in a file.
+// `draft == nullptr`: a session without --mtp, its file holding the QSA layers' K/V only.
+bool conversation_snapshot_sinks(std::vector<SessionKvSink>& sinks, const SessionState& session,
+                                 const ModelGeometry& g, int64_t upto, const QsaState* draft, std::string& error);
+// Everything a streamed restore checks before any K/V byte moves: the meta against this runtime, without the
+// K/V layer checks (the image holds no K/V; the sink declarations are checked per layer instead).  The first
+// half of conversation_snapshot_validate.
+bool conversation_snapshot_meta_validate(const SavedConversation& meta, const SessionState& session,
+                                         const ModelGeometry& g, std::string& error);
 // The bytes of each K/V part (k, v, k_scale, v_scale, pooled) a snapshot of `upto` tokens holds: no state read.
 bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
                                 std::array<uint64_t, 5>& sizes, std::string& error);
@@ -125,6 +140,10 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
 // rejected as invalid).
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session, const ModelGeometry& g,
                                  const QsaState* draft, size_t& bytes, std::string& error);
+// The disk save with `draft == nullptr`: a session without --mtp, whose file holds the QSA layers' K/V only.
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& session, const ModelGeometry& g, const QsaState* draft,
                                          size_t& bytes, std::string& error);
