@@ -5445,7 +5445,7 @@ int main(int argc, char** argv) {
     // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
     strata::core::MtpDrafter mtp;
 #if defined(STRATA_HAVE_DFLASH2)
-    strata::core::Dflash2Drafter df2;   // --draft dflash2 (CLI spec loop only)
+    strata::core::Dflash2Drafter df2;   // --draft dflash2 (the CLI spec loop and the serve solo stream; the batch slots keep the MTP)
     bool use_df2 = false;
 #endif
     // the draft layer's geometry (the canonical model's MTP head), `static` because MtpDrafter keeps a reference; the batch
@@ -5475,7 +5475,7 @@ int main(int argc, char** argv) {
         if (o.draft == "dflash2") {
             const char* why = o.mtp.empty() ? "it needs --mtp (the fallback) and --spec 2 or more"
                               : !native_pack ? "it needs a native pack"
-                              : multi_gpu || o.batch > 0 || o.serve ? "it is for one card and the CLI run (not --serve, --batch or a layer split) in this build"
+                              : multi_gpu ? "it is for one card and the CLI run (not --batch or a layer split) in this build"
                               : o.draft_model.empty() ? "it needs --draft-model PACK (tools/dflash2_pack.py)" : nullptr;
             if (why == nullptr) {
                 if (df2.load(o.draft_model, 0, err)) {
@@ -9164,6 +9164,9 @@ int main(int argc, char** argv) {
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+#if defined(STRATA_HAVE_DFLASH2)
+        if (use_df2) ver.set_taps(df2.tap_layers());   // before init: the taps are baked into every window graph
+#endif
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
@@ -9173,6 +9176,24 @@ int main(int argc, char** argv) {
         }
         if (prefill_head_alias_bound) mtp.set_window_R(ver.final_R_all());
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
+#if defined(STRATA_HAVE_DFLASH2)
+        if (use_df2 && !ver.tapping()) {
+            std::fprintf(stderr, "strata serve: --draft dflash2: the verifier keeps no taps on this build; the MTP drafts instead\n");
+            use_df2 = false;
+        }
+        if (use_df2 && !df2.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
+                                 o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab, err)) {
+            std::fprintf(stderr, "strata serve: --draft dflash2: %s; the MTP drafts instead\n", err.c_str());
+            use_df2 = false;
+        }
+        if (use_df2 && !df2.prepare(ver.tap_dev(), err)) {
+            std::fprintf(stderr, "strata serve: --draft dflash2: %s; the MTP drafts instead\n", err.c_str());
+            use_df2 = false;
+        }
+        if (use_df2)
+            std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms), the MTP drafts the batch slots\n",
+                         o.draft_model.c_str(), df2.ms_capture);
+#endif
         auto free_slot_mtp_rows = [](float* p) { if (p != nullptr) (void) cudaFree(p); };
         std::vector<std::unique_ptr<float, decltype(free_slot_mtp_rows)>> slot_mtp_rows;
         if (batch_mtp) {
@@ -13038,6 +13059,12 @@ int main(int argc, char** argv) {
             req_times = ReqTimes{};
             if (use_mtp) mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
+            // DFlash2 drafts the solo stream only when this request's prompt read fills its ring (the last 2048 rows reach it)
+            bool df2_req = false;
+#if defined(STRATA_HAVE_DFLASH2)
+            df2_req = use_df2 && n_stages == 1 && read_from <= std::max<int64_t>(0, n - 2048);
+            if (df2_req) df2.reset();
+#endif
             conversations.limit_reuse(read_from);
             pp_total = n;
             pp_from = read_from;
@@ -13239,6 +13266,10 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+#if defined(STRATA_HAVE_DFLASH2)
+                    // the drafter's ring: the prompt's last rows, fed window by window (it keeps 2048 and needs no more)
+                    if (df2_req && q + T > n - 2048 && !df2.context(ver.tap_dev(), T, q, e)) return false;
+#endif
                     q += T;
                     pp_reached = q;   // #471
                     pp_exact = true;
@@ -14066,6 +14097,9 @@ int main(int argc, char** argv) {
                 if (to <= at) continue;
                 err.clear();
                 const bool win = windows_ok(at, to);
+#if defined(STRATA_HAVE_DFLASH2)
+                if (!win) df2_req = false;   // the batched prompt path keeps no taps: the MTP drafts this request
+#endif
                 if (win && !refill(err)) {
                     std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
@@ -14877,6 +14911,22 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
                 }
             }
+            // the next round's drafts: the DFlash2 block from the committed rows' taps, or the MTP chain
+            auto draft_next = [&](int T_, int a_) -> bool {
+#if defined(STRATA_HAVE_DFLASH2)
+                if (df2_req) {
+                    int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+                    float pp[strata::core::Dflash2Drafter::kDrafts];
+                    if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+                    for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) {
+                        drafts[i] = dd[i];
+                        dprob[i] = pp[i];
+                    }
+                    return true;
+                }
+#endif
+                return mtp.draft(T_, outv.data(), p, a_, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+            };
             while (!pl_ran && !cancelled && produced_n < max_new) {
                 int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
                 policy.set_context(p);
@@ -15085,7 +15135,7 @@ int main(int argc, char** argv) {
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
                 // (never on a first window: a merged one holds prompt tokens, not drafts)
-                if (use_mtp && mtp.prob() && !from_sfx && !first_window && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
+                if (use_mtp && !df2_req && mtp.prob() && !from_sfx && !first_window && T_mtp > 1) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
@@ -15163,10 +15213,9 @@ int main(int argc, char** argv) {
                 const Clock::time_point tw2 = Clock::now();
                 // coupled drafts with penalties: the next window's row-0 history (`consumed` holds this window's
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
-                if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
+                if (use_mtp && !df2_req && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = !use_mtp || eos || produced_n >= max_new ||
-                                     mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                const bool drafted = !use_mtp || eos || produced_n >= max_new || draft_next(T, a);
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };

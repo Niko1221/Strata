@@ -15,6 +15,7 @@ model starts with the MTP and ``Decision.note`` says why in plain words.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,12 +139,11 @@ def normalize(value: Any) -> str:
     return text if text in MODES else DEFAULT_MODE
 
 
-#: Does the engine in this release run DFlash2 when it serves (the app and `strata launch`)? In f-023-int src/program/generate.cpp, `--draft dflash2`
-#: is "for one card and the CLI run (not --serve, --batch or a layer split)": a served model prints "--draft dflash2 is off: ... the MTP drafts
-#: instead". So today the choice cannot take effect when serving, and nothing is downloaded or packed for it (1.2 GB for no effect would be a bad
-#: surprise); the start says so ("Drafting: MTP (DFlash2 isn't available in this mode yet)"). Flip this when the engine serves it; everything
-#: else (flags, download, pack, fallback text) is in place and tested with it on.
-ENGINE_SERVES_DFLASH2 = False
+#: Does the engine in this release run DFlash2 when it serves (the app and `strata launch`)? Upstream f-023-int does not: `--draft dflash2` there
+#: is "for one card and the CLI run (not --serve, --batch or a layer split)". This fork's engine serves it on the solo stream (GEN windows) and
+#: keeps the MTP for the batch slots, so the served choice can take effect; an engine without the port prints "--draft dflash2 is off: ... the MTP
+#: drafts instead" and falls back on its own. Set STRATA_DFLASH2_SERVE=0 to force the upstream refusal on a stock engine.
+ENGINE_SERVES_DFLASH2 = os.environ.get("STRATA_DFLASH2_SERVE", "1") != "0"
 
 #: Why the MTP runs when something else was asked for: a closed set of short reasons, each one is a sentence in the interface catalog in all eight
 #: languages (the line is "Drafting: MTP (<reason>)").
