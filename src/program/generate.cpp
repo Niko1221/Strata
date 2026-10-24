@@ -15403,7 +15403,7 @@ int main(int argc, char** argv) {
                             std::printf("ERR grammar mask upload failed\n");
                             return 1;
                         }
-                        if (grammar_debug_on()) grammar_debug_row(t, m);
+                        if (grammar_debug_on()) std::fprintf(stderr, "gdbg draft t=%d tok=%d\n", t, (int) window[(size_t) t]);
                     }
                     for (int t = chain_t; t < T; ++t) {
                         if (cudaMemcpy(grammar_ring.row(t), grammar_ring.row(chain_t - 1),

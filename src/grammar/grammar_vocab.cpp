@@ -26,6 +26,20 @@ std::string sp_piece_to_text(const std::string& piece) {
         else if (cp == 0x10Au) { out += '\n'; }      // the newline symbol
         else if (cp >= 0xA1u && cp <= 0xFFu) { out += (char)(unsigned char)cp; }  // cp1252 symbols ride their bytes
         else if (cp >= 0x20u && cp <= 0x7Eu) { out += (char)(unsigned char)cp; }  // printable ascii
+        else if (cp >= 0x100u && cp <= 0x143u) {
+            // the rest of the GPT2 byte map (bytes_to_unicode, as HF's tokenizers and llama.cpp's
+            // converter apply it): bytes 0-32 ride U+0100-U+0120, 127 rides U+0121, 128-160 ride
+            // U+0122-U+0142 and 173 rides U+0143.  These are the second/third bytes of most CJK
+            // pieces - leaving them as raw UTF-8 kept ~36% of this model's vocabulary (measured:
+            // 88990 of 248320 tokens) out of every grammar mask, which degraded constrained
+            // generation into filler characters exactly where the model wanted those tokens.
+            uint32_t b = cp;
+            if (cp <= 0x120u) b = cp - 0x100u;
+            else if (cp == 0x121u) b = 0x7Fu;
+            else if (cp <= 0x142u) b = cp - 0x122u + 0x80u;
+            else b = 0xADu;
+            out += (char)(unsigned char)b;
+        }
         else { out.append(piece, i, len); }          // raw UTF-8 (CJK pieces) and everything else
         i += len;
     }
