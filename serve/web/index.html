@@ -60,8 +60,9 @@
             <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
           <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat">
             <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-          <button type="button" class="st-btn st-btn--icon" id="sampling-btn" title="Sampling and thinking" aria-label="Sampling and thinking">
-            <svg class="st-icon"><use href="web/sprite.svg#i-settings"/></svg></button>
+          <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings">
+            <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
+            <span class="chat-settings-label">Chat settings</span><span class="chat-settings-short" aria-hidden="true">Settings</span></button>
           <span class="spacer"></span>
           <span class="composer-hint" id="composer-hint"></span>
           <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
@@ -165,7 +166,7 @@
         <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
         <div class="mcp-list" id="mcp-list"></div>
         <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
-          (in this page's chat only; switch it off in Sampling).</p>
+          (in this page's chat only; switch it off in Chat settings).</p>
       </div>
     </div>
   </section>
@@ -210,8 +211,8 @@
 </main>
 
 <!-- ============================ Sampling drawer ============================ -->
-<aside class="st-drawer" id="drawer" data-open="false" aria-label="Sampling and thinking" aria-hidden="true">
-  <div class="st-drawer__head"><span class="card-title">Sampling</span>
+<aside class="st-drawer" id="drawer" data-open="false" aria-label="Chat settings" aria-hidden="true">
+  <div class="st-drawer__head"><span class="card-title">Chat settings</span>
     <button class="st-btn st-btn--icon" id="drawer-close" aria-label="Close">
       <svg class="st-icon"><use href="web/sprite.svg#i-chevron"/></svg></button></div>
   <div class="st-drawer__body">
@@ -248,6 +249,9 @@
     <div class="toggle-row" id="mcp-row" hidden><span>Use tools from MCP servers<br><span class="muted small"
       id="mcp-row-sub">the model may call them while it answers</span></span>
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers"></button></div>
+    <div class="toggle-row"><span>Edit chat history<br><span class="muted small">Edit messages, regenerate answers, or
+      remove a turn and everything after it. Kept in this browser only.</span></span>
+      <button class="st-toggle" id="s-edit-history" role="switch" aria-checked="false" aria-label="Edit chat history"></button></div>
     <div class="toggle-row" id="esp-row" hidden><span>Experimental speed projection<br><span class="muted small">the
       engine's control vector; off = the stock model. Switching reads the chat again once</span></span>
       <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Experimental speed projection"></button></div>
