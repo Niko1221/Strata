@@ -45,7 +45,7 @@ namespace strata::core {
 namespace {
 constexpr char kMagic[8] = {'S', 'T', 'R', 'S', 'E', 'S', 'S', '\x01'};
 constexpr char kEnd[8] = {'S', 'T', 'R', 'S', 'E', 'N', 'D', '\x01'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr size_t kHeader = 64, kTrailer = 16;
 
 // Progress for a transfer: one report after every block that was handed to (or read from) the OS, whatever its size
@@ -689,6 +689,11 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
     for (int64_t g : s.geometry) o.i64(g);
     o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+    // format v2: the later-stage geometry the file was written with (empty table: a single-device session)
+    o.u64(s.stage_table.size());
+    for (const auto& g : s.stage_table) {
+        o.i64(g.layer_lo); o.i64(g.layer_hi); o.i64(g.qsa_alloc); o.i64(g.gdn_alloc); o.u64(g.draft ? 1 : 0);
+    }
     put_checkpoint(o, s.live);
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);
@@ -774,6 +779,21 @@ bool get_payload(In& in, SavedConversation& s) {
         return in.fail("saved with another layer range than this runtime's");
     if (cvec > 1) return in.fail("invalid cvec flag");
     s.cvec = cvec == 1;
+    // format v2 stage table: bounded by count and bytes left, then compared against the live layout
+    // before any state array is read
+    uint64_t stages = 0;
+    if (!in.count(stages, 40, in.limits.max_stages)) return false;
+    s.stage_table.resize((size_t) stages);
+    for (auto& g : s.stage_table) {
+        uint64_t draft = 0;
+        if (!in.i64(g.layer_lo) || !in.i64(g.layer_hi) || !in.i64(g.qsa_alloc) || !in.i64(g.gdn_alloc) ||
+            !in.u64(draft))
+            return false;
+        if (draft > 1) return in.fail("invalid stage draft flag");
+        g.draft = draft == 1;
+    }
+    if (in.limits.stages && *in.limits.stages != s.stage_table)
+        return in.fail("saved with a different layer split than this runtime's");
     if (!get_checkpoint(in, s.live)) return false;
     uint64_t n = 0;
     // a checkpoint is at least 8 counts + used = 72 bytes; a K/V layer at least 7 + 5 = 96
@@ -999,7 +1019,8 @@ uint64_t sat_mul(uint64_t a, uint64_t b) { return a && b > UINT64_MAX / a ? UINT
 
 uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     const uint64_t open = UINT64_MAX;
-    if (l.max_tokens == open || l.max_checkpoints == open || l.max_kv_layers == open) return l.max_file_bytes;
+    if (l.max_tokens == open || l.max_checkpoints == open || l.max_kv_layers == open || l.max_stages == open)
+        return l.max_file_bytes;
     for (uint64_t b : l.max_state_bytes) if (b == open) return l.max_file_bytes;
     if (l.max_kv_bytes.size() < l.max_kv_layers) return l.max_file_bytes;
     // one checkpoint: ids (8 + 4 per token), images (8 + 16 per image), five state arrays (8 + bytes), used (8)
@@ -1007,6 +1028,7 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
     cp = sat_add(cp, 8);
     uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
+    n = sat_add(n, sat_add(8, sat_mul(l.max_stages, 40)));        // stage table (v2): count + 40 bytes per entry
     n = sat_add(n, cp);                                            // live
     n = sat_add(n, sat_add(8, sat_mul(l.max_checkpoints, cp)));    // checkpoints
     n = sat_add(n, 8);
