@@ -3219,6 +3219,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                          "budget instead\n");
         }
     }
+    // the MMQ prompt path waits on it whatever the placement, so it is made before the all-in-VRAM return below
+    CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (slots <= 0 && total <= budget2 && total + ((size_t) 256 << 20) <= fr) {
         std::vector<uint8_t> blob;
         for (Layer* L : all) {
@@ -3338,7 +3340,6 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
     CK(cudaMalloc(&E.d_miss, T * Kp * 4));
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
-    CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
     if (staging) {
         CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
         if (E.split_copy) {   // --split-stage-copy: the resident experts' copies (kernels, see stream_kick) on a stream of their own
