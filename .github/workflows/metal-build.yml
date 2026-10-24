@@ -20,15 +20,26 @@ permissions:
 
 jobs:
   metal-link:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
       # setup.py's LLAMA_CPP_COMMIT and metal/setup_mac.py's metal-cpp pin
       LLAMA_CPP_COMMIT: 3cf03257f219afbe7334045ff7c6a06ac68c627d
       METAL_CPP_URL: https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip
       METAL_CPP_SHA256: 4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4
     steps:
       - uses: actions/checkout@v4
+      - name: Check Apple toolchain
+        run: |
+          xcodebuild -version
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          printf 'macOS SDK: %s\n' "$sdk_version"
+          sdk_major="${sdk_version%%.*}"
+          if ! [[ "$sdk_major" =~ ^[0-9]+$ ]] || (( sdk_major < 26 )); then
+            echo "::error::Metal CI requires macOS SDK 26 or newer; check DEVELOPER_DIR."
+            exit 1
+          fi
       - name: Tools
         run: brew install ninja
       - name: metal-cpp
