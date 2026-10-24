@@ -1,0 +1,41 @@
+[strata] 2026-10-10 14:30:20 engine started: /home/r/dev/Strata/engine/strata --serve --pack /home/r/dev/Strata-data/packs/iq3_s --native /home/r/dev/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf /home/r/dev/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile /home/r/dev/Strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp /home/r/dev/Strata-data/mtp/rt --max-context 131072 --kv int8 --pcie-frac 0.20 --spec-min-p 0.30 --adapt-every 1 --adapt-swaps 80 --adapt-decay 0.97
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 46.84 GiB at 6.16 GiB/s
+strata generate: 23 pool workers on logical processors 2,4,6,8,10,12,14,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache 3897 slots, 7.44 GiB of VRAM; policy is
+strata generate: session is up (engine 0.1.41)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 8192 tokens, a 384-slot ring
+strata serve: the prompt path borrows 2170 CUDA0 cache slots (4.12 GiB)
+strata serve: prompt 19 tokens = 0 reused + 19 read in 244 ms (77.8 tok/s), 2 generated in 92 ms (21.8 tok/s), drafts accepted 3 of 3, 1 checkpoints
+strata serve: decode expert cache hit rate: 27.2% (588 hits / 2161 lookups); 239 more read by the GPU over PCIe or from another GPU (10.0% of all 2400 routed)
+strata serve: prompt 4096 tokens = 0 reused + 4096 read in 2253 ms (1817.7 tok/s), 256 generated in 3563 ms (71.8 tok/s), drafts accepted 154 of 283, 1 checkpoints
+strata serve: decode expert cache hit rate: 69.9% (124733 hits / 178394 lookups); 6886 more read by the GPU over PCIe or from another GPU (3.7% of all 185280 routed)
+strata serve: prompt 4096 tokens = 0 reused + 4096 read in 2191 ms (1869.6 tok/s), 256 generated in 3372 ms (75.9 tok/s), drafts accepted 150 of 279, 1 checkpoints
+strata serve: decode expert cache hit rate: 73.1% (131087 hits / 179326 lookups); 5954 more read by the GPU over PCIe or from another GPU (3.2% of all 185280 routed)
+strata serve: prompt 4096 tokens = 0 reused + 4096 read in 2175 ms (1883.1 tok/s), 256 generated in 3233 ms (79.2 tok/s), drafts accepted 153 of 266, 1 checkpoints
+strata serve: decode expert cache hit rate: 73.0% (125049 hits / 171416 lookups); 5704 more read by the GPU over PCIe or from another GPU (3.2% of all 177120 routed)
+strata serve: prompt 32768 tokens = 0 reused + 32768 read in 12161 ms (2694.6 tok/s), 256 generated in 2949 ms (86.8 tok/s), drafts accepted 163 of 237, 2 checkpoints
+strata serve: decode expert cache hit rate: 72.7% (111357 hits / 153233 lookups); 5167 more read by the GPU over PCIe or from another GPU (3.3% of all 158400 routed)
+strata serve: prompt 32768 tokens = 0 reused + 32768 read in 12261 ms (2672.5 tok/s), 256 generated in 3272 ms (78.3 tok/s), drafts accepted 155 of 271, 2 checkpoints
+strata serve: decode expert cache hit rate: 73.7% (128035 hits / 173646 lookups); 5394 more read by the GPU over PCIe or from another GPU (3.0% of all 179040 routed)
+strata serve: prompt 32768 tokens = 0 reused + 32768 read in 12295 ms (2665.2 tok/s), 256 generated in 3125 ms (81.9 tok/s), drafts accepted 161 of 256, 2 checkpoints
+strata serve: decode expert cache hit rate: 72.8% (118903 hits / 163406 lookups); 5554 more read by the GPU over PCIe or from another GPU (3.3% of all 168960 routed)
+strata serve: prompt 128000 tokens = 0 reused + 128000 read in 49666 ms (2577.2 tok/s), 256 generated in 3342 ms (76.6 tok/s), drafts accepted 156 of 279, 6 checkpoints
+strata serve: decode expert cache hit rate: 74.6% (131506 hits / 176377 lookups); 5543 more read by the GPU over PCIe or from another GPU (3.0% of all 181920 routed)
+strata serve: prompt 128000 tokens = 0 reused + 128000 read in 49847 ms (2567.9 tok/s), 256 generated in 3172 ms (80.7 tok/s), drafts accepted 163 of 262, 6 checkpoints
+strata serve: decode expert cache hit rate: 73.0% (120352 hits / 164936 lookups); 5464 more read by the GPU over PCIe or from another GPU (3.2% of all 170400 routed)
+strata serve: prompt 128000 tokens = 0 reused + 128000 read in 49868 ms (2566.8 tok/s), 256 generated in 3561 ms (71.9 tok/s), drafts accepted 146 of 287, 6 checkpoints
+strata serve: decode expert cache hit rate: 74.6% (137919 hits / 184904 lookups); 5656 more read by the GPU over PCIe or from another GPU (3.0% of all 190560 routed)
+strata serve: prompt 33286 tokens = 0 reused + 33286 read in 13874 ms (2399.2 tok/s), 9 generated in 191 ms (47.2 tok/s), drafts accepted 8 of 8, 3 checkpoints
+strata serve: decode expert cache hit rate: 19.3% (995 hits / 5145 lookups); 615 more read by the GPU over PCIe or from another GPU (10.7% of all 5760 routed)
+strata serve: prompt 33286 tokens = 0 reused + 33286 read in 13336 ms (2496.0 tok/s), 9 generated in 126 ms (71.2 tok/s), drafts accepted 6 of 6, 3 checkpoints
+strata serve: decode expert cache hit rate: 32.5% (1281 hits / 3943 lookups); 377 more read by the GPU over PCIe or from another GPU (8.7% of all 4320 routed)
+strata serve: prompt 33287 tokens = 16384 reused + 16903 read in 7347 ms (2300.8 tok/s), 10 generated in 160 ms (62.5 tok/s), drafts accepted 9 of 9, 3 checkpoints
+strata serve: decode expert cache hit rate: 50.4% (2912 hits / 5781 lookups); 459 more read by the GPU over PCIe or from another GPU (7.4% of all 6240 routed)
+strata serve: prompt 126640 tokens = 0 reused + 126640 read in 49995 ms (2533.1 tok/s), 10 generated in 188 ms (53.3 tok/s), drafts accepted 8 of 12, 6 checkpoints
+strata serve: decode expert cache hit rate: 62.9% (4879 hits / 7752 lookups); 408 more read by the GPU over PCIe or from another GPU (5.0% of all 8160 routed)
+strata serve: prompt 126638 tokens = 0 reused + 126638 read in 50075 ms (2528.9 tok/s), 9 generated in 175 ms (51.5 tok/s), drafts accepted 4 of 11, 6 checkpoints
+strata serve: decode expert cache hit rate: 72.2% (5328 hits / 7380 lookups); 300 more read by the GPU over PCIe or from another GPU (3.9% of all 7680 routed)
+strata serve: prompt 126638 tokens = 16384 reused + 110254 read in 44017 ms (2504.8 tok/s), 9 generated in 141 ms (63.7 tok/s), drafts accepted 7 of 9, 6 checkpoints
+strata serve: decode expert cache hit rate: 76.3% (4979 hits / 6524 lookups); 196 more read by the GPU over PCIe or from another GPU (2.9% of all 6720 routed)
