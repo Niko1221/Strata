@@ -1,5 +1,8 @@
 """Request inspection through HTTP; no native model or GPU is required."""
 import json
+import os
+import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -10,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, MockEngine, Service, serve
+from serve.server import ByteTokenizer, EngineDied, MockEngine, Service, StrataEngine, serve
 
 
 class ReloadableEngine(MockEngine):
@@ -259,6 +262,44 @@ class ConversationCacheCard(unittest.TestCase):
         for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
+
+
+class MtpAcceptance(unittest.TestCase):
+    """The MTP ACC figure: accepted over offered speculative drafts, as a percentage, in the request history.
+    None when the engine reported no drafts (offered == 0), so an unused draft path shows a dash, not 0%."""
+
+    FAKE = r'''
+import sys
+drafts = sys.argv[sys.argv.index('--drafts') + 1]
+print('READY 4096 stop', flush=True)
+for line in sys.stdin:
+    if line.startswith('QUIT'):
+        break
+    if line.startswith(('GEN', 'BGEN')):
+        print('T 72\nT 101\nDONE 3 3 50 40 stop ' + drafts, flush=True)
+'''
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        py = Path(self.tmp.name) / 'native.py'
+        if os.name == 'nt':   # no shebangs on Windows: a .cmd runs the same fake engine
+            py.write_text(self.FAKE); self.script = Path(self.tmp.name) / 'native.cmd'
+            self.script.write_text(f'@"{sys.executable}" "{py}" %*\r\n')
+        else:
+            py.write_text('#!' + sys.executable + '\n' + self.FAKE); py.chmod(0o700); self.script = py
+
+    def last_record(self, drafts):
+        e = StrataEngine(str(self.script), ['--drafts', drafts])
+        self.addCleanup(e.close)
+        svc = Service(e, ByteTokenizer(), ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
+        list(svc.run([1], False, [], 8, {}, threading.Event()))
+        return svc.history[-1]
+
+    def test_accepted_share_of_offered_drafts(self):
+        self.assertEqual(self.last_record('218 280 0')['mtp_acc'], 77.9)     # 218 / 280 = 77.857 -> 77.9
+
+    def test_no_drafts_is_a_dash_not_zero(self):
+        self.assertIsNone(self.last_record('0 0 0')['mtp_acc'])
 
 
 if __name__ == "__main__":
