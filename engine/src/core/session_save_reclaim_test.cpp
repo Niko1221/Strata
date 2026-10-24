@@ -164,5 +164,19 @@ int main() {
         check(!session_save_checkpoints(chain, live, [](uint64_t, std::string& w) { w = "low RAM"; return false; }, out, why)
               && out.empty() && why == "low RAM", "the typed memory refusal stands after an exhausted reclaim");
     }
+    {   // (e) park<->file churn: a save the admission refuses leaves the parked conversations and the
+        // chain exactly as they were - the refusal path itself touches no cache (review line 5) - and a
+        // reclaim under no real pressure frees nothing.
+        std::vector<ConversationCheckpoint> chain{checkpoint(100), checkpoint(300)};
+        ConversationCache cache(1u << 20, 10); park(cache, 10); park(cache, 20); park(cache, 30, true);
+        const size_t parked = cache.size(), bytes = cache.bytes();
+        std::vector<ConversationCheckpoint> out; std::string why;
+        check(!session_save_checkpoints(chain, live, [](uint64_t, std::string& w) { w = "low RAM"; return false; }, out, why)
+              && out.empty() && cache.size() == parked && cache.bytes() == bytes && cache.evictions() == 0 &&
+              chain.size() == 2, "a refused save leaves parked conversations and the chain untouched");
+        auto r = session_read_reclaim(cache, chain, 1000, floor, [] { return std::optional<uint64_t>(UINT64_MAX); });
+        check(!r.bytes && !r.checkpoints && !r.parked && cache.size() == parked && cache.evictions() == 0,
+              "read reclaim frees nothing when the probe already clears the need");
+    }
     std::printf("session_save_reclaim: %d checks passed\n", checks_run);
 }
