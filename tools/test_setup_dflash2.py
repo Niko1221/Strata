@@ -114,7 +114,7 @@ class DrafterChoice(unittest.TestCase):
         bf16 = setup.dflash2_vram_estimate_gb(131072, "bf16")
         self.assertGreater(long, short)
         self.assertGreater(bf16, long)
-        self.assertLess(setup.low_ram_gpu_gb("IQ3_XXS", 16, 131072, "int8", "q8"),
+        self.assertLess(setup.low_ram_gpu_gb("IQ3_XXS", 16, 131072, "int8", dflash2_quant="q8"),
                         setup.low_ram_gpu_gb("IQ3_XXS", 16, 131072, "int8"))
 
     def test_vram_estimate_covers_observed_128k_allocations(self):

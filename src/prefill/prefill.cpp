@@ -5023,7 +5023,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
         }
 #endif
-        if (on_chunk || on_stage_chunk || on_taps) {
+        if (on_chunk || on_stage_chunk || on_dflash_taps) {
             const auto toc = Clock::now();
             if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
@@ -5032,7 +5032,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             const auto toc2 = Clock::now();
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
             if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
-            if (on_taps && m.n_taps_ > 0 && !on_taps(m.taps, m.n_taps_, T, p0, err)) return false;
+            if (on_dflash_taps && m.n_taps_ > 0 && !on_dflash_taps(m.taps, m.n_taps_, T, p0, err)) return false;
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
         }

@@ -8691,7 +8691,7 @@ int main(int argc, char** argv) {
 
         if (has_dflash) {
             sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
-            sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
+            sp.on_dflash_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
                 return !df_request || dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
             };
         }
@@ -16252,7 +16252,7 @@ int main(int argc, char** argv) {
         }
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
-            prefill.on_taps = [&dflash, &prefill](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
+            prefill.on_dflash_taps = [&dflash, &prefill](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
                                                   std::string& e) -> bool {
                 return dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e);
             };
@@ -16264,7 +16264,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             const int64_t tap_n_embd = g.n_embd;
-            prefill.on_taps = [&prefill, tap_n_embd, &dflash, use_dflash](const uint16_t* taps, int n_taps, int64_t T,
+            prefill.on_dflash_taps = [&prefill, tap_n_embd, &dflash, use_dflash](const uint16_t* taps, int n_taps, int64_t T,
                                                      int64_t p0, std::string& e) -> bool {
                 if (use_dflash && !dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e)) {
                     e = "dflash: " + e;

@@ -207,7 +207,7 @@ public:
     void set_tap_layers(const int* layers, int n, bool hc_mean = false) {
         tap_hc_mean_ = hc_mean;
         n_taps_ = n > 8 ? 8 : n;
-        for (int i = 0; i < n_taps_; ++i) tap_layers_[i] = layers[i];
+        for (int i = 0; i < n_taps_; ++i) dflash_tap_layers_[i] = layers[i];
     }
     int n_taps() const { return n_taps_; }
     const float* taps() const { return taps_; }
@@ -547,7 +547,7 @@ private:
     const NativeHead* head_ = nullptr;
     int max_t_ = 0;
     bool tap_hc_mean_ = false;
-    int tap_layers_[8] = {};                 ///< set_tap_layers: the boundary layers to capture
+    int dflash_tap_layers_[8] = {};                 ///< set_tap_layers: the boundary layers to capture
     int n_taps_ = 0;
     float* taps_ = nullptr;                  ///< n_taps_ x max_t_ x n_embd f32 (the DFlash taps)
     int64_t tap_stride_ = 0;

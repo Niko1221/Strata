@@ -5691,7 +5691,7 @@ def dflash2_vram_estimate_gb(ctx, quant="q8") -> float:
         max(0, int(ctx)) * DFLASH2_CONTEXT_BYTES_PER_TOKEN / 1e9 + 0.05  # metadata, widened norms and allocator slack
 
 
-def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8", dflash2_quant=None, mtp=True) -> float:
+def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8", mtp=True, *, dflash2_quant=None) -> float:
     """About how many GB of the model's experts the GPU's cache holds: its VRAM minus ~5 GB for the dense weights,
     buffers and a 32K context's KV cache, minus the KV cache of a longer context (in VRAM in the low-RAM mode: its RAM
     has no room for KV streaming), minus the selected drafter's weights and memory."""
@@ -5702,16 +5702,16 @@ def low_ram_gpu_gb(model, vram_gb, ctx=32768, kv="int8", dflash2_quant=None, mtp
     return max(0.0, min(MODELS[model]["arena_gb"], vram_gb - 5 - mtp_gb - longer - dflash2_gb))
 
 
-def low_ram_gpu_share(model, vram_gb, ctx=32768, kv="int8", dflash2_quant=None, mtp=True) -> float:
+def low_ram_gpu_share(model, vram_gb, ctx=32768, kv="int8", mtp=True, *, dflash2_quant=None) -> float:
     """About how much of the model's experts the GPU holds."""
-    return low_ram_gpu_gb(model, vram_gb, ctx, kv, dflash2_quant, mtp=mtp) / MODELS[model]["arena_gb"]
+    return low_ram_gpu_gb(model, vram_gb, ctx, kv, mtp=mtp, dflash2_quant=dflash2_quant) / MODELS[model]["arena_gb"]
 
 
-def low_ram_resident(model, ram, vram_gb, ctx=32768, kv="int8", dflash2_quant=None, mtp=True) -> bool:
+def low_ram_resident(model, ram, vram_gb, ctx=32768, kv="int8", mtp=True, *, dflash2_quant=None) -> bool:
     """In the low-RAM mode: the experts the GPU does not hold fit the RAM with the usual room beside them, so they are
     copied into RAM once (the resident variant, `--resident-experts`) instead of being read through the OS file cache
     (plain `--mmap-experts`, which a PC this short of RAM keeps re-reading from the SSD)."""
-    rest = MODELS[model]["arena_gb"] - low_ram_gpu_gb(model, vram_gb, ctx, kv, dflash2_quant, mtp=mtp)
+    rest = MODELS[model]["arena_gb"] - low_ram_gpu_gb(model, vram_gb, ctx, kv, mtp=mtp, dflash2_quant=dflash2_quant)
     return ram >= rest + LOW_RAM_HEADROOM_GB
 
 
@@ -9368,14 +9368,14 @@ def main() -> int:
         vram = low_ram_vram(gpu) - (VISION[vision]["reserve_mib"] / 1024 if vision != "none" else 0)
         with_mtp = a.drafter == "mtp" and a.mtp != "off"
         dflash2_quant = a.dflash2_quant if a.drafter == "dflash2" else None
-        share = low_ram_gpu_share(model, vram, ctx, kv, dflash2_quant, mtp=with_mtp)
-        rest = arena - low_ram_gpu_gb(model, vram, ctx, kv, dflash2_quant, mtp=with_mtp)
+        share = low_ram_gpu_share(model, vram, ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant)
+        rest = arena - low_ram_gpu_gb(model, vram, ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant)
         resident = a.low_ram == "resident" or (a.low_ram != "mmap" and
                                                  low_ram_resident(model, ram, vram, ctx, kv,
-                                                                  dflash2_quant, mtp=with_mtp))
+                                                                  mtp=with_mtp, dflash2_quant=dflash2_quant))
         if multi:      # every chosen card's share (the image encoder on the main one); #364 #384: the mapped variant
-            held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv, dflash2_quant, mtp=with_mtp) +
-                       sum(low_ram_gpu_gb(model, low_ram_vram(x), ctx, kv, dflash2_quant, mtp=with_mtp)
+            held = min(arena, low_ram_gpu_gb(model, vram, ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant) +
+                       sum(low_ram_gpu_gb(model, low_ram_vram(x), ctx, kv, mtp=with_mtp, dflash2_quant=dflash2_quant)
                            for x in chosen[1:]))
             share, rest = held / arena, arena - held
             # #642: the resident variant on a split, by the same rule as on one card - what no card holds fits the RAM
@@ -9473,7 +9473,7 @@ def main() -> int:
         margin = 4                                # DFlash2 artifact and conversion working space
     else:
         margin = 2 if mtp_have else 8
-    mtp_fetch = 5.2 if (a.drafter != "none" and not a.dflash and not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
+    mtp_fetch = 5.2 if (a.drafter != "none" and not a.dflash2 and not mtp_have and not ready and a.mtp != "off") else 0.0      # the draft layer's tensors step 6 fetches (strata_control.discovery.MTP_FETCH_GB)
     real = to_fetch + prep_gb + mtp_fetch + \
         (40 if q2_avx and not pack_bin else 0) + (1 if vision != "none" else 0) + \
         (MODELS[model]["arena_gb"] + 1 if low_ram and not q2_avx and not pack_bin else 0)
@@ -9505,6 +9505,7 @@ def main() -> int:
              "the engine from this source")
         eng = build_engine(gpu, vision, a.yes, llama, toolkit=cuda_tk, dflash2=bool(a.dflash2))
         meta = json.loads((eng / "BUILD.json").read_text(encoding="utf-8"))
+        lib_dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or cuda_lib_dirs(cuda_tk)
     if a.dflash2:
         probe_env = dict(os.environ)
         dirs = meta.get("lib_dirs") or meta.get("cuda_dirs") or []
@@ -9635,18 +9636,20 @@ def main() -> int:
         if corrupt:
             warn("some MTP tensors are not the checkpoint's (a download mirror that ignored range requests, #327): "
                  "fetching them again and rebuilding the draft layer")
-        if corrupt or not (rt / "experts.bin").exists():
+        if a.mtp == "off" and not (rt / "experts.bin").exists():
+            ok("the draft layer (MTP) is off: its ~5 GB are not downloaded (`--mtp on` fetches it later)")
+        elif corrupt or not (rt / "experts.bin").exists():
             say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
             say("  only its ~5 GB of MTP tensors are downloaded.")
-            run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)],
-                env={**env, "STRATA_SOURCE": model_source()})
+            fetch_mtp(mtp, env)
             run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
                  "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
             run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
                 env=env)
         draft_vocab = a.draft_vocab or saved_draft_vocab(home() / f"strata-{tag.lower()}.json")
-        refresh_draft_vocab(rt, draft_vocab or "cjk")
-        ok(f"MTP draft layer: {rt}")
+        if (rt / "experts.bin").exists():
+            refresh_draft_vocab(rt, draft_vocab or "cjk")
+            ok(f"MTP draft layer: {rt}")
         for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):
             say("  " + line)
 

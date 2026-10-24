@@ -430,13 +430,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/dequant_bf16.cu
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
-                          src/kernels/cuda/dflash2_native.cu
+                          src/kernels/cuda/dflash2.cu
                           src/kernels/cuda/iq_kernels.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   if(STRATA_ENABLE_DFLASH2)
-    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash2_extension.cu)
   endif()
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
   # Exact gfx1100 prompt scorer (PR1825 method port): optional standalone test,

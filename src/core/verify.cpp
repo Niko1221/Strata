@@ -1395,7 +1395,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             inputs_pending = false;
         }
         for (int ti = 0; ti < n_taps_; ++ti)
-            if (l == tap_layers_[ti]) {   // DFlash tap: the attn-half read's contracted residual (docs/DFLASH.md)
+            if (l == dflash_tap_layers_[ti]) {   // DFlash tap: the attn-half read's contracted residual (docs/DFLASH.md)
 #ifdef STRATA_ENABLE_DFLASH2
                 if (tap_hc_mean_)
                     strata::kernels::dflash2_hc_mean(Rt(tb),
