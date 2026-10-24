@@ -5968,6 +5968,9 @@ int main(int argc, char** argv) {
         }
     }
 #endif
+    if (srcp == &arena_src)   // #3708: no per-node placement here, so the automatic split would only add remote reads
+        strata::kernels::cpu::set_numa_pool_veto("this model's experts come from the arena path, which does not place "
+                                                 "memory per node");
     if (o.pool_measure)
         o.pool_affinity = measure_pool_affinity(srcp, o.pool_workers, !o.no_host_worker, o.pool_tasks);
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,

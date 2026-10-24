@@ -121,6 +121,12 @@ HostCore host_core_setting();
 void set_pool_cores(const std::vector<int>& cpus);
 const std::vector<int>& pool_cores_setting();
 
+/// Why the automatic NUMA pool (two or more nodes, neither STRATA_NUMA_POOL nor STRATA_NUMA_SPLIT set) is not tried, or ""
+/// (the default: it is).  generate sets it before it builds a pool when the experts' memory will not be placed per node
+/// (the arena path): the split would then only spread the workers over both sockets' remote reads (#3708).  The pool
+/// then keeps its one-socket count and says why; STRATA_NUMA_SPLIT=1 still forces the split.
+void set_numa_pool_veto(const std::string& why);
+
 /// Every logical processor this process may run on and the physical core it belongs to (see LogicalCpuInfo).  Empty when
 /// the system does not say (macOS, a sandbox without the topology).
 std::vector<LogicalCpuInfo> logical_cpu_layout();
