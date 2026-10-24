@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <array>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -533,8 +535,28 @@ public:
   void get_memory_info(size_t &free_memory, size_t &total_memory) {
 #if (defined(__SYCL_COMPILER_VERSION) && __SYCL_COMPILER_VERSION >= 20221105)
     if (!has(sycl::aspect::ext_intel_free_memory)) {
-      std::cerr << "get_memory_info: ext_intel_free_memory is not supported." << std::endl;
+      // An integrated GPU (the Arc 140T measured here) has no free-memory query, not even with
+      // ZES_ENABLE_SYSMAN=1, and allocates from system RAM: what is free for it is what the system can still
+      // give, MemAvailable. Without this the figure is 0 and the expert cache refuses to start.
       free_memory = 0;
+#if defined(__linux__)
+      // STRATA_SYCL_FREE_MIB overrides it: the xe driver keeps freed GPU pages in a pool that MemAvailable does
+      // not count but the next GPU allocation reuses (measured: 6 GiB allocated, MemAvailable unchanged).
+      const char* free_mib = std::getenv("STRATA_SYCL_FREE_MIB");
+      if (free_mib != nullptr && get_info<sycl::info::device::host_unified_memory>()) {
+        free_memory = (size_t)std::strtoull(free_mib, nullptr, 10) << 20;
+      } else if (get_info<sycl::info::device::host_unified_memory>()) {
+        std::ifstream meminfo("/proc/meminfo");
+        std::string key;
+        size_t kib = 0;
+        while (meminfo >> key >> kib) {
+          if (key == "MemAvailable:") { free_memory = kib * 1024; break; }
+          meminfo.ignore(256, '\n');
+        }
+      }
+#endif
+      if (free_memory == 0)
+        std::cerr << "get_memory_info: ext_intel_free_memory is not supported." << std::endl;
     } else {
       free_memory = get_info<sycl::ext::intel::info::device::free_memory>();
     }
