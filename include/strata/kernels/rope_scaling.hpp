@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
 #define STRATA_ROPE_SCALING_HD __host__ __device__
@@ -181,6 +182,29 @@ inline const char* rope_scaling_invalid(const RopeScaling& s) {
         return "the YaRN betas must be finite and > 0";
     if (!std::isfinite(s.mscale()) || s.mscale() <= 0.0) return "the resolved magnitude correction must be finite and > 0";
     return nullptr;
+}
+
+// Host table coefficients for one absolute position. Shared by the table builder
+// and experimental cache conversion; preserve the builder's arithmetic order.
+inline void rope_table_coefficients(int n_rot, const RopeScaling& sc, int64_t position,
+                                    int pair, float& c, float& s) {
+    const double inv = std::pow(sc.freq_base, -2.0 * (double) pair / (double) n_rot);
+    const double extrap = (double) position * inv;
+    if (sc.type == RopeScalingType::None) {
+        c = (float) std::cos(extrap);
+        s = (float) std::sin(extrap);
+        return;
+    }
+    const double interp = sc.freq_scale() * extrap;
+    double angle = interp;
+    if (sc.ext_factor != 0) {
+        double cd[2];
+        sc.corr_dims(n_rot, cd);
+        const double ramp = (double) rope_yarn_ramp((float) cd[0], (float) cd[1], pair) * sc.ext_factor;
+        angle = interp * (1.0 - ramp) + extrap * ramp;
+    }
+    c = (float) (std::cos(angle) * sc.mscale());
+    s = (float) (std::sin(angle) * sc.mscale());
 }
 
 /// The process's one rope configuration.  Set it ONCE at startup, after the CLI and the model file
