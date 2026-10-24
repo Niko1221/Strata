@@ -39,6 +39,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
 mod desktoplog;
+#[cfg(windows)]
+mod window_lifecycle;
 #[cfg(target_os = "linux")]
 mod supervisor;
 
@@ -867,6 +869,8 @@ fn run_embedded() {
     tauri::Builder::default()
         // First, as the plugin requires: a second launch ends here after telling the running app to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            #[cfg(windows)]
+            if window_lifecycle::second_launch(app, &_args) { return; }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
@@ -884,6 +888,16 @@ fn run_embedded() {
                 panic!("STRATA_DESKTOP_TEST_PANIC is set: the app panics on purpose");
             }
             let handle = app.handle().clone();
+            #[cfg(windows)]
+            {
+                // A cold explicit Quit starts neither the Host nor a window.
+                if window_lifecycle::quit_requested(&std::env::args().collect::<Vec<_>>()) {
+                    handle.exit(0);
+                    return Ok(());
+                }
+                handle.manage(window_lifecycle::Policy::from_environment());
+                handle.state::<window_lifecycle::Policy>().watch_owner(handle.clone());
+            }
             // A setup error would become a panic inside Tauri ("Failed to setup app"), and with panic = "abort" a crash with no message.
             // A failed start is reported (log, crash file, message box) and ends the app here instead.
             let port = match start_host(&handle) {
@@ -901,6 +915,8 @@ fn run_embedded() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(windows)]
+            if window_lifecycle::close(window, event) { return; }
             if let tauri::WindowEvent::Destroyed = event {
                 stop_host(&window.app_handle().clone());
             }
