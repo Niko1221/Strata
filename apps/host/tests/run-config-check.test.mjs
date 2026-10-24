@@ -27,6 +27,11 @@ test('every key the app edits is a known key', () => {
   for (const field of NATIVE_FIELDS) assert.ok(KNOWN_KEYS.has(field.id), field.id);
 });
 
+test('splice_turns (serve/server.py) is a known key', () => {
+  assert.ok(KNOWN_KEYS.has('splice_turns'));
+  assert.deepEqual(checkRunConfig('{"splice_turns": true}'), { ok: true, issues: [] });
+});
+
 test('broken JSON is reported with its line, in plain words', () => {
   const text = '{\n  "args": ["--ple-io" "mmap"],\n  "port": 8080\n}';
   const result = checkRunConfig(text);
