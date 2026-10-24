@@ -1,0 +1,137 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.75in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage{multirow}
+
+\title{Hardening the Exact-Cell KV Window for \texttt{--kv q4lm8v}: Design, Decisions, and Validation}
+\author{Matthias Kronenberger}
+\date{October 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+The exact-cell KV window is an opt-in memory/accuracy trade-off for Strata: \texttt{--kv q4lm8v} paired with \texttt{STRATA\_KV\_WINDOW=1} (shape $S{=}256, R{=}64$, \texttt{--prefill auto} capped at $B{=}6144$) yields a measured operating point of 5.29 bit/cell ($\sim$1.016\,MiB at 128K) versus 8.00 bit/cell for \texttt{int8} ($\sim$1.584\,MiB at 128K). \texttt{int8} remains the quality default. This paper documents the design of the window, the development decisions made while hardening it (A1--A5), and the validation methodology. All window logic is gated behind \texttt{qsa\_kv\_win()}. Across 8/8 runs the \texttt{int8} default dump-logits SHA is byte-identical (\texttt{A014F504\ldots BA052}), the window stays opt-in, and compatibility edges (free-ring auto chunk, streaming interaction, grid stability, empty/tag initialization) are closed without changing the default path. AMD HIP (RX 9060 XT, Windows, ROCm 7.1) is tested; CUDA/SYCL build checks are requested as review gates. A full cell$\rightarrow$row parity test is planned as follow-up.
+\end{abstract}
+
+\section{Introduction}
+
+Strata's KV cache supports several quantization schemes. \texttt{q4lm8v} introduces an \emph{exact-cell window}: a small resident ring of recent cells is kept in a higher-precision/exact form, while older cells use the compressed representation. The goal is to recover accuracy for the most recent context without paying the full cost of keeping the entire KV at \texttt{int8}. 
+
+The implementation was functional in principle, but several integration points could silently fail: the host-side prefill chunking, the interaction with KV streaming/residency, per-state grid selection, and the semantics of uninitialized/empty ring entries. These were treated as correctness issues (not performance) and fixed behind the same opt-in flag with no change to the default \texttt{int8} path.
+
+\section{Design of \texttt{q4lm8v} with Exact-Cell Window}
+
+\subsection{Operating point}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{KV mode} & \textbf{Bits/cell (128K)} & \textbf{Size (128K)} \\
+\midrule
+\texttt{int8} (default) & 8.00 & $\sim$1.584\,MiB \\
+\texttt{q4lm8v} + window & 5.29 & $\sim$1.016\,MiB \\
+\bottomrule
+\end{tabular}
+\caption{Measured KV footprint (author hardware)}
+\end{table}
+
+The window is configured by $S$ (window size), $R$ (recent/exact ring shape), and batch/chunk $B$ (governed by \texttt{--prefill}). With \texttt{--prefill auto}, the effective batch is capped to $B{=}6144$ in windowed runs for correctness (see A1).
+
+\subsection{Architecture notes}
+\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
+\item \textbf{Gating:} Window code paths are only active when \texttt{qsa\_kv\_win()} is true / \texttt{st.k\_win != nullptr}.
+\item \textbf{Recent cells:} A side pool holds exact/recent cells accessed through window helpers (\texttt{win\_row\_of}, read via \texttt{qsa\_win\_slot}).
+\item \textbf{Residency:} The window's recent cells must remain resident. This is a property of the memory plan, not a tunable that can be arbitrarily combined with streaming (see A2).
+\item \textbf{Grid:} The (S,R,B) grid defines the window geometry; stability across states is required (see A3-lite).
+\item \textbf{Tags:} Ring entries use tags to distinguish empty/stale entries from valid exact cells (see A5).
+\end{itemize}
+
+\section{Development Decisions and Hardening (A1--A5)}
+
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{@{}p{0.07\textwidth}p{0.16\textwidth}p{0.25\textwidth}p{0.24\textwidth}p{0.22\textwidth}@{}}
+\toprule
+\textbf{Fix} & \textbf{Files} & \textbf{Observed issue} & \textbf{Decision / rationale} & \textbf{Result} \\
+\midrule
+A1 & \texttt{src/program/generate.cpp} & Free ring auto ceiling allowed 8192 cells while ring scan limit was 6400; \texttt{kv\_append\_win} refused mid-prompt (\texttt{std::exit(1)}). & Apply \texttt{prefill\_auto\_cap} = \texttt{kKvWinBatchMax} (6144) in the free-ring branch when window active and not explicitly set. Cover auto/generate/serve consumers. & \texttt{prompt chunk auto: 6144}, \texttt{DONE 8192}, no crash. Explicit small ring still refused as contract. \\
+A2 & \texttt{src/program/generate.cpp}, \texttt{setup.py} & \texttt{--kv-resident} + window co-configurable; setup preferred writing both for \texttt{q4lm8v}. Window needs always-resident side pool; streaming has none $\to$ risk of reading quantized where exact is promised (silent). & \textbf{Setup wins first:} for \texttt{q4lm8v}, force streaming off / never write pair; explain to user. \textbf{Engine fallback:} refuse pair loudly before load (exit 2) for hand-edited configs. & Pair refused in ~1s; window-alone/int8+streaming OK. \texttt{--kv-check} reports refusal. Tests 59/59. Window stays in VRAM. \\
+A3-lite & \texttt{src/program/generate.cpp}, \texttt{src/core/layer.cpp}, \texttt{include/strata/core/layer.hpp} & Window grid could drift between states (main/MTP drafter/twin) carved later. Different grids on same contract are incorrect. & Freeze grid post prompt-chunk via \texttt{qsa\_kv\_win\_freeze()}; guard/assert stability on subsequent \texttt{qsa\_set\_kv\_win\_batch()}. Prefer A3-lite over full state-layout refactor pending parity test (A4). & Stable grid; default SHA unchanged. Probes pass. \\
+A5 & \texttt{src/core/layer.cpp} & Empty/uninitialized ring rows tagged 0 could be misread as real cell 0 and treated as exact (silent). & Initialize empty ring tags to \texttt{0xFF} (-1) under window. Stale/mismatched tag falls back to quantized row as intended. & Correct empty-state semantics; no default-path change. \\
+\bottomrule
+\end{tabular}
+\caption{Decisions and rationale for A1--A5}
+\end{table*}
+
+\textbf{Key principle:} when there is any risk of silent misread (exact promised but quantized read), we prefer a loud refusal or an invariant/assert over guessing. Where setup can prevent bad configs, we prevent them there; where configs can be hand-edited, the engine enforces the contract.
+
+\section{Validation Methodology and Results}
+
+\subsection{Methodology details}
+\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
+\item \textbf{Byte-identity:} dump-logits/STRATA\_LOGPOS SHA of \texttt{int8} default is the regression gate. All changes gated behind \texttt{qsa\_kv\_win()}.
+\item \textbf{Probes:} targeted probes reproduce the former crash (B) and edge cases (C: explicit ring) before/after fixes.
+\item \textbf{A/B:} 4K segments, rounds 1--4, old/new interleaved where possible. Window measured on same segment sets for direct comparison.
+\item \textbf{Noise control:} single GPU job, quiet machine. Timing not reported as comparative; quality/SHA are.
+\end{itemize}
+
+\subsection{Results}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}p{0.46\columnwidth}p{0.44\columnwidth}@{}}
+\toprule
+\textbf{Measurement} & \textbf{Value/Result} \\
+\midrule
+\texttt{int8} default (4K A/B) & 8/8 identical: \texttt{A014F504\ldots BA052} (4,330,448\,B, 4095 pos.) \\
+Window 8192 ids (auto:16384) & \texttt{0768398A\ldots 94CA} (8,656,476\,B, 8191) \\
+Window cwe-4k (4096) & \texttt{4161376D\ldots 707E} (4,327,363\,B, 4095) \\
+Window on set-4096 & \texttt{71B0B586\ldots 6463} \\
+Window vs \texttt{int8} (same set) & KL = 0.04524, top-1 = 98.00\% \\
+Probe B (crash config) & PASS (\texttt{DONE 8192}, chunk 6144) \\
+Refusal A/B/C & PASS (pair exit 2) \\
+Setup tests & 59/59 PASS \\
+\texttt{--kv-check} & Reports mode/window/env/streaming + bits/cell \\
+\bottomrule
+\end{tabular}
+\caption{Validation results}
+\end{table}
+
+The KL difference is small and consistent with keeping recent cells exact while quantizing older cells; it validates the window is active and behaving as intended without destabilizing the default path.
+
+\section{Build Coverage, Risks, and Follow-up}
+
+\subsection{Build coverage}
+\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
+\item \textbf{Tested:} AMD HIP, RX 9060 XT 16\,GB, Windows 11, ROCm 7.1 (built with \texttt{vcvars64}, target \texttt{strata}).
+\item \textbf{Not tested:} NVIDIA CUDA (nvcc) and Intel SYCL (dpcpp) — no suitable GPUs/toolkits locally. 
+\item \textbf{Notes:} Changes are backend-agnostic (globals, arg checks, setup Python, memset value). \texttt{q4lm8v} is not offered on SYCL (\texttt{WINDOW\_KV}=False) so window paths are dead there but should compile. CUDA/SYCL build verification requested as part of review. Uncommitted unrelated workarounds (\texttt{src/core/mtp.cpp}, \texttt{src/kernels/cuda/iq\_kernels.cu}) not included.
+\end{itemize}
+
+\subsection{Known limitations / follow-up}
+The teacher-forced log-prob measurements cover one read path. The full cell$\rightarrow$row contract must be validated across all shapes:
+\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
+\item Writer \texttt{win\_row\_of} (\texttt{kv\_q4.cu:391}) $\leftrightarrow$ reader \texttt{qsa\_win\_slot} (\texttt{qsa\_decode\_attn.hpp:73}, host \texttt{:93})
+\item Ring wrap after scrolling past R rows
+\item Stale-tag $\to$ quantized fallback
+\item Sink rows (cell-addressed, not ring rows)
+\item Batch-boundary shapes (\texttt{STRATA\_KV\_WINDOW\_BATCH} vs \texttt{--prefill}, A1 cap)
+\item Empty-tag on zeroed memory (A5)
+\end{itemize}
+A follow-up PR will add an engine-level parity check (dump every window row at write time, re-read via \texttt{qsa\_win\_slot} on each shape). Meanwhile window stays opt-in and \texttt{int8} default remains byte-identical.
+
+\section{Conclusion}
+
+Hardening \texttt{q4lm8v} was primarily an exercise in preventing silent failures at integration boundaries. By combining setup-side prevention with engine-side enforcement, freezing state invariants, and correcting initialization semantics, the window can safely provide 5.29 bit/cell at 128K while keeping \texttt{int8} as the byte-identical quality default. The evidence (byte identity, probes, refusal tests, KL/top-1) supports this, with CUDA/SYCL build coverage and full cell$\rightarrow$row parity identified as the remaining validation gates.
+
+\end{document}
