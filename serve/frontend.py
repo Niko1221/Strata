@@ -65,6 +65,18 @@ class ChatTemplate:
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
+    def gen_prompt_tail(self, enable_thinking: bool) -> str:
+        """What add_generation_prompt adds to this template: the generation prompt's tail.
+
+        The raw /v1/completions prompt is passed through untouched; this is what a chat render would have
+        appended when the client asks thinking off. The probe message keeps the render the template needs;
+        both renders get the same kwargs, so the difference is the generation prompt alone.
+        """
+        probe = [{"role": "user", "content": "x"}]
+        base = self.render(probe, add_generation_prompt=False, enable_thinking=enable_thinking)
+        full = self.render(probe, add_generation_prompt=True, enable_thinking=enable_thinking)
+        return full[len(base):]
+
     def _detect_caps(self) -> dict[str, bool]:
         """llama.cpp's capability names, checked at load time against this template and Strata's tool-call format.
         These are rendering hints, not a guarantee that the model will follow a request."""
