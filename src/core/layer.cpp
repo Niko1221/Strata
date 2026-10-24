@@ -781,10 +781,12 @@ int64_t qsa_kv_ring_adapt(const ModelGeometry& g, int64_t cells_needed, int64_t 
     // cost 7.3 % at 1K (record-iq3s-v4-w4-adaptive-20261019.json) while 32,768 is the live value.
     const int64_t floor = std::max<int64_t>(qsa_kv_resident_min(), 32768);
     if (cap <= floor) return cap;
-    // Drafter-aware: grow to the cap only when the ring can cover the whole context.  Anywhere else the draft path
-    // pays for a ring it cannot use (0.2.0, 32K: -9.1 % with MTP against -1.7 % without), and the live 32,768 is
-    // the value a shallow run already has.
-    return rounded >= cap ? cap : floor;
+    // Drafter-aware: grow to the cap only when the context is at least twice the cap.  Below that the draft
+    // path pays for a ring it cannot use - 0.2.0, 32K: -9.1 % with MTP against -1.7 % without; and on
+    // 0.2.3.1 the needed>=cap form regressed 64K by -16.5 % (74.8 -> 62.5 tok/s, n=2) while 128K still
+    // gained +23.3 % (53.5 -> 65.9, n=3) - the crossover sits between 64K and 128K, so 2x cap keeps every
+    // measured tier below it on the live 32,768 and still delivers the cap at depth.
+    return rounded >= 2 * cap ? cap : floor;
 }
 int64_t qsa_kv_resident() { return g_kv_resident; }
 int64_t qsa_kv_resident_min() { return 20480; }
