@@ -193,13 +193,17 @@ void split_battery(const std::vector<bool>& draft_of) {
     Split sp;
     sp.fill(7);
     const std::vector<const SessionState*> sessions{&sp.ss0, &sp.ss1};
+    // Each carve's device, parallel to `sessions`.  The fake carves all live on device 0, so these batteries
+    // exercise the discipline the engine applies on a real split (each stage captured, transferred and streamed
+    // on its own card) without a second GPU.
+    const std::vector<int> devices{0, 0};
 
     // (a) sources in stage-group order: stage 0's QSA source, then stage 1's, the draft closing its owner's group.
     {
         const ConversationView view{sp.ids, sp.images, sp.checkpoints, true};
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
-        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, sp.draft.state, sp.g, sp.err),
+        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, devices, sp.draft.state, sp.g, sp.err),
               "split sources captured");
         check(sources.size() == 3, "one source per owned QSA layer plus the draft");
         size_t at = 0;
@@ -339,9 +343,12 @@ void split_battery(const std::vector<bool>& draft_of) {
             Split narrow; narrow.fill(11); narrow.qsa[1].max_cells = 40;   // the file holds 65 cells
             std::vector<SessionState*> tight{&narrow.ss0, &narrow.ss1};
             std::string nerr;
-            check(conversation_snapshot_restore_split(back, tight, draft_of, &narrow.draft.state, narrow.g, nerr)
+            check(conversation_snapshot_restore_split(back, tight, draft_of, devices, &narrow.draft.state, narrow.g, nerr)
                       == ConversationRestore::invalid,
                   "extents past stage 1's own carve are typed invalid");
+            check(conversation_snapshot_restore_split(back, tight, draft_of, {0}, &narrow.draft.state, narrow.g, nerr)
+                      == ConversationRestore::invalid,
+                  "restore_split refuses a devices table that does not match the carves");
         }
 
         {   // Tampering: one byte flipped inside stage 1's K/V section (post-read, pre-restore) is an invalid
@@ -360,7 +367,7 @@ void split_battery(const std::vector<bool>& draft_of) {
             SavedConversation tampered = back;
             tampered.kv[stage1_kv].cells ^= (int64_t) 1 << 40;   // a byte flip inside the extents field
             std::string terr;
-            check(conversation_snapshot_restore_split(tampered, fresh, draft_of, &dst.draft.state, dst.g, terr)
+            check(conversation_snapshot_restore_split(tampered, fresh, draft_of, devices, &dst.draft.state, dst.g, terr)
                       == ConversationRestore::invalid,
                   "the tampered K/V section is typed invalid");
             ConversationCheckpoint post0, post1; post0.ids = back.live.ids; post1.ids = back.live.ids;
@@ -377,7 +384,7 @@ void split_battery(const std::vector<bool>& draft_of) {
 
             // The round trip: capture -> write v2 -> read -> validate -> restore into fresh carves -> recaptured
             // state and pools match the file byte for byte, per stage.
-            check(conversation_snapshot_restore_split(back, fresh, draft_of, &dst.draft.state, dst.g, sp.err)
+            check(conversation_snapshot_restore_split(back, fresh, draft_of, devices, &dst.draft.state, dst.g, sp.err)
                       == ConversationRestore::restored,
                   "restore_split restored the image into the fresh runtime");
             ConversationCheckpoint got0, got1; got0.ids = back.live.ids; got1.ids = back.live.ids;
@@ -424,7 +431,7 @@ void split_battery(const std::vector<bool>& draft_of) {
         const ConversationView view{sp.ids, sp.images, sp.checkpoints, true};
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
-        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, sp.draft.state, sp.g, sp.err),
+        check(conversation_snapshot_sources_split(meta, sources, view, sessions, draft_of, devices, sp.draft.state, sp.g, sp.err),
               "split capture accepted a checkpointed chain");
         check(meta.checkpoints.size() == 1 && meta.checkpoints[0].stage_parts.size() == 1,
               "the chain checkpoint kept its part");
@@ -439,10 +446,16 @@ void split_battery(const std::vector<bool>& draft_of) {
         SavedConversation bad;
         std::vector<SessionKvSource> bad_sources;
         std::string berr;
-        check(!conversation_snapshot_sources_split(bad, bad_sources, view, sessions, draft_of, sp.draft.state, sp.g, berr),
+        check(!conversation_snapshot_sources_split(bad, bad_sources, view, sessions, draft_of, devices, sp.draft.state, sp.g, berr),
               "a checkpoint without its stage parts is refused");
         check(bad_sources.empty() && bad.checkpoints.empty(), "refusal captured nothing");
         sp.checkpoints[0].stage_parts.push_back(chain.stage_parts[0]);
+        {   // A `devices` table that does not match the carves is a caller error: refused before any capture.
+            SavedConversation none; std::vector<SessionKvSource> none_sources; std::string derr;
+            check(!conversation_snapshot_sources_split(none, none_sources, view, sessions, draft_of, {0}, sp.draft.state, sp.g, derr),
+                  "split capture refuses a devices table that does not match the carves");
+            check(none_sources.empty() && none.checkpoints.empty(), "the refusal captured nothing");
+        }
 
         // One carve through the split builders: an engaged empty table, no per-stage bounds.
         SessionReadLimits one;
