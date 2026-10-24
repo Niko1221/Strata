@@ -974,8 +974,11 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     args = {}
     while "<parameter=" in rest:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
-        pname = rest[:rest.index(">")]
-        rest = rest[rest.index(">") + 1:]
+        gt = rest.find(">")
+        if gt < 0:      # cut inside the parameter name: drop the opener, keep the complete parameters
+            break
+        pname = rest[:gt]
+        rest = rest[gt + 1:]
         end = param_end(rest, final=True, names=set(props))
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
@@ -1645,6 +1648,8 @@ class OutputParser:
         out = []
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
+        if self.state == "call":                # cut inside a parameter name: the opener is dropped, not the parameters before it
+            self.buf = re.sub(r"<parameter=[^>\n]*$", "", self.buf)
         if self.state == "call" and self.bare and function_end(self.buf, self.schemas, True) >= 0:
             i = function_end(self.buf, self.schemas, True)          # recover: a bare call is whole at its </function>
             body, rest = self.buf[:i], self.buf[i:].strip()
@@ -1653,7 +1658,7 @@ class OutputParser:
             if rest and not CALL_END.startswith(rest):
                 out.append(Event("content", self._track(rest)))
             return out
-        if self.state == "call" and self.recover and reason in (None, "stop") and self.buf.strip():
+        if self.state == "call" and self.recover and reason in (None, "stop") and ">" in self.buf[self.buf.find(FUNC_START) + 1:]:
             # the model stopped on its own with the call's closers missing (`true` then the end, no `</parameter>`, or no
             # `</function>` / `</tool_call>`): complete it, so the client gets whole arguments instead of JSON cut
             # after the last key
