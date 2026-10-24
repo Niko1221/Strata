@@ -102,7 +102,7 @@ tokens in the window. Same prompts, 5 interleaved pairs, R9700:
 The text is the same with and without it (every slot equal to its solo tokens).
 
 **What a slot costs.** Each slot keeps its own cache in VRAM: 1.5 GB at a context of 32K (fp32 keys and values of the 10 attention layers
-and the MTP block, 45 KB per token) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
+and the MTP block, 45 KB per token; `--kv` below takes less) and 0.07 GB of recurrent state. Setup writes the context for one conversation, so N slots take N times
 that from the room the experts would have: on a card that does not hold every expert (12 and 16 GB, the hybrid mode) that is room the
 expert slots lose, and a batch reads more distinct experts from RAM. Setup **offers `--parallel`** where the sessions do not eat the experts' room: up to 3-4 where every expert still fits (3 on a 32 GB card at
 32K), and on a card that does not (the hybrid mode) the count whose sessions take at most 35% of the room the experts would have, so it
@@ -180,6 +180,41 @@ prompt's token ids are above 65,536), and a candidate list built from the tokens
 stream (captured into the decode graph) decodes at 36 tok/s instead of 117 with this ROCm. Chunked (WY) GDN and the PCIe-assisted hybrid decode
 were not attempted.
 
+## Opt-ins of this engine path
+
+All off by default; with none of them the engine runs as before. They go in the config's `args` (`strata-qwen36-<size>.json`) or
+on the `strata-q36` command line.
+
+- **`--tokens-file F`** (with `--tokens` mode, the main path's name): the prompt ids from a file, commas or whitespace, instead of on the
+  command line (a long prompt does not fit one argument).
+- **`--kv fp16 | int8 | k8v4`**: the keys and values in less VRAM than the default fp32: 22.5 / 12.7 / 9.5 KB per token and session
+  instead of 45 KB (fp16 is #3641's; int8 is q8_0 rows; k8v4 is int8 keys and rotated q4_0 values, as the main path's `--kv k8v4`). fp16 and k8v4
+  always decode with the grouped-query kernel below. The main path's `q4_0` is not on this path: in serve mode it is said and
+  skipped (the fp32 cache), elsewhere refused. Before this option a config's `--kv` was skipped by this engine; a config that
+  carries one now gets that cache.
+- **`--gqa-attn`**: the grouped-query decode attention (#3641's kernel) for the fp32 and int8 caches: a block per KV head reads
+  each cache cell once for all its query heads (the default kernel reads it once per query head). fp32 switches to it from 8,192
+  cells, int8 at every cell: with the int8 cache (a Qwen3.6-35B-A3B fine-tune (Q4_K_M), RTX 5080) it decodes at 184 tok/s (the default kernel 179) at 4K and 165
+  (155) at 8K. The int8 kernel (`part_q8x`, 8 query heads per KV head) streams the cache through shared memory (`cp.async`, sm_80+;
+  older cards keep the first int8 kernel) and serves all rows of a verify window in one pass over the cache (up to 4 rows a block,
+  one session). Its partials have the same bits as the first int8 kernel's (checked by `q36_attn_parity` and by `cmp` of the logits).
+  `--attn-mma` without `--gqa-attn --kv int8`, or on a card below compute capability 8.0, says so and is ignored.
+  Microbench (not an engine run) of the attention's partial kernel for one layer on an RTX 5080, int8 cache, 16 query / 2 KV
+  heads, L2 flushed before each call: 4K cells 48 -> 24 us, 32K 95 -> 69, 90K 229 -> 142, 262K 554 -> 361 us; a 3-row window at
+  262K 1,550 -> 925 us.
+- **`--attn-mma`** (with `--gqa-attn --kv int8`, sm_80+; `STRATA_Q36_ATTN_MMA` does the same: `1` / `on` / `true` / `yes` turns it on, `0` / `off` / `false` / `no` leaves it off, anything else is said and ignored; the flag wins): the decode attention on tensor cores
+  (`part_q8m`): the window's query rows (8 per row) against the int8 cells as fp16 `mma.sync` products with fp32 accumulation, the cache
+  read once per window. **Not bit-identical** to the default kernel: q, the softmax weights times the V scale, and the products are
+  rounded to fp16 (about 1e-4 relative), K and V enter as their exact int8 values. A row's result does not depend on the other rows of
+  its window, so `--mtp` text equals the plain text. KL against the default kernel over the 14K / 57K / 76K set (65 forced steps each,
+  Sage, RTX 5080): mean 5.7e-3, median 1.1e-3, p99 0.033, max 0.36 (the `--prefill 1024` floor: 8.9e-3, 1.3e-3, 0.09, 0.51).
+  Microbench of the partial kernel for one layer (int8, 16 / 2 heads, L2 flushed): 262K cells 1 row 331 us (the int8 kernel above: 361),
+  a 3-row window 425 us (925), 4 rows 461 us (1,200); 32K cells, 3 rows 76 us (157).
+
+Test settings: `STRATA_Q36_ATTN_OLD=1` (the first int8 attention kernel, `part_q8`), `STRATA_Q36_ATTN_ROWS=n` (at most n window rows a block),
+`STRATA_Q36_GQA_FROM=N` (the cell the grouped-query kernel takes over from; not with k8v4, which always uses it),
+`STRATA_Q36_CACHE_WINDOW=0/1` (the expert slots' rebalancing over a window of the recent routing, on with `--kv fp16`).
+
 ## Not done / limits
 
 - Eight slots at most (the window holds 8 rows); `--batch-mtp` shares those rows between slots and proposals.
@@ -201,3 +236,6 @@ The gates are in `tools/qwen35/` and talk to the engine through its serve protoc
   `GENI` / `BGENI` (solo, in a batch, the conversation cache); `q36_vision_serve.py` and `q36_serve_par.py` / `q36_serve_handoff.py`:
   the same through the server.
 - `q36_par_bench.py`: the aggregate-throughput A/B against `llama-server -np N`.
+- `q36_attn_parity` (built with the tests or `-DSTRATA_PARITY_Q36_ATTN=ON`, GPU, no model): the grouped-query attention kernels (fp32,
+  fp16, int8 and k8v4 cells) against a double-precision reference.
+- `native_expert_parity --synthetic-ff512 q4_K/q4_K` (with the tests): the Q4_K down kernel at this model's FF of 512.
