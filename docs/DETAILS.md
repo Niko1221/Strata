@@ -1185,7 +1185,7 @@ ID is required: only exact token/image prefixes with matching steering mode are 
 Without `--conversation-cache-mib` the budget is sized from the RAM that is free once the model is loaded (0.2.3, #3493): 40% of what is left above `--conversation-cache-min-free-mib`, at most 8192, in steps of 256, and off when that is under 1024; the engine log says which in one line. An agent Harness that alternates a long main conversation with shorter ones (sub-agents, summaries) used to read every prompt again (`Reused` 0); with the cache on, the next turn of each one reuses its prompt. `--conversation-cache-mib N` sets it and `--conversation-cache-mib 0` turns it off; `--prompt-cache 0` also disables parking.
 With `--layer-split`, a parked conversation holds one image per stage (each later stage's
 session and its share of the conversation checkpoints), every image is validated before
-anything is overwritten, and each is restored on its own GPU. Verified on a 4-GPU split:
+anything is overwritten, and each is restored on its own GPU. With `STRATA_STAGE_COPY_PARALLEL=1`, independent stages capture and restore concurrently through persistent workers; the copied state is unchanged. A four-arm A/B on 4x RTX 4090 improved cached-repeat latency, but did not establish superiority over the serial path for every workload or prove the main system bottleneck was gone. Verified on a 4-GPU split:
 a 9,276-token conversation restored in 51 ms, and its follow-up decodes exactly the tokens
 it decodes when the conversation never left (`tools/parking_test.py`). FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
