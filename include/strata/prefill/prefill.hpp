@@ -169,6 +169,11 @@ public:
     /// build with the pointer-table MMQ (STRATA_MMQ_TAB).
     static size_t slot_guard_bytes();
 
+    /// STRATA_EXPERT_NIBBLE=1: whether every converted layer's experts reach the prompt path's MMQ gather only (the
+    /// GGUF blocks rebuilt from the 4-bit slots); false with the first layer and the reason in `why`.  Pure: the
+    /// layers' formats, the environment and the visible GPUs (generate.cpp asks once, before anything is allocated).
+    static bool nibble_prompt_check(std::string& why);
+
     /// Positions [pos0, pos0 + n) holding `tokens`; `ss.ple_prev` must be the two tokens before pos0 (oldest
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);

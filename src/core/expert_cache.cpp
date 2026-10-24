@@ -24,6 +24,17 @@
 
 namespace strata::core {
 
+namespace {
+// STRATA_EXPERT_NIBBLE: a write into a sealed cache (see ExpertCache::seal).  Says which call and stops: the slots hold
+// 4-bit codes the GGUF bytes would overwrite, or a GGUF expert where a 4-bit one is expected - a wrong reply, not an error.
+[[noreturn]] void sealed_write(const char* call, int32_t slot) {
+    std::fprintf(stderr, "strata: STRATA_EXPERT_NIBBLE: ExpertCache::%s(slot %d) after the cache was sealed - a GGUF "
+                         "blob would be written into the 4-bit expert slots: stopping\n", call, (int) slot);
+    std::fflush(stderr);
+    std::abort();
+}
+}  // namespace
+
 // See the header.  NVIDIA's DGX Spark Porting Guide (section 5.5, "Memory reporting on UMA systems") recommends the same:
 // not to rely on cudaMemGetInfo alone but to count the memory the OS can reclaim.  Swap is not counted here (unlike
 // NVIDIA's reference snippet): an expert cache that pushes the system into swap would be far slower than a smaller one.
@@ -621,6 +632,7 @@ void ExpertCache::close() {
     next_free_ = 0;
     fills_ = 0;
     admitted_ = 0;
+    sealed_ = false;
     layer_next_.clear();
 }
 
@@ -641,6 +653,7 @@ int32_t ExpertCache::slot_of(int64_t layer, int64_t expert) const {
 }
 
 int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
+    if (sealed_) return kNotResident;   // STRATA_EXPERT_NIBBLE: nothing is admitted (and so filled) after the startup fill
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
     const size_t at = (size_t) (layer * n_expert_ + expert);
     if (residency_[at] != kNotResident) return residency_[at];
@@ -673,6 +686,7 @@ const uint8_t* ExpertCache::device_slot(int32_t slot) const {
 }
 
 bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream, std::string& err, int64_t bytes) {
+    if (sealed_) sealed_write("fill_slot", slot);
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
@@ -695,6 +709,7 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
 }
 
 bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
+    if (sealed_) sealed_write("fill_slot_blocking", slot);
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
@@ -726,6 +741,7 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
 }
 
 bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
+    if (sealed_) sealed_write("fill_slot_queued", slot);
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr || host_blob == nullptr) {
@@ -743,6 +759,7 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::
 }
 
 bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err) {
+    if (sealed_) sealed_write("fill_slot_queued_parts", slot);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr || parts == nullptr || n <= 0) {
         err = "ExpertCache::fill_slot_queued_parts: slot outside the arena or no pieces";
