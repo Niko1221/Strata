@@ -1,0 +1,66 @@
+# System probes, collected 2026-10-07 on the benchmark PC (PowerShell; local paths replaced)
+
+## OS
+Microsoft Windows 11 Pro 10.0.26200 build 26200 64-bit
+
+## GPU (nvidia-smi)
+name, memory.total [MiB], driver_version, pcie.link.gen.max, pcie.link.width.max, power.limit [W], compute_cap
+NVIDIA GeForce RTX 3070 Ti, 8192 MiB, 617.42, 4, 16, 290.00 W, 8.6
+
+## CPU
+AMD Ryzen 9 5900X 12-Core Processor; cores 12; threads 24; max clock 4200 MHz
+
+## RAM
+total physical: 63.9 GiB
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+module: 16 GiB, speed 3600, configured 3600, part F4-3600C16-16GTZNC
+
+## Storage
+Samsung SSD 970 EVO Plus 2TB; SSD; NVMe; 1863 GB
+
+## Page file
+automatic managed: True
+
+## Engine
+engine/BUILD.json:
+{
+ "version": "0.1.40.3",
+ "source": "release",
+ "archs": [
+  75,
+  86,
+  89,
+  120
+ ],
+ "ptx": true,
+ "cuda": "13.0",
+ "vision": "gpu",
+ "portable": true
+}
+engine/strata.exe SHA-256: 34cde150b21148e6cf192dbf2242e5544d3456c09ab0010837aaacfda11eca5b
+engine/strata.exe size: 159101952 B
+
+## CUDA wheels in .venv
+nvidia-cublas       13.0.2.14
+nvidia-cuda-runtime 13.0.96
+
+## Environment
+STRATA_* variables (process, user, machine): none
+
+## Model files
+Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf: 39225954592 B
+Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf: 28800138432 B
+expert-profile.bin SHA-256: 8f59b4aa8873209dff11c11e37bcda9529a1335b724a1afeea37bf6388975baf
+
+## setup check (START-HERE.bat --check, first run, driver 610.88 at the time; the driver was updated to 617.42 before any measurement)
+  [ok] GPU: NVIDIA GeForce RTX 3070 Ti, 8.0 GB VRAM, compute capability 8.6, driver 610.88
+  [!]  less than 12 GB of VRAM: Strata will run, but most experts stay on the CPU and it will be slow
+  [ok] RAM: 64 GB
+  [ok] CPU: AMD Ryzen 9 5900X 12-Core Processor (AVX2)
+  [ok] PCIe: 4.0 x16
+setup --setup run (2026-10-07, driver 617.42): "[ok] GPU: NVIDIA GeForce RTX 3070 Ti, 8.0 GB VRAM, compute capability 8.6, driver 617.42"
+
+## Engine log: large pages (every block; this line from block 1)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages

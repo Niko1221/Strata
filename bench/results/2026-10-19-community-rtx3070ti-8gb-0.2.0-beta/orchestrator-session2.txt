@@ -1,0 +1,16 @@
+18:30:28 block 07-C: arm C
+18:31:00   loaded in 25s
+18:31:05   harness targets 4096,16384 x5
+18:34:41     4096: prefill 596.3 (584.1-599.6) decode 68.7 (64.4-74.8) ttft 6.9s
+18:34:41     16384: prefill 585.9 (583.6-586.8) decode 70.2 (69.2-72.1) ttft 28.0s
+18:34:41 block 08-B: arm B
+18:35:13   loaded in 25s
+18:35:19   harness targets 4096,16384 x5
+18:38:51     4096: prefill 586.6 (580.6-590.8) decode 66.7 (66.0-71.8) ttft 7.0s
+18:38:51     16384: prefill 602.8 (600.8-603.6) decode 70.8 (69.4-74.2) ttft 27.2s
+18:38:51 block 09-B-share-off: arm B-share-off
+18:39:24   loaded in 25s
+18:39:29   harness targets 4096,16384 x5
+18:44:04     4096: prefill 424.7 (422.5-425.7) decode 68.7 (65.8-70.7) ttft 9.7s
+18:44:04     16384: prefill 442.8 (442.4-443.6) decode 68.1 (65.8-72.8) ttft 37.0s
+18:44:12 done

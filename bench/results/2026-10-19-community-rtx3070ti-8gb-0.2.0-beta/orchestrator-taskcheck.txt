@@ -1,0 +1,5 @@
+18:44:12 block 12-C-taskcheck: arm C
+18:44:44   loaded in 25s
+18:44:49   task check (13 prompts)
+18:46:17   scored: code_expr: 15/15 cases correct, 4/4 malformed inputs rejected | json_strict: parses, schema ok = True | poem: lines 4 chars per line [7, 7, 7, 7]
+18:46:25 done

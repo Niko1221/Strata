@@ -1,0 +1,194 @@
+## block 00-smoke-A: arm A  (started 2026-10-19 17:21:11)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.7 s (302 canonical tensors skipped: served natively)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.99 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.21 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 987 slots
+strata generate: expert cache 1023 slots, 1.39 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1280 tokens, a 351-slot ring
+strata serve: the prompt path borrows 873 CUDA0 cache slots (1.18 GiB)
+strata serve: 320 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 8.45, "strata_rss_gib": 35.15, "nvidia_smi": "7829, 8192, 43, 617.42"}
+after runs: {"ram_available_gib": 7.68, "strata_rss_gib": 35.78, "nvidia_smi": "7831, 8192, 60, 617.42"}
+
+## block 01-A: arm A  (started 2026-10-19 17:23:29)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.97 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.21 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 987 slots
+strata generate: expert cache 1023 slots, 1.39 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1280 tokens, a 351-slot ring
+strata serve: the prompt path borrows 873 CUDA0 cache slots (1.18 GiB)
+strata serve: 334 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.21, "strata_rss_gib": 35.0, "nvidia_smi": "7440, 8192, 45, 617.42"}
+after runs: {"ram_available_gib": 13.7, "strata_rss_gib": 37.26, "nvidia_smi": "7557, 8192, 73, 617.42"}
+
+## block 02-B: arm B  (started 2026-10-19 17:28:03)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.98 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.14 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 933 slots
+strata generate: expert cache 968 slots, 1.31 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 458 CUDA0 cache slots (0.62 GiB)
+strata serve: 338 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.51, "strata_rss_gib": 36.35, "nvidia_smi": "7394, 8192, 55, 617.42"}
+after runs: {"ram_available_gib": 12.61, "strata_rss_gib": 38.43, "nvidia_smi": "7519, 8192, 78, 617.42"}
+
+## block 03-C: arm C  (started 2026-10-19 17:33:07)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.97 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.25 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1014 slots
+strata generate: expert cache 1051 slots, 1.43 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 337 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.62, "strata_rss_gib": 36.35, "nvidia_smi": "7377, 8192, 56, 617.42"}
+after runs: {"ram_available_gib": 12.72, "strata_rss_gib": 38.44, "nvidia_smi": "7501, 8192, 79, 617.42"}
+
+## block 04-D: arm D  (started 2026-10-19 17:38:09)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.55 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.96 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.05 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 871 slots
+strata generate: expert cache 902 slots, 1.22 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 512 tokens, a 8-slot ring
+strata serve: the prompt path borrows 398 CUDA0 cache slots (0.54 GiB)
+strata serve: 337 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.45, "strata_rss_gib": 36.7, "nvidia_smi": "7359, 8192, 57, 617.42"}
+after runs: {"ram_available_gib": 12.1, "strata_rss_gib": 38.94, "nvidia_smi": "7483, 8192, 79, 617.42"}
+
+## block 05-B: arm B  (started 2026-10-19 17:43:40)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.96 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.14 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 933 slots
+strata generate: expert cache 968 slots, 1.31 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 458 CUDA0 cache slots (0.62 GiB)
+strata serve: 337 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.75, "strata_rss_gib": 36.35, "nvidia_smi": "7349, 8192, 58, 617.42"}
+after runs: {"ram_available_gib": 12.66, "strata_rss_gib": 38.43, "nvidia_smi": "7475, 8192, 73, 617.42"}
+
+## block 06-C: arm C  (started 2026-10-19 17:48:42)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.96 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.25 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1014 slots
+strata generate: expert cache 1051 slots, 1.43 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 337 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.74, "strata_rss_gib": 36.35, "nvidia_smi": "7346, 8192, 58, 617.42"}
+after runs: {"ram_available_gib": 11.5, "strata_rss_gib": 39.57, "nvidia_smi": "7519, 8192, 83, 617.42"}
+
+## block 07-C: arm C  (started 2026-10-19 18:30:35)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.96 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.25 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1014 slots
+strata generate: expert cache 1051 slots, 1.43 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 408 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.59, "strata_rss_gib": 36.35, "nvidia_smi": "7390, 8192, 54, 617.42"}
+after runs: {"ram_available_gib": 12.6, "strata_rss_gib": 38.44, "nvidia_smi": "7515, 8192, 83, 617.42"}
+
+## block 08-B: arm B  (started 2026-10-19 18:34:48)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.94 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.14 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 933 slots
+strata generate: expert cache 968 slots, 1.31 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 458 CUDA0 cache slots (0.62 GiB)
+strata serve: 408 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.75, "strata_rss_gib": 36.35, "nvidia_smi": "7388, 8192, 58, 617.42"}
+after runs: {"ram_available_gib": 12.62, "strata_rss_gib": 38.43, "nvidia_smi": "7514, 8192, 80, 617.42"}
+
+## block 09-B-share-off: arm B-share-off  (started 2026-10-19 18:38:58)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.96 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.14 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 933 slots
+strata generate: expert cache 968 slots, 1.31 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+strata serve: prompt chunk auto: 768 tokens, a 8-slot ring
+strata serve: the prompt path borrows 458 CUDA0 cache slots (0.62 GiB)
+strata serve: 408 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.77, "strata_rss_gib": 36.35, "nvidia_smi": "7388, 8192, 58, 617.42"}
+after runs: {"ram_available_gib": 12.68, "strata_rss_gib": 38.38, "nvidia_smi": "7514, 8192, 83, 617.42"}
+
+## block 12-C-taskcheck: arm C  (started 2026-10-19 18:44:19)
+strata generate: 1466 MiB of weights loaded from <data-dir>\packs\iq2_xs in 0.3 s (302 canonical tensors skipped: served natively)
+strata generate: KV streaming: 20480 of 131072 cells per QSA layer in VRAM, the K/V in 1.20 GiB of pinned RAM
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 35456548864 B (GetLargePageMinimum=2097152, VirtualAlloc error 1314); using 4 KB pages
+strata generate: loaded 33.02 GiB at 2.99 GiB/s
+strata generate: 11 pool workers on logical processors 2,4,6,8,10,12,14,16,18,20,22, the host thread on 0 (draining too) (--host-core first)
+strata generate: expert cache auto: 2.25 GiB free, 700 MiB reserved (+143 MiB for the draft head) -> 1014 slots
+strata generate: expert cache 1051 slots, 1.43 GiB of VRAM; policy is
+strata generate: 11 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.45)
+prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.
+strata serve: prompt chunk auto: 1024 tokens, a 384-slot ring
+strata serve: the prompt path borrows 900 CUDA0 cache slots (1.22 GiB)
+strata serve: 408 MiB of VRAM free with everything loaded
+strata serve: that is little room for the verify windows' buffers under WDDM; if the engine exits right after this line, --prefill auto:8192 (a smaller prompt chunk borrows fewer cache slots) or a larger --vram-reserve-mib leaves more
+after load: {"ram_available_gib": 14.71, "strata_rss_gib": 36.35, "nvidia_smi": "7388, 8192, 57, 617.42"}
+after runs: {"ram_available_gib": 13.03, "strata_rss_gib": 38.07, "nvidia_smi": "7528, 8192, 80, 617.42"}

@@ -1,0 +1,36 @@
+17:23:22 block 01-A: arm A
+17:23:54   loaded in 25s
+17:23:59   harness targets 4096,16384 x5
+17:27:55     4096: prefill 542.8 (529.4-547.0) decode 49.3 (46.6-50.0) ttft 7.6s
+17:27:55     16384: prefill 586.0 (585.6-586.6) decode 48.2 (47.4-49.2) ttft 28.0s
+17:27:55 block 02-B: arm B
+17:28:28   loaded in 25s
+17:28:33   harness targets 4096,16384 x5
+17:32:59     4096: prefill 485.9 (472.8-490.3) decode 46.8 (46.1-50.2) ttft 8.5s
+17:32:59     16384: prefill 498.8 (496.2-500.6) decode 47.8 (45.0-50.8) ttft 32.9s
+17:32:59 block 03-C: arm C
+17:33:32   loaded in 25s
+17:33:37   harness targets 4096,16384 x5
+17:38:01     4096: prefill 498.9 (496.9-511.4) decode 49.8 (43.7-53.1) ttft 8.2s
+17:38:01     16384: prefill 493.6 (492.4-494.5) decode 49.7 (48.0-51.6) ttft 33.2s
+17:38:01 block 04-D: arm D
+17:38:34   loaded in 25s
+17:38:40   harness targets 4096,16384 x5
+17:43:32     4096: prefill 438.6 (432.4-440.9) decode 52.1 (45.4-54.1) ttft 9.4s
+17:43:32     16384: prefill 432.5 (431.8-435.0) decode 48.5 (47.4-50.4) ttft 37.9s
+17:43:32 block 05-B: arm B
+17:44:06   loaded in 25s
+17:44:11   harness targets 4096,16384 x5
+17:48:34     4096: prefill 487.8 (478.5-492.8) decode 50.5 (46.2-52.7) ttft 8.4s
+17:48:34     16384: prefill 497.4 (495.8-497.8) decode 49.6 (45.9-55.3) ttft 33.0s
+17:48:34 block 06-C: arm C
+17:49:07   loaded in 25s
+17:49:12   harness targets 4096,16384,32768 x5
+17:59:45     4096: prefill 500.6 (500.2-505.6) decode 50.4 (45.9-50.8) ttft 8.2s
+17:59:45     16384: prefill 491.2 (490.3-493.9) decode 48.6 (47.8-50.9) ttft 33.4s
+17:59:45     32768: prefill 484.2 (482.6-485.8) decode 47.3 (45.5-48.4) ttft 67.7s
+17:59:45   harness targets 128000 x3
+18:13:52     128000: prefill 464.6 (463.7-466.7) decode 51.0 (50.4-51.2) ttft 275.6s
+18:13:52   needle_bench 32k,128k x depths 10,50,90
+18:29:19   needles: 6 of 6 found
+18:29:27 done

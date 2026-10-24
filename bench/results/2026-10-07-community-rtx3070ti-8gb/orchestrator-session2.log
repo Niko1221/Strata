@@ -1,0 +1,22 @@
+19:14:20 block 7-E1: E1-C-prefill768
+19:14:47   loaded in 20s, max_context 131072
+19:14:52   harness targets 4096,16384 x5
+19:20:15     4096: prefill 381 (378-381) decode 48.1 (47.4-51.9) ttft 10.8s
+19:20:15     16384: prefill 397 (396-398) decode 51.1 (50.4-53.2) ttft 41.3s
+19:20:15 block 8-E2: E2-C-prefill768-streammin512
+19:20:44   loaded in 21s, max_context 131072
+19:20:49   harness targets 4096,16384 x5
+19:25:50     4096: prefill 404 (402-411) decode 49.8 (47.6-52.5) ttft 10.2s
+19:25:50     16384: prefill 437 (435-438) decode 51.7 (48.7-52.9) ttft 37.6s
+19:25:50 block 9-C: C-128k-k8v4-res20k
+19:26:17   loaded in 20s, max_context 131072
+19:26:22   harness targets 4096,16384 x5
+19:30:31     4096: prefill 526 (520-531) decode 51.3 (49.6-51.8) ttft 7.8s
+19:30:31     16384: prefill 557 (555-558) decode 51.0 (50.4-52.1) ttft 29.5s
+19:30:31 block 10-B: B-128k-k8v4-res32k
+19:30:58   loaded in 20s, max_context 131072
+19:31:03   harness targets 4096,16384 x5
+19:36:28     4096: prefill 379 (376-379) decode 49.4 (48.2-51.6) ttft 10.8s
+19:36:28     16384: prefill 395 (395-396) decode 51.1 (50.5-51.3) ttft 41.5s
+19:36:28 restoring the normal start (run-iq2_xs.bat)
+19:36:35 done
