@@ -34,6 +34,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
+#include <cstdlib>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -1102,6 +1103,21 @@ private:
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
+    /// #3065, STRATA_MMAP_PREFETCH: a plain mapped experts.bin (not staged: no unbuffered tier, no io prefetch) asks the
+    /// OS for all of a layer's CPU experts in one batch before the pool reads them, instead of faulting them in page by
+    /// page.  =1 on the calling (dispatch) thread; =2 on a helper thread, returning at once (PrefetchVirtualMemory costs
+    /// about 0.2 ms a call even when every page is resident); the newest request replaces one not yet started.  Read
+    /// once at construction; off by default.
+    int mmap_prefetch_ = [] { const char* v = std::getenv("STRATA_MMAP_PREFETCH"); return v != nullptr ? std::atoi(v) : 0; }();
+    void prefetch_mapped(int64_t layer, const int64_t* experts, int64_t n);
+    void prefetch_async(int64_t layer, const int64_t* experts, int64_t n);
+    void stop_prefetch_thread();
+    std::thread pf_thread_;
+    std::mutex pf_mu_;
+    std::condition_variable pf_cv_;
+    bool pf_quit_ = false, pf_pending_ = false;
+    int64_t pf_layer_ = -1;
+    std::vector<int64_t> pf_experts_;
     mutable std::atomic<int64_t> direct_fallbacks_{0};
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;

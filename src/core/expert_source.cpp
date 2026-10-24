@@ -934,7 +934,80 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
 
 // ================================ THE FILE-BACKED SOURCE ================================
 
-FileExpertSource::~FileExpertSource() { close(); }
+FileExpertSource::~FileExpertSource() {
+    stop_prefetch_thread();
+    close();
+}
+
+void FileExpertSource::stop_prefetch_thread() {
+    {
+        std::lock_guard<std::mutex> lk(pf_mu_);
+        pf_quit_ = true;
+    }
+    pf_cv_.notify_all();
+    if (pf_thread_.joinable()) pf_thread_.join();
+}
+
+// #3065, STRATA_MMAP_PREFETCH: the mapped blobs of these experts (the RAM copy's skipped) as one
+// PrefetchVirtualMemory / MADV_WILLNEED batch - the pages come in together while the pool works on the first ones,
+// instead of one page fault after another.  Only warms: what `blob` returns is unchanged.
+void FileExpertSource::prefetch_mapped(int64_t layer, const int64_t* experts, int64_t n) {
+    if (base_ == nullptr || unmapped_ || !role_ptr_.empty() || n <= 0 || layer < 0 || layer >= n_layers_) return;
+#if defined(_WIN32)
+    using Pvm = BOOL(WINAPI*)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+    static const Pvm pvm = (Pvm) (void*) GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
+    if (pvm == nullptr) return;
+    WIN32_MEMORY_RANGE_ENTRY ranges[128];
+    ULONG nr = 0;
+#endif
+    const uint64_t bytes = layer_blob_bytes_[(size_t) layer];
+    for (int64_t j = 0; j < n; ++j) {
+        const int64_t e = experts[j];
+        if (e < 0 || e >= n_expert_) continue;
+        const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) e;
+        if (complement_ready_ && resident_blob(index) != nullptr) continue;   // in the RAM copy
+        const uint8_t* p = mapped_blob(layer, e);
+        if (p == nullptr) continue;
+#if defined(_WIN32)
+        ranges[nr++] = {(PVOID) p, (SIZE_T) bytes};
+        if (nr == 128) { (void) pvm(GetCurrentProcess(), nr, ranges, 0); nr = 0; }
+#else
+        const uintptr_t pg = 4096, a = (uintptr_t) p & ~(pg - 1);
+        (void) madvise((void*) a, (size_t) ((uintptr_t) p + bytes - a), MADV_WILLNEED);
+#endif
+    }
+#if defined(_WIN32)
+    if (nr > 0) (void) pvm(GetCurrentProcess(), nr, ranges, 0);
+#endif
+}
+
+void FileExpertSource::prefetch_async(int64_t layer, const int64_t* experts, int64_t n) {
+    if (n <= 0) return;
+    {
+        std::lock_guard<std::mutex> lk(pf_mu_);
+        if (pf_quit_) return;
+        pf_layer_ = layer;
+        pf_experts_.assign(experts, experts + n);
+        pf_pending_ = true;
+        if (!pf_thread_.joinable())
+            pf_thread_ = std::thread([this] {
+                std::vector<int64_t> todo;
+                for (;;) {
+                    int64_t layer_now;
+                    {
+                        std::unique_lock<std::mutex> lk(pf_mu_);
+                        pf_cv_.wait(lk, [&] { return pf_quit_ || pf_pending_; });
+                        if (pf_quit_) return;
+                        pf_pending_ = false;
+                        layer_now = pf_layer_;
+                        todo.swap(pf_experts_);
+                    }
+                    prefetch_mapped(layer_now, todo.data(), (int64_t) todo.size());
+                }
+            });
+    }
+    pf_cv_.notify_one();
+}
 
 #if defined(__linux__)
 namespace {
@@ -2092,6 +2165,11 @@ const uint8_t* FileExpertSource::staged_blob(int64_t layer, int64_t expert) {
 }
 
 void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
+    if (!staged() && mmap_prefetch_ != 0 && n > 0 && layer >= 0 && layer < n_layers_) {   // #3065: a plain mapped experts.bin
+        if (mmap_prefetch_ >= 2) prefetch_async(layer, experts, n);
+        else prefetch_mapped(layer, experts, n);
+        return;
+    }
     if (!staged() || n <= 0 || layer < 0 || layer >= n_layers_) return;
     if (io_fill_ && io_pf_ && direct_.empty()) {   // hand the layer's uncached blobs to the workers and go on: the kernels
         for (int64_t i = 0; i < n; ++i) {          // that reach one before it lands wait on its pages, the rest compute

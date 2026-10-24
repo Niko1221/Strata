@@ -726,6 +726,56 @@ void test_io_prefetch() {
     source.close();
 }
 
+// #3065, STRATA_MMAP_PREFETCH: a plain mapped experts.bin (not staged: no unbuffered tier, no io prefetch) asks the OS
+// for a layer's experts in one batch before the pool reads them - =1 on the calling thread, =2 on a helper thread - and
+// `blob` hands out the same bytes either way.  The variable is read when the source is constructed.  Each pass ends with
+// a request that may still be queued when the source goes away: the destructor stops the helper before the mapping
+// is closed.
+void test_mmap_prefetch() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 3;
+    constexpr int64_t experts = 4;
+    const uint64_t layer_bytes = (uint64_t) experts * BLOB;
+    const uint64_t total = (uint64_t) layers * layer_bytes;
+    TempDirectory dir(fs::current_path());
+    std::string err;
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    std::vector<uint8_t> bytes((size_t) total);
+    uint64_t x = 0x2545F4914F6CDD1Dull;
+    for (uint8_t& b : bytes) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        b = (uint8_t) (x >> 56);
+    }
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary | std::ios::trunc);
+        out.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        require((bool) out, "could not write the synthetic experts.bin");
+    }
+    const int64_t all[experts] = {0, 1, 2, 3};
+    for (const char* mode : {"1", "2"}) {
+        set_env("STRATA_MMAP_PREFETCH", mode);
+        {
+            FileExpertSource source;
+            set_env("STRATA_MMAP_PREFETCH", nullptr);
+            require(source.open(dir.path.string(), layers, experts, err), "could not map the synthetic pack: " + err);
+            for (int round = 0; round < 4; ++round)
+                for (int64_t l = 0; l < layers; ++l) {
+                    source.prefetch(l, all, experts);
+                    for (int64_t e = round % 2; e < experts; e += 2) {
+                        const uint8_t* b = source.blob(l, e);
+                        require(b != nullptr, "a prefetched mapped blob lookup failed");
+                        require(std::memcmp(b, bytes.data() + (size_t) (l * (int64_t) layer_bytes + e * (int64_t) BLOB),
+                                            (size_t) BLOB) == 0,
+                                "a prefetched mapped blob differs from the file");
+                    }
+                }
+            source.prefetch(0, all, experts);   // =2: possibly still queued when the source goes away
+        }
+        std::cout << "mmap prefetch (STRATA_MMAP_PREFETCH=" << mode << "): bytes PASS\n";
+    }
+}
+
 void test_rotating_source(bool rotate, bool pin) {
     using namespace strata::core;
     using namespace strata::kernels::cpu;
@@ -998,6 +1048,7 @@ int main(int argc, char** argv) {
         test_canonical_layout();
         test_unbuffered_reads();
         test_io_prefetch();
+        test_mmap_prefetch();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();
 #endif
