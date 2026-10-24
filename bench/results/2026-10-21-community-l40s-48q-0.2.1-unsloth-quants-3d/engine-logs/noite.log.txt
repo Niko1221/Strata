@@ -1,0 +1,3 @@
+2026-10-20 19:00:11 [noite] esperando o final.sh (PID 17654) terminar
+2026-10-20 20:57:11 [noite] final.sh terminou; parando a producao para a bateria 0.2.1
+2026-10-21 05:28:37 [noite] pipeline 0.2.1 terminou (rc 0)

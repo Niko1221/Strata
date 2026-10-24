@@ -1,0 +1,38 @@
+[
+ {
+  "alvo": "8k",
+  "prompt_tokens": 6918,
+  "saida": 512,
+  "total_s": 14.1,
+  "prompt_tok_s": 972,
+  "decode_tok_s": 73.5,
+  "hit_rate": 0.824,
+  "pcie_share": 0.004,
+  "reaproveitado": 0,
+  "drafts": "282/455"
+ },
+ {
+  "alvo": "32k",
+  "prompt_tokens": 32801,
+  "saida": 512,
+  "total_s": 26.6,
+  "prompt_tok_s": 1712,
+  "decode_tok_s": 69.6,
+  "hit_rate": 0.847,
+  "pcie_share": 0.003,
+  "reaproveitado": 0,
+  "drafts": "270/503"
+ },
+ {
+  "alvo": "128k",
+  "prompt_tokens": 125538,
+  "saida": 512,
+  "total_s": 85.2,
+  "prompt_tok_s": 1616,
+  "decode_tok_s": 69.7,
+  "hit_rate": 0.842,
+  "pcie_share": 0.003,
+  "reaproveitado": 0,
+  "drafts": "268/466"
+ }
+]

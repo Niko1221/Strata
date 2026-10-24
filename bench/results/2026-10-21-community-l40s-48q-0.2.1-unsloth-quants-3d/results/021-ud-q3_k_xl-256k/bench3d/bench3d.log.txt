@@ -1,0 +1,27 @@
+PASSOU cubo_chao            13.4s tam (2.000, 2.000, 2.000) min.z 0.000 centro (0.000, 0.000, 1.000) 
+PASSOU esferas_fila         17.7s centros (-2.000, 0.000, 0.500) (0.000, 0.000, 0.500) (2.000, 0.000, 0.500) 
+PASSOU pilha_girada         13.0s z/rot 0.00/0.0 1.00/15.0 2.00/30.0 
+PASSOU anel_cilindros       11.1s forma/raio ok 8/8; passos [45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0, 45.0] 
+PASSOU mesa                 51.6s tampo (2.000, 1.000, 0.050) topo 0.750; pernas ok 4/4; cantos 4 
+PASSOU esfera_sobre_cubo    10.5s cubo (-1.000, -1.000, 0.000)..(1.000, 1.000, 2.000) esfera min.z 2.000 
+PASSOU grade                40.2s 12/12 posicoes certas 
+PASSOU cilindro_deitado      6.0s tam (4.000, 0.500, 0.500) centro (0.000, 0.000, 0.000) 
+PASSOU escada               36.4s degraus certos 10/10 
+PASSOU sala                 38.8s piso (4.000, 5.000, 0.100); paredes X 2 Y 2 
+PASSOU camera_mira           9.0s camera em (10.000, -10.000, 8.000), desvio 0.00 graus 
+PASSOU luzes                12.3s sol 3.0 desvio 0.0; area (0.000, 0.000, 4.000) 500.0W (2.0, 2.0) 
+PASSOU material_bola        50.7s cor (1.000, 0.000, 0.000) metal 1.00 rug 0.20 
+PASSOU hierarquia           55.1s pai Pivo; satelite em (0.000, 2.000, 1.000) 
+PASSOU array                19.5s count 5 rel (1.5, 0.0, 0.0) comprimento 7.000 
+PASSOU espelho              15.5s x original 0.500..1.500; avaliado -1.500..1.500 
+PASSOU boolean_furo         54.3s tam (2.000, 2.000, 2.000); raio no centro acerta: False; ao lado: z=1.000 
+PASSOU animacao             27.2s quadros 1-50; 1 (0.000, 0.000, 0.000) 25 (2.423, 0.000, 0.000) 50 (5.000, 0.000, 
+falhou colecao              53.9s      exec(compile(codigo, "script_do_modelo.py", "exec"), {"__name__": "__main__"
+PASSOU escala_aplicada      35.4s escala (1.000, 1.000, 1.000) tam (3.000, 2.000, 1.000) min.z 0.000 
+PASSOU carro                54.0s rodas certas 4/4; tamanhos ['(0.600, 0.200, 0.600)', '(0.600, 0.200, 0.600)', '( 
+PASSOU cone_x               51.5s x 0.000..2.000 tam (2.000, 1.000, 1.000) ponta (2.000, 0.000, 0.000) 
+PASSOU render                7.8s CYCLES 64 1920x1080 100% PNG 
+PASSOU cadeiras             32.2s mesa (1.600, 0.900, 0.750); cadeiras y -0.650 e 0.650 
+PASSOU texto                16.3s 'Olá 3D' extrude 0.10000000149011612 align CENTER 
+PASSOU subdiv               11.0s subsurf [(2, 2)] suave True faces 512 
+3D 021-ud-q3_k_xl-256k: 25/26 {'medidas': [5, 5], 'relacoes': [8, 8], 'camera_luz': [2, 2], 'material_cena': [4, 5], 'hierarquia_mod': [5, 5], 'animacao': [1, 1]}

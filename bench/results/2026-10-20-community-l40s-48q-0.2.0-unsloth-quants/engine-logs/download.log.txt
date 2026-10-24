@@ -1,0 +1,24 @@
+2026-10-19 14:40:18 inicio
+2026-10-19 14:40:18 baixando UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf (tentativa 1)
+2026-10-19 14:40:20 OK UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
+2026-10-19 14:40:20 baixando UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00002-of-00003.gguf (tentativa 1)
+2026-10-19 15:20:34 OK UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00002-of-00003.gguf
+2026-10-19 15:20:34 baixando UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00003-of-00003.gguf (tentativa 1)
+2026-10-19 15:43:30 OK UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00003-of-00003.gguf
+2026-10-19 15:43:30 baixando UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf (tentativa 1)
+2026-10-19 15:43:34 OK UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00001-of-00003.gguf
+2026-10-19 15:43:34 baixando UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf (tentativa 1)
+2026-10-19 16:23:11 OK UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00002-of-00003.gguf
+2026-10-19 16:23:11 baixando UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf (tentativa 1)
+2026-10-19 16:54:10 OK UD-Q3_K_XL/Qwen3.8-Flash-Next-UD-Q3_K_XL-00003-of-00003.gguf
+2026-10-19 16:54:10 baixando UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf (tentativa 1)
+2026-10-19 16:54:13 OK UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00001-of-00006.gguf
+2026-10-19 16:54:16 OK (hardlink do UD-Q6_K_XL) UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00002-of-00006.gguf
+2026-10-19 16:57:52 OK (hardlink do UD-Q6_K_XL) UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00003-of-00006.gguf
+2026-10-19 17:01:08 baixando UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00004-of-00006.gguf (tentativa 1)
+2026-10-19 17:37:16 OK UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00004-of-00006.gguf
+2026-10-19 17:40:31 baixando UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00005-of-00006.gguf (tentativa 1)
+2026-10-19 18:11:00 OK UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00005-of-00006.gguf
+2026-10-19 18:11:59 baixando UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00006-of-00006.gguf (tentativa 1)
+2026-10-19 18:14:01 OK UD-Q5_K_XL/Qwen3.8-Flash-Next-UD-Q5_K_XL-00006-of-00006.gguf
+2026-10-19 18:14:01 FIM: 12 de 12 arquivos conferidos; livre em /dados: 1,6T

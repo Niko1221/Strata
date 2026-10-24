@@ -1,0 +1,275 @@
+{
+  "results": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "name": "bbh_cot_zeroshot_geometric_shapes",
+      "alias": "bbh_cot_zeroshot_geometric_shapes",
+      "sample_len": 250,
+      "exact_match,flexible-extract": 0.8,
+      "exact_match_stderr,flexible-extract": 0.025348970020979078,
+      "exact_match,strict-match": 0.0,
+      "exact_match_stderr,strict-match": 0.0
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "name": "bbh_cot_zeroshot_navigate",
+      "alias": "bbh_cot_zeroshot_navigate",
+      "sample_len": 250,
+      "exact_match,flexible-extract": 1.0,
+      "exact_match_stderr,flexible-extract": 0.0,
+      "exact_match,strict-match": 0.0,
+      "exact_match_stderr,strict-match": 0.0
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "task": "bbh_cot_zeroshot_geometric_shapes",
+      "dataset_path": "SaylorTwift/bbh",
+      "dataset_name": "geometric_shapes",
+      "test_split": "test",
+      "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+      "doc_to_target": "{{target}}",
+      "unsafe_code": false,
+      "description": "Name geometric shapes from their SVG paths.\n\n",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+        "doc_to_choice": null,
+        "doc_to_target": "{{target}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "regexes_to_ignore": [
+            "\\.$",
+            ",",
+            "\\\\",
+            "\n",
+            "\""
+          ]
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>",
+          "Q:",
+          "<|im_end|>"
+        ],
+        "do_sample": false,
+        "temperature": 0.0,
+        "max_gen_toks": 4096
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "flexible-extract",
+          "filter": [
+            {
+              "function": "<class 'lm_eval.tasks.bbh.cot_zeroshot.utils.MultiChoiceRegexFilter'>",
+              "group_select": -1,
+              "ignore_case": true,
+              "ignore_punctuation": true,
+              "regex_pattern": "(\\([A-Z]\\))"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        },
+        {
+          "name": "strict-match",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "((?<=The answer is )(.*)(?=.)|(?<=the answer is )(.*)(?=.)|(?<=The answer: )(.*)(?=.)|(?<=The final answer: )(.*)(?=.))"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.0,
+        "model": "t",
+        "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "<data>/testes-q6-q8/venv-eval/lib/python3.10/site-packages/lm_eval/tasks/bbh/cot_zeroshot/geometric_shapes.yaml"
+      }
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "task": "bbh_cot_zeroshot_navigate",
+      "dataset_path": "SaylorTwift/bbh",
+      "dataset_name": "navigate",
+      "test_split": "test",
+      "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+      "doc_to_target": "{{target}}",
+      "unsafe_code": false,
+      "description": "Given a series of navigation instructions, determine whether one would end up back at the starting point.\n\n",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "Q: {{input}}\nA: Let's think step by step.",
+        "doc_to_choice": null,
+        "doc_to_target": "{{target}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true,
+          "ignore_case": true,
+          "regexes_to_ignore": [
+            "\\.$",
+            ",",
+            "\\\\",
+            "\n",
+            "\""
+          ]
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "</s>",
+          "Q:",
+          "<|im_end|>"
+        ],
+        "do_sample": false,
+        "temperature": 0.0,
+        "max_gen_toks": 4096
+      },
+      "repeats": 1,
+      "filter_list": [
+        {
+          "name": "flexible-extract",
+          "filter": [
+            {
+              "function": "regex",
+              "group_select": -1,
+              "regex_pattern": "\\b(Yes|No|yes|no)\\b"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        },
+        {
+          "name": "strict-match",
+          "filter": [
+            {
+              "function": "regex",
+              "regex_pattern": "((?<=The answer is )(.*)(?=.)|(?<=the answer is )(.*)(?=.)|(?<=The answer: )(.*)(?=.)|(?<=The final answer: )(.*)(?=.))"
+            },
+            {
+              "function": "take_first"
+            }
+          ]
+        }
+      ],
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 3.0,
+        "model": "t",
+        "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+        "num_concurrent": 1,
+        "max_retries": 3,
+        "tokenized_requests": false,
+        "config_source": "<data>/testes-q6-q8/venv-eval/lib/python3.10/site-packages/lm_eval/tasks/bbh/cot_zeroshot/navigate.yaml"
+      }
+    }
+  },
+  "versions": {
+    "bbh_cot_zeroshot_geometric_shapes": 3.0,
+    "bbh_cot_zeroshot_navigate": 3.0
+  },
+  "n-shot": {
+    "bbh_cot_zeroshot_geometric_shapes": 0,
+    "bbh_cot_zeroshot_navigate": 0
+  },
+  "higher_is_better": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "exact_match": true
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "exact_match": true
+    }
+  },
+  "n-samples": {
+    "bbh_cot_zeroshot_geometric_shapes": {
+      "original": 250,
+      "effective": 250
+    },
+    "bbh_cot_zeroshot_navigate": {
+      "original": 250,
+      "effective": 250
+    }
+  },
+  "config": {
+    "model": "local-chat-completions",
+    "model_args": {
+      "model": "t",
+      "base_url": "http://127.0.0.1:8090/v1/chat/completions",
+      "num_concurrent": 1,
+      "max_retries": 3,
+      "tokenized_requests": false
+    },
+    "batch_size": 1,
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": 250.0,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {
+      "max_gen_toks": 4096
+    },
+    "random_seed": 1234,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": null,
+  "date": 1792485842.803828,
+  "pretty_env_info": "N/A (torch not installed)",
+  "transformers_version": "5.19.0",
+  "lm_eval_version": "0.4.13",
+  "upper_git_hash": null,
+  "task_hashes": {
+    "bbh_cot_zeroshot_geometric_shapes": "beebf741ffeb2e89cce4d5a56b64980acaebdd6ed4d7a7af33f864f03862a0e3",
+    "bbh_cot_zeroshot_navigate": "0febe7826163bb5950a84bc93a88b009a23c6dd917d13149839cfd5525886814"
+  },
+  "model_source": "local-chat-completions",
+  "model_name": "t",
+  "model_name_sanitized": "t",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": true,
+  "chat_template": "",
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "4183.635059343651"
+}

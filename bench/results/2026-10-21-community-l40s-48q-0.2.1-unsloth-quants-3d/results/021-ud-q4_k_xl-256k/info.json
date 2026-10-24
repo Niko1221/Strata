@@ -1,0 +1,43 @@
+{
+ "health": {
+  "status": "ok",
+  "max_context": 262144,
+  "model": "qwen3.8-flash-next-teste-021-ud-q4_k_xl-256k",
+  "images": true,
+  "api_key": true,
+  "image_generation": false,
+  "loaded": true,
+  "service": "strata"
+ },
+ "models": {
+  "object": "list",
+  "data": [
+   {
+    "id": "qwen3.8-flash-next-teste-021-ud-q4_k_xl-256k",
+    "object": "model",
+    "status": {
+     "value": "loaded"
+    },
+    "meta": {
+     "n_ctx": 262144
+    },
+    "architecture": {
+     "input_modalities": [
+      "text",
+      "image"
+     ],
+     "output_modalities": [
+      "text"
+     ]
+    }
+   }
+  ]
+ },
+ "log": [
+  "[strata] loading the experts into RAM (tens of GB) and locking part of them for the GPU.",
+  "[strata] experts loaded: 71.73 GiB at 22.54 GiB/s (23 s so far)",
+  "[strata] filling the GPU's expert cache (11204 experts, 32.71 GiB of VRAM) ...",
+  "[strata] thinking budget: 16000 tokens (reasoning_budget_tokens; a request can set its own)",
+  "ready: http://127.0.0.1:8090/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on, API key required)"
+ ]
+}

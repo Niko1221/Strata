@@ -1,0 +1,91 @@
+2026-10-20 20:57:23 [alternar] subindo 021-ud-q2_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-20 20:58:01 [alternar] 021-ud-q2_k_xl-256k pronto em 38 s
+2026-10-20 21:17:03 [alternar] parando o teste (PID 157764)
+2026-10-20 21:17:12 [alternar] GPU depois de parar: 52 MiB
+2026-10-20 21:17:12 [alternar] teste parado
+2026-10-20 21:17:12 [alternar] subindo 021-ud-q2_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-20 21:17:35 [alternar] 021-ud-q2_k_xl-256k pronto em 23 s
+2026-10-20 21:55:48 [alternar] parando o teste (PID 184537)
+2026-10-20 21:55:57 [alternar] GPU depois de parar: 52 MiB
+2026-10-20 21:55:57 [alternar] teste parado
+2026-10-20 21:55:58 [alternar] subindo 021-ud-q3_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-20 21:56:41 [alternar] 021-ud-q3_k_xl-256k pronto em 43 s
+2026-10-20 22:15:16 [alternar] parando o teste (PID 241109)
+2026-10-20 22:15:25 [alternar] GPU depois de parar: 52 MiB
+2026-10-20 22:15:25 [alternar] teste parado
+2026-10-20 22:15:26 [alternar] subindo 021-ud-q3_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-20 22:15:54 [alternar] 021-ud-q3_k_xl-256k pronto em 28 s
+2026-10-20 23:02:30 [alternar] parando o teste (PID 267126)
+2026-10-20 23:02:39 [alternar] GPU depois de parar: 52 MiB
+2026-10-20 23:02:39 [alternar] teste parado
+2026-10-20 23:02:39 [alternar] subindo 021-ud-q4_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-20 23:03:12 [alternar] 021-ud-q4_k_xl-256k pronto em 33 s
+2026-10-20 23:29:05 [alternar] parando o teste (PID 326971)
+2026-10-20 23:29:15 [alternar] GPU depois de parar: 52 MiB
+2026-10-20 23:29:15 [alternar] teste parado
+2026-10-20 23:29:15 [alternar] subindo 021-ud-q4_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-20 23:29:43 [alternar] 021-ud-q4_k_xl-256k pronto em 28 s
+2026-10-21 00:23:52 [alternar] parando o teste (PID 357476)
+2026-10-21 00:24:02 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 00:24:02 [alternar] teste parado
+2026-10-21 00:24:02 [alternar] subindo 021-ud-q5_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-21 00:25:10 [alternar] 021-ud-q5_k_xl-256k pronto em 68 s
+2026-10-21 00:49:51 [alternar] parando o teste (PID 417978)
+2026-10-21 00:50:02 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 00:50:02 [alternar] teste parado
+2026-10-21 00:50:02 [alternar] subindo 021-ud-q5_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-21 00:50:40 [alternar] 021-ud-q5_k_xl-256k pronto em 38 s
+2026-10-21 01:51:29 [alternar] parando o teste (PID 444041)
+2026-10-21 01:51:40 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 01:51:40 [alternar] teste parado
+2026-10-21 01:51:40 [alternar] subindo 021-ud-q6_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-21 01:52:49 [alternar] 021-ud-q6_k_xl-256k pronto em 69 s
+2026-10-21 02:22:44 [alternar] parando o teste (PID 504515)
+2026-10-21 02:22:55 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 02:22:55 [alternar] teste parado
+2026-10-21 02:22:55 [alternar] subindo 021-ud-q6_k_xl-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-21 02:23:33 [alternar] 021-ud-q6_k_xl-256k pronto em 38 s
+2026-10-21 03:29:31 [alternar] parando o teste (PID 532433)
+2026-10-21 03:29:42 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 03:29:42 [alternar] teste parado
+2026-10-21 03:29:42 [alternar] subindo 021-q8_0-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-21 03:30:25 [alternar] 021-q8_0-256k pronto em 43 s
+2026-10-21 04:03:38 [alternar] parando o teste (PID 592913)
+2026-10-21 04:03:50 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 04:03:50 [alternar] teste parado
+2026-10-21 04:03:50 [alternar] subindo 021-q8_0-256k (<data>/strata-021/control/python/bin/python3)
+2026-10-21 04:04:33 [alternar] 021-q8_0-256k pronto em 43 s
+2026-10-21 05:20:45 [alternar] parando o teste (PID 621388)
+2026-10-21 05:20:57 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:20:57 [alternar] teste parado
+2026-10-21 05:20:57 [alternar] subindo ab020-q4 (<data>/strata-020/control/python/bin/python3)
+2026-10-21 05:21:25 [alternar] ab020-q4 pronto em 28 s
+2026-10-21 05:21:53 [alternar] parando o teste (PID 683636)
+2026-10-21 05:22:03 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:22:03 [alternar] teste parado
+2026-10-21 05:22:03 [alternar] subindo ab021-q4 (<data>/strata-021/control/python/bin/python3)
+2026-10-21 05:22:32 [alternar] ab021-q4 pronto em 29 s
+2026-10-21 05:22:58 [alternar] parando o teste (PID 684128)
+2026-10-21 05:23:08 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:23:08 [alternar] teste parado
+2026-10-21 05:23:08 [alternar] subindo ab020-q4 (<data>/strata-020/control/python/bin/python3)
+2026-10-21 05:23:36 [alternar] ab020-q4 pronto em 28 s
+2026-10-21 05:24:02 [alternar] parando o teste (PID 684622)
+2026-10-21 05:24:12 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:24:12 [alternar] teste parado
+2026-10-21 05:24:12 [alternar] subindo ab021-q4 (<data>/strata-021/control/python/bin/python3)
+2026-10-21 05:24:41 [alternar] ab021-q4 pronto em 29 s
+2026-10-21 05:25:06 [alternar] parando o teste (PID 685111)
+2026-10-21 05:25:16 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:25:16 [alternar] teste parado
+2026-10-21 05:25:16 [alternar] subindo ab020-q4 (<data>/strata-020/control/python/bin/python3)
+2026-10-21 05:25:45 [alternar] ab020-q4 pronto em 29 s
+2026-10-21 05:26:11 [alternar] parando o teste (PID 685591)
+2026-10-21 05:26:21 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:26:21 [alternar] teste parado
+2026-10-21 05:26:21 [alternar] subindo ab021-q4 (<data>/strata-021/control/python/bin/python3)
+2026-10-21 05:26:49 [alternar] ab021-q4 pronto em 28 s
+2026-10-21 05:27:15 [alternar] parando o teste (PID 686085)
+2026-10-21 05:27:25 [alternar] GPU depois de parar: 52 MiB
+2026-10-21 05:27:25 [alternar] teste parado
+2026-10-21 05:27:46 [alternar] nenhum teste rodando

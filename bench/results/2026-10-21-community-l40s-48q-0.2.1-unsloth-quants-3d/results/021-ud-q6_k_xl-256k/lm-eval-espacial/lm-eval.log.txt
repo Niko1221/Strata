@@ -1,0 +1,34 @@
+2026-10-21:03:01:35 WARNING  [config.evaluate_config:337] --limit SHOULD ONLY BE USED FOR TESTING. REAL METRICS SHOULD NOT BE COMPUTED USING LIMIT.
+2026-10-21:03:01:35 INFO     [config.evaluate_config:357] Using default fewshot_as_multiturn=True.
+2026-10-21:03:01:42 INFO     [_cli.run:392] Selected Tasks: ['minerva_math_geometry']
+2026-10-21:03:01:42 INFO     [evaluator:214] Setting random seed to 1234 | Setting numpy seed to 1234 | Setting torch manual seed to 1234 | Setting fewshot manual seed to 1234
+2026-10-21:03:01:42 WARNING  [evaluator:226] generation_kwargs: {'max_gen_toks': 4096} specified through cli, these settings will update set parameters in yaml tasks. Ensure 'do_sample=True' for non-greedy decoding!
+2026-10-21:03:01:42 INFO     [evaluator:239] Initializing local-chat-completions model, with arguments: {'model': 't', 'base_url': 'http://127.0.0.1:8090/v1/chat/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False}
+2026-10-21:03:01:42 INFO     [models.api_models:176] Using max length 2048 - 1
+2026-10-21:03:01:42 INFO     [models.api_models:179] Concurrent requests are disabled. To enable concurrent requests, set `num_concurrent` > 1.
+2026-10-21:03:01:42 INFO     [models.api_models:197] Using tokenizer None
+2026-10-21:03:01:44 INFO     [evaluator_utils:472] Selected tasks:
+2026-10-21:03:01:44 INFO     [evaluator_utils:506] Task: minerva_math_geometry (minerva_math/minerva_math_geometry.yaml)
+2026-10-21:03:01:44 INFO     [evaluator:314] minerva_math_geometry: Using gen_kwargs: {'until': ['Problem:'], 'do_sample': False, 'temperature': 0.0, 'max_gen_toks': 4096}
+2026-10-21:03:01:44 INFO     [api.task:312] Building contexts for minerva_math_geometry on rank 0...
+
+  0%|          | 0/100 [00:00<?, ?it/s]
+ 14%|█▍        | 14/100 [00:00<00:00, 136.38it/s]
+ 51%|█████     | 51/100 [00:00<00:00, 270.40it/s]
+ 88%|████████▊ | 88/100 [00:00<00:00, 314.45it/s]
+100%|██████████| 100/100 [00:00<00:00, 296.64it/s]
+2026-10-21:03:01:44 INFO     [evaluator:589] Running generate_until requests
+2026-10-21:03:01:44 INFO     [models.api_models:752] Tokenized requests are disabled. Context + generation length is not checked.
+
+
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+2026-10-21:03:29:30 INFO     [loggers.evaluation_tracker:247] Saving results aggregated
+2026-10-21:03:29:30 INFO     [loggers.evaluation_tracker:119] Saving per-task samples to <data>/testes-021/resultados/021-ud-q6_k_xl-256k/lm-eval-espacial/t/*.jsonl
+local-chat-completions ({'model': 't', 'base_url': 'http://127.0.0.1:8090/v1/chat/completions', 'num_concurrent': 1, 'max_retries': 3, 'tokenized_requests': False}), gen_kwargs: ({'max_gen_toks': 4096}), limit: 100.0, num_fewshot: None, batch_size: 1
+|        Tasks        |Version|Filter|n-shot|  Metric   |   |Value|   |Stderr|
+|---------------------|------:|------|-----:|-----------|---|----:|---|-----:|
+|minerva_math_geometry|    3.1|none  |     4|exact_match|↑  | 0.00|±  |0.0000|
+|                     |       |none  |     4|math_verify|↑  | 0.97|±  |0.0171|
+

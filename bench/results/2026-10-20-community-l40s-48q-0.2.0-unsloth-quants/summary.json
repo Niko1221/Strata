@@ -1,0 +1,531 @@
+{
+ "UD-Q2_K_XL": {
+  "tag": "020-ud-q2_k_xl-256k",
+  "start_s": 39,
+  "ram_experts_gib": 42.92,
+  "gpu_cache_experts": 19414,
+  "gpu_cache_gib": 33.91,
+  "vram_ready": "43351 MiB",
+  "decode": {
+   "8k": 125.6,
+   "32k": 122.1,
+   "128k": 110.6
+  },
+  "prompt": {
+   "8k": 1340,
+   "32k": 3194,
+   "128k": 3425
+  },
+  "drafts": {
+   "8k": "267/451",
+   "32k": "268/484",
+   "128k": "250/475"
+  },
+  "bench": {
+   "chat_decode": "138.9",
+   "p4k": "2730.7",
+   "p16k": "3471.9",
+   "agent_decode": "136.5",
+   "agent_cache_hit": "68.5"
+  },
+  "needles": "3/3",
+  "kl": 0.20241717653786648,
+  "kl_median": 0.14567211626084037,
+  "kl_p90": 0.42896018440246275,
+  "top1": "53/60",
+  "kl_domains": 0.40473484140067295,
+  "top1_domains": "115/160",
+  "kl_by_domain": {
+   "python": {
+    "n": 40,
+    "kl_media": 0.34099476392087386,
+    "kl_mediana": 0.13289720962592558
+   },
+   "cpp": {
+    "n": 40,
+    "kl_media": 0.528589720964756,
+    "kl_mediana": 0.32124779832332967
+   },
+   "ingles": {
+    "n": 40,
+    "kl_media": 0.3239122406484628,
+    "kl_mediana": 0.2306165711211848
+   },
+   "portugues": {
+    "n": 40,
+    "kl_media": 0.4254426400685992,
+    "kl_mediana": 0.23942512502566782
+   }
+  },
+  "humaneval_plus": [
+   0.933,
+   0.89
+  ],
+  "gsm8k_4096": 0.98,
+  "gsm8k_256": 0.74,
+  "ifeval_prompt_strict": 0.88,
+  "ifeval_inst_strict": 0.9141104294478528,
+  "math_geometry": 0.95,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 0.996,
+  "vision_detail": null
+ },
+ "UD-Q3_K_XL": {
+  "tag": "020-ud-q3_k_xl-256k",
+  "start_s": 43,
+  "ram_experts_gib": 51.99,
+  "gpu_cache_experts": 15568,
+  "gpu_cache_gib": 32.95,
+  "vram_ready": "43368 MiB",
+  "decode": {
+   "8k": 107.2,
+   "32k": 107.7,
+   "128k": 105.4
+  },
+  "prompt": {
+   "8k": 1435,
+   "32k": 3484,
+   "128k": 3417
+  },
+  "drafts": {
+   "8k": "267/459",
+   "32k": "272/475",
+   "128k": "275/484"
+  },
+  "bench": {
+   "chat_decode": "116.5",
+   "p4k": "2692.3",
+   "p16k": "3464.4",
+   "agent_decode": "128.1",
+   "agent_cache_hit": "68.5"
+  },
+  "needles": "3/3",
+  "kl": 0.10817047248097063,
+  "kl_median": 0.06309589811089703,
+  "kl_p90": 0.3108481983899184,
+  "top1": "54/60",
+  "kl_domains": 0.1579936748496406,
+  "top1_domains": "133/160",
+  "kl_by_domain": {
+   "python": {
+    "n": 40,
+    "kl_media": 0.16336545524129392,
+    "kl_mediana": 0.05404548353260724
+   },
+   "cpp": {
+    "n": 40,
+    "kl_media": 0.19345258075063118,
+    "kl_mediana": 0.13027224098307616
+   },
+   "ingles": {
+    "n": 40,
+    "kl_media": 0.13220206402913495,
+    "kl_mediana": 0.10354849811726258
+   },
+   "portugues": {
+    "n": 40,
+    "kl_media": 0.14295459937750238,
+    "kl_mediana": 0.07096654130221419
+   }
+  },
+  "humaneval_plus": [
+   0.896,
+   0.872
+  ],
+  "gsm8k_4096": 0.99,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": 0.83,
+  "ifeval_inst_strict": 0.8895705521472392,
+  "math_geometry": 0.96,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 1.0,
+  "vision_detail": null
+ },
+ "UD-Q4_K_XL": {
+  "tag": "020-ud-q4_k_xl-256k",
+  "start_s": 118,
+  "ram_experts_gib": 71.73,
+  "gpu_cache_experts": 11203,
+  "gpu_cache_gib": 32.71,
+  "vram_ready": "43377 MiB",
+  "decode": {
+   "8k": 98.0,
+   "32k": 99.4,
+   "128k": 95.6
+  },
+  "prompt": {
+   "8k": 1345,
+   "32k": 2828,
+   "128k": 2739
+  },
+  "drafts": {
+   "8k": "270/460",
+   "32k": "281/485",
+   "128k": "273/468"
+  },
+  "bench": {
+   "chat_decode": "104.4",
+   "p4k": "1723.2",
+   "p16k": "2908.1",
+   "agent_decode": "113.0",
+   "agent_cache_hit": "68.7"
+  },
+  "needles": "3/3",
+  "kl": 0.03695725878929473,
+  "kl_median": 0.012094695531644311,
+  "kl_p90": 0.09565346911460208,
+  "top1": "57/60",
+  "kl_domains": 0.06478737959962197,
+  "top1_domains": "143/160",
+  "kl_by_domain": {
+   "python": {
+    "n": 40,
+    "kl_media": 0.09103888801276627,
+    "kl_mediana": 0.02846028076374505
+   },
+   "cpp": {
+    "n": 40,
+    "kl_media": 0.08346899173800604,
+    "kl_mediana": 0.040630213585933536
+   },
+   "ingles": {
+    "n": 40,
+    "kl_media": 0.03557249931183333,
+    "kl_mediana": 0.02197097899616651
+   },
+   "portugues": {
+    "n": 40,
+    "kl_media": 0.04906913933588222,
+    "kl_mediana": 0.030180446332974988
+   }
+  },
+  "humaneval_plus": [
+   0.939,
+   0.915
+  ],
+  "gsm8k_4096": 0.99,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": 0.84,
+  "ifeval_inst_strict": 0.8895705521472392,
+  "math_geometry": 0.95,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 1.0,
+  "vision_detail": {
+   "texto9px": "0/2",
+   "texto12px": "1/2",
+   "texto16px": "2/2",
+   "texto24px": "2/2",
+   "contar": "2/6",
+   "tabela": "6/6",
+   "cor-posicao": "4/4"
+  }
+ },
+ "UD-Q5_K_XL": {
+  "tag": "020-ud-q5_k_xl-256k",
+  "start_s": 159,
+  "ram_experts_gib": 91.61,
+  "gpu_cache_experts": 8758,
+  "gpu_cache_gib": 32.66,
+  "vram_ready": "43383 MiB",
+  "decode": {
+   "8k": 88.9,
+   "32k": 90.0,
+   "128k": 83.3
+  },
+  "prompt": {
+   "8k": 1166,
+   "32k": 2288,
+   "128k": 2167
+  },
+  "drafts": {
+   "8k": "274/461",
+   "32k": "281/467",
+   "128k": "269/494"
+  },
+  "bench": {
+   "chat_decode": "86.9",
+   "p4k": "1249.2",
+   "p16k": "2288.9",
+   "agent_decode": "98.4",
+   "agent_cache_hit": "68.7"
+  },
+  "needles": "3/3",
+  "kl": 0.023330060470345675,
+  "kl_median": 0.007964043599796956,
+  "kl_p90": 0.06953956981063361,
+  "top1": "55/60",
+  "kl_domains": 0.03424705380120841,
+  "top1_domains": "152/160",
+  "kl_by_domain": {
+   "python": {
+    "n": 40,
+    "kl_media": 0.04283921958906182,
+    "kl_mediana": 0.009063199587889422
+   },
+   "cpp": {
+    "n": 40,
+    "kl_media": 0.03218445645530098,
+    "kl_mediana": 0.01615868866448232
+   },
+   "ingles": {
+    "n": 40,
+    "kl_media": 0.028673601077201294,
+    "kl_mediana": 0.015986384646086767
+   },
+   "portugues": {
+    "n": 40,
+    "kl_media": 0.033290938083269564,
+    "kl_mediana": 0.011280507840977415
+   }
+  },
+  "humaneval_plus": [
+   0.927,
+   0.896
+  ],
+  "gsm8k_4096": 0.98,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": 0.82,
+  "ifeval_inst_strict": 0.8773006134969326,
+  "math_geometry": 0.96,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 1.0,
+  "vision_detail": null
+ },
+ "UD-Q6_K_XL": {
+  "tag": "020-ud-q6_k_xl-256k",
+  "start_s": 148,
+  "ram_experts_gib": 101.75,
+  "gpu_cache_experts": 7878,
+  "gpu_cache_gib": 32.64,
+  "vram_ready": "43397 MiB",
+  "decode": {
+   "8k": 82.1,
+   "32k": 81.5,
+   "128k": 78.0
+  },
+  "prompt": {
+   "8k": 1091,
+   "32k": 2037,
+   "128k": 1928
+  },
+  "drafts": {
+   "8k": "269/456",
+   "32k": "281/488",
+   "128k": "263/471"
+  },
+  "bench": {
+   "chat_decode": "77.9",
+   "p4k": "1086.2",
+   "p16k": "2020.0",
+   "agent_decode": "90.7",
+   "agent_cache_hit": "68.6"
+  },
+  "needles": "3/3",
+  "kl": 0.01464634705718686,
+  "kl_median": 0.00623073752851855,
+  "kl_p90": 0.03284852638236639,
+  "top1": "56/60",
+  "kl_domains": 0.03693500022711742,
+  "top1_domains": "148/160",
+  "kl_by_domain": {
+   "python": {
+    "n": 40,
+    "kl_media": 0.07896410458547774,
+    "kl_mediana": 0.009558489020933376
+   },
+   "cpp": {
+    "n": 40,
+    "kl_media": 0.02883927904294411,
+    "kl_mediana": 0.016873606345102123
+   },
+   "ingles": {
+    "n": 40,
+    "kl_media": 0.015251529295301153,
+    "kl_mediana": 0.016085484350451054
+   },
+   "portugues": {
+    "n": 40,
+    "kl_media": 0.024685087984746647,
+    "kl_mediana": 0.009660705300790138
+   }
+  },
+  "humaneval_plus": [
+   0.921,
+   0.89
+  ],
+  "gsm8k_4096": 0.99,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": 0.86,
+  "ifeval_inst_strict": 0.901840490797546,
+  "math_geometry": 0.96,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 1.0,
+  "vision_detail": null
+ },
+ "Q8_0": {
+  "tag": "020-q8_0-256k",
+  "start_s": 198,
+  "ram_experts_gib": 119.53,
+  "gpu_cache_experts": 6627,
+  "gpu_cache_gib": 32.23,
+  "vram_ready": "43394 MiB",
+  "decode": {
+   "8k": 74.6,
+   "32k": 73.3,
+   "128k": 72.0
+  },
+  "prompt": {
+   "8k": 977,
+   "32k": 1703,
+   "128k": 1613
+  },
+  "drafts": {
+   "8k": "276/454",
+   "32k": "268/463",
+   "128k": "271/456"
+  },
+  "bench": {
+   "chat_decode": "69.9",
+   "p4k": "898.1",
+   "p16k": "1676.6",
+   "agent_decode": "76.3",
+   "agent_cache_hit": "68.5"
+  },
+  "needles": "3/3",
+  "kl": null,
+  "kl_median": null,
+  "kl_p90": null,
+  "top1": null,
+  "kl_domains": null,
+  "top1_domains": null,
+  "kl_by_domain": null,
+  "humaneval_plus": [
+   0.927,
+   0.89
+  ],
+  "gsm8k_4096": 0.99,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": 0.86,
+  "ifeval_inst_strict": 0.901840490797546,
+  "math_geometry": 0.97,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 1.0,
+  "vision_detail": {
+   "texto9px": "0/2",
+   "texto12px": "1/2",
+   "texto16px": "2/2",
+   "texto24px": "2/2",
+   "contar": "2/6",
+   "tabela": "6/6",
+   "cor-posicao": "4/4"
+  }
+ },
+ "Q8_0 on 0.1.45 (reference)": {
+  "tag": "ref0145-q8_0-256k",
+  "start_s": 78,
+  "ram_experts_gib": 119.53,
+  "gpu_cache_experts": 6629,
+  "gpu_cache_gib": 32.24,
+  "vram_ready": "43396 MiB",
+  "decode": {
+   "8k": 73.5,
+   "32k": 69.6,
+   "128k": 69.7
+  },
+  "prompt": {
+   "8k": 972,
+   "32k": 1712,
+   "128k": 1616
+  },
+  "drafts": {
+   "8k": "282/455",
+   "32k": "270/503",
+   "128k": "268/466"
+  },
+  "bench": {
+   "chat_decode": "66.5",
+   "p4k": "902.2",
+   "p16k": "1682.0",
+   "agent_decode": "75.5",
+   "agent_cache_hit": "68.7"
+  },
+  "needles": null,
+  "kl": null,
+  "kl_median": null,
+  "kl_p90": null,
+  "top1": null,
+  "kl_domains": null,
+  "top1_domains": null,
+  "kl_by_domain": null,
+  "humaneval_plus": [
+   0.933,
+   0.902
+  ],
+  "gsm8k_4096": 0.99,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": 0.85,
+  "ifeval_inst_strict": 0.8957055214723927,
+  "math_geometry": 0.95,
+  "bbh_geometric_shapes": 0.8,
+  "bbh_navigate": 0.992,
+  "vision_detail": {
+   "texto9px": "0/2",
+   "texto12px": "1/2",
+   "texto16px": "2/2",
+   "texto24px": "2/2",
+   "contar": "3/6",
+   "tabela": "6/6",
+   "cor-posicao": "4/4"
+  }
+ },
+ "UD-Q4_K_XL, tail skip at the engine default": {
+  "tag": "020-ud-q4_k_xl-256k-tailskip7",
+  "start_s": 53,
+  "ram_experts_gib": 71.73,
+  "gpu_cache_experts": 11203,
+  "gpu_cache_gib": 32.71,
+  "vram_ready": null,
+  "decode": {
+   "8k": 96.8,
+   "32k": 102.7,
+   "128k": 95.5
+  },
+  "prompt": {
+   "8k": 1275,
+   "32k": 2778,
+   "128k": 2726
+  },
+  "drafts": {
+   "8k": "272/462",
+   "32k": "281/489",
+   "128k": "270/470"
+  },
+  "bench": {
+   "chat_decode": "104.2",
+   "p4k": "1729.0",
+   "p16k": "3052.5",
+   "agent_decode": "111.8",
+   "agent_cache_hit": "68.8"
+  },
+  "needles": null,
+  "kl": null,
+  "kl_median": null,
+  "kl_p90": null,
+  "top1": null,
+  "kl_domains": null,
+  "top1_domains": null,
+  "kl_by_domain": null,
+  "humaneval_plus": [
+   0.939,
+   0.902
+  ],
+  "gsm8k_4096": 0.99,
+  "gsm8k_256": null,
+  "ifeval_prompt_strict": null,
+  "ifeval_inst_strict": null,
+  "math_geometry": null,
+  "bbh_geometric_shapes": null,
+  "bbh_navigate": null,
+  "vision_detail": null
+ }
+}
