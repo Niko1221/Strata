@@ -73,6 +73,15 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
+  Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
+  `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
+  +5% on prompt reading; `--batch` gives no aggregate gain, 2400 → 3600 MT/s RAM is +2%, `--kv-resident` neutral.
+- [2026-10-25: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM](../bench/results/2026-10-25-community-2x-mi50-iq4xs/README.md):
+  Strata 0.2.1 (engine 0.1.46) gfx906 source build, IQ3_S at 131,072 tokens and UD-IQ4_XS at 262,144;
+  decode 73.7 / 57.5 tok/s and prompt 691 / 533 tok/s at a 31K prompt, 140,908-token prompt read at 546 tok/s
+  with the needle found; expert cache 12,245 / 9,876 slots at 98-99.7% / 90-94% hit; quality 17/17 on both.
+  RAM runs at JEDEC 2400 (DOCP 3200 and 3600 hung the machine under load); the IQ4_XS pack needs --compat-bf16.
 
 ## Run the standard benchmark
 
@@ -120,15 +129,6 @@ Close other programs first: a browser or a game changes the numbers.
 
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
 
-- [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
-  Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
-  `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
-  +5% on prompt reading; `--batch` gives no aggregate gain, 2400 → 3600 MT/s RAM is +2%, `--kv-resident` neutral.
-- [2026-10-25: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM](../bench/results/2026-10-25-community-2x-mi50-iq4xs/README.md):
-  Strata 0.2.1 (engine 0.1.46) gfx906 source build, IQ3_S at 131,072 tokens and UD-IQ4_XS at 262,144;
-  decode 73.7 / 57.5 tok/s and prompt 691 / 533 tok/s at a 31K prompt, 140,908-token prompt read at 546 tok/s
-  with the needle found; expert cache 12,245 / 9,876 slots at 98-99.7% / 90-94% hit; quality 17/17 on both.
-  RAM runs at JEDEC 2400 (DOCP 3200 and 3600 hung the machine under load); the IQ4_XS pack needs --compat-bf16.
 - `README.md` in the format below, with the GPU, VRAM, CPU, RAM, OS, driver, Strata and engine versions, model and
   quantization, context and your settings filled in from the machine and the server
 - `results.json` with every request (tokens, timings, errors) and the machine facts
