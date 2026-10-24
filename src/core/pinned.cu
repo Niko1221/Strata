@@ -354,6 +354,7 @@ int arena_pin_cap_gib() {
     if (e == nullptr || *e == '\0') return -1;
     if (std::string(e) == "none") return -1;   // 153-igpu: handled by arena_no_register(); no cap otherwise
     if (std::string(e) == "auto") return -2;   // #243: the Windows shared-memory budget sets the sliced pin's cap
+    if (std::string(e) == "none") return -3;   // nothing pinned (`0` stays the whole arena, as documented)
     const int v = std::atoi(e);
     return v < 0 ? -1 : v;
 }
@@ -441,6 +442,10 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         if (cap == 0 && env_gib > 0) {
             cap = (uint64_t) env_gib << 30;
             cap_why = "by STRATA_ARENA_PIN_GIB";
+        }
+        if (env_gib == -3 && cap <= 1) {   // STRATA_ARENA_PIN_GIB=none: no slice fits one byte
+            cap = 1;
+            cap_why = "by STRATA_ARENA_PIN_GIB=none (nothing pinned)";
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
         const cudaError_t e = capped ? cudaSuccess :
