@@ -7,6 +7,39 @@
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a></p>
 
+> **Personal fork (c-OOL-io/Strata-WebSearch).** This fork adds **web search and full page reading to the built-in Chat and the serve frontend**: the lean terminal web app, where upstream has no search (upstream's search lives in the App). It is built the way Strata's Chat itself is built: **completely off by default** (until you turn it on, nothing search-related leaves the PC), **no added tokens** for chats that don't enable it, and search text budget-capped to a small slice of the model's context window (defaults scale with `max_context`, so small-context instances stay safe).
+>
+> - **Engines:** DuckDuckGo by default (no key), SearXNG (your own self-hosted instance), Brave, Tavily, Serper (Google), Exa and Perplexity with your own keys. Keys stay in the browser; nothing search-related is stored on the server.
+> - **Query optimizer:** conversational wording is rewritten into a clean search query by one fast call to your own local model, kept in the language you wrote in. If it fails, the raw message is searched instead. Whenever what was searched differs from what you typed, the Sources line shows it.
+> - **Read result pages:** the top result pages are fetched and injected as extracted text (nav/footer/scripts stripped, `main`/`article` preferred), with Direct / Jina-fallback / Jina-for-all reader modes and an explicit warning whenever a third party could see your URLs.
+> - **Auditable answers:** every reply gets a `Sources` line (engine, exact query, clickable links, `read` badges) that rides along into the Markdown export, and a failed search leaves a named per-cause warning (missing key, unreachable engine, bot check) instead of failing silently.
+> - **Hardened:** `/search` sits behind the app's own-page guard (foreign origins rejected), http(s)-only URL checks so page reading can never become a local file reader, injected web text is framed as untrusted, and the backend (`serve/websearch.py`) is stdlib-only, no new dependencies, Windows/Linux/macOS.
+>
+> Two things to know before you download anything:
+>
+> 1. **The download links below are the vanilla upstream app** from Niko1221/Strata. The prebuilt binaries do **not**
+>    contain this fork's search. To run the search-enabled version, use this repo's source: `git clone`, branch
+>    `web-search`, then START-HERE.bat / setup.sh.
+> 2. **This fork is also for the resource-light Terminal route**: anyone who only wants the lean serve/CLI on a headless
+>    server (no app, no chat UI) gets it from this same source, with the search built into the serve frontend.
+>
+> **Install via CLI** (this fork, branch `web-search`): clone and set up exactly as you would Strata from source, with
+> the search built in. The fork's own install guide (terminal / from source, and how to update) is in
+> [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md):
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
+> Bench results from an RTX 4080 SUPER / Ryzen 9 7950X3D are included in `bench/`.
+
+<p align="center">
+  <img src="docs/media/web-search-chat.png" width="360" alt="Web search in the Strata chat">
+  <img src="docs/media/web-search-settings.png" width="360" alt="Search settings: engines and API keys">
+</p>
+<p align="center"><sub>Left: an answered chat with the Sources line under the reply (engine used, the exact query that was searched). Web search switches on/off via the globe in the composer.<br>Right: the Settings panel's Web search section: on/off, query optimization, engine picker (DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity), key field, page reading.</sub></p>
+
 <h3 align="center">Run a state-of-the-art model on your own gaming PC</h3>
 
 <p align="center">Support for NVIDIA, AMD, Intel · Windows, Linux, Mac · free and open source</p>

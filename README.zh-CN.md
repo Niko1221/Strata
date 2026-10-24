@@ -7,6 +7,37 @@
 
 <p align="center"><a href="README.md">English</a> · <b>简体中文</b> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a></p>
 
+> **个人分支 (c-OOL-io/Strata-WebSearch)。** 此分支为内置聊天与 serve 前端加入了**网页搜索与完整网页读取**: 轻量的终端 Web 应用, 上游在这里没有搜索功能 (上游的搜索在 App 中)。它按 Strata 聊天本身的方式构建: **默认完全关闭** (开启之前, 任何搜索相关内容都不会离开电脑), 未开启搜索的聊天**不增加任何 token**, 搜索文本被限制在模型上下文窗口的一小部分 (默认值随 `max_context` 缩放, 小上下文实例依然安全)。
+>
+> - **搜索引擎:** 默认 DuckDuckGo (无需密钥), SearXNG (自建实例), Brave, Tavily, Serper (Google), Exa 和 Perplexity 使用你自己的密钥。密钥只留在浏览器; 服务器上不再存储任何搜索相关内容。
+> - **查询优化器:** 口语化的表述由本地模型的一次快速调用改写成干净的搜索查询, 并保持你写作时使用的语言。失败时改搜原始消息。若实际搜索的内容与你输入的不同, Sources 行会显示出来。
+> - **阅读结果页面:** 抓取排名靠前的结果页面并以提取出的正文注入 (去除导航/页脚/脚本, 优先 `main`/`article`), 提供 Direct / Jina 回退 / Jina 全部三档阅读模式, 第三方可看到你的 URL 时会有显式警告。
+> - **可核查的回答:** 每条回答带有 `Sources` 行 (引擎、实际查询、可点击链接、`read` 徽标), 并随 Markdown 导出一起保存; 搜索失败会留下具名原因警告 (缺少密钥、引擎不可达、bot 检查), 而不是静默失败。
+> - **安全加固:** `/search` 位于应用自有页面防护之后 (拒绝外部 Origin), 仅 http(s) 的 URL 检查确保网页读取永远不会变成本地文件读取器, 注入的网页文本被标记为不可信, 后端 (`serve/websearch.py`) 仅用标准库, 无新依赖, 支持 Windows/Linux/macOS。
+>
+
+> 下载前需知两点:
+>
+> 1. **下方的下载链接是 Niko1221/Strata 的原版应用。** 预编译二进制**不包含**此分支的搜索功能。带搜索的版本只存在于源码中:`git clone`,分支 `web-search`,然后 START-HERE.bat / setup.sh。
+> 2. **此分支也适合精简的 Terminal 路线**:只需要 headless 服务器上的轻量 serve/CLI (无应用、无聊天界面) 的人,用同一份源码即可,搜索内置于 serve 前端。
+>
+> **通过 CLI 安装**（此分支，`web-search` 分支）：克隆并按 Strata 源码方式安装，搜索已内置。本 Fork
+> 的完整安装指南（终端 / 源码，含更新）见 [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md)：
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # first run: .venv, the engine build, the model; then it serves
+> ```
+>
+> RTX 4080 SUPER / Ryzen 9 7950X3D 的基准测试结果在 `bench/`。
+
+<p align="center">
+  <img src="docs/media/web-search-chat.png" width="360" alt="Strata 聊天中的网页搜索">
+  <img src="docs/media/web-search-settings.png" width="360" alt="设置中的网页搜索:引擎与密钥">
+</p>
+<p align="center"><sub>左：内置聊天的回答与回复下方的 Sources 行（所用引擎与实际检索词），可在输入区用地球图标开关。<br>右：设置中的 Web search 区：开关、查询优化、引擎选择（DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity）、密钥输入、网页读取。</sub></p>
+
+
 <h3 align="center">在你自己的游戏电脑上运行最先进的模型</h3>
 
 <p align="center">支持 NVIDIA、AMD、Intel · Windows、Linux、Mac · 免费开源</p>

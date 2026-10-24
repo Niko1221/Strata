@@ -7,6 +7,38 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <b>Deutsch</b> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a></p>
 
+> **Persönlicher Fork (c-OOL-io/Strata-WebSearch).** Dieser Fork ergänzt den eingebauten Chat und das serve-Frontend um **Websuche und vollständiges Seitenlesen**: die schlanke Terminal-Web-App, bei der Upstream keine Suche hat (Upstreams Suche steckt in der App). Er ist so gebaut wie Stratas Chat selbst: **standardmäßig komplett aus** (bis du sie einschaltest, verlässt nichts Suchbezogenes den PC), **keine zusätzlichen Tokens** für Chats, die sie nicht aktivieren, und Suchtext ist auf einen kleinen Anteil des Kontextfensters des Modells begrenzt (Defaults skalieren mit `max_context`, kleine Kontext-Instanzen bleiben sicher).
+>
+> - **Engines:** standardmäßig DuckDuckGo (ohne Key), SearXNG (eigene selbst gehostete Instanz), Brave, Tavily, Serper (Google), Exa und Perplexity mit eigenen Keys. Keys bleiben im Browser; nichts Suchbezogenes wird auf dem Server gespeichert.
+> - **Query-Optimierer:** umständliche Formulierung wird per einem schnellen Anruf beim eigenen lokalen Modell in eine saubere Suchanfrage umgeschrieben, in der Sprache, in der du geschrieben hast. Schlägt er fehl, wird die Originalnachricht gesucht. Wenn das tatsächlich Gesuchte sich vom Getippten unterscheidet, zeigt es die Sources-Zeile.
+> - **Ergebnisseiten lesen:** die besten Ergebnisseiten werden geholt und als extrahierter Text injiziert (Nav/Footer/Skripte entfernt, `main`/`article` bevorzugt), mit Direct- / Jina-Fallback- / Jina-für-alle-Lesemodus und explizitem Warnhinweis, sobald ein Dritter deine URLs sehen könnte.
+> - **Nachvollziehbare Antworten:** jede Antwort bekommt eine `Sources`-Zeile (Engine, exakte Query, klickbare Links, `read`-Badges), die auch im Markdown-Export mitfährt, und eine fehlgeschlagene Suche hinterlässt eine benannte Ursache-Warnung (fehlender Key, Engine nicht erreichbar, Bot-Check) statt still zu scheitern.
+> - **Abgehärtet:** `/search` sitzt hinter dem Own-Page-Schutz der App (fremde Origins abgelehnt), http(s)-only-URL-Prüfungen, damit Seitenlesen nie ein lokaler Datei-Leser wird, injizierter Webtext wird als nicht vertrauenswürdig markiert, und das Backend (`serve/websearch.py`) ist stdlib-only, keine neuen Abhängigkeiten, Windows/Linux/macOS.
+>
+
+> Zwei Dinge vor dem Download:
+>
+> 1. **Die Download-Links unten sind die Vanilla-Upstream-App** von Niko1221/Strata. Die fertigen Binaries enthalten **nicht** die Suche dieses Forks. Die Version mit Suche gibt es nur aus dem Source: `git clone`, Branch `web-search`, dann START-HERE.bat / setup.sh.
+> 2. **Dieser Fork ist auch für den ressourcenschonenden Terminal-Weg**: wer nur den schlanken serve/CLI auf einem headless Server will (keine App, keine Chat-UI), bekommt ihn aus demselben Source, mit Suche im serve-Frontend.
+>
+> **Installation per CLI** (dieser Fork, Branch `web-search`): klonen und einrichten genau wie Strata aus dem Quellcode,
+> mit eingebauter Suche. Die eigene Installationsanleitung dieses Forks (Terminal / Quellcode, inkl. Update) steht in
+> [docs/INSTALL.FORK.md](docs/INSTALL.FORK.md):
+>
+> ```sh
+> git clone -b web-search https://github.com/c-OOL-io/Strata-WebSearch.git && cd Strata-WebSearch
+> ./setup.sh          # erster Start: .venv, der Engine-Build, das Modell; danach läuft es
+> ```
+>
+> Bench-Ergebnisse von RTX 4080 SUPER / Ryzen 9 7950X3D liegen in `bench/`.
+
+<p align="center">
+  <img src="docs/media/web-search-chat.png" width="360" alt="Websuche im Strata-Chat">
+  <img src="docs/media/web-search-settings.png" width="360" alt="Websuche-Einstellungen mit Engine-Wahl und Keys">
+</p>
+<p align="center"><sub>Links: beantworteter Chat mit Sources-Zeile unter der Antwort (Engine + tatsächlich gesuchte Query), Umschalten per Globe im Composer.<br>Rechts: Settings-Abschnitt Websuche: An/Aus, Query-Optimierung, Engine-Wahl (DuckDuckGo / SearXNG / Brave / Tavily / Serper / Exa / Perplexity), Key-Feld, Page-Reading.</sub></p>
+
+
 <h3 align="center">Ein Spitzenmodell auf deinem eigenen Gaming-PC</h3>
 
 <p align="center">Unterstützt NVIDIA, AMD, Intel · Windows, Linux, Mac · kostenlos und Open Source</p>
