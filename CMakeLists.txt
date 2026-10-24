@@ -144,6 +144,10 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  # RAM pressure on the parked conversations (conversation_pressure.hpp): fake readings, and a real release
+  add_executable(conversation_pressure_test src/core/conversation_pressure_test.cpp)
+  target_include_directories(conversation_pressure_test PRIVATE include)
+  add_test(NAME conversation_pressure_test COMMAND conversation_pressure_test)
 endif()
 
 if(STRATA_HIP_GFX906)
