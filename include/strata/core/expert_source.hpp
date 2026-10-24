@@ -933,6 +933,9 @@ public:
     int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
     /// #286: blobs an unbuffered read could not deliver, read through the mapping instead (0 when all went direct).
     int64_t direct_fallbacks() const { return direct_fallbacks_.load(std::memory_order_relaxed); }
+    /// #1237: refills that had to wait for a copy queued out of the stage buffer (STRATA_STAGE_PIN).  Nonzero says the
+    /// streams ran more than a buffer pool behind; tests/hip/stage_fence.cpp asserts it moves.
+    int64_t stage_fence_waits() const { return (int64_t) stage_fence_waits_.load(std::memory_order_relaxed); }
 
     /// Blobs touched, for the driver to report.  With `h = 0` this is `48 * k` per token and the number is only
     /// interesting once Phase 3 makes it not so.
@@ -1123,10 +1126,19 @@ private:
     int64_t last_layer_ = -1;
     bool stage_grew_ = false;
     bool stage_pin_said_ = false, stage_pin_failed_said_ = false;   ///< the one-time notes in claim_stage
-    // #1237: per stage buffer, the event recorded after the last asynchronous copy out of it (note_async_read); a
-    // buffer is refilled only once that event has completed.  cudaEvent_t, stored untyped (no cuda_runtime.h here).
-    std::vector<void*> stage_ev_;
-    std::vector<char> stage_ev_live_;                 ///< a copy was queued since the buffer was last waited for
+    // #1237: per stage buffer, one fence entry per stream a copy out of it was queued on (note_async_read); the
+    // buffer is refilled only once EVERY such copy has completed.  One entry per stream, not one event per buffer:
+    // the hit path, a peer GPU's refill and the startup's stream-0 refills can all read the same blob, and a single
+    // event would keep only the last one recorded - the refill would then overwrite the buffer under the others.
+    // cudaEvent_t and cudaStream_t are stored untyped (no cuda_runtime.h here).  A full table waits for its oldest
+    // entry and reuses it, so a fence is never dropped.
+    struct StageFence {
+        void* stream = nullptr;
+        void* event = nullptr;
+        bool live = false;          ///< a copy was queued and not yet waited for
+    };
+    static constexpr size_t kStageFences = 4;
+    std::vector<std::array<StageFence, kStageFences>> stage_fence_;
     std::unordered_map<const uint8_t*, size_t> stage_idx_;   ///< buffer address -> index (the buffers never move)
     void stage_free_events();
     std::atomic<uint64_t> stage_fence_waits_{0};      ///< refills that had to wait for a queued copy

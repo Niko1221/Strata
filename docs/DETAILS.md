@@ -2002,7 +2002,10 @@ the pairs in which the switched arm won). They are here so you can try them on y
   measured the same on 2x RTX 3090 (the misses per layer are below one there, so the CPU round trip stays). Left off.
 - **`STRATA_STAGE_PIN`: pinned stage buffers** (Zhong Uncle, #1237; **opt-in, `STRATA_STAGE_PIN=1`**. It was on by default in
   development, but the 0.1.41 release gate found IQ3_S decode corrupted after a 4096-token prompt with it on, likely a stage
-  buffer recycled before its asynchronous copy finished; it stays off until that is fixed). Where the experts are served from the GGUF in
+  buffer recycled before its asynchronous copy finished. The recycle path now records one event per stream a copy out of the
+  buffer was queued on, and waits for all of them before it refills the buffer; `tests/hip/stage_fence.cpp` reproduces that
+  race with two streams: without the fence the slower of the two copies lands the refilled bytes, with it both hold the bytes
+  they were queued for. The default stays off in that change). Where the experts are served from the GGUF in
   place (`--mmap-experts`, or too little RAM for the arena) the buffers the cache fill copies from are page-locked, so the
   copy no longer goes through the driver's bounce buffer (about 0.4-0.6 GiB of pinned RAM, one buffer falls back to
   pageable when the driver refuses). Decode, median tok/s on, off, 6 pairs of whole runs: Tesla P100 with the RAM capped at

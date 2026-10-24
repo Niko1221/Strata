@@ -1586,7 +1586,7 @@ void FileExpertSource::close() {
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
         // the buffers' last copies end before they are freed (#1237)
-        if (!stage_ev_.empty()) (void) cudaDeviceSynchronize();
+        if (!stage_fence_.empty()) (void) cudaDeviceSynchronize();
         stage_free_events();
         stage_buf_.clear();
         stage_key_.clear();
@@ -1787,7 +1787,13 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
 
 // Pinned stage buffers (PR 1237): opt-in (STRATA_STAGE_PIN=1).  On by default they corrupted IQ3_S decode after a 4096-token
 // prompt in the 0.1.41 release gate (48 tokens of id 0; off = identical to 0.1.40.4): with page-locked buffers the cache-fill
-// copy is truly asynchronous, so a recycled stage buffer can be overwritten before its copy finishes.  Off until that is fixed.
+// copy is truly asynchronous, so a recycled stage buffer can be overwritten before its copy finishes.  Off until that is
+// fixed.
+//
+// The recycle path fences what it queued (note_async_read/claim_stage): one event per STREAM a copy left the buffer on,
+// waited for before the buffer is handed out again.  One event per buffer was not enough - the hit path, a peer GPU's
+// refill and the startup's refills can read the same blob, and a single event kept only the last record, so a slower
+// stream's copy ran on into the refill (tests/hip/stage_fence.cpp reproduces that with two streams).
 #define STAGE_PIN_DEFAULT 0
 constexpr uint64_t kStagePinFloor = 3ull << 30;   // RAM left available after a pinned stage buffer
 void FileExpertSource::StageBufFree::operator()(uint8_t* p) const noexcept {
@@ -1819,6 +1825,10 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         return true;
     }
     v = stage_buf_.size();
+    // The victim is the least recently used recyclable buffer, exactly as before #1237's fence: preferring a buffer
+    // no copy is reading (a two-pass choice) was measured on a Radeon AI PRO R9700 in the unbuffered low-RAM mode and
+    // cost 59% more file reads and 20% of decode - the fenced buffer it passed over was the one whose blob came back
+    // soonest.  The refill waits for the queued copies below instead.
     uint64_t oldest = std::numeric_limits<uint64_t>::max();
     for (size_t i = 0; i < stage_buf_.size(); ++i)
         if (!stage_busy_[i] && (stage_epoch_[i] + kStageAge <= epoch_ || stage_used_[i] + kStageSeq <= seq) &&
@@ -1848,8 +1858,7 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
         if (raw == nullptr) return false;
         stage_buf_.emplace_back(raw, StageBufFree{pinned});
         stage_idx_[raw] = stage_buf_.size() - 1;
-        stage_ev_.push_back(nullptr);
-        stage_ev_live_.push_back(0);
+        stage_fence_.emplace_back();
         if (pinned && !stage_pin_said_) {
             stage_pin_said_ = true;
             std::fprintf(stderr, "FileExpertSource: the stage buffers are pinned (cudaHostAlloc)\n");
@@ -1871,18 +1880,18 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool ahea
     } else {
         stage_of_.erase(stage_key_[v]);
         if (stage_pf_[v]) { stage_pf_[v] = 0; io_pf_unused_.fetch_add(1, std::memory_order_relaxed); }   // read ahead, never asked for
-        // #1237: a page-locked buffer is read by the DMA after the copy call returned: it is refilled only once the
-        // last copy queued out of it (note_async_read) has finished.  Rare: the pool is sized so that a buffer asked
-        // for has long been consumed; a wait here means the stream is more than a pool behind.
-        if (v < stage_ev_live_.size() && stage_ev_live_[v]) {
-            stage_ev_live_[v] = 0;
-            if (stage_ev_[v] != nullptr) {
-                if (cudaEventQuery((cudaEvent_t) stage_ev_[v]) == cudaErrorNotReady) {
-                    stage_fence_waits_.fetch_add(1, std::memory_order_relaxed);
-                    (void) cudaEventSynchronize((cudaEvent_t) stage_ev_[v]);
-                }
-                (void) cudaGetLastError();
+        // #1237: a page-locked buffer is read by the DMA after the copy call returned: it is refilled only once
+        // every copy queued out of it (note_async_read) has finished.  Rare: the pool is sized so that a buffer
+        // asked for has long been consumed; a wait here means the streams are more than a pool behind.
+        for (StageFence& f : stage_fence_[v]) {
+            if (!f.live) continue;
+            f.live = false;
+            if (f.event == nullptr) continue;     // every copy on this stream was waited for when it was queued
+            if (cudaEventQuery((cudaEvent_t) f.event) != cudaSuccess) {
+                stage_fence_waits_.fetch_add(1, std::memory_order_relaxed);
+                (void) cudaEventSynchronize((cudaEvent_t) f.event);
             }
+            (void) cudaGetLastError();
         }
     }
     stage_key_[v] = key;
@@ -2034,29 +2043,60 @@ void FileExpertSource::note_async_read(const uint8_t* blob, void* stream) {
     const auto it = stage_idx_.find(blob);
     if (it == stage_idx_.end()) return;                 // not a stage buffer: the mapping or the resident arena
     const size_t v = it->second;
+    if (v >= stage_fence_.size()) return;
     if (!stage_buf_[v].get_deleter().pinned) return;    // pageable: the driver copied it before the call returned
-    if (stage_ev_[v] == nullptr) {
+    std::array<StageFence, kStageFences>& fence = stage_fence_[v];
+    // Every queued copy must be waited for, and each entry names the stream its copy was queued on: a second copy of
+    // the same buffer on ANOTHER stream (a second GPU's refill, the hit path beside a peer fill) would be lost by
+    // overwriting one shared event.  Two copies on the SAME stream need one entry: the stream's own order makes the
+    // later copy the last one to finish.
+    StageFence* slot = nullptr;
+    for (StageFence& f : fence)
+        if (f.live && f.stream == stream) { slot = &f; break; }
+    if (slot == nullptr)
+        for (StageFence& f : fence)
+            if (!f.live) { slot = &f; break; }
+    if (slot == nullptr) {   // every stream of the table holds a queued copy: wait for the first, then reuse it
+        StageFence& f = fence[0];
+        f.live = false;
+        if (f.event != nullptr) {
+            if (cudaEventQuery((cudaEvent_t) f.event) != cudaSuccess) {
+                stage_fence_waits_.fetch_add(1, std::memory_order_relaxed);
+                (void) cudaEventSynchronize((cudaEvent_t) f.event);
+            }
+            (void) cudaGetLastError();
+        }
+        slot = &f;
+    }
+    if (slot->event == nullptr) {
         cudaEvent_t ev = nullptr;
         if (cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) != cudaSuccess) {
             (void) cudaGetLastError();
             (void) cudaStreamSynchronize((cudaStream_t) stream);   // no event: wait for the copy itself
+            slot->stream = stream;
+            slot->live = false;                                    // nothing left to fence
             return;
         }
-        stage_ev_[v] = ev;
+        slot->event = ev;
     }
-    if (cudaEventRecord((cudaEvent_t) stage_ev_[v], (cudaStream_t) stream) != cudaSuccess) {
+    if (cudaEventRecord((cudaEvent_t) slot->event, (cudaStream_t) stream) != cudaSuccess) {
         (void) cudaGetLastError();
         (void) cudaStreamSynchronize((cudaStream_t) stream);
+        slot->stream = stream;
+        slot->live = false;
         return;
     }
-    stage_ev_live_[v] = 1;
+    slot->stream = stream;
+    slot->live = true;
 }
 
+// Drops every fence entry and event.  The caller has synchronised the device first (close, end_startup_unbuffered):
+// an event can only be destroyed - and the buffers it fences freed - once its copy has completed.
 void FileExpertSource::stage_free_events() {
-    for (void*& e : stage_ev_)
-        if (e != nullptr) { (void) cudaEventDestroy((cudaEvent_t) e); e = nullptr; }
-    stage_ev_.clear();
-    stage_ev_live_.clear();
+    for (std::array<StageFence, kStageFences>& fence : stage_fence_)
+        for (StageFence& f : fence)
+            if (f.event != nullptr) { (void) cudaEventDestroy((cudaEvent_t) f.event); f.event = nullptr; }
+    stage_fence_.clear();
     stage_idx_.clear();
 }
 
@@ -2643,8 +2683,10 @@ bool FileExpertSource::end_startup_unbuffered(std::string& why) {
     }
     for (void* d : direct_) close_direct(d);
     direct_.clear();
-    {   // the mapped tier hands out the mapping: the startup's stage buffers go
+    {   // the mapped tier hands out the mapping: the startup's stage buffers go (their queued copies first, #1237)
         std::lock_guard<std::mutex> lk(stage_mu_);
+        if (!stage_fence_.empty()) (void) cudaDeviceSynchronize();
+        stage_free_events();
         stage_buf_.clear();
         stage_key_.clear();
         stage_epoch_.clear();
