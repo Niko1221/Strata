@@ -3,9 +3,14 @@
 Share measurements from your own hardware so other users can judge how Strata
 might run on a similar machine. This guide suggests a report format and a pull
 request workflow; a single model, GPU, or context length is enough to contribute.
-The quickest way is the built-in benchmark: [`BENCH.bat` / `./bench.sh`](#run-the-benchmark) writes a report in this format.
+There are two ways to measure. For results other people can compare with, run the **standard benchmark**: `strata bench run`
+follows the draft protocol in [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md) (fixed prompts, thinking on, the model card's
+sampling, twelve sanity checks, about 2 to 4 minutes after the model has loaded on a fast card, more on a slow one) and writes `results.json` with
+the hardware, versions and every request. For a quick look at your own machine, [`BENCH.bat` / `./bench.sh`](#run-the-benchmark)
+takes 3 to 10 minutes and writes a report in the format below.
 
-A standard benchmark protocol for future submissions exists only as a **draft**: [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md). The tools described on this page do not implement it, and the reports below are not standard results; keep using this guide for now.
+The protocol is still a draft until a pilot has run on two kinds of hardware. The reports listed below were made before
+it existed and are not standard results; they stay valid under this guide.
 
 Existing [benchmark reports](../bench/results/) provide examples. The
 [engine 0.1.26 speed report](../bench/results/2026-09-29-speed-0126/README.md)
@@ -114,6 +119,7 @@ latency are measured by the client. Thinking is off for the suite so the answers
 Close other programs first: a browser or a game changes the numbers.
 
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
+
 - [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
   Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
   `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
