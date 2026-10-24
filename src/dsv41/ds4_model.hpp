@@ -34,6 +34,10 @@ struct Options {
     // the CPU lane's experts read in place from the model's files, the page cache keeping what fits, instead of
     // copied into RAM: 1 on, 0 off, -1 (auto) where the RAM this process can get does not hold them
     int mmap_experts = -1;
+    // the CPU lane's copied experts over the NUMA nodes: 0 the part layout (whole rows of each matrix a node, at
+    // most two of them), -1 bands over every node, N (>= 2) bands over N nodes — every 128-row band of every
+    // matrix placed on node (band + expert) % nodes: one copy, the part layout's RAM, every node serving
+    int numa_experts = 0;
     // the experts the VRAM leaves over are cached in RAM by a store of their own (ds4_store.hpp): whole experts read unbuffered into
     // slots, a replacement policy (0 lru, 1 lfu, 2 lfu then lru), filled on demand and by the lookahead's guesses.  GB of RAM at
     // most (never past the RAM the process can still get less 8 GB); 0: off, the OS page cache as before
