@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <limits>
 
 namespace strata::core {
@@ -164,6 +165,8 @@ namespace strata::core {
 
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
+    static std::atomic<uint64_t> captures{0};
+    c.capture = ++captures;   // new bytes: a new identity (ConversationCheckpoint::capture)
 #if defined(STRATA_GPU_METAL)
     (void) ss; (void) g;
     return strata::metal_engine::window_checkpoint_save(c, error);
@@ -301,7 +304,7 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& ss, const ModelGeometry& g,
                                 const QsaState* draft, std::string& error,
-                                ConversationKvReuse reuse, size_t* reused_bytes) {
+                                ConversationKvReuse reuse, size_t* reused_bytes, ConversationParkSource* source) {
     size_t estimate = 0;
     if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, estimate, error) || !sync(error)) return false;
     // Build into a new object so a failure cannot publish a partial snapshot.
@@ -309,7 +312,9 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints);
+    captured.cvec = view.cvec;
+    captured.checkpoints = source != nullptr ? conversation_detail::park_checkpoints(view.checkpoints, *source)
+                                             : conversation_detail::copy_checkpoints_beating(view.checkpoints);
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
     captured.kv = std::move(reuse.kv);
     const size_t layers = owned_qsa(ss);
