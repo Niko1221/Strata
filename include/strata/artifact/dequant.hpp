@@ -140,6 +140,26 @@ inline void dequantize_iq4_nl(const uint8_t* block, float* out) {
         out[j + 16] = d * (float)kvalues_iq4nl[qs[j] >> 4];
     }
 }
+// ---- MXFP4: 32 elements from a 17-byte block: one E8M0 exponent e, then IQ4_NL's nibble layout over the FP4
+// (E2M1) values doubled to integers, `kvalues_mxfp4` in ggml-common.h at 3cf03257.  The scale is ggml's
+// GGML_E8M0_TO_FP32_HALF(e) = 2^(e - 128), the half undoing the doubling (dequantize_row_mxfp4, ggml-quants.c).
+static const int8_t kvalues_mxfp4[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+
+inline float e8m0_to_fp32_half(uint8_t e) {
+    const uint32_t bits = e < 2 ? 0x00200000u << e : (uint32_t)(e - 1) << 23;   // e < 2: the two subnormals
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+inline void dequantize_mxfp4(const uint8_t* block, float* out) {
+    const float d = e8m0_to_fp32_half(block[0]);
+    const uint8_t* qs = block + 1;
+    for (int j = 0; j < 16; ++j) {
+        out[j] = d * (float)kvalues_mxfp4[qs[j] & 0x0F];
+        out[j + 16] = d * (float)kvalues_mxfp4[qs[j] >> 4];
+    }
+}
 // ---- Q6_K: 256 elements from a 210-byte super-block, transcribed from dequantize_row_q6_K
 // (ggml-quants.c at 3cf03257). Layout: ql[128] low nibbles, qh[64] high 2 bits, scales[16] int8,
 // fp16 d LAST. Processed in two 128-element halves, each advancing ql by 64, qh by 32, sc by 8.
