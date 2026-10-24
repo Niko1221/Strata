@@ -67,6 +67,8 @@ and their limits. Report what you actually measured and label estimates separate
   Strata 0.1.41, Coder IQ1_M and abliterated Q2_0 at 262K; prompt and decode at 4K / 32K / 128K.
 - [2026-10-09: RTX 5060 Ti 16 GB under WSL2, Ryzen 7 3700X, 128 GB RAM](../bench/results/2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141/README.md):
   Strata 0.1.41 source build, IQ3_S with experimental speed projection; single runs only (decode 48.2/47.7 tok/s, prompt 343/598 tok/s at 3.8K/19.2K), no needle test, no TTFT.
+- [2026-10-20: 2x RTX 5060 Ti 16 GB (PCIe gen4 x8/x8), Threadripper 3970X, 128 GB RAM](../bench/results/2026-10-20-community-2x-rtx-5060-ti-qwen3-8-flash-next-iq3-s/README.md):
+  Strata 0.1.46.2 (project 0.2.1) source build, Flash-Next IQ3_S at 262K with KV streaming, `--ple-io ram` and a layer split of 25; suite 1 fresh 4K/16K plus an agent session (decode 83.1 tok/s short, prompt 1230/2034 tok/s at 4K/16K), compared against the same box on engine 0.1.44, and noting the calibration shift on 0.2.x (`--pcie-frac` 0.20 -> 0.00, `--spec-min-p` 0.70 -> 0.50) plus the measured VRAM cost of `parallel: 2` slots on 16 GB cards.
 - [2026-10-09: Radeon Pro VII 16 GB (gfx906), Xeon E5-2666 v3, 125.7 GiB RAM](../bench/results/2026-10-09-community-radeon-pro-vii-16gb/README.md):
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
