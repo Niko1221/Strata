@@ -19,13 +19,16 @@ here=$(cd "$(dirname "$0")/../.." && pwd)                 # the repo
 root=${STRATA_SYCL_ROOT:-$(dirname "$here")}
 repo_in=/work/$(basename "$here")
 name=${STRATA_SYCL_NAME:-strata-sycl-serve}
-docker rm -f "$name" >/dev/null 2>&1 || true              # a container left behind by a killed server
 args=""
 for a in "$@"; do args+=" $(printf '%q' "$a")"; done
 # the port's run-time switches: the device-built verify plan, and no host handshakes in it. NO_HOST is for a card on
 # the xe driver (the host<->GPU flag stores are not visible there); an i915 card (Arc A-series) runs without it
 # (docs/INTEL.md)
-declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STRATA_STAGER_THREADS]=12)
+# STRATA_CACHE_DIR: the engine's measurements that outlive a run (the int8 prompt experts' crossover, measured at
+# the first prompt of each format: ~1.4 s of a B70's first 2K prompt) - under the mounted data root, not in the
+# throwaway container's home
+declare -A setting=([STRATA_VERIFY_DEVICE_PLAN]=1 [STRATA_VERIFY_NO_HOST]=1 [STRATA_STAGER_THREADS]=12
+                    [STRATA_CACHE_DIR]=/work/.strata-cache)
 while IFS= read -r k; do
     case "$k" in
         STRATA_SYCL_*) ;;                                 # this script's own settings
@@ -39,10 +42,26 @@ for k in "${!setting[@]}"; do
 done
 shm=()
 if [ "${STRATA_SYCL_SHM:-1}" != 0 ] && [ -d /dev/shm ]; then shm=(-v /dev/shm:/dev/shm); fi
-exec docker run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
-    --ulimit memlock=-1 \
+run_cmd="cd $repo_in && exec ${STRATA_SYCL_BIN:-build-sycl-aot/strata}$args"
+runner=${STRATA_SYCL_RUNNER:-docker}
+case "$runner" in
+native|distrobox:?*)
+    # no container: the same settings exported in a shell with oneAPI's environment (the image's single-card
+    # selector unless one is set)
+    exports="export ONEAPI_DEVICE_SELECTOR=$(printf '%q' "${ONEAPI_DEVICE_SELECTOR:-level_zero:0}")"
+    for e in "${envs[@]}"; do [ "$e" = -e ] || exports+=" $(printf '%q' "$e")"; done
+    script="set +u; . /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; $exports; $run_cmd"
+    if [ "$runner" = native ]; then exec bash -c "$script"; fi
+    exec distrobox enter "${runner#distrobox:}" -- bash -c "$script" ;;
+docker) ctr=(docker); extra=() ;;
+podman) ctr=(podman); extra=(--security-opt label=disable) ;;
+*) echo "strata-sycl.sh: STRATA_SYCL_RUNNER is docker, podman, native or distrobox:<name>" >&2; exit 2 ;;
+esac
+"${ctr[@]}" rm -f "$name" >/dev/null 2>&1 || true        # a container left behind by a killed server
+exec "${ctr[@]}" run --rm -i --name "$name" --device /dev/dri --oom-score-adj 1000 --stop-timeout 30 --no-healthcheck \
+    --ulimit memlock=-1 "${extra[@]}" \
     -v "$root:/work" \
     "${shm[@]}" \
     "${envs[@]}" \
     "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" \
-    "cd $repo_in && exec ${STRATA_SYCL_BIN:-build-sycl-aot/strata}$args"
+    "$run_cmd"
