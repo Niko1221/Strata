@@ -617,6 +617,19 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
     return true;
 }
 
+bool PleTable::gather_raw_iq4nl(const uint32_t* rows, size_t n_tokens, uint8_t* out) const {
+    std::lock_guard<std::recursive_mutex> lk(impl_->mu);
+    if (impl_->data == nullptr || impl_->fmt->id != PleFormat::IQ4_NL || impl_->rb != PLE_ROW_BYTES) return false;
+    const size_t n = n_tokens * (size_t) PLE_N_HEADS;
+    for (size_t i = 0; i < n; ++i) {
+        uint8_t* o = out + i * PLE_ROW_BYTES;
+        if (rows[i] >= impl_->n_rows) std::memset(o, 0, PLE_ROW_BYTES);
+        else std::memcpy(o, impl_->data + (size_t) rows[i] * PLE_ROW_BYTES, PLE_ROW_BYTES);
+    }
+    impl_->bytes_read += (uint64_t) n * PLE_ROW_BYTES;
+    return true;
+}
+
 void PleTable::set_injected_delay_us(double us) { impl_->reader.set_injected_delay_us(us); }
 
 std::string PleTable::io_report() const {
