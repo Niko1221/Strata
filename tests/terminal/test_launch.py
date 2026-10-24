@@ -1231,7 +1231,19 @@ class ConnectCommand(unittest.TestCase):
     def test_context_flag_reaches_the_config(self):
         code, out, _ = run_cli(["connect", "pi", "--url", "http://127.0.0.1:8080", "--context", "64k", "--show-key"])
         self.assertIn('"contextWindow": 65536', out)
-        self.assertIn('"reserveTokens": 50536', out)
+        self.assertIn('"reserveTokens": 33394', out)             # 65536 - 32142: the tested 52.3% share, not a flat 15K
+
+    def test_the_compaction_point_scales_with_the_window(self):
+        """A wider server must not be summarised every 15,000 tokens: the share the tested 32K configs used carries over."""
+        wide = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 262144)
+        self.assertEqual(harness.compact_at(wide), 135000)                     # 52.3% of the 258048 input limit
+        cfg = json.loads(self.render("opencode", context=262144)["files"][0]["text"])
+        self.assertEqual(wide.input_limit - cfg["compaction"]["buffer"], 135000)
+        self.assertIn("model_auto_compact_token_limit = 135000", self.render("codex", context=262144)["files"][0]["text"])
+        self.assertIn("thresholdTokens: 135000", self.render("omp", context=262144)["files"][1]["text"])
+        # the window every config was tested on keeps exactly the value it was tested at
+        tested = harness.target("http://127.0.0.1:18900", None, "qwen3.8-flash-next-q2_0", 32768)
+        self.assertEqual(harness.compact_at(tested), 15000)
 
 
 class GpuRolesFlag(unittest.TestCase):
