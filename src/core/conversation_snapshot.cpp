@@ -9,6 +9,14 @@
 #include <limits>
 #include <memory>
 
+#if defined(STRATA_GPU_METAL)
+namespace strata::metal_engine {   // metal/src/engine/window.cpp: the decode window holds the conversation's K/V
+int window_kv_format();
+bool window_kv_layer(const strata::core::QsaState* st, bool index, int64_t upto, void* ptr[5], size_t bytes[5],
+                     std::string& err);
+}  // namespace strata::metal_engine
+#endif
+
 namespace strata::core {
 namespace {
 struct Layout {
@@ -27,6 +35,18 @@ bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
 }
 
 bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index, Layout& l, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    // On Metal the session's QSA states hold no K/V (layer.cpp kv_plan): a snapshot's K/V layer is the decode window's, cells
+    // [0, upto) of the solo conversation's QSA layer (`index`) or of the MTP draft layer, in the window's own layout
+    // (its format key; no pages: cells = tokens).  Any other state is refused.
+    void* ptr[5] = {};
+    size_t n[5] = {};
+    if (!strata::metal_engine::window_kv_layer(&st, index, upto, ptr, n, error)) return false;
+    if (g.idx_key_dim <= 0) { error = "conversation snapshot: invalid K/V geometry"; return false; }
+    l = {strata::metal_engine::window_kv_format(), upto, (int64_t) (n[4] / ((size_t) g.idx_key_dim * sizeof(float))), 1,
+         n[0], n[2], n[4], n[1], n[3]};
+    return true;
+#endif
     if (!valid_extent(st, upto, error)) return false;
     if (st.kv_hybrid && (st.kv_mode == 2 || st.kv_q4 || st.kv_int8)) {   // a streamed one reads its host copy
         error = "conversation snapshot: hybrid K8V4 cannot be a ring and needs distinct format flags";
@@ -73,6 +93,17 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
 }
 
 std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
+#if defined(STRATA_GPU_METAL)
+    // the window's buffers (layout() refused any state that is not the window's): a solo session QSA state, else the
+    // draft layer
+    (void) resident;
+    void* p[5] = {};
+    size_t n[5] = {};
+    std::string e;
+    if (!strata::metal_engine::window_kv_layer(&st, true, 0, p, n, e))
+        strata::metal_engine::window_kv_layer(&st, false, 0, p, n, e);
+    return {p[0], p[1], p[2], p[3], p[4]};
+#endif
     const bool host = st.kv_mode != 0 && !resident;
     if (st.kv_hybrid)
         return {host ? st.host.k_q : st.k_q, host ? st.host.v_q4 : st.v_q4, host ? st.host.k_scale : st.k_scale,
@@ -86,6 +117,10 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
 }
 
 bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    (void) st; (void) l; (void) upto; (void) error;
+    return true;   // the window's K/V: no pages, no streaming, no ring (layout() checked the extent)
+#endif
     if (upto < 0 || upto > st.max_cells || st.n_pages < 0 || l.cells / l.page_size > st.n_pages ||
         st.kv_mode < 0 || st.kv_mode > 2 || st.n_slots <= 0 ||
         (st.kv_mode == 0 && st.n_slots < st.n_pages) ||
@@ -113,6 +148,10 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
 bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (!n) return true;
     if (!src || !dst) { error = "conversation snapshot: missing state buffer"; return false; }
+#if defined(STRATA_GPU_METAL)
+    std::memcpy(dst, src, n);   // unified memory: the window's buffers are host-visible, and the window is idle here
+    return true;
+#endif
     // Default handles both device allocations and device-mapped host pool aliases.
     const cudaError_t e = conversation_detail::copy_nonblocking(dst, src, n);
     if (e == cudaSuccess) return true;
