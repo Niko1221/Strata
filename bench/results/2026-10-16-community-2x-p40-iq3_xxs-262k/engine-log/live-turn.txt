@@ -1,0 +1,2 @@
+# engine log, 2026-10-16 session started 19:00:00 UTC (v0.1.44.1 held config); the one request line for README section 6
+strata serve: prompt 13083 tokens = 0 reused + 13083 read in 25780 ms (507.5 tok/s), 13327 generated in 342471 ms (38.9 tok/s), drafts accepted 6694 of 10075, 1 checkpoints

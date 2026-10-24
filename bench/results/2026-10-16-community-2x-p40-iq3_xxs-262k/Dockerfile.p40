@@ -1,0 +1,115 @@
+# syntax=docker/dockerfile:1
+#
+# flash-next-strata — Strata engine for Qwen3.8-Flash-Next on 2x Tesla P40 (Pascal, sm_61).
+# Derived 2026-10-10 from strata/Dockerfile at tag v0.1.40.3 (d5ea713); every difference from the stock file
+# is marked "P40:". Rule-5 exception for this stack: STRATA_FLASH_NEXT_PLAN.md §6 (granted 2026-10-10).
+# 2026-10-16: clone moved to tag v0.1.40.4 (6674a00, the Pascal sm_61 decode fix #1469). The stock Dockerfile,
+# docker-entrypoint.sh, requirements.txt and .dockerignore are byte-identical at v0.1.40.4, so this file is unchanged
+# apart from this note and the build line below (versioned image tags; `:latest` stays the v0.1.40.3 image).
+# 2026-10-16 (plan step 14): clone moved to tag v0.1.44.1 (296b59d2). `git diff v0.1.40.4 v0.1.44.1` on the stock Dockerfile
+# = one addition (the K-quant MMQ prompt library copy, mirrored below after the engine copy); docker-entrypoint.sh gains an
+# AVX2 warning only (EPYC 7302 has AVX2); requirements.txt, .dockerignore and LLAMA_CPP_COMMIT unchanged.
+#
+#   stock                                     | this file
+#   FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 | FROM nvidia/cuda:12.9.1-devel-ubuntu24.04  (CUDA 13 dropped Pascal; 12.9.1 =
+#                                             |   the base of the one proven Pascal-in-Docker run, Strata #1069; Ubuntu 24.04
+#                                             |   = gcc 13 / glibc 2.39, below the glibc 2.43 clash in docs/TROUBLESHOOTING.md)
+#   CUDA_ARCHITECTURES=75;80;86;89;120        | 61  (CMakeLists refuses < 75 unless STRATA_EXPERIMENTAL_SM60=ON)
+#   BUILD_VISION=1                            | 0   (vision is its own A/B; plan §4.2)
+#   engine built into engine/ (CUDA 13)       | engine-cuda12/ with "toolkit": 12 in BUILD.json — exactly what setup.py's
+#                                             |   build_engine() writes for a CUDA 12 engine (setup.py ~3150-3195), so the
+#                                             |   runtime (cuda_choice → 12 for sm_61, engine_dir(12)) finds it "already
+#                                             |   built" instead of recompiling into the container at first start
+#   cmake defs                                | + -DSTRATA_EXPERIMENTAL_SM60=ON (setup.engine_defs for archs < 75 / toolkit 12)
+#   no ENV for old cards                      | ENV STRATA_CUDA=12 STRATA_EXPERIMENTAL_SM60=1 (docs/OLDER_GPUS.md "Opting in")
+#   HEALTHCHECK start-period 600s             | 900s (first start builds the IQ pack + fetches the MTP layer; plan §4.2)
+#   llama.cpp zip downloaded during build     | SAME: strata/.dockerignore excludes third_party/llama.cpp/ and *.zip, so the
+#                                             |   pre-unpacked copy in the stack dir is NOT in the context; get_llama_cpp()
+#                                             |   downloads the pinned commit (setup.LLAMA_CPP_COMMIT 3cf03257…) during the
+#                                             |   build (verified on the first build 2026-10-10). Network needed at build time.
+#
+# Build (from the stack dir; the context is the strata/ clone):
+#   docker build -f Dockerfile.p40 -t flash-next-strata-server-local:v0.1.40.4 strata/   (via ./build.sh)
+# Run: as a Portainer stack (docker-compose.yml in this directory); never docker run.
+
+FROM nvidia/cuda:12.9.1-devel-ubuntu24.04
+
+# STRATA_EXECV=1: setup.py replaces itself with the server, so the server is PID 1
+# and docker stop's SIGTERM reaches it (see setup.start).
+# P40: STRATA_CUDA=12 selects the experimental CUDA 12 engine for every model on this image;
+#      STRATA_EXPERIMENTAL_SM60=1 lists Pascal cards as usable (setup.py experimental_sm60 / old_gpus_opt_in).
+ENV DEBIAN_FRONTEND=noninteractive PYTHONUNBUFFERED=1 LANG=C.UTF-8 STRATA_EXECV=1 \
+    STRATA_CUDA=12 STRATA_EXPERIMENTAL_SM60=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl git libatomic1 libgomp1 \
+        python3 python3-pip python3-venv unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/strata
+COPY . .
+
+# P40: Pascal GP102 only. BUILD_VISION=0 skips the image encoder (vision off on the first boot).
+ARG CUDA_ARCHITECTURES=61
+ARG BUILD_VISION=0
+
+RUN python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir --upgrade pip \
+    && .venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && chmod +x setup.sh docker-entrypoint.sh
+
+# The engine, built the way setup.py's build_engine() builds a CUDA 12 engine (toolkit 12): build dir build-cuda12,
+# engine dir engine-cuda12, -DSTRATA_EXPERIMENTAL_SM60=ON, BUILD.json with "toolkit": 12. BUILD.json is what setup.py
+# reads to decide whether an engine is current: source=local with a matching src hash means the first start reuses it.
+RUN .venv/bin/python - <<'PYEOF'
+import json, os, pathlib, shutil
+import setup
+
+llama = setup.get_llama_cpp()                       # third_party/llama.cpp, pre-unpacked in the context
+nvcc, ver = setup.find_nvcc(below=(13, 0))          # the CUDA 12.x toolkit of this image (12.9)
+assert nvcc and ver and ver[0] == 12, (nvcc, ver)
+arch = os.environ.get("CUDA_ARCHITECTURES", "61").strip().strip('"').replace(",", ";")
+archs = sorted({int(a.split("-")[0]) for a in arch.split(";") if a.split("-")[0].isdigit()})
+vision = "gpu" if os.environ.get("BUILD_VISION", "0") == "1" else "none"
+toolkit = 12
+
+bdir = setup.ROOT / "build-cuda12"
+setup.cmake_build(setup.ROOT, bdir, "strata",
+    ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF",
+     f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+     f"-DSTRATA_GGML_DIR={llama}", *setup.engine_defs(archs, toolkit)], None, "build-strata-cuda12.bat")
+vdir = setup.ROOT / "build-vision-cuda12"
+if vision != "none":
+    setup.cmake_build(setup.ROOT / "tools" / "vision", vdir, "strata-vision",
+        [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=ON", "-DSTRATA_PORTABLE=OFF",
+         f"-DCMAKE_CUDA_ARCHITECTURES={arch}", f"-DCMAKE_CUDA_COMPILER={nvcc}"], None, "build-vision-cuda12.bat")
+
+eng = setup.engine_dir(toolkit)                     # engine-cuda12/
+eng.mkdir(exist_ok=True)
+shutil.copy2(bdir / setup.EXE, eng / setup.EXE)
+if (bdir / setup.KQ_LIB).exists():      # stock Dockerfile at v0.1.44.1: the K-quant MMQ prompt library (UD-Q4/Q5/Q6_K_XL files)
+    shutil.copy2(bdir / setup.KQ_LIB, eng / setup.KQ_LIB)
+if vision != "none":
+    shutil.copy2(vdir / "bin" / setup.VEXE, eng / setup.VEXE)
+bindir = pathlib.Path(nvcc).parent
+meta = {"source": "local", "version": setup.source_version(), "archs": archs, "vision": vision, "toolkit": toolkit,
+        "cuda_dirs": [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()],
+        "src": setup.source_hash(setup.ENGINE_SOURCES),
+        "vision_src": setup.source_hash(setup.VISION_SOURCES) if vision != "none" else None}
+(eng / "BUILD.json").write_text(json.dumps(meta, indent=1))
+print("BUILD.json:", json.dumps(meta))
+PYEOF
+
+# the cmake trees are build-time only; the engine itself is what the container needs
+RUN rm -rf build-cuda12 build-vision-cuda12
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+# /health is answered before the API key gate, so it works with or without one.
+# P40: the first start on this box builds the IQ3_XXS native pack and fetches the ~5 GB MTP layer (cold starts
+# REPORTED 70–920 s), so the start period is 900 s; the compose healthcheck says the same.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=900s --retries=3 \
+  CMD curl -fs "http://127.0.0.1:${PORT:-8080}/health" || exit 1
+
+ENTRYPOINT ["./docker-entrypoint.sh"]
