@@ -1,0 +1,22 @@
+{
+  "think": "on",
+  "tasks": {
+    "gsm8k": {
+      "elapsed_s": 647,
+      "results": {
+        "gsm8k": {
+          "name": "gsm8k",
+          "alias": "gsm8k",
+          "sample_len": 100,
+          "exact_match,strict-match": 0.99,
+          "exact_match_stderr,strict-match": 0.009999999999999995,
+          "exact_match,flexible-extract": 0.99,
+          "exact_match_stderr,flexible-extract": 0.009999999999999995
+        }
+      },
+      "n": {
+        "gsm8k": 200
+      }
+    }
+  }
+}

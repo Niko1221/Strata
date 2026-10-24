@@ -1,0 +1,16 @@
+model,quant,gsm8k,gsm8k_n,mmlu,mmlu_n,humaneval,humaneval_n
+qwen-q2_0,Q2_0,0.97,100,0.87,100,1.0,50
+qwen-iq2_xs,IQ2_XS,0.99,100,0.83,100,0.98,50
+qwen-iq3_xxs,IQ3_XXS,0.99,100,0.83,100,0.96,50
+qwen-iq3_s,IQ3_S,0.99,100,0.83,100,0.98,50
+coder-iq1_m,IQ1_M,0.99,100,0.73,100,0.98,50
+swift-iq2_xs,IQ2_XS,0.99,100,0.84,100,0.94,50
+swift-iq3_xxs,IQ3_XXS,0.99,100,0.83,100,0.98,50
+swift-iq3_s,IQ3_S,0.96,100,0.84,100,0.98,50
+unsloth-ud-iq4_xs,UD-IQ4_XS,0.99,100,0.86,100,0.98,50
+unsloth-ud-q4_k_xl,UD-Q4_K_XL,0.99,100,0.87,100,0.98,50
+nvfp4-nvfp4,NVFP4,0.99,100,0.89,100,1.0,50
+nvfp4-nvidia,NVFP4-NVIDIA,0.99,100,0.86,100,0.96,50
+qwen36-ud-q4_k_xl,UD-Q4_K_XL,0.99,100,0.84,100,1.0,50
+qwen36-ud-q6_k_xl,UD-Q6_K_XL,0.98,100,0.83,100,0.96,50
+qwen36-q8_0,Q8_0,0.99,100,0.82,100,0.98,50

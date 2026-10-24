@@ -1,0 +1,2 @@
+[strata] 2026-10-21 18:27:23 engine started: <strata>\engine\strata.exe --serve --native <models>\models\qwen36-Q8_0\Qwen3.6-35B-A3B-Q8_0.gguf --max-context 65536 --prefill auto --mtp 2 --vision
+strata-q36: context 65536 cells, prompt chunk 2048, MTP block loaded, 3.33 GiB of VRAM free

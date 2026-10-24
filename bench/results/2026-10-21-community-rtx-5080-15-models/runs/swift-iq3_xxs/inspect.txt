@@ -1,0 +1,14 @@
+=== swift-iq3_xxs ===
+shards: Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf (39.79 GB), Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf (36.18 GB)
+total 75.94 GB, 176.94 B weights, 3.43 bits/weight overall (every shard, PLE counted once)
+group                                weights       GB  bits/w  types
+n-gram/per-layer embeddings           51.23B    28.87    4.51  IQ4_NL 100%, BF16 0%, F16 0%
+routed experts                       120.80B    42.91    2.84  IQ3_S 26%, IQ4_NL 21%, IQ2_S 16%, Q2_0 15%, IQ3_XXS 11%, IQ2_XS 6%, IQ2_XXS 5%
+hyper-connections                      0.63B     1.28   16.25  BF16 100%
+output head                            0.64B     0.44    5.50  Q5_K 100%
+token embedding                        0.64B     0.27    3.38  IQ3_S 100%
+attention (incl. GDN qkv/gate)         2.12B     1.39    5.25  Q6_K 46%, Q4_K 20%, IQ4_XS 18%, Q5_K 8%, IQ3_S 5%, BF16 3%
+linear attn/SSM                        0.57B     0.41    5.75  Q6_K 74%, Q4_K 8%, Q5_K 6%, IQ3_S 4%, BF16 4%, IQ4_XS 3%, F32 1%
+shared experts                         0.24B     0.12    4.00  IQ4_NL 31%, IQ3_S 24%, IQ4_XS 23%, Q4_K 13%, Q6_K 4%, Q2_0 3%, Q5_K 1%, F32 0%
+router                                 0.07B     0.25   28.57  F32 100%
+-> routed experts are 2.84 bits/weight (120.80B, 42.91 GB)

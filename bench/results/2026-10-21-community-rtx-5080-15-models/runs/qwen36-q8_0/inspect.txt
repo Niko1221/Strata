@@ -1,0 +1,13 @@
+=== qwen36-q8_0 ===
+shards: Qwen3.6-35B-A3B-Q8_0.gguf (37.8 GB)
+total 37.79 GB, 35.51 B weights, 8.51 bits/weight overall (every shard, PLE counted once)
+group                                weights       GB  bits/w  types
+routed experts                        33.02B    35.08    8.50  Q8_0 100%
+output head                            0.51B     0.54    8.47  Q8_0 100%
+token embedding                        0.51B     0.54    8.47  Q8_0 100%
+attention (incl. GDN qkv/gate)         1.05B     1.12    8.53  Q8_0 100%
+linear attn/SSM                        0.26B     0.28    8.62  Q8_0 99%, F32 1%
+shared experts                         0.13B     0.14    8.62  Q8_0 100%, F32 0%, BF16 0%
+router                                 0.02B     0.08   32.00  F32 99%, BF16 1%
+MTP / nextn                            0.01B     0.01    8.00  Q8_0 100%
+-> routed experts are 8.50 bits/weight (33.02B, 35.08 GB)
