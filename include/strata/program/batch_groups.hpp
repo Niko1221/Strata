@@ -10,10 +10,40 @@
 // the serial windows with the slots' drafts (the 0.1.42/0.1.43 behaviour).  A number or `auto` given on the command line
 // is honoured as before.
 //
+// The pipelined path starts no round of the adaptive VRAM tier on its own (the serial batch windows start one every
+// `--adapt-every` windows): opt-in, STRATA_PIPE_ADAPT_EVERY=N lets it run one after every N group windows, once the groups
+// in flight have finished (pipe_adapt_every / pipe_adapt_due below).
+//
 // Pure (no GPU, no environment read): generate.cpp passes in what it knows.
 #pragma once
 
+#include <cstdlib>
+
 namespace strata::program::batch_groups {
+
+/// STRATA_PIPE_ADAPT_EVERY's value -> the interval in group windows; 0 (off: the pipelined path adapts nothing, as before)
+/// when unset, empty, not a number, 0 or negative.
+inline int pipe_adapt_every(const char* value) {
+    if (value == nullptr) return 0;
+    const int n = std::atoi(value);
+    return n > 0 ? n : 0;
+}
+
+/// What the pipelined loop knows when it decides on a round.
+struct PipeAdapt {
+    int every = 0;               ///< pipe_adapt_every()
+    bool tier_on = false;        ///< the adaptive tier counts the routing here (it is on and not the whole model)
+    bool async_tier = false;     ///< --adapt-async 1 runs its own rounds
+    bool prompt_read = false;    ///< a prompt is read beside the slots (it may hold a loan of cache slots)
+    bool swaps_pending = false;  ///< the last round's copies have not landed yet
+    long long windows = 0;       ///< group windows completed so far
+    long long last = 0;          ///< `windows` when the last round ran
+};
+
+/// A round is due: the loop starts no new group, and runs the round once nothing is in flight.
+inline bool pipe_adapt_due(const PipeAdapt& p) {
+    return p.every > 0 && p.tier_on && !p.async_tier && !p.prompt_read && !p.swaps_pending && p.windows - p.last >= p.every;
+}
 
 /// What kept `auto` from pipelining.
 enum class Serial { None, BatchMtp, AdaptAsync, TwoCardsSerialFaster };

@@ -4,7 +4,9 @@
 //   2. a layer split with --batch >= 2 and no --batch-groups means `auto` (0.1.41);
 //   3. --batch-mtp (or --adapt-async 1) turns that default into one group, and says which feature did it;
 //   4. a number or `auto` given explicitly is honoured, with or without those features;
-//   5. no layer split: the number given (1) stays.
+//   5. no layer split: the number given (1) stays;
+//   6. STRATA_PIPE_ADAPT_EVERY: off unless a positive number; a round is due after N group windows, never with the tier
+//      off, beside --adapt-async, while a prompt is read or while the last round's copies are in flight.
 #include "strata/program/batch_groups.hpp"
 
 #include <cstdio>
@@ -124,6 +126,41 @@ int main() {
         i.set = true;
         i.given = 2;
         check(bg::resolve(i).groups == 2, "an explicit number without a split is returned (the engine warns)");
+    }
+
+    // STRATA_PIPE_ADAPT_EVERY
+    check(bg::pipe_adapt_every(nullptr) == 0 && bg::pipe_adapt_every("") == 0 && bg::pipe_adapt_every("0") == 0,
+          "pipe adapt: unset, empty or 0 is off");
+    check(bg::pipe_adapt_every("-5") == 0 && bg::pipe_adapt_every("off") == 0, "pipe adapt: negative or not a number is off");
+    check(bg::pipe_adapt_every("128") == 128 && bg::pipe_adapt_every("1") == 1, "pipe adapt: a positive number is the interval");
+    {
+        bg::PipeAdapt p;
+        p.every = 128;
+        p.tier_on = true;
+        p.windows = 127;
+        check(!bg::pipe_adapt_due(p), "pipe adapt: not before N group windows");
+        p.windows = 128;
+        check(bg::pipe_adapt_due(p), "pipe adapt: due after N group windows");
+        p.last = 128;
+        p.windows = 200;
+        check(!bg::pipe_adapt_due(p), "pipe adapt: counted again from the last round");
+        p.windows = 256;
+        check(bg::pipe_adapt_due(p), "pipe adapt: due N windows after the last round");
+        bg::PipeAdapt q = p;
+        q.every = 0;
+        check(!bg::pipe_adapt_due(q), "pipe adapt: never when off");
+        q = p;
+        q.tier_on = false;
+        check(!bg::pipe_adapt_due(q), "pipe adapt: never with the adaptive tier off");
+        q = p;
+        q.async_tier = true;
+        check(!bg::pipe_adapt_due(q), "pipe adapt: never beside --adapt-async 1");
+        q = p;
+        q.prompt_read = true;
+        check(!bg::pipe_adapt_due(q), "pipe adapt: never while a prompt is read beside the slots");
+        q = p;
+        q.swaps_pending = true;
+        check(!bg::pipe_adapt_due(q), "pipe adapt: never while the last round's copies are in flight");
     }
 
     std::printf("%s\n", g_fail == 0 ? "batch_groups_test: all passed" : "batch_groups_test: FAILED");
