@@ -948,9 +948,10 @@ class OutputParser:
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.fence, self.line, self.ticks = "", "", 0
         # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
-        # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
+        # form is the call - `<parameter=NAME>` or `<=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
         self.recover = recover
+        self.alt_end = ""            # the closer `</NAME>` of a call opened as `<NAME>`
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._reset_scan()
@@ -1003,6 +1004,18 @@ class OutputParser:
             if gt < 0:
                 return "wait" if "\n" not in after else "text"
             return "param" if after[len(PARAM_START):gt] in self.schemas else "text"
+        if after.startswith("<="):
+            # `<=NAME>`: the template's `<function=NAME>` with its "function" token lost (seen from Coder-L)
+            gt = after.find(">")
+            if gt < 0:
+                return "wait" if "\n" not in after else "text"
+            return "eq" if after[2:gt] in self.schemas else "text"
+        if after.startswith("<") and after[1:2].isalpha():
+            # `<NAME>`: the bare tool name as the tag (seen from Coder-L), one line, a declared tool only
+            gt = after.find(">")
+            if gt < 0:
+                return "wait" if "\n" not in after else "text"
+            return "name" if after[1:gt] in self.schemas else "text"
         if after.startswith("{"):
             return "json" if self.schemas else "text"
         if after.startswith("```") or (after and "```".startswith(after)):
@@ -1014,7 +1027,7 @@ class OutputParser:
                     return "json" if self.schemas else "text"
                 return "wait" if not rest else "text"
             return "wait" if "\n" not in after else "text"
-        if not after or FUNC_START.startswith(after) or PARAM_START.startswith(after):
+        if not after or FUNC_START.startswith(after) or PARAM_START.startswith(after) or after == "<=":
             return "wait"
         return "text"
 
@@ -1426,21 +1439,30 @@ class OutputParser:
                         return out
                     if loose:                            # #3441: `<=NAME>` etc. is `<function=NAME>`
                         at = len(self.buf) - len(after)
+                        if "=" not in after[:loose[1]] and "function" not in after[:loose[1]]:
+                            self.alt_end = "</" + loose[0] + ">"    # `<NAME>`: its closer may be `</NAME>`
                         self.buf = self.buf[:at] + FUNC_START + loose[0] + ">" + after[loose[1]:]
                         continue
                 kind = self._follower(after) if self.recover else None
                 if (after.startswith("<") and kind is None and not FUNC_START.startswith(after)
                         and not after.startswith(FUNC_START)):
                     self.unread += 1
-                if kind in ("param", "json"):
+                if kind in ("param", "eq", "name", "json"):
                     if i and self.buf[:i].strip():
                         out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
                     rest = self.buf[i + len(CALL_START):]
                     if kind == "param":                  # <parameter=NAME> as the opener: the call's <function=NAME>
                         at = len(rest) - len(after)
                         rest = rest[:at] + FUNC_START + after[len(PARAM_START):]
+                    elif kind == "eq":                   # <=NAME> as the opener: likewise
+                        at = len(rest) - len(after)
+                        rest = rest[:at] + FUNC_START + after[2:]
+                    elif kind == "name":                 # <NAME> as the opener: likewise; its closer may be </NAME>
+                        at = len(rest) - len(after)
+                        self.alt_end = "</" + after[1:after.find(">") + 1]
+                        rest = rest[:at] + FUNC_START + after[1:]
                     self.buf = rest
-                    self.state = "call" if kind == "param" else "json"
+                    self.state = "json" if kind == "json" else "call"
                     continue
                 if kind == "wait":
                     after = ""
@@ -1511,6 +1533,8 @@ class OutputParser:
                         elif after and not CALL_END.startswith(after):
                             drop = 0
                 else:
+                    if self.alt_end:
+                        self.buf = re.sub(r"(</parameter>\s*)" + re.escape(self.alt_end), r"\1" + FUNC_END, self.buf)
                     i = self._wrapped_call_end()
                     if i >= 0:
                         drop = len(CALL_END)
@@ -1539,6 +1563,7 @@ class OutputParser:
                 body = self.buf[:i]
                 self.buf = self.buf[i + drop:]
                 batch, self.batch = self.batch, False
+                self.alt_end = ""
                 out += self._finish_call(body)
                 if batch and out[-1].kind == "tool_call":
                     self.state, self.lead = "call", False
