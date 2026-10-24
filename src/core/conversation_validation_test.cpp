@@ -26,6 +26,8 @@ extern "C" cudaError_t __wrap_cudaMemcpy(void* dst, const void* src, size_t n, c
 }
 // the snapshot/checkpoint copies go through a private non-blocking stream (conversation_copy.hpp)
 extern "C" cudaError_t __wrap_cudaGetDevice(int* dev) { *dev = 0; return cudaSuccess; }
+extern "C" cudaError_t __wrap_cudaSetDevice(int) { return cudaSuccess; }
+extern "C" cudaError_t __wrap_cudaStreamDestroy(cudaStream_t) { return cudaSuccess; }
 extern "C" cudaError_t __wrap_cudaStreamCreateWithFlags(cudaStream_t* s, unsigned int) {
     *s = reinterpret_cast<cudaStream_t>(static_cast<uintptr_t>(1)); return cudaSuccess;
 }

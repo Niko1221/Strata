@@ -24,9 +24,24 @@ inline cudaError_t private_stream(cudaStream_t& s) {
     int dev = 0;
     cudaError_t e = cudaGetDevice(&dev);
     if (e != cudaSuccess) return e;
-    thread_local std::vector<cudaStream_t> streams;
+    struct StreamOwner {
+        std::vector<cudaStream_t> streams;
+        ~StreamOwner() {
+            int previous = 0;
+            if (cudaGetDevice(&previous) != cudaSuccess) return;
+            for (size_t i = 0; i < streams.size(); ++i) {
+                if (streams[i] && cudaSetDevice(static_cast<int>(i)) == cudaSuccess)
+                    (void) cudaStreamDestroy(streams[i]);
+            }
+            (void) cudaSetDevice(previous);
+        }
+    };
+    // Pipeline stage workers can be short-lived: their private streams must not
+    // outlive the thread that owns them.
+    thread_local StreamOwner owner;
+    auto& streams = owner.streams;
     if (dev < 0) dev = 0;
-    if ((size_t) dev >= streams.size()) streams.resize((size_t) dev + 1, nullptr);   // never destroyed: process lifetime
+    if ((size_t) dev >= streams.size()) streams.resize((size_t) dev + 1, nullptr);
     if (!streams[(size_t) dev]) {
         e = cudaStreamCreateWithFlags(&streams[(size_t) dev], cudaStreamNonBlocking);
         if (e != cudaSuccess) { streams[(size_t) dev] = nullptr; return e; }
