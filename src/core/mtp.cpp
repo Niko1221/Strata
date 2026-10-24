@@ -62,6 +62,13 @@ bool mtp_load(const std::string& rt_dir, int max_t, std::string& err);
 bool mtp_prefill(const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err);
 bool mtp_draft(int T, const int32_t* tokens, int64_t p, int a, int max_steps, int32_t* drafts, float* probs, float min_p,
                int* n_drafts, std::string& err);
+// The draft layer's K/V descriptor for the session snapshot: the Metal window's own buffers.  st_ stays default
+// here (load returns through mtp_load), so this is what makes the draft's K/V readable at all.
+bool mtp_kv_bind(strata::core::QsaState& st, std::string& err);
+// The decode window (window.cpp): `window_init` is idempotent, and bringing it up is what loads the draft layer.
+void* window_create();
+bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::SessionState& ss, int max_t,
+                 int64_t max_cells, int64_t* n_vocab, std::string& err);
 }  // namespace strata::metal_engine
 #endif
 
@@ -255,7 +262,16 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     g_ = &g;
     ss_ = &ss;
     max_t_ = max_t;
-    return strata::metal_engine::mtp_load(rt_dir, max_t, err);
+    if (!strata::metal_engine::mtp_load(rt_dir, max_t, err)) return false;
+    // The draft's K/V lives in the decode window and the window is what loads the draft layer, so bring it up now:
+    // a session RESTORE can arrive before any prefill, and it needs this descriptor to size the file's draft part.
+    // window_init is idempotent (an already-ready window is a no-op apart from the bind below).
+    int64_t nv = 0;
+    std::string why;
+    strata::metal_engine::window_init(strata::metal_engine::window_create(), g, ss, max_t,
+                                      ss.qsa_states[ss.qsa_primary()].max_cells, &nv, why);
+    strata::metal_engine::mtp_kv_bind(st_, why);   // prefill() retries if the window was not up after all
+    return true;
 #endif
     cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
@@ -1417,6 +1433,9 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
                          bool sync) {
 #if defined(STRATA_GPU_METAL)
     (void) R_rows; (void) sync;   // the rows are the decode window's own (the Metal drafter reads them in place)
+    // Lazy, and before any token exists: the draft layer is loaded by the window, so this is the first moment its
+    // K/V buffers can be described (load() ran before the window came up).
+    strata::metal_engine::mtp_kv_bind(st_, err);
     return strata::metal_engine::mtp_prefill(next_tokens, n, cell0, err);
 #endif
     const OnDevice on_device(device_);
