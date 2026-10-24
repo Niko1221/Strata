@@ -3526,5 +3526,12 @@
   "s9034": "Das Modell wird geladen …",
   "s9035": "Diese Modelldateien fehlen: {0}.",
   "s9036": "Drücken Sie noch einmal auf „Herunterladen und laden“, um sie zu holen. Vorhandene Dateien bleiben erhalten. Werden dieselben Dateien wieder aufgelistet, öffnen Sie die Details und teilen Sie sie mit, wenn Sie um Hilfe bitten.",
-  "s9037": "Dieses Update wurde beim Neustart der App unterbrochen. Ein späteres Update ist abgeschlossen, Sie müssen nichts tun."
+  "s9037": "Dieses Update wurde beim Neustart der App unterbrochen. Ein späteres Update ist abgeschlossen, Sie müssen nichts tun.",
+  "s9038": "Modelleinstellungen öffnen",
+  "s9039": "API-Server öffnen",
+  "s9040": "Modelle öffnen",
+  "s9041": "Skills öffnen",
+  "s9042": "Lass den Assistenten zuerst einen Plan schreiben; ausgeführt wird erst nach deiner Zustimmung",
+  "s9043": "Das Web durchsuchen, Seiten lesen und mit Quellen antworten",
+  "s9044": "Neues Gespräch beginnen und dieses behalten"
 }

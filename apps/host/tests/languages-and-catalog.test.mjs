@@ -8,6 +8,19 @@ const english=catalogs.en;
 const slots=text=>[...text.matchAll(/\{\d+\}/g)].map(match=>match[0]).sort();
 const compiled=await build({stdin:{contents:"export * from './src/lib/i18n'; export * from './src/lib/native-catalog'; export * from './src/lib/session-title';",resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm'});
 const {tr,setTranslationLanguage,currentLanguage,localeTag,nativeCatalogModels,catalogVersionLabel,sessionTitle}=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+test('open templates preserve user titles even when they match translated command labels',()=>{
+ const titles=['Model settings','Serving','Models','Skills','Ready','Models notes','私のメモ'];
+ try{
+  for(const language of languages){
+   setTranslationLanguage(language);
+   for(const title of titles){
+    assert.equal(tr('Open {0}',[title]),catalogs[language].s1242.replace('{0}',title));
+    assert.equal(tr('Open {0} in sidebar',[title]),catalogs[language].s1243.replace('{0}',title));
+   }
+   assert.equal(tr('Open Models notes'),catalogs[language].s1242.replace('{0}','Models notes'));
+  }
+ }finally{setTranslationLanguage('en');}
+});
 test('every language covers every interface key and preserves interpolation slots',()=>{
  for(const language of languages){
   assert.deepEqual(Object.keys(catalogs[language]),Object.keys(english),language);
