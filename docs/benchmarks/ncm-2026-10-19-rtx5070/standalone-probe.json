@@ -1,0 +1,148 @@
+{
+  "utc": "2026-10-19T19:14:12.919455+00:00",
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "torch": "2.12.0+cu130",
+  "cuda": "13.0",
+  "gpu": "NVIDIA GeForce RTX 5070",
+  "gpu_bytes": 12351569920,
+  "ncm_revision": "c70274273f489abc73832b2b98584a8483b6b203",
+  "task": "tinystories",
+  "precision": "float32; no autocast",
+  "seed": 42,
+  "cpu_threads": 4,
+  "batch_size": 1,
+  "warmup": 3,
+  "iterations": 20,
+  "generator_parameters": 88605707,
+  "tokenizer_parameters": 36434816,
+  "combined_unique_parameters": 125040523,
+  "text_vocab_size": 8192,
+  "latent_vocab_sizes": [
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096,
+    4096
+  ],
+  "levels": [
+    1,
+    8,
+    16,
+    24,
+    32,
+    40,
+    52,
+    64,
+    76,
+    92,
+    108,
+    128
+  ],
+  "profiled_level_forwards": [
+    {
+      "code_positions_per_sample": 8,
+      "ms": 2.831814001183375
+    },
+    {
+      "code_positions_per_sample": 16,
+      "ms": 3.1110180007090094
+    },
+    {
+      "code_positions_per_sample": 24,
+      "ms": 3.0543069988198113
+    },
+    {
+      "code_positions_per_sample": 32,
+      "ms": 3.0696579997311346
+    },
+    {
+      "code_positions_per_sample": 40,
+      "ms": 2.9543059990828624
+    },
+    {
+      "code_positions_per_sample": 52,
+      "ms": 3.0188959990482545
+    },
+    {
+      "code_positions_per_sample": 64,
+      "ms": 3.5049139987677336
+    },
+    {
+      "code_positions_per_sample": 76,
+      "ms": 3.482993999568862
+    },
+    {
+      "code_positions_per_sample": 92,
+      "ms": 3.4329919999436243
+    },
+    {
+      "code_positions_per_sample": 108,
+      "ms": 3.684766999867861
+    },
+    {
+      "code_positions_per_sample": 128,
+      "ms": 4.2333849996794015
+    }
+  ],
+  "raw_text_positions_per_sample": 128,
+  "latent_generation_ms": [
+    42.0768699987093,
+    39.1205150008318,
+    40.294313001140836,
+    38.59390599973267,
+    40.47771499972441,
+    39.078754000001936,
+    39.04281299946888,
+    38.94544200011296,
+    38.894291001270176,
+    41.5004209990002,
+    38.661108001178945,
+    38.87690100054897,
+    41.83202600142977,
+    39.29651700127579,
+    39.45005900095566,
+    40.56587699960801,
+    38.53724600048736,
+    38.84473000107391,
+    45.26655900008336,
+    39.576451999892015
+  ],
+  "full_generation_ms": [
+    40.0040380009159,
+    40.496944999176776,
+    40.42606499933754,
+    43.31312899921613,
+    39.81946499879996,
+    42.26320299858344,
+    42.106259999854956,
+    40.00360899954103,
+    40.76892000011867,
+    39.99350800040702,
+    40.54692600038834,
+    40.5036360007216,
+    40.69874899869319,
+    40.33918400091352,
+    40.50443500091205,
+    39.92783700050495,
+    40.60782700071286,
+    40.1690310009144,
+    41.309977999844705,
+    41.258267001467175
+  ],
+  "full_generation_median_ms": 40.504035500816826,
+  "raw_text_positions": 2560,
+  "visible_text_tokens": 2560,
+  "raw_text_positions_per_second": 3140.869164769696,
+  "visible_text_tokens_per_second": 3140.869164769696,
+  "peak_allocated_bytes": 777734144,
+  "peak_reserved_bytes": 799014912,
+  "limits": "TinyStories BPE tokens, not Qwen tokens; no acceptance or quality measurement"
+}
