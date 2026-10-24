@@ -2243,15 +2243,25 @@ bool native_q8_0_packed_eligible(int n_in, int n_out) {
 }
 
 namespace {
-std::unordered_map<const void*, void*>& q8_sm60_owned() {   // packed copies made here (the head), freed by release
+// packed copies made here (the head), freed by release; null: packed in place (release only unregisters it)
+std::unordered_map<const void*, void*>& q8_sm60_owned() {
     static std::unordered_map<const void*, void*> owned;
     return owned;
 }
+bool q8_sm60_pack_impl(const void* weights, int n_in, int n_out, const char* what, bool quiet);
 } // namespace
 
 bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char* what) {
+    return q8_sm60_pack_impl(weights, n_in, n_out, what, false);
+}
+bool native_q8_0_sm60_pack_quiet(const void* weights, int n_in, int n_out, const char* what) {
+    return q8_sm60_pack_impl(weights, n_in, n_out, what, true);
+}
+
+namespace {
+bool q8_sm60_pack_impl(const void* weights, int n_in, int n_out, const char* what, bool quiet) {
 #if defined(__HIPCC__)
-    (void) weights; (void) n_in; (void) n_out; (void) what;
+    (void) weights; (void) n_in; (void) n_out; (void) what; (void) quiet;
     return false;
 #else
     if (!q8_sm60_on() || !weights || !native_q8_0_packed_eligible(n_in, n_out)) return false;
@@ -2276,18 +2286,20 @@ bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char*
     }
     q8_packed_registry()[weights] = Q8Packed{qs, d, n_in, n_out};
     q8_sm60_owned()[weights] = packed;
-    std::fprintf(stderr, "strata q8 sm60: packed %s (%d x %d, %.0f MiB more VRAM)\n", what, n_out, n_in,
-                 double(bytes) / 1048576.0);
+    if (!quiet)
+        std::fprintf(stderr, "strata q8 sm60: packed %s (%d x %d, %.0f MiB more VRAM)\n", what, n_out, n_in,
+                     double(bytes) / 1048576.0);
     return true;
 #endif
 }
+} // namespace
 
 void native_q8_0_sm60_release(const void* weights) {
     auto& owned = q8_sm60_owned();
     const auto it = owned.find(weights);
     if (it == owned.end()) return;
     q8_packed_registry().erase(weights);
-    cudaFree(it->second);
+    if (it->second) cudaFree(it->second);
     owned.erase(it);
 }
 
@@ -2312,6 +2324,40 @@ void native_q8_0_packed_register(const void* gguf_weights, const void* packed, i
 }
 
 void native_q8_0_packed_unregister(const void* gguf_weights) { q8_packed_registry().erase(gguf_weights); }
+
+bool native_q8_0_sm60_pack_in_place(void* weights, int n_in, int n_out, const char* what) {
+#if defined(__HIPCC__)
+    (void) weights; (void) n_in; (void) n_out; (void) what;
+    return false;
+#else
+    if (!q8_sm60_on() || !weights || !native_q8_0_packed_eligible(n_in, n_out)) return false;
+    if (q8_packed_registry().count(weights)) return true;
+    // The GGUF blocks are gone afterwards, so only where q8_packed_mmvq can never fall back to the GGUF-layout kernels
+    // (every column count fits the kernel's shared-memory planes) and its 16-byte weight loads stay aligned
+    if (q8sm60::smem_bytes(MAX_NCOLS, n_in) > q8sm60::MAX_SMEM || reinterpret_cast<std::uintptr_t>(weights) % 16 != 0)
+        return native_q8_0_sm60_pack(weights, n_in, n_out, what);
+    const std::size_t bytes = std::size_t(n_in / 32) * std::size_t(n_out) * 34;   // both layouts: 34 bytes per 32
+    std::vector<uint8_t> blocks(bytes), planes(bytes);
+    if (cudaMemcpy(blocks.data(), weights, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: reading the %s failed; it keeps the GGUF layout\n", what);
+        return false;
+    }
+    native_q8_0_pack_host(blocks.data(), planes.data(), n_in, n_out);
+    if (cudaMemcpy(weights, planes.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaGetLastError();
+        // a partial write leaves neither layout: put the blocks back
+        const bool restored = cudaMemcpy(weights, blocks.data(), bytes, cudaMemcpyHostToDevice) == cudaSuccess;
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: writing the packed %s failed; %s\n", what,
+                     restored ? "it keeps the GGUF layout" : "its GGUF blocks could not be restored either");
+        return false;
+    }
+    native_q8_0_packed_register(weights, weights, n_in, n_out);
+    q8_sm60_owned()[weights] = nullptr;
+    return true;   // the caller says what it packed
+#endif
+}
 
 bool native_q6_k_packed_enabled() {
     static const bool enabled = [] {
