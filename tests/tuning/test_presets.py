@@ -48,6 +48,18 @@ class StoreTest(unittest.TestCase):
         full = dict(self.choices, goal="speed")
         self.assertEqual(presets.default_name(full), "IQ3_S 128K – Full speed")
 
+    def test_confirmation_samples_and_rates_survive_saving(self):
+        result = copy.deepcopy(RESULT)
+        result["settings"] = {"args": {}, "env": {}, "per_request": {"aux_cpus": 1}}
+        result["base"]["decode_tok_s"] = 40.0
+        result["chosen"] = {"decode_tok_s": 45.6}
+        result["per_request_confirm"] = {"ok": True, "ratio": 1.14,
+                                         "samples": [{"base": [39.0, 41.0], "tuned": [45.0, 46.2]}]}
+        saved = presets.load(self.make(result=result)["id"])
+        self.assertEqual(saved["baseline"]["decode_tok_s"], 40.0)
+        self.assertEqual(saved["measured"]["decode_tok_s"], 45.6)
+        self.assertEqual(saved["evidence"]["per_request_confirm"], result["per_request_confirm"])
+
     def test_create_list_rename_delete(self):
         p = self.make()
         self.assertTrue(p["name"].startswith("IQ3_S 128K"))

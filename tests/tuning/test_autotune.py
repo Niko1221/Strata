@@ -344,6 +344,74 @@ class TunerTest(unittest.TestCase):
         t, s, r = run_tuner(model, session_kw={"run_s": 60.0}, opts=autotune.Options(budget_s=1200))
         self.assertGreater(len(s.runs), 4)
 
+    def test_slow_base_defers_candidates_without_claiming_time_expired(self):
+        seen = []
+        def model(args, env, tune=None):
+            return 51.5 * (1.14 if tune and tune.get("aux_cpus") == 1 else 1.0)
+        _, session, result = run_tuner(model, session_kw={"run_s": 480, "noise": 0}, progress=seen.append)
+        self.assertEqual(result.settings["per_request"], {"aux_cpus": 1})
+        self.assertEqual(len(session.runs), 2)
+        self.assertTrue(any("time budget" in p["message"] for p in seen if p["stage"] == "plan"))
+        self.assertFalse(any("No other setting is worth" in p["message"] for p in seen))
+        self.assertFalse(any("ran out" in n for n in result.notes))
+        self.assertEqual(seen[-1]["eta_s"], 0)
+
+    def test_budget_skipped_candidates_do_not_confirm_defaults(self):
+        _, _, result = run_tuner(speed_with({}), session_kw={"run_s": 480, "noise": 0},
+                                 opts=autotune.Options(per_request=False))
+        self.assertEqual(result.outcome, "inconclusive")
+        self.assertEqual(result.reason_code, "time_budget")
+
+    def test_no_eligible_candidates_does_not_warn_about_time(self):
+        seen = []
+        _, _, result = run_tuner(speed_with({}), ctx=make_ctx_small(),
+                                 session_kw={"run_s": 480, "noise": 0},
+                                 opts=autotune.Options(per_request=False), progress=seen.append)
+        self.assertEqual(result.outcome, "default_confirmed")
+        self.assertFalse(any("ran out" in n for n in result.notes))
+        self.assertTrue(any("eligible" in p["message"] for p in seen if p["stage"] == "plan"))
+
+    def test_per_request_summary_uses_measured_confirmation_rates(self):
+        from strata_cli.tune_commands import _human_result
+        def model(args, env, tune=None):
+            base = 51.5 if len(session.runs) == 1 else 40.0
+            return base * (1.14 if tune and tune.get("aux_cpus") == 1 else 1.0)
+        clock = FakeClock()
+        session = StubSession(model=model, clock=clock, run_s=480, noise=0)
+        tuner = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(), clock=clock, sleep=clock.sleep,
+                               system=session.system, total_ram_mib=64000, total_vram_mib=12000, quiet=lambda: None)
+        result = tuner.run()
+        self.assertEqual(result.gain_pct, 14.0)
+        self.assertEqual(result.base["decode_tok_s"], 40.0)
+        self.assertEqual(result.chosen["decode_tok_s"], 45.6)
+        self.assertEqual(result.values["tuned_tok_s"], 45.6)
+        self.assertIn("40.0 -> 45.6 tok/s", _human_result(result.to_dict(), None))
+        self.assertEqual(len(result.per_request_confirm["samples"]), 5)
+
+    def test_per_request_screen_stops_at_budget_without_retaining_partial_results(self):
+        clock = FakeClock()
+        def model(args, env, tune=None):
+            clock.t += 10
+            return 60.0 * (1.14 if tune and tune.get("aux_cpus") == 1 else 1.0)
+        _, session, result = run_tuner(model, clock=clock, session_kw={"run_s": 1, "noise": 0},
+                                       opts=autotune.Options(budget_s=75))
+        self.assertLessEqual(session.decodes, 3)
+        self.assertEqual(result.settings["per_request"], {})
+
+    def test_incomplete_per_request_confirmation_is_not_accepted(self):
+        clock = FakeClock()
+        def model(args, env, tune=None):
+            clock.t += 10
+            return 60.0 * (1.14 if tune and tune.get("aux_cpus") == 1 else 1.0)
+        session = StubSession(model=model, clock=clock, run_s=1, noise=0)
+        tuner = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(budget_s=75).resolved(),
+                               clock=clock, sleep=clock.sleep, system=session.system, total_ram_mib=64000,
+                               total_vram_mib=12000, quiet=lambda: None)
+        result = tuner._confirm_per_request({"aux_cpus": 1}, tuner._spec(), 1.03)
+        self.assertFalse(result["ok"])
+        self.assertLessEqual(session.decodes, 3)
+        self.assertEqual(result["ratios"], [])
+
     def test_progress_reports_stage_and_time_left(self):
         seen = []
         t, s, r = run_tuner(speed_with({}), progress=seen.append)
@@ -352,6 +420,17 @@ class TunerTest(unittest.TestCase):
         self.assertTrue(etas)
         self.assertLessEqual(etas[-1], etas[0])
         self.assertEqual(seen[-1]["stage"], "done")
+
+    def test_startup_does_not_estimate_time_before_a_run_is_measured(self):
+        for mode, budget in (("quick", 1200), ("thorough", 1800 * 60)):
+            with self.subTest(mode=mode):
+                seen = []
+                run_tuner(speed_with({}), opts=autotune.Options(mode=mode, budget_s=budget), progress=seen.append)
+                startup = [p for p in seen if p["runs_done"] == 0]
+                self.assertTrue(startup)
+                self.assertTrue(all(p["eta_s"] is None for p in startup))
+                self.assertTrue(any(p["eta_s"] is not None for p in seen if p["runs_done"] > 0))
+                self.assertEqual(seen[-1]["eta_s"], 0)
 
     def test_progress_carries_the_speed_of_every_measurement_so_far(self):
         seen = []

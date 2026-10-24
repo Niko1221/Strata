@@ -213,6 +213,7 @@ class Tuner:
         self.storm = False
         self.speeds: list[dict[str, Any]] = []
         self.waited_s = 0.0                # time spent waiting for the box lock, the PC to be quiet or memory: not the user's budget
+        self.budget_limited = False
 
     # ---- bookkeeping
     def _elapsed(self) -> float:
@@ -220,9 +221,13 @@ class Tuner:
 
     def _say(self, stage: str, message: str, **extra: Any) -> None:
         elapsed = self._elapsed()
-        avg = statistics.mean(self.run_times) if self.run_times else 150.0
         remaining = max(0, self.planned_runs - self.done_runs)
-        eta = min(max(0.0, self.o.budget_s - elapsed), remaining * avg) if self.planned_runs else None
+        # There is no measured run duration during startup. Do not present the
+        # scheduler's fallback duration as an estimate for this machine.
+        eta = (min(max(0.0, self.o.budget_s - elapsed), remaining * statistics.mean(self.run_times))
+               if self.planned_runs and self.run_times else None)
+        if stage == "done":
+            eta = 0.0
         self.progress({"stage": stage, "message": message, "elapsed_s": round(elapsed), "runs_done": self.done_runs,
                        "runs_planned": self.planned_runs, "eta_s": None if eta is None else round(eta),
                        # what each measurement so far came to, for the live readout (label, decode tok/s as the goal judges it)
@@ -233,7 +238,7 @@ class Tuner:
             raise Cancelled()
 
     def _over_budget(self, reserve_s: float = 0.0) -> bool:
-        return self._elapsed() + reserve_s > self.o.budget_s
+        return self._elapsed() + reserve_s >= self.o.budget_s
 
     def _avg_run(self) -> float:
         return statistics.mean(self.run_times) if self.run_times else 150.0
@@ -424,6 +429,8 @@ class Tuner:
             left = int((o.budget_s - self._elapsed()) / max(1.0, self._avg_run()))
             fixed = (per_arm - 1) + 1                      # extra base rounds, the final base
             n_arms = min(len(planned), max(0, (left - fixed) // per_arm))
+        deferred = len(planned) - n_arms
+        self.budget_limited |= deferred > 0
         for p in planned[n_arms:]:
             skipped.append({"id": p.arm.id, "label": p.arm.label, "reason": "left out to stay inside the time you chose"})
         planned = planned[:n_arms]
@@ -432,7 +439,10 @@ class Tuner:
         by_use = {p.arm.id: ("prompt" if p.arm.metric == "prompt" else o.use) for p in planned}
         self.planned_runs = self.done_runs + per_arm * (len(planned) + 1) - 1 + 1 + (o.confirm_pairs or 0) * 2
         if not planned:
-            self._say("plan", "No other setting is worth trying on this PC")
+            self._say("plan", "No restart candidates fit the remaining time budget" if deferred else
+                      "No eligible restart candidates for this configuration")
+        if deferred:
+            r.notes.append(f"{deferred} restart candidate(s) were not tried: their estimated runs do not fit the remaining time budget")
 
         # ---- stage 3: interleaved rounds. Every round runs the base and each live candidate once, in a rotating order.
         round_runs: list[dict[str, RunResult]] = [{} for _ in range(per_arm)]
@@ -440,17 +450,18 @@ class Tuner:
         alive = list(planned)
         stop = False
         for rnd in range(per_arm):
-            if stop or self.storm or (rnd > 0 and not alive):
+            if stop or self.storm or not alive:
                 break
             for item in rotate(["base"] + alive, rnd):
                 self._check_cancel()
+                if item == "base" and rnd == 0:
+                    continue                             # already measured; no time needs reserving for it
                 if self._over_budget(reserve_s=2 * self._avg_run()):
-                    r.notes.append("the time you chose ran out before every round finished")
+                    self.budget_limited = True
+                    r.notes.append("restart rounds stopped: the estimated remaining runs do not fit the time budget")
                     stop = True
                     break
                 if item == "base":
-                    if rnd == 0:
-                        continue                         # round 1's base is the run above
                     if self._ram_guard(0, "your current settings"):
                         r.notes.append("not enough free memory for another measurement of your current settings; the search stopped")
                         stop = True
@@ -611,9 +622,10 @@ class Tuner:
             self._say("confirm", "Confirming the settings that need no restart")
             r.per_request_confirm = self._confirm_per_request(per_request_chosen, spec, threshold)
             if not r.per_request_confirm["ok"]:
-                r.notes.append("a per-request setting looked faster in the first test but did not hold in the confirmation, so it was not kept")
+                r.notes.append("a per-request setting was not kept: confirmation was incomplete or did not meet the gain threshold")
                 per_request_chosen = {}
         elif per_request_chosen:
+            self.budget_limited = True
             r.notes.append("a per-request setting looked faster but could not be confirmed in the time left, so it was not kept")
             per_request_chosen = {}
 
@@ -630,6 +642,9 @@ class Tuner:
         if r.outcome != "inconclusive":
             if chosen_args or chosen_env or per_request_chosen:
                 r.outcome = "improved"
+            elif self.budget_limited:
+                r.outcome, r.reason_code = "inconclusive", "time_budget"
+                r.message = "No improvement was confirmed within the time budget; the search was incomplete. Your settings were not changed."
             elif r.noise["noisy"] and (spread > 2 * STAGE_GAP_NOISY):
                 r.outcome = "inconclusive"
                 r.reason_code = "noisy"
@@ -681,7 +696,12 @@ class Tuner:
             r.gain_pct = r.gain_decode_pct = round(100 * ((r.per_request_confirm or {}).get("ratio", 1.0) - 1.0), 1)
             r.pairs = len((r.per_request_confirm or {}).get("ratios", []))
             r.faster_pairs = sum(1 for x in (r.per_request_confirm or {}).get("ratios", []) if x > 1.0)
-            r.chosen = dict(r.base)
+            # Show the actual paired confirmation rates, not the earlier baseline copied to both sides.
+            samples = r.per_request_confirm["samples"]
+            base_rates = [statistics.mean(s["base"]) for s in samples]
+            tuned_rates = [statistics.mean(s["tuned"]) for s in samples]
+            r.base = {**r.base, "decode_tok_s": round(statistics.median(base_rates), 2), "decode_runs": base_rates}
+            r.chosen = {"decode_tok_s": round(statistics.median(tuned_rates), 2), "decode_runs": tuned_rates}
         else:
             r.chosen = {k: r.base.get(k) for k in ("decode_tok_s", "pp_tok_s", "rss_peak_mib", "vram_used_mib")}
         if r.outcome == "improved":
@@ -717,7 +737,8 @@ class Tuner:
         for i in range(pairs):
             self._check_cancel()
             if self._over_budget(reserve_s=2 * self._avg_run()):
-                self.result.notes.append("confirmation stopped early: the time you chose ran out")
+                self.budget_limited = True
+                self.result.notes.append("confirmation stopped early: another estimated pair does not fit the time budget")
                 break
             first = "cand" if i % 2 == 0 else "base"
             runs: dict[str, RunResult] = {}
@@ -761,6 +782,10 @@ class Tuner:
             order = rotate([None] + points + ([control] if control else []) + [None], rnd)
             for item in order:
                 self._check_cancel()
+                if self._over_budget():
+                    self.budget_limited = True
+                    self.result.notes.append("per-request screening stopped at the time budget; partial results were discarded")
+                    return []
                 if item is None:
                     d = eng.decode_once(None, 200)
                     if d:
@@ -792,6 +817,7 @@ class Tuner:
         """5 interleaved rounds in a fresh engine of the chosen per-request settings against the engine's own choice (two decodes
         each, the order alternating). Kept only if the median ratio beats the threshold in at least 4 of 5 rounds."""
         ratios: list[float] = []
+        samples: list[dict[str, list[float]]] = []
 
         def points(eng: Any) -> None:
             for i in range(5):
@@ -799,17 +825,23 @@ class Tuner:
                 got: dict[str, list[float]] = {"d": [], "t": []}
                 for who in (("d", "t") if i % 2 == 0 else ("t", "d")):
                     for _ in range(2):
+                        self._check_cancel()
+                        if self._over_budget():
+                            self.budget_limited = True
+                            self.result.notes.append("per-request confirmation stopped at the time budget; the incomplete pair was discarded")
+                            return
                         v = eng.decode_once(chosen if who == "t" else None, 200)
                         if v:
                             got[who].append(v)
-                if got["d"] and got["t"]:
+                if len(got["d"]) == 2 and len(got["t"]) == 2:
                     ratios.append(statistics.mean(got["t"]) / statistics.mean(got["d"]))
+                    samples.append({"base": got["d"], "tuned": got["t"]})
 
         res = self._run(self.base_args, {}, spec, "confirm per-request", points=points)
         ok = res.status == "PASS" and len(ratios) == 5 and sum(1 for x in ratios if x > 1.0) >= 4 \
             and statistics.median(ratios) >= threshold
         return {"ok": ok, "ratios": [round(x, 4) for x in ratios], "ratio": round(statistics.median(ratios), 4) if ratios else None,
-                "status": res.status}
+                "samples": samples, "status": res.status}
 
 
 # --------------------------------------------------------------------------- building a tuner from a run configuration
