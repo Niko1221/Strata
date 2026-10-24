@@ -5496,6 +5496,9 @@ class Service:
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                            # the speculative draft acceptance as a percentage (#457 counts; None: no drafts, or the engine did not say)
+                            mtp_acc = round(last["drafts_accepted"] / last["drafts_offered"] * 100, 1) \
+                                if last.get("drafts_offered") and last.get("drafts_accepted") is not None else None
                             # #588: the share the GPU read over PCIe (--pcie-frac) or another GPU computed - not in
                             # the hit rate's lookups, which is the VRAM share of the rest (None: an older engine)
                             routed = (last.get("lookups") or 0) + (last.get("offloaded") or 0)
@@ -5521,7 +5524,8 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"),
+                                "mtp_acc": mtp_acc})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
