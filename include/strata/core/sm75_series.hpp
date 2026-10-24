@@ -12,6 +12,7 @@
 //
 // The numerics-changing Turing options are NOT part of this switch and keep their own explicit opt-ins:
 //   STRATA_SELECT_SIMT=1|2 (FP32 tiled block scorer), STRATA_PA_V2T=1 (v2 prompt attention), STRATA_PF_FUSED_SM75=1
+//   (Q2_0 prompt experts), STRATA_PF_FUSED_NATIVE_SM75=1 (native-IQ prompt experts)
 //   (fused int8 prompt experts), STRATA_BF16_TC=1 (FP16 tensor-core projections).
 #pragma once
 
