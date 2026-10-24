@@ -244,7 +244,7 @@ def fallback_note(log_text: str) -> str:
     if "--draft dflash2" not in text:
         return ""
     low = text.lower()
-    if "it is for one card and the cli run" in low or "needs a native pack" in low or "it needs --mtp" in low:
+    if "it is for one card and the cli run" in low or "it is not available with" in low or "needs a native pack" in low or "it needs --mtp" in low:
         reason = NOT_HERE
     else:
         reason = DIDNT_FIT
