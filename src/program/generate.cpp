@@ -14213,6 +14213,49 @@ int main(int argc, char** argv) {
             const int64_t dt_sw0 = ajob ? a_swapped : adapt_nswaps;
             int64_t dec_windows = 0, dec_T = 0;
             const int64_t decode_hits0 = drive.d.cache_hits;
+            // STRATA_WINDOW_TRACE=<path> (record only, serial decode loop): one binary record per decode window - when it
+            // started, its boundary work (adaptive tier wait, STRATA_RAM_ADAPT moves, async tick), run, commit, draft, and
+            // the expert reads it made (VRAM hits, CPU entries, RAM and file reads) - appended to <path>.  Unset: nothing is
+            // timed or written.  Layout: tools/window_trace.py.
+            struct WinRec {
+                int32_t req, win, T, accepted, flags, pad;
+                int64_t pos;
+                double t_ms, total_ms, pre_ms, ram_adapt_ms, tick_ms, setup_ms, run_ms, commit_ms, draft_ms, join_ms;
+                double wait_ms, pool_ms, jobs_ms;
+                int64_t vram_hits, cpu_entries, cpu_misses, pcie, ram_reads, file_reads, file_bytes, ram_moved, ram_staged,
+                        gpu_swapped;
+            };
+            static_assert(sizeof(WinRec) == 216, "tools/window_trace.py reads 216-byte records");
+            static std::FILE* const wt_f = [] {
+                const char* path = std::getenv("STRATA_WINDOW_TRACE");
+                if (path == nullptr || path[0] == '\0') return (std::FILE*) nullptr;
+                std::FILE* f = std::fopen(path, "ab");
+                if (f == nullptr) {
+                    std::fprintf(stderr, "strata serve: STRATA_WINDOW_TRACE: cannot open %s\n", path);
+                    return (std::FILE*) nullptr;
+                }
+                if (std::ftell(f) == 0) {   // a new file: magic and record size
+                    const char magic[12] = {'S', 'T', 'R', 'A', 'T', 'A', '_', 'W', 'T', '1', '\n', '\0'};
+                    const uint32_t size = (uint32_t) sizeof(WinRec);
+                    std::fwrite(magic, 1, sizeof magic, f);
+                    std::fwrite(&size, sizeof size, 1, f);
+                }
+                std::fprintf(stderr, "strata serve: STRATA_WINDOW_TRACE: a record per decode window to %s (%zu bytes each)\n",
+                             path, sizeof(WinRec));
+                return f;
+            }();
+            static int32_t wt_req = -1;
+            if (wt_f) ++wt_req;
+            int32_t wt_win = 0;
+            struct WtSnap {
+                double wait, pool, jobs;
+                int64_t hits, entries, misses, pcie, ram, files, bytes, moved, staged, swapped;
+            };
+            auto wt_snap = [&]() {
+                return WtSnap{ver.ms_wait, ver.ms_pool, drive.d.ms_jobs, drive.d.cache_hits, drive.d.multi_entries,
+                              drive.d.multi_misses, drive.d.pcie_experts, src.ram_reads(), src.file_reads(),
+                              (int64_t) src.file_read_bytes(), src.ram_adapts(), (int64_t) -1, ajob ? a_swapped : adapt_nswaps};
+            };
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
             const uint64_t file_bytes0 = src.file_read_bytes();
@@ -14920,6 +14963,9 @@ int main(int argc, char** argv) {
                 T += chain_n;
                 const bool timed_round = !first_window;
                 const Clock::time_point round0 = Clock::now();
+                const WtSnap wt0 = wt_f ? wt_snap() : WtSnap{};
+                const int32_t wt_flags = (first_window ? 1 : 0) | (merged ? 2 : 0) | (from_sfx ? 4 : 0) | (chain_n > 0 ? 8 : 0);
+                Clock::time_point wt_ra0, wt_ra1, wt_at1, wt_t3;
                 if (p + T > o.max_context) break;
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i)
@@ -14951,6 +14997,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 else if (pending.empty() || ++pending_age >= adapt_lag()) apply_pending(true);
+                if (wt_f) wt_ra0 = Clock::now();
                 // STRATA_RAM_ADAPT=<n> (opt-in, the resident RAM mode on one GPU): the RAM copy is chosen once, at
                 // start, so an expert it does not hold is read from the file every time the conversation routes to
                 // it.  With this, before a window and while no adaptive round is in flight, up to n experts the windows
@@ -15058,10 +15105,12 @@ int main(int argc, char** argv) {
                     if ((int) swaps.size() > ram_adapt_n) swaps.resize((size_t) ram_adapt_n);
                     for (const RamSwap& x : swaps) src.replace_resident(x.layer, x.in, x.out);
                 }
+                if (wt_f) wt_ra1 = Clock::now();
                 if (!adapt_tick(false)) {   // --adapt-async: the round in flight moves on a step when it can
                     std::printf("ERR an adaptive refill failed\n");
                     return 1;
                 }
+                if (wt_f) wt_at1 = Clock::now();
                 dt_adapt_wait += std::chrono::duration<double, std::milli>(Clock::now() - taw0).count();
                 if (hist_n > 0) {
                     // the tails the penalties count over, ONE PER ROW: the tokens the state has consumed, the
@@ -15173,11 +15222,25 @@ int main(int argc, char** argv) {
                     dt_run += msd(tw0, tw1); dt_commit += msd(tw1, tw2); dt_draft += msd(tw2, tw3);
                     ++dec_windows; dec_T += merged ? 1 : T;   // a merged window's prompt rows are not decode rows
                 }
+                if (wt_f) wt_t3 = Clock::now();
                 pcie_auto_step(req_pcie_frac);   // the default share, refined from the CPU pool's speed (PcieAuto); a request's own share is left alone
                 if (adapt_thr.joinable()) {
                     const Clock::time_point taj0 = Clock::now();
                     adapt_thr.join();
                     dt_adapt_join += std::chrono::duration<double, std::milli>(Clock::now() - taj0).count();
+                }
+                if (wt_f) {
+                    const Clock::time_point wt_e = Clock::now();
+                    const WtSnap s = wt_snap();
+                    auto ms = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
+                    const WinRec r{wt_req, wt_win++, T, a, wt_flags, 0, p,
+                                   ms(d0, round0), ms(round0, wt_e), ms(taw0, wt_ra0), ms(wt_ra0, wt_ra1), ms(wt_ra1, wt_at1),
+                                   ms(wt_at1, tw0), ms(tw0, tw1), ms(tw1, tw2), ms(tw2, wt_t3), ms(wt_t3, wt_e),
+                                   s.wait - wt0.wait, s.pool - wt0.pool, s.jobs - wt0.jobs,
+                                   s.hits - wt0.hits, s.entries - wt0.entries, s.misses - wt0.misses, s.pcie - wt0.pcie,
+                                   s.ram - wt0.ram, s.files - wt0.files, s.bytes - wt0.bytes, s.moved - wt0.moved,
+                                   s.staged < 0 ? -1 : s.staged - wt0.staged, s.swapped - wt0.swapped};
+                    std::fwrite(&r, sizeof r, 1, wt_f);
                 }
                 if (!adapt_ok) {
                     std::printf("ERR an adaptive refill failed\n");
@@ -15200,6 +15263,7 @@ int main(int argc, char** argv) {
                 p += a + 1;
             }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
+            if (wt_f) std::fflush(wt_f);
             // the last commit (set_commit_async): the session is complete before anything reads or copies it
             if (!ver.wait_commit(err)) {
                 std::printf("ERR %s\n", err.c_str());
