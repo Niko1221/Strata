@@ -100,6 +100,11 @@ Close other programs first: a browser or a game changes the numbers.
 
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
 
+- [2026-10-25: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM](../bench/results/2026-10-25-community-2x-mi50-iq4xs/README.md):
+  Strata 0.2.1 (engine 0.1.46) gfx906 source build, IQ3_S at 131,072 tokens and UD-IQ4_XS at 262,144;
+  decode 73.7 / 57.5 tok/s and prompt 691 / 533 tok/s at a 31K prompt, 140,908-token prompt read at 546 tok/s
+  with the needle found; expert cache 12,245 / 9,876 slots at 98-99.7% / 90-94% hit; quality 17/17 on both.
+  RAM runs at JEDEC 2400 (DOCP 3200 and 3600 hung the machine under load); the IQ4_XS pack needs --compat-bf16.
 - `README.md` in the format below, with the GPU, VRAM, CPU, RAM, OS, driver, Strata and engine versions, model and
   quantization, context and your settings filled in from the machine and the server
 - `results.json` with every request (tokens, timings, errors) and the machine facts
