@@ -22,6 +22,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/session.hpp"
+#include "strata/kernels/cvec.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -408,6 +409,15 @@ private:
     int lchain_ = -1;
     bool chain_ = false;
     mtl::Buffer dout_, dprob_, posv_, dmap_;
+    // --control-vector-scaled (strata/kernels/cvec.hpp, cvec.cpp): msl/cvec.metal after each steered layer's FFN, its
+    // pending write applied there instead of in the next layer's read.  cv_ is the switch as this encoding saw it
+    // (cvec_enabled(), set per request): off, the window and the prompt chunks encode the stock dispatches.
+    int lcvec_ = -1;
+    mtl::Buffer cvdir_;   // the loader's direction table (n_layers x n_embd)
+    bool cv_ = false;
+    bool cv_begin();      // reads the switch for the encoding that follows; false = off
+    bool cv_at(int l) const { return cv_ && strata::kernels::cvec().covers(l); }
+    mtl::Dispatch cv_dispatch(const mtl::Buffer& R, const mtl::Buffer& bo, const mtl::Buffer& inj, int l, int ntok);
 };
 
 namespace {
@@ -776,8 +786,9 @@ void Window::had_rows_ind(std::vector<mtl::Dispatch>& ds, int lib, const std::st
 
 void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0) {
     const std::string b = "blk." + std::to_string(l) + ".";
-    // ---- the mixer: layer 1's read after the PLE is not applied again (its pending write was applied before it)
-    gr_read(ds, b + "hc_attn", l > 0 && !(l == 1 && ple_on_), XA_, false, ntok);
+    // ---- the mixer: layer 1's read after the PLE is not applied again (its pending write was applied before it), nor
+    // a read after a steered layer (cvec_apply applied it)
+    gr_read(ds, b + "hc_attn", l > 0 && !(l == 1 && ple_on_) && !cv_at(l - 1), XA_, false, ntok);
     if (l % 4 != 3) {
         const int gi = l - l / 4;
         // a one-token window commits in the step; a longer one leaves the state and commit() folds the kept prefix
@@ -1010,6 +1021,33 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         d.tg[0] = 256;
         push(ds, d);
     }
+    if (cv_at(l)) push(ds, cv_dispatch(R_, bo_, inj_[cur_inj_], l, ntok));   // the FFN write, then the vector
+}
+
+bool Window::cv_begin() {
+    cv_ = strata::kernels::cvec_enabled();
+    if (!cv_ || lcvec_ >= 0) return cv_;
+    const strata::kernels::Cvec& v = strata::kernels::cvec();
+    if (v.n_embd != N || v.hc != HC || v.steered.size() != 48) {
+        std::fprintf(stderr, "strata metal: the control vector's shape differs from the model's\n");
+        std::exit(2);
+    }
+    lcvec_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/cvec.metal"}, "#define NO_GGML_COMMON 1\n");
+    cvdir_ = cx_->alloc((size_t) 48 * N * 4);
+    std::memcpy(cvdir_.ptr, v.dir, (size_t) 48 * N * 4);
+    return cv_;
+}
+
+mtl::Dispatch Window::cv_dispatch(const mtl::Buffer& R, const mtl::Buffer& bo, const mtl::Buffer& inj, int l, int ntok) {
+    const strata::kernels::Cvec& v = strata::kernels::cvec();
+    struct CvecArgs { uint32_t n_embd, hc, mode, write; float s; } a{N, HC, (uint32_t) v.mode, 1u, v.s[l]};
+    mtl::Dispatch d;
+    d.p = P(lcvec_, "cvec_apply", {}, "cvec_apply");
+    d.args = {mtl::Arg::B(R), mtl::Arg::B(bo), mtl::Arg::B(inj), mtl::Arg::B(cvdir_, (size_t) l * N * 4), mtl::Arg::V(a)};
+    d.grid[0] = HC;
+    d.grid[1] = ntok;
+    d.tg[0] = 256;
+    return d;
 }
 
 namespace {
@@ -1108,8 +1146,8 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
             for (int c = 0; c < 2051; ++c) qids_.as<int>()[t * 2051 + c] = c;
         qdirty_ = false;
     }
-    const int key = (((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0)) * 2 +
-                    (mrope_on() ? 1 : 0);
+    const int key = ((((((Tn * 2 + (head ? 1 : 0)) * 2 + hp_) * (MAXT + 1)) + pend_fold_) * 2 + (sel ? 1 : 0)) * 2 +
+                     (mrope_on() ? 1 : 0)) * 2 + (cv_begin() ? 1 : 0);
     mrope_sync(pos0, Tn);
     const int fold_n = pend_fold_;
     pend_fold_ = 0;
@@ -1193,7 +1231,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     }
     for (int l = 1; l < 48; ++l) layer(ds, l, Tn, pos0);
     // ---- the final mixer and the head
-    gr_read(ds, "output_hc", true, XA_, true, Tn);
+    gr_read(ds, "output_hc", !cv_at(47), XA_, true, Tn);
     if (head) gemv(ds, T("output.weight"), XA_, lm_, (size_t) n_vocab_, Tn);
     if (head) {
         ArgArgs a{(uint32_t) n_vocab_, 120};
@@ -2277,6 +2315,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     std::vector<mtl::Dispatch> ds;
     std::vector<int> cuts;
     nb_ = false;
+    cv_begin();
     auto D = [&](const mtl::Pipeline* pp, std::vector<mtl::Arg> a, uint32_t gx, uint32_t gy, uint32_t tg, uint32_t gz = 1) {
         mtl::Dispatch d;
         d.p = pp;
@@ -2340,7 +2379,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     (void) MB;
     for (int l = 0; l < 48; ++l) {
         const std::string b = "blk." + std::to_string(l) + ".";
-        hc_read(b + "hc_attn", l > 0 && !(l == 1 && ple_on_));
+        hc_read(b + "hc_attn", l > 0 && !(l == 1 && ple_on_) && !cv_at(l - 1));
         if (l % 4 != 3) {
             const int gi = l - l / 4;
             dq(TN(b + "attn_qkv.weight"), p.Wqkv);
@@ -2516,6 +2555,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         const uint32_t oa[2] = {(uint32_t) T, N};
         D(PP(p.lib, "moe_out"), {mtl::Arg::B(p.yr), mtl::Arg::B(p.ys), mtl::Arg::B(p.sgv), mtl::Arg::B(p.bo), mtl::Arg::V(oa)},
           (T * N + 255) / 256, 1, 256);
+        if (cv_at(l)) push(ds, cv_dispatch(p.R, p.bo, p.inj[ci], l, T));
         if (l == 0 && ple_on_) {
             // layer 0's FFN write applied to R, then the PLE block (as the window, for T rows)
             const gguf::Tensor& tn = TN("blk.1.hc_attn_norm.weight");
@@ -2537,8 +2577,8 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
                mtl::Arg::B(p.R), mtl::Arg::V(pl)}, HC * N / 256, T, 256);
         }
     }
-    // the last layer's write applied to R (the draft layer's K/V read the final residual rows)
-    {
+    // the last layer's write applied to R (the draft layer's K/V read the final residual rows) - already, when steered
+    if (!cv_at(47)) {
         const gguf::Tensor& tn = TN("output_hc_norm.weight");
         GrArgs a{N, HC, LR, (uint32_t) T, 1u, eps_};
         D(P(lib_, "gr_norm", {}, "gr_norm"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),

@@ -179,10 +179,6 @@ namespace strata::kernels::cpu { void s2_expert_gu_rows(const uint8_t * p0, cons
 namespace strata::kernels::cpu { void s2_expert_gu_rows_multi(const uint8_t * p0, const ActQ *const * p1, int p2, float *const * p3, int p4, int p5) { strata::metal_engine::missing("strata::kernels::cpu::s2_expert_gu_rows_multi"); } }
 namespace strata::kernels::cpu { void s2_expert_vnni_q(const uint8_t * p0, const ActQ & p1, float * p2, ExpertScratch & p3) { strata::metal_engine::missing("strata::kernels::cpu::s2_expert_vnni_q"); } }
 namespace strata::kernels { void cvec_apply(float * p0, int64_t p1, int64_t p2, int64_t p3, const float * p4, int64_t p5, const float * p6, int64_t p7, bool p8, void * p9) { strata::metal_engine::missing("strata::kernels::cvec_apply"); } }
-namespace strata::kernels { bool cvec_replicate(std::string & p0) { strata::metal_engine::missing("strata::kernels::cvec_replicate"); return {}; } }
-namespace strata::kernels { void cvec_set_enabled(bool p0) { strata::metal_engine::missing("strata::kernels::cvec_set_enabled"); } }
-namespace strata::kernels { bool cvec_tables(const float ** p0, const float ** p1, const int ** p2) { strata::metal_engine::missing("strata::kernels::cvec_tables"); return {}; } }
-namespace strata::kernels { bool cvec_upload(const std::vector<float> & p0, const std::vector<float> & p1, int p2, int p3, int p4, int64_t p5, int64_t p6, std::string & p7) { strata::metal_engine::missing("strata::kernels::cvec_upload"); return {}; } }
 namespace strata::kernels { void doorbell_publish(const float * p0, const int32_t * p1, const float * p2, int64_t p3, int64_t p4, float * p5, int32_t * p6, float * p7, uint32_t * p8, void * p9) { strata::metal_engine::missing("strata::kernels::doorbell_publish"); } }
 namespace strata::kernels { void doorbell_publish_res(const float * p0, const int32_t * p1, const int32_t * p2, int p3, int64_t p4, int64_t p5, float * p6, int32_t * p7, uint32_t * p8, void * p9) { strata::metal_engine::missing("strata::kernels::doorbell_publish_res"); } }
 namespace strata::kernels { void doorbell_ring(uint32_t * p0, void * p1) { strata::metal_engine::missing("strata::kernels::doorbell_ring"); } }
