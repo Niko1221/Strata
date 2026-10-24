@@ -1,0 +1,42 @@
+{
+ "exe": "/home/kchauhan/repos/l3ms/vendor/strata-latest/build/strata",
+ "args": [
+  "--pack",
+  "/home/kchauhan/repos/l3ms/vendor/Strata-data/packs/iq3_xxs",
+  "--native",
+  "/home/kchauhan/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "--ple-gguf",
+  "/home/kchauhan/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+  "--expert-profile",
+  "/home/kchauhan/repos/l3ms/vendor/strata-latest/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "/home/kchauhan/repos/l3ms/vendor/Strata-data/mtp/rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "k8v4"
+ ],
+ "cwd": "/home/kchauhan/repos/l3ms/vendor/strata-latest",
+ "tokenizer": "/home/kchauhan/repos/l3ms/vendor/Strata-data/packs/iq3_xxs/tokenizer",
+ "model_name": "qwen3.8-flash-next-iq3_xxs",
+ "port": 8088,
+ "gpu": 0,
+ "gpus_asked": true,
+ "fit_max_tokens": true,
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 0.0,
+  "repetition_penalty": 1.0
+ }
+}
