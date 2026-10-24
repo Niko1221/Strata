@@ -75,8 +75,9 @@ ISTA_SETS = {
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
 ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB card (measured on the 5070 / 3060: the engine places the rest itself)
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
-                 "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
-                 "about 31 tokens a second")
+                 "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; an RTX 4080 SUPER (16 GB) with "
+                 "61 GB of RAM: about 18 to 29 tokens a second, a 3,600-token prompt read at about 230 tokens a second (first read); "
+                 "four Radeon AI PRO R9700 cards: about 31 tokens a second")
 
 
 def variant(model: str | None) -> dict | None:

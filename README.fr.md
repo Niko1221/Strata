@@ -180,7 +180,7 @@ dans `strata launch`. L'application de bureau ne le propose pas encore.
 | Version | Téléchargement | Qualité | Écrit du code à |
 | --- | ---: | --- | --- |
 | **IQ1_M** (1,75 bit) | 239 Go | La plus petite, plus faible sur la prose simple | pas encore mesuré sur un PC |
-| **IQ2_XXS** (2.00 bits) | 257 Go | Bon équilibre | 10 tokens/s (RTX 3060), 5 (RTX 5070), 48 (4x R9700) |
+| **IQ2_XXS** (2.00 bits) | 257 Go | Bon équilibre | 10 tokens/s (RTX 3060), 5 (RTX 5070), 18-29 (RTX 4080 SUPER), 48 (4x R9700) |
 | **IQ2_XS** (2.25 bits) | 274 Go | Au plus près de l'original | 15 tokens/s (une R9700), 80 (4x R9700) |
 | **IQ4_NL** (table Engram) | compris dans chaque téléchargement ci-dessus | La table de consultation que les trois versions partagent | |
 

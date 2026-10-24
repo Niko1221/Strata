@@ -178,7 +178,7 @@ app de desktop ainda não o oferece.
 | Conjunto | Download | Qualidade | Escreve código a |
 | --- | ---: | --- | --- |
 | **IQ1_M** (1,75 bits) | 239 GB | O menor, mais fraco em prosa simples | ainda não medido num PC |
-| **IQ2_XXS** (2.00 bits) | 257 GB | Bom equilíbrio | 10 tokens/s (RTX 3060), 5 (RTX 5070), 48 (4x R9700) |
+| **IQ2_XXS** (2.00 bits) | 257 GB | Bom equilíbrio | 10 tokens/s (RTX 3060), 5 (RTX 5070), 18-29 (RTX 4080 SUPER), 48 (4x R9700) |
 | **IQ2_XS** (2.25 bits) | 274 GB | O mais perto do original | 15 tokens/s (uma R9700), 80 (4x R9700) |
 | **IQ4_NL** (tabela Engram) | incluída em cada download acima | A tabela de consulta que os três conjuntos compartilham | |
 

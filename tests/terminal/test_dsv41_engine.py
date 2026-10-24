@@ -199,5 +199,17 @@ class ManualPackage(Dsv41Engine):
         self.assertEqual([p.name for p in dsv41_engine.pending(dest)], [archive.name])
 
 
+class BuildDefaults(unittest.TestCase):
+    """The default arch list of the two dsv41 build scripts: the 0.2.4 package shipped without sm_89 and setup refused every
+    RTX 40 card with "this PC's GPU is sm_89" although the engine's kernels cover it (they need sm_80+)."""
+
+    def test_sm_89_is_in_both_defaults(self):
+        root = Path(__file__).resolve().parents[2]
+        sh = (root / "packaging" / "build_dsv41_cuda.sh").read_text(encoding="utf-8")
+        bat = (root / "packaging" / "build_dsv41_windows.bat").read_text(encoding="utf-8")
+        self.assertIn("ARCH=${ARCH:-86-real;89-real;120}", sh)
+        self.assertIn('set "DSV41_ARCH=86-real;89-real;120"', bat)
+
+
 if __name__ == "__main__":
     unittest.main()

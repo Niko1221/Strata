@@ -180,7 +180,7 @@ hat die Sets gebaut. Es läuft auf NVIDIA-RTX-Karten der Serien 30 bis 50 und au
 | Set | Download | Qualität | Schreibt Code mit |
 | --- | ---: | --- | --- |
 | **IQ1_M** (1,75 Bit) | 239 GB | Das kleinste, schwächer bei einfacher Prosa | auf einem PC noch nicht gemessen |
-| **IQ2_XXS** (2.00 Bit) | 257 GB | Gute Balance | 10 Tokens/s (RTX 3060), 5 (RTX 5070), 48 (4x R9700) |
+| **IQ2_XXS** (2.00 Bit) | 257 GB | Gute Balance | 10 Tokens/s (RTX 3060), 5 (RTX 5070), 18-29 (RTX 4080 SUPER), 48 (4x R9700) |
 | **IQ2_XS** (2.25 Bit) | 274 GB | Am nächsten am Original | 15 Tokens/s (eine R9700), 80 (4x R9700) |
 | **IQ4_NL** (Engram-Tabelle) | in jedem Download oben enthalten | Die Nachschlagetabelle, die alle drei Sets teilen | |
 

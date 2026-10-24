@@ -3,10 +3,12 @@
 # beside `strata` (setup.py dsv41_exe() looks for strata-dsv41 in the engine folder).  Same toolchain and RUNPATH rule as the
 # engine build: the result finds cudart/cublas beside itself ($ORIGIN), never the toolkit it was built with.
 #
-#   SRC=<checkout> B=<build dir> CUDA=/usr/local/cuda-13.0 GG=<llama.cpp checkout> [ARCH="86-real;120"] [JOBS=6]  packaging/build_dsv41_cuda.sh
+#   SRC=<checkout> B=<build dir> CUDA=/usr/local/cuda-13.0 GG=<llama.cpp checkout> [ARCH="86-real;89-real;120"] [JOBS=6]  packaging/build_dsv41_cuda.sh
 #
-# ARCH defaults to the 0.2.4 release shape: SASS for sm_86 (RTX 3090 / 3060) and sm_120 (RTX Blackwell) + PTX sm_120 (the Windows twin
-# built and ran on an RTX 5070; the Linux sm_86 build is the one tested on the RTX 3060 box).  Needs CUDA 13 (the sm_120 code); for a
+# ARCH defaults to the release shape: SASS for sm_86 (RTX 3090 / 3060), sm_89 (RTX 4080 / 4090) and sm_120 (RTX Blackwell) + PTX sm_120
+# (the Windows twin built and ran on an RTX 5070; the Linux sm_86 build is the one tested on the RTX 3060 box; the 0.2.4 package shipped
+# without sm_89 and setup refused RTX 40 cards with "this PC's GPU is sm_89" - the sm_86+sm_89+sm_120 build ran the 2.00 set end to end on
+# an RTX 4080 SUPER: the 16-token smoke question and about 18-29 tokens a second).  Needs CUDA 13 (the sm_120 code); for a
 # CUDA 12.9 package pass ARCH="86-real;89-real;89-virtual" or leave strata-dsv41 out (the Pascal cuda12 variant has no DeepSeek path).
 # Prints the binary path on the last line; collect its libraries with packaging/collect_libs.py --binary <it> --search $CUDA/lib64.
 set -eu
@@ -14,7 +16,7 @@ SRC=${SRC:-$(cd "$(dirname "$0")/.." && pwd)}
 B=${B:?B=<build dir>}
 CUDA=${CUDA:?CUDA=<toolkit root>}
 GG=${GG:?GG=<llama.cpp checkout at the pinned commit>}
-ARCH=${ARCH:-86-real;120}
+ARCH=${ARCH:-86-real;89-real;120}
 JOBS=${JOBS:-6}
 export PATH=$CUDA/bin:$PATH
 cmake -G Ninja -S "$SRC" -B "$B" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF -DSTRATA_BUILD_DSV41=ON \
