@@ -71,9 +71,18 @@ class PrivateFileTests(unittest.TestCase):
     def test_a_file_made_in_the_profile_is_unshared_but_not_strictly_private(self):
         path = self.root / "inherited.json"
         path.write_text("{}")
+        if not pf.WINDOWS:
+            # POSIX files have mode bits rather than an inherited profile ACL.
+            # Specify the private mode instead of depending on the process umask.
+            path.chmod(0o600)
         self.assertTrue(pf.is_unshared(path))
         if pf.WINDOWS:
             self.assertFalse(pf.is_private(path))   # SYSTEM and Administrators still inherit
+        else:
+            self.assertTrue(pf.is_private(path))
+            path.chmod(0o644)
+            self.assertFalse(pf.is_unshared(path))
+            self.assertFalse(pf.is_private(path))
 
     @unittest.skipUnless(pf.WINDOWS, "NTFS ACLs")
     def test_everyone_is_noticed_by_the_relaxed_check_too(self):

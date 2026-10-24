@@ -3,6 +3,7 @@ build, 0.1.46.1) then won over the rx9070 one (0.1.46). Selection must follow th
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from strata_control import engine_component as ec, feed as feedmod, updater
@@ -80,7 +81,11 @@ class Names(unittest.TestCase):
 class Detection(unittest.TestCase):
     def test_windows_without_hipinfo_reads_the_gfx_from_the_adapters(self):
         adapters = [{"vendor": "1002", "device": 0x7550, "name": "AMD Radeon RX 9070 XT", "vram_gb": 16.0}]
-        with mock.patch.object(updater.os, "name", "nt"), mock.patch.object(updater.shutil, "which", return_value=None), \
+        # Keep pathlib on the host platform while both hardware probes model Windows.
+        windows = SimpleNamespace(name="nt")
+        with mock.patch.object(updater, "os", windows), mock.patch.object(ec, "os", windows), \
+                mock.patch.object(updater, "Path", return_value=SimpleNamespace(is_dir=lambda: False)), \
+                mock.patch.object(updater.shutil, "which", return_value=None), \
                 mock.patch.object(ec, "windows_display_adapters", return_value=adapters):
             self.assertEqual(updater._gfx_names(), ["gfx1201"])
             self.assertEqual(updater._amd_card_names(), ["AMD Radeon RX 9070 XT"])
