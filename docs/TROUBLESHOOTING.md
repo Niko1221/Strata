@@ -107,6 +107,21 @@ settings; it cannot be turned back on without a reset of Windows), or, if only t
 An update keeps the engine it replaced in `engine\.previous` (one generation, about 210 MiB).
 `python setup.py --rollback-engine` puts it back (and keeps the newer one there: run it again to go forward) (#670).
 
+**The engine dies the moment it starts, before writing anything to its log.**
+Since 0.1.44.1 the start error names how the process ended: "the engine process ended: killed by
+signal 4 (SIGILL, Illegal instruction)" (Linux/macOS), or "the engine process ended: exit code
+0xC000001D: illegal instruction (the CPU lacks an instruction the program uses)" (Windows) - an
+access violation, a stack overflow or the out-of-memory killer (SIGKILL) get their own words the
+same way. A crash like that is not retried: a second try repeats it exactly (0.1.44 retried an
+old CPU's illegal instruction three times as "the GPU runtime was starting" and never showed the
+reason, #2324). If the engine log's last lines are only the launcher's own `[strata]` ones, the
+error says so. After an illegal instruction on Linux the note also names the features the CPU
+reports missing (AVX, AVX2, FMA, F16C), or says this is a bug in the engine when the CPU reports
+them all - either way, report it with the CPU model. A CPU without AVX2 runs the experimental
+build from [INSTALL.md](INSTALL.md#older-cpus-experimental). 0.1.44's ready-made engine also died
+before it could refuse an old CPU (its AVX/FMA tables were built at program
+start, before the CPU was checked); fixed in 0.1.44.1 (#2324).
+
 **UPDATE.bat / update.sh say "git pull did not succeed", or "has no commit in common" (#1276).**
 The repository's history was cleaned up on 2026-10-06, so a clone made before that cannot be updated with `git pull`.
 The 0.1.40.2 scripts handle it: when no tracked file is edited they keep your old commits in the branch

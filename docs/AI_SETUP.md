@@ -134,6 +134,10 @@ Notes:
   model on a real AMD card on Windows by us: ask the user to report how it runs ([AMD_HIP.md](AMD_HIP.md)).
 - **Mac:** the Metal engine is fetched like any other. Pictures are on by default and read on the Mac's GPU ([MAC.md](MAC.md)).
 
+- **A setup run again over an installed model** (`--setup`, or `SETUP.bat` again to change its
+  context): its installed size is pre-selected and marked "(installed)", and `--yes` takes it - a
+  re-run does not move an installed model to the recommended size (0.1.44.1).
+
 ## 5. While it downloads, tell the user
 
 - It downloads about 70 GB from Hugging Face; how long depends on their connection (at 100 Mbit/s roughly 1.5-2
