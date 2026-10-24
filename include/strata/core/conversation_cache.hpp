@@ -37,7 +37,8 @@ struct ConversationCheckpoint {
     // its buffers were laid out for (which experts the prompt reads in place and which it streams: that sets bits
     // too), the pipe value it was planned with, whether it is one chunk and whether the plan changed the buffers'
     // chunks.  A periodic checkpoint taken inside such a segment keeps it, so a read that goes on from there reads the
-    // rest in the same chunks with the same loan.  Run-time only, like `pinned` (a layer split saves no session files).
+    // rest in the same chunks with the same loan.  Run-time only, like `pinned` (a session file keeps its resume
+    // point, not the prompt-segment plans).
     struct PromptPlan {
         int64_t chunk = 0, from = -1, to = -1, lend = 0;
         double pipe = 0.0;
