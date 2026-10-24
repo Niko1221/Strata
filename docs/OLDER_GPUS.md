@@ -136,7 +136,12 @@ and i-quant blocks (Q6_K, IQ4_XS, Q4_K, IQ3_S, ...) one int at a time. Two chang
   change (decode 0.97-1.03x, inside the noise of that box), so it is off by default (the contributor's version had it on
   for compute capability 6.0). On an RTX 3090 Ti, forced on, the same IQ3_S layers took 3-13% longer (those kernels already
   read at 490-665 GB/s there).
-- Neither change is measured on compute capability 6.1 (P40, P4, GTX 10 series), which has `__dp4a`. Both build for
+- **Opt-in `STRATA_DOWN_WS=1`** (compute capability 6.0 only): the verify window's IQ4_NL / Q2_0 expert down rows
+  (n_ff 640) take `native_down_ws_kernel`, which stages a block's rows in shared memory with 16-byte loads and then
+  runs expert mode 0's row dots on them: bit for bit mode 0's output (and mode 8's, which equals it). On one PH402
+  die, Swift 1.5 IQ3_S, one-token window: IQ4_NL 72.6 us (mode 8, the cc 6.0 default) / 54.5 us (mode 0) -> 42.3 us,
+  Q2_0 53.5 / 65.4 -> 38.6 us. It replaces the down step in either expert mode.
+- None of these changes is measured on compute capability 6.1 (P40, P4, GTX 10 series), which has `__dp4a`. Both build for
   sm_61, and on a card with `__dp4a` the Q8_0 kernel's dot is the hardware instruction (`tools/q8_sm60_check.cu`
   passes on an RTX 3090 Ti); numbers from a 6.1 card with `STRATA_Q8_SM60=1` or `STRATA_IQ_STAGE_TABLES=1` would
   show whether either helps there.

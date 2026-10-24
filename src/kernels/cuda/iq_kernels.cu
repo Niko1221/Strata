@@ -4167,6 +4167,314 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
     else if (g_no_sub16_gu) native_down_multi_kernel<TD, false><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else native_down_multi_kernel<TD, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
 }
+// ---------------------------------------------------------------- STRATA_DOWN_WS: the decode down projection, staged
+// (opt-in, default off; cc 6.0 only).  native_down_multi_kernel's IQ4_NL (K 40, n_ff 640) and Q2_0 (K 20) rows read each
+// weight as 2-byte loads, an item at a time, straight from global memory, and a block (32 / 16 rows) waits on that.
+// Here a block copies its rows (IQ4_NL 32, Q2_0 64: 11,520 bytes) into shared memory with 16-byte loads - one round
+// trip, all in flight - reads the plan words before the group test and the entries' destination rows before the weights
+// land, and then runs the production row dots on the copy: the same 8 / 16-lane sub-warp, lane t, items, float
+// expressions and order (row_dot_40_sub8 / row_dot_20_sub16: s += item t (+ t + 32), s16, s8, s24, the __fadd_rn's,
+// xor 4..1 / 8..1, * sd).  Two integer-only changes inside an item: the dp4a emulation's byte products are taken from
+// the table lookup's bytes with vmad byte selectors (no interleaving byte_perm), and IQ4_NL's lookup uses raw prmt
+// selectors (bit 3, sign replicate, only touches the bytes the low/high merge drops; lhsi's nibbles are 0..7, so no
+// 0x7777 masks).  An item's int32 sum is the sum of the same int8 x int8 products, so every output is bit for bit
+// native_down_multi_kernel's (memcmp equal on all 48 layers of the Swift 1.5 IQ3_S pack, all 512 experts, 1-6
+// entries a group and T = 1..4 plans; native_expert_bench checks it against mode 0 and mode 8 by output hash).
+#if defined(STRATA_EXPERIMENTAL_SM60) && !defined(__HIPCC__) && !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && \
+    !defined(STRATA_GPU_METAL)
+#define STRATA_DOWN_WS_BUILT 1   // the CUDA build with STRATA_EXPERIMENTAL_SM60 only
+#else
+#define STRATA_DOWN_WS_BUILT 0
+#endif
+#if STRATA_DOWN_WS_BUILT
+#define STRATA_DWS_VMAD(r, a, sa, b, sb) asm("vmad.s32.s32.s32 %0, %1.b" #sa ", %2.b" #sb ", %0;" : "+r"(r) : "r"(a), "r"(b))
+
+__device__ __forceinline__ uint32_t dws_prmt(uint32_t a, uint32_t b, uint32_t c) {
+    uint32_t d;
+    asm("prmt.b32 %0, %1, %2, %3;" : "=r"(d) : "r"(a), "r"(b), "r"(c));
+    return d;
+}
+
+// get_int_from_table_16(q4, kvalues_iq4nl) before its 0x6420 / 0x7531 interleave: t0 = T(v0) T(v16) T(v1) T(v17),
+// t1 = T(v2) T(v18) T(v3) T(v19).  low = prmt(T0..7, q) is right for codes < 8, high = prmt(T8..15, q ^ 0x8..) for
+// codes >= 8, and the merge with lhsi (nibbles 0..7) takes exactly those bytes - the same bytes as __byte_perm's masked
+// selectors give.
+__device__ __forceinline__ void dws_iq4_tab(uint32_t q4, int& t0, int& t1) {
+    const uint32_t* table32 = (const uint32_t*) kvalues_iq4nl;
+    const uint32_t lhsi = 0x32103210u | ((q4 & 0x88888888u) >> 1);
+    const uint32_t qx = q4 ^ 0x88888888u;
+    t0 = (int) dws_prmt(dws_prmt(table32[0], table32[1], q4), dws_prmt(table32[2], table32[3], qx), lhsi);
+    t1 = (int) dws_prmt(dws_prmt(table32[0], table32[1], q4 >> 16), dws_prmt(table32[2], table32[3], qx >> 16), lhsi >> 16);
+}
+
+struct DwsIq4W { int t0[2], t1[2]; float dw; };
+
+__device__ __forceinline__ DwsIq4W dws_iq4_load(const void* __restrict__ vbq, int kbx, int iqs) {
+    const block_iq4_nl* bq4 = (const block_iq4_nl*) vbq + kbx;
+    DwsIq4W r;
+#pragma unroll
+    for (int l = 0; l < 2; ++l) dws_iq4_tab((uint32_t) get_int_b2(bq4->qs, iqs + l), r.t0[l], r.t1[l]);
+    r.dw = __half2float(bq4->d);
+    return r;
+}
+
+// = Split<20>::apply(Split<20>::load(...)): x_l = (t0.b0 t0.b2 t1.b0 t1.b2) . q8[l], y_l = (t0.b1 t0.b3 t1.b1 t1.b3) . q8[l + 4]
+__device__ __forceinline__ float dws_iq4_apply(const DwsIq4W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+    const int* q8 = (const int*) bq8_1->qs + iqs;
+    int sumi = 0;
+#pragma unroll
+    for (int l = 0; l < 2; ++l) {
+        const int A = q8[l + 0], B = q8[l + 4];
+        STRATA_DWS_VMAD(sumi, r.t0[l], 0, A, 0);
+        STRATA_DWS_VMAD(sumi, r.t0[l], 2, A, 1);
+        STRATA_DWS_VMAD(sumi, r.t1[l], 0, A, 2);
+        STRATA_DWS_VMAD(sumi, r.t1[l], 2, A, 3);
+        STRATA_DWS_VMAD(sumi, r.t0[l], 1, B, 0);
+        STRATA_DWS_VMAD(sumi, r.t0[l], 3, B, 1);
+        STRATA_DWS_VMAD(sumi, r.t1[l], 1, B, 2);
+        STRATA_DWS_VMAD(sumi, r.t1[l], 3, B, 3);
+    }
+    const float d = r.dw * __low2float(bq8_1->ds);
+    return d * sumi;
+}
+
+// row_dot_40_sub8<20, NC, true> (t < 8: its k loop is k = t, t + 32), the five items' words loaded first
+template<int NC>
+__device__ __forceinline__ void dws_row40(const uint8_t* row, const block_q8_1* x, int t, float (&s)[NC]) {
+    const int k0 = t, k1 = t + 32, k2 = t + 16, k3 = t + 8, k4 = t + 24;
+    const DwsIq4W w0 = dws_iq4_load(row, k0 / 2, 2 * (k0 % 2));
+    const DwsIq4W w1 = dws_iq4_load(row, k1 / 2, 2 * (k1 % 2));
+    const DwsIq4W w2 = dws_iq4_load(row, k2 / 2, 2 * (k2 % 2));
+    const DwsIq4W w3 = dws_iq4_load(row, k3 / 2, 2 * (k3 % 2));
+    const DwsIq4W w4 = dws_iq4_load(row, k4 / 2, 2 * (k4 % 2));
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        const block_q8_1* xc = x + 20 * c;
+        s[c] = 0.0f;
+        s[c] += dws_iq4_apply(w0, xc + k0 / 2, 2 * (k0 % 2));
+        s[c] += dws_iq4_apply(w1, xc + k1 / 2, 2 * (k1 % 2));
+        {
+            float s16 = 0.0f;
+            s16 += dws_iq4_apply(w2, xc + k2 / 2, 2 * (k2 % 2));
+            s[c] = __fadd_rn(s[c], s16);
+        }
+        float s8 = 0.0f;
+        s8 += dws_iq4_apply(w3, xc + k3 / 2, 2 * (k3 % 2));
+        {
+            float s24 = 0.0f;
+            s24 += dws_iq4_apply(w4, xc + k4 / 2, 2 * (k4 % 2));
+            s[c] = __fadd_rn(s[c], __fadd_rn(s8, s24));
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+#pragma unroll
+        for (int o = 4; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+    }
+}
+
+// Split<42>::load before its 0x5140 / 0x7362 interleave (qx = qe.b0 qo.b0 qe.b1 qo.b1, qy = qe.b2 qo.b2 qe.b3 qo.b3)
+struct DwsQ2W { int qe[4], qo[4]; float d2; };
+
+__device__ __forceinline__ DwsQ2W dws_q2_load(const void* __restrict__ vbq, int kbx, int iqs) {
+    const block_q2_0* bq2_0 = (const block_q2_0*) vbq + kbx;
+    DwsQ2W r;
+    r.d2 = bq2_0->d;
+    const int16_t* qs = (const int16_t*) bq2_0->qs + iqs * 4;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int q = qs[j];
+        r.qe[j] = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
+        r.qo[j] = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
+    }
+    return r;
+}
+
+// = Split<42>::apply, the 32 products summed in two int32 chains
+__device__ __forceinline__ float dws_q2_apply(const DwsQ2W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+    const block_q8_1* bq8_1_chunk = bq8_1 + iqs;
+    int a[2] = { 0, 0 };
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int u = get_int_b4(bq8_1_chunk->qs, j * 2 + 0);
+        const int v = get_int_b4(bq8_1_chunk->qs, j * 2 + 1);
+        int& x = a[j & 1];
+        STRATA_DWS_VMAD(x, u, 0, r.qe[j], 0);
+        STRATA_DWS_VMAD(x, u, 1, r.qo[j], 0);
+        STRATA_DWS_VMAD(x, u, 2, r.qe[j], 1);
+        STRATA_DWS_VMAD(x, u, 3, r.qo[j], 1);
+        STRATA_DWS_VMAD(x, v, 0, r.qe[j], 2);
+        STRATA_DWS_VMAD(x, v, 1, r.qo[j], 2);
+        STRATA_DWS_VMAD(x, v, 2, r.qe[j], 3);
+        STRATA_DWS_VMAD(x, v, 3, r.qo[j], 3);
+    }
+    const int sumi = a[0] + a[1];
+    const float d8 = __low2float(bq8_1_chunk->ds);
+    return r.d2 * d8 * sumi;
+}
+
+// row_dot_20_sub16<42, NC, true>
+template<int NC>
+__device__ __forceinline__ void dws_row20(const uint8_t* row, const block_q8_1* x, int t, float (&s)[NC]) {
+    const DwsQ2W w = dws_q2_load(row, t / 2, t % 2);
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        s[c] = 0.0f;
+        s[c] += dws_q2_apply(w, x + 20 * c + (t / 2) * 2, t % 2);
+    }
+    float s16[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) s16[c] = 0.0f;
+    if (t < 4) {
+        const int k = t + 16;
+        const DwsQ2W w2 = dws_q2_load(row, k / 2, k % 2);
+#pragma unroll
+        for (int c = 0; c < NC; ++c) s16[c] += dws_q2_apply(w2, x + 20 * c + (k / 2) * 2, k % 2);
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c) {
+        s[c] = __fadd_rn(s[c], s16[c]);
+#pragma unroll
+        for (int o = 8; o > 0; o >>= 1) s[c] += __shfl_xor_sync(0xffffffffu, s[c], o);
+    }
+}
+
+// NC entries of one row; every lane of the sub-warp holds the same sum (butterfly), lane c stores entry c
+template<int TD, int NC>
+__device__ __forceinline__ void dws_rows(const uint8_t* wr, const block_q8_1* s_hq, int t, float sd, float* __restrict__ out,
+                                         const int (&dst)[NC], int64_t n_embd, int r) {
+    float s[NC];
+    if constexpr (TD == 20) dws_row40<NC>(wr, s_hq, t, s);
+    else dws_row20<NC>(wr, s_hq, t, s);
+#pragma unroll
+    for (int c = 0; c < NC; ++c)
+        if (t == c) out[(size_t) dst[c] * n_embd + r] = s[c] * sd;
+}
+
+// grid (n_embd / RB, gy), 256 threads: RB = 32 IQ4_NL rows (one pass of 8-lane rows) or 64 Q2_0 rows (four passes of
+// 16-lane rows); entries NCMAX at a time (1: a T = 1 window, every group one entry; 4: as GRP_NC)
+template<int TD, int NCMAX>
+__global__ void __launch_bounds__(256, 4) native_down_ws_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                                                const int32_t* __restrict__ grp_start,
+                                                                const int32_t* __restrict__ n_groups,
+                                                                const int32_t* __restrict__ ent_dst,
+                                                                const block_q8_1* __restrict__ hq, NativeExpertLayout L,
+                                                                float* __restrict__ out) {
+    constexpr int LPR = TD == 20 ? 8 : 16, RPP = 256 / LPR, P = TD == 20 ? 1 : 4, RB = RPP * P;
+    constexpr int DROW = TD == 20 ? 360 : 180, WB = RB * DROW, NV = (WB / 16 + 255) / 256;
+    static_assert(WB % 16 == 0, "16-byte copies");
+    STRATA_SHARED_ALIGN16_U32(s_w, WB / 4);
+    STRATA_SHARED_ALIGN16_U32(s_hq_buf, NCMAX * 20 * 9);
+    const int tid = threadIdx.x, t = tid % LPR, sub = tid / LPR;
+    const int r0 = blockIdx.x * RB;
+    const int nrow = min(RB, (int) L.n_embd - r0);
+    const block_q8_1* s_hq = reinterpret_cast<const block_q8_1*>(s_hq_buf);
+    // the plan words of this block row's first group before the test (gridDim.y <= cap_groups: in bounds)
+    int g = blockIdx.y;
+    unsigned long long gpu = grp_ptr[g];
+    int e0 = grp_start[g], e1 = grp_start[g + 1];
+    const int ng = *n_groups;
+    for (; g < ng; g += gridDim.y) {   // the group stride, as native_down_multi_kernel
+        if (g != (int) blockIdx.y) {
+            __syncthreads();
+            gpu = grp_ptr[g];
+            e0 = grp_start[g];
+            e1 = grp_start[g + 1];
+        }
+        const uint8_t* gp = (const uint8_t*) gpu + L.down_off + (size_t) r0 * DROW;
+        const float sd = L.tail_off ? ((const float*) (gpu + L.tail_off))[2] : 1.0f;
+        int dst[NCMAX];
+#pragma unroll
+        for (int c = 0; c < NCMAX; ++c) dst[c] = ent_dst[min(e0 + c, e1 - 1)];
+        const int nbytes = nrow * DROW;
+        if ((((uintptr_t) gp) & 15) == 0 && (nbytes & 15) == 0) {
+            const uint4* src = reinterpret_cast<const uint4*>(gp);
+            uint4* dw = reinterpret_cast<uint4*>(s_w);
+            uint4 v[NV];
+#pragma unroll
+            for (int k = 0; k < NV; ++k)
+                if (tid + 256 * k < (nbytes >> 4)) v[k] = __ldg(src + tid + 256 * k);
+#pragma unroll
+            for (int k = 0; k < NV; ++k)
+                if (tid + 256 * k < (nbytes >> 4)) dw[tid + 256 * k] = v[k];
+        } else {
+            const uint16_t* s2 = reinterpret_cast<const uint16_t*>(gp);
+            uint16_t* d2 = reinterpret_cast<uint16_t*>(s_w);
+            for (int i = tid; i < (nbytes >> 1); i += 256) d2[i] = s2[i];
+        }
+        for (int e = e0; e < e1; e += NCMAX) {
+            const int n = min(NCMAX, e1 - e);
+            if (e != e0) {
+                __syncthreads();
+#pragma unroll
+                for (int c = 0; c < NCMAX; ++c) dst[c] = ent_dst[min(e + c, e1 - 1)];
+            }
+            const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
+            for (int i = tid; i < n * 180; i += 256) s_hq_buf[i] = src[i];
+            __syncthreads();
+#pragma unroll
+            for (int p = 0; p < P; ++p) {
+                const int rl = p * RPP + sub;
+                if (rl >= nrow) continue;
+                const uint8_t* wr = reinterpret_cast<const uint8_t*>(s_w) + rl * DROW;
+                const int r = r0 + rl;
+                if constexpr (NCMAX == 1) {
+                    const int d1[1] = { dst[0] };
+                    dws_rows<TD, 1>(wr, s_hq, t, sd, out, d1, L.n_embd, r);
+                } else {
+                    static_assert(NCMAX == 4, "NCMAX 1 or 4");
+                    if (n == 1) {
+                        const int d1[1] = { dst[0] };
+                        dws_rows<TD, 1>(wr, s_hq, t, sd, out, d1, L.n_embd, r);
+                    } else if (n == 2) {
+                        const int d2[2] = { dst[0], dst[1] };
+                        dws_rows<TD, 2>(wr, s_hq, t, sd, out, d2, L.n_embd, r);
+                    } else if (n == 3) {
+                        const int d3[3] = { dst[0], dst[1], dst[2] };
+                        dws_rows<TD, 3>(wr, s_hq, t, sd, out, d3, L.n_embd, r);
+                    } else {
+                        const int d4[4] = { dst[0], dst[1], dst[2], dst[3] };
+                        dws_rows<TD, 4>(wr, s_hq, t, sd, out, d4, L.n_embd, r);
+                    }
+                }
+            }
+        }
+    }
+}
+#undef STRATA_DWS_VMAD
+
+// STRATA_DOWN_WS=1 on a compute capability 6.0 device: the IQ4_NL / Q2_0 down rows at n_ff 640 take
+// native_down_ws_kernel (whatever the expert mode: it is bitwise mode 0's, and mode 8's matches mode 0)
+bool down_ws_on(const NativeExpertLayout& L) {
+    static const bool env = env_on("STRATA_DOWN_WS");
+    if (!env || g_old_kernels || g_no_sub16_gu || L.n_ff != 640 || (L.d_type != 20 && L.d_type != 42)) return false;
+    static int per_dev[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!per_dev[dev]) {
+        int major = 0, minor = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        per_dev[dev] = major == 6 && minor == 0 ? 2 : 1;
+    }
+    return per_dev[dev] == 2;
+}
+
+void launch_down_ws(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cudaStream_t s, const unsigned long long* grp_ptr,
+                    const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_dst, const block_q8_1* hq, float* out) {
+    const int rb = L.d_type == 20 ? 32 : 64;
+    const dim3 grid((unsigned) ((L.n_embd + rb - 1) / rb), (unsigned) gy);
+    const bool one = cap_groups <= 10;   // a T = 1 window: ten groups of one entry
+    if (L.d_type == 20) {
+        if (one) native_down_ws_kernel<20, 1><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        else native_down_ws_kernel<20, 4><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    } else {
+        if (one) native_down_ws_kernel<42, 1><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        else native_down_ws_kernel<42, 4><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    }
+}
+#endif  // STRATA_DOWN_WS_BUILT
+
 
 }  // namespace
 
@@ -5255,6 +5563,13 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 || L.d_type == 40 || tq_sub8 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const int tq_ch = tq_sub8 ? tq_row_chunks() : 1;   // the staged trellis down kernel takes this many 32-row chunks a block
     const dim3 gd((unsigned) (((L.n_embd + d_rows - 1) / d_rows + tq_ch - 1) / tq_ch), (unsigned) gy);
+#if STRATA_DOWN_WS_BUILT
+    if (down_ws_on(L)) {   // STRATA_DOWN_WS=1 (cc 6.0): the staged down rows, bitwise native_down_multi_kernel's
+        launch_down_ws(L, gy, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, out);
+        check("native_expert_grouped/down ws");
+        return;
+    }
+#endif
 #if STRATA_EXP_LAYOUTS
     const int em0d = sm75_down_em(em0, cap_groups);
     int dev_d = 0;
