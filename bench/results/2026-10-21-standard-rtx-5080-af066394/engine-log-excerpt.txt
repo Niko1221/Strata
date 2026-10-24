@@ -1,0 +1,45 @@
+[strata] 2026-10-21 23:43:19 engine started: I:\Strata-main\engine\strata.exe --serve --pack I:\Strata-data\packs\unsloth-ud-iq4_xs --native I:\Strata-data\models\UD-IQ4_XS\Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile I:\Strata-main\data\expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp I:\Strata-data\mtp\rt --max-context 131072 --kv q4_0 --kv-resident 32768 --vision --conversation-cache-mib 8192 --conversation-cache-slots 6 --conversation-cache-min-tokens 2000 --vram-reserve-mib 1024
+strata: pinned-memory headroom: holding 800 MiB for the buffers allocated after the expert arena (released after it: 640 MiB; kept until needed: 160 MiB; STRATA_PIN_RESERVE_MIB changes it)
+strata generate: expert arena read unbuffered (0 of 32 probe reads from the file cache; 26.1 GiB available, 87.2 GiB of files)
+strata: pinned-memory headroom: 640 MiB handed back after the expert arena
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages refused for 59523465216 B (GetLargePageMinimum=2097152, VirtualAlloc error 1450); using 4 KB pages
+strata generate: expert cache auto: 8.67 GiB free, 1024 MiB reserved (+218 MiB for the draft head) -> 2300 slots
+strata generate: only 542 MiB free once the slots are written (reserve 1024 MiB); shrinking the expert cache
+strata generate: expert cache 3074 slots, 6.92 GiB of VRAM; policy is
+strata generate: session is up (engine 0.1.47)
+strata serve: the prompt path borrows 1992 CUDA0 cache slots (4.50 GiB)
+strata serve: 582 MiB of VRAM free with everything loaded
+strata serve: WARNING: only 624 MiB of VRAM free at the start of this request (below 1024 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 1472 to the config's args, or lower --max-context / --batch
+strata verify: capturing the 4-token window (590 MiB of VRAM free)
+strata verify: capturing the 1-token window (586 MiB of VRAM free)
+strata verify: capturing the 3-token window (539 MiB of VRAM free)
+strata verify: capturing the 2-token window (269 MiB of VRAM free)
+strata verify: capturing the 5-token window (339 MiB of VRAM free)
+strata verify: capturing the 6-token window (507 MiB of VRAM free)
+strata serve: decode expert cache hit rate: 62.0% (123699 hits / 199542 lookups); 47178 more read by the GPU over PCIe or from another GPU (19.1% of all 246720 routed)
+strata serve: WARNING: only 478 MiB of VRAM free at the start of this request (below 1024 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 1600 to the config's args, or lower --max-context / --batch
+strata serve: decode expert cache hit rate: 63.0% (71871 hits / 114029 lookups); 24691 more read by the GPU over PCIe or from another GPU (17.8% of all 138720 routed)
+strata serve: decode expert cache hit rate: 65.6% (311801 hits / 475193 lookups); 90727 more read by the GPU over PCIe or from another GPU (16.0% of all 565920 routed)
+strata serve: decode expert cache hit rate: 72.8% (387435 hits / 531950 lookups); 73810 more read by the GPU over PCIe or from another GPU (12.2% of all 605760 routed)
+strata serve: decode expert cache hit rate: 58.0% (35158 hits / 60669 lookups); 14691 more read by the GPU over PCIe or from another GPU (19.5% of all 75360 routed)
+strata serve: decode expert cache hit rate: 67.8% (211385 hits / 311750 lookups); 54970 more read by the GPU over PCIe or from another GPU (15.0% of all 366720 routed)
+strata serve: decode expert cache hit rate: 60.3% (53115 hits / 88135 lookups); 20345 more read by the GPU over PCIe or from another GPU (18.8% of all 108480 routed)
+strata serve: WARNING: only 269 MiB of VRAM free at the start of this request (below 1024 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 1792 to the config's args, or lower --max-context / --batch
+strata serve: decode expert cache hit rate: 65.2% (115300 hits / 176954 lookups); 34726 more read by the GPU over PCIe or from another GPU (16.4% of all 211680 routed)
+strata serve: decode expert cache hit rate: 51.3% (32357 hits / 63035 lookups); 17125 more read by the GPU over PCIe or from another GPU (21.4% of all 80160 routed)
+strata serve: decode expert cache hit rate: 71.5% (172750 hits / 241512 lookups); 39288 more read by the GPU over PCIe or from another GPU (14.0% of all 280800 routed)
+strata serve: decode expert cache hit rate: 68.9% (186586 hits / 270616 lookups); 45224 more read by the GPU over PCIe or from another GPU (14.3% of all 315840 routed)
+strata serve: decode expert cache hit rate: 70.4% (191514 hits / 271891 lookups); 42509 more read by the GPU over PCIe or from another GPU (13.5% of all 314400 routed)
+strata serve: decode expert cache hit rate: 70.0% (122324 hits / 174783 lookups); 29697 more read by the GPU over PCIe or from another GPU (14.5% of all 204480 routed)
+strata serve: decode expert cache hit rate: 68.3% (175897 hits / 257681 lookups); 45199 more read by the GPU over PCIe or from another GPU (14.9% of all 302880 routed)
+strata serve: decode expert cache hit rate: 67.9% (184616 hits / 272034 lookups); 47646 more read by the GPU over PCIe or from another GPU (14.9% of all 319680 routed)
+strata serve: decode expert cache hit rate: 67.8% (148128 hits / 218544 lookups); 40656 more read by the GPU over PCIe or from another GPU (15.7% of all 259200 routed)
+strata serve: decode expert cache hit rate: 66.9% (175375 hits / 262046 lookups); 48994 more read by the GPU over PCIe or from another GPU (15.8% of all 311040 routed)
+strata serve: decode expert cache hit rate: 69.0% (180140 hits / 261216 lookups); 42624 more read by the GPU over PCIe or from another GPU (14.0% of all 303840 routed)
+strata serve: decode expert cache hit rate: 59.8% (21239 hits / 35540 lookups); 8140 more read by the GPU over PCIe or from another GPU (18.6% of all 43680 routed)
+strata serve: decode expert cache hit rate: 60.5% (18927 hits / 31268 lookups); 6652 more read by the GPU over PCIe or from another GPU (17.5% of all 37920 routed)
+strata serve: decode expert cache hit rate: 67.3% (28021 hits / 41637 lookups); 7803 more read by the GPU over PCIe or from another GPU (15.8% of all 49440 routed)
+strata serve: decode expert cache hit rate: 78.6% (19161 hits / 24370 lookups); 2990 more read by the GPU over PCIe or from another GPU (10.9% of all 27360 routed)
+strata serve: decode expert cache hit rate: 72.5% (33084 hits / 45640 lookups); 7160 more read by the GPU over PCIe or from another GPU (13.6% of all 52800 routed)
+strata serve: decode expert cache hit rate: 75.8% (23651 hits / 31192 lookups); 4328 more read by the GPU over PCIe or from another GPU (12.2% of all 35520 routed)
+strata serve: decode expert cache hit rate: 76.6% (26046 hits / 33998 lookups); 4402 more read by the GPU over PCIe or from another GPU (11.5% of all 38400 routed)
