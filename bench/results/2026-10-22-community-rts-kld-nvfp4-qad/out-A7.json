@@ -1,0 +1,168 @@
+{
+ "summary": {
+  "measure": "kld",
+  "label": "A7",
+  "model": "qwen3.8-flash-next-nvfp4-nvfp4-qad",
+  "context": "262144",
+  "build": "strata 0.1.46.1",
+  "prompt_cache": "cold",
+  "corpus": "f553e2c3",
+  "topk": 64,
+  "positions": 46050,
+  "ppl": 6.411929201080693,
+  "tsv": "logpos-A7.tsv",
+  "ids": "dlss.ids.json"
+ },
+ "segments": [
+  {
+   "name": "DLSS-4-Transforming-Real-Time-Graphics-with-AI#0@0",
+   "first_line": 0,
+   "end_line": 1535
+  },
+  {
+   "name": "DLSS-4-Transforming-Real-Time-Graphics-with-AI#1@2572",
+   "first_line": 1535,
+   "end_line": 3070
+  },
+  {
+   "name": "DLSS-4-Transforming-Real-Time-Graphics-with-AI#2@5144",
+   "first_line": 3070,
+   "end_line": 4605
+  },
+  {
+   "name": "DLSS-FG-Programming-Guide#0@0",
+   "first_line": 4605,
+   "end_line": 6140
+  },
+  {
+   "name": "DLSS-FG-Programming-Guide#1@13599",
+   "first_line": 6140,
+   "end_line": 7675
+  },
+  {
+   "name": "DLSS-FG-Programming-Guide#2@27198",
+   "first_line": 7675,
+   "end_line": 9210
+  },
+  {
+   "name": "dlss-prompt3#0@0",
+   "first_line": 9210,
+   "end_line": 10745
+  },
+  {
+   "name": "dlss-prompt3#1@51212",
+   "first_line": 10745,
+   "end_line": 12280
+  },
+  {
+   "name": "dlss-prompt3#2@102424",
+   "first_line": 12280,
+   "end_line": 13815
+  },
+  {
+   "name": "DLSS-RR-Integration-Guide#0@0",
+   "first_line": 13815,
+   "end_line": 15350
+  },
+  {
+   "name": "DLSS-RR-Integration-Guide#1@5397",
+   "first_line": 15350,
+   "end_line": 16885
+  },
+  {
+   "name": "DLSS-RR-Integration-Guide#2@10794",
+   "first_line": 16885,
+   "end_line": 18420
+  },
+  {
+   "name": "DLSS5_Report#0@0",
+   "first_line": 18420,
+   "end_line": 19955
+  },
+  {
+   "name": "DLSS5_Report#1@5071",
+   "first_line": 19955,
+   "end_line": 21490
+  },
+  {
+   "name": "DLSS5_Report#2@10142",
+   "first_line": 21490,
+   "end_line": 23025
+  },
+  {
+   "name": "DLSS_Programming_Guide_Release#0@0",
+   "first_line": 23025,
+   "end_line": 24560
+  },
+  {
+   "name": "DLSS_Programming_Guide_Release#1@14844",
+   "first_line": 24560,
+   "end_line": 26095
+  },
+  {
+   "name": "DLSS_Programming_Guide_Release#2@29688",
+   "first_line": 26095,
+   "end_line": 27630
+  },
+  {
+   "name": "nvidia-ada-gpu-architecture#0@0",
+   "first_line": 27630,
+   "end_line": 29165
+  },
+  {
+   "name": "nvidia-ada-gpu-architecture#1@5887",
+   "first_line": 29165,
+   "end_line": 30700
+  },
+  {
+   "name": "nvidia-ada-gpu-architecture#2@11774",
+   "first_line": 30700,
+   "end_line": 32235
+  },
+  {
+   "name": "NVIDIA-ADA-GPU-PRO-Architecture-Whitepaper_1.1#0@0",
+   "first_line": 32235,
+   "end_line": 33770
+  },
+  {
+   "name": "NVIDIA-ADA-GPU-PRO-Architecture-Whitepaper_1.1#1@4201",
+   "first_line": 33770,
+   "end_line": 35305
+  },
+  {
+   "name": "NVIDIA-ADA-GPU-PRO-Architecture-Whitepaper_1.1#2@8402",
+   "first_line": 35305,
+   "end_line": 36840
+  },
+  {
+   "name": "nvidia-rtx-blackwell-gpu-architecture#0@0",
+   "first_line": 36840,
+   "end_line": 38375
+  },
+  {
+   "name": "nvidia-rtx-blackwell-gpu-architecture#1@7756",
+   "first_line": 38375,
+   "end_line": 39910
+  },
+  {
+   "name": "nvidia-rtx-blackwell-gpu-architecture#2@15512",
+   "first_line": 39910,
+   "end_line": 41445
+  },
+  {
+   "name": "NVIDIA-RTX-Blackwell-PRO-GPU-Architecture-v1.0#0@0",
+   "first_line": 41445,
+   "end_line": 42980
+  },
+  {
+   "name": "NVIDIA-RTX-Blackwell-PRO-GPU-Architecture-v1.0#1@6369",
+   "first_line": 42980,
+   "end_line": 44515
+  },
+  {
+   "name": "NVIDIA-RTX-Blackwell-PRO-GPU-Architecture-v1.0#2@12738",
+   "first_line": 44515,
+   "end_line": 46050
+  }
+ ]
+}
