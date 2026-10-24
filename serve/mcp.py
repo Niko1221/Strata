@@ -12,9 +12,10 @@ back to the server that has it.  A server that does not start is left out with o
 it.  A server that stops later (a crash) is started again on its next call.
 
 Tool results reach the model as text: the MCP content blocks joined, capped at `max_result_chars` (a directory tree or
-a web page can be megabytes, far more than a context holds) with a note saying so.  A failed call - the tool's own
-error, a crash, a timeout - becomes a result that starts with "error:", so the model can react instead of the chat
-breaking.
+a web page can be megabytes, far more than a context holds) with a note saying so.  A picture is not text: an MCP
+image block - what a server that reads pictures hands back - goes to the vision encoder with the rest of the result
+and reaches the model as pixels (`result_parts`).  A failed call - the tool's own error, a crash, a timeout - becomes
+a result that starts with "error:", so the model can react instead of the chat breaking.
 """
 from __future__ import annotations
 
@@ -461,29 +462,95 @@ class McpServer:
 
 
 # ------------------------------------------------------------------------------------------------ the hub
-def result_text(result: dict) -> str:
-    """An MCP tool result as the text the model reads: the text blocks as they are, other blocks named."""
-    parts = []
+# A picture is not text.  An MCP image block - what a server that reads pictures hands back - becomes the data: URL
+# the vision encoder reads (serve/server.py's `Vision.load`), so the model gets the pixels instead of a line saying a
+# picture was there.  The two caps are per result: a server that hands back a wall of pictures, or one enormous one,
+# must not fill the context or the memory; 32 MiB is what the chat's own image input allows (serve/server.py's
+# `IMAGE_URL_MAX`).  What is past a cap is named in the text, as every picture used to be.
+MAX_RESULT_IMAGES = 8
+MAX_IMAGE_BYTES = 32 * 1024 * 1024
+
+
+def _picture(block: dict, images: list) -> tuple[str, str | None]:
+    """One image block (base64 in `data`, its type in `mimeType`) -> (the line the model reads naming it, its data:
+    URL).  The URL is None - and the line says why - when the picture is past one of the caps; `images` counts the
+    ones this result has taken and takes this one."""
+    mime, data = str(block.get("mimeType") or "?"), str(block.get("data") or "")
+    size = len(data) * 3 // 4
+    why = ("has no data" if not data else
+           "is not an image type" if not mime.startswith("image/") else
+           f"is over {MAX_IMAGE_BYTES >> 20} MiB" if size > MAX_IMAGE_BYTES else
+           f"is past the {MAX_RESULT_IMAGES} pictures one result may carry" if len(images) >= MAX_RESULT_IMAGES
+           else "")
+    if why:
+        return f"[image ({mime}, {size:,} bytes): {why}, not shown to the model]", None
+    url = f"data:{mime};base64,{data}"
+    images.append(url)
+    return f"[image ({mime}, {size:,} bytes)]", url
+
+
+def result_parts(result: dict) -> tuple[str, list | None]:
+    """An MCP tool result as (text, parts): the text the model reads - the text blocks as they are, other blocks named
+    - and, when the result carries pictures, that same content in the form the prompt takes (serve/frontend.py's
+    `_parts_of`: text items and image items, in the order the server sent them).  `parts` is None when there are no
+    pictures, and the tool message then carries the text alone exactly as it always did.
+
+    A picture is pixels, not characters: it is not counted in `max_result_chars` and never cut by it, but at most
+    MAX_RESULT_IMAGES of MAX_IMAGE_BYTES each are taken from one result; the rest are named in the text."""
+    texts, parts, images = [], [], []
+
+    def text(s: str):
+        texts.append(s)
+        # the newline the joined text has between two blocks goes into the part: the template writes the parts one
+        # after another with nothing between them, and a run of them would otherwise read as one long line
+        parts.append({"type": "text", "text": ("\n" if parts else "") + s})
+
+    def picture(block: dict):
+        note, url = _picture(block, images)
+        text(note)                                       # the line naming the picture, taken or not
+        if url:
+            parts.append({"type": "image", "source": url})
+
     for block in result.get("content") or []:
         if not isinstance(block, dict):
             continue
         kind = block.get("type")
         if kind == "text":
-            parts.append(str(block.get("text", "")))
+            text(str(block.get("text", "")))
         elif kind == "resource":
             res = block.get("resource") or {}
-            parts.append(str(res["text"]) if "text" in res else f"[resource {res.get('uri', '')} "
-                                                                  f"({res.get('mimeType', 'binary')}), not shown]")
+            if "text" in res:
+                text(str(res["text"]))
+            elif res.get("blob") and str(res.get("mimeType") or "").startswith("image/"):
+                picture({"data": res["blob"], "mimeType": res["mimeType"]})   # the same base64, another wrapper
+            else:
+                text(f"[resource {res.get('uri', '')} ({res.get('mimeType', 'binary')}), not shown]")
         elif kind == "resource_link":
-            parts.append(f"[resource link: {block.get('name') or ''} {block.get('uri', '')}]".replace("  ", " "))
-        elif kind in ("image", "audio"):
+            text(f"[resource link: {block.get('name') or ''} {block.get('uri', '')}]".replace("  ", " "))
+        elif kind == "image":
+            picture(block)
+        elif kind == "audio":
             size = len(block.get("data") or "") * 3 // 4
-            parts.append(f"[{kind} ({block.get('mimeType', '?')}, {size:,} bytes): not shown to the model]")
+            text(f"[audio ({block.get('mimeType', '?')}, {size:,} bytes): not shown to the model]")
         else:
-            parts.append(json.dumps(block, ensure_ascii=False))
+            text(json.dumps(block, ensure_ascii=False))
     if not parts and result.get("structuredContent") is not None:
-        parts.append(json.dumps(result["structuredContent"], ensure_ascii=False))
-    return "\n".join(parts)
+        text(json.dumps(result["structuredContent"], ensure_ascii=False))
+    return "\n".join(texts), (parts if images else None)
+
+
+def _cut_parts(parts: list, cap: int, note: str) -> list:
+    """`parts` with their text cut at `cap` characters in all and `note` after it.  The pictures are kept: the cap is
+    about the text a context has to hold, and a picture's own size is capped where it is taken."""
+    out, left = [], cap
+    for p in parts:
+        if p["type"] == "image":
+            out.append(p)
+        elif left > 0:
+            out.append({"type": "text", "text": p["text"][:left]})
+            left -= len(p["text"])
+    out.append({"type": "text", "text": note})
+    return out
 
 
 def _clean(name: str) -> str:
@@ -549,29 +616,36 @@ class McpHub:
 
     def call(self, name: str, arguments: dict, cancel: threading.Event | None = None) -> dict:
         """Run one tool -> {"ok", "text" (what the model reads, capped), "chars" (its full length), "truncated",
-        "ms", "server", "tool"}.  Errors become text starting with "error:"; only McpCancelled is raised."""
+        "ms", "server", "tool", "parts" (the tool message's content when the result carried pictures, else None),
+        "images" (those pictures as data: URLs)}.  Errors become text starting with "error:", and a result that
+        reports one is text alone as it always was; only McpCancelled is raised."""
         t0 = time.monotonic()
         server, tool = self._routes.get(name) or self.routes().get(name, (None, name))
         out = {"server": server.name if server else None, "tool": tool}
         if server is None:
-            text, ok = f"error: there is no tool named {name!r}", False
+            text, parts, ok = f"error: there is no tool named {name!r}", None, False
         else:
             try:
                 res = server.call(tool, arguments if isinstance(arguments, dict) else {},
                                   float(self.settings["timeout_s"]), cancel)
-                text, ok = result_text(res), not res.get("isError")
+                text, parts = result_parts(res)
+                ok = not res.get("isError")
                 if not ok:
-                    text = "error: " + (text or "the tool reported an error")
+                    text, parts = "error: " + (text or "the tool reported an error"), None
             except McpCancelled:
                 raise
             except McpError as e:
-                text, ok = f"error: {e}", False
+                text, parts, ok = f"error: {e}", None, False
         cap = int(self.settings["max_result_chars"])
         full = len(text)
+        note = ""
         if cap > 0 and full > cap:
-            text = text[:cap] + (f"\n\n[... truncated: the tool returned {full:,} characters; only the first "
-                                 f"{cap:,} are shown]")
-        out.update(ok=ok, text=text, chars=full, truncated=cap > 0 and full > cap,
+            note = (f"\n\n[... truncated: the tool returned {full:,} characters; only the first "
+                    f"{cap:,} are shown]")
+            text = text[:cap] + note
+            parts = _cut_parts(parts, cap, note) if parts is not None else None
+        out.update(ok=ok, text=text, chars=full, truncated=bool(note), parts=parts,
+                   images=[p["source"] for p in parts or () if p["type"] == "image"],
                    ms=int((time.monotonic() - t0) * 1000))
         return out
 
