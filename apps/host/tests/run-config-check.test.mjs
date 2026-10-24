@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-import { KNOWN_KEYS, checkRunConfig, describeIssues, nearestKey } from '../server/run-config-check.mjs';
+import { KNOWN_KEYS, checkAndParseRunConfig, checkRunConfig, describeIssues, nearestKey } from '../server/run-config-check.mjs';
 import { NATIVE_FIELDS } from '../server/native-settings.mjs';
 import { openTextFile, textEditorCommand } from '../server/open-text-file.mjs';
 
@@ -21,6 +21,20 @@ const good = `{
 test('a normal run config has no issues', () => {
   assert.deepEqual(checkRunConfig(good), { ok: true, issues: [] });
   assert.deepEqual(checkRunConfig('\uFEFF{}'), { ok: true, issues: [] }, 'Notepad’s byte-order mark is fine');
+});
+
+test('the checked configuration is parsed from the same captured text', () => {
+  const text = '\uFEFF{"parallel":2,"args":["--ple-io","mmap"]}';
+  const checked = checkAndParseRunConfig(text);
+  assert.deepEqual(checked, {
+    ok: true,
+    issues: [],
+    config: { parallel: 2, args: ['--ple-io', 'mmap'] },
+  });
+  const refused = checkAndParseRunConfig('{"parallel":99}');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.config, null);
+  assert.equal(refused.issues[0].code, 'whole-range');
 });
 
 test('every key the app edits is a known key', () => {
