@@ -709,24 +709,45 @@ _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
 
 
-def param_end(text: str, final: bool = False) -> int:
-    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by the next
-    `<parameter=` or `</function>` - the same text inside a value (a file that documents the call format, #210) is
-    part of the value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
-    at = text.find(PARAM_END)
+def param_end(text: str, final: bool = False, names=None) -> int:
+    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by `</function>` or
+    by the opener of another parameter of this tool (`<parameter=NAME>`, NAME among `names`; any name when `names` is
+    empty) - the same text inside a value (a file that documents the call format, #210) is part of the value, even
+    a whole call written there: a `<function=` in the value that is not closed yet owns the next closer.
+    -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
+    at, inner_end = text.find(PARAM_END), -1
     while at >= 0:
         after = text[at + len(PARAM_END):].lstrip()
-        if after.startswith(("<parameter=", FUNC_END)):
+        follows = None                      # True: a parameter/function follows; None: not decided yet
+        if after.startswith(FUNC_END):
+            follows = True
+        elif after.startswith("<parameter="):
+            gt = after.find(">")
+            follows = (not names or after[len("<parameter="):gt] in names) if gt >= 0 else (
+                None if "\n" not in after else False)
+        elif not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
+            follows = None
+        elif after.startswith("<=") and ">" not in after.split("\n", 1)[0] and "\n" not in after:
+            follows = None                  # a damaged `<=NAME>` opener still arriving
+        else:
+            follows = False
+        if follows and text[:at].count(FUNC_START) > text[:at].count(FUNC_END):
+            inner_end, follows = at, False  # closes the parameter of a call written inside the value
+        if follows:
             return at
-        if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
+        if follows is None:
             return at if final else -2
-        if after.startswith("<=") and ">" not in after.split("\n", 1)[0] and "\n" not in after:
-            return at if final else -2      # a damaged `<=NAME>` opener still arriving
         at = text.find(PARAM_END, at + 1)
-    return -1
+    return inner_end if final else -1
 
 
-def call_end(text: str) -> int:
+def _names_of(schemas, head: str) -> set:
+    """The declared parameter names of the tool a call opener's name (`head`) names; empty when unknown."""
+    props = (((schemas or {}).get(head.strip()) or {}).get("parameters") or {}).get("properties") or {}
+    return set(props)
+
+
+def call_end(text: str, schemas: dict | None = None, final: bool = False) -> int:
     """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
     its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
     the call format ends at the first `</tool_call>`, as before."""
@@ -737,6 +758,7 @@ def call_end(text: str) -> int:
     gt = text.find(">", pos)
     if gt < 0:
         return -1
+    names = _names_of(schemas, text[text.index(FUNC_START, pos) + len(FUNC_START):gt])
     pos = gt + 1
     while True:
         rest = text[pos:]
@@ -746,7 +768,7 @@ def call_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            end = param_end(text[gt + 1:], final, names)
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -809,7 +831,7 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 PARAM_START = "<parameter="
 
 
-def function_end(text: str) -> int:
+def function_end(text: str, schemas: dict | None = None, final: bool = False) -> int:
     """Where a `<function=NAME>...</function>` at the start of `text` ends (just past `</function>`), walking its
     parameters with param_end like call_end does; -1: not complete (or not in the call format)."""
     s = text.lstrip()
@@ -819,6 +841,7 @@ def function_end(text: str) -> int:
     gt = text.find(">", pos)
     if gt < 0:
         return -1
+    names = _names_of(schemas, text[text.index(FUNC_START, pos) + len(FUNC_START):gt])
     pos = gt + 1
     while True:
         rest = text[pos:]
@@ -828,7 +851,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            end = param_end(text[gt + 1:], final, names)
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -863,7 +886,9 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
             return None
     if args is None:
         args = {}
-    return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
+    if not isinstance(args, dict):
+        return None
+    return ToolCall(name=obj["name"], arguments=coerce_args(args, schemas[obj["name"]]))
 
 
 _BOOLS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
@@ -885,6 +910,27 @@ def coerce_param(value: str, declared) -> object:
     if declared == "boolean" and not isinstance(v, bool):
         return value
     return v
+
+
+def coerce_args(args: dict, schema: dict | None) -> dict:
+    """A call's arguments by the tool's declared parameter types - the one place every ToolCall passes through (the JSON
+    form, the whole-call parser).  A value that is not a string (a JSON call already carrying a number or boolean) is
+    left alone; a string is coerced by its declared type (coerce_param); an undeclared parameter stays as it is."""
+    props = ((schema or {}).get("parameters") or {}).get("properties") or {}
+    out = {}
+    for k, v in args.items():
+        declared = (props.get(k) or {}).get("type")
+        out[k] = coerce_param(v, declared) if isinstance(v, str) and declared is not None else v
+    return out
+
+
+_FUSED = re.compile(r"<function=([^<>\s=]+)[ \t]*(?=<parameter=)")
+
+
+def fix_fused(buf: str, schemas: dict) -> str:
+    """`<function=Read <parameter=file_path>` - the tool's name fused with its first parameter's opener (the model left
+    out the `>` after the name) - is `<function=Read>\n<parameter=file_path>` when the prefix is a declared tool."""
+    return _FUSED.sub(lambda m: "<function=%s>\n" % m.group(1) if m.group(1) in schemas else m.group(0), buf)
 
 
 _DAMAGED_PARAM = re.compile(r"(?:</parameter>|<function=[^>\n]*>)\s*<=([^>\s]+)>")
@@ -921,16 +967,15 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
         pname = rest[:rest.index(">")]
         rest = rest[rest.index(">") + 1:]
-        end = param_end(rest, final=True)
+        end = param_end(rest, final=True, names=set(props))
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
         if value.startswith("\n"):
             value = value[1:]
         if value.endswith("\n"):
             value = value[:-1]
-        declared = (props.get(pname) or {}).get("type")
-        args[pname] = coerce_param(value, declared)
-    return ToolCall(name=name, arguments=args)
+        args[pname] = value
+    return ToolCall(name=name, arguments=coerce_args(args, schema))
 
 
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
@@ -1177,7 +1222,7 @@ class OutputParser:
                 self._call_end_checked = len(self.buf)
                 return -1
             self._call_end_checked = -1
-        return call_end(self.buf)
+        return call_end(self.buf, self.schemas)
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1235,7 +1280,7 @@ class OutputParser:
                         self.sp += 1
                         rest = rest[1:]
                     self.sval_started = True
-                end = param_end(rest)
+                end = param_end(rest, names=set(self.sdeclared))
                 if end >= 0:
                     value = rest[:end]
                     if value.endswith("\n"):
@@ -1253,7 +1298,7 @@ class OutputParser:
                     self.sp += safe
                 return out
             elif self.ss == "raw":
-                end = param_end(rest)
+                end = param_end(rest, names=set(self.sdeclared))
                 if end < 0:
                     return out
                 value = rest[:end]
@@ -1303,13 +1348,15 @@ class OutputParser:
 
     def feed(self, delta: str) -> list[Event]:
         self.buf += delta
+        if self.schemas and "<function=" in self.buf:
+            self.buf = fix_fused(self.buf, self.schemas)    # a name fused with its first parameter's opener
         out: list[Event] = []
         while True:
             if self.state == "rcall":
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body), body.find(THINK_END)
+                end, think = call_end(body, self.schemas), body.find(THINK_END)
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
@@ -1482,7 +1529,9 @@ class OutputParser:
                     name = self.aliases.get(name, name)
                     if raw_name != raw_name.strip() and name not in self.schemas:
                         is_call = None     # only declared names gain whitespace normalization
-                is_partial = FUNC_START.startswith(after) or re.fullmatch(r"<function=\s*[^<>\s]*\s*", after)
+                fused = re.fullmatch(r"<function=\s*[^<>\s]+\s*(<.*)", after, re.S)     # name fused with <parameter=
+                is_partial = (FUNC_START.startswith(after) or re.fullmatch(r"<function=\s*[^<>\s]*\s*", after)
+                              or (fused and PARAM_START.startswith(fused.group(1))))
                 if not is_call and not is_partial:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
@@ -1536,7 +1585,7 @@ class OutputParser:
                 if self.recover and "<=" in self.buf:
                     self.buf = fix_param_openers(self.buf, self.schemas, self.sp if self.stream_tools else 0)
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
-                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    i = function_end(self.buf, self.schemas)      # </tool_call> after it is the wrapper's closer, dropped
                     if i >= 0:
                         after = self.buf[i:].lstrip()
                         if after.startswith(CALL_END):
@@ -1550,7 +1599,7 @@ class OutputParser:
                     if i >= 0:
                         drop = len(CALL_END)
                     # Only a following call opener confirms an omitted wrapper closer.
-                    f = function_end(self.buf)
+                    f = function_end(self.buf, self.schemas)
                     nxt = self.buf[f:].lstrip() if f >= 0 else ""
                     if re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", nxt):
                         i, drop = f, 0
@@ -1587,14 +1636,32 @@ class OutputParser:
         out = []
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
-        if self.state == "call" and self.bare and function_end(self.buf) >= 0:
-            i = function_end(self.buf)          # recover: a bare call is whole at its </function>
+        if self.state == "call" and self.bare and function_end(self.buf, self.schemas, True) >= 0:
+            i = function_end(self.buf, self.schemas, True)          # recover: a bare call is whole at its </function>
             body, rest = self.buf[:i], self.buf[i:].strip()
             self.buf = ""
             out += self._finish_call(body)
             if rest and not CALL_END.startswith(rest):
                 out.append(Event("content", self._track(rest)))
             return out
+        if self.state == "call" and self.recover and reason in (None, "stop") and self.buf.strip():
+            # the model stopped on its own with the call's closers missing (`true` then the end, no `</parameter>`, or no
+            # `</function>` / `</tool_call>`): complete it, so the client gets whole arguments instead of JSON cut
+            # after the last key
+            text = self.buf.rstrip()
+            if text.endswith(CALL_END):
+                text = text[:-len(CALL_END)].rstrip()
+            bases = ([text[:-len(FUNC_END)].rstrip()] if text.endswith(FUNC_END) else []) + [text]
+            for base, tail in [(b, t) for b in bases for t in ("", "\n" + FUNC_END, "\n" + PARAM_END + "\n" + FUNC_END)]:
+                if function_end(base + tail, self.schemas, True) == len(base + tail):
+                    body = base + tail
+                    if self.stream_tools:
+                        whole, self.buf = self.buf, body
+                        out += self._scan()
+                        out += self._close_scan()
+                        self.buf = whole
+                    self.buf = ""
+                    return out + self._finish_call(body)
         if self.state == "call" and self.stream_tools and self.scall is not None:
             out += self._scan()                 # the output ended inside a call that was already announced
             if self.ss == "function_done" and not self.buf[self.sp:].strip() and reason in (None, "stop"):
@@ -1634,6 +1701,10 @@ class OutputParser:
             self._reset_scan()
             self.state = "content"
             return [Event("content", self._track(body if bare else CALL_START + body + CALL_END))]
+        if os.environ.get("STRATA_LOG_TOOL_CALLS"):
+            need = (self.schemas.get(name, {}).get("parameters") or {}).get("required") or []
+            if [k for k in need if k not in call.arguments]:
+                print(f"[strata] tool call missing required parameters: raw={body!r} parsed={call.arguments!r}", flush=True)
         if self.scall is not None:
             call.id = self.scall.id
         self._reset_scan()
