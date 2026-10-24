@@ -86,10 +86,16 @@ struct PinnedArena {
     /// Registers the deferred slices in order, publishing how many are done in `ready`, and INT_MAX once it
     /// returns (a slice CUDA refuses ends the registration, and the rest is kept resident by the working-set lock).
     void register_slices(std::atomic<int>& ready);
+    /// STRATA_ARENA_REUSE: record that a shared-file arena is now fully populated, by setting the header's
+    /// completion flag through the MAP_SHARED mapping (a no-op without a shared-file backing).  A later start
+    /// that finds the flag set (and the pack hash matching) attaches the arena instead of copying it again.
+    void mark_shared_complete();
     std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
     void* mapping_base = nullptr;     ///< actual mapping start; differs from base when a shared-file header exists
     uint64_t mapping_bytes = 0;       ///< bytes to release from mapping_base
+    bool shared_existing = false;     ///< the shared-file backing was found on disk, not created by this call
+    bool shared_complete = false;     ///< its header's completion flag was set when it was found
     ~PinnedArena();
     PinnedArena(const PinnedArena&) = delete;
     PinnedArena& operator=(const PinnedArena&) = delete;
