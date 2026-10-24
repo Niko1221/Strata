@@ -394,8 +394,24 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
                 if (c == "memory") v1_path = line.substr(c2 + 1);
             continue;
         }
-        auto path = (root / line.substr(4)).lexically_normal();
-        if (path.string().rfind(root.string(), 0) != 0 || !std::filesystem::is_directory(path)) return false;
+        // The mount may not show this group: a container without its own cgroup namespace can see its host path here
+        // but only its own subtree under the mount.  Read the deepest part of the path that the mount shows, as the
+        // memory guard's group_dirs() does.  A hybrid host lists this line as well but mounts a cgroup-v1 tmpfs here
+        // (the v2 tree, at unified/, has no memory controller): no v2 terms then, the memory controller's v1 group
+        // below decides.
+        std::error_code ec;
+        if (!std::filesystem::exists(root / "cgroup.controllers", ec)) continue;
+        std::vector<std::string> names;
+        std::istringstream parts(line.substr(4));
+        for (std::string name; std::getline(parts, name, '/');) {
+            if (name == "." || name == "..") return false;
+            if (!name.empty()) names.push_back(name);
+        }
+        std::filesystem::path path = root;
+        for (const std::string& name : names) {
+            if (!std::filesystem::is_directory(path / name, ec)) break;
+            path /= name;
+        }
         v2 = true;
         while (path.string().rfind(root.string(), 0) == 0) {
             std::ifstream limit_file(path / "memory.max"), current_file(path / "memory.current");
