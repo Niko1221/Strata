@@ -1,0 +1,47 @@
+[strata] 2026-10-19 19:00:03 engine started: /opt/strata/components/engine/engine-cuda13/strata --serve --pack /data/Strata-data/packs/unsloth-ud-iq4_xs --native /data/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile /opt/strata/terminal/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /data/Strata-data/mtp/rt --max-context 262144 --kv int8 --ple-io ram --kv-resident 32768
+strata: sm_86 (Ampere): 9 exact speed switches on by default (STRATA_SM86_PERF=0 turns them off; a switch you set is kept): ADAPT_NOWAIT ADAPT_LAG CPU_IQ_ALL_EXACT1 SIDE_MIXER ATTN_DAILY GR_UP75 GU_SWIGLU QSA_ROWS B6_MMVQ_ROWS
+strata generate: memory guard: limit 94.2 GiB (source: meminfo), current 10.3 GiB, reclaimable cache credited 0.0 GiB; available 83.9 GiB (MemAvailable 83.9 GiB), floor 2560 MiB
+strata generate: PCIe probe: 25.2 GB/s host->device (best of 25.2 25.2 25.2 25.2) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: /data/Strata-data/packs/unsloth-ud-iq4_xs experts (largest blob 3.48 MB), token embedding Q8_0 in mapped host memory (644 MiB, 0.4 s)
+strata generate: 216 MiB of weights loaded from /data/Strata-data/packs/unsloth-ud-iq4_xs in 0.0 s (495 canonical tensors skipped: served natively)
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 499 native projection matrices, 3619.14 MiB of weights, in 0.5 s
+strata generate: PLE table locked in RAM (--ple-io ram) in 6.4 s
+strata generate: profile /opt/strata/terminal/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of /data/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 0.30 s (2624 MiB/s)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.2 s
+strata generate: GPU 0: NVIDIA GeForce RTX 3080 Ti, compute capability 8.6
+strata: expert arena: MAP_HUGETLB unavailable (needed 28383 2 MiB pages, vm.nr_hugepages=0); transparent huge pages NOT requested: only 0 GiB of free 2 MiB blocks for a 55 GiB arena, compaction would stall the load (STRATA_ARENA_THP=1 requests them anyway) (#2126)
+[strata] 2026-10-19 19:00:43 engine started: /opt/strata/components/engine/engine-cuda13/strata --serve --pack /data/Strata-data/packs/unsloth-ud-iq4_xs --native /data/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile /opt/strata/terminal/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /data/Strata-data/mtp/rt --max-context 262144 --kv int8 --ple-io ram --kv-resident 32768
+strata: sm_86 (Ampere): 9 exact speed switches on by default (STRATA_SM86_PERF=0 turns them off; a switch you set is kept): ADAPT_NOWAIT ADAPT_LAG CPU_IQ_ALL_EXACT1 SIDE_MIXER ATTN_DAILY GR_UP75 GU_SWIGLU QSA_ROWS B6_MMVQ_ROWS
+strata generate: memory guard: limit 94.2 GiB (source: meminfo), current 10.2 GiB, reclaimable cache credited 0.0 GiB; available 84.0 GiB (MemAvailable 84.0 GiB), floor 2560 MiB
+strata generate: PCIe probe: 25.1 GB/s host->device (best of 25.1 25.1 25.1 25.1) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: /data/Strata-data/packs/unsloth-ud-iq4_xs experts (largest blob 3.48 MB), token embedding Q8_0 in mapped host memory (644 MiB, 0.4 s)
+strata generate: 216 MiB of weights loaded from /data/Strata-data/packs/unsloth-ud-iq4_xs in 0.1 s (495 canonical tensors skipped: served natively)
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 499 native projection matrices, 3619.14 MiB of weights, in 1.7 s
+strata generate: PLE table locked in RAM (--ple-io ram) in 0.7 s
+strata generate: profile /opt/strata/terminal/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of /data/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 0.50 s (1564 MiB/s)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.2 s
+strata generate: GPU 0: NVIDIA GeForce RTX 3080 Ti, compute capability 8.6
+[strata] 2026-10-19 19:15:05 engine started: /opt/strata/components/engine/engine-cuda13/strata --serve --pack /data/Strata-data/packs/unsloth-ud-iq4_xs --native /data/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile /opt/strata/terminal/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp /data/Strata-data/mtp/rt --max-context 262144 --kv int8 --ple-io ram --kv-resident 32768
+strata: sm_86 (Ampere): 9 exact speed switches on by default (STRATA_SM86_PERF=0 turns them off; a switch you set is kept): ADAPT_NOWAIT ADAPT_LAG CPU_IQ_ALL_EXACT1 SIDE_MIXER ATTN_DAILY GR_UP75 GU_SWIGLU QSA_ROWS B6_MMVQ_ROWS
+strata generate: memory guard: limit 94.2 GiB (source: meminfo), current 10.1 GiB, reclaimable cache credited 0.0 GiB; available 84.1 GiB (MemAvailable 84.1 GiB), floor 2560 MiB
+strata generate: PCIe probe: 25.1 GB/s host->device (best of 25.1 25.1 25.1 25.1) -> pcie_frac 0.55 (default 0.55)
+strata generate: native pack: /data/Strata-data/packs/unsloth-ud-iq4_xs experts (largest blob 3.48 MB), token embedding Q8_0 in mapped host memory (644 MiB, 0.4 s)
+strata generate: 216 MiB of weights loaded from /data/Strata-data/packs/unsloth-ud-iq4_xs in 0.1 s (495 canonical tensors skipped: served natively)
+strata: STRATA_HC_Q8=1: 0.63 GiB of Q8_0 hyper-connection projections for the verify read
+strata generate: 499 native projection matrices, 3619.14 MiB of weights, in 1.7 s
+strata generate: PLE table locked in RAM (--ple-io ram) in 6.2 s
+strata generate: profile /opt/strata/terminal/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of /data/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf
+strata mtp: draft layer loaded, 835 MiB of VRAM (experts 675, dense 111), files read in 0.47 s (1671 MiB/s)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.2 s
+strata generate: GPU 0: NVIDIA GeForce RTX 3080 Ti, compute capability 8.6
+strata: expert arena: MAP_HUGETLB unavailable (needed 28383 2 MiB pages, vm.nr_hugepages=0); transparent huge pages NOT requested: only 24 GiB of free 2 MiB blocks for a 55 GiB arena, compaction would stall the load (STRATA_ARENA_THP=1 requests them anyway) (#2126)

@@ -73,6 +73,10 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-19: RTX 3080 Ti 12 GB in a KVM guest (Xeon w7-2475X, 94 GiB), Docker, 0.2.0-beta against 0.1.43](../bench/results/2026-10-19-community-rtx-3080-ti-kvm-docker-0.2.0/README.md):
+  IQ3_S, Swift 1.5 IQ3_S and UD-IQ4_XS at 262,144 context, the two versions interleaved on the same files. IQ3_S decode
+  76.4/77.1/68.4 -> 97.0/92.2/81.8 tok/s at 4K/32K/128K (sm_86 table off: 83.5/79.6/73.8), Swift 1.5 similar, prompt speed
+  unchanged; 0.2.0's own UD-IQ4_XS settings OOM-killed on 94 GiB (4 of 4), with a 55 GiB budget prompts 13-46% slower.
 
 ## Run the standard benchmark
 

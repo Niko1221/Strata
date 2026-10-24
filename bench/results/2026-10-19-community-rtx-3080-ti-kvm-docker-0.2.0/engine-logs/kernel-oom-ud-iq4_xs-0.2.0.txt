@@ -1,0 +1,18 @@
+Oct 19 19:00:23 <host> kernel: strata invoked oom-killer: gfp_mask=0x140dc2(GFP_HIGHUSER|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0
+Oct 19 19:00:23 <host> kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=docker-<id>.scope,mems_allowed=0,global_oom,task_memcg=/system.slice/docker-<id>.scope,task=strata,pid=926198,uid=0
+Oct 19 19:00:23 <host> kernel: Out of memory: Killed process 926198 (strata) total-vm:126966480kB, anon-rss:50369508kB, file-rss:28189724kB, shmem-rss:4267128kB, UID:0 pgtables:163020kB oom_score_adj:0
+Oct 19 19:00:25 <host> kernel: oom_reaper: reaped process 926198 (strata), now anon-rss:0kB, file-rss:68kB, shmem-rss:3341288kB
+Oct 19 19:02:18 <host> kernel: strata invoked oom-killer: gfp_mask=0x140dc2(GFP_HIGHUSER|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0
+Oct 19 19:02:18 <host> kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=docker-<id>.scope,mems_allowed=0,global_oom,task_memcg=/system.slice/docker-<id>.scope,task=strata,pid=927041,uid=0
+Oct 19 19:02:18 <host> kernel: Out of memory: Killed process 927041 (strata) total-vm:127163016kB, anon-rss:57705448kB, file-rss:23718460kB, shmem-rss:4267128kB, UID:0 pgtables:177400kB oom_score_adj:0
+Oct 19 19:15:30 <host> kernel: herdr-boot-serv invoked oom-killer: gfp_mask=0x440dc0(GFP_KERNEL_ACCOUNT|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=200
+Oct 19 19:15:30 <host> kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/system.slice/docker-<id>.scope,task=strata,pid=936932,uid=0
+Oct 19 19:15:30 <host> kernel: Out of memory: Killed process 936932 (strata) total-vm:126966392kB, anon-rss:50858524kB, file-rss:28076108kB, shmem-rss:4267128kB, UID:0 pgtables:163984kB oom_score_adj:0
+Oct 19 19:15:32 <host> kernel: oom_reaper: reaped process 936932 (strata), now anon-rss:0kB, file-rss:68kB, shmem-rss:3703928kB
+Oct 19 19:27:59 <host> kernel: strata invoked oom-killer: gfp_mask=0x140dc2(GFP_HIGHUSER|__GFP_ZERO|__GFP_COMP), order=0, oom_score_adj=0
+Oct 19 19:27:59 <host> kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=docker-<id>.scope,mems_allowed=0,global_oom,task_memcg=/system.slice/docker-<id>.scope,task=strata,pid=942663,uid=0
+Oct 19 19:27:59 <host> kernel: Out of memory: Killed process 942663 (strata) total-vm:126966380kB, anon-rss:57204736kB, file-rss:25723624kB, shmem-rss:4267128kB, UID:0 pgtables:176420kB oom_score_adj:0
+Oct 19 19:28:02 <host> kernel: oom_reaper: reaped process 942663 (strata), now anon-rss:0kB, file-rss:68kB, shmem-rss:3445736kB
+Oct 19 19:29:32 <host> kernel: cuda-EvtHandlr invoked oom-killer: gfp_mask=0xcc0(GFP_KERNEL), order=0, oom_score_adj=0
+Oct 19 19:29:32 <host> kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=docker-<id>.scope,mems_allowed=0,global_oom,task_memcg=/system.slice/docker-<id>.scope,task=strata,pid=942979,uid=0
+Oct 19 19:29:32 <host> kernel: Out of memory: Killed process 942979 (strata) total-vm:135407124kB, anon-rss:59525548kB, file-rss:24049620kB, shmem-rss:4464888kB, UID:0 pgtables:182468kB oom_score_adj:0
