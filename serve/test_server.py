@@ -1733,6 +1733,40 @@ class SharedPrefix(unittest.TestCase):
         self.assertEqual(req, {"temperature": 0})
         self.assertEqual(ids, self.svc.prepare(self.MSGS, None, {}, 16)[0])
 
+    def test_image_prefix_boundaries_use_encoded_rows(self):
+        tok = ByteTokenizer()
+        with tempfile.TemporaryDirectory() as d:
+            class Vision(ImageMarkers.FakeVision):
+                def encode(self, source):
+                    return self.rows, 3 if source == "a.png" else 7
+            vision = Vision(d)
+            svc = Service(MockEngine(tok, "ok", max_context=CTX), tok,
+                          ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision)
+            msgs = [{"role": "user", "content": [{"type": "image", "source": "a.png"},
+                                                   {"type": "text", "text": "<|image_pad|> is literal"}]},
+                    {"role": "user", "content": [{"type": "image", "source": "b.png"}]},
+                    {"role": "user", "content": "Question"}]
+            plain, _, _ = svc.prepare(msgs, None, {}, 16)
+            svc.drop_embeddings()
+            pad = tok.encode("<|image_pad|>", parse_special=True)[0]
+            for spec, rows, ending in (({"messages": 1}, 3, "is literal<|im_end|>\n"),
+                                       ({"messages": 2}, 10, "<|im_end|>\n"),
+                                       ({"message": 2, "chars": 4}, 10, "Ques")):
+                with self.subTest(spec=spec), mock.patch.object(vision, "encode", wraps=vision.encode) as encode:
+                    req = {"strata_prefix": spec}
+                    ids, _, _ = svc.prepare(msgs, None, {}, 16, req=req)
+                    prefix = ids[:req["strata_prefix"]["tokens"]]
+                    self.assertEqual(encode.call_count, 2)
+                    self.assertEqual(ids, plain)
+                    self.assertEqual(prefix.count(pad), rows)
+                    self.assertTrue(tok.decode(prefix).endswith(ending))
+                    svc.drop_embeddings()
+            with contextlib.redirect_stdout(io.StringIO()):
+                req = {"strata_prefix": {"tokens": plain.index(pad) + 1}}
+                svc.prepare(msgs, None, {}, 16, req=req)
+                self.assertEqual(req["strata_prefix"], {})
+                svc.drop_embeddings()
+
 
 class GpuChoice(unittest.TestCase):
     """Issue #51: the config's \"gpu\" reaches the engine as CUDA_VISIBLE_DEVICES, numbered like nvidia-smi."""
