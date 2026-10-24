@@ -339,6 +339,22 @@ class ReportTests(unittest.TestCase):
     def test_no_server_is_an_error_not_a_crash(self):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
 
+    def test_project_version_does_not_use_the_locale_code_page(self):
+        # #2792: a Windows with a Chinese or Japanese code page decodes a text file read without an encoding as GBK / cp932,
+        # and CMakeLists.txt is UTF-8 with a BOM.  Path.read_text here defaults to GBK, as it does on such a machine.
+        original = Path.read_text
+
+        def gbk_default(self, encoding=None, errors=None, **kw):
+            return original(self, encoding=encoding or "gbk", errors=errors, **kw)
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "CMakeLists.txt").write_bytes(
+                "﻿cmake_minimum_required(VERSION 3.24)\n# notes — €\nproject(strata VERSION 9.8.7 LANGUAGES CXX)\n"
+                .encode("utf-8"))
+            with mock.patch.object(B, "ROOT", root), mock.patch.object(Path, "read_text", gbk_default):
+                self.assertEqual(B.project_version(), "9.8.7")
+
 
 if __name__ == "__main__":
     unittest.main()

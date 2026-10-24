@@ -563,7 +563,8 @@ def detect_quant(view: dict) -> str | None:
 
 def project_version() -> str | None:
     try:
-        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text())
+        # UTF-8 as setup.py reads it: without an encoding a Chinese or Japanese Windows decodes with GBK / cp932 (#2792)
+        m = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
         return m.group(1) if m else None
     except OSError:
         return None
