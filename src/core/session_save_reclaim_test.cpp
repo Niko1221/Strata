@@ -111,5 +111,58 @@ int main() {
         auto r = session_save_reclaim(chain, cache, live, floor, [] { return std::optional<uint64_t>(0); });
         check(!r.bytes && !r.checkpoints && !r.parked, "empty chain and disabled cache");
     }
+    // ---- RESTORE-side read reclaim: same ladder, caller-supplied need (the read admit's hook).
+    {   // (a) retained reuse first, then oldest parked, then the chain from the back, re-probing after
+        // every step and stopping the moment the supplied need clears the floor.
+        const uint64_t need = 1u << 18;   // a read's session_read_peak_bytes for the arriving file
+        for (int sufficient_after = 1; sufficient_after <= 5; ++sufficient_after) {
+            std::vector<ConversationCheckpoint> chain{checkpoint(100), checkpoint(300), checkpoint(300)};
+            auto* selected_storage = chain[1].gdn.data();
+            ConversationCache cache(1u << 20, 10); park(cache, 10); park(cache, 20);
+            std::vector<ConversationKv> kv(1); kv[0].v.resize(100); cache.retain(std::move(kv), 100);
+            const size_t bytes_before = cache.bytes();
+            size_t chain_bytes = 0; for (const auto& c : chain) chain_bytes += c.bytes();
+            int probes = 0;
+            auto r = session_read_reclaim(cache, chain, need, floor, [&]() -> std::optional<uint64_t> {
+                return probes++ >= sufficient_after ? need + floor : 0;
+            });
+            check(probes == sufficient_after + 1, "read reclaim stops immediately once the probe clears the floor");
+            check(r.parked == size_t(std::min(sufficient_after - 1, 2)), "one-at-a-time parked eviction, oldest first");
+            check(r.checkpoints == size_t(sufficient_after >= 4 ? sufficient_after - 3 : 0),
+                  "chain checkpoints only after the parked cache");
+            check(r.bytes == bytes_before - cache.bytes() + chain_bytes -
+                  [&] { size_t left = 0; for (const auto& c : chain) left += c.bytes(); return left; }(),
+                  "read reclaim byte accounting");
+            check(session_deepest_checkpoint(chain)->gdn.data() == selected_storage, "first deepest tie retained");
+        }
+    }
+    {   // (b) pins survive: neither a pinned parked conversation nor a pinned checkpoint is ever evicted.
+        std::vector<ConversationCheckpoint> chain{checkpoint(100, true), checkpoint(300, true), checkpoint(500)};
+        ConversationCache cache(1u << 20, 10); park(cache, 10, true);
+        std::vector<ConversationKv> kv(1); kv[0].v.resize(100); cache.retain(std::move(kv), 100);
+        auto r = session_read_reclaim(cache, chain, 1u << 30, floor, [] { return std::optional<uint64_t>(0); });
+        check(cache.size() == 1 && cache.evictions() == 0, "a pinned parked conversation stays parked");
+        // With a pin in the chain the file selection is the deepest PINNED checkpoint (session_deepest_checkpoint),
+        // so exactly that one survives - as in the save-side battery - and the deeper unpinned tail is reclaimable.
+        check(r.checkpoints == 1 && chain.size() == 2 && chain[0].pinned && chain[1].pinned,
+              "pinned checkpoints stay, the unpinned tail goes");
+        check(r.parked == 0, "the pinned parked conversation is not reclaimed");
+        check(cache.retained_bytes() == 0 && r.bytes >= 100, "retained reuse is not a pin");
+    }
+    {   // (c) the deepest chain checkpoint survives even when the whole ladder runs, and (d) an exhausted
+        // reclaim frees nothing and the typed memory refusal stands.
+        std::vector<ConversationCheckpoint> chain{checkpoint(100), checkpoint(300), checkpoint(500)};
+        const auto before = *session_deepest_checkpoint(chain);
+        auto* storage = chain[2].gdn.data();
+        ConversationCache cache(0, 0);   // nothing parked: only the chain can free
+        auto r = session_read_reclaim(cache, chain, 1u << 30, floor, [] { return std::optional<uint64_t>(0); });
+        check(r.checkpoints == 2 && chain.size() == 1 && chain[0].gdn.data() == storage &&
+              session_deepest_checkpoint(chain)->ids == before.ids, "the deepest checkpoint survives the ladder");
+        auto again = session_read_reclaim(cache, chain, 1u << 30, floor, [] { return std::optional<uint64_t>(0); });
+        check(!again.bytes && !again.checkpoints && !again.parked, "exhausted read reclaim is idempotent");
+        std::vector<ConversationCheckpoint> out; std::string why;
+        check(!session_save_checkpoints(chain, live, [](uint64_t, std::string& w) { w = "low RAM"; return false; }, out, why)
+              && out.empty() && why == "low RAM", "the typed memory refusal stands after an exhausted reclaim");
+    }
     std::printf("session_save_reclaim: %d checks passed\n", checks_run);
 }
