@@ -166,6 +166,23 @@ inline bool g_qdedup() { static const bool on = [] { const char* v = std::getenv
 // fork F4 (Eddoursul): 2-4 token dense projections read an interleaved copy of the q8_1 activations (bitwise the same
 // outputs); STRATA_MMVQ_IL=0 keeps native_mmvq's multi-column kernels
 inline bool g_mmvq_il() { static const bool on = [] { const char* v = std::getenv("STRATA_MMVQ_IL"); return v == nullptr || v[0] != '0'; }(); return on; }
+// STRATA_SELECT_LONG=1 (opt-in): a window graph past select_long_at() cells takes the long-context QSA select
+// (qsa_block_topk_long's multi-CTA top-k through topk_scratch_, qsa_block_scores_long's shuffle-free decode scorer;
+// both compute capability 6.x by default, the same ids and score bits).  Each costs ~6 more kernels a call, which only
+// a longer context pays back (4x GP100: 0.5 ms a window more at 1K, even at 30K, 4.0-4.7 ms less at 300K), so the
+// verifier keeps a second set of window graphs for it.  Off: no scratch, no second graphs.
+inline bool select_long_on() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_SELECT_LONG"); return v != nullptr && v[0] == '1'; }();
+    return on;
+}
+// STRATA_SELECT_LONG_AT: the threshold in cells (default 65536; 0: always)
+inline int64_t select_long_at() {
+    static const int64_t at = [] {
+        const char* v = std::getenv("STRATA_SELECT_LONG_AT");
+        return v != nullptr && v[0] != 0 ? (int64_t) std::atoll(v) : (int64_t) 65536;
+    }();
+    return at;
+}
 // 143-amdk: STRATA_QFUSE_HC - only the hyper-connection read writes its consumer's q8_1 image (not the GDN recurrence): gfx12 default (=0 / 1 forces off / on)
 inline bool g_qfuse_hc() {
 #if defined(STRATA_USE_HIP)
@@ -617,10 +634,12 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
-    for (auto& e : exec_)
-        if (e) cudaGraphExecDestroy(e);
-    for (auto& e : exec_nr_)
-        if (e) cudaGraphExecDestroy(e);
+    for (auto& row : exec_)
+        for (auto& e : row)
+            if (e) cudaGraphExecDestroy(e);
+    for (auto& row : exec_nr_)
+        for (auto& e : row)
+            if (e) cudaGraphExecDestroy(e);
     if (commit_exec_) cudaGraphExecDestroy(commit_exec_);
     for (auto& kv : exec_bm_)
         if (kv.second) cudaGraphExecDestroy(kv.second);
@@ -878,6 +897,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
         idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
         scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_);
+        if (select_long_on() && strata::kernels::qsa_topk_multi_scratch_ints(T) > 0)   // STRATA_SELECT_LONG only
+            topk_scratch_ = b.take<int32_t>((uint64_t) strata::kernels::qsa_topk_multi_scratch_ints(T));
         attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
         attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
         tail_snap_ = b.take<float>(nQ * TS);
@@ -1662,6 +1683,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         }
                 };
                 auto idx_select = [&](cudaStream_t ns) {
+                    if (sel_long_) {   // STRATA_SELECT_LONG: the long-context window graphs (the same ids)
+                        qsa_block_scores_long(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n,
+                                              max_blocks_, s, scores_ + (size_t) tb * max_blocks_, ns, -1);
+                        qsa_block_topk_long(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_,
+                                            cap_, s, sel_ + (size_t) tb * cap_, ns, -1, topk_scratch_);
+                        return;
+                    }
                     qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
                                      s, scores_ + (size_t) tb * max_blocks_, ns);
                     qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
@@ -2452,7 +2480,7 @@ void Verifier::refresh_ar() {
 }
 
 bool Verifier::capture(int T, std::string& err) {
-    cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[T] : exec_[T];
+    cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];
     if (exec_t != nullptr) return true;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
@@ -2839,7 +2867,8 @@ bool Verifier::chain_overlap() const {
 bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string& err) {
     const OnDevice on_device(device_);
     prelaunched_ = 0;
-    cudaGraphExec_t exec_t = ar_off_ ? exec_nr_[T] : exec_[T];   // #871: the variant the previous stage refreshed
+    sel_long_ = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;   // the variant the previous stage captured
+    cudaGraphExec_t exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];   // #871: the variant the previous stage refreshed
     if (T < 1 || T > max_t_ || exec_t == nullptr) { err = "verify: prelaunch before the window was captured"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     if (pos0 + T > ss_->qsa_states[ss_->qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
@@ -2883,11 +2912,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     prelaunched_ = 0;
     if (!pre && pre_launch_ && !pre_launch_(cs_, err)) return false;   // (a prelaunched window's was served with the first stage's)
     if (!pre) refresh_ar();
+    // STRATA_SELECT_LONG: the select kernels this window's context pays off with (the same on every stage)
+    sel_long_ = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;
     if (!capture(T, err) || !capture_commit(err)) return false;
     const bool chain = chain_overlap();
     if (chain) {   // capture the next stage's window here, on this thread, so the helper only stages and launches
         const OnDevice on_next(next_->device_);
         next_->refresh_ar();                     // #871: the variant its prelaunch and its run() will both use
+        next_->sel_long_ = sel_long_;
         if (!next_->capture(T, err) || !next_->capture_commit(err)) return false;
     }
     VDBG("captured; staging\n");
@@ -2910,7 +2942,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #endif
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
     bool flag_raised = false;   // the PLE flag went up before the launch (early_ple_flag_mode)
-    bool& graph_launched = ar_off_ ? launched_nr_[T] : launched_[T];
+    bool& graph_launched = ar_off_ ? launched_nr_[sel_long_][T] : launched_[sel_long_][T];
     if (!pre && ar_on() && !test_stall && (early_ple_flag_mode() == 1 || (early_ple_flag_mode() == 2 && !graph_launched))) {
         if (do_ple) {
             const Clock::time_point tp = Clock::now();
@@ -2939,11 +2971,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             const char* value = std::getenv("STRATA_VERIFY_ASYNC_LAUNCH");
             return value != nullptr && value[0] == '1';
         }();
-        launch_o.emplace(ar_off_ ? exec_nr_[T] : exec_[T], cs_, device_, threaded_launch,
+        launch_o.emplace(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_, device_, threaded_launch,
                          [this] { (void) release_gpu_waits(5000); });
         const cudaError_t le = launch_o->status();
 #else
-        const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[T] : exec_[T], cs_);
+        const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_);
 #endif
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
         graph_launched = true;
@@ -3503,6 +3535,7 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
     row_base_ = hbase;
     for (int t = 0; t < S; ++t) brow_[t] = rows[t];
     std::string rerr;
+    sel_long_ = 0;   // batch rows: the one-CTA select
     const bool ok = record_window(S, cs_, rerr);
     batch_rec_ = false;
     row_base_ = 0;
@@ -4176,8 +4209,14 @@ bool Verifier::capture_all(std::string& err) {
     if (g_ == nullptr) { err = "verify: capture_all before init"; return false; }
     if (remote_opt_ != nullptr) { err = "verify: pipelined windows do not serve --remote-expert-opt"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
-    for (int T = 1; T <= max_t_; ++T)
-        if (!capture(T, err)) return false;
+    // STRATA_SELECT_LONG: both select variants (see select_long_at): pl_launch takes the one its window's context
+    // needs, and nothing can be captured once pipelined windows are in flight.  Without it only [0]
+    for (int sl = 0; sl < (select_long_on() ? 2 : 1); ++sl) {
+        sel_long_ = sl;
+        for (int T = 1; T <= max_t_; ++T)
+            if (!capture(T, err)) return false;
+    }
+    sel_long_ = 0;
     if (!capture_commit(err)) return false;
     if ((ev_done_ == nullptr && cudaEventCreateWithFlags(&ev_done_, cudaEventDisableTiming) != cudaSuccess) ||
         (ev_commit_ == nullptr && cudaEventCreateWithFlags(&ev_commit_, cudaEventDisableTiming) != cudaSuccess)) {
@@ -4232,7 +4271,8 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
-    if (exec_[T] == nullptr || commit_exec_ == nullptr || ev_done_ == nullptr || pl_ple_rows_.empty()) {
+    const int sl = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;   // the variant this window's context pays off with
+    if (exec_[sl][T] == nullptr || commit_exec_ == nullptr || ev_done_ == nullptr || pl_ple_rows_.empty()) {
         err = "verify: pipelined window not prepared (capture_all)";
         return false;
     }
@@ -4254,7 +4294,7 @@ bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW (pipelined)", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
-    const cudaError_t le = cudaGraphLaunch(exec_[T], cs_);
+    const cudaError_t le = cudaGraphLaunch(exec_[sl][T], cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
     if (fl_prof_) cudaMemcpyAsync(prof_pin_, prof_, prof_h_.size() * 8, cudaMemcpyDeviceToHost, cs_);
