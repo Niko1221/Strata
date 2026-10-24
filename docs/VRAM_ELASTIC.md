@@ -114,6 +114,10 @@ and starts the encoder with the model, as before) the GPU encoder is not started
   `VRAM` command first keeps `"elastic_mib"` (default 2048) free on top of the reserve - the last `POST /v1/vram`, or 0
   when none was made - and then the encoder starts. If the cache cannot shrink (the resident low-RAM mode, an engine
   without `--vram-elastic`) it starts anyway, as a non-elastic encoder would, and the log says why.
+- **Pictures the hash cache already knows never wake it**: the cache and its `.sve` files survive a stop, and most
+  clients re-send the conversation's pictures on every turn - such a turn (every picture a hit, elastic only) takes
+  neither the FIFO turn nor a start **(code; `serve/test_vision_cache_wake.py`)**. A turn with one picture the cache
+  lacks takes both, for all of its pictures.
 - **Idle** for `"elastic_idle_s"` (default 120) without a picture: a thread stops the encoder between requests and
   sends `VRAM` with that reserve again, so the cache grows back to the size it had (0, not the start's reserve: that
   would leave it a segment or more smaller).
