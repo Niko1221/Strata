@@ -1,0 +1,15 @@
+NVIDIA GeForce RTX 5070 asyncEngineCount=2
+throughput 1 stream(s): 12.470 ms for 256 blobs = 28.38 GB/s
+throughput 2 stream(s): 12.533 ms for 256 blobs = 28.24 GB/s
+big range 1 stream(s): 3.071 ms for 88473600 bytes = 28.81 GB/s
+big range 2 stream(s): 3.071 ms for 88473600 bytes = 28.81 GB/s
+layer of  1 blobs, 1 stream(s): median 0.070 ms  min 0.069  p90 0.079  (ideal at 11 GB/s 0.126)
+layer of  1 blobs, 2 stream(s): median 0.070 ms  min 0.068  p90 0.079  (ideal at 11 GB/s 0.126)
+layer of  2 blobs, 1 stream(s): median 0.122 ms  min 0.117  p90 0.141  (ideal at 11 GB/s 0.251)
+layer of  2 blobs, 2 stream(s): median 0.126 ms  min 0.118  p90 0.129  (ideal at 11 GB/s 0.251)
+layer of  4 blobs, 1 stream(s): median 0.222 ms  min 0.215  p90 0.226  (ideal at 11 GB/s 0.503)
+layer of  4 blobs, 2 stream(s): median 0.224 ms  min 0.217  p90 0.228  (ideal at 11 GB/s 0.503)
+layer of  8 blobs, 1 stream(s): median 0.419 ms  min 0.411  p90 0.422  (ideal at 11 GB/s 1.005)
+layer of  8 blobs, 2 stream(s): median 0.419 ms  min 0.413  p90 0.423  (ideal at 11 GB/s 1.005)
+layer of 16 blobs, 1 stream(s): median 0.810 ms  min 0.804  p90 0.815  (ideal at 11 GB/s 2.011)
+layer of 16 blobs, 2 stream(s): median 0.813 ms  min 0.804  p90 0.817  (ideal at 11 GB/s 2.011)
