@@ -252,6 +252,30 @@ public:
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
     int64_t multi_bytes = 0;
+    /// run_phase's split (host thread only, plain doubles, not atomic), accumulated ms and calls of any mode: wait for the
+    /// workers to park before the batch, publish..wait_done (the drain), wait for them to re-park.  `bytes_gu` / `bytes_down`:
+    /// run_split_multi_native's weight bytes per phase (distinct experts).
+    double ms_ph_pre = 0, ms_ph_drain = 0, ms_ph_post = 0;
+    int64_t ph_calls = 0, ph_tasks = 0, bytes_gu = 0, bytes_down = 0;
+    /// (q36 hybrid decode, opt-in): the parked workers load, into their own caches, the rows they will compute of the
+    /// next layer's predicted experts (`blobs`, the layer's format `f`, at most kMaxWarm); a phase published meanwhile stops
+    /// the loading between 8 KB chunks.  `run_split_multi_native` then gives a warmed expert's rows to the worker that
+    /// loaded them (the same row split by worker id) instead of the shared claim, and drops the warm set.  The rows of
+    /// every job are the same single-token dots whoever computes them: the result is bitwise the same.  Needs pinned workers
+    /// and no NUMA split (else off).  `enable_warm` before the first call.
+    static constexpr int kMaxWarm = 8;
+    void enable_warm(bool on);
+    bool warm_enabled() const { return warm_on_; }
+    void warm_post(const NativeFmt& f, const uint8_t* const* blobs, int n);
+    /// host-thread counters of the native calls: [0] no job warmed, [1] some, [2] all (calls, jobs, ms, bytes)
+    int64_t wc_calls[3] = {0, 0, 0}, wc_jobs[3] = {0, 0, 0}, wc_bytes[3] = {0, 0, 0}, warm_posts = 0, warm_full = 0;
+    double wc_ms[3] = {0, 0, 0};
+    void reset_phase_stats() {
+        for (int k = 0; k < 3; ++k) wc_calls[k] = wc_jobs[k] = wc_bytes[k] = 0, wc_ms[k] = 0;
+        warm_posts = warm_full = 0;
+        ms_multi_gu = ms_multi_q = ms_multi_down = ms_ph_pre = ms_ph_drain = ms_ph_post = 0;
+        multi_bytes = ph_calls = ph_tasks = bytes_gu = bytes_down = 0;
+    }
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
     /// atomics below.  It was a LOCKED read-modify-write in the park loop, so measuring the contention added to
@@ -288,7 +312,9 @@ private:
     int tasks_ = 0;
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
-    void run_phase(int mode, int n_tasks);
+    void run_phase(int mode, int n_tasks, int n_extra = 0);
+    void native_rows(int e, int r0, int r1);
+    void warm_run(int id, uint32_t epoch, uint32_t seq);
     /// Claim the next job of batch `epoch`, or -1 (that batch is exhausted, or it is not the current one).
     int claim(uint32_t epoch);
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.
@@ -339,6 +365,19 @@ private:
     alignas(64) std::atomic<uint32_t> done_{0};
     alignas(64) std::atomic<uint32_t> parked_{0};
     alignas(64) std::atomic<uint32_t> epoch_{0};
+    // The warm set (a seqlock: warm_seq_ is odd while the host writes it and moves to the next even value when it is
+    // whole; a reader that sees the value change discards what it read), how many workers finished loading THAT set (warm_done_:
+    // the set's seq in the high 32 bits, the count in the low ones, so a count of an older set never counts; the 32-bit seq wraps after 2^31 posts, which is days of decode, and a wrap is harmless: it needs the same value twice within one set's life), and the
+    // static row slices of the current native phase (jobs [static_first_, static_first_ + static_n_), one slice per worker)
+    bool warm_on_ = false;
+    // (relaxed atomics: the seqlock's readers copy them while the host may be rewriting them, and discard the copy then)
+    std::atomic<const NativeFmt*> warm_fmt_{nullptr};
+    std::atomic<const uint8_t*> warm_blob_[kMaxWarm] = {};
+    std::atomic<int> warm_n_{0};
+    int static_first_ = 0, static_n_ = 0;
+    alignas(64) std::atomic<uint32_t> warm_seq_{0};
+    alignas(64) std::atomic<uint64_t> warm_done_{0};
+    std::unique_ptr<std::atomic<uint32_t>[]> static_epoch_;
     alignas(64) std::atomic<bool> stop_{false};
     // The sleep after `kSpinBeforeSleep`.  `sleepers_` is how `publish` knows whether anyone needs waking, so the
     // token path pays one uncontended load per publish and never takes the mutex while the workers spin.

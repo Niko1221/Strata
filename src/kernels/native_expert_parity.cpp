@@ -2,6 +2,7 @@
 //
 //     build/native_expert_parity <shard.gguf> [layer ...]     real rows (a split model's shards are found by name)
 //     build/native_expert_parity --synthetic GU/DOWN ...      random weights quantized by ggml (e.g. q4_K/q5_1)
+//     build/native_expert_parity --synthetic-ff512 GU/DOWN ... the same at FF 512 (Qwen3.6-35B-A3B's: K-quant downs)
 //     build/native_expert_parity --q5_1-min                   the Q5_1 min term on crafted activations
 //     (the CPU-only checks of the trellis kernels, AVX2 / AVX-512 / scalar, are in tq_cpu_parity)
 //
@@ -59,7 +60,8 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-constexpr int64_t H = 2560, FF = 640;
+constexpr int64_t H = 2560;
+int64_t FF = 640;   // (--synthetic-ff512: 512)
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
@@ -793,6 +795,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"
                              "       native_expert_parity --synthetic-hadamard GU/DOWN ...   (the same, Hadamard-folded: APR)\n"
+                             "       native_expert_parity --synthetic-ff512 GU/DOWN ...   (the same at FF 512: K-quant downs)\n"
                              "       native_expert_parity --q5_1-min\n"
                              "       native_expert_parity --bf16-embd\n"
                              "       native_expert_parity --load-check <pack> <model.gguf>  (start-up checks, no GPU load)\n"
@@ -823,9 +826,11 @@ int main(int argc, char** argv) {
         failures += check_q5_1_min(s);
     } else if (mode == "--bf16-embd") {
         failures += check_bf16_embd(s);
-    } else if (mode == "--synthetic" || mode == "--synthetic-hadamard") {
+    } else if (mode == "--synthetic" || mode == "--synthetic-hadamard" || mode == "--synthetic-ff512") {
         // --synthetic-hadamard: the same with the layer Hadamard-folded (APR, prism.hadamard): random signs, block 128
         const bool had = mode == "--synthetic-hadamard";
+        // --synthetic-ff512: Qwen3.6-35B-A3B's FF, whole 256-blocks per down row (the Q4_K / Q5_K / Q6_K downs)
+        if (mode == "--synthetic-ff512") FF = 512;
         static std::vector<float> sx((size_t) H), sh((size_t) FF);
         std::mt19937 srng(5);
         for (auto& v : sx) v = (srng() & 1) ? 1.f : -1.f;
