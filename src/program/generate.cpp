@@ -5705,6 +5705,11 @@ int main(int argc, char** argv) {
         }
     }
     strata::core::ArenaExpertSource arena_src;
+    // arena-skip: the tail block's release waits for the prompt partition further down.  "Every pair of its layers is
+    // resident" is true when the residency table is built, but a stage's prompt path may then borrow its own cache
+    // slots and evict experts for the whole prompt - so the decision is taken where that is known.
+    bool arena_tail_ready = false;
+    int64_t arena_tail_l0 = -1;
     strata::core::ExpertSource* srcp = nullptr;
     if (o.mmap_experts) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
@@ -5898,6 +5903,32 @@ int main(int argc, char** argv) {
                              skip, profile.size(), pin_nonres);
                 arena_src.set_pin_priority(pin_cand, pin_nonres);
             }
+        }
+        // arena-skip (docs/ARCH-EXPERT-MEMORY-2026-10-19.md §4.7): on a layer split the tail stage's layers go into a
+        // second PinnedArena, so the whole block can be handed back with one MEM_RELEASE once the residency table
+        // proves no pair of them can be read from RAM.  A large-page allocation cannot be freed in part - that is
+        // why the block exists at all.  The release itself waits for host_res, below.  Gated on the same switch that
+        // releases it: without the release, two blocks are pure overhead.
+        {
+            const char* ar = std::getenv("STRATA_ARENA_RELEASE_BLOCK");
+            const bool ar_on = ar != nullptr && ar[0] != '\0' && ar[0] != '0';
+            // Modes that can move residency at run time: the block is not created for them at all, because "these
+            // layers can never be read" would stop being true after the release (a shrunk cache evicts, a peer or
+            // an adaptive tier swaps).  Same list as ruibeikaa's STRATA_ARENA_FREE guards on #3185 - minus the
+            // router look-ahead, which warms CUDA0's arena in this tree while the block is a later stage.
+            const char* fs_slots = std::getenv("STRATA_FS_SLOTS");
+            const char* ram_adapt = std::getenv("STRATA_RAM_ADAPT");
+            const char* ram_adapt2 = std::getenv("STRATA_RAM_ADAPT2");
+            const bool res_moves = o.vram_elastic || o.peer_device >= 0 || o.adapt_async != 0 ||
+                                   (fs_slots != nullptr && std::atoi(fs_slots) > 0) ||
+                                   (ram_adapt != nullptr && std::atoi(ram_adapt) > 0) ||
+                                   (ram_adapt2 != nullptr && std::atoi(ram_adapt2) != 0);
+            if (ar_on && res_moves)
+                std::fprintf(stderr, "strata generate: arena-skip: one block - the residency can move at run time "
+                                     "(--vram-elastic, a peer expert cache, --adapt-async, the Foresight swap space "
+                                     "or STRATA_RAM_ADAPT), so a released layer could still be read\n");
+            else if (multi_gpu && !split_at.empty() && !o.mmap_experts && ar_on)
+                arena_src.set_split_layer(split_at.front());
         }
         // The arena pins until the OS refuses; on Windows that leaves no page-locked memory for the small buffers the
         // engine allocates after it (the verify window's staging: "mapped staging allocation failed", exit 1).  Keep a
@@ -7446,6 +7477,42 @@ int main(int argc, char** argv) {
             (void) pf;
             rss_probe("after the prefetch hints");
         }
+        // arena-skip: hand the tail block back when EVERY pair of its layers sits in a GPU cache.  Then no CPU-pool
+        // read can land there, and no eviction can arrive either: a layer with all 512 experts resident has no spare
+        // slot to admit another one, so the adaptive tier never swaps an expert of it out.  Without that proof the
+        // block stays - a released blob reads as zeros, which is silent corruption rather than an error.
+        if (arena_src.split_layer() >= 0) {
+            const char* on = std::getenv("STRATA_ARENA_RELEASE_BLOCK");
+            const bool asked = on != nullptr && on[0] != '\0' && on[0] != '0';
+            const int64_t l0 = arena_src.split_layer();
+            bool whole = true;
+            for (int64_t l = l0; l < g.n_layers && whole; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e)
+                    if (host_res[(size_t) (l * g.n_expert + e)] == strata::core::kNotResident) {
+                        whole = false;
+                        break;
+                    }
+            if (!asked)
+                std::fprintf(stderr, "strata generate: arena-skip: the tail block (layers %lld-%lld, %.2f GiB) is "
+                                     "kept; STRATA_ARENA_RELEASE_BLOCK=1 hands it back when %s\n",
+                             (long long) l0, (long long) (g.n_layers - 1),
+                             (double) (strata::kernels::cpu::expert_layout().total -
+                                       strata::kernels::cpu::expert_layout().layer_offset(l0)) /
+                                 (1024.0 * 1024.0 * 1024.0),
+                             whole ? "its layers are fully resident (they are)" : "its layers are fully resident");
+            else if (whole) {
+                // Fully resident NOW - but the prompt partition below may borrow those slots and evict experts, so
+                // the block is only handed back once that is known (see the pf_parts block in the serve setup).
+                arena_tail_ready = true;
+                arena_tail_l0 = l0;
+                std::fprintf(stderr, "strata generate: arena-skip: layers %lld-%lld are fully resident; the block "
+                                     "goes back once the prompt partition is known\n",
+                             (long long) l0, (long long) (g.n_layers - 1));
+            } else {
+                std::fprintf(stderr, "strata generate: arena-skip: the tail block stays - a layer past %lld is not "
+                                     "fully resident, so the CPU pool still reads it\n", (long long) l0);
+            }
+        }
         for (auto& st : stages) {   // layer split across GPUs: the same table on every device
             const strata::core::OnDevice on(st->dev);
             if (cudaMalloc((void**) &st->d_res, host_res.size() * sizeof(int32_t)) != cudaSuccess ||
@@ -8673,12 +8740,24 @@ int main(int argc, char** argv) {
                     return v == nullptr || v[0] != '0';
                 }();
                 if (pf_parts.size() > 1 && own_ok) {
+                    // The 1.5 GiB slack above `need` (verify windows, draft head, workspaces made after this) is a
+                    // judgement call, and a card can be just short of it while still fitting the buffers: on a
+                    // 3090 + V100 split at K=26 the V100 has 3.07 GiB free against 2.16 + 1.5, so it borrows 1,027
+                    // slots it does not need to - which evicts them for the whole prompt.  STRATA_SPLIT_OWN_MARGIN_MIB
+                    // sets the slack (default 1536, unchanged); a smaller value lets such a stage keep its own buffers
+                    // per stage, without --no-prefill-borrow (which flattens the rule and makes EVERY card withhold
+                    // its buffers, costing the other card's cache).
+                    static const uint64_t own_margin = [] {
+                        const char* v = std::getenv("STRATA_SPLIT_OWN_MARGIN_MIB");
+                        const long long m = v != nullptr ? std::atoll(v) : 1536;
+                        return (uint64_t) (m < 0 ? 0 : m) << 20;
+                    }();
                     for (PfPart& p : pf_parts) {
                         const strata::core::OnDevice on(p.dev);
                         size_t fb = 0, tb = 0;
                         if (cudaMemGetInfo(&fb, &tb) != cudaSuccess) { (void) cudaGetLastError(); continue; }
                         const uint64_t need = strata::prefill::Prefill::bytes_needed(g, *p.ses, chunk, srcp != nullptr);
-                        if ((uint64_t) fb >= need + (3ull << 29)) {
+                        if ((uint64_t) fb >= need + own_margin) {
                             std::fprintf(stderr, "strata serve:   CUDA%d keeps its own prompt buffers (%.2f GiB of "
                                                  "%.2f GiB free): no loan\n", p.dev < 0 ? 0 : p.dev,
                                          (double) need / 1073741824.0, (double) fb / 1073741824.0);
@@ -8740,6 +8819,29 @@ int main(int argc, char** argv) {
 #endif
         bool any_loan = borrow != nullptr;
         for (size_t i = 1; i < pf_parts.size(); ++i) any_loan = any_loan || pf_parts[i].first >= 0;
+        // arena-skip (docs/ARCH-EXPERT-MEMORY-2026-10-19.md §4.7): the release deferred above happens here, because a
+        // stage that lends its prompt buffers takes those slots out of its own cache for the whole prompt and refills
+        // them after it - the experts leave the table the release was based on, and a CPU-pool read would need them.
+        if (arena_tail_ready) {
+            int64_t lent = 0;
+            int lent_dev = 0;
+            for (size_t i = 1; i < pf_parts.size(); ++i)
+                if (pf_parts[i].first >= 0) {
+                    lent = pf_parts[i].cache->slots() - pf_parts[i].first;
+                    lent_dev = pf_parts[i].dev;
+                }
+            if (lent == 0) {
+                const uint64_t freed = arena_src.release_tail();
+                std::fprintf(stderr, "strata generate: arena-skip: layers %lld-%lld are fully resident: %.2f GiB "
+                                     "of the expert arena handed back to the OS\n",
+                             (long long) arena_tail_l0, (long long) (g.n_layers - 1),
+                             (double) freed / (1024.0 * 1024.0 * 1024.0));
+            } else {
+                std::fprintf(stderr, "strata generate: arena-skip: the tail block stays - CUDA%d lends %lld of its "
+                                     "cache slots to the prompt buffers, which evicts experts the block still holds\n",
+                             lent_dev, (long long) lent);
+            }
+        }
         if (any_loan) {
             if (borrow != nullptr)
                 std::fprintf(stderr, "strata serve: the prompt path borrows %lld CUDA0 cache slots (%.2f GiB)\n",
