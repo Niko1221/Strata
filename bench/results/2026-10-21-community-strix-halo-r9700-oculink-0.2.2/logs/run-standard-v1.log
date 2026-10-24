@@ -1,0 +1,143 @@
+== concurrency 4 vs strata-022-r9700-p4-32k-b.json  (r9700 layout: True)
+  arg --conversation-cache-slots: svc '24'  measured '16'
+  written /home/<user>/evals/strata-std-022-svc-c4.json
+== concurrency 1 vs strata-022-r9700-kvgrow-cs.json  (r9700 layout: True)
+  arg --batch-mtp: svc None  measured True
+  arg --conversation-cache-slots: svc '24'  measured '16'
+  parallel: svc null  measured 1
+  written /home/<user>/evals/strata-std-022-svc-c1.json
+== 18:17:24 Strata svc-c4 up
+ready after 60 s
+== 18:18:25 svc-c4 ready, standard-v1 with the optional concurrency stage
+    completed: prompt 857.340546 tok/s, decode 77.5884 tok/s, first token 4.796738 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 691.281635 tok/s, decode 83.183142 tok/s, first token 5.939659 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 1827.226591 tok/s, decode 75.195218 tok/s, first token 8.994654 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 2060.443014 tok/s, decode 76.270879 tok/s, first token 7.983875 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 114.865342 tok/s, decode 85.2581 tok/s, first token 2.872303 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 114.225314 tok/s, decode 72.682786 tok/s, first token 2.956221 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 106.177606 tok/s, decode 79.799362 tok/s, first token 3.336645 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 102.494331 tok/s, decode 83.946425 tok/s, first token 3.329733 s
+concurrency round 1/3: four requests released together
+    round 1: 4 completed or capped, 0 failed, 25.883177 s
+concurrency round 2/3: four requests released together
+    round 2: 4 completed or capped, 0 failed, 24.194874 s
+concurrency round 3/3: four requests released together
+    round 3: 4 completed or capped, 0 failed, 23.975851 s
+Strata standard benchmark (strata-qwen38-thinking-v1-draft.1)
+Status: complete. 21 of 21 required requests finished, 0 failed, 0 skipped. Time after the model loaded: 2 min 59 s.
+Machine: AMD Radeon; AMD RYZEN AI MAX+ 395 w/ Radeon 8060S; 124 GB RAM; Ubuntu 26.04.1 LTS 7.0.0-38-generic.
+Model: qwen3.8-flash-next-iq3_s, IQ3_S, context 262144; engine 0.1.47; track custom.
+
+Speed (median, min-max, n; the engine's own prompt and decode timings, the client's first-token time):
+  Case        Prompt tok/s                Decode tok/s          TTFT s                Total s               Capped
+  short       n/a                         70.2 (66.9-78.8) n=3  1.22 (1.15-1.25) n=3  7.5 (7.5-8.5) n=3     1/3
+  prompt-4k   689.7 (651.0-691.9) n=3     65.4 (62.3-65.8) n=3  5.96 (5.94-6.36) n=3  14.1 (13.8-14.1) n=3  3/3
+  prompt-16k  1829.0 (1825.7-2058.6) n=3  60.9 (60.3-69.9) n=3  8.99 (7.99-9.00) n=3  16.5 (16.3-17.4) n=3  3/3
+  short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k.
+  Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
+
+Sanity checks: 12 of 12 passed (instruction 4/4, retrieval 4/4, tool calls 4/4).
+
+Four requests at once (server capacity 4): 74.0, 80.7, 77.0 tok/s in total per round
+
+Report: /home/<user>/evals/results/std-022-svc-c4/README.md
+Result: /home/<user>/evals/results/std-022-svc-c4/results.json
+== 18:23:33 svc-c4: bench exit 0
+== 18:23:44 Strata svc-c1 up
+ready after 25 s
+== 18:24:09 svc-c1 ready, standard-v1 with the optional concurrency stage
+    completed: prompt 795.556247 tok/s, decode 88.721602 tok/s, first token 5.161899 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 788.925333 tok/s, decode 102.620487 tok/s, first token 5.204595 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 2264.677827 tok/s, decode 82.014114 tok/s, first token 7.259458 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 1984.165416 tok/s, decode 73.279714 tok/s, first token 8.286144 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 295.213008 tok/s, decode 87.219867 tok/s, first token 1.122026 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 386.300738 tok/s, decode 88.04317 tok/s, first token 0.887494 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 410.113014 tok/s, decode 93.11667 tok/s, first token 0.878628 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 408.877096 tok/s, decode 93.512566 tok/s, first token 0.849405 s
+concurrency round 1/3: four requests released together
+    round 1: 4 completed or capped, 0 failed, 26.496568 s
+concurrency round 2/3: four requests released together
+    round 2: 4 completed or capped, 0 failed, 27.189631 s
+concurrency round 3/3: four requests released together
+    round 3: 4 completed or capped, 0 failed, 25.08586 s
+Strata standard benchmark (strata-qwen38-thinking-v1-draft.1)
+Status: complete. 21 of 21 required requests finished, 0 failed, 0 skipped. Time after the model loaded: 2 min 20 s.
+Machine: AMD Radeon; AMD RYZEN AI MAX+ 395 w/ Radeon 8060S; 124 GB RAM; Ubuntu 26.04.1 LTS 7.0.0-38-generic.
+Model: qwen3.8-flash-next-iq3_s, IQ3_S, context 262144; engine 0.1.47; track custom.
+
+Speed (median, min-max, n; the engine's own prompt and decode timings, the client's first-token time):
+  Case        Prompt tok/s                Decode tok/s          TTFT s                Total s               Capped
+  short       n/a                         82.9 (81.2-85.0) n=3  0.56 (0.48-0.59) n=3  5.9 (4.4-6.9) n=3     1/3
+  prompt-4k   965.4 (917.8-992.9) n=3     78.1 (66.5-83.7) n=3  4.26 (4.14-4.48) n=3  10.8 (10.6-11.8) n=3  3/3
+  prompt-16k  2166.8 (2004.9-2267.2) n=3  74.7 (68.4-85.8) n=3  7.59 (7.25-8.20) n=3  14.1 (13.5-15.7) n=3  3/3
+  short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k.
+  Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
+
+Sanity checks: 12 of 12 passed (instruction 4/4, retrieval 4/4, tool calls 4/4).
+
+Four requests at once (server capacity 1): 71.9, 74.7, 75.2 tok/s in total per round
+
+Report: /home/<user>/evals/results/std-022-svc-c1/README.md
+Result: /home/<user>/evals/results/std-022-svc-c1/results.json
+== 18:28:39 svc-c1: bench exit 0
+== 18:28:47 Strata dual up
+ready after 45 s
+== 18:29:33 dual ready, standard-v1 with the optional concurrency stage
+    completed: prompt 1016.026836 tok/s, decode 53.944234 tok/s, first token 4.067833 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 1010.003705 tok/s, decode 52.389381 tok/s, first token 4.093876 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 1539.401229 tok/s, decode 52.615755 tok/s, first token 10.689551 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 1512.564715 tok/s, decode 49.881531 tok/s, first token 10.884161 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 346.555769 tok/s, decode 61.841303 tok/s, first token 0.980556 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 383.998166 tok/s, decode 52.337338 tok/s, first token 0.915035 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 403.90132 tok/s, decode 58.000902 tok/s, first token 0.914533 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 389.834407 tok/s, decode 55.960046 tok/s, first token 0.912901 s
+concurrency round 1/3: four requests released together
+    round 1: 4 completed or capped, 0 failed, 32.785273 s
+concurrency round 2/3: four requests released together
+    round 2: 4 completed or capped, 0 failed, 28.992928 s
+concurrency round 3/3: four requests released together
+    round 3: 4 completed or capped, 0 failed, 29.205891 s
+Strata standard benchmark (strata-qwen38-thinking-v1-draft.1)
+Status: complete. 21 of 21 required requests finished, 0 failed, 0 skipped. Time after the model loaded: 3 min 16 s.
+Machine: AMD Radeon, AMD Radeon; AMD RYZEN AI MAX+ 395 w/ Radeon 8060S; 124 GB RAM; Ubuntu 26.04.1 LTS 7.0.0-38-generic.
+Model: qwen3.8-flash-next-iq3_s, IQ3_S, context 262144; engine 0.1.47; track custom.
+
+Speed (median, min-max, n; the engine's own prompt and decode timings, the client's first-token time):
+  Case        Prompt tok/s                Decode tok/s          TTFT s                   Total s               Capped
+  short       n/a                         48.1 (46.6-51.1) n=3  0.67 (0.61-0.67) n=3     7.2 (6.7-7.2) n=3     0/3
+  prompt-4k   1016.7 (1014.5-1033.7) n=3  42.6 (38.7-47.1) n=3  4.07 (4.00-4.08) n=3     16.0 (14.8-17.3) n=3  3/3
+  prompt-16k  1544.0 (1541.4-1553.0) n=3  40.3 (40.3-47.8) n=3  10.66 (10.60-10.68) n=3  23.3 (21.3-23.3) n=3  3/3
+  short is a prompt of about 80 tokens: its prompt rate is dominated by the fixed cost of a request, so it is not shown; read prompt speed from prompt-4k and prompt-16k.
+  Capped = requests that reached the 512-token cap, reasoning and answer together. A capped request's total time is the time to the cap, not to an answer, and it has no first-answer time when it was still reasoning.
+
+Sanity checks: 12 of 12 passed (instruction 4/4, retrieval 4/4, tool calls 4/4).
+
+Four requests at once (server capacity 4): 62.2, 70.5, 70.1 tok/s in total per round
+
+Report: /home/<user>/evals/results/std-022-dual/README.md
+Result: /home/<user>/evals/results/std-022-dual/results.json
+== 18:35:08 dual: bench exit 0
+== 18:35:20 all done
+== 18:35:20 end: Strata down
+STD-022D-DONE

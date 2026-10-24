@@ -1,0 +1,84 @@
+missing paths: none
+missing paths: none
+== 16:19:30 waiting until Halogen is idle
+== 16:19:47 Halogen stopped; Paiton down
+down; R9700 VRAM 57 MiB
+== 16:19:56 both down; MemAvailable 120 GiB
+ready after 60 s
+== 16:21:01 021 ready; MemAvailable 64 GiB
+http://127.0.0.1:8080: model qwen3.8-flash-next-iq3_s, label strata-0.2.1-iq3s-dual, tokens per character 0.2611
+warm-up 16K: first token 10.7 s
+strata-0.2.1-iq3s-dual  64K run 1:   64537 tokens, first token   39.8 s ( 1622 tok/s), decode  47.5 tok/s over 600 tokens
+strata-0.2.1-iq3s-dual  64K run 2:   64537 tokens, first token   40.1 s ( 1611 tok/s), decode  49.5 tok/s over 600 tokens
+strata-0.2.1-iq3s-dual 128K run 1:  128440 tokens, first token   82.9 s ( 1549 tok/s), decode  48.9 tok/s over 600 tokens
+strata-0.2.1-iq3s-dual 128K run 2:  128440 tokens, first token   82.6 s ( 1554 tok/s), decode  48.3 tok/s over 600 tokens
+strata-0.2.1-iq3s-dual 200K run 1:  210963 tokens, first token  141.4 s ( 1492 tok/s), decode  46.0 tok/s over 600 tokens
+strata-0.2.1-iq3s-dual 200K run 2:  210963 tokens, first token  141.5 s ( 1491 tok/s), decode  45.4 tok/s over 600 tokens
+BENCH-DONE
+      1 [strata] 2026-10-21 16:20:01 engine started: /home/<user>/strata-lab/build-dual-v021-wlb8-pp/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-o
+      1 strata generate: --batch 4: the slot sessions take 2.36 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+      1 strata generate: expert cache 15360 slots, 28.47 GiB of VRAM; policy is
+      1 strata generate: expert cache auto: 97.62 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 15360 slots
+      1 strata generate: layer split: CUDA1 runs layers 30-47, expert cache 9216 slots (18.37 GiB), 9216 of its 9216 profiled pairs; slot 0 verified
+      1 strata generate: R4 hit path ON - resident experts are computed on the GPU
+      1 strata generate: token graph hit path: 24576 resident experts, decided on the device
+      1 strata: gfx1151 (Strix Halo): 19 exact speed switches on by default (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE HCD_EXACT PF_PAD TOPK_REG_MIN_BLOCKS Q8_PACKED Q6_PACKED MMVF_ROWS AT
+      1 strata prefill: no hipBLAS warm-up: the cards are of more than one architecture (it slows prompts there, #3204); the first prompt loads the libraries (STRATA_PREFILL_WARM=1 asks for it)
+      1 strata serve: layer split: 100% of the experts resident, the prompt path's streamed ring 96 slots
+      2 strata verify: window up to 8 tokens, 87.6 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+      1 strata-vision: on the CPU, 16 threads, no warm-up
+ready after 50 s
+== 16:32:50 022 ready; MemAvailable 65 GiB
+http://127.0.0.1:8080: model qwen3.8-flash-next-iq3_s, label strata-0.2.2-iq3s-dual, tokens per character 0.2611
+warm-up 16K: first token 10.6 s
+strata-0.2.2-iq3s-dual  64K run 1:   64537 tokens, first token   39.6 s ( 1631 tok/s), decode  48.0 tok/s over 600 tokens
+strata-0.2.2-iq3s-dual  64K run 2:   64537 tokens, first token   39.8 s ( 1623 tok/s), decode  50.1 tok/s over 600 tokens
+strata-0.2.2-iq3s-dual 128K run 1:  128440 tokens, first token   81.7 s ( 1572 tok/s), decode  49.5 tok/s over 600 tokens
+strata-0.2.2-iq3s-dual 128K run 2:  128440 tokens, first token   82.0 s ( 1567 tok/s), decode  48.8 tok/s over 600 tokens
+strata-0.2.2-iq3s-dual 200K run 1:  210963 tokens, first token  140.2 s ( 1505 tok/s), decode  46.4 tok/s over 600 tokens
+strata-0.2.2-iq3s-dual 200K run 2:  210963 tokens, first token  141.3 s ( 1493 tok/s), decode  45.7 tok/s over 600 tokens
+BENCH-DONE
+      1 [strata] 2026-10-21 16:32:00 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-0
+      1 strata generate: --batch 4: the slot sessions take 2.36 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+      1 strata generate: expert cache 15360 slots, 28.47 GiB of VRAM; policy is
+      1 strata generate: expert cache auto: 87.60 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 15360 slots
+      1 strata generate: expert cache auto: this GPU shares system RAM: 97.62 GiB free on the GPU, but the OS has 97.56 GiB available; 9.96 GiB stay for the desktop, so the cache is sized from 87.60 GiB (STRATA_UMA_RESERVE_GIB changes the reserve, --expert-cac
+      1 strata generate: layer split: CUDA1 runs layers 30-47, expert cache 9216 slots (18.37 GiB), 9216 of its 9216 profiled pairs; slot 0 verified
+      1 strata generate: R4 hit path ON - resident experts are computed on the GPU
+      1 strata generate: token graph hit path: 24576 resident experts, decided on the device
+      1 strata: gfx1151 (Strix Halo): 19 exact speed switches on by default (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE HCD_EXACT PF_PAD TOPK_REG_MIN_BLOCKS Q8_PACKED Q6_PACKED MMVF_ROWS AT
+      1 strata prefill: no hipBLAS warm-up: the cards are of more than one architecture (it slows prompts there, #3204); the first prompt loads the libraries (STRATA_PREFILL_WARM=1 asks for it)
+      1 strata serve: layer split: 100% of the experts resident, the prompt path's streamed ring 96 slots
+      2 strata verify: window up to 8 tokens, 87.6 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+      1 strata-vision: on the CPU, 16 threads, no warm-up
+ready after 25 s
+== 16:44:08 022-b ready; MemAvailable 65 GiB
+http://127.0.0.1:8080: model qwen3.8-flash-next-iq3_s, label strata-0.2.2-iq3s-dual-b, tokens per character 0.2611
+warm-up 16K: first token 10.6 s
+strata-0.2.2-iq3s-dual-b  64K run 1:   64537 tokens, first token   39.6 s ( 1629 tok/s), decode  48.2 tok/s over 600 tokens
+strata-0.2.2-iq3s-dual-b  64K run 2:   64537 tokens, first token   39.8 s ( 1623 tok/s), decode  50.2 tok/s over 600 tokens
+BENCH-DONE
+      1 [strata] 2026-10-21 16:43:43 engine started: /home/<user>/strata-lab/build-dual-v022-wlb8/strata --serve --pack /home/<user>/strata-lab/Strata-data/packs/iq3_s --native /home/<user>/strata-lab/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-0
+      1 strata generate: --batch 4: the slot sessions take 2.36 GiB of VRAM on CUDA0 that the expert cache would otherwise hold
+      1 strata generate: expert cache 15360 slots, 28.47 GiB of VRAM; policy is
+      1 strata generate: expert cache auto: 87.58 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 15360 slots
+      1 strata generate: expert cache auto: this GPU shares system RAM: 97.62 GiB free on the GPU, but the OS has 97.54 GiB available; 9.96 GiB stay for the desktop, so the cache is sized from 87.58 GiB (STRATA_UMA_RESERVE_GIB changes the reserve, --expert-cac
+      1 strata generate: layer split: CUDA1 runs layers 30-47, expert cache 9216 slots (18.37 GiB), 9216 of its 9216 profiled pairs; slot 0 verified
+      1 strata generate: R4 hit path ON - resident experts are computed on the GPU
+      1 strata generate: token graph hit path: 24576 resident experts, decided on the device
+      1 strata: gfx1151 (Strix Halo): 19 exact speed switches on by default (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): GDN_HEAD GDN_PP GDN_CONVL2 GDN_NOY CVEC_FUSE HCD_EXACT PF_PAD TOPK_REG_MIN_BLOCKS Q8_PACKED Q6_PACKED MMVF_ROWS AT
+      1 strata prefill: no hipBLAS warm-up: the cards are of more than one architecture (it slows prompts there, #3204); the first prompt loads the libraries (STRATA_PREFILL_WARM=1 asks for it)
+      1 strata serve: layer split: 100% of the experts resident, the prompt path's streamed ring 96 slots
+      2 strata verify: window up to 8 tokens, 87.6 MiB of device buffers (100% VRAM resident: zero-doorbell graph)
+      1 strata-vision: on the CPU, 16 threads, no warm-up
+      2 [strata] engine priority: nice +5 (this PC has built-in Radeon graphics that usually draw the desktop; STRATA_ENGINE_NICE=0 turns it off)
+== 16:46:23 Strata down; Paiton and Halogen back
+8060S GTT 17 MiB, MemAvailable 111 GiB, 2421 free 2 MiB blocks
+READY after 43 s; 8060S GTT 35098 MiB, R9700 VRAM 28447 MiB
+halogen health: {'api': '0.18.12', 'engine': '0.18.12', 'match': True}
+paiton /v1/models 200
+paiton-qwen38 Up 2 minutes
+ec-halogen-svc Up 43 seconds
+8080 listeners: 0, ttm page_pool_size 262144
+RESTORE-DONE
+V022-DONE

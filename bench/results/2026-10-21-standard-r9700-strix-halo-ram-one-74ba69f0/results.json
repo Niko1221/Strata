@@ -1,0 +1,2489 @@
+{
+  "format": "strata-standard-benchmark",
+  "schema_version": 1,
+  "protocol": {
+    "id": "strata-qwen38-thinking-v1-draft.1",
+    "git_commit": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+    "profile": "qwen3.8-flash-next-thinking",
+    "corpus_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+    "model_card_revision": null
+  },
+  "run": {
+    "id": "20261021T182459Z-74ba69f0",
+    "started_at": "2026-10-21T18:24:59Z",
+    "status": "complete",
+    "required_duration_s": 140.847,
+    "optional_duration_s": 78.926,
+    "optional_concurrency": true,
+    "command": "strata bench run --url http://127.0.0.1:8080 --suite standard-v1 --optional-concurrency --track custom --track-notes Strata 0.2.2 (011c9e60) source build. Radeon AI PRO R9700 (gfx1201, OCuLink PCIe 4.0 x4, 7.2 GB/s measured) alone, the Strix Halo 8060S hidden (ROCR_VISIBLE_DEVICES=0); the whole expert arena in the Strix Halo's RAM (no --mmap-experts, cudaHostRegister PORTABLE), --expert-cache auto, --prefill 32768, --spec 4 --spec-min-p 0.5, MTP, --kv int8, --max-context 262144, --vision (CPU encoder); env STRATA_PF_FUSED=1 STRATA_PF_GEMM=1 STRATA_PA_FAST=1 STRATA_HIP_WMMA=1 STRATA_SELECT_WMMA=1; one request at a time (no --batch), --kv-grow (whole K/V in VRAM, grows), STRATA_PREFILL_CPU_SHARE=auto --model-revision ed59f92082b1e93c0e96d60a8b11aab089b52f09 --quantization IQ3_S --custom-pack Strata's own iq3_s pack (setup's iq_pack of the pinned ISTA-DASLab files), data/expert-profile.bin of 0.2.2 --background headless Ubuntu server (kernel 7.0.0-38), no desktop; the Halogen and Paiton containers stopped; nothing else on either GPU; soft RLIMIT_NOFILE raised to the hard limit (524288) --build-options HIP gfx1151+gfx1201 one binary,ROCm TheRock 7.14.1 multiarch (hipBLASLt 1.4.1),CMAKE_BUILD_TYPE=Release,STRATA_PREFILL_MMQ=ON,-DSTRATA_W_LB=8,ggml 3cf03257 --out <home>/evals/results/std-022-svc-c1"
+  },
+  "hardware": {
+    "gpus": [
+      {
+        "device_index": 0,
+        "name": "AMD Radeon",
+        "memory_bytes": null,
+        "memory_kind": "dedicated",
+        "power_limit_w": null
+      }
+    ],
+    "cpu": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+    "ram_bytes": 133625880576,
+    "storage": [
+      {
+        "kind": "nvme",
+        "model": "Lexar SSD NQ790 2TB",
+        "bus": "nvme"
+      }
+    ],
+    "background_workloads": [
+      "headless Ubuntu server (kernel 7.0.0-38), no desktop; the Halogen and Paiton containers stopped; nothing else on either GPU; soft RLIMIT_NOFILE raised to the hard limit (524288)"
+    ]
+  },
+  "software": {
+    "os": {
+      "name": "Ubuntu 26.04.1 LTS",
+      "version": "7.0.0-38-generic"
+    },
+    "drivers": null,
+    "runtime": null,
+    "strata_commit": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+    "engine_version": "0.1.47",
+    "build_kind": "source",
+    "runner_commit": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+    "build_options": [
+      "HIP gfx1151+gfx1201 one binary",
+      "ROCm TheRock 7.14.1 multiarch (hipBLASLt 1.4.1)",
+      "CMAKE_BUILD_TYPE=Release",
+      "STRATA_PREFILL_MMQ=ON",
+      "-DSTRATA_W_LB=8",
+      "ggml 3cf03257"
+    ]
+  },
+  "model": {
+    "id": "qwen3.8-flash-next-iq3_s",
+    "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "source_revision": null,
+    "quantization": "IQ3_S",
+    "files": [
+      {
+        "path": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+        "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
+      },
+      {
+        "path": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+        "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+      }
+    ],
+    "tokenizer_revision": null,
+    "custom_pack": "Strata's own iq3_s pack (setup's iq_pack of the pinned ISTA-DASLab files), data/expert-profile.bin of 0.2.2"
+  },
+  "configuration": {
+    "track": "custom",
+    "track_notes": "Strata 0.2.2 (011c9e60) source build. Radeon AI PRO R9700 (gfx1201, OCuLink PCIe 4.0 x4, 7.2 GB/s measured) alone, the Strix Halo 8060S hidden (ROCR_VISIBLE_DEVICES=0); the whole expert arena in the Strix Halo's RAM (no --mmap-experts, cudaHostRegister PORTABLE), --expert-cache auto, --prefill 32768, --spec 4 --spec-min-p 0.5, MTP, --kv int8, --max-context 262144, --vision (CPU encoder); env STRATA_PF_FUSED=1 STRATA_PF_GEMM=1 STRATA_PA_FAST=1 STRATA_HIP_WMMA=1 STRATA_SELECT_WMMA=1; one request at a time (no --batch), --kv-grow (whole K/V in VRAM, grows), STRATA_PREFILL_CPU_SHARE=auto",
+    "context_tokens": 262144,
+    "server_capacity": 1,
+    "kv_cache": null,
+    "expert_cache": null,
+    "offloading": null,
+    "prefill": null,
+    "mtp": null,
+    "calibration": null,
+    "experimental_options": null,
+    "template": {
+      "path": "provenance/chat_template.jinja",
+      "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    },
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "reasoning_effort": "xhigh"
+    },
+    "chat_template_kwargs": {
+      "enable_thinking": true,
+      "preserve_thinking": true
+    }
+  },
+  "request_counts": {
+    "warmup": {
+      "planned": 1,
+      "attempted": 1,
+      "completed": 0,
+      "truncated": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "performance": {
+      "planned": 9,
+      "attempted": 9,
+      "completed": 2,
+      "truncated": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "sanity": {
+      "planned": 12,
+      "attempted": 12,
+      "completed": 12,
+      "truncated": 0,
+      "failed": 0,
+      "skipped": 0
+    },
+    "concurrency": {
+      "planned": 12,
+      "attempted": 12,
+      "completed": 3,
+      "truncated": 9,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "requests": [
+    {
+      "id": "warmup",
+      "phase": "warmup",
+      "case_id": "warmup",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 128,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 75,
+        "cached_tokens": 0,
+        "read_tokens": 75,
+        "output_tokens": 128,
+        "decode_tokens": 128
+      },
+      "timings": {
+        "prompt_s": 0.4529,
+        "decode_s": 2.3386,
+        "ttft_s": 0.48361,
+        "first_answer_s": 1.850808,
+        "total_s": 2.796898
+      },
+      "metrics": {
+        "prompt_tps": 165.59947,
+        "decode_tps": 54.733601
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-short-r1",
+      "phase": "performance",
+      "case_id": "short",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 77,
+        "cached_tokens": 0,
+        "read_tokens": 77,
+        "output_tokens": 330,
+        "decode_tokens": 330
+      },
+      "timings": {
+        "prompt_s": 0.4572,
+        "decode_s": 3.9815,
+        "ttft_s": 0.477067,
+        "first_answer_s": 1.351603,
+        "total_s": 4.441452
+      },
+      "metrics": {
+        "prompt_tps": 168.416448,
+        "decode_tps": 82.883335
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-prompt-4k-r1",
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 4093,
+        "cached_tokens": 0,
+        "read_tokens": 4093,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 4.2396,
+        "decode_s": 6.5525,
+        "ttft_s": 4.261329,
+        "first_answer_s": 8.603222,
+        "total_s": 10.796454
+      },
+      "metrics": {
+        "prompt_tps": 965.421266,
+        "decode_tps": 78.138115
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-prompt-16k-r1",
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 16387,
+        "cached_tokens": 0,
+        "read_tokens": 16387,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 8.1735,
+        "decode_s": 7.4895,
+        "ttft_s": 8.199439,
+        "first_answer_s": null,
+        "total_s": 15.671235
+      },
+      "metrics": {
+        "prompt_tps": 2004.893864,
+        "decode_tps": 68.362374
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-short-r2",
+      "phase": "performance",
+      "case_id": "short",
+      "repetition": 2,
+      "seed": 2,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 77,
+        "cached_tokens": 0,
+        "read_tokens": 77,
+        "output_tokens": 453,
+        "decode_tokens": 453
+      },
+      "timings": {
+        "prompt_s": 0.5439,
+        "decode_s": 5.3308,
+        "ttft_s": 0.563741,
+        "first_answer_s": 1.444561,
+        "total_s": 5.877613
+      },
+      "metrics": {
+        "prompt_tps": 141.570142,
+        "decode_tps": 84.977864
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-prompt-4k-r2",
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "repetition": 2,
+      "seed": 2,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 4093,
+        "cached_tokens": 0,
+        "read_tokens": 4093,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 4.4597,
+        "decode_s": 6.1176,
+        "ttft_s": 4.481335,
+        "first_answer_s": 7.578425,
+        "total_s": 10.581336
+      },
+      "metrics": {
+        "prompt_tps": 917.774738,
+        "decode_tps": 83.692951
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-prompt-16k-r2",
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "repetition": 2,
+      "seed": 2,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 16387,
+        "cached_tokens": 0,
+        "read_tokens": 16387,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 7.228,
+        "decode_s": 6.8519,
+        "ttft_s": 7.253762,
+        "first_answer_s": 11.616187,
+        "total_s": 14.088008
+      },
+      "metrics": {
+        "prompt_tps": 2267.155506,
+        "decode_tps": 74.723799
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-short-r3",
+      "phase": "performance",
+      "case_id": "short",
+      "repetition": 3,
+      "seed": 3,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 77,
+        "cached_tokens": 0,
+        "read_tokens": 77,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.5688,
+        "decode_s": 6.3068,
+        "ttft_s": 0.588641,
+        "first_answer_s": 4.327846,
+        "total_s": 6.87837
+      },
+      "metrics": {
+        "prompt_tps": 135.372714,
+        "decode_tps": 81.182216
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-prompt-4k-r3",
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "repetition": 3,
+      "seed": 3,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 4093,
+        "cached_tokens": 0,
+        "read_tokens": 4093,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 4.1223,
+        "decode_s": 7.6974,
+        "ttft_s": 4.143879,
+        "first_answer_s": null,
+        "total_s": 11.823804
+      },
+      "metrics": {
+        "prompt_tps": 992.892317,
+        "decode_tps": 66.515966
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "performance-prompt-16k-r3",
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "repetition": 3,
+      "seed": 3,
+      "max_output_tokens": 512,
+      "concurrency": 1,
+      "round": null,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 16387,
+        "cached_tokens": 0,
+        "read_tokens": 16387,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 7.5629,
+        "decode_s": 5.9652,
+        "ttft_s": 7.588518,
+        "first_answer_s": 9.939605,
+        "total_s": 13.535982
+      },
+      "metrics": {
+        "prompt_tps": 2166.761427,
+        "decode_tps": 85.831154
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "sanity-I1",
+      "phase": "sanity",
+      "case_id": "I1",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 82,
+        "cached_tokens": 0,
+        "read_tokens": 82,
+        "output_tokens": 74,
+        "decode_tokens": 74
+      },
+      "timings": {
+        "prompt_s": 0.5392,
+        "decode_s": 1.1501,
+        "ttft_s": 0.55927,
+        "first_answer_s": 1.619854,
+        "total_s": 1.691961
+      },
+      "metrics": {
+        "prompt_tps": 152.077151,
+        "decode_tps": 64.342231
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "instruction",
+        "passed": true,
+        "reason": "the expected JSON value"
+      }
+    },
+    {
+      "id": "sanity-I2",
+      "phase": "sanity",
+      "case_id": "I2",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 90,
+        "cached_tokens": 0,
+        "read_tokens": 90,
+        "output_tokens": 90,
+        "decode_tokens": 90
+      },
+      "timings": {
+        "prompt_s": 0.4716,
+        "decode_s": 0.9804,
+        "ttft_s": 0.491637,
+        "first_answer_s": 1.299794,
+        "total_s": 1.455135
+      },
+      "metrics": {
+        "prompt_tps": 190.839695,
+        "decode_tps": 91.799266
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "instruction",
+        "passed": true,
+        "reason": "the expected JSON value"
+      }
+    },
+    {
+      "id": "sanity-I3",
+      "phase": "sanity",
+      "case_id": "I3",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 85,
+        "cached_tokens": 0,
+        "read_tokens": 85,
+        "output_tokens": 77,
+        "decode_tokens": 77
+      },
+      "timings": {
+        "prompt_s": 0.447,
+        "decode_s": 0.7741,
+        "ttft_s": 0.467198,
+        "first_answer_s": 1.111058,
+        "total_s": 1.224283
+      },
+      "metrics": {
+        "prompt_tps": 190.1566,
+        "decode_tps": 99.470353
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "instruction",
+        "passed": true,
+        "reason": "the expected JSON value"
+      }
+    },
+    {
+      "id": "sanity-I4",
+      "phase": "sanity",
+      "case_id": "I4",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 71,
+        "cached_tokens": 0,
+        "read_tokens": 71,
+        "output_tokens": 44,
+        "decode_tokens": 44
+      },
+      "timings": {
+        "prompt_s": 0.4195,
+        "decode_s": 0.5188,
+        "ttft_s": 0.440322,
+        "first_answer_s": 0.941683,
+        "total_s": 0.942112
+      },
+      "metrics": {
+        "prompt_tps": 169.249106,
+        "decode_tps": 84.811103
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "instruction",
+        "passed": true,
+        "reason": "the exact expected text"
+      }
+    },
+    {
+      "id": "sanity-R1",
+      "phase": "sanity",
+      "case_id": "R1",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 4089,
+        "cached_tokens": 0,
+        "read_tokens": 4089,
+        "output_tokens": 66,
+        "decode_tokens": 66
+      },
+      "timings": {
+        "prompt_s": 5.1398,
+        "decode_s": 0.7439,
+        "ttft_s": 5.161899,
+        "first_answer_s": 5.826382,
+        "total_s": 5.887799
+      },
+      "metrics": {
+        "prompt_tps": 795.556247,
+        "decode_tps": 88.721602
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "retrieval",
+        "passed": true,
+        "reason": "the exact expected text"
+      }
+    },
+    {
+      "id": "sanity-R2",
+      "phase": "sanity",
+      "case_id": "R2",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 4089,
+        "cached_tokens": 0,
+        "read_tokens": 4089,
+        "output_tokens": 56,
+        "decode_tokens": 56
+      },
+      "timings": {
+        "prompt_s": 5.183,
+        "decode_s": 0.5457,
+        "ttft_s": 5.204595,
+        "first_answer_s": 5.671903,
+        "total_s": 5.732429
+      },
+      "metrics": {
+        "prompt_tps": 788.925333,
+        "decode_tps": 102.620487
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "retrieval",
+        "passed": true,
+        "reason": "the exact expected text"
+      }
+    },
+    {
+      "id": "sanity-R3",
+      "phase": "sanity",
+      "case_id": "R3",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 16382,
+        "cached_tokens": 0,
+        "read_tokens": 16382,
+        "output_tokens": 86,
+        "decode_tokens": 86
+      },
+      "timings": {
+        "prompt_s": 7.2337,
+        "decode_s": 1.0486,
+        "ttft_s": 7.259458,
+        "first_answer_s": 8.219011,
+        "total_s": 8.290369
+      },
+      "metrics": {
+        "prompt_tps": 2264.677827,
+        "decode_tps": 82.014114
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "retrieval",
+        "passed": true,
+        "reason": "the exact expected text"
+      }
+    },
+    {
+      "id": "sanity-R4",
+      "phase": "sanity",
+      "case_id": "R4",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 16390,
+        "cached_tokens": 0,
+        "read_tokens": 16390,
+        "output_tokens": 246,
+        "decode_tokens": 246
+      },
+      "timings": {
+        "prompt_s": 8.2604,
+        "decode_s": 3.357,
+        "ttft_s": 8.286144,
+        "first_answer_s": 11.402275,
+        "total_s": 11.624903
+      },
+      "metrics": {
+        "prompt_tps": 1984.165416,
+        "decode_tps": 73.279714
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "retrieval",
+        "passed": true,
+        "reason": "the expected JSON value"
+      }
+    },
+    {
+      "id": "sanity-T1",
+      "phase": "sanity",
+      "case_id": "T1",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "tool_calls",
+      "error": null,
+      "tokens": {
+        "input_tokens": 325,
+        "cached_tokens": 0,
+        "read_tokens": 325,
+        "output_tokens": 72,
+        "decode_tokens": 72
+      },
+      "timings": {
+        "prompt_s": 1.1009,
+        "decode_s": 0.8255,
+        "ttft_s": 1.122026,
+        "first_answer_s": 1.716313,
+        "total_s": 1.93059
+      },
+      "metrics": {
+        "prompt_tps": 295.213008,
+        "decode_tps": 87.219867
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "tool_call",
+        "passed": true,
+        "reason": "the expected tool call"
+      }
+    },
+    {
+      "id": "sanity-T2",
+      "phase": "sanity",
+      "case_id": "T2",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "tool_calls",
+      "error": null,
+      "tokens": {
+        "input_tokens": 335,
+        "cached_tokens": 0,
+        "read_tokens": 335,
+        "output_tokens": 93,
+        "decode_tokens": 93
+      },
+      "timings": {
+        "prompt_s": 0.8672,
+        "decode_s": 1.0563,
+        "ttft_s": 0.887494,
+        "first_answer_s": 1.649928,
+        "total_s": 1.926439
+      },
+      "metrics": {
+        "prompt_tps": 386.300738,
+        "decode_tps": 88.04317
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "tool_call",
+        "passed": true,
+        "reason": "the expected tool call"
+      }
+    },
+    {
+      "id": "sanity-T3",
+      "phase": "sanity",
+      "case_id": "T3",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "tool_calls",
+      "error": null,
+      "tokens": {
+        "input_tokens": 352,
+        "cached_tokens": 0,
+        "read_tokens": 352,
+        "output_tokens": 102,
+        "decode_tokens": 102
+      },
+      "timings": {
+        "prompt_s": 0.8583,
+        "decode_s": 1.0954,
+        "ttft_s": 0.878628,
+        "first_answer_s": 1.582831,
+        "total_s": 1.956473
+      },
+      "metrics": {
+        "prompt_tps": 410.113014,
+        "decode_tps": 93.11667
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "tool_call",
+        "passed": true,
+        "reason": "the expected tool call"
+      }
+    },
+    {
+      "id": "sanity-T4",
+      "phase": "sanity",
+      "case_id": "T4",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 2048,
+      "concurrency": 1,
+      "round": null,
+      "status": "completed",
+      "finish_reason": "tool_calls",
+      "error": null,
+      "tokens": {
+        "input_tokens": 339,
+        "cached_tokens": 0,
+        "read_tokens": 339,
+        "output_tokens": 80,
+        "decode_tokens": 80
+      },
+      "timings": {
+        "prompt_s": 0.8291,
+        "decode_s": 0.8555,
+        "ttft_s": 0.849405,
+        "first_answer_s": 1.399502,
+        "total_s": 1.687775
+      },
+      "metrics": {
+        "prompt_tps": 408.877096,
+        "decode_tps": 93.512566
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": {
+        "category": "tool_call",
+        "passed": true,
+        "reason": "the expected tool call"
+      }
+    },
+    {
+      "id": "concurrency-r1-c1",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 1,
+      "seed": 1,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 1,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.416,
+        "decode_s": 6.0027,
+        "ttft_s": 13.668169,
+        "first_answer_s": 16.255789,
+        "total_s": 19.65389
+      },
+      "metrics": {
+        "prompt_tps": 187.5,
+        "decode_tps": 85.294951
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r1-c2",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 1,
+      "seed": 2,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 1,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 368,
+        "decode_tokens": 368
+      },
+      "timings": {
+        "prompt_s": 0.4504,
+        "decode_s": 4.7532,
+        "ttft_s": 0.475592,
+        "first_answer_s": 1.343565,
+        "total_s": 5.211573
+      },
+      "metrics": {
+        "prompt_tps": 173.179396,
+        "decode_tps": 77.421527
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r1-c3",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 1,
+      "seed": 3,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 1,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.4672,
+        "decode_s": 7.5245,
+        "ttft_s": 5.697442,
+        "first_answer_s": null,
+        "total_s": 13.232489
+      },
+      "metrics": {
+        "prompt_tps": 166.952055,
+        "decode_tps": 68.044388
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r1-c4",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 1,
+      "seed": 4,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 1,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.455,
+        "decode_s": 6.386,
+        "ttft_s": 20.12685,
+        "first_answer_s": 24.057264,
+        "total_s": 26.495604
+      },
+      "metrics": {
+        "prompt_tps": 171.428571,
+        "decode_tps": 80.175384
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r2-c1",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 2,
+      "seed": 5,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 2,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.4654,
+        "decode_s": 6.5429,
+        "ttft_s": 20.663333,
+        "first_answer_s": 23.910071,
+        "total_s": 27.189264
+      },
+      "metrics": {
+        "prompt_tps": 167.597765,
+        "decode_tps": 78.252763
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r2-c2",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 2,
+      "seed": 6,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 2,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 494,
+        "decode_tokens": 494
+      },
+      "timings": {
+        "prompt_s": 0.4246,
+        "decode_s": 6.2125,
+        "ttft_s": 13.984411,
+        "first_answer_s": 16.383842,
+        "total_s": 20.17944
+      },
+      "metrics": {
+        "prompt_tps": 183.702308,
+        "decode_tps": 79.517103
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r2-c3",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 2,
+      "seed": 7,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 2,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.4463,
+        "decode_s": 5.8418,
+        "ttft_s": 0.471437,
+        "first_answer_s": 2.065476,
+        "total_s": 6.296272
+      },
+      "metrics": {
+        "prompt_tps": 174.770334,
+        "decode_tps": 87.644219
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r2-c4",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 2,
+      "seed": 8,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 2,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.436,
+        "decode_s": 6.8069,
+        "ttft_s": 6.750452,
+        "first_answer_s": 10.694255,
+        "total_s": 13.540422
+      },
+      "metrics": {
+        "prompt_tps": 178.899083,
+        "decode_tps": 75.217794
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r3-c1",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 3,
+      "seed": 9,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 3,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.4632,
+        "decode_s": 6.334,
+        "ttft_s": 18.769365,
+        "first_answer_s": 22.496245,
+        "total_s": 25.08586
+      },
+      "metrics": {
+        "prompt_tps": 168.393782,
+        "decode_tps": 80.833596
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r3-c2",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 3,
+      "seed": 10,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 3,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.4314,
+        "decode_s": 6.1333,
+        "ttft_s": 0.454964,
+        "first_answer_s": 2.762924,
+        "total_s": 6.571257
+      },
+      "metrics": {
+        "prompt_tps": 180.806676,
+        "decode_tps": 83.478715
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r3-c3",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 3,
+      "seed": 11,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 3,
+      "status": "truncated",
+      "finish_reason": "length",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 512,
+        "decode_tokens": 512
+      },
+      "timings": {
+        "prompt_s": 0.4228,
+        "decode_s": 6.813,
+        "ttft_s": 7.012889,
+        "first_answer_s": 12.048391,
+        "total_s": 13.808564
+      },
+      "metrics": {
+        "prompt_tps": 184.48439,
+        "decode_tps": 75.150448
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    },
+    {
+      "id": "concurrency-r3-c4",
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "repetition": 3,
+      "seed": 12,
+      "max_output_tokens": 512,
+      "concurrency": 4,
+      "round": 3,
+      "status": "completed",
+      "finish_reason": "stop",
+      "error": null,
+      "tokens": {
+        "input_tokens": 78,
+        "cached_tokens": 0,
+        "read_tokens": 78,
+        "output_tokens": 351,
+        "decode_tokens": 351
+      },
+      "timings": {
+        "prompt_s": 0.4579,
+        "decode_s": 4.0189,
+        "ttft_s": 14.284667,
+        "first_answer_s": 15.242804,
+        "total_s": 18.286336
+      },
+      "metrics": {
+        "prompt_tps": 170.34287,
+        "decode_tps": 87.337331
+      },
+      "sources": {
+        "input_tokens": "usage.prompt_tokens of the final stream chunk",
+        "cached_tokens": "usage.prompt_tokens_details.cached_tokens",
+        "read_tokens": "timings.prompt_n",
+        "output_tokens": "usage.completion_tokens of the final stream chunk",
+        "decode_tokens": "timings.predicted_n (agrees with timings.predicted_per_second x predicted_ms)",
+        "engine_timings": "timings.prompt_ms, timings.predicted_ms, timings.predicted_per_second of the final stream chunk (raw values in outputs.jsonl)",
+        "client_timings": "client monotonic clock from dispatch; event offsets in outputs.jsonl"
+      },
+      "first_delta_kind": "reasoning",
+      "token_accounting_note": null,
+      "evaluation": null
+    }
+  ],
+  "summaries": [
+    {
+      "phase": "performance",
+      "case_id": "short",
+      "concurrency": 1,
+      "metric": "prompt_tps",
+      "unit": "tokens/s",
+      "median": 141.570142,
+      "min": 135.372714,
+      "max": 168.416448,
+      "n": 3,
+      "included_request_ids": [
+        "performance-short-r1",
+        "performance-short-r2",
+        "performance-short-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "short",
+      "concurrency": 1,
+      "metric": "decode_tps",
+      "unit": "tokens/s",
+      "median": 82.883335,
+      "min": 81.182216,
+      "max": 84.977864,
+      "n": 3,
+      "included_request_ids": [
+        "performance-short-r1",
+        "performance-short-r2",
+        "performance-short-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "short",
+      "concurrency": 1,
+      "metric": "ttft_s",
+      "unit": "s",
+      "median": 0.563741,
+      "min": 0.477067,
+      "max": 0.588641,
+      "n": 3,
+      "included_request_ids": [
+        "performance-short-r1",
+        "performance-short-r2",
+        "performance-short-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "short",
+      "concurrency": 1,
+      "metric": "first_answer_s",
+      "unit": "s",
+      "median": 1.444561,
+      "min": 1.351603,
+      "max": 4.327846,
+      "n": 3,
+      "included_request_ids": [
+        "performance-short-r1",
+        "performance-short-r2",
+        "performance-short-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "short",
+      "concurrency": 1,
+      "metric": "total_s",
+      "unit": "s",
+      "median": 5.877613,
+      "min": 4.441452,
+      "max": 6.87837,
+      "n": 3,
+      "included_request_ids": [
+        "performance-short-r1",
+        "performance-short-r2",
+        "performance-short-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "concurrency": 1,
+      "metric": "prompt_tps",
+      "unit": "tokens/s",
+      "median": 965.421266,
+      "min": 917.774738,
+      "max": 992.892317,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-4k-r1",
+        "performance-prompt-4k-r2",
+        "performance-prompt-4k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "concurrency": 1,
+      "metric": "decode_tps",
+      "unit": "tokens/s",
+      "median": 78.138115,
+      "min": 66.515966,
+      "max": 83.692951,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-4k-r1",
+        "performance-prompt-4k-r2",
+        "performance-prompt-4k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "concurrency": 1,
+      "metric": "ttft_s",
+      "unit": "s",
+      "median": 4.261329,
+      "min": 4.143879,
+      "max": 4.481335,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-4k-r1",
+        "performance-prompt-4k-r2",
+        "performance-prompt-4k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "concurrency": 1,
+      "metric": "first_answer_s",
+      "unit": "s",
+      "median": 8.090824,
+      "min": 7.578425,
+      "max": 8.603222,
+      "n": 2,
+      "included_request_ids": [
+        "performance-prompt-4k-r1",
+        "performance-prompt-4k-r2"
+      ],
+      "excluded": [
+        {
+          "request_id": "performance-prompt-4k-r3",
+          "reason": "first_answer_s is not available for this request"
+        }
+      ]
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-4k",
+      "concurrency": 1,
+      "metric": "total_s",
+      "unit": "s",
+      "median": 10.796454,
+      "min": 10.581336,
+      "max": 11.823804,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-4k-r1",
+        "performance-prompt-4k-r2",
+        "performance-prompt-4k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "concurrency": 1,
+      "metric": "prompt_tps",
+      "unit": "tokens/s",
+      "median": 2166.761427,
+      "min": 2004.893864,
+      "max": 2267.155506,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-16k-r1",
+        "performance-prompt-16k-r2",
+        "performance-prompt-16k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "concurrency": 1,
+      "metric": "decode_tps",
+      "unit": "tokens/s",
+      "median": 74.723799,
+      "min": 68.362374,
+      "max": 85.831154,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-16k-r1",
+        "performance-prompt-16k-r2",
+        "performance-prompt-16k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "concurrency": 1,
+      "metric": "ttft_s",
+      "unit": "s",
+      "median": 7.588518,
+      "min": 7.253762,
+      "max": 8.199439,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-16k-r1",
+        "performance-prompt-16k-r2",
+        "performance-prompt-16k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "concurrency": 1,
+      "metric": "first_answer_s",
+      "unit": "s",
+      "median": 10.777896,
+      "min": 9.939605,
+      "max": 11.616187,
+      "n": 2,
+      "included_request_ids": [
+        "performance-prompt-16k-r2",
+        "performance-prompt-16k-r3"
+      ],
+      "excluded": [
+        {
+          "request_id": "performance-prompt-16k-r1",
+          "reason": "first_answer_s is not available for this request"
+        }
+      ]
+    },
+    {
+      "phase": "performance",
+      "case_id": "prompt-16k",
+      "concurrency": 1,
+      "metric": "total_s",
+      "unit": "s",
+      "median": 14.088008,
+      "min": 13.535982,
+      "max": 15.671235,
+      "n": 3,
+      "included_request_ids": [
+        "performance-prompt-16k-r1",
+        "performance-prompt-16k-r2",
+        "performance-prompt-16k-r3"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "concurrency": 4,
+      "metric": "prompt_tps",
+      "unit": "tokens/s",
+      "median": 173.974865,
+      "min": 166.952055,
+      "max": 187.5,
+      "n": 12,
+      "included_request_ids": [
+        "concurrency-r1-c1",
+        "concurrency-r1-c2",
+        "concurrency-r1-c3",
+        "concurrency-r1-c4",
+        "concurrency-r2-c1",
+        "concurrency-r2-c2",
+        "concurrency-r2-c3",
+        "concurrency-r2-c4",
+        "concurrency-r3-c1",
+        "concurrency-r3-c2",
+        "concurrency-r3-c3",
+        "concurrency-r3-c4"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "concurrency": 4,
+      "metric": "decode_tps",
+      "unit": "tokens/s",
+      "median": 79.846243,
+      "min": 68.044388,
+      "max": 87.644219,
+      "n": 12,
+      "included_request_ids": [
+        "concurrency-r1-c1",
+        "concurrency-r1-c2",
+        "concurrency-r1-c3",
+        "concurrency-r1-c4",
+        "concurrency-r2-c1",
+        "concurrency-r2-c2",
+        "concurrency-r2-c3",
+        "concurrency-r2-c4",
+        "concurrency-r3-c1",
+        "concurrency-r3-c2",
+        "concurrency-r3-c3",
+        "concurrency-r3-c4"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "concurrency": 4,
+      "metric": "ttft_s",
+      "unit": "s",
+      "median": 10.340529,
+      "min": 0.454964,
+      "max": 20.663333,
+      "n": 12,
+      "included_request_ids": [
+        "concurrency-r1-c1",
+        "concurrency-r1-c2",
+        "concurrency-r1-c3",
+        "concurrency-r1-c4",
+        "concurrency-r2-c1",
+        "concurrency-r2-c2",
+        "concurrency-r2-c3",
+        "concurrency-r2-c4",
+        "concurrency-r3-c1",
+        "concurrency-r3-c2",
+        "concurrency-r3-c3",
+        "concurrency-r3-c4"
+      ],
+      "excluded": []
+    },
+    {
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "concurrency": 4,
+      "metric": "first_answer_s",
+      "unit": "s",
+      "median": 15.242804,
+      "min": 1.343565,
+      "max": 24.057264,
+      "n": 11,
+      "included_request_ids": [
+        "concurrency-r1-c1",
+        "concurrency-r1-c2",
+        "concurrency-r1-c4",
+        "concurrency-r2-c1",
+        "concurrency-r2-c2",
+        "concurrency-r2-c3",
+        "concurrency-r2-c4",
+        "concurrency-r3-c1",
+        "concurrency-r3-c2",
+        "concurrency-r3-c3",
+        "concurrency-r3-c4"
+      ],
+      "excluded": [
+        {
+          "request_id": "concurrency-r1-c3",
+          "reason": "first_answer_s is not available for this request"
+        }
+      ]
+    },
+    {
+      "phase": "concurrency",
+      "case_id": "short-burst",
+      "concurrency": 4,
+      "metric": "total_s",
+      "unit": "s",
+      "median": 16.04745,
+      "min": 5.211573,
+      "max": 27.189264,
+      "n": 12,
+      "included_request_ids": [
+        "concurrency-r1-c1",
+        "concurrency-r1-c2",
+        "concurrency-r1-c3",
+        "concurrency-r1-c4",
+        "concurrency-r2-c1",
+        "concurrency-r2-c2",
+        "concurrency-r2-c3",
+        "concurrency-r2-c4",
+        "concurrency-r3-c1",
+        "concurrency-r3-c2",
+        "concurrency-r3-c3",
+        "concurrency-r3-c4"
+      ],
+      "excluded": []
+    }
+  ],
+  "concurrency_rounds": [
+    {
+      "round": 1,
+      "request_ids": [
+        "concurrency-r1-c1",
+        "concurrency-r1-c2",
+        "concurrency-r1-c3",
+        "concurrency-r1-c4"
+      ],
+      "wall_s": 26.496568,
+      "output_tokens": 1904,
+      "aggregate_tps": 71.858363,
+      "failed": 0
+    },
+    {
+      "round": 2,
+      "request_ids": [
+        "concurrency-r2-c1",
+        "concurrency-r2-c2",
+        "concurrency-r2-c3",
+        "concurrency-r2-c4"
+      ],
+      "wall_s": 27.189631,
+      "output_tokens": 2030,
+      "aggregate_tps": 74.660815,
+      "failed": 0
+    },
+    {
+      "round": 3,
+      "request_ids": [
+        "concurrency-r3-c1",
+        "concurrency-r3-c2",
+        "concurrency-r3-c3",
+        "concurrency-r3-c4"
+      ],
+      "wall_s": 25.08586,
+      "output_tokens": 1887,
+      "aggregate_tps": 75.221659,
+      "failed": 0
+    }
+  ],
+  "quality": {
+    "passed": 12,
+    "total": 12,
+    "categories": {
+      "instruction": {
+        "passed": 4,
+        "total": 4
+      },
+      "retrieval": {
+        "passed": 4,
+        "total": 4
+      },
+      "tool_call": {
+        "passed": 4,
+        "total": 4
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "kind": "outputs",
+      "path": "outputs.jsonl",
+      "sha256": "ce639170978dd851a7a4deb772bb7e268aa9180cff1d07a12defa1c999e1ab87"
+    },
+    {
+      "kind": "config",
+      "path": "config.json",
+      "sha256": "cde6a66e6fcd83226c3897865f0423f66c610b80e559026da46cb5c3300afec9"
+    },
+    {
+      "kind": "provenance",
+      "path": "provenance/chat_template.jinja",
+      "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+    },
+    {
+      "kind": "provenance",
+      "path": "provenance/corpus-manifest.sha256",
+      "sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407"
+    },
+    {
+      "kind": "provenance",
+      "path": "provenance/corpus-build.json",
+      "sha256": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2"
+    }
+  ],
+  "missing": {
+    "/protocol/model_card_revision": "the profile's model-card revision is not pinned yet (protocol draft)",
+    "/hardware/gpus/0/memory_bytes": "the local tools did not report this card's memory",
+    "/hardware/gpus/0/power_limit_w": "no power limit available for this card from the local tools",
+    "/software/drivers": "no GPU driver version was reported by the local tools",
+    "/software/runtime": "no CUDA, ROCm or Metal runtime version was reported by the local tools",
+    "/model/source_revision": "not given: pass --source-revision",
+    "/model/tokenizer_revision": "not given: pass --tokenizer-revision",
+    "/configuration/kv_cache": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/configuration/expert_cache": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/configuration/offloading": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/configuration/prefill": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/configuration/mtp": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/configuration/calibration": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/configuration/experimental_options": "engine options are not exposed by a running server; start it from a profile or pass --config",
+    "/requests/0/round": "not applicable outside the concurrency stage",
+    "/requests/0/error": "none: the request ended normally",
+    "/requests/0/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/0/evaluation": "not applicable outside the sanity stage",
+    "/requests/1/round": "not applicable outside the concurrency stage",
+    "/requests/1/error": "none: the request ended normally",
+    "/requests/1/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/1/evaluation": "not applicable outside the sanity stage",
+    "/requests/2/round": "not applicable outside the concurrency stage",
+    "/requests/2/error": "none: the request ended normally",
+    "/requests/2/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/2/evaluation": "not applicable outside the sanity stage",
+    "/requests/3/round": "not applicable outside the concurrency stage",
+    "/requests/3/error": "none: the request ended normally",
+    "/requests/3/timings/first_answer_s": "no answer text or tool call arrived (reasoning alone does not count)",
+    "/requests/3/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/3/evaluation": "not applicable outside the sanity stage",
+    "/requests/4/round": "not applicable outside the concurrency stage",
+    "/requests/4/error": "none: the request ended normally",
+    "/requests/4/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/4/evaluation": "not applicable outside the sanity stage",
+    "/requests/5/round": "not applicable outside the concurrency stage",
+    "/requests/5/error": "none: the request ended normally",
+    "/requests/5/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/5/evaluation": "not applicable outside the sanity stage",
+    "/requests/6/round": "not applicable outside the concurrency stage",
+    "/requests/6/error": "none: the request ended normally",
+    "/requests/6/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/6/evaluation": "not applicable outside the sanity stage",
+    "/requests/7/round": "not applicable outside the concurrency stage",
+    "/requests/7/error": "none: the request ended normally",
+    "/requests/7/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/7/evaluation": "not applicable outside the sanity stage",
+    "/requests/8/round": "not applicable outside the concurrency stage",
+    "/requests/8/error": "none: the request ended normally",
+    "/requests/8/timings/first_answer_s": "no answer text or tool call arrived (reasoning alone does not count)",
+    "/requests/8/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/8/evaluation": "not applicable outside the sanity stage",
+    "/requests/9/round": "not applicable outside the concurrency stage",
+    "/requests/9/error": "none: the request ended normally",
+    "/requests/9/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/9/evaluation": "not applicable outside the sanity stage",
+    "/requests/10/round": "not applicable outside the concurrency stage",
+    "/requests/10/error": "none: the request ended normally",
+    "/requests/10/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/11/round": "not applicable outside the concurrency stage",
+    "/requests/11/error": "none: the request ended normally",
+    "/requests/11/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/12/round": "not applicable outside the concurrency stage",
+    "/requests/12/error": "none: the request ended normally",
+    "/requests/12/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/13/round": "not applicable outside the concurrency stage",
+    "/requests/13/error": "none: the request ended normally",
+    "/requests/13/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/14/round": "not applicable outside the concurrency stage",
+    "/requests/14/error": "none: the request ended normally",
+    "/requests/14/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/15/round": "not applicable outside the concurrency stage",
+    "/requests/15/error": "none: the request ended normally",
+    "/requests/15/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/16/round": "not applicable outside the concurrency stage",
+    "/requests/16/error": "none: the request ended normally",
+    "/requests/16/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/17/round": "not applicable outside the concurrency stage",
+    "/requests/17/error": "none: the request ended normally",
+    "/requests/17/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/18/round": "not applicable outside the concurrency stage",
+    "/requests/18/error": "none: the request ended normally",
+    "/requests/18/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/19/round": "not applicable outside the concurrency stage",
+    "/requests/19/error": "none: the request ended normally",
+    "/requests/19/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/20/round": "not applicable outside the concurrency stage",
+    "/requests/20/error": "none: the request ended normally",
+    "/requests/20/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/21/round": "not applicable outside the concurrency stage",
+    "/requests/21/error": "none: the request ended normally",
+    "/requests/21/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/22/error": "none: the request ended normally",
+    "/requests/22/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/22/evaluation": "not applicable outside the sanity stage",
+    "/requests/23/error": "none: the request ended normally",
+    "/requests/23/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/23/evaluation": "not applicable outside the sanity stage",
+    "/requests/24/error": "none: the request ended normally",
+    "/requests/24/timings/first_answer_s": "no answer text or tool call arrived (reasoning alone does not count)",
+    "/requests/24/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/24/evaluation": "not applicable outside the sanity stage",
+    "/requests/25/error": "none: the request ended normally",
+    "/requests/25/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/25/evaluation": "not applicable outside the sanity stage",
+    "/requests/26/error": "none: the request ended normally",
+    "/requests/26/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/26/evaluation": "not applicable outside the sanity stage",
+    "/requests/27/error": "none: the request ended normally",
+    "/requests/27/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/27/evaluation": "not applicable outside the sanity stage",
+    "/requests/28/error": "none: the request ended normally",
+    "/requests/28/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/28/evaluation": "not applicable outside the sanity stage",
+    "/requests/29/error": "none: the request ended normally",
+    "/requests/29/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/29/evaluation": "not applicable outside the sanity stage",
+    "/requests/30/error": "none: the request ended normally",
+    "/requests/30/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/30/evaluation": "not applicable outside the sanity stage",
+    "/requests/31/error": "none: the request ended normally",
+    "/requests/31/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/31/evaluation": "not applicable outside the sanity stage",
+    "/requests/32/error": "none: the request ended normally",
+    "/requests/32/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/32/evaluation": "not applicable outside the sanity stage",
+    "/requests/33/error": "none: the request ended normally",
+    "/requests/33/token_accounting_note": "none: the API and engine counts agree or only one exists",
+    "/requests/33/evaluation": "not applicable outside the sanity stage"
+  },
+  "extensions": {
+    "suite": "standard-v1",
+    "runner": "strata_cli.bench_standard",
+    "status_reasons": [],
+    "started_engine": false,
+    "server_requests_before_run": 0,
+    "other_engine_options": {},
+    "request_checks": {
+      "warmup": {
+        "max_shared_prefix_tokens": 47,
+        "frozen_input_tokens": 75,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-short-r1": {
+        "max_shared_prefix_tokens": 50,
+        "frozen_input_tokens": 77,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-prompt-4k-r1": {
+        "max_shared_prefix_tokens": 54,
+        "frozen_input_tokens": 4093,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-prompt-16k-r1": {
+        "max_shared_prefix_tokens": 55,
+        "frozen_input_tokens": 16387,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-short-r2": {
+        "max_shared_prefix_tokens": 50,
+        "frozen_input_tokens": 77,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-prompt-4k-r2": {
+        "max_shared_prefix_tokens": 54,
+        "frozen_input_tokens": 4093,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-prompt-16k-r2": {
+        "max_shared_prefix_tokens": 55,
+        "frozen_input_tokens": 16387,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-short-r3": {
+        "max_shared_prefix_tokens": 50,
+        "frozen_input_tokens": 77,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-prompt-4k-r3": {
+        "max_shared_prefix_tokens": 54,
+        "frozen_input_tokens": 4093,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "performance-prompt-16k-r3": {
+        "max_shared_prefix_tokens": 55,
+        "frozen_input_tokens": 16387,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-I1": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 82,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-I2": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 90,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-I3": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 85,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-I4": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 71,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-R1": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 4089,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-R2": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 4089,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-R3": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 16382,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-R4": {
+        "max_shared_prefix_tokens": 49,
+        "frozen_input_tokens": 16390,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-T1": {
+        "max_shared_prefix_tokens": 61,
+        "frozen_input_tokens": 325,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-T2": {
+        "max_shared_prefix_tokens": 62,
+        "frozen_input_tokens": 335,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-T3": {
+        "max_shared_prefix_tokens": 61,
+        "frozen_input_tokens": 352,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "sanity-T4": {
+        "max_shared_prefix_tokens": 62,
+        "frozen_input_tokens": 339,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r1-c1": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r1-c2": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r1-c3": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r1-c4": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r2-c1": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r2-c2": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r2-c3": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r2-c4": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r3-c1": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r3-c2": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r3-c3": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      },
+      "concurrency-r3-c4": {
+        "max_shared_prefix_tokens": 51,
+        "frozen_input_tokens": 78,
+        "unexpected_payload_reuse": false,
+        "length_outside_tolerance": false
+      }
+    },
+    "optional_stage_skipped": false,
+    "api_key_sent": true
+  }
+}
