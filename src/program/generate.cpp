@@ -982,7 +982,7 @@ void usage() {
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
-                 "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
+                 "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE or RESTORE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
                  "                       give VRAM back to other programs between requests and take it back later\n"
@@ -13695,17 +13695,37 @@ int main(int argc, char** argv) {
                         strata::core::SessionReadLimits limits;
                         limits.progress = moving;
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
-                        limits.admit = [floor, &o](uint64_t need, std::string& why) {
+                        limits.admit = [floor, &o, &conversations, &checks, &tail_ckpt_len](uint64_t need,
+                                                                                             std::string& why) {
                             const auto mem = strata::core::sample_host_memory();
                             const std::optional<uint64_t> avail = mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
                             if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+                            // The save side's opt-in ladder, here: free the reconstructible host caches (retained K/V
+                            // reuse, the oldest unpinned parked conversations, the chain's own checkpoints from the
+                            // back - never the live device state) and probe the RAM again.
+                            if (o.session_save_reclaim) {
+                                const auto freed = strata::core::session_read_reclaim(conversations, checks, need,
+                                                                                      floor, strata::core::available_host_bytes);
+                                if (freed.bytes || freed.checkpoints || freed.parked) {
+                                    // A removed tail must not mark a later checkpoint at this length as a tail.
+                                    if (tail_ckpt_len >= 0 && std::none_of(checks.begin(), checks.end(), [&](const auto& c) {
+                                            return int64_t(c.ids.size()) == tail_ckpt_len;
+                                        })) tail_ckpt_len = -1;
+                                    std::fprintf(stderr, "strata serve: restore reclaimed %zu checkpoints, %zu parked, "
+                                                 "%zu host bytes; checking RAM again\n",
+                                                 freed.checkpoints, freed.parked, freed.bytes);
+                                    if (strata::core::conversation_memory_admit(strata::core::available_host_bytes(),
+                                                                                need, floor))
+                                        return true;
+                                }
+                            }
                             why = "not enough RAM to read it (" + std::to_string(need >> 20) + " MiB plus a floor of " +
                                   std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " +
                                   ram_note(mem) + ")";
                             return false;
                         };
-                        if (!strata::core::conversation_session_read_limits(
-                                limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                        if (!strata::core::conversation_session_read_limits_split(
+                                limits, carves, g, draft_of, mtp.kv_state(), (uint64_t) o.max_context,
                                 (uint64_t) std::max(o.prompt_cache, 1), err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -13722,7 +13742,8 @@ int main(int argc, char** argv) {
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (!strata::core::conversation_snapshot_validate_split(image, sessions, draft_of,
+                                                                            &mtp.kv_state(), g, err)) {
                         refuse(err);
                         continue;
                     }
@@ -13735,7 +13756,8 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore_split(image, sessions, draft_of, &mtp.kv_state(),
+                                                                          g, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again
