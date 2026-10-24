@@ -164,8 +164,12 @@ class FakeRoot(unittest.TestCase):
         self.strata.disk_free = lambda p: 1000.0
         self.tools = M.Tools(self.strata)
         self.extra = []
+        # the tests must never see a Strata server that happens to run on the real default port on this PC
+        self._default_port = M.DEFAULT_PORT
+        M.DEFAULT_PORT = free_port()
 
     def tearDown(self):
+        M.DEFAULT_PORT = self._default_port
         for p in self.extra:
             if p.poll() is None:
                 p.kill()
