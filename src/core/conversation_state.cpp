@@ -812,6 +812,79 @@ bool conversation_session_read_limits_split(SessionReadLimits& limits, const std
     return true;
 }
 
+bool conversation_snapshot_validate_split(const SavedConversation& image, const std::vector<SessionState*>& sessions,
+                                          const std::vector<bool>& draft_of, const QsaState* draft,
+                                          const ModelGeometry& g, std::string& error) {
+    if (sessions.empty() || draft_of.size() != sessions.size())
+        return fail(error, "invalid layer-split layout");
+    if (!image.stage_images.empty())
+        return fail(error, "a parked conversation restores through its stage images, not the split file form");
+    // The file's stage table must be exactly this runtime's later carves, draft placement included: an image from
+    // another split cannot restore per stage here, and is refused before any of its arrays is looked at.
+    std::vector<SessionStageGeom> table;
+    table.reserve(sessions.size() - 1);
+    for (size_t k = 1; k < sessions.size(); ++k)
+        table.push_back(SessionStageGeom{sessions[k]->layer_lo, sessions[k]->layer_hi,
+                                         sessions[k]->qsa_alloc, sessions[k]->gdn_alloc, draft_of[k]});
+    if (image.stage_table != table) return fail(error, "saved with a different layer split than this runtime's");
+    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
+    if (image.layer_lo != sessions[0]->layer_lo || image.layer_hi != sessions[0]->layer_hi)
+        return fail(error, "snapshot from another session layer range");
+    size_t owned_draft = 0;
+    for (bool owns : draft_of) owned_draft += owns ? 1 : 0;
+    if (owned_draft != (draft ? size_t{1} : size_t{0}))
+        return fail(error, "the draft layer belongs to exactly one stage of the split");
+    if (image.live.stage_parts.size() != sessions.size() - 1)
+        return fail(error, "the running checkpoint's stage parts do not match the stage table");
+    std::vector<const SessionState*> carves(sessions.begin(), sessions.end());
+    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
+    if (!view_validate_split(view, carves, g, error)) return false;
+    if (!conversation_checkpoint_validate(image.live, *sessions[0], g, error)) return false;
+    for (size_t k = 1; k < sessions.size(); ++k)
+        if (!conversation_checkpoint_validate(image.live.stage_parts[k - 1], *sessions[k], g, error)) return false;
+    // K/V groups sliced by the stage table: each stage's QSA layers over its own carve, the draft at its owner's
+    // group end - the exact order conversation_snapshot_sources_split wrote.
+    size_t total = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) total += owned_qsa(*sessions[k]) + (draft_of[k] ? 1 : 0);
+    if (image.kv.size() != total) return fail(error, "invalid K/V layer count");
+    const int64_t upto = (int64_t) image.live.ids.size();
+    size_t at = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) {
+        const size_t layers = owned_qsa(*sessions[k]);
+        for (size_t j = 0; j < layers; ++j)
+            if (!conversation_kv_validate(image.kv[at + j], owned(*sessions[k], j), g, upto, true, error)) return false;
+        if (draft_of[k] && !conversation_kv_validate(image.kv[at + layers], *draft, g, upto, false, error)) return false;
+        at += layers + (draft_of[k] ? 1 : 0);
+    }
+    return true;
+}
+
+ConversationRestore conversation_snapshot_restore_split(const SavedConversation& image,
+                                                        const std::vector<SessionState*>& sessions,
+                                                        const std::vector<bool>& draft_of, const QsaState* draft,
+                                                        const ModelGeometry& g, std::string& error) {
+    if (!conversation_snapshot_validate_split(image, sessions, draft_of, draft, g, error))
+        return ConversationRestore::invalid;   // every stage validated: nothing transfers for a refused image
+    if (!sync(error)) return ConversationRestore::transfer_failed;
+    const int64_t upto = (int64_t) image.live.ids.size();
+    size_t at = 0;
+    for (size_t k = 0; k < sessions.size(); ++k) {   // main stage first, mirroring the park stage order
+        const size_t layers = owned_qsa(*sessions[k]);
+        for (size_t j = 0; j < layers; ++j)
+            if (!conversation_kv_restore(image.kv[at + j], owned(*sessions[k], j), g, upto, true, error))
+                return ConversationRestore::transfer_failed;
+        if (draft_of[k] && !conversation_kv_restore(image.kv[at + layers], *draft, g, upto, false, error))
+            return ConversationRestore::transfer_failed;
+        at += layers + (draft_of[k] ? 1 : 0);
+    }
+    if (!conversation_checkpoint_restore(image.live, *sessions[0], g, error))
+        return ConversationRestore::transfer_failed;
+    for (size_t k = 1; k < sessions.size(); ++k)
+        if (!conversation_checkpoint_restore(image.live.stage_parts[k - 1], *sessions[k], g, error))
+            return ConversationRestore::transfer_failed;
+    return ConversationRestore::restored;
+}
+
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error) {
     if (!image.live.stage_parts.empty())
