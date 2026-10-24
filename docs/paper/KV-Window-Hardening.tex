@@ -1,137 +1,480 @@
 \documentclass[10pt,twocolumn]{article}
-\usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage[margin=0.75in]{geometry}
+% Page geometry: ACM sigplan (10pt conference) --- US Letter, 1in top/bottom,
+% 0.75in side margins, 2pc column separation.
+\usepackage[letterpaper,top=1in,bottom=1in,margin=0.75in,columnsep=2pc,heightrounded]{geometry}
+% Fonts: the ACM template pair --- Linux Libertine (text) and Inconsolata (mono).
+\usepackage[tt=false]{libertine}
+\usepackage{libertinust1math}
+\usepackage[varqu]{zi4}
+\usepackage{microtype}
 \usepackage{booktabs}
 \usepackage{array}
+\usepackage{tabularx}
+\usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage{amsmath}
 \usepackage{enumitem}
 \usepackage{multirow}
+\usepackage{titlesec}
+\usepackage{caption}
+\usepackage{tikz}
 
-\title{Hardening the Exact-Cell KV Window for \texttt{--kv q4lm8v}: Design, Decisions, and Validation}
-\author{Matthias Kronenberger}
-\date{October 2026}
+% ACM sigplan heading styles: bold \Large sections, bold normal-size subsections,
+% ragged-right, tight spacing.
+\titleformat{\section}{\Large\bfseries\raggedright}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalsize\bfseries\raggedright}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\raggedright}{\thesubsubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.2ex plus .2ex minus .2ex}{0.55ex plus .1ex}
+\titlespacing*{\subsection}{0pt}{1.0ex plus .2ex minus .2ex}{0.45ex plus .1ex}
+\titlespacing*{\subsubsection}{0pt}{0.9ex plus .2ex minus .2ex}{0.4ex plus .1ex}
+
+% ACM caption style: bold label, small text.
+\captionsetup{labelfont=bf,font=small,skip=6pt}
+
+% ACM link colors.
+\definecolor{ACMPurple}{cmyk}{0.55,1,0,0.15}
+\definecolor{ACMDarkBlue}{cmyk}{1,0.58,0,0.21}
+\hypersetup{colorlinks,linkcolor=ACMPurple,citecolor=ACMPurple,urlcolor=ACMDarkBlue,
+  pdftitle={Hardening the Exact-Cell KV Window for --kv q4lm8v},
+  pdfauthor={Matthias Kronenberger}}
+
+\setlength{\parindent}{10pt}
 
 \begin{document}
 
-\maketitle
+% Full-width ACM conference title block, then the two columns start with the abstract.
+\twocolumn[{%
+  \begin{center}
+    {\LARGE\bfseries Hardening the Exact-Cell KV Window for \texttt{-{}-kv q4lm8v}:\\[0.25em] Design, Decisions, and a Measurement-First Validation\par}
+    \vspace{1.0em}
+    {\large Matthias Kronenberger\par}
+    \vspace{0.35em}
+    October 2026
+  \end{center}
+  \vspace{1.0em}
+}]
 
-\begin{abstract}
-The exact-cell KV window is an opt-in memory/accuracy trade-off for Strata: \texttt{--kv q4lm8v} paired with \texttt{STRATA\_KV\_WINDOW=1} (shape $S{=}256, R{=}64$, \texttt{--prefill auto} capped at $B{=}6144$) yields a measured operating point of 5.29 bit/cell ($\sim$1.016\,MiB at 128K) versus 8.00 bit/cell for \texttt{int8} ($\sim$1.584\,MiB at 128K). \texttt{int8} remains the quality default. This paper documents the design of the window, the development decisions made while hardening it (A1--A5), and the validation methodology. All window logic is gated behind \texttt{qsa\_kv\_win()}. Across 8/8 runs the \texttt{int8} default dump-logits SHA is byte-identical (\texttt{A014F504\ldots BA052}), the window stays opt-in, and compatibility edges (free-ring auto chunk, streaming interaction, grid stability, empty/tag initialization) are closed without changing the default path. AMD HIP (RX 9060 XT, Windows, ROCm 7.1) is tested; CUDA/SYCL build checks are requested as review gates. A full cell$\rightarrow$row parity test is planned as follow-up.
-\end{abstract}
+\noindent\textbf{Abstract}\par
+\vspace{0.6ex}
+\noindent
+The exact-cell KV window is an opt-in memory/accuracy point for Strata's 4-bit Lloyd KV cache (\texttt{-{}-kv q4lm8v}). A small resident ring of recent cells and a set of sink cells are kept in fp16 while the rest of the cache remains 4-bit. With $S{=}256$ recent cells, $R{=}64$ sinks and the automatic prompt chunk capped at $B{=}6{,}144$, the production point uses 5.29 bit/cell (1,016\,MiB at 128K) against \texttt{int8}'s 8.25 bit/cell (1,584\,MiB), at equal prefill throughput and decode inside run-to-run spread. This paper describes the design, the correctness hardening (A1--A5), and a measurement-first validation. Quality is scored teacher-forced against an fp16 KV reference on three fixed corpora (2K, 4K, 128K), reporting mean KL, p99 KL, top-1 agreement and perplexity, with paired per-segment statistics. The window removes most of the plain 4-bit base's error on the cwe task: 73\% of its gap to \texttt{int8} at 4K and 58\% of its mean KL at the 128K tail. At 2K its mean KL is not statistically distinguishable from \texttt{int8} (0.00702 against 0.00503, paired $t=-1.92$); at 4K \texttt{int8} is significantly better on the mean (paired $t=-3.55$) but indistinguishable in the answer region; at 128K \texttt{int8} keeps the better p99, the last 1,024 positions and the whole segment. The result is a 36\% KV-memory saving with a small, measurable KL cost, not an accuracy win over \texttt{int8}. The \texttt{int8} default path stays byte-identical in 8/8 runs. AMD HIP is measured; CUDA/SYCL builds and a full cell-to-row parity test remain review gates.
+\par\medskip
 
 \section{Introduction}
 
-Strata's KV cache supports several quantization schemes. \texttt{q4lm8v} introduces an \emph{exact-cell window}: a small resident ring of recent cells is kept in a higher-precision/exact form, while older cells use the compressed representation. The goal is to recover accuracy for the most recent context without paying the full cost of keeping the entire KV at \texttt{int8}. 
+At long context the KV cache is a large, fixed cost: at 128K tokens the \texttt{int8} default reserves 1,584\,MiB before any expert weights are loaded. A 4-bit KV cache reduces that, but quantizing every cell uniformly costs accuracy on long documents: earlier 4-bit KV work measured document perplexity 8--12\% above the 8-bit default at 1K and 8K context\,\cite{strata-kv4,strata-details}. The exact-cell KV window is an attempt to keep the memory saving while protecting the cells that matter most.
 
-The implementation was functional in principle, but several integration points could silently fail: the host-side prefill chunking, the interaction with KV streaming/residency, per-state grid selection, and the semantics of uninitialized/empty ring entries. These were treated as correctness issues (not performance) and fixed behind the same opt-in flag with no change to the default \texttt{int8} path.
+The memory landscape assumed here is not the datacenter one. On Hopper- and Blackwell-class NVIDIA hardware, an FP8 KV cache is the production two-times point: vLLM reports at most 1--2 accuracy points of degradation from FP8 KV-cache and attention quantization, sustained on prompts up to a million tokens\,\cite{vllm-fp8}. A consumer AMD GPU driven through HIP has no FP8 attention path; on such hardware the block-quantized \texttt{int8} default is the deployed two-times saving, and 4-bit is the frontier. That is the constraint the window addresses.
 
-\section{Design of \texttt{q4lm8v} with Exact-Cell Window}
+The idea is simple. The most recent $S$ cells and the first $R$ cells (attention sinks) of each attention layer are kept in fp16 in a resident side pool; older cells stay in the 4-bit Lloyd format. The window thus spends exact bytes where the model is most sensitive and leaves the long tail compressed. It is opt-in (\texttt{-{}-kv q4lm8v} plus \texttt{STRATA\_KV\_WINDOW=1}) and never changes the default \texttt{int8} path.
+
+The implementation was functional in principle, but several integration points could fail silently: the host-side prompt chunking, the interaction with KV streaming, the stability of the window grid across model states, and the meaning of uninitialized ring entries. We treated these as correctness issues, not performance issues, and fixed them behind the same opt-in flag.
+
+This paper makes six contributions. It positions the window against prior and current KV-cache compression work (Section~2); it describes the window design and its production point (Section~3); it records the alternatives weighed against this design and why each was left out (Section~4); it documents the hardening decisions and the evidence that the default path is untouched (Section~5); it sets out the measurement methodology --- mean KL, p99 KL, top-1 agreement and perplexity, with paired statistics (Section~6) --- and reports results at 2K, 4K and 128K context (Section~7), with a discussion of where the point fits (Section~8). The emphasis is on the methodology and on what the measurements do and do not show; file-level implementation detail is deliberately kept out.
+
+\section{Related Work}\label{sec:related}
+
+KV-cache compression splits into \emph{eviction} and \emph{quantization}.
+Eviction keeps a subset of cells and drops the rest: H2O~\cite{h2o} accumulates attention as heavy hitters, SnapKV~\cite{snapkv} selects per-head clusters from an observation window, and PyramidKV~\cite{pyramidkv} allocates larger budgets to lower layers. Quantization keeps every cell at a lower bit width: KIVI~\cite{kivi} shows tuning-free 2-bit per-channel K and V with a fixed fp16 residual of recent tokens; KVQuant~\cite{kvquant} adds per-channel keys, pre-RoPE key quantization and non-uniform datatypes to reach sub-0.1 PPL degradation at 3 bits; GEAR~\cite{gear} corrects residual error with a low-rank plus sparse-outlier decomposition. Rotations make low-bit quantization robust to channel outliers: QuaRot~\cite{quarot} and RotateKV~\cite{rotatekv} apply orthogonal or Hadamard rotations before quantization. Strata's 4-bit base quantizes per cell after exactly such an orthonormal Walsh--Hadamard rotation, so it belongs to that family; the K-is-more-sensitive-than-V asymmetry behind its 4-bit K / 8-bit V split is the same observation KVTuner~\cite{kvtuner} formalizes with layer-wise precision pairs. For token-precision co-tuning across layers, \cite{top-k} studies the trade-off between kept tokens and bits per token. Table~\ref{tab:survey} collects the documented operating points in one view.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{System} & \textbf{Point} & \textbf{Documented outcome} \\
+\midrule
+KIVI~\cite{kivi} & 2b K, 2b V & per-channel, fp16 recent \\
+& & residual; tuning-free \\
+KVQuant~\cite{kvquant} & 3b per-channel & $<$0.1 PPL degradation \\
+& + pre-RoPE & (Wikitext-2/C4) \\
+GEAR~\cite{gear} & 4b + correction & low-rank + sparse \\
+RotateKV~\cite{rotatekv} & 2b & rotation-based \\
+KVTuner~\cite{kvtuner} & 3.25--4.0b & layer-wise pairs, \\
+& & nearly lossless \\
+SnapKV~\cite{snapkv} & eviction & per-head clusters \\
+PyramidKV~\cite{pyramidkv} & eviction & 12\% of cache matches \\
+& & full cache (LongBench) \\
+\texttt{llama.cpp}~\cite{llama-cpp} & q8\_0 / q4\_0 & block-quantized, \\
+& & per-cache type \\
+\texttt{vLLM}~\cite{vllm-fp8} & FP8 & $\leq$1--2 acc.\ points \\
+& & up to 1M-token prompts \\
+\bottomrule
+\end{tabular}
+\caption{Documented operating points from the literature and production
+runtimes. All entries are the cited works' own published results on their
+own hardware and models; they are not comparable across rows.}
+\label{tab:survey}
+\end{table}
+
+In production, \texttt{llama.cpp} ships block-quantized KV (q8\_0, q4\_0) selected per cache\,\cite{llama-cpp}, and \texttt{vLLM} ships an FP8 KV-cache path whose measured degradation stays within 1--2 accuracy points on reasoning and long-context benchmarks on Hopper- and Blackwell-class hardware\,\cite{vllm-fp8}. Strata targets a corner where neither path exists---one consumer GPU through HIP, no FP8 attention kernels---so its block-quantized \texttt{int8} default already provides the two-times point, and this paper moves toward 4-bit.
+
+The window itself is a quantization-side design: it keeps the whole context addressable (no eviction, unlike~\cite{h2o,snapkv,pyramidkv}), and it spends fp16 bytes on a small recent-plus-sink overlay. The recent-token residual is KIVI's~\cite{kivi} and the sink retention is StreamingLLM's~\cite{streamingllm}; what this paper adds is the overlay on top of a block-quantized Lloyd base on this engine, the hardening around it, and the paired-statistics discipline used to read it. The fair competitor we do not measure here is a per-channel-K arm in the KIVI/KVQuant style on the same engine; it is listed as follow-up work.
+
+Code and documentation for the compared systems are listed with the references\,\cite{streamingllm,kivi,kvquant,kvtuner,llama-cpp,vllm-fp8}. Strata's own measurement provenance lives in the repository and is described in Section~6.6.
+
+\section{Design of the Exact-Cell Window}
+
+Throughout, a \emph{cell} is one token's K or V entry in one attention layer; the reference model has 12 attention layers. A \emph{row} is that cell's storage within the layer's cache, and the mean numbers of this section (bits/cell, MiB) are per layer and per context token unless stated otherwise. \texttt{int8} names the default's block format: 8-bit content plus block scales, 8.25 effective bit/cell.
+
+\begin{figure}[t]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[every node/.style={font=\footnotesize},x=1cm,y=0.55cm]
+  % main quantized cache bar
+  \node[anchor=west] at (0,3.35) {quantized cache (per layer)};
+  \draw[fill=gray!25] (0,2.4) rectangle (6.9,3.1);
+  \node at (3.45,2.75) {4-bit Lloyd bulk};
+  \draw[fill=blue!14] (6.9,2.4) rectangle (8.2,3.1);
+  \node at (7.55,2.75) {sinks $R$};
+  \draw[fill=blue!26] (8.2,2.4) rectangle (9.0,3.1);
+  \node at (8.6,2.75) {recent};
+  % fp16 overlay bar
+  \node[anchor=west] at (0,1.55) {fp16 overlay (resident, additional)};
+  \draw[fill=blue!20] (0,0.55) rectangle (1.2,1.25);
+  \node at (0.6,0.9) {$R{=}64$};
+  \draw[fill=blue!30] (1.2,0.55) rectangle (2.6,1.25);
+  \node at (1.9,0.9) {$S{=}256$};
+  \draw[fill=blue!42] (2.6,0.55) rectangle (6.4,1.25);
+  \node at (4.5,0.9) {chunk $B{=}6{,}144$ (transient)};
+  % connectors
+  \draw[<->, dashed] (7.55,2.4) -- (0.6,1.25);
+  \draw[<->, dashed] (8.6,2.4) -- (1.9,1.25);
+  % streaming note
+  \node[anchor=west, align=left] at (0,0.05)
+    {not combinable with KV streaming (A2):\\ a streamed cache has no resident side pool};
+\end{tikzpicture}%
+}
+\caption{Cache anatomy per layer, widths not to scale ($R$ and $S$ are tiny
+against 131,072 cells). Every cell stays quantized in the 4-bit base; the
+copied fp16 rows form an \emph{additional} resident side pool covering the
+$R$ sink cells, the $S$ most recent cells and the current prefill chunk.}
+\label{fig:anatomy}
+\end{figure}
 
 \subsection{Operating point}
-\begin{table}[h]
+
+The production point is $S{=}256$, $R{=}64$ and the automatic prompt chunk capped at $B{=}6{,}144$. Table~\ref{tab:footprint} compares it with the default. The window costs 0.79 bit/cell more than the plain 4-bit base (4.50 bit, 864\,MiB) and frees 36\% of the KV memory against \texttt{int8}.
+
+\begin{table}[t]
 \centering
 \small
 \begin{tabular}{@{}lcc@{}}
 \toprule
-\textbf{KV mode} & \textbf{Bits/cell (128K)} & \textbf{Size (128K)} \\
+\textbf{KV mode} & \textbf{Bits/cell} & \textbf{KV at 128K} \\
 \midrule
-\texttt{int8} (default) & 8.00 & $\sim$1.584\,MiB \\
-\texttt{q4lm8v} + window & 5.29 & $\sim$1.016\,MiB \\
+\texttt{int8} (default) & 8.25 & 1,584\,MiB \\
+plain \texttt{q4lm8v} & 4.50 & 864\,MiB \\
+\texttt{q4lm8v} + window 256/64 & 5.29 & 1,016\,MiB \\
 \bottomrule
 \end{tabular}
-\caption{Measured KV footprint (author hardware)}
+\caption{KV footprint at 128K (131,072 cells, 12 attention layers). \texttt{int8} stores 8-bit content plus block scales; its 8.25 is the effective rate. The window figure includes the resident ring at $B{=}6{,}144$; the plain figure is from the byte model.}
+\label{tab:footprint}
 \end{table}
 
-The window is configured by $S$ (window size), $R$ (recent/exact ring shape), and batch/chunk $B$ (governed by \texttt{--prefill}). With \texttt{--prefill auto}, the effective batch is capped to $B{=}6144$ in windowed runs for correctness (see A1).
+\subsection{Window geometry and cost}
 
-\subsection{Architecture notes}
-\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
-\item \textbf{Gating:} Window code paths are only active when \texttt{qsa\_kv\_win()} is true / \texttt{st.k\_win != nullptr}.
-\item \textbf{Recent cells:} A side pool holds exact/recent cells accessed through window helpers (\texttt{win\_row\_of}, read via \texttt{qsa\_win\_slot}).
-\item \textbf{Residency:} The window's recent cells must remain resident. This is a property of the memory plan, not a tunable that can be arbitrarily combined with streaming (see A2).
-\item \textbf{Grid:} The (S,R,B) grid defines the window geometry; stability across states is required (see A3-lite).
-\item \textbf{Tags:} Ring entries use tags to distinguish empty/stale entries from valid exact cells (see A5).
-\end{itemize}
+The 4-bit base stores K at 16 levels and V at 8 levels in 18-byte blocks, 576\,B per cell and layer. The window keeps a side copy of the sink and recent cells in fp16. The side copy is \emph{additional} to the quantized row, not a replacement: the exact cell is 16 bits, not $16-\text{base}$ bits. The resident ring holds $R$ sink rows, $S$ recent rows and $B$ rows for the current prompt chunk, so the marginal cost of a windowed run is
+\begin{equation}
+\text{bits/cell} \;\approx\; 4.50 \;+\; \frac{16\,(R+S+B)}{L},
+\end{equation}
+where $L$ is the context length in cells. All three terms are resident memory: the ring is sized for the prompt chunk, so the $B$ term dominates the per-cell average at this $L$ ($0.75$ of the $0.79$ added bit/cell at 128K). At 128K with $R{=}64$, $S{=}256$ and $B{=}6{,}144$ this gives 5.29 bit/cell and 1,016\,MiB.
 
-\section{Development Decisions and Hardening (A1--A5)}
+The chunk $B$ follows \texttt{-{}-prefill}. A larger automatic chunk would need a larger ring, and the ring's scan limit is 6,144 cells, so a windowed run caps the automatic chunk there and says so. A ring the user sizes explicitly is left alone; a chunk that does not fit is refused loudly. Below roughly 32K cells the ring costs more than the 4-bit base saves, which is why setup offers the window only from 32K upwards.
+
+The exact cells must stay resident. A streamed KV cache has no always-resident side pool, so the window and KV streaming do not combine (A2). The window is also orthogonal to the level table: it can be enabled on other 4-bit modes, but the production point is \texttt{q4lm8v} with 256/64.
+
+\section{Design Alternatives Considered}\label{sec:alternatives}
+
+None of the alternatives in this section was measured on this engine. The section records why each was left out; the reasoning is static analysis, not measurement, and every item is a candidate follow-up arm.
+
+\paragraph{Per-channel key quantization.} KIVI and KVQuant quantize K along the channel axis because the key error concentrates in outlier channels~\cite{kivi,kvquant}. Strata's base quantizes per cell after an orthonormal Hadamard rotation, which spreads that outlier energy across channels; whether the rotation makes the cheaper per-cell axis competitive with the per-channel axis on this model is exactly the unmeasured question. It would change the block writer and reader, not the window.
+
+\paragraph{Pre-RoPE key quantization.} KVQuant quantizes K before the rotary positional embedding, because the rotation multiplies the quantization error~\cite{kvquant}. Strata's Hadamard rotation is also pre-quantization; whether the engine's K path can quantize before RoPE instead of after is a kernel-layout question that has not been examined.
+
+\paragraph{Non-uniform levels.} KVQuant derives sensitivity-weighted datatypes~\cite{kvquant}; our K uses 16 uniform Lloyd levels and V uses 8. Non-uniform levels are orthogonal to the window and would change the level tables only.
+
+\paragraph{Low-rank plus sparse correction.} GEAR keeps a correction term for the residual error~\cite{gear}. The window's fp16 overlay is essentially a dense-but-local correction: full 16-bit precision on 4.9\% of cells. A distributed low-rank correction would cover the whole cache at a smaller byte rate, at an added latency cost; both would need new kernel shapes.
+
+\paragraph{Layer-wise precision pairs.} KVTuner reaches a nearly lossless 3.25-bit point with different precision per layer~\cite{kvtuner}. Strata's KV format is global per cache; per-layer level tables are representable in the block layout but add configuration space that setup would have to explain to users.
+
+\paragraph{Eviction on top of the 4-bit base.} SnapKV/H2O-style eviction is a larger memory win with a different cost: cells leave the cache~\cite{snapkv,h2o}. The window was designed so the whole context stays addressable --- the A-series treats a silently unavailable exact cell as a fault --- so eviction is out of scope for this point; a combined mode would have to be a separate opt-in with its own hardening.
+
+\paragraph{A streaming-compatible sink pool.} A2 refuses the window under streaming. A tiny sink-only side pool ($R$ cells, no recent ring) could in principle combine with a streamed cache, because sinks never scroll far from position~0. We did not build it: the sink budget interacts with the streaming host copy, and the current contract prefers loud refusal over a new silent-failure surface. Untested.
+
+\section{Hardening: Preventing Silent Failures}
+
+The guiding principle is that a silent misread is worse than a loud refusal. When the window cannot guarantee an exact read, it should stop, refuse the configuration, or fail an invariant---not fall back quietly to a quantized value that the caller believes is exact. Table~\ref{tab:decisions} summarizes decisions A1--A5, including A4 as the visible open item.
 
 \begin{table*}[t]
 \centering
 \small
-\begin{tabular}{@{}p{0.07\textwidth}p{0.16\textwidth}p{0.25\textwidth}p{0.24\textwidth}p{0.22\textwidth}@{}}
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X@{}}
 \toprule
-\textbf{Fix} & \textbf{Files} & \textbf{Observed issue} & \textbf{Decision / rationale} & \textbf{Result} \\
+\textbf{ID} & \textbf{Observed problem} & \textbf{Decision} & \textbf{Evidence} \\
 \midrule
-A1 & \texttt{src/program/generate.cpp} & Free ring auto ceiling allowed 8192 cells while ring scan limit was 6400; \texttt{kv\_append\_win} refused mid-prompt (\texttt{std::exit(1)}). & Apply \texttt{prefill\_auto\_cap} = \texttt{kKvWinBatchMax} (6144) in the free-ring branch when window active and not explicitly set. Cover auto/generate/serve consumers. & \texttt{prompt chunk auto: 6144}, \texttt{DONE 8192}, no crash. Explicit small ring still refused as contract. \\
-A2 & \texttt{src/program/generate.cpp}, \texttt{setup.py} & \texttt{--kv-resident} + window co-configurable; setup preferred writing both for \texttt{q4lm8v}. Window needs always-resident side pool; streaming has none $\to$ risk of reading quantized where exact is promised (silent). & \textbf{Setup wins first:} for \texttt{q4lm8v}, force streaming off / never write pair; explain to user. \textbf{Engine fallback:} refuse pair loudly before load (exit 2) for hand-edited configs. & Pair refused in ~1s; window-alone/int8+streaming OK. \texttt{--kv-check} reports refusal. Tests 59/59. Window stays in VRAM. \\
-A3-lite & \texttt{src/program/generate.cpp}, \texttt{src/core/layer.cpp}, \texttt{include/strata/core/layer.hpp} & Window grid could drift between states (main/MTP drafter/twin) carved later. Different grids on same contract are incorrect. & Freeze grid post prompt-chunk via \texttt{qsa\_kv\_win\_freeze()}; guard/assert stability on subsequent \texttt{qsa\_set\_kv\_win\_batch()}. Prefer A3-lite over full state-layout refactor pending parity test (A4). & Stable grid; default SHA unchanged. Probes pass. \\
-A5 & \texttt{src/core/layer.cpp} & Empty/uninitialized ring rows tagged 0 could be misread as real cell 0 and treated as exact (silent). & Initialize empty ring tags to \texttt{0xFF} (-1) under window. Stale/mismatched tag falls back to quantized row as intended. & Correct empty-state semantics; no default-path change. \\
+A1 & The automatic prompt chunk could exceed the ring's scan limit, so an append in the middle of a long prompt aborted the run. & Cap the automatic chunk at the ring's batch maximum (6,144) when the window is active and the user did not set a size; cover the generate and serve paths. & An 8,192-token prompt completes with a 6,144 chunk and no abort. An explicitly undersized ring is still refused as a contract violation. \\
+A2 & Setup could write a streamed KV cache beside the window. A streamed cache has no always-resident side pool, so a promised exact read could silently become quantized. & Setup never writes the pair and explains why; the engine refuses the pair before loading anything. & The pair is refused in about one second; window alone and \texttt{int8} with streaming both run. Setup tests pass 59/59. \\
+A3 & The $(S,R,B)$ grid could drift between the main state and a later-carved MTP/twin state. Different grids on the same contract are incorrect. & Freeze the grid after the prompt chunk and assert stability on later batch changes. & The grid stays stable; the default logits SHA is unchanged; targeted probes pass. \\
+A4 & The window's write/read paths have no full parity test across all shapes, so a shape-specific misread would be silent. & \textbf{Open item.} Dump every window row at write time and re-read it through the window reader on every shape: ring wrap, stale tags, sinks, batch boundaries, empty tags. & Not yet run; the test is specified in the repository and is a review gate. \\
+A5 & Zero-initialized ring rows were tagged as cell~0 and could be read as a valid exact cell. & Initialize empty tags to a sentinel; a stale or mismatched tag falls back to the quantized row. & Empty-state semantics are correct and the default path is unchanged. \\
 \bottomrule
-\end{tabular}
-\caption{Decisions and rationale for A1--A5}
+\end{tabularx}
+\caption{Hardening decisions A1--A5. The A4 row is the open follow-up item (a full cell-to-row parity test across all shapes), a review gate rather than a shipped fix.}
+\label{tab:decisions}
 \end{table*}
 
-\textbf{Key principle:} when there is any risk of silent misread (exact promised but quantized read), we prefer a loud refusal or an invariant/assert over guessing. Where setup can prevent bad configs, we prevent them there; where configs can be hand-edited, the engine enforces the contract.
+Two decisions deserve emphasis. A2 is enforced twice---once in setup, where most users will meet it, and once in the engine, where a hand-edited configuration can still arrive. A3 is deliberately a freeze-and-assert rather than a full state-layout refactor: it closes the silent-drift hole without moving the default path, and it leaves the larger refactor to the parity test. A4 is the one item in the A-series that is still open.
 
-\section{Validation Methodology and Results}
+\section{Evaluation Methodology}
 
-\subsection{Methodology details}
-\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
-\item \textbf{Byte-identity:} dump-logits/STRATA\_LOGPOS SHA of \texttt{int8} default is the regression gate. All changes gated behind \texttt{qsa\_kv\_win()}.
-\item \textbf{Probes:} targeted probes reproduce the former crash (B) and edge cases (C: explicit ring) before/after fixes.
-\item \textbf{A/B:} 4K segments, rounds 1--4, old/new interleaved where possible. Window measured on same segment sets for direct comparison.
-\item \textbf{Noise control:} single GPU job, quiet machine. Timing not reported as comparative; quality/SHA are.
-\end{itemize}
+\subsection{Corpora}
 
-\subsection{Results}
-\begin{table}[h]
+Three fixed teacher-forced corpora are used. The 2K set is the RULER \emph{complex word extraction} task in eight contiguous segments, 16,351 scored positions. The 4K set uses the same task with eight segments of 4,096 tokens, 32,746 positions. The 128K set is one 131,063-token segment, 131,062 scored positions, scored on the last 4,096 positions and on the whole segment. The three sets are different texts; numbers are not comparable across lengths, and the 4K set is not a length-scaling experiment for the 128K set.
+
+\subsection{Reference and scoring}
+
+The reference is fp16 K/V with fixed Swift~1.5 IQ3\_XXS weights. The model is given the reference text and the log-probabilities are read; there is no free generation. Each arm is a separate engine run, and the harness records per-position log-probabilities and compares them offline, so KL, top-1 and PPL come from the same pass. The KV cache of the prefill is quantized along with the decode cache, so the absolute gaps are internal Strata numbers and are not directly comparable with field numbers measured decode-only. The 2K and 4K runs use one expert slot; the 128K quality runs use one expert slot and \texttt{-{}-prefill 512}. The runtime runs use the automatic expert cache and a mixed prompt set.
+
+\subsection{Metrics}
+
+Four metrics are reported. \emph{Mean KL} is the Kullback--Leibler divergence $D_{\mathrm{KL}}(p_{\mathrm{ref}}\,\|\,p_{\mathrm{arm}})$, from the fp16 reference distribution to the arm's distribution, in nats per position; zero means identical, and lower is better. KL is not symmetric, so the direction is fixed: this direction directly penalizes an arm that puts little probability mass where the reference has mass (bulk distribution drift), which is the kind of error a downstream sampler inherits. The reverse direction weights the arm's own modes instead; the ranking could differ under it, and we have not measured that. \emph{p99 KL} is the 99th percentile of the per-position KL: it exposes a heavy error tail that a good mean can hide. \emph{Top-1} is the fraction of positions where the arm's argmax equals the fp16 argmax; it is a coarse agreement measure, not target accuracy. \emph{Perplexity} is $\exp$ of the mean negative log-likelihood of the true tokens. Perplexity is reported for context only: quantized-KV error tends to damp the distribution, so a quantized arm can score \emph{below} the fp16 reference while its $D_{\mathrm{KL}}(p_{\mathrm{ref}}\,\|\,p_{\mathrm{arm}})$ is positive. KL, not perplexity, is the decision metric. The p99 entries are point estimates; at these position counts their sampling error is much smaller than the spread between arms, but it is not quantified here --- a bootstrap over positions is the cheapest missing piece and needs no new runs.
+
+\subsection{Paired statistics}
+
+Both arms see the same positions. We compute the KL difference per segment, then average over the eight segments. The text cancels, so the spread is much smaller than in a comparison of two independent means. We report the paired $t$ statistic and the number of segments whose difference has the expected sign. With eight segments (seven degrees of freedom), $|t|\gtrsim2.4$ is roughly $p<0.05$ two-sided and $|t|\gtrsim3.5$ roughly $p<0.01$. A large $t$ with 4/8 segments is not a result; the sign count is read alongside it. The 128K set is one segment, so its eight 4K blocks are adjacent and not independent; its $t$ is a rough reading, not a segment-pair test.
+
+\subsection{Runtime, memory and correctness gates}
+
+Runtime is a same-day A/B with a fresh server per arm and two alternating rounds; the engine's own prefill and decode counters are read, and table entries are medians of the two rounds. The reported runs use a mixed prompt set --- short and long prompts over the same serving session --- whose per-prompt results are documented in the measurement report\,\cite{strata-wp}; the hit rate column is the expert-cache hit rate over that set, i.e.\ the fraction of expert lookups served from the resident cache. Reported memory is KV bytes at 128K and resident expert slots. The correctness gate is byte-identity: the \texttt{int8} default's dump-logits SHA must be identical across runs, and every window change must leave it unchanged. Targeted probes reproduce the former crash and the refusal cases; kernel parity tests compare the window writer and reader bitwise; needle tests at 32K and 128K check that retrieval does not regress.
+
+\subsection{Provenance and reproducibility}
+
+Every number in this paper is traceable to the repository's measurement history: the window work is documented in \texttt{docs/KV\_QUANT\_WORKPACKAGE.md}\,\cite{strata-wp}, the authoritative byte model and quality section in \texttt{docs/DETAILS.md}\,\cite{strata-details}, and the plain-4-bit document-perplexity measurement in \texttt{bench/results/2026-09-27-kv-q4}\,\cite{strata-kv4}. The cwe corpora are RULER complex-word-extraction texts generated by the repository's quant-quality harness (fixed segment structure and scored positions per section above; the harness and its KL-yardstick conventions are documented in \texttt{docs/QUANTS.md}\,\cite{strata-quants}); the harness records per-position log-probabilities that the KL, top-1 and PPL statistics are computed from. No new runs were produced for this paper; where a figure is byte-model rather than runtime-observed, the table captions say so. The engine, terminal and harness are in the Strata repository; the measurement reports are plain-text files next to the code.
+
+\section{Results}
+
+\subsection{Memory and speed}
+
+Table~\ref{tab:runtime} gives the 128K runtime point. The production arm (256/64, $B{=}6{,}144$) has the same prefill throughput as \texttt{int8}, decode 1.0 token/s lower with changing signs across rounds (inside the run-to-run spread), and a capacity gain the numbers state directly: it frees 568\,MiB of VRAM at 128K, which the expert cache converts into 416 more resident expert slots and a slightly higher expert-cache hit rate. Serving throughput at concurrency was not measured, so these are capacity figures, not speed wins. The $B{=}512$ arm is cheaper (4.60 bit, 884\,MiB) but prompts at 105 token/s, about five times slower, so it is an offline/batch point. The 512/128 arm is not chosen: its quality is the same as 256/64, it costs 8--10\,MiB more, decodes about 0.85 token/s slower, and its apparent prefill advantage did not reproduce on the needle prompts.
+
+\begin{table*}[t]
 \centering
 \small
-\begin{tabular}{@{}p{0.46\columnwidth}p{0.44\columnwidth}@{}}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
-\textbf{Measurement} & \textbf{Value/Result} \\
+\textbf{Arm} & \textbf{Bit} & \textbf{MiB} & \textbf{Slots} & \textbf{Prefill} & \textbf{Decode} & \textbf{Hit} \\
 \midrule
-\texttt{int8} default (4K A/B) & 8/8 identical: \texttt{A014F504\ldots BA052} (4,330,448\,B, 4095 pos.) \\
-Window 8192 ids (auto:16384) & \texttt{0768398A\ldots 94CA} (8,656,476\,B, 8191) \\
-Window cwe-4k (4096) & \texttt{4161376D\ldots 707E} (4,327,363\,B, 4095) \\
-Window on set-4096 & \texttt{71B0B586\ldots 6463} \\
-Window vs \texttt{int8} (same set) & KL = 0.04524, top-1 = 98.00\% \\
-Probe B (crash config) & PASS (\texttt{DONE 8192}, chunk 6144) \\
-Refusal A/B/C & PASS (pair exit 2) \\
-Setup tests & 59/59 PASS \\
-\texttt{--kv-check} & Reports mode/window/env/streaming + bits/cell \\
+\texttt{int8} & 8.25 & 1,584 & 3,033 & 526.1 & \textbf{35.2} & 0.74 \\
+256/64, $B{=}6{,}144$ & 5.29 & 1,016 & 3,449 & 528.0 & 34.2 & 0.76 \\
+256/64, $B{=}512$ & \textbf{4.60} & \textbf{884} & 3,496 & 105.0 & 34.5 & 0.76 \\
+512/128, $B{=}6{,}144$ & 5.33 & 1,023 & 3,412 & \textbf{634.0} & 33.35 & 0.77 \\
 \bottomrule
 \end{tabular}
-\caption{Validation results}
+\caption{128K runtime (Swift~1.5 IQ3\_XXS, RX~9060~XT 16\,GB, Windows HIP). Prefill and decode in tokens/s; medians of two same-day alternating rounds over a mixed prompt set. The 512/128 prefill advantage did not reproduce on the needle prompts and is shown for completeness.}
+\label{tab:runtime}
+\end{table*}
+
+\subsection{Quality at 2K and 4K}
+
+Tables~\ref{tab:q2k} and~\ref{tab:q4k} report the short-context quality; all quality statements in this section are for the cwe task and this model, and are not length-scaling claims across the different corpora. At 2K the window's mean KL is 0.00702 against \texttt{int8}'s 0.00503, but the paired difference is not significant ($t=-1.92$, 2/8 segments positive). The window is also close in the tail: p99 0.0835 against 0.0733. It removes most of the plain 4-bit arm's error (0.01791) and lands near \texttt{int8}.
+
+At 4K \texttt{int8} is significantly better on the mean (0.01688 against 0.02090; paired $t=-3.55$), and the window closes 73\% of the plain-arm-to-\texttt{int8} gap ($0.01093/0.01494$). In the small answer region the two are not distinguishable ($t=-0.51$; descriptive, small region). The 512/128 form is statistically identical to 256/64 ($t=0.02$), so the smaller form is kept.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Arm} & \textbf{Top-1} & \textbf{Mean KL} & \textbf{p99 KL} & \textbf{PPL} \\
+\midrule
+fp16 (reference) & --- & 0 & --- & 2.999 \\
+\texttt{int8} & 99.35\% & \textbf{0.00503} & \textbf{0.0733} & 3.004 \\
+plain \texttt{q4lm8v} & 98.92\% & 0.01791 & 0.2793 & 3.024 \\
++ window 256/64 & 99.33\% & 0.00702 & 0.0835 & 3.003 \\
++ window 512/128 & \textbf{99.39\%} & 0.00623 & 0.0743 & \textbf{2.995} \\
+\bottomrule
+\end{tabular}
+\caption{Quality on cwe-2k (16,351 positions, fp16 K/V reference). Top-1 is agreement with the fp16 argmax; KL in nats/position.}
+\label{tab:q2k}
 \end{table}
 
-The KL difference is small and consistent with keeping recent cells exact while quantizing older cells; it validates the window is active and behaving as intended without destabilizing the default path.
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Arm} & \textbf{Top-1} & \textbf{Mean KL} & \textbf{p99 KL} & \textbf{PPL} \\
+\midrule
+\texttt{int8} & \textbf{99.05\%} & \textbf{0.01688} & \textbf{0.1888} & 2.860 \\
+plain \texttt{q4lm8v} & 98.40\% & 0.03182 & 0.5785 & 2.888 \\
++ window 256/64 & 98.84\% & 0.02090 & 0.2811 & 2.858 \\
++ window 512/128 & 98.95\% & 0.02088 & 0.2822 & 2.858 \\
+\bottomrule
+\end{tabular}
+\caption{Quality on cwe-4k (32,746 positions). cwe-4k is a different text from cwe-2k; the two tables are not comparable across sets.}
+\label{tab:q4k}
+\end{table}
 
-\section{Build Coverage, Risks, and Follow-up}
+\subsection{Quality at 128K}
 
-\subsection{Build coverage}
-\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
-\item \textbf{Tested:} AMD HIP, RX 9060 XT 16\,GB, Windows 11, ROCm 7.1 (built with \texttt{vcvars64}, target \texttt{strata}).
-\item \textbf{Not tested:} NVIDIA CUDA (nvcc) and Intel SYCL (dpcpp) — no suitable GPUs/toolkits locally. 
-\item \textbf{Notes:} Changes are backend-agnostic (globals, arg checks, setup Python, memset value). \texttt{q4lm8v} is not offered on SYCL (\texttt{WINDOW\_KV}=False) so window paths are dead there but should compile. CUDA/SYCL build verification requested as part of review. Uncommitted unrelated workarounds (\texttt{src/core/mtp.cpp}, \texttt{src/kernels/cuda/iq\_kernels.cu}) not included.
-\end{itemize}
+Table~\ref{tab:q128k} reports the tail of the 128K run, and Table~\ref{tab:regions} the other regions. On the last 4,096 positions the window's mean KL is 0.00663 against \texttt{int8}'s 0.00959, a 31\% lower mean, but the paired eight-block $t$ is $-0.74$: the lead is not significant and comes from two blocks in which \texttt{int8} has its own spikes. The robust reading favors \texttt{int8}: it has the better p99 (0.01655 against 0.02977), the better last 1,024 positions (0.00265 against 0.00444), and the better whole segment (0.10715 against 0.13312); the region table also shows a lower answer-region KL for \texttt{int8}, but that region has 27 positions, so the number is descriptive only and we do not use it as an argument. The window still beats the plain 4-bit base clearly: mean KL 0.00663 against 0.01587 (58\% lower), whole segment 0.13312 against 0.15758, and p99 0.0298 against 0.0308. The 128K result is therefore the same story as 4K: the window recovers much of the base's loss and approaches \texttt{int8}, but does not overtake it.
 
-\subsection{Known limitations / follow-up}
-The teacher-forced log-prob measurements cover one read path. The full cell$\rightarrow$row contract must be validated across all shapes:
-\begin{itemize}[leftmargin=*,noitemsep,topsep=2pt]
-\item Writer \texttt{win\_row\_of} (\texttt{kv\_q4.cu:391}) $\leftrightarrow$ reader \texttt{qsa\_win\_slot} (\texttt{qsa\_decode\_attn.hpp:73}, host \texttt{:93})
-\item Ring wrap after scrolling past R rows
-\item Stale-tag $\to$ quantized fallback
-\item Sink rows (cell-addressed, not ring rows)
-\item Batch-boundary shapes (\texttt{STRATA\_KV\_WINDOW\_BATCH} vs \texttt{--prefill}, A1 cap)
-\item Empty-tag on zeroed memory (A5)
-\end{itemize}
-A follow-up PR will add an engine-level parity check (dump every window row at write time, re-read via \texttt{qsa\_win\_slot} on each shape). Meanwhile window stays opt-in and \texttt{int8} default remains byte-identical.
+\begin{table*}[t]
+\centering
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+\textbf{Arm} & \textbf{Bit @128K} & \textbf{KV MiB} & \textbf{Mean KL} & \textbf{p99 KL} & \textbf{Top-1} & \textbf{PPL} \\
+\midrule
+\texttt{int8} & 8.25 & 1,584 & 0.00959 & \textbf{0.01655} & \textbf{99.73\%} & 2.4052 \\
+256/64 & \textbf{5.29} & \textbf{1,016} & \textbf{0.00663} & 0.02977 & \textbf{99.73\%} & 2.4079 \\
+plain \texttt{q4lm8v} & 4.50 & 864 & 0.01587 & 0.03079 & 99.51\% & 2.4029 \\
+\bottomrule
+\end{tabular}
+\caption{Quality on cwe-128k, last 4,096 positions (context 126,967--131,062). The fp16 reference has KL~0 and PPL~2.4149; target-token top-1 is 79.74\%. This p99 covers the tail region only and is not comparable with the whole-corpus p99 of Tables~\ref{tab:q2k} and~\ref{tab:q4k}; over the whole 128K segment the p99 is 3.66--5.55 at all three arms (Table~\ref{tab:regions}), driven by isolated hard positions. The 864\,MiB of the plain arm is from the byte model, not a runtime reading.}
+\label{tab:q128k}
+\end{table*}
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Region / metric} & \texttt{int8} & 256/64 & plain \\
+\midrule
+Last 1,024, mean KL & \textbf{0.00265} & 0.00444 & 0.01096 \\
+Last 1,024, p99 KL & \textbf{0.04056} & 0.06283 & 0.13641 \\
+Whole segment, mean KL & \textbf{0.10715} & 0.13312 & 0.15758 \\
+Whole segment, p99 KL & \textbf{3.65623} & 4.75603 & 5.55046 \\
+Answer region (27), mean KL & \textbf{0.00526} & 0.00861 & 0.01155 \\
+Answer region, top-1 & \textbf{96.30\%} & 92.59\% & \textbf{96.30\%} \\
+\bottomrule
+\end{tabular}
+\caption{cwe-128k by region. The KL rows are fp16-reference KL; \emph{the top-1 row is target-token accuracy, not the fp16-argmax agreement of Table~\ref{tab:q128k}}, and is computed over 27 positions: $25/27=92.59\%$, $26/27=96.30\%$ --- a difference of one position, not a result. The whole-segment p99 values are dominated by isolated hard positions (the measurement report lists single-position KLs of 17.3, 17.1 and 15.8); \texttt{int8} reaches 3.66 as well, so they do not separate the arms.}
+\label{tab:regions}
+\end{table}
+
+\subsection{Reading the results}
+
+Three conclusions follow, all within this task family and this model. First, the window does what it was designed to do: it removes most of the plain 4-bit base's error at every length tested, and at 2K it is statistically indistinguishable from \texttt{int8} on cwe-2k. Second, it does not replace \texttt{int8} as the quality default. At 4K \texttt{int8} is significantly better on the mean; at 128K \texttt{int8} keeps the p99, the last 1,024 positions and the whole segment. The window saves 36\% of the KV memory at the price of a small, measurable quality gap that the mean KL alone can hide. Third, perplexity is not a useful discriminator here: the 128K PPL values (2.4052, 2.4079, 2.4029) all sit below the fp16 reference (2.4149) while every KL is positive. Reporting PPL without KL would reverse the ranking.
+
+\subsection{Correctness gates}
+
+The default path is unchanged: the \texttt{int8} dump-logits SHA is byte-identical in 8/8 runs (\texttt{A014F504\ldots BA052}). The former crash config now completes with a 6,144 chunk; an explicitly undersized ring is still refused; the window-plus-streaming pair exits with code~2 in about one second. Setup tests pass 59/59, kernel parity tests pass 12/12, and needle retrieval is 18/18 at 32K and 128K (6/6 per arm; the test is saturated and shows no regression but no separation). A full cell-to-row parity test remains open (A4).
+
+\section{Discussion: Where the Point Fits}\label{sec:discussion}
+
+\subsection{A decision rule}
+
+The measured numbers compose into a short rule for operators. If context stays below roughly 32K cells, the window is off the table: the ring costs more than the 4-bit base saves (Section~3.2). At long context, quality-first workloads keep \texttt{int8}: it wins or ties every region statistic that carries weight (Tables~\ref{tab:q2k}--\ref{tab:q128k}). Memory-bound workloads at 128K take the window: 568\,MiB freed, 416 more resident expert slots, prefill parity, decode inside spread (Table~\ref{tab:runtime}), and a measured KL penalty that is small on this task family and bounded by the 4K and 128K readings. Setup already follows this shape: \texttt{int8} is the default, the window is opt-in from 32K upwards.
+
+\subsection{How firm is the grid}
+
+The neighborhood of the production grid is measured more thinly than the endpoints. On cwe-2k the window first carries the load near $S{=}512$, and the §7.16 knee arms ($R{=}64$ with $S{=}256$, plus the 512/128 sink pair) are each statistically indistinguishable from \texttt{int8} on both bases\,\cite{strata-wp}. At 4K and at 128K the 512/128 pair scores the same quality as 256/64 (Tables~\ref{tab:q2k} and~\ref{tab:q128k}) for 8--10\,MiB more bytes and a slower decode, which is why 256/64 ships. What was not measured at 128K is anything smaller than 256/64: the data support 256/64 as the cheapest measured arm with indistinguishable quality, not as a local optimum. A finer sweep of $S$ and $R$ at 128K --- and the knee move observed at 2K, where the load-bearing $S$ sits higher --- is the natural next measurement.
+
+\subsection{Cheaper overlays exist on paper}
+
+The window is orthogonal to the level table, and the repository documents a $\leq$3-bit K overlay on the same mechanism with a measured byte/quality crossover between roughly 4.8 and 5.3 bit/cell on the small-context grid\,\cite{strata-wp}. That is a documented result, not a validated production point: it ran on the Swift 2K/4K harnesses, under the $R{=}8$ grid of those arms, and nothing at this crossover was carried through the 128K runtime or quality gates that Section~7 reports. It is recorded here because it bounds what the mechanism could offer if the memory target tightens further: a leaner base plus the window may match this point's quality at fewer bytes, and proving or refuting that at 128K is a concrete follow-up arm.
+
+\subsection{Two unmeasured workload questions}
+
+Two questions bound how the point is used today. First, multi-turn growth: the window's home workload is a chat that grows by small appends to a long context, every turn after the first presumably reading large parts of the cache; the quality runs here score single segments, and the runtime A/B's mixed prompt set is the only evidence for repeated prompting. Second, mid-context degradation: the 128K corpus is scored at the tail, and the 4K corpus shows that per-cell quantization hurts where nothing protects the cell; a mid-segment scoring region (for example, around position 64K) would verify that the tail hotspot is not hiding an interior one. Both are unmeasured; neither argues for removing the window, but both belong on the list before larger deployment claims.
+
+\section{Threats to Validity}
+
+The measurements come from one GPU (RX~9060~XT, gfx1200), one operating system (Windows~11), one ROCm/HIP stack (7.1) and one weight set (Swift~1.5 IQ3\_XXS). CUDA and SYCL were not built; the changes are backend-agnostic, but that is an argument, not a measurement. The short-context results have eight segments; the 128K result is one text with adjacent blocks, so its $t$ values are descriptive. The 4K exact-cell fraction is 20.3\% at $B{=}512$, while at 128K the production ring covers 4.9\% of cells; the 4K KL is an upper bound on the long-context benefit, not a prediction, and the 128K KL is measured separately. The prefill KV is also quantized, so the absolute KL gaps are not comparable with decode-only field numbers. Finally, the window is a memory trade-off, not a quality improvement over \texttt{int8}; the paper should be read that way. Two coverage limits stand out. The quality evidence comes from one task family (RULER complex word extraction) on one model; the full RULER set or LongBench subsets were not run, so the quality sentences here carry no claim outside this family. And no community-standard arm --- for example a KIVI-style per-channel-K quantization with an fp16 residual~\cite{kivi,kvquant} --- was measured on this engine, so the 5.29-bit point has no external anchor on the published trade-off curve. One intermittent engine hang was seen once on the \emph{plain} 4-bit arm (no window) during a 128K prefill; it did not reproduce in 6/6 reruns, and the window arms completed three 128K runs without it. It remains an open engine bug report, not evidence against the window.
+
+\section{Follow-up Work}\label{sec:followup}
+
+Two gates remain. A full cell-to-row parity test should dump every window row at write time and re-read it through the window reader on every shape: ring wrap after scrolling past $R$ rows, stale-tag fallback, sink rows, batch-boundary shapes and the empty-tag case. The second gate is build coverage: CUDA (nvcc) and Intel SYCL (dpcpp) should compile and pass their parity suites. \texttt{q4lm8v} is not offered on SYCL, so the window paths are dead there, but they should still compile.
+
+Beyond the gates, the next measurement round has six limbs. Three need GPU time: a per-channel-K arm in the KIVI/KVQuant style on the same engine (the fair community competitor this paper does not include, Section~4); a second RULER task family at 4K, since the quality evidence above covers only cwe; and a finer $S/R$ sweep at 128K including pairs smaller than 256/64, because the current data support 256/64 as the cheapest measured arm, not as a local optimum (Section~8.2). Two more score existing corpora differently: a mid-segment scoring region around position 64K on the 128K text, and a multi-turn append A/B where short prompts grow a long context turn by turn (Section~8.3). The last limb is offline arithmetic: a bootstrap over positions for the p99 entries, which needs no engine runs (Section~6.3). Optionally, the $\leq$3-bit overlay crossover at 128K (Section~8.4) rounds out the byte side. Both gates are review items, not shipped claims.
 
 \section{Conclusion}
 
-Hardening \texttt{q4lm8v} was primarily an exercise in preventing silent failures at integration boundaries. By combining setup-side prevention with engine-side enforcement, freezing state invariants, and correcting initialization semantics, the window can safely provide 5.29 bit/cell at 128K while keeping \texttt{int8} as the byte-identical quality default. The evidence (byte identity, probes, refusal tests, KL/top-1) supports this, with CUDA/SYCL build coverage and full cell$\rightarrow$row parity identified as the remaining validation gates.
+Hardening the exact-cell window was primarily an exercise in preventing silent failures at integration boundaries. Setup-side prevention and engine-side enforcement close the window-plus-streaming hole; a frozen grid closes state drift; sentinel tags close the empty-cell misread; a capped automatic chunk closes the mid-prompt abort. The default \texttt{int8} path stays byte-identical. The measurement-first validation shows the intended trade-off clearly: on the cwe corpora, the window removes most of the 4-bit base's KL error (73\% of its gap to \texttt{int8} at 4K, 58\% of its mean KL at the 128K tail), approaches \texttt{int8} at 2K, and saves 36\% of the KV memory at 128K. It does not beat \texttt{int8} in the tail, and the p99 and whole-segment numbers say so. That is the correct result for an opt-in memory point: keep \texttt{int8} as the quality default, offer the window where memory is the constraint, and measure both.
+
+Two habits generalize beyond this feature. First, correctness is enforced where the failure would be silent: setup-side for users, engine-side for hand-edited configs, and a byte-identity gate for everything the default path touches. Second, an opt-in point earns its existence only against measured alternatives --- here, against \texttt{int8} in regions that the mean KL alone cannot see. Both habits cost little and transfer to the next integration-boundary feature.
+
+\begin{thebibliography}{17}
+\setlength{\itemsep}{1pt}\small
+
+\bibitem{streamingllm}
+G.~Xiao, Y.~Tian, B.~Chen, S.~Han, M.~Lewis.
+\emph{Efficient Streaming Language Models with Attention Sinks}.
+arXiv:2309.17453, 2023 (ICLR 2024). Code: \url{https://github.com/mit-han-lab/streaming-llm}.
+
+\bibitem{kivi}
+Z.~Liu, J.~Yuan, H.~Jin, S.~Zhong, Z.~Xu, V.~Braverman, B.~Chen, X.~Hu.
+\emph{KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache}.
+ICML 2024, arXiv:2402.02750. Code: \url{https://github.com/jy-yuan/KIVI}.
+
+\bibitem{kvquant}
+C.~Hooper, S.~Kim, H.~Mohammadzadeh, M.~W.~Mahoney, Y.~S.~Shao, K.~Keutzer, A.~Gholami.
+\emph{KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization}.
+NeurIPS 2024, arXiv:2401.18079. Code: \url{https://github.com/SqueezeAILab/KVQuant}.
+
+\bibitem{gear}
+H.~Kang et~al.
+\emph{GEAR: An Efficient KV Cache Compression Recipe for Near-Lossless Generative LLM Serving}.
+arXiv:2403.05527, 2024.
+
+\bibitem{snapkv}
+Z.~Zhang et~al.
+\emph{SnapKV: LLM Knows What You Are Looking for Before Generation}.
+NeurIPS 2024, arXiv:2404.14469.
+
+\bibitem{pyramidkv}
+Z.~Cai et~al.
+\emph{PyramidKV: Dynamic KV Cache Compression based on Pyramidal Information Funneling}.
+COLM 2025, arXiv:2406.02069.
+
+\bibitem{h2o}
+Z.~Zhang et~al.
+\emph{H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models}.
+NeurIPS 2023, arXiv:2306.14048.
+
+\bibitem{quarot}
+\emph{QuaRot: Outlier-Free 4-Bit Inference in LLMs via Rotations}.
+arXiv:2404.00456, 2024.
+
+\bibitem{rotatekv}
+\emph{RotateKV: Accurate and Robust 2-Bit KV Cache Quantization for Large Language Models}.
+IJCAI 2025 (proceedings 2025/0690).
+
+\bibitem{kvtuner}
+X.~Li, Z.~Xing, Y.~Li, L.~Qu, H.~Zhen, Y.~Yao, W.~Liu, S.~J.~Pan, M.~Yuan.
+\emph{KVTuner: Sensitivity-Aware Layer-Wise Mixed-Precision KV Cache Quantization for Efficient and Nearly Lossless LLM Inference}.
+ICML 2025, arXiv:2502.04420. Code: \url{https://github.com/cmd2001/KVTuner}.
+
+\bibitem{top-k}
+\emph{More Tokens, Lower Precision: Towards the Optimal Token-Precision Trade-off in KV Cache Compression}.
+arXiv:2412.12706, 2024.
+
+\bibitem{llama-cpp}
+ggml-org, \texttt{llama.cpp} repository:
+KV-cache quantization types (\texttt{--cache-type-k/v}: fp16, q8\_0, q4\_0).
+\url{https://github.com/ggml-org/llama.cpp}.
+
+\bibitem{vllm-fp8}
+vLLM team, \emph{The State of FP8 KV-Cache and Attention Quantization in vLLM}, vLLM blog, 2026-04-22.
+\url{https://vllm-project.github.io/2026/04/22/fp8-kvcache.html};
+quantized-KV feature documentation: \url{https://docs.vllm.ai/en/latest/features/quantization/quantized_kvcache}.
+
+\bibitem{strata-details}
+Strata, \texttt{docs/DETAILS.md}: KV-cache quantization section (byte model, KL measurements, window 256/64 at 128K). In-repo.
+
+\bibitem{strata-quants}
+Strata, \texttt{docs/QUANTS.md}: quant-quality yardsticks (mean KL, KL p99, top-1, perplexity). In-repo.
+
+\bibitem{strata-kv4}
+Strata, \texttt{bench/results/2026-09-27-kv-q4}: Q4\_0 KV with Hadamard rotation; document perplexity 8--12\% above the 8-bit default at 1K/8K. In-repo.
+
+\bibitem{strata-wp}
+Strata, \texttt{docs/KV\_QUANT\_WORKPACKAGE.md}: KV-quantization workpackage with the window's runtime, quality and parity history (\S7.12--\S7.21). In-repo, branch \texttt{KV\_QUANT\_research}.
+
+\end{thebibliography}
 
 \end{document}
