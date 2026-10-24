@@ -298,6 +298,27 @@ class ReportTests(unittest.TestCase):
             m = B.collect_machine(srv.base, "", {"backend": "sycl"})
         self.assertEqual((m["gpu"], m["cuda"]), (["Intel Arc Pro B70"], None))
 
+    def test_the_report_labels_the_driver_s_cuda_and_the_engine_s_build(self):
+        """#2111: the CUDA line was the driver's ceiling read as the engine's toolkit, and storage said "not measured"."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        nv = {"gpus": [{"name": "NVIDIA GeForce RTX 9999", "vram_mib": 16384, "driver": "616.92",
+                        "power_limit_w": "165.00", "power_draw_w": "20.25", "pcie": "gen4 x8",
+                        "pstate": "P3", "temp_c": "45"}], "cuda": "13.4"}
+        with mock.patch.object(B, "gpu_info_local", return_value=nv), mock.patch.object(
+                B, "storage_info", return_value="Samsung SSD 990 EVO Plus 2TB SSD/NVMe"), mock.patch.object(
+                B, "engine_build", return_value={"version": "0.1.43", "cuda": "13.0"}):
+            with tempfile.TemporaryDirectory() as d:
+                self.assertEqual(self.run_main(srv, d), 0)
+                readme = next(Path(d).iterdir()).joinpath("README.md").read_text(encoding="utf-8")
+        for part in ("CUDA (driver supports up to): 13.4; engine built for CUDA 13.0",
+                     "storage: Samsung SSD 990 EVO Plus 2TB SSD/NVMe",
+                     "GPU detail (after the run, near idle): power_limit_w=165.00, power_draw_w=20.25, "
+                     "pcie=gen4 x8, pstate=P3, temp_c=45",
+                     "Background workloads: not recorded (GPU power limit/draw read above)"):
+            self.assertIn(part, readme)
+        self.assertNotIn("storage: not measured", readme)
+
     def test_a_bench_server_never_saves_over_the_users_profile(self):
         """#2088: --expert-profile-save writes the profile at quit; the bench's own server runs without it."""
         cfg = {"args": ["--expert-profile", "p.bin", "--expert-profile-save", "p.bin", "--spec", "4"]}
@@ -338,6 +359,33 @@ class ReportTests(unittest.TestCase):
 
     def test_no_server_is_an_error_not_a_crash(self):
         self.assertEqual(B.main(["--url", "http://127.0.0.1:9", "--quiet"]), 2)
+
+
+class MachineDetailTests(unittest.TestCase):
+    """#2111: what the report reads straight from nvidia-smi on the PC."""
+
+    ROW = "NVIDIA GeForce RTX 4060 Ti, 16380, 616.92, 165.00, 20.25, 4, 8, P3, 45"
+
+    @staticmethod
+    def queries(cmd) -> bool:
+        return any(str(c).startswith("--query-gpu") for c in cmd)
+
+    def test_cuda_header_in_both_forms(self):
+        """Current drivers print "CUDA UMD Version: 13.4"; the old "CUDA Version:" line still has to be read."""
+        for head, want in (("Some header\n\nCUDA UMD Version: 13.4\n", "13.4"),
+                           ("Some header\n\nCUDA Version: 12.6\n", "12.6")):
+            def fake(cmd, *a, _head=head, **k):
+                return self.ROW if self.queries(cmd) else _head
+            with mock.patch.object(B, "run_cmd", side_effect=fake):
+                info = B.gpu_info_local()
+            self.assertEqual((info["cuda"], info["gpus"][0]["power_limit_w"]), (want, "165.00"))
+
+    def test_power_pcie_pstate_and_temperature_are_read(self):
+        with mock.patch.object(B, "run_cmd",
+                               side_effect=lambda cmd, *a, **k: self.ROW if self.queries(cmd) else ""):
+            g = B.gpu_info_local()["gpus"][0]
+        self.assertEqual((g["name"], g["vram_mib"], g["driver"]), ("NVIDIA GeForce RTX 4060 Ti", 16380, "616.92"))
+        self.assertEqual((g["power_limit_w"], g["pcie"], g["pstate"], g["temp_c"]), ("165.00", "gen4 x8", "P3", "45"))
 
 
 if __name__ == "__main__":
