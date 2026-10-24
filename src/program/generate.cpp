@@ -13551,7 +13551,11 @@ int main(int argc, char** argv) {
                 strata::core::conversation_checkpoint_join(nullptr);
                 strata::core::conversation_park_join();   // (STRATA_PARK_ASYNC: the last park's K/V)
                 if (path.empty()) { refuse("missing path"); continue; }
-                if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
+                // Design 2026-10-24: a layer split IS a session-file host now.  The file records its
+                // stage table, and every stage's running state and K/V group are captured, validated
+                // and restored per stage (conversation_snapshot_sources_split et al.); a file from a
+                // different split (or a no-split runtime) is refused by the stage-table comparison,
+                // exactly as the single-session form refuses foreign geometry.
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
@@ -13572,6 +13576,15 @@ int main(int argc, char** argv) {
                     refuse(std::string("session identity: ") + e.what(), strata::core::SessionError::io);
                     continue;
                 }
+                // The carves a save/restore addresses: the main session, then every later stage's own
+                // session in park's order (the shape park's per-stage capture and restore use).  The draft
+                // layer's placement is park's own rule (park_current_body's draft0/draft_of): stage 0's
+                // group when there is no split or the drafter sits on the first card, else the last stage's.
+                std::vector<strata::core::SessionState*> sessions{&ss};
+                for (const auto& st : stages) sessions.push_back(&st->ss);
+                std::vector<bool> draft_of(sessions.size(), false);
+                draft_of[mtp_first || stages.empty() ? 0 : sessions.size() - 1] = true;
+                std::vector<const strata::core::SessionState*> carves(sessions.begin(), sessions.end());
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
                     size_t bytes = 0, kept = 0;
@@ -13585,18 +13598,30 @@ int main(int argc, char** argv) {
                         // the authoritative pools straight into the file, without a full host capture.
                         strata::core::SessionSaveLive sl;
                         {
-                            strata::core::ConversationStateSizes z;
+                            std::vector<strata::core::ConversationStateSizes> zs;
                             std::string why;
                             uint64_t state = UINT64_MAX;   // unknown sizes: the preflight refuses rather than guesses
-                            if (strata::core::conversation_session_sizes(g, ss, z, why)) {
-                                const uint64_t q = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0);
-                                const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
-                                if (q == 0 || per <= (UINT64_MAX - z.gdn - z.ple) / q) state = z.gdn + z.ple + q * per;
+                            uint64_t layers = 0;
+                            if (strata::core::conversation_session_sizes_split(g, carves, zs, why)) {
+                                for (size_t k = 0; k < zs.size(); ++k)
+                                    layers += (uint64_t) std::max<int64_t>(carves[k]->qsa_alloc, 0) + (draft_of[k] ? 1 : 0);
+                                uint64_t total = 0;
+                                bool closed = true;
+                                for (size_t k = 0; closed && k < zs.size(); ++k) {
+                                    const auto& z = zs[k];
+                                    const uint64_t q = (uint64_t) std::max<int64_t>(carves[k]->qsa_alloc, 0);
+                                    const uint64_t per = (uint64_t) z.tail + z.dead + z.block_pos;
+                                    if (q != 0 && per > (UINT64_MAX - z.gdn - z.ple) / q) { closed = false; break; }
+                                    const uint64_t stage = z.gdn + z.ple + q * per;   // the same per-carve sum today's
+                                    if (total > UINT64_MAX - stage) closed = false;   // single session computes, added
+                                    else total += stage;                              // stage by stage
+                                }
+                                if (closed) state = total;
                             }
                             sl.state_bytes = state;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
+                            sl.kv_layers = layers;
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         if (o.session_save_reclaim) {
@@ -13634,8 +13659,8 @@ int main(int argc, char** argv) {
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
-                                                                         err)) {
+                        if (!strata::core::conversation_snapshot_sources_split(meta, sources, view, carves, draft_of,
+                                                                               mtp.kv_state(), g, err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
                         }
