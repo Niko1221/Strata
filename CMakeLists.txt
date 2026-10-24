@@ -391,6 +391,12 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  # STRATA_SELECT_TWO_PASS: the bound between the single-pass and 3xTF32 QSA block scores and the cut-off rule that
+  # keeps the selection (header-only, no GPU)
+  add_executable(qsa_two_pass_test tests/prefill/qsa_two_pass_test.cpp)
+  target_include_directories(qsa_two_pass_test PRIVATE include)
+  add_test(NAME qsa_two_pass_test COMMAND qsa_two_pass_test)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
@@ -590,6 +596,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(qsa_scores_parity PRIVATE strata_kernels CUDA::cudart)
     add_test(NAME qsa_scores_parity COMMAND qsa_scores_parity)
     set_tests_properties(qsa_scores_parity PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "STRATA_SCORES_THREAD=1")
+    # STRATA_SELECT_TWO_PASS: the two-pass prompt scores' selection against the tensor-core scorer's, ids and the
+    # scored-again blocks bitwise (sm_80+, synthetic, no model)
+    add_executable(qsa_two_pass_parity src/kernels/qsa_two_pass_parity.cpp)
+    target_include_directories(qsa_two_pass_parity PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    target_link_libraries(qsa_two_pass_parity PRIVATE strata_kernels CUDA::cudart)
+    add_test(NAME qsa_two_pass_parity COMMAND qsa_two_pass_parity)
+    set_tests_properties(qsa_two_pass_parity PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "STRATA_SELECT_TWO_PASS=1")
   endif()
   # QSAROWS (docs/QSAROWS.md): what the T rows of a verification window cost in a QSA layer's decode kernels at a long
   # context (block scores, top-k, attention over each row's selection, indexer append), row by row; GPU, synthetic, no

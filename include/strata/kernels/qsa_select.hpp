@@ -94,4 +94,33 @@ void qsa_block_scores_long(const float* pooled, const float* dead, const float* 
 /// path: pass null).
 int64_t qsa_topk_multi_scratch_ints(int64_t nq);
 
+/// STRATA_SELECT_TWO_PASS=1 (the prompt path, CUDA sm_80+; the bound and the rule: qsa_two_pass.hpp).  A scores row
+/// that qsa_block_topk turns into exactly the ids of qsa_block_scores_tc's row: every block is scored once in
+/// single-pass TF32, the blocks whose error bound reaches the query's top-k cut-off are scored again with
+/// qsa_block_scores_tc's own 3xTF32 arithmetic (bit for bit), and a query whose bound cannot be settled has its
+/// 16-query tile scored again in full.  The kept blocks hold their single-pass score, so the row is NOT
+/// qsa_block_scores_tc's: it is for qsa_block_topk only.  `scratch` (qsa_two_pass_scratch_bytes(nq_cap, max_blocks),
+/// 16-byte aligned) holds the key norms qsa_two_pass_keys wrote for this layer and chunk.  False (nothing launched):
+/// the switch is off, HIP, a card or STRATA_QSA_WARP where qsa_block_scores_tc would not run its tensor-core kernel,
+/// another geometry, nq > nq_cap, too little scratch.
+bool qsa_two_pass_on();             ///< STRATA_SELECT_TWO_PASS=1, read once
+bool qsa_two_pass_check_on();       ///< STRATA_SELECT_TWO_PASS_CHECK=1, read once (a diagnostic, see qsa_two_pass_check)
+int64_t qsa_two_pass_min_blocks();  ///< STRATA_SELECT_TWO_PASS_MIN (blocks), read once; default two_pass::kMinBlocksDefault
+uint64_t qsa_two_pass_scratch_bytes(int64_t nq_cap, int64_t max_blocks);
+/// Once per layer and chunk, after the indexer appends and before the calls: the norms of the pooled keys [0, n_blocks).
+bool qsa_two_pass_keys(const float* pooled, int64_t n_blocks, int64_t nq_cap, int64_t max_blocks, void* scratch,
+                       uint64_t scratch_bytes, void* stream);
+bool qsa_block_scores_two_pass(const float* pooled, const float* dead, const float* q_idx, const int32_t* steps,
+                               int64_t nq, int64_t nq_cap, int64_t max_blocks, const QsaShapes& s, float* scores,
+                               void* scratch, uint64_t scratch_bytes, void* stream, int64_t active_blocks);
+/// STRATA_SELECT_TWO_PASS_CHECK: right after a two-pass call and its qsa_block_topk, against today's row and ids for
+/// the same queries (ref_scores from qsa_block_scores_tc, ref_ids from qsa_block_topk on them): counts the queries
+/// whose ids differ, the scored-again blocks whose score is not today's bit for bit, and the kept blocks whose
+/// single-pass score lies outside the bound (two_pass::Stat).
+void qsa_two_pass_check(const float* scores, const int32_t* ids, const float* ref_scores, const int32_t* ref_ids,
+                        const int32_t* steps, int64_t nq, int64_t nq_cap, int64_t max_blocks, int64_t cap,
+                        void* scratch, void* stream);
+/// The counters (two_pass::kStatCount of them, this device), read on `stream` (synchronized); reset: zeroed after.
+bool qsa_two_pass_stats(unsigned long long* out, bool reset, void* stream);
+
 }  // namespace strata::kernels
