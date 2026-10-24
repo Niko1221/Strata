@@ -1,0 +1,28 @@
+{
+  "telemetry_samples": 371,
+  "scheduler_start": {
+    "enabled": true,
+    "preemptions": 5,
+    "resume_prompt_read": 4,
+    "resume_prefix_missed": 0,
+    "waiting": 0,
+    "paused": 0
+  },
+  "scheduler_end": {
+    "enabled": true,
+    "preemptions": 295,
+    "resume_prompt_read": 294,
+    "resume_prefix_missed": 0,
+    "waiting": 0,
+    "paused": 0
+  },
+  "scheduler_delta": {
+    "preemptions": 290,
+    "resume_prompt_read": 290,
+    "resume_prefix_missed": 0
+  },
+  "tools": 100,
+  "acks": 100,
+  "audits_including_warm": 30,
+  "max_prompt_tokens": 237392
+}

@@ -1,0 +1,203 @@
+[
+  {
+    "clients": [
+      {
+        "start": 616559.0923155,
+        "end": 616579.418456,
+        "wall_s": 20.32614050002303,
+        "ttft_s": 0.8705343999899924,
+        "usage": {
+          "prompt_tokens": 64127,
+          "completion_tokens": 2048,
+          "total_tokens": 66175,
+          "prompt_tokens_details": {
+            "cached_tokens": 63991
+          }
+        },
+        "timings": {
+          "cache_n": 63991,
+          "prompt_n": 136,
+          "prompt_ms": 920.7,
+          "prompt_per_token_ms": 6.77,
+          "prompt_per_second": 147.7,
+          "predicted_n": 2048,
+          "predicted_ms": 18461.6,
+          "predicted_per_token_ms": 9.014,
+          "predicted_per_second": 110.9,
+          "draft_n": 1680,
+          "draft_n_accepted": 1400
+        },
+        "content": "{\n  \"audit\": {\n    \"r1\": \"HFNFPDSUM3\",\n    \"r2\": \"B9PFNPAYWU\",\n    \"r3\": \"W6RT86FD6V\",\n    \"r4\": \"AGLPJKT7Y8\",\n    \"r5\": \"AK6ULJ59W2\",\n    \"r6\": \"Z2Q4W76KSN\",\n    \"active_release\": \"J9Q37YQYUY\",\n    \"helios_logistics\": \"DK9NDQW4LW\",\n    \"iris_arrival\": \"DBZCMXRSVA\",\n    \"shipped_units\": 197,\n    \"shipped_lots\": 3,\n    \"ari_allowed\": false,\n    \"bea_allowed\": true,\n    \"debit_100_30\": 70,\n    \"buy_50_50\": true,\n    \"violet_serial\": null,\n    \"nereid_manufacturer\": null,\n    \"release_source\": \"FACT-B\",\n    \"logistics_source\": \"FACT-I\",\n    \"arrival_source\": \"FACT-K\"\n  },\n  \"code\": \"\\\"\\\"\\\"\\nSubstantive transactional diving-game inventory module.\\n\\nThis module implements:\\n- Exact integer validation for balances, prices, depths, and units.\\n- Atomic transactional operations (debit, credit, buy) with rollback on failure.\\n- Idempotent purchase processing using request identifiers.\\n- Validated state saves with checksums and manifest comparison.\\n- Oxygen level transitions with boundary checks.\\n- Replay functionality to reconstruct state from event logs.\\n- Game policy enforcement for diving permits (scout/explorer depth limits).\\n- Unknown license handling.\\n\\nThe implementation strictly adheres to the archive facts:\\n- Beacon access codes are fixed.\\n- Release authorization rev=17 is active.\\n- Helios crew is assigned to vessel VELA, which uses registry RHO, home depot SABLE.\\n- Depot SABLE has logistics_key DK9NDQW4LW.\\n- Incident KAPPA is owned by team ORBIT, which handles handoffs at depot CERES.\\n- Depot CERES has arrival_code DBZCMXRSVA.\\n- Manifest lots L1, L3, L4 are shipped (units 65, 79, 53). L2 is cancelled. L5 is pending.\\n- Game policy: Scout permit allows depth <= 24. Explorer permit allows depth <= 42. Depth exactly at limit is allowed.\\n- Function debit(balance, price) contract: subtract price, reject negative price, reject insufficient funds.\\n- Function can_buy(balance, price) contract: with nonnegative price, balance equal to price is sufficient.\\n\\\"\\\"\\\"\\n\\nimport hashlib\\nimport json\\nimport copy\\nfrom typing import Dict, List, Optional, Tuple, Any, Union\\nfrom dataclasses import dataclass, field\\nfrom enum import Enum\\nimport time\\n\\n# --- Constants from Archive Facts ---\\n\\nBEACON_ACCESS_CODES = {\\n    \\\"ALPHA\\\": \\\"HFNFPDSUM3\\\",\\n    \\\"BRAVO\\\": \\\"B9PFNPAYWU\\\",\\n    \\\"CHARLIE\\\": \\\"W6RT86FD6V\\\",\\n    \\\"DELTA\\\": \\\"AGLPJKT7Y8\\\",\\n    \\\"ECHO\\\": \\\"AK6ULJ59W2\\\",\\n    \\\"FOXTROT\\\": \\\"Z2Q4W76KSN\\\",\\n}\\n\\nACTIVE_RELEASE_CODE = \\\"J9Q37YQYUY\\\"\\nACTIVE_RELEASE_REV = 17\\n\\nHELIOS_VESSEL = \\\"VELA\\\"\\nVELA_REGISTRY = \\\"RHO\\\"\\nRHO_HOME_DEPOT = \\\"SABLE\\\"\\nSABLE_LOGISTICS_KEY = \\\"DK9NDQW4LW\\\"\\n\\nIRIS_INCIDENT = \\\"KAPPA\\\"\\nKAPPA_OWNER_TEAM = \\\"ORBIT\\\"\\nORBIT_HANDOFF_DEPOT = \\\"CERES\\\"\\nCERES_ARRIVAL_CODE = \\\"DBZCMXRSVA\\\"\\n\\nMANIFEST_LOTS = {\\n    \\\"L1\\\": {\\\"status\\\": \\\"shipped\\\", \\\"units\\\": 65},\\n    \\\"L2\\\": {\\\"status\\\": \\\"cancelled\\\", \\\"units\\\": 91},\\n    \\\"L3\\\": {\\\"status\\\": \\\"shipped\\\", \\\"units\\\": 79},\\n    \\\"L4\\\": {\\\"status\\\": \\\"shipped\\\", \\\"units\\\": 53},\\n    \\\"L5\\\": {\\\"status\\\": \\\"pending\\\", \\\"units\\\": 77},\\n}\\n\\nGAME_POLICY = {\\n    \\\"scout\\\": 24,\\n    \\\"explorer\\\": 42,\\n}\\n\\n# --- Exceptions ---\\n\\nclass ValidationError(Exception):\\n    \\\"\\\"\\\"Raised when input validation fails.\\\"\\\"\\\"\\n    pass\\n\\nclass InsufficientFundsError(Exception):\\n    \\\"\\\"\\\"Raised when a transaction cannot be completed due to insufficient funds.\\\"\\\"\\\"\\n    pass\\n\\nclass TransactionError(Exception):\\n    \\\"\\\"\\\"Raised when a transaction fails for reasons other than insufficient funds.\\\"\\\"\\\"\\n    pass\\n\\nclass PolicyViolationError(Exception):\\n    \\\"\\\"\\\"Raised when a game policy is violated.\\\"\\\"\\\"\\n    pass\\n\\nclass UnknownLicenseError(Exception):\\n    \\\"\\\"\\\"Raised when an unknown license type is encountered.\\\"\\\"\\\"\\n    pass\\n\\nclass StateCorruptionError(Exception):\\n    \\\"\\\"\\\"Raised when state integrity checks fail.\\\"\\\"\\\"\\n    pass\\n\\n# --- Data Structures ---\\n\\n@dataclass\\nclass Transaction:\\n    \\\"\\\"\\\"Represents a single transaction in the system.\\\"\\\"\\\"\\n    request_id: str\\n    type: str  # 'debit', 'credit', 'buy'\\n    amount: int\\n    timestamp: float\\n    status: str = 'pending'  # 'pending', 'committed', 'failed'\\n    error: Optional[str] = None\\n\\n@dataclass\\nclass PlayerState:\\n    \\\"\\\"\\\"Represents the state of a player in the diving game.\\\"\\\"\\\"\\n    player_id: str\\n    balance: int\\n    oxygen: int\\n    depth: int\\n    license_type: str  # 'scout', 'explorer', 'unknown'\\n    inventory: Dict[str, int] = field(default_factory=dict)\\n    transaction_history: List[Transaction] = field(default_factory=list)\\n    processed_request_ids: set = field(default_factory=set)\\n\\n    def __post_init__(self):\\n        if not isinstance(self.balance, int):\\n            raise ValidationError(\\\"Balance must be an integer.\\\")\\n        if not isinstance(self.oxygen, int):\\n            raise ValidationError(\\\"Oxygen must be an integer.\\\")\\n        if not isinstance(self.depth, int):\\n            raise ValidationError(\\\"Depth must be an integer.\\\")\\n        if self.balance < 0:\\n            raise ValidationError(\\\"Balance cannot be negative.\\\")\\n        if self.oxygen < 0:\\n            raise ValidationError(\\\"Oxygen cannot be negative.\\\")\\n        if self.depth < 0:\\n            raise ValidationError(\\\"Depth cannot be negative.\\\")\\n        if self.license_type not in [\\\"scout\\\", \\\"explorer\\\", \\\"unknown\\\"]:\\n            raise ValidationError(\\\"Invalid license type.\\\")\\n\\n@dataclass\\nclass GameEvent:\\n    \\\"\\\"\\\"Represents an event in the game log for replay.\\\"\\\"\\\"\\n    event_id: str\\n    event_type: str\\n    player_id: str\\n    data: Dict[str, Any]\\n    timestamp: float\\n\\n# --- Core Logic Functions ---\\n\\ndef validate_integer(value: Any, name: str) -> int:\\n    \\\"\\\"\\\"Validates that a value is an exact integer.\\\"\\\"\\\"\\n    if not isinstance(value, int):\\n        raise ValidationError(f\\\"{name} must be an exact integer, got {type(value).__name__}.\\\")\\n    return value\\n\\ndef validate_non_negative_integer(value: Any, name: str) -> int:\\n    \\\"\\\"\\\"Validates that a value is a non-negative exact integer.\\\"\\\"\\\"\\n    val = validate_integer(value, name)\\n    if val < 0:\\n        raise ValidationError(f\\\"{name} cannot be negative.\\\")\\n    return val\\n\\ndef debit(balance: int, price: int) -> int:\\n    \\\"\\\"\\\"\\n    Contract: subtract price from balance.\\n    Rejects negative price.\\n    Rejects insufficient funds (balance < price).\\n    \\\"\\\"\\\"\\n    balance = validate_integer(balance, \\\"balance\\\")\\n    price = validate_integer(price, \\\"price\\\")\\n    \\n    if price < 0:\\n        raise ValidationError(\\\"Price cannot be negative.\\\")\\n    \\n    if balance < price:\\n        raise InsufficientFundsError(f\\\"Insufficient funds: balance {balance} < price {price}.\\\")\\n    \\n    return balance - price\\n\\ndef can_buy(balance: int, price: int) -> bool:\\n    \\\"\\\"\\\"\\n    Contract: with nonnegative price, balance equal to price is sufficient.\\n    \\\"\\\"\\\"\\n    balance = validate_integer(balance, \\\"balance\\\")\\n    price = validate_integer(price, \\\"price\\\")\\n    \\n    if price",
+        "reasoning_content": "",
+        "tool_calls": [],
+        "audit_correct": true
+      },
+      {
+        "start": 616566.093738,
+        "end": 616567.0252129,
+        "wall_s": 0.9314748999895528,
+        "ttft_s": 0.7095144999912009,
+        "usage": {
+          "prompt_tokens": 39,
+          "completion_tokens": 21,
+          "total_tokens": 60,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 39,
+          "prompt_ms": 639.9,
+          "prompt_per_token_ms": 16.408,
+          "prompt_per_second": 60.9,
+          "predicted_n": 21,
+          "predicted_ms": 231.5,
+          "predicted_per_token_ms": 11.024,
+          "predicted_per_second": 90.7,
+          "draft_n": 17,
+          "draft_n_accepted": 17
+        },
+        "content": "{\"check\":\"COPPER-731\",\"value\":42,\"missing\":null}",
+        "reasoning_content": "",
+        "tool_calls": []
+      }
+    ],
+    "pair_wall_s": 20.32614050002303,
+    "aggregate_tok_s": 101.79010619343381
+  },
+  {
+    "clients": [
+      {
+        "start": 616579.4203331,
+        "end": 616599.8216844,
+        "wall_s": 20.401351299951784,
+        "ttft_s": 1.1735860999906436,
+        "usage": {
+          "prompt_tokens": 64127,
+          "completion_tokens": 2048,
+          "total_tokens": 66175,
+          "prompt_tokens_details": {
+            "cached_tokens": 63717
+          }
+        },
+        "timings": {
+          "cache_n": 63717,
+          "prompt_n": 410,
+          "prompt_ms": 1210.3,
+          "prompt_per_token_ms": 2.952,
+          "prompt_per_second": 338.8,
+          "predicted_n": 2048,
+          "predicted_ms": 18537.8,
+          "predicted_per_token_ms": 9.052,
+          "predicted_per_second": 110.5,
+          "draft_n": 1684,
+          "draft_n_accepted": 1390
+        },
+        "content": "{\n  \"audit\": {\n    \"r1\": \"HFNFPDSUM3\",\n    \"r2\": \"B9PFNPAYWU\",\n    \"r3\": \"W6RT86FD6V\",\n    \"r4\": \"AGLPJKT7Y8\",\n    \"r5\": \"AK6ULJ59W2\",\n    \"r6\": \"Z2Q4W76KSN\",\n    \"active_release\": \"J9Q37YQYUY\",\n    \"helios_logistics\": \"DK9NDQW4LW\",\n    \"iris_arrival\": \"DBZCMXRSVA\",\n    \"shipped_units\": 197,\n    \"shipped_lots\": 3,\n    \"ari_allowed\": false,\n    \"bea_allowed\": true,\n    \"debit_100_30\": 70,\n    \"buy_50_50\": true,\n    \"violet_serial\": null,\n    \"nereid_manufacturer\": null,\n    \"release_source\": \"FACT-B\",\n    \"logistics_source\": \"FACT-I\",\n    \"arrival_source\": \"FACT-K\"\n  },\n  \"code\": \"\\\"\\\"\\\"\\nSubstantive Python module implementing a transactional diving-game inventory system.\\n\\nThis module provides:\\n1. Transactional inventory management with atomic failures.\\n2. Idempotent purchase processing using request identifiers.\\n3. Validated save/load mechanisms with checksums.\\n4. Oxygen level transitions and state management.\\n5. Replay functionality for transaction logs.\\n6. Strict integer validation and boundary checks.\\n7. Handling of unknown licenses and cap boundaries.\\n\\nThe implementation adheres to the archive facts provided in the audit task,\\nensuring that business rules (such as depth limits for permits and correct\\ncalculation logic for debits and purchases) are enforced.\\n\\\"\\\"\\\"\\n\\nimport hashlib\\nimport json\\nimport time\\nimport threading\\nfrom typing import Dict, List, Optional, Tuple, Any, Union\\nfrom dataclasses import dataclass, field, asdict\\nfrom enum import Enum\\nfrom collections import defaultdict\\nimport copy\\n\\n# --- Constants and Configuration ---\\n\\n# Game Policy Constants from FACT-E\\nSCOUT_DEPTH_LIMIT = 24\\nEXPLORER_DEPTH_LIMIT = 42\\n\\n# Release Authorization Constants from FACT-B\\nCURRENT_RELEASE_REV = 17\\nCURRENT_RELEASE_CODE = \\\"J9Q37YQYUY\\\"\\n\\n# Beacon Access Codes from FACT-A, FACT-C, FACT-E, FACT-G, FACT-I, FACT-L\\nBEACON_CODES = {\\n    \\\"ALPHA\\\": \\\"HFNFPDSUM3\\\",\\n    \\\"BRAVO\\\": \\\"B9PFNPAYWU\\\",\\n    \\\"CHARLIE\\\": \\\"W6RT86FD6V\\\",\\n    \\\"DELTA\\\": \\\"AGLPJKT7Y8\\\",\\n    \\\"ECHO\\\": \\\"AK6ULJ59W2\\\",\\n    \\\"FOXTROT\\\": \\\"Z2Q4W76KSN\\\"\\n}\\n\\n# Depot and Logistics Constants from FACT-D, FACT-G, FACT-I, FACT-K\\nHOME_DEPOT_VELA = \\\"SABLE\\\"\\nLOGISTICS_KEY_SABLE = \\\"DK9NDQW4LW\\\"\\nHANDOFF_DEPOT_ORBIT = \\\"CERES\\\"\\nARRIVAL_CODE_CERES = \\\"DBZCMXRSVA\\\"\\n\\n# Manifest Lot Statuses\\nLOT_STATUS_SHIPPED = \\\"shipped\\\"\\nLOT_STATUS_CANCELLED = \\\"cancelled\\\"\\nLOT_STATUS_PENDING = \\\"pending\\\"\\n\\n# --- Exceptions ---\\n\\nclass GameError(Exception):\\n    \\\"\\\"\\\"Base exception for game logic errors.\\\"\\\"\\\"\\n    pass\\n\\nclass InsufficientFundsError(GameError):\\n    \\\"\\\"\\\"Raised when a transaction cannot be completed due to lack of funds.\\\"\\\"\\\"\\n    pass\\n\\nclass InvalidDepthError(GameError):\\n    \\\"\\\"\\\"Raised when a dive depth violates permit constraints.\\\"\\\"\\\"\\n    pass\\n\\nclass UnknownLicenseError(GameError):\\n    \\\"\\\"\\\"Raised when a character has an unrecognized or invalid license.\\\"\\\"\\\"\\n    pass\\n\\nclass DuplicateTransactionError(GameError):\\n    \\\"\\\"\\\"Raised when a duplicate request identifier is detected.\\\"\\\"\\\"\\n    pass\\n\\nclass StateCorruptionError(GameError):\\n    \\\"\\\"\\\"Raised when state integrity checks fail.\\\"\\\"\\\"\\n    pass\\n\\nclass OxygenDepletionError(GameError):\\n    \\\"\\\"\\\"Raised when oxygen levels reach critical or zero levels.\\\"\\\"\\\"\\n    pass\\n\\n# --- Data Models ---\\n\\nclass PermitType(Enum):\\n    SCOUT = \\\"scout\\\"\\n    EXPLORER = \\\"explorer\\\"\\n    UNKNOWN = \\\"unknown\\\"\\n\\n@dataclass\\nclass Character:\\n    name: str\\n    permit_type: PermitType\\n    balance: int = 0\\n    oxygen_level: int = 100\\n    current_depth: int = 0\\n    is_diving: bool = False\\n\\n    def __post_init__(self):\\n        if not isinstance(self.balance, int):\\n            raise TypeError(\\\"Balance must be an integer\\\")\\n        if not isinstance(self.oxygen_level, int):\\n            raise TypeError(\\\"Oxygen level must be an integer\\\")\\n        if not isinstance(self.current_depth, int):\\n            raise TypeError(\\\"Current depth must be an integer\\\")\\n        if self.balance < 0:\\n            raise ValueError(\\\"Balance cannot be negative\\\")\\n        if self.oxygen_level < 0 or self.oxygen_level > 100:\\n            raise ValueError(\\\"Oxygen level must be between 0 and 100\\\")\\n        if self.current_depth < 0:\\n            raise ValueError(\\\"Current depth cannot be negative\\\")\\n\\n@dataclass\\nclass Item:\\n    item_id: str\\n    name: str\\n    price: int\\n    stock: int\\n    manufacturer: Optional[str] = None\\n\\n    def __post_init__(self):\\n        if not isinstance(self.price, int):\\n            raise TypeError(\\\"Price must be an integer\\\")\\n        if not isinstance(self.stock, int):\\n            raise TypeError(\\\"Stock must be an integer\\\")\\n        if self.price < 0:\\n            raise ValueError(\\\"Price cannot be negative\\\")\\n        if self.stock < 0:\\n            raise ValueError(\\\"Stock cannot be negative\\\")\\n\\n@dataclass\\nclass Transaction:\\n    request_id: str\\n    character_name: str\\n    item_id: str\\n    quantity: int\\n    timestamp: float\\n    status: str  # 'pending', 'completed', 'failed'\\n    error_message: Optional[str] = None\\n\\n    def __post_init__(self):\\n        if not isinstance(self.quantity, int):\\n            raise TypeError(\\\"Quantity must be an integer\\\")\\n        if self.quantity <= 0:\\n            raise ValueError(\\\"Quantity must be positive\\\")\\n\\n@dataclass\\nclass DiveSession:\\n    session_id: str\\n    character_name: str\\n    target_depth: int\\n    start_time: float\\n    end_time: Optional[float] = None\\n    oxygen_consumed: int = 0\\n    status: str = \\\"active\\\" # 'active', 'completed', 'failed'\\n\\n    def __post_init__(self):\\n        if not isinstance(self.target_depth, int):\\n            raise TypeError(\\\"Target depth must be an integer\\\")\\n        if self.target_depth < 0:\\n            raise ValueError(\\\"Target depth cannot be negative\\\")\\n\\n# --- Core Logic Functions (Corrected per FACT-C and FACT-J) ---\\n\\ndef debit(balance: int, price: int) -> int:\\n    \\\"\\\"\\\"\\n    Correct implementation of debit based on FACT-C contract.\\n    Contract: subtracting price, rejecting negative price and insufficient funds.\\n    \\\"\\\"\\\"\\n    if not isinstance(balance, int) or not isinstance(price, int):\\n        raise TypeError(\\\"Balance and price must be integers\\\")\\n    if price < 0:\\n        raise ValueError(\\\"Price cannot be negative\\\")\\n    if balance < price:\\n        raise InsufficientFundsError(\\\"Insufficient funds for debit\\\")\\n    return balance - price\\n\\ndef can_buy(balance: int, price: int) -> bool:\\n    \\\"\\\"\\\"\\n    Correct implementation of can_buy based on FACT-J contract.\\n    Contract: with nonnegative price, balance equal to price is sufficient.\\n    \\\"\\\"\\\"\\n    if not isinstance(balance, int) or not isinstance(price, int):\\n        raise TypeError(\\\"Balance and price must be integers\\\")\\n    if price < 0:\\n        raise ValueError(\\\"Price cannot be negative\\\")\\n    return balance >= price\\n\\ndef check_depth_permission(permit_type: PermitType, depth: int) -> bool:\\n    \\\"\\\"\\\"\\n    Checks if a character with a specific permit can dive to a specific depth.\\n    Based on FACT-E: scout permit allows depth <= 24; explorer permits depth <= 42.\\n    A depth exactly at the limit is allowed.\\n    \\\"\\\"\\\"\\n    if not isinstance(depth, int):\\n        raise TypeError(\\\"Depth must be an integer\\\")\\n    if depth < 0:\\n        raise ValueError(\\\"Depth cannot be negative\\\")\\n\\n    if permit_type == PermitType.SCOUT:\\n        return depth",
+        "reasoning_content": "",
+        "tool_calls": [],
+        "audit_correct": true
+      },
+      {
+        "start": 616586.4221184,
+        "end": 616587.0156176,
+        "wall_s": 0.5934991999529302,
+        "ttft_s": 0.382002400001511,
+        "usage": {
+          "prompt_tokens": 39,
+          "completion_tokens": 21,
+          "total_tokens": 60,
+          "prompt_tokens_details": {
+            "cached_tokens": 32
+          }
+        },
+        "timings": {
+          "cache_n": 32,
+          "prompt_n": 7,
+          "prompt_ms": 355.7,
+          "prompt_per_token_ms": 50.814,
+          "prompt_per_second": 19.7,
+          "predicted_n": 21,
+          "predicted_ms": 218.1,
+          "predicted_per_token_ms": 10.386,
+          "predicted_per_second": 96.3,
+          "draft_n": 15,
+          "draft_n_accepted": 15
+        },
+        "content": "{\"check\":\"COPPER-731\",\"value\":42,\"missing\":null}",
+        "reasoning_content": "",
+        "tool_calls": []
+      }
+    ],
+    "pair_wall_s": 20.401351299951784,
+    "aggregate_tok_s": 101.41485088808258
+  },
+  {
+    "clients": [
+      {
+        "start": 616599.8230816,
+        "end": 616619.272563,
+        "wall_s": 19.44948139996268,
+        "ttft_s": 1.1645943999756128,
+        "usage": {
+          "prompt_tokens": 64127,
+          "completion_tokens": 2048,
+          "total_tokens": 66175,
+          "prompt_tokens_details": {
+            "cached_tokens": 63717
+          }
+        },
+        "timings": {
+          "cache_n": 63717,
+          "prompt_n": 410,
+          "prompt_ms": 1198.0,
+          "prompt_per_token_ms": 2.922,
+          "prompt_per_second": 342.2,
+          "predicted_n": 2048,
+          "predicted_ms": 17561.8,
+          "predicted_per_token_ms": 8.575,
+          "predicted_per_second": 116.6,
+          "draft_n": 1681,
+          "draft_n_accepted": 1414
+        },
+        "content": "{\n  \"audit\": {\n    \"r1\": \"HFNFPDSUM3\",\n    \"r2\": \"B9PFNPAYWU\",\n    \"r3\": \"W6RT86FD6V\",\n    \"r4\": \"AGLPJKT7Y8\",\n    \"r5\": \"AK6ULJ59W2\",\n    \"r6\": \"Z2Q4W76KSN\",\n    \"active_release\": \"J9Q37YQYUY\",\n    \"helios_logistics\": \"DK9NDQW4LW\",\n    \"iris_arrival\": \"DBZCMXRSVA\",\n    \"shipped_units\": 197,\n    \"shipped_lots\": 3,\n    \"ari_allowed\": false,\n    \"bea_allowed\": true,\n    \"debit_100_30\": 70,\n    \"buy_50_50\": true,\n    \"violet_serial\": null,\n    \"nereid_manufacturer\": null,\n    \"release_source\": \"FACT-B\",\n    \"logistics_source\": \"FACT-I\",\n    \"arrival_source\": \"FACT-K\"\n  },\n  \"code\": \"\\\"\\\"\\\"\\nSubstantive Python module implementing a transactional diving-game inventory system.\\n\\nThis module provides:\\n- Transactional inventory management with atomic failures.\\n- Idempotent purchase processing using request identifiers.\\n- Validated save/load mechanisms with checksums.\\n- Oxygen level transitions and state management.\\n- Replay functionality for transaction logs.\\n- Strict integer validation and boundary checks.\\n- Handling of unknown licenses and cap boundaries.\\n- Comprehensive unit tests (100+ functions).\\n\\nThe implementation adheres to the archive facts regarding game policies:\\n- Scout permit allows depth <= 24.\\n- Explorer permit allows depth <= 42.\\n- Depth exactly at the limit is allowed.\\n- Debit contract: subtract price, reject negative price and insufficient funds.\\n- Can_buy contract: balance >= price (for nonnegative price).\\n\\\"\\\"\\\"\\n\\nimport hashlib\\nimport json\\nimport copy\\nimport time\\nimport random\\nfrom typing import Dict, List, Optional, Tuple, Any, Union\\nfrom dataclasses import dataclass, field\\nfrom enum import Enum\\nfrom collections import defaultdict\\n\\n# --- Constants and Configuration ---\\n\\nMAX_DEPTH_SCOUT = 24\\nMAX_DEPTH_EXPLORER = 42\\nMAX_OXYGEN = 100\\nMIN_OXYGEN = 0\\nMAX_INVENTORY_SIZE = 1000\\n\\n# --- Exceptions ---\\n\\nclass GameError(Exception):\\n    \\\"\\\"\\\"Base exception for game logic errors.\\\"\\\"\\\"\\n    pass\\n\\nclass InsufficientFundsError(GameError):\\n    \\\"\\\"\\\"Raised when a transaction cannot be completed due to lack of funds.\\\"\\\"\\\"\\n    pass\\n\\nclass InvalidPriceError(GameError):\\n    \\\"\\\"\\\"Raised when a price is negative or invalid.\\\"\\\"\\\"\\n    pass\\n\\nclass InvalidDepthError(GameError):\\n    \\\"\\\"\\\"Raised when a depth request violates license constraints.\\\"\\\"\\\"\\n    pass\\n\\nclass UnknownLicenseError(GameError):\\n    \\\"\\\"\\\"Raised when a license type is not recognized.\\\"\\\"\\\"\\n    pass\\n\\nclass InventoryFullError(GameError):\\n    \\\"\\\"\\\"Raised when the inventory has reached its maximum capacity.\\\"\\\"\\\"\\n    pass\\n\\nclass TransactionError(GameError):\\n    \\\"\\\"\\\"Raised when a transaction fails due to state inconsistency.\\\"\\\"\\\"\\n    pass\\n\\nclass SaveError(GameError):\\n    \\\"\\\"\\\"Raised when saving or loading state fails.\\\"\\\"\\\"\\n    pass\\n\\nclass ReplayError(GameError):\\n    \\\"\\\"\\\"Raised when replaying transactions fails.\\\"\\\"\\\"\\n    pass\\n\\n# --- Data Structures ---\\n\\nclass LicenseType(Enum):\\n    SCOUT = \\\"scout\\\"\\n    EXPLORER = \\\"explorer\\\"\\n    UNKNOWN = \\\"unknown\\\"\\n\\n@dataclass\\nclass Item:\\n    item_id: str\\n    name: str\\n    price: int\\n    depth_requirement: int\\n    oxygen_cost: int\\n    \\n    def __post_init__(self):\\n        if not isinstance(self.price, int) or self.price < 0:\\n            raise InvalidPriceError(f\\\"Price must be a non-negative integer. Got: {self.price}\\\")\\n        if not isinstance(self.depth_requirement, int) or self.depth_requirement < 0:\\n            raise InvalidDepthError(f\\\"Depth requirement must be a non-negative integer. Got: {self.depth_requirement}\\\")\\n        if not isinstance(self.oxygen_cost, int) or self.oxygen_cost < 0:\\n            raise GameError(f\\\"Oxygen cost must be a non-negative integer. Got: {self.oxygen_cost}\\\")\\n\\n@dataclass\\nclass Player:\\n    player_id: str\\n    balance: int\\n    oxygen: int\\n    license_type: LicenseType\\n    inventory: List[Item] = field(default_factory=list)\\n    \\n    def __post_init__(self):\\n        if not isinstance(self.balance, int) or self.balance < 0:\\n            raise GameError(f\\\"Balance must be a non-negative integer. Got: {self.balance}\\\")\\n        if not isinstance(self.oxygen, int) or self.oxygen < 0 or self.oxygen > MAX_OXYGEN:\\n            raise GameError(f\\\"Oxygen must be between 0 and {MAX_OXYGEN}. Got: {self.oxygen}\\\")\\n        if not isinstance(self.license_type, LicenseType):\\n            raise UnknownLicenseError(f\\\"Invalid license type: {self.license_type}\\\")\\n\\n@dataclass\\nclass Transaction:\\n    tx_id: str\\n    player_id: str\\n    item_id: str\\n    timestamp: float\\n    status: str  # 'pending', 'completed', 'failed'\\n    error_msg: Optional[str] = None\\n    \\n    def to_dict(self) -> Dict[str, Any]:\\n        return {\\n            \\\"tx_id\\\": self.tx_id,\\n            \\\"player_id\\\": self.player_id,\\n            \\\"item_id\\\": self.item_id,\\n            \\\"timestamp\\\": self.timestamp,\\n            \\\"status\\\": self.status,\\n            \\\"error_msg\\\": self.error_msg\\n        }\\n\\n# --- Core Logic Functions ---\\n\\ndef validate_depth(license_type: LicenseType, requested_depth: int) -> bool:\\n    \\\"\\\"\\\"\\n    Validates if a requested depth is allowed for the given license type.\\n    \\n    Args:\\n        license_type: The type of license held by the player.\\n        requested_depth: The depth the player wishes to dive to.\\n        \\n    Returns:\\n        True if allowed, False otherwise.\\n        \\n    Raises:\\n        UnknownLicenseError: If the license type is not recognized.\\n    \\\"\\\"\\\"\\n    if not isinstance(requested_depth, int):\\n        raise InvalidDepthError(\\\"Requested depth must be an integer.\\\")\\n        \\n    if license_type == LicenseType.SCOUT:\\n        return requested_depth <= MAX_DEPTH_SCOUT\\n    elif license_type == LicenseType.EXPLORER:\\n        return requested_depth <= MAX_DEPTH_EXPLORER\\n    else:\\n        raise UnknownLicenseError(f\\\"Cannot validate depth for unknown license: {license_type}\\\")\\n\\ndef can_buy(balance: int, price: int) -> bool:\\n    \\\"\\\"\\\"\\n    Checks if a player can afford an item.\\n    Contract: With nonnegative price, balance equal to price is sufficient.\\n    \\n    Args:\\n        balance: Current balance of the player.\\n        price: Price of the item.\\n        \\n    Returns:\\n        True if balance >= price, False otherwise.\\n        \\n    Raises:\\n        InvalidPriceError: If price is negative.\\n    \\\"\\\"\\\"\\n    if not isinstance(balance, int) or not isinstance(price, int):\\n        raise GameError(\\\"Balance and price must be integers.\\\")\\n    if price < 0:\\n        raise InvalidPriceError(\\\"Price cannot be negative.\\\")\\n    return balance >= price\\n\\ndef debit(balance: int, price: int) -> int:\\n    \\\"\\\"\\\"\\n    Subtracts price from balance.\\n    Contract: Rejects negative price and insufficient funds.\\n    \\n    Args:\\n        balance: Current balance.\\n        price: Amount to deduct.\\n        \\n    Returns:\\n        New balance.\\n        \\n    Raises:\\n        InvalidPriceError: If price is negative.\\n        InsufficientFundsError: If balance < price.\\n    \\\"\\\"\\\"\\n    if not isinstance(balance, int) or not isinstance(price, int):\\n        raise GameError(\\\"Balance and price must be integers.\\\")\\n    if price < 0:\\n        raise InvalidPriceError(\\\"Price cannot be negative.\\\")\\n    if balance < price:\\n        raise InsufficientFundsError(f\\\"Insufficient funds: balance={balance}, price={price}\\\")\\n    return balance - price\\n\\ndef update_oxygen(current_oxygen: int, cost: int) -> int:\\n    \\\"\\\"\\\"\\n    Updates oxygen level after a dive.\\n    \\n    Args:\\n        current_oxygen: Current oxygen level.\\",
+        "reasoning_content": "",
+        "tool_calls": [],
+        "audit_correct": true
+      },
+      {
+        "start": 616606.8245996,
+        "end": 616607.4632456,
+        "wall_s": 0.6386459999484941,
+        "ttft_s": 0.4001372999045998,
+        "usage": {
+          "prompt_tokens": 39,
+          "completion_tokens": 21,
+          "total_tokens": 60,
+          "prompt_tokens_details": {
+            "cached_tokens": 32
+          }
+        },
+        "timings": {
+          "cache_n": 32,
+          "prompt_n": 7,
+          "prompt_ms": 362.5,
+          "prompt_per_token_ms": 51.786,
+          "prompt_per_second": 19.3,
+          "predicted_n": 21,
+          "predicted_ms": 243.1,
+          "predicted_per_token_ms": 11.576,
+          "predicted_per_second": 86.4,
+          "draft_n": 17,
+          "draft_n_accepted": 17
+        },
+        "content": "{\"check\":\"COPPER-731\",\"value\":42,\"missing\":null}",
+        "reasoning_content": "",
+        "tool_calls": []
+      }
+    ],
+    "pair_wall_s": 19.44948139996268,
+    "aggregate_tok_s": 106.37815772321673
+  }
+]

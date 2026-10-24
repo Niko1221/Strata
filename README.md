@@ -240,6 +240,10 @@ To reach Strata from your phone or another PC, use `strata launch --access lan`.
 An agent installs Strata with the one-line command above and runs `strata launch --model NAME --yes --no-tui`. Steps,
 flags and exit codes: [docs/AI_SETUP.md](docs/AI_SETUP.md). Repository rules for agents: [AGENTS.md](AGENTS.md).
 
+For a shared single engine, the experimental, opt-in [priority scheduler](docs/SOLO_PRIORITY.md)
+lets short text requests interrupt and resume a long answer using the conversation RAM cache.
+Cold reads can still delay a short request.
+
 | Your app speaks | Base URL |
 | --- | --- |
 | OpenAI API (most apps and agents) | `http://127.0.0.1:8080/v1` (any API key, any model name) |
