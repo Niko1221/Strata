@@ -2309,6 +2309,35 @@ struct GrammarRing {
     uint32_t* row(int r) const { return d + (size_t) r * (size_t) words; }
 };
 
+// #3862: one-time accept of the env-gated grammar mask trace (STRATA_GRAMMAR_DEBUG=1): every accepted
+// token prints the mask it was sampled under - words, how many tokens stay open, the first open id.
+bool grammar_debug_on() {
+    static const bool on = [] {
+        char* v = nullptr;
+#if defined(_WIN32)
+        size_t n = 0;
+        if (_dupenv_s(&v, &n, "STRATA_GRAMMAR_DEBUG") == 0 && v) { const bool r = v[0] != '\0'; free(v); return r; }
+        return false;
+#else
+        v = getenv("STRATA_GRAMMAR_DEBUG");
+        return v && v[0] != '\0';
+#endif
+    }();
+    return on;
+}
+
+void grammar_debug_mask(const strata::grammar::SlotGrammar& sg, int tok) {
+    int allowed = 0, first = -1;
+    for (int w = 0; w < (int) sg.mask.size(); ++w) {
+        const uint32_t inv = ~sg.mask[(size_t) w];   // bit=1 allows
+        for (int b = 0; b < 32; ++b) {
+            if ((inv >> b) & 1u) { ++allowed; if (first < 0) first = w * 32 + b; }
+        }
+    }
+    std::fprintf(stderr, "gdbg accept tok=%d words=%d allowed=%d first_open=%d\n", tok, (int) sg.mask.size(), allowed, first);
+    std::fflush(stderr);
+}
+
 int main(int argc, char** argv) {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -12265,6 +12294,10 @@ int main(int argc, char** argv) {
             // spec_min_p named on the same request is a draft floor, so the request opts into drafting
             bool req_grammar_named = false, req_spec_min_named = false;
             std::string req_grammar_sha;
+            // gseed=<n>: the prompt's last n tokens are the generated text a previous pass of this request
+            // already produced (a thinking wrap-up, a forced call, a batch slot handed back to solo); the
+            // grammar is replayed over them so the state and mask continue where that pass left off
+            long long req_gseed = 0;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary
             // (so no split there) nor every --prompt-cache-every tokens, and its session is neither continued nor
@@ -12300,6 +12333,7 @@ int main(int argc, char** argv) {
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "grammar") { req_grammar_sha = tok.substr(eq + 1); req_grammar_named = true; }
+                    else if (key == "gseed") req_gseed = std::strtoll(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
@@ -12339,12 +12373,14 @@ int main(int argc, char** argv) {
                 std::printf("ERR logit_bias: %s\n", o.batch > 0 ? "continuous batching is not supported" : bias_error.c_str());
                 continue;
             }
-            // #3862: a grammar request must name a registered grammar, and drafting (engine spec, MTP,
-            // or a request that raises the draft floor) is off: the state stacks advance one token at a
-            // time, and the verify tree would accept draft tokens the grammar never sampled
+            // #3862: a grammar request must name a registered grammar. The MTP drafter (--mtp, --batch-mtp)
+            // and a request that raises the draft floor (--spec-min-p) are hard refusals: their verify trees
+            // would accept draft tokens the grammar never sampled. The suffix/n-gram drafting (--spec launches,
+            // the IQ packs' requirement) is turned off per request instead (sfx_on): the state stacks advance
+            // one sampled token at a time, and the request pays the drafted-free speed cost.
             std::shared_ptr<const strata::grammar::GrammarEntry> req_grammar;
             if (req_grammar_named) {
-                if (o.spec >= 2 || !o.mtp.empty() || req_spec_min_named) {
+                if (!o.mtp.empty() || o.batch_mtp || req_spec_min_named) {
                     std::printf("ERR grammar + speculative decoding is not supported\n");
                     continue;
                 }
@@ -12367,6 +12403,25 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            // #3862: the seed is checked on a throwaway clone before anything is set up: a prompt tail that
+            // does not fit the grammar is a refused request, never a silent fall back to the root mask (which
+            // would leave the rest of the reply unconstrained - the wrap-up's </think> would never be seen)
+            if (req_grammar && req_gseed > 0) {
+                if (req_gseed > n) {
+                    std::printf("ERR grammar seed: %lld tokens is more than the prompt's %lld\n",
+                                req_gseed, (long long) n);
+                    continue;
+                }
+                strata::grammar::SlotGrammar probe(req_grammar);
+                std::string seed_err;
+                bool seed_ok = true;
+                for (int64_t si = n - req_gseed; seed_ok && si < n; ++si)
+                    seed_ok = probe.advance((int32_t) ids[(size_t) si], seed_err);
+                if (!seed_ok) {
+                    std::printf("ERR grammar seed: the prompt's tail does not fit the grammar: %s\n", seed_err.c_str());
+                    continue;
+                }
+            }
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
@@ -13935,6 +13990,13 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 slot_grammar = std::make_shared<strata::grammar::SlotGrammar>(req_grammar);
+                // a continuation pass (gseed): replay the prompt's generated tail (checked on the throwaway
+                // clone above, so this cannot fail) so the first sampled token is masked by the state the
+                // last pass left - the wrap-up's </think> has moved the grammar into the answer
+                for (int64_t si = n - req_gseed; req_gseed > 0 && si < n; ++si) {
+                    std::string seed_err;
+                    if (!slot_grammar->advance((int32_t) ids[(size_t) si], seed_err)) break;
+                }
                 req_sp.grammar_mask = grammar_ring.row(0);
                 req_sp.mask_stride_words = grammar_ring.words;
                 if (cudaMemcpy(grammar_ring.row(0), slot_grammar->mask.data(),
@@ -13942,6 +14004,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR grammar mask upload failed\n");
                     return 1;
                 }
+                if (grammar_debug_on()) grammar_debug_mask(*slot_grammar, -1);   // the root mask, before the first pick
             }
             if (!ver.set_logit_bias(req_bias, err) || (pipe && !ver_b.set_logit_bias(req_bias, err))) {
                 std::printf("ERR %s\n", err.c_str());
@@ -15162,11 +15225,14 @@ int main(int argc, char** argv) {
                         if (!slot_grammar->advance(outv[(size_t) i], g_err)) {
                             std::printf("ERR grammar: %s\n", g_err.c_str());   // the mask accepted an unacceptable token
                             eos = true;
-                        } else if (cudaMemcpy(grammar_ring.row(0), slot_grammar->mask.data(),
-                                              (size_t) grammar_ring.words * sizeof(uint32_t),
-                                              cudaMemcpyHostToDevice) != cudaSuccess) {
-                            std::printf("ERR grammar mask upload failed\n");
-                            eos = true;
+                        } else {
+                            if (grammar_debug_on()) grammar_debug_mask(*slot_grammar, (int) outv[(size_t) i]);
+                            if (cudaMemcpy(grammar_ring.row(0), slot_grammar->mask.data(),
+                                           (size_t) grammar_ring.words * sizeof(uint32_t),
+                                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                                std::printf("ERR grammar mask upload failed\n");
+                                eos = true;
+                            }
                         }
                     }
                 }

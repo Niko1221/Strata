@@ -7,7 +7,7 @@ The named-grammar check is structural: Python has no grammar core, so the assert
 import unittest
 
 from serve.frontend import ChatTemplate
-from serve.grammar_tools import build_tool_grammar, gbnf_escape, tool_grammar_choice
+from serve.grammar_tools import build_tool_grammar, gbnf_escape, tool_grammar_choice, with_think_prologue
 from pathlib import Path
 
 TOOLS = [{"name": "get_weather",
@@ -116,7 +116,7 @@ class Shape(unittest.TestCase):
 
     def test_thinking_prepends_the_prologue(self):
         g = build("required", thinking=True)
-        self.assertIn('"\\n</think>\\n\\n"', g)                # the template's closer and blank line
+        self.assertIn('root ::= reason "</think>\\n" ws answer', g)                # the template's closer and blank line
         self.assertTrue([line for line in g.splitlines() if line.startswith("root ::=")][0].startswith(
             "root ::= reason"))
 
@@ -138,6 +138,19 @@ class Routing(unittest.TestCase):
         # a named choice the old code degrades to "auto" keeps the prompt path (grammar would be a policy change)
         self.assertEqual(tool_grammar_choice(True, TOOLS, {"type": "function", "function": {"name": "ghost"}}, False),
                          ("prompt", None, None))
+
+
+class ThinkPrologue(unittest.TestCase):
+    def test_the_answer_grammar_becomes_the_region_after_the_closer(self):
+        g = with_think_prologue('root ::= "a" | "b"\n')
+        self.assertIn('root ::= reason "</think>\\n" answer', g)
+        self.assertIn("answer ::= ws ( fenced | answer-root )", g)
+        self.assertIn('fenced ::= "```json" ws answer-root ws "```"', g)   # the habit is legal, canary strips it
+        self.assertIn('ws ::= ( " " | ', g)                               # free whitespace, zero or more
+        self.assertIn('answer-root ::= "a" | "b"', g)
+        self.assertIn('reason ::= ', g)                            # free text that never spells the closer
+        self.assertIn('"<" reason-1-0', g)                     # the closer chain
+        self.assertIn('"`" reason-0-1', g)                     # the fenced-answer habit is refused too
 
 
 if __name__ == "__main__":

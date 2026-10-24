@@ -13,7 +13,7 @@ from pathlib import Path
 from serve.frontend import ChatTemplate
 from serve import grammar as grammar_api
 from serve import grammar_schema as grammar_conv
-from serve.server import ByteTokenizer, MockEngine, Service, StrataEngine, serve
+from serve.server import ByteTokenizer, IM_END, MockEngine, Service, StrataEngine, serve
 
 BUILD = Path(__file__).resolve().parents[1] / "build"
 CONVERTER = BUILD / ("grammar_schema.exe" if os.name == "nt" else "grammar_schema")
@@ -78,7 +78,41 @@ class GrammarPath(GrammarBase):
         prompt = self.tok.decode(engine.last_prompt)
         self.assertNotIn("OUTPUT FORMAT REQUIREMENT", prompt)      # the constraint is in the sampler now
         self.assertIn("root ::=", engine.grammars[-1])             # the converted GBNF reached the engine
+        self.assertNotIn("reason", engine.grammars[-1])            # reasoning_effort=none: no think prologue
         self.assertEqual(engine.last_sampling.get("grammar"), grammar_api.grammar_sha16(engine.grammars[-1]))
+
+    @unittest.skipUnless(HAVE_CONVERTER, "grammar_schema CLI is not built")
+    def test_a_thinking_request_carries_the_answer_grammar_past_the_think_closer(self):
+        engine = self.capable(script="A steady hand and a wide aperture.\n</think>\n\n" + json.dumps(STORY))
+        self.assertEqual(self.chat(response_format=FORMAT, reasoning_effort="medium")[0], 200)
+        text = engine.grammars[-1]
+        self.assertIn('root ::= reason "</think>\\n" answer', text)   # reasoning, the closer, the answer
+        self.assertIn("answer ::= ws ( fenced | answer-root )", text)   # the fence habit is legal, the canary strips it
+        self.assertIn("answer-root ::=", text)
+
+    @unittest.skipUnless(HAVE_CONVERTER, "grammar_schema CLI is not built")
+    def test_a_continuation_pass_seeds_the_grammar_with_what_was_generated(self):
+        # the thinking wrap-up resends the prompt with the generated tail: the engine is told (gseed) that
+        # the grammar has already consumed it, or the whole continuation would sample from the open root
+        # mask and the wrap-up's </think> would never move the grammar into the answer
+        engine = self.capable()
+        engine.scripts = [engine.scripts[0],
+                          self.tok.encode(json.dumps(STORY), parse_special=True)
+                          + self.tok.encode(IM_END, parse_special=True)]
+        calls = []
+        orig = engine.generate
+        def recording(ids, max_new, sampling, cancel, embeddings=None):
+            calls.append(dict(sampling or {}))
+            yield from orig(ids, max_new, sampling, cancel, embeddings)
+        engine.generate = recording
+        code, reply = self.request("/v1/chat/completions",
+                                   {"messages": [{"role": "user", "content": "Plan the shot."}],
+                                    "response_format": FORMAT, "reasoning_effort": "medium",
+                                    "reasoning_budget_tokens": 3})
+        self.assertEqual(code, 200, reply)
+        self.assertGreaterEqual(len(calls), 2)                       # the wrap-up made a continuation pass
+        self.assertNotIn("strata_grammar_seed", calls[0])            # the first pass starts at the root
+        self.assertGreater(calls[-1].get("strata_grammar_seed", 0), 0)   # the continuation carries the seed
 
     @unittest.skipUnless(HAVE_CONVERTER, "grammar_schema CLI is not built")
     def test_the_same_schema_registers_once_per_engine(self):
@@ -92,7 +126,7 @@ class GrammarPath(GrammarBase):
         engine = self.capable()
         code, raw = self.chat(response_format={"type": "json_object"}, stream=True)
         self.assertEqual(code, 200, raw)
-        self.assertEqual(engine.grammars[-1], grammar_api.JSON_OBJECT_GBNF)
+        self.assertEqual(engine.grammars[-1], grammar_api.JSON_OBJECT_GBNF)   # reasoning_effort=none: no prologue
         chunks = [json.loads(line[6:]) for line in raw.splitlines() if line.startswith("data: {")]
         deltas = [c for c in chunks if c["choices"][0].get("delta", {}).get("content")]
         self.assertGreater(len(deltas), 1)                         # streamed piece by piece, not one buffered delta
@@ -246,7 +280,7 @@ class ToolGrammar(GrammarBase):
         self.assertEqual(code, 200, reply)
         # Anthropic thinking is on by default: the grammar starts at the prologue, as the template's tail does
         self.assertIn("answer ::= calls", engine.grammars[-1])
-        self.assertIn('root ::= reason "\\n</think>\\n\\n" answer', engine.grammars[-1])
+        self.assertIn('root ::= reason "</think>\\n" ws answer', engine.grammars[-1])
 
 
 class GrammarConverter(unittest.TestCase):
@@ -294,6 +328,12 @@ class GrammarWire(unittest.TestCase):
         for bad in (None, 12, "", "  ", "x" * ((1 << 20) + 1)):
             with self.assertRaises(ValueError):
                 grammar_api.check_param(bad)
+
+    def test_the_seed_key_rides_the_grammar_key_only(self):
+        self.assertIn(" gseed=7", StrataEngine.sampling_keys({"grammar": "abc123", "strata_grammar_seed": 7}))
+        self.assertNotIn("gseed", StrataEngine.sampling_keys({"grammar": "abc123", "strata_grammar_seed": 0}))
+        self.assertNotIn("gseed", StrataEngine.sampling_keys({"grammar": "abc123", "strata_grammar_seed": True}))
+        self.assertNotIn("gseed", StrataEngine.sampling_keys({"strata_grammar_seed": 7}))
 
 
 if __name__ == "__main__":

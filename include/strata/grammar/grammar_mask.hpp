@@ -6,8 +6,9 @@
 // piece; EOG rides only at the terminal state (any stack empty); Strata additionally bans every
 // CONTROL token (spec §5.1, recorded divergence), and padding bits stay banned.
 //
-// The vendored core has no mask cache; this is the design's per-state cache (spec §5.1). The
-// stacks enter as a key only - (rule, offset) of every stack's top element.
+// The vendored core has no mask cache; this is the design's per-state cache (spec §5.1). The key is
+// the WHOLE stack state: (rule, offset) of every element of every live stack (a top-only key collides
+// across states that share their top and hands one of them the other's mask).
 #pragma once
 
 #include "strata/grammar/grammar.hpp"
@@ -47,7 +48,7 @@ public:
     size_t size() const { return index_.size(); }
 
 private:
-    using key_t = std::vector<std::pair<uint32_t, uint32_t>>; // per stack: (rule, element offset)
+    using key_t = std::vector<std::pair<uint32_t, uint32_t>>; // per stack: a boundary, then (rule, offset) of every element
 
     key_t make_key(const std::vector<grammar_stack>& stacks, const grammar_rules& rules) const;
 

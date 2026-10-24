@@ -1463,6 +1463,12 @@ class StrataEngine:
         gs = sampling.get("grammar")
         if isinstance(gs, str) and gs:
             keys += f" grammar={gs}"
+            # a continuation pass (a thinking wrap-up, a close retry, a forced call, a batch slot back to
+            # solo) resends the prompt with the generated tail: gseed tells the engine its last n tokens are
+            # the text the grammar has already consumed, so the state and mask continue where that pass left
+            seed = sampling.get("strata_grammar_seed")
+            if isinstance(seed, int) and not isinstance(seed, bool) and seed > 0:
+                keys += f" gseed={seed}"
         return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
 
     @staticmethod
@@ -1820,6 +1826,12 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
+        gram = bool(isinstance((sampling or {}).get("grammar"), str) and (sampling or {}).get("grammar"))
+
+        def gseed_keys(n_generated):
+            # a grammar request's continuation (the prompt now carries what it generated): the engine replays
+            # the tail so the grammar's state continues from the last pass (the first pass has nothing to seed)
+            return f" gseed={n_generated}" if gram and n_generated else ""
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
@@ -1845,7 +1857,8 @@ class StrataEngine:
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
-                    head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
+                    head = f"GENI {left}{keys}{gseed_keys(len(out))} {embeddings}" if embeddings else \
+                        f"GEN {left}{keys}{gseed_keys(len(out))}"
                     self._last_done = None                  # (#879: this request's DONE decides below)
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
@@ -1969,7 +1982,8 @@ class StrataEngine:
                         holding, born = True, self.gen                  # (the engine it now has the control lines of)
                     while not self.slot_q[slot].empty():
                         self.slot_q[slot].get_nowait()
-                    head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
+                    head = f"BGENI {slot} {left}{keys}{gseed_keys(len(out))} {embeddings}" if embeddings else \
+                        f"BGEN {slot} {left}{keys}{gseed_keys(len(out))}"
                     live = {"slot": slot, "request_id": getattr(cancel, "_strata_request_id", None),
                             "state": "reading", "prompt_tokens": len(prompt), "prompt_read": 0, "generated": 0,
                             "started": time.time(), "first_token": None}
@@ -5121,10 +5135,15 @@ class Service:
                     for ev in opening:
                         yield "event", ev
                     while True:
+                        # a grammar request's continuation pass carries the seed: the prompt's tail is the
+                        # generated text the grammar has already consumed (the first pass has none of it)
+                        pass_sampling = sampling
+                        if sampling.get("grammar") and raw_ids:
+                            pass_sampling = {**sampling, "strata_grammar_seed": len(raw_ids)}
                         segment_before = getattr(self.engine, "last", None)
                         segments_before = len(segments)     # (#879: a pass sent again leaves no segment)
-                        gen = self.engine.generate(prompt, max_new - n, sampling, cancel, embeddings=emb) if emb \
-                            else self.engine.generate(prompt, max_new - n, sampling, cancel)
+                        gen = self.engine.generate(prompt, max_new - n, pass_sampling, cancel, embeddings=emb) if emb \
+                            else self.engine.generate(prompt, max_new - n, pass_sampling, cancel)
                         recover_prompt = None
                         seg, wrap, leaving = [], False, False   # this pass's tokens; the budget is reached; closed
                         nonfinite = False               # #879: the engine ended this pass on non-finite logits
@@ -7008,6 +7027,10 @@ def make_handler(svc: Service):
             # and the buffered validation ride along only when it cannot (the prompt path is the fallback).
             grammar_text, messages, validator = grammar_conv.plan_response_format(
                 svc.engine, req.get("response_format"), messages)
+            if grammar_text is not None and kw.get("enable_thinking", True) is not False:
+                # the template opens the answer inside a think block: the grammar carries the reasoning
+                # and the closer too, so the constrained JSON lands in the answer region, not the think one
+                grammar_text = grammar_tools.with_think_prologue(grammar_text)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             if req.get("grammar") is not None:      # a bare GBNF text: the client's own grammar, no validator
@@ -7220,6 +7243,8 @@ def make_handler(svc: Service):
                 # the canary that says a constrained stream conformed, and it streams unbuffered.
                 grammar_text, messages, validator = grammar_conv.plan_response_format(
                     svc.engine, responses_api.text_format(req), messages, with_tools=bool(tools))
+                if grammar_text is not None and kw.get("enable_thinking", True) is not False:
+                    grammar_text = grammar_tools.with_think_prologue(grammar_text)   # as on the chat route
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
             tool_grammar = None

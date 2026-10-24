@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace strata {
 namespace grammar {
@@ -67,25 +68,27 @@ GrammarMaskCache::GrammarMaskCache(const GrammarVocab& vocab, const grammar_rule
 
 GrammarMaskCache::key_t GrammarMaskCache::make_key(const std::vector<grammar_stack>& stacks,
                                                    const grammar_rules& rules) const {
+    // the WHOLE stack is the state.  A top-only key collides: a string element inside the steps array
+    // and one inside an object property share their top, and one of them then sampled through the
+    // other's mask (measured on the rig: the walk then rejected what the mask had allowed -
+    // "Unexpected empty grammar stack" - or accepted a turn the state never had, which surfaced as a
+    // finished reply that failed its own schema).
+    std::unordered_map<const grammar_element*, std::pair<uint32_t, uint32_t>> where;
+    for (size_t r = 0; r < rules.size(); ++r) {
+        const grammar_rule& rule_vec = rules[r];
+        for (size_t o = 0; o < rule_vec.size(); ++o)
+            where.emplace(rule_vec.data() + o, std::make_pair((uint32_t) r, (uint32_t) o));
+    }
     key_t key;
-    key.reserve(stacks.size() + 1);
+    key.reserve(stacks.size() * 8 + 1);
     key.emplace_back(0xFFFFFFFFu, (uint32_t)stacks.size()); // (rules identity is the cache's own)
     for (const grammar_stack& stack : stacks) {
-        if (stack.empty()) {
-            key.emplace_back(0, 0xFFFFFFFFu); // the terminal marker
-            continue;
+        key.emplace_back(0xFFFFFFFEu, (uint32_t)stack.size()); // the stack boundary; depth 0 = terminal
+        for (const grammar_element* e : stack) {
+            const auto it = where.find(e);
+            key.emplace_back(it != where.end() ? it->second.first : 0xFFFFFFFFu,
+                             it != where.end() ? it->second.second : 0xFFFFFFFFu);
         }
-        const grammar_element* top = stack.back();
-        uint32_t rule = 0xFFFFFFFFu, offset = 0xFFFFFFFFu;
-        for (size_t r = 0; r < rules.size(); ++r) {
-            const grammar_rule& rule_vec = rules[r];
-            if (!rule_vec.empty() && top >= rule_vec.data() && top < rule_vec.data() + rule_vec.size()) {
-                rule = (uint32_t)r;
-                offset = (uint32_t)(top - rule_vec.data());
-                break;
-            }
-        }
-        key.emplace_back(rule, offset);
     }
     return key;
 }

@@ -6,6 +6,33 @@
 namespace strata {
 namespace grammar {
 
+namespace {
+// SentencePiece stores byte tokens with the llama byte_decoder symbols: 'Ġ' (U+0120) is the
+// space, 'Ċ' (U+010A) is the newline, and cp1252 symbols stand for their bytes; a GBNF grammar
+// speaks real text, so the pieces are decoded back to bytes once at load (a grammar that wants
+// a space then matches token 220, not a token whose piece spells 'Ġ').
+std::string sp_piece_to_text(const std::string& piece) {
+    std::string out;
+    size_t i = 0;
+    const size_t n = piece.size();
+    while (i < n) {
+        unsigned char c = (unsigned char)piece[i];
+        uint32_t cp = c;
+        size_t len = 1;
+        if (c >= 0xF0 && i + 3 < n) { cp = ((c & 7u) << 18) | ((piece[i + 1] & 0x3F) << 12) | ((piece[i + 2] & 0x3F) << 6) | (piece[i + 3] & 0x3F); len = 4; }
+        else if (c >= 0xE0 && i + 2 < n) { cp = ((c & 0xFu) << 12) | ((piece[i + 1] & 0x3F) << 6) | (piece[i + 2] & 0x3F); len = 3; }
+        else if (c >= 0xC0 && i + 1 < n) { cp = ((c & 0x1Fu) << 6) | (piece[i + 1] & 0x3F); len = 2; }
+        if (cp == 0x120u) { out += ' '; }            // the space symbol
+        else if (cp == 0x10Au) { out += '\n'; }      // the newline symbol
+        else if (cp >= 0xA1u && cp <= 0xFFu) { out += (char)(unsigned char)cp; }  // cp1252 symbols ride their bytes
+        else if (cp >= 0x20u && cp <= 0x7Eu) { out += (char)(unsigned char)cp; }  // printable ascii
+        else { out.append(piece, i, len); }          // raw UTF-8 (CJK pieces) and everything else
+        i += len;
+    }
+    return out;
+}
+} // namespace
+
 bool load_grammar_vocab(const std::string& gguf_path, GrammarVocab& out, std::string& err) {
     // full_arrays: the sampled 64-item read cannot carry a 150k vocabulary
     GgufFile f(gguf_path, true);
@@ -19,7 +46,7 @@ bool load_grammar_vocab(const std::string& gguf_path, GrammarVocab& out, std::st
     out.pieces.clear();
     out.pieces.resize(n);
     for (size_t i = 0; i < tokens->items.size() && i < n; ++i) {
-        out.pieces[i] = tokens->items[i].s;
+        out.pieces[i] = sp_piece_to_text(tokens->items[i].s);
     }
 
     out.control.assign(n, 0);

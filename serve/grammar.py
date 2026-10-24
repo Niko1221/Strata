@@ -53,5 +53,9 @@ def grammar_canary(chunks, validator):
                 try:
                     validated_json("".join(collected), validator, finish)
                 except StructuredOutputError as e:
+                    # an unfinished stream is the budget, not the constraint: say which
+                    if finish != "stop":
+                        raise StructuredOutputError(
+                            f"the constrained answer did not fit the output budget: {e}") from e
                     raise StructuredOutputError(
                         f"grammar engine bug: a constrained stream failed its own schema: {e}") from e

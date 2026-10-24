@@ -37,9 +37,61 @@ def exclude_seq(seq: str, name: str, rules: list) -> str:
         cls = f"[^{_CLASS_ESCAPES.get(ch, ch)}]"
         head = name if k == 0 else f"{name}-{k}"
         if k == len(seq) - 1:
-            rules.append(f'{head} ::= {cls} {name}-0 | ""')
+            rules.append(f'{head} ::= {cls} {name} | ""')
         else:
-            rules.append(f'{head} ::= {cls} {name}-0 | {_lit(ch)} {name}-{k + 1} | ""')
+            rules.append(f'{head} ::= {cls} {name} | {_lit(ch)} {name}-{k + 1} | ""')
+    return name
+
+
+def exclude_seqs(seqs: list, name: str, rules: list) -> str:
+    """Rules for any text that never spells any of `seqs` - the product of the per-sequence
+    restart chains, one rule per reachable state (the entry rule is `name`; the others are
+    `name-<i>-<j>...`). A character that advances an axis takes only its tracking branch (so a
+    completing character is refused by that state alone); a character that completes a sequence
+    is refused by the state before it; every other character - including one that merely restarts
+    a partial match - rides the free class and the text flows as it would unconstrained. Returns
+    the entry rule name.
+
+    The single-sequence shape is exactly exclude_seq's chain; use this for the think prologue,
+    which must refuse both the template's closer and the model's fenced-JSON answer habit
+    (measured on the rig: the habit pours out as free reasoning and the answer never starts).
+    """
+    lens = [len(s) for s in seqs]
+
+    def nxt(v, ch):
+        # a mismatch restarts that axis to 0, as the single-sequence chain does; this keeps every
+        # transition off its own state, which the grammar parser demands
+        return tuple(j + 1 if ch == s[j] else 0 for j, s in zip(v, seqs))
+
+    def label(v):
+        return name if not any(v) else name + "-" + "-".join(str(x) for x in v)
+
+    chars = sorted({c for s in seqs for c in s})
+    entry = (0,) * len(seqs)
+    states, order = {entry}, [entry]
+    heads = {}
+    for v in order:
+        branches, refused = [], set()
+        for ch in chars:
+            w = nxt(v, ch)
+            if any(w[k] == lens[k] for k in range(len(seqs))):
+                refused.add(ch)                    # completing a sequence: the state refuses the char
+            elif w != entry:
+                if w not in states:
+                    states.add(w)
+                    order.append(w)
+                branches.append((ch, w))
+                refused.add(ch)                    # advancing: only its tracking branch may take it, so the
+                                                   # refusal of a completing char cannot leak through a
+                                                   # parallel restart stack
+            # else: the char restarts every axis and rides the free class (any text stays legal - the bug
+            # that excluded these made a bare "h" or "t" in the reasoning unmatchable and starved the
+            # model's thinking down to letter-free loops)
+        cls = "".join(_CLASS_ESCAPES.get(c, c) for c in sorted(refused))
+        body = [f"[^{cls}] {label(entry)}"] + [f"{_lit(ch)} {label(w)}" for ch, w in branches]
+        heads[v] = f'{label(v)} ::= ' + " | ".join(body) + ' | ""'
+    for v in order:
+        rules.append(heads[v])
     return name
 
 
@@ -51,20 +103,57 @@ CALL_TAIL = "</function>\n</tool_call>"
 CALL_JOIN = "\n"                              # calls in one turn are joined by a bare newline
 PROSE_PREFIX = "\n\n"                         # prose and calls are separated by a blank line
 THINK_TAIL = "\n</think>\n\n"                 # reasoning ends, then the template's blank line
+THINK_CLOSE = "</think>\n"                    # the closer as a model writes it, + one newline (see with_think_prologue)
+THINK_BANNED = ["</think>", "```json"]       # the reason region refuses the closer (it opens the answer) and the model's fenced-JSON answer habit (free-text reasoning that never ends)
+
+
+def _strip_comment(line: str) -> str:
+    """Drop a GBNF '#' comment: the parser skips from '#' to end of line unless the '#' sits in a
+    quoted literal or a character class; the same scan lets a multi-line rule be joined without a
+    trailing comment eating the joined tail."""
+    out, quoted, cls, esc = [], False, False, False
+    for ch in line:
+        if ch == "#" and not quoted and not cls:
+            break
+        out.append(ch)
+        if esc:                                   # a backslash escapes the next character
+            esc = False
+        elif ch == "\\" and (quoted or cls):
+            esc = True
+        elif ch == '"' and not cls:
+            quoted = not quoted
+        elif not quoted:
+            if ch == "[":
+                cls = True
+            elif ch == "]":
+                cls = False
+    return "".join(out)
 
 
 def _inline(grammar_text: str, ns: str, rules: list) -> str:
     """Splice the converter's full grammar under the namespace `ns` (every rule renamed `ns-<rule>`,
     literals and character classes left alone) and return the entry rule (the converter's root)."""
     parsed = []
+    current = None
+    def flush():
+        if current is None:
+            return
+        if not current[1]:
+            raise ValueError(f"the schema converter produced an empty rule body: {current[0]}")
+        parsed.append((current[0], current[1]))
     for line in grammar_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(";;"):
+        line = _strip_comment(line).strip()
+        if not line:
             continue
-        m = re.match(r"^([a-zA-Z][a-zA-Z0-9-]*)\s*::=\s*(.+)$", line)
-        if not m:
+        m = re.match(r"^([a-zA-Z][a-zA-Z0-9-]*)\s*::=\s*(.*)$", line)
+        if m:
+            flush()
+            current = [m.group(1), m.group(2).strip()]
+        elif current is not None:                       # the converter's root grammars span lines
+            current[1] = (current[1] + " " + line).strip()
+        else:
             raise ValueError(f"the schema converter produced a rule that cannot be inlined: {line!r}")
-        parsed.append((m.group(1), m.group(2)))
+    flush()
     if not any(old == "root" for old, _ in parsed):
         raise ValueError("the schema converter produced no root rule")
     names = {old for old, _ in parsed}
@@ -136,8 +225,10 @@ def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, conv
     else:
         raise ValueError(f"tool_choice {tool_choice!r} needs no grammar")
     if thinking:
-        reason = exclude_seq("</think>", "reason", rules)
-        rules.append(f"root ::= {reason} {_lit(THINK_TAIL)} answer")
+        reason = exclude_seqs(THINK_BANNED, "reason", rules)
+        # one newline after the closer, then free whitespace before the call (see with_think_prologue)
+        rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} )*')
+        rules.append(f"root ::= {reason} {_lit(THINK_CLOSE)} ws answer")
     else:
         rules.append("root ::= answer")
     return "\n".join(rules) + "\n"
@@ -185,3 +276,33 @@ def plan_tool_grammar(engine, tools, tool_choice, mcp, thinking):
     except ValueError:
         return None, None           # the prompt path serves the call, as it always did
     return text, None
+
+
+def with_think_prologue(grammar_text: str) -> str:
+    """A response_format grammar on a model whose template opens the answer inside a think block:
+    the reasoning region rides as free text that never spells the template's closer, then the
+    closer, then the constrained answer. Without this the grammar's first token lands inside the
+    open think region and the server reads the whole answer as reasoning.
+
+    The closer is '</think>' + ONE newline, and the answer body grows a leading whitespace rule -
+    not the template's full '\n
+</think>
+
+
+\n\n'. The model that closes tightly lands on the answer's first token; the model
+    that pads the closer with blank lines rides the answer's own leading whitespace. A grammar
+    that requires both template newlines strands a padding model: every token it then writes is
+    legal only as free text, so the mask never opens the answer (measured on the rig). The serve
+    parser splits reasoning at '</think>' alone, so both models agree where the answer begins.
+    """
+    rules: list = []
+    answer = _inline(grammar_text, "answer", rules)
+    reason = exclude_seqs(THINK_BANNED, "reason", rules)
+    rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} )*')
+    # a model whose answer habit is a fenced block must be able to write it - banning the fence left
+    # it with no legal continuation right after the closer and the stream degenerated (measured);
+    # the canary's JSON extractor strips the fence, so the answer it validates is the JSON
+    rules.append(f'fenced ::= {_lit("```json")} ws {answer} ws {_lit("```")}')
+    rules.append(f"answer ::= ws ( fenced | {answer} )")
+    rules.append(f"root ::= {reason} {_lit(THINK_CLOSE)} answer")
+    return "\n".join(rules) + "\n"

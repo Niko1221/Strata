@@ -102,8 +102,20 @@ NVIDIA/AMD：`json_object` = 仅对象语法；`json_schema` = schema→GBNF 硬
 
 ## 9. 开放问题（留实施计划）
 
-- `GRAMMAR` 行的传输编码（文本转义/分块）细节。
-- grammar 图 LRU 缓存的逐出语义（槽位活跃时不逐出）。
-- 思考（`<think>`）区：v1 初定**不约束思考区**，约束只作用于其后的工具块/答案。此立场同时覆盖 `tool_choice: auto` 与 `response_format: json_schema/json_object`（thinking 模型下从第 0 token 硬约束会掐死思考）：服务器把 grammar 组成"放行 think 块、其后硬约束"的前序规则；与模板 `<think>` 生成开关对齐，实施时用模板实测确认。
-- GBNF 无负向前瞻："散文可含 `<` 但不可成 `<tool_call>`"（tool_choice:auto 的散文交替）与"think 前序放行"都需手写字符类展开，是全设计手写语法最重的一块；计划须给专门的语法边界测试（含 `<` 的散文、`<tool_call>` 前缀、围栏代码、散文中的 `</think>`）。
-- BGEN 批槽全活跃时每步多槽 mask 计算的 CPU 开销上限（多槽并发下实测）。
+实施期间全部落定（2026-10-24，4090 实机验收通过，数字见文末）：
+
+- `GRAMMAR` 行的传输编码：定为单行转义 —— 服务端把 `\` 转义为 `\\`、换行转义为 `\n`，byte_len 记未转义字节数；引擎一遍反转义。
+- grammar LRU 逐出：cap 64；被某个槽位的 shared_ptr 钉住的条目永不逐出（溢出期容忍超限）。
+- 思考区立场修正：实测否决了『完全放行思考区』——模型把围栏 JSON 习惯当成自由推理倾倒，答案永不开始。落地为重启链前序（reason 区禁成句的 `</think>` 与 <code>&#96;&#96;&#96;json</code>，其余任意文本逐字放行），思考预算到点的 wrap-up 续跑以 `gseed=<n>` 重放已生成尾部（否则续跑整段跑在开放的 reason 掩码上）。
+- 负向前瞻缺口：exclude_seqs 乘积链自动枚举全部状态；修复了把『重启字符』错并进拒绝类的实现缺陷（曾把思考区饿成无字母循环）。边界测试在 serve/test_grammar.py 与 tools/test_grammar_builder.py。
+- 多槽 mask 开销：6 槽并发聚合 172.1 → 140.1 tok/s；单流 400 token 中位 -2.6%。逐 token 的宿主 CPU 毫秒数此次未测得（探测进程时间读数为 0），以聚合吞吐为代理指标记录。
+
+
+## 10. 验收结果（2026-10-24，RTX 4090 48GiB，Swift IQ3_S，engine 0.1.47 构建）
+
+- 协议冒烟 6/6（INFO 声明、注册 OK/ERR、带语法生成、未注册拒绝、spec 组合拒绝）。
+- JSON 套件 50/50 全部通过自身 schema（5 个 schema × 10 提示，effort low，温度 0.6，max_tokens 3200）。
+- 工具套件 30/30 解析为合法调用，0 失败、0 从推理区抢救。
+- 单流成本：中位 84.8 → 82.6 tok/s（-2.6%）；首次约束请求含一次性 mask 核预热。
+- 6 槽并发：聚合 172.1 → 140.1 tok/s；无槽位错误。
+- 结果与逐项记录：`bench/results/2026-10-24-1332-grammar-4090/`。

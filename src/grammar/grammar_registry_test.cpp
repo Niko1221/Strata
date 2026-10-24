@@ -84,6 +84,28 @@ int main(void) {
         }
         CHECK(reg.find("00000000000000aa") != nullptr);
     }
+    { // the seed replay (gseed): a fresh clone advanced over the same tokens lands in the same state as one
+      // that decoded them live, and a tail that does not fit is refused (the request never silently falls
+      // back to the root mask, which would leave the rest of the reply unconstrained)
+        GrammarRegistry reg(make_vocab());
+        std::string err;
+        CHECK(reg.register_grammar("0000000000000004", "root ::= \"a\" \"b\"\n", err));
+        auto e = reg.find("0000000000000004");
+        CHECK(e != nullptr);
+        if (e) {
+            strata::grammar::SlotGrammar live(e);
+            std::string aerr;
+            CHECK(live.advance(0, aerr));                 // "a" decoded live
+            strata::grammar::SlotGrammar seeded(e);       // a continuation pass's fresh clone...
+            CHECK(seeded.advance(0, aerr));               // ...seeded with the same token
+            CHECK(seeded.mask == live.mask);
+            CHECK(live.advance(1, aerr));                 // "b" after "a"
+            CHECK(seeded.advance(1, aerr));
+            CHECK(seeded.mask == live.mask);
+            strata::grammar::SlotGrammar fresh(e);
+            CHECK(!fresh.advance(1, aerr));               // "b" at the root does not fit: refused
+        }
+    }
     if (failures) {
         std::printf("%d registry test(s) FAILED\n", failures);
         return 1;
