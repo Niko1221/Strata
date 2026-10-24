@@ -140,6 +140,13 @@ and i-quant blocks (Q6_K, IQ4_XS, Q4_K, IQ3_S, ...) one int at a time. Two chang
   sm_61, and on a card with `__dp4a` the Q8_0 kernel's dot is the hardware instruction (`tools/q8_sm60_check.cu`
   passes on an RTX 3090 Ti); numbers from a 6.1 card with `STRATA_Q8_SM60=1` or `STRATA_IQ_STAGE_TABLES=1` would
   show whether either helps there.
+- **Opt-in `STRATA_PATTN_SM60=1`** (prompt path, int8 K/V): below sm_70 the prompt reads each QSA layer's attention
+  through the decode kernels, 32 queries a call, with 817 KB of partials a query and a merge kernel. The switch runs a
+  score kernel and a value kernel that merges as it folds (`src/kernels/cuda/qsa_pattn.cu`) in the same scratch, bit for
+  bit the decode kernels' output. On one GP100 die a 1,536-query chunk's attention takes 43.3 -> 30.8 ms per QSA layer
+  at 26K context (-29%, -31% against `STRATA_ATTN_MERGE_V2=1`; the same at 88K and 115K); on four dies prompt reads of 8K-150K tokens took 2-3% less time with
+  identical replies (another revision, see the PR). `pattn_bench` (`-DSTRATA_PATTN_BENCH=ON`) replays a `STRATA_QSA_DUMP` file and checks the bytes.
+  Measured on GP100 only; it also turns on for compute capability 6.1, where it was not measured.
 
 Measured on a PH402 SKU 200 (two boards, four GP100 dies of 48 SMs and 32 GB HBM2), application clocks locked at
 1050 MHz, Windows 11, driver 581.80 (TCC), CUDA 12.9, engine 0.1.40.2; Flash-Next IQ3_XXS, 32K, `--layer-split 12,24,36
