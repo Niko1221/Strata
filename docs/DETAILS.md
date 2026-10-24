@@ -1321,7 +1321,7 @@ moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
 retention for diagnostic comparisons. Parked snapshots are not
-persisted across restarts; the session files below are.
+persisted across restarts unless the server is started with `STRATA_PARK_DIR` (below); the session files below are.
 
 **Session files (disk).** The conversation the engine holds can be saved to a file and restored later, also after a
 restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
@@ -1454,6 +1454,34 @@ more than 16 MiB apart. A symbolic link, a second hard link and a file with one 
 (the last also while a restored conversation was live, which then went on to answer); a fresh engine with another
 `--rope-freq-base` refused the file and then answered; a save with a RAM floor above the machine's RAM was refused as
 `memory` before any copy, the file it would have replaced untouched. The times are single runs.
+
+**Parked conversations over a restart (opt-in, `STRATA_PARK_DIR`).** With the conversation cache on, a server started
+with the environment variable `STRATA_PARK_DIR=<folder>` writes the parked conversations (the live one parked first) to
+that folder when it stops gracefully - Ctrl+C, SIGTERM, `POST /unload`, the idle unload - and the next start puts them
+back in the parked list before the first request. A long conversation's next turn then continues from its saved state
+instead of reading the whole prompt again. It works with `--layer-split`: each stage of a conversation is its own
+session file (the format and identity checks above), and a `park.manifest` written last lists them. Underneath, the
+server sends the engine `PARKSAVE <folder>` and `PARKLOAD <folder>` between requests, answered like `SAVE` / `RESTORE`
+with a conversation count in place of the tokens.
+
+Every graceful stop writes what changed since the last one, which can be several GB per long conversation (5.33 GB for
+260K tokens below), so on an SSD it spends write endurance for as long as it is on. To keep that small, a save skips a
+conversation whose files are already in the folder and that has not run since, conversations shorter than
+`STRATA_PARK_MIN_TOKENS` tokens (default 16384: a short one is cheaper to read again than to keep) and ones parked more
+than `STRATA_PARK_MAX_AGE_H` hours ago (default 48, 0 = no limit; a start does not load those either), and it writes
+only two checkpoints of each: the deepest, where the next turn resumes, and the shallowest, the system prompt's root.
+The files are bound to the model, to the engine file (its size and modification time) and to every `STRATA_*` variable
+except `STRATA_PARK_*`: after an engine update or a changed switch nothing is loaded and the next stop replaces them. A
+save that does not finish (a forced kill, a crash, a power cut) leaves the previous manifest and its files. A request
+still running when the server is stopped is not waited for by the save (it is skipped then). Not used with
+`--peer-device`, `--batch` (`"parallel"`) or replicas. Unset (the default), nothing is written or read; delete the
+folder to free its space.
+
+Measured on four GP100 dies (Swift 1.5 IQ3_XXS GGUF, `--layer-split 12,24,36`, NVMe SSD, Windows): a 260,834-token
+conversation that takes 296 s to read from zero was saved in 3.6 s (5.33 GB) and loaded in 3.2 s at the next start; its
+next turn took 7.2 s (260,834 tokens reused, 893 read). A 30K conversation's turn after two restarts reused 34,838
+tokens and its reply was identical to the one without a restart. A stop with no request since the last load wrote
+nothing. Single runs, engine 0.1.41 with this change.
 
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats
