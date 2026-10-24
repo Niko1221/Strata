@@ -155,6 +155,11 @@ struct Split {
                  {qsa[1].idx_tail, z1.tail, (uint8_t) (salt + 3)}, {qsa[1].idx_dead, z1.dead, (uint8_t) (salt + 3)},
                  {qsa[1].idx_block_pos, z1.block_pos, (uint8_t) (salt + 3)}})
             cuda_check(cudaMemset(p, s, n));
+        // A real indexer maintains its spare pooled row (the one at ids/4) as a copy of idx_dead; the K/V
+        // capture records that row and conversation_checkpoint_restore re-establishes it from the checkpoint.
+        for (auto& st : qsa)
+            cuda_check(cudaMemcpy(st.idx_pooled + (size_t) (kTokens / 4) * (size_t) g.idx_key_dim, st.idx_dead,
+                                  (size_t) g.idx_key_dim * sizeof(float), cudaMemcpyDeviceToDevice));
     }
 };
 
@@ -302,6 +307,103 @@ void split_battery(const std::vector<bool>& draft_of) {
         SavedConversation none; size_t n = 0; std::string rerr;
         check(!session_file_read(path, id, none, n, rerr, single), "the split file is refused by a single-carve runtime");
         check(none.stage_table.empty() && none.kv.empty(), "refusal left the caller's image untouched");
+
+        // ---- per-stage validate and restore.
+        std::vector<SessionState*> carves{&sp.ss0, &sp.ss1};
+        check(conversation_snapshot_validate_split(back, carves, draft_of, &sp.draft.state, sp.g, sp.err),
+              "validate_split accepts the image of its own runtime");
+
+        {   // A stage table that differs from the runtime's carves is another split: refused.
+            SavedConversation wrong = back; wrong.stage_table[0].qsa_alloc = 2; std::string werr;
+            check(!conversation_snapshot_validate_split(wrong, carves, draft_of, &sp.draft.state, sp.g, werr),
+                  "a foreign stage table is refused");
+        }
+        {   // A missing draft group in a stage that owns it: refused.
+            SavedConversation bad = back;
+            bad.kv.erase(bad.kv.begin() + (draft_of[0] ? 1 : 2));
+            std::string berr;
+            check(!conversation_snapshot_validate_split(bad, carves, draft_of, &sp.draft.state, sp.g, berr),
+                  "a missing draft group is refused");
+        }
+        {   // live.stage_parts must match the stage table exactly.
+            SavedConversation bad = back; std::string berr;
+            bad.live.stage_parts.clear();
+            check(!conversation_snapshot_validate_split(bad, carves, draft_of, &sp.draft.state, sp.g, berr),
+                  "a split image without live stage parts is refused");
+            bad = back; bad.live.stage_parts.push_back(bad.live.stage_parts[0]);
+            check(!conversation_snapshot_validate_split(bad, carves, draft_of, &sp.draft.state, sp.g, berr),
+                  "too many live stage parts are refused");
+        }
+        {   // The same file against a runtime whose stage 1 carves fewer cells than the conversation: extents past
+            // that stage's own caps are typed invalid, before anything transfers.
+            Split narrow; narrow.fill(11); narrow.qsa[1].max_cells = 40;   // the file holds 65 cells
+            std::vector<SessionState*> tight{&narrow.ss0, &narrow.ss1};
+            std::string nerr;
+            check(conversation_snapshot_restore_split(back, tight, draft_of, &narrow.draft.state, narrow.g, nerr)
+                      == ConversationRestore::invalid,
+                  "extents past stage 1's own carve are typed invalid");
+        }
+
+        {   // Tampering: one byte flipped inside stage 1's K/V section (post-read, pre-restore) is an invalid
+            // image, and the refusal happens before any target array is written.
+            Split dst; dst.fill(3);
+            std::vector<SessionState*> fresh{&dst.ss0, &dst.ss1};
+            const size_t stage1_kv = draft_of[0] ? 2 : 1;   // stage 1's layer at its group position
+            ConversationCheckpoint pre0, pre1; pre0.ids = back.live.ids; pre1.ids = back.live.ids;
+            check(conversation_checkpoint_save(pre0, dst.ss0, dst.g, sp.err) &&
+                  conversation_checkpoint_save(pre1, dst.ss1, dst.g, sp.err), "pristine fresh carve state captured");
+            std::vector<ConversationKv> pre_kv(3);
+            check(conversation_kv_save(pre_kv[0], dst.qsa[0], dst.g, kTokens, true, sp.err) &&
+                  conversation_kv_save(pre_kv[1], dst.qsa[1], dst.g, kTokens, true, sp.err) &&
+                  conversation_kv_save(pre_kv[2], dst.draft.state, dst.g, kTokens, false, sp.err),
+                  "pristine fresh pools captured");
+            SavedConversation tampered = back;
+            tampered.kv[stage1_kv].cells ^= (int64_t) 1 << 40;   // a byte flip inside the extents field
+            std::string terr;
+            check(conversation_snapshot_restore_split(tampered, fresh, draft_of, &dst.draft.state, dst.g, terr)
+                      == ConversationRestore::invalid,
+                  "the tampered K/V section is typed invalid");
+            ConversationCheckpoint post0, post1; post0.ids = back.live.ids; post1.ids = back.live.ids;
+            check(conversation_checkpoint_save(post0, dst.ss0, dst.g, sp.err) &&
+                  conversation_checkpoint_save(post1, dst.ss1, dst.g, sp.err), "recaptured after the refusal");
+            check(post0.gdn == pre0.gdn && post0.tails == pre0.tails && post1.gdn == pre1.gdn &&
+                  post1.block_pos == pre1.block_pos, "the refusal wrote no state into either carve");
+            std::vector<ConversationKv> post_kv(3);
+            check(conversation_kv_save(post_kv[0], dst.qsa[0], dst.g, kTokens, true, sp.err) &&
+                  conversation_kv_save(post_kv[1], dst.qsa[1], dst.g, kTokens, true, sp.err) &&
+                  conversation_kv_save(post_kv[2], dst.draft.state, dst.g, kTokens, false, sp.err), "recaptured pools");
+            check(equal_kv(post_kv[0], pre_kv[0]) && equal_kv(post_kv[1], pre_kv[1]) &&
+                  equal_kv(post_kv[2], pre_kv[2]), "the refusal wrote nothing into any pool");
+
+            // The round trip: capture -> write v2 -> read -> validate -> restore into fresh carves -> recaptured
+            // state and pools match the file byte for byte, per stage.
+            check(conversation_snapshot_restore_split(back, fresh, draft_of, &dst.draft.state, dst.g, sp.err)
+                      == ConversationRestore::restored,
+                  "restore_split restored the image into the fresh runtime");
+            ConversationCheckpoint got0, got1; got0.ids = back.live.ids; got1.ids = back.live.ids;
+            check(conversation_checkpoint_save(got0, dst.ss0, dst.g, sp.err) &&
+                  conversation_checkpoint_save(got1, dst.ss1, dst.g, sp.err), "recaptured from the fresh carves");
+            check(got0.gdn == back.live.gdn && got0.ple == back.live.ple && got0.tails == back.live.tails &&
+                  got0.dead == back.live.dead && got0.block_pos == back.live.block_pos,
+                  "stage 0's running state round-trips");
+            const auto& want_part = back.live.stage_parts[0];
+            check(got1.gdn == want_part.gdn && got1.ple == want_part.ple && got1.tails == want_part.tails &&
+                  got1.dead == want_part.dead && got1.block_pos == want_part.block_pos,
+                  "stage 1's part state round-trips");
+            size_t at = 0;
+            for (size_t k = 0; k < fresh.size(); ++k) {
+                ConversationKv after;
+                check(conversation_kv_save(after, dst.qsa[k], dst.g, kTokens, true, sp.err) &&
+                      equal_kv(after, back.kv.at(at)), "each stage's K/V round-trips into its own carve");
+                ++at;
+                if (draft_of[k]) {
+                    ConversationKv draft_after;
+                    check(conversation_kv_save(draft_after, dst.draft.state, dst.g, kTokens, false, sp.err) &&
+                          equal_kv(draft_after, back.kv.at(at)), "the draft layer round-trips at its group end");
+                    ++at;
+                }
+            }
+        }
     }
 
     // (c) chain checkpoints already carrying host stage parts pass through without recapture.
