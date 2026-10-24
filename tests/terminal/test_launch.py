@@ -435,8 +435,8 @@ class SetupArgs(unittest.TestCase):
     def test_a_mac_gets_only_the_options_its_setup_knows(self):
         with mock.patch.object(sys, "platform", "darwin"):
             a = self.runner(data_dir="/d", gpus=[0])
-        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no", "--data-dir", "/d",
-                             "--set-default-data-dir"])
+        self.assertEqual(a, ["--yes", "--no-start", "--family", "qwen", "--model", "IQ3_XXS", "--context", "32768", "--vision", "no",
+                             "--experimental-speed-projection", "off", "--data-dir", "/d", "--set-default-data-dir"])
 
 
 class AdoptRules(unittest.TestCase):

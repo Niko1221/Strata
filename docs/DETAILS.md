@@ -2229,7 +2229,8 @@ so measure it on your own prompts; the Monitor marks every request ESP or stock.
 
 **Turning it on (at setup).** `START-HERE.bat --setup` asks "Turn on the experimental speed projection?" (default:
 no), or pass `--experimental-speed-projection on` (`off`, or a path to another vector GGUF). Only for the original
-Qwen3.8-Flash-Next, not Swift 1.5. It writes these engine flags (llama.cpp's) into `strata-<model>.json`:
+Qwen3.8-Flash-Next, not Swift 1.5. On a Mac, `./setup.sh --experimental-speed-projection on` (the Metal engine applies it too:
+[MAC.md](MAC.md#limits-this-version)). It writes these engine flags (llama.cpp's) into `strata-<model>.json`:
 
 ```
 --control-vector-scaled <Strata>\data\experimental-speed-projection\Qwen3.8-Flash-Next-experimental-speed-projection.gguf:1.0

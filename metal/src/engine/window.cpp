@@ -25,6 +25,7 @@
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cvec.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -49,6 +50,11 @@
 namespace strata::gpu { uint64_t purge_device_allocations(size_t min_bytes); }   // metal/src/gpu/runtime.cpp
 
 namespace strata::metal_engine {
+
+// the control vector's host tables (cvec.cpp); the window keeps its own copies on the device
+const std::vector<float>& cvec_dir_host();
+const std::vector<float>& cvec_s_host();
+void cvec_bind_flag(int* dev);
 
 namespace {
 
@@ -220,6 +226,16 @@ private:
         return (size_t) b;
     }
     int lib_ = -1, lgdn_ = -1, lqsa_ = -1, lsmp_ = -1, lple_ = -1;
+    // ---- the control vector (--control-vector-scaled; msl/cvec.metal): after a steered layer's FFN write its kernel
+    // applies the pending write and the vector, so the next layer's read does not apply the write again
+    int lcv_ = -1;
+    mtl::Buffer cvdir_, cvs_, cvon_;
+    bool cv_ready();   // the tables on the device (once, after the loader's cvec_upload); false without a vector
+    bool cv_covers(int l) { return strata::kernels::cvec().covers(l) && cv_ready(); }
+    // layer l's first read applies the pending write: not layer 0's, not layer 1's after the PLE (applied before it),
+    // not after a steered layer (the vector's kernel applied it)
+    bool pend_write(int l) { return l > 0 && !(l == 1 && ple_on_) && !cv_covers(l - 1); }
+    mtl::Dispatch cv_dispatch(const mtl::Buffer& R, const mtl::Buffer& bo, const mtl::Buffer& inj, int l, int ntok);
     std::map<std::string, mtl::Pipeline> pcache_;
     bool nb_ = false;
     int max_t_ = 1;
@@ -698,6 +714,44 @@ void Window::xprep(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& x, const A
 }
 
 // the hyper-connection read (gr.metal, 3 dispatches): the previous sublayer's write folded in when `apply`
+bool Window::cv_ready() {
+    if (lcv_ >= 0) return true;
+    const strata::kernels::Cvec& v = strata::kernels::cvec();
+    if (!v.loaded() || cx_ == nullptr) return false;
+    if (v.n_embd != N || v.hc != HC) {
+        std::fprintf(stderr, "strata metal: the control vector is for n_embd %lld x %lld streams, the model has %d x %d\n",
+                     (long long) v.n_embd, (long long) v.hc, N, HC);
+        std::exit(2);
+    }
+    const std::vector<float>& dir = cvec_dir_host();
+    const std::vector<float>& sc = cvec_s_host();
+    cvdir_ = cx_->alloc(dir.size() * 4);
+    cvs_ = cx_->alloc(sc.size() * 4);
+    cvon_ = cx_->alloc(16);
+    std::memcpy(cvdir_.ptr, dir.data(), dir.size() * 4);
+    std::memcpy(cvs_.ptr, sc.data(), sc.size() * 4);
+    cvec_bind_flag(cvon_.as<int>());   // the per-request switch writes it from now on (its current value first)
+    lcv_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) +
+                         "/cvec.metal"}, "#define NO_GGML_COMMON 1\n");
+    int steered = 0;
+    for (bool b : v.steered) steered += b ? 1 : 0;
+    std::fprintf(stderr, "strata metal: control vector (%s) after %d layers' FFN write, on the GPU\n", v.mode == 0 ? "project" : "add",
+                 steered);
+    return true;
+}
+
+mtl::Dispatch Window::cv_dispatch(const mtl::Buffer& R, const mtl::Buffer& bo, const mtl::Buffer& inj, int l, int ntok) {
+    struct CvecArgs { uint32_t n_embd, hc, layer, write, mode; } a{N, HC, (uint32_t) l, 1u, (uint32_t) strata::kernels::cvec().mode};
+    mtl::Dispatch d;
+    d.p = P(lcv_, "cvec_apply", {}, "cvec_apply");
+    d.args = {mtl::Arg::B(R), mtl::Arg::B(bo), mtl::Arg::B(inj), mtl::Arg::B(cvdir_), mtl::Arg::B(cvs_), mtl::Arg::B(cvon_),
+              mtl::Arg::V(a)};
+    d.grid[0] = HC;
+    d.grid[1] = ntok;
+    d.tg[0] = 256;
+    return d;
+}
+
 void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, bool apply, const Act& out, bool final_,
                      int ntok) {
     const gguf::Tensor& tn = T(pre + "_norm.weight");
@@ -777,7 +831,7 @@ void Window::had_rows_ind(std::vector<mtl::Dispatch>& ds, int lib, const std::st
 void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0) {
     const std::string b = "blk." + std::to_string(l) + ".";
     // ---- the mixer: layer 1's read after the PLE is not applied again (its pending write was applied before it)
-    gr_read(ds, b + "hc_attn", l > 0 && !(l == 1 && ple_on_), XA_, false, ntok);
+    gr_read(ds, b + "hc_attn", pend_write(l), XA_, false, ntok);
     if (l % 4 != 3) {
         const int gi = l - l / 4;
         // a one-token window commits in the step; a longer one leaves the state and commit() folds the kept prefix
@@ -1010,6 +1064,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         d.tg[0] = 256;
         push(ds, d);
     }
+    if (cv_covers(l)) push(ds, cv_dispatch(R_, bo_, inj_[cur_inj_], l, ntok));   // the pending write is inj_[cur_inj_]'s
 }
 
 namespace {
@@ -1193,7 +1248,7 @@ bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t
     }
     for (int l = 1; l < 48; ++l) layer(ds, l, Tn, pos0);
     // ---- the final mixer and the head
-    gr_read(ds, "output_hc", true, XA_, true, Tn);
+    gr_read(ds, "output_hc", !cv_covers(47), XA_, true, Tn);
     if (head) gemv(ds, T("output.weight"), XA_, lm_, (size_t) n_vocab_, Tn);
     if (head) {
         ArgArgs a{(uint32_t) n_vocab_, 120};
@@ -2340,7 +2395,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     (void) MB;
     for (int l = 0; l < 48; ++l) {
         const std::string b = "blk." + std::to_string(l) + ".";
-        hc_read(b + "hc_attn", l > 0 && !(l == 1 && ple_on_));
+        hc_read(b + "hc_attn", pend_write(l));
         if (l % 4 != 3) {
             const int gi = l - l / 4;
             dq(TN(b + "attn_qkv.weight"), p.Wqkv);
@@ -2516,6 +2571,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         const uint32_t oa[2] = {(uint32_t) T, N};
         D(PP(p.lib, "moe_out"), {mtl::Arg::B(p.yr), mtl::Arg::B(p.ys), mtl::Arg::B(p.sgv), mtl::Arg::B(p.bo), mtl::Arg::V(oa)},
           (T * N + 255) / 256, 1, 256);
+        if (cv_covers(l)) push(ds, cv_dispatch(p.R, p.bo, p.inj[ci], l, T));
         if (l == 0 && ple_on_) {
             // layer 0's FFN write applied to R, then the PLE block (as the window, for T rows)
             const gguf::Tensor& tn = TN("blk.1.hc_attn_norm.weight");
@@ -2540,7 +2596,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     // the last layer's write applied to R (the draft layer's K/V read the final residual rows)
     {
         const gguf::Tensor& tn = TN("output_hc_norm.weight");
-        GrArgs a{N, HC, LR, (uint32_t) T, 1u, eps_};
+        GrArgs a{N, HC, LR, (uint32_t) T, cv_covers(47) ? 0u : 1u, eps_};
         D(P(lib_, "gr_norm", {}, "gr_norm"), {mtl::Arg::B(p.R), mtl::Arg::B(p.bo), mtl::Arg::B(p.inj[ci]), mtl::Arg::B(W_, tn.offset),
                                               mtl::Arg::B(p.YE), mtl::Arg::V(a)}, HC, T, 256);
     }

@@ -6385,6 +6385,37 @@ def own_path_config(cfg: dict) -> bool:
     return cfg.get("arch") in {d["arch"] for d in OWN_PATH_FAMILIES.values()}
 
 
+def esp_choose(choice, family: str, model: str, yes: bool):
+    """EXPERIMENTAL: the experimental-speed-projection control vector (data/experimental-speed-projection), off unless
+    chosen here (--experimental-speed-projection on|off|GGUF, or the question); with it loaded, the web app and the API
+    switch it off per request.  The vector's path, or None.  The NVIDIA, AMD, Intel and Metal engines all apply it."""
+    esp = None
+    esp_choice = (choice or "").strip()
+    if family in ("qwen", "coder"):                   # the Coder: the same model's residual stream
+        if not esp_choice:
+            say()
+            say("  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).")
+            say("  It changes how the model answers: its package describes it as a refusal-direction projection (the")
+            say("  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off")
+            say("  per chat. Details: data/experimental-speed-projection/README.md")
+            esp_choice = "on" if ask("Turn on the experimental speed projection?", ["y", "n"], "n", yes) == "y" else "off"
+        if esp_choice.lower() not in ("off", "no", "n", "0"):
+            esp = ESP_VECTOR if esp_choice.lower() in ("on", "yes", "y", "1") else Path(esp_choice).expanduser().resolve()
+            if not esp.is_file():
+                fail(f"the experimental speed projection's vector is missing: {esp}")
+        ok("experimental speed projection: " + ("ON (experimental)" if esp else "off"))
+    elif esp_choice.lower() not in ("", "off", "no", "n", "0"):
+        warn("the experimental speed projection is made for the original Qwen3.8-Flash-Next, not Swift 1.5: left off"
+             if family == "swift" else f"the experimental speed projection is not tested with {model}: left off")
+    return esp
+
+
+def esp_engine_args(esp: Path) -> list:
+    """The speed projection's engine options: the package's profile, with llama.cpp's flags (the engine takes the same ones)."""
+    return ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
+            "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+
+
 def choices_from_config(cfg_path: Path) -> dict:
     """The setup answers a config was written with (family, size, context, KV, images, projection, network)."""
     cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
@@ -8382,6 +8413,10 @@ def mac_control_setup(a) -> int:
     port = a.port or 8080
     args = MF.engine_args(pack, [files[0], files[0]] if family == "gyro" else files, rt, ctx, stream, ram,
                           ROOT / "data" / "expert-profile.bin")      # Gyro: one file, the model and its n-gram table
+    # the app asks nothing here: off unless --experimental-speed-projection is given
+    esp = esp_choose(a.experimental_speed_projection, family, model, True) if a.experimental_speed_projection else None
+    if esp is not None:
+        args += esp_engine_args(esp)
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}
@@ -9174,26 +9209,7 @@ def main() -> int:
             if share < 0.6:
                 warn("most of the experts are read from the SSD while it answers: expect it to be much slower than "
                      "with enough RAM (a faster SSD and a smaller size help)")
-    # EXPERIMENTAL: the experimental-speed-projection control vector (data/experimental-speed-projection), off unless
-    # chosen here; with it loaded, the web app and the API switch it off per request
-    esp = None
-    esp_choice = (a.experimental_speed_projection or "").strip()
-    if family in ("qwen", "coder"):                   # the Coder: the same model's residual stream
-        if not esp_choice:
-            say()
-            say("  EXPERIMENTAL - speed projection: a small control vector applied while the model runs (layers 4-44).")
-            say("  It changes how the model answers: its package describes it as a refusal-direction projection (the")
-            say("  model declines far fewer requests). Off unless you choose it; when on, the web app can switch it off")
-            say("  per chat. Details: data/experimental-speed-projection/README.md")
-            esp_choice = "on" if ask("Turn on the experimental speed projection?", ["y", "n"], "n", a.yes) == "y" else "off"
-        if esp_choice.lower() not in ("off", "no", "n", "0"):
-            esp = ESP_VECTOR if esp_choice.lower() in ("on", "yes", "y", "1") else Path(esp_choice).expanduser().resolve()
-            if not esp.is_file():
-                fail(f"the experimental speed projection's vector is missing: {esp}")
-        ok("experimental speed projection: " + ("ON (experimental)" if esp else "off"))
-    elif esp_choice.lower() not in ("", "off", "no", "n", "0"):
-        warn("the experimental speed projection is made for the original Qwen3.8-Flash-Next, not Swift 1.5: left off"
-             if family == "swift" else f"the experimental speed projection is not tested with {model}: left off")
+    esp = esp_choose(a.experimental_speed_projection, family, model, a.yes)
     ready = bool(fam.get("ready"))                     # NVFP4: ready-made packs (NVFP4_REPOS), no GGUF shards
     if ready:
         models_dir = Path(a.models_dir)
@@ -9591,9 +9607,7 @@ def main() -> int:
             if w:
                 warn(w)                                   # #1445: a warning only, never a refusal
     if esp is not None:
-        # the package's profile, with llama.cpp's flags (the engine takes the same ones)
-        args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
-                 "--cvec-mode", "project", "--cvec-dir", "per-layer"]
+        args += esp_engine_args(esp)
     cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
