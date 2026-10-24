@@ -168,8 +168,9 @@ enum class ConversationRestore { restored, invalid, transfer_failed };
 // groups are sliced by the stage table / draft_of, every stage is validated over its own carve before anything is
 // transferred (the same validate-then-transfer-once envelope as the single-session functions), and the main stage
 // restores first, mirroring the park loop.  A `draft` of nullptr means no stage owns the draft layer; exactly one
-// stage's group ends with it when a draft exists.  `devices` (restore only) is parallel to `sessions`: each transfer
-// quiesces and writes the carve's own device, where the residency refresh kernels launch (park's per-stage rule).
+// stage's group ends with it when a draft exists.  The `devices` table here (restore; the capture sibling above
+// takes its own) is parallel to `sessions`: each transfer quiesces and writes the carve's own device, where the
+// residency refresh kernels launch (park's per-stage rule).
 bool conversation_snapshot_validate_split(const SavedConversation& image, const std::vector<SessionState*>& sessions,
                                           const std::vector<bool>& draft_of, const QsaState* draft,
                                           const ModelGeometry& g, std::string& error);
