@@ -44,6 +44,12 @@ bool copy(void* dst, const void* src, size_t bytes, std::string& error, bool que
 size_t owned_qsa(const SessionState& ss) { return (size_t) std::max<int64_t>(ss.qsa_alloc, 0); }
 const QsaState& owned(const SessionState& ss, size_t j) { return ss.qsa_states[(size_t) ss.qsa_ord0 + j]; }
 
+// The token bound a session's read limits can ever use: at most the caller's max_tokens, never more than the
+// session's own cells.  Shared by the per-stage and whole-session read limits so the clamp is defined once.
+uint64_t read_limit_tokens(uint64_t max_tokens, const SessionState& ss) {
+    return std::min<uint64_t>(max_tokens, (uint64_t) ss.max_cells);
+}
+
 bool image_keys(const std::vector<ConversationImageKey>& images, size_t tokens) {
     int64_t previous = -1;
     for (const auto& image : images) {
@@ -329,7 +335,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -339,42 +345,66 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    // a later stage owns no draft: with draft == nullptr the sources are the session's own layers only
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
+    return true;
+}
+
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
+}
+
+// One stage's read limits from its carve: its layer range, running-state bounds and per-K/V-layer bounds.  It does
+// not touch the top-level max_tokens / max_checkpoints / geometry / max_kv_layers; the caller sets those.  A later
+// stage passes draft == nullptr (it owns no draft layer).
+bool conversation_stage_read_limits(SessionReadLimits::SessionStageLimits& sl, const SessionState& ss,
+                                    const ModelGeometry& g, const QsaState* draft, uint64_t max_tokens,
+                                    std::string& error) {
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error)) return false;
+    if (ss.max_cells < 0) return fail(error, "invalid session cells");
+    const uint64_t tokens = read_limit_tokens(max_tokens, ss);
+    const size_t layers = owned_qsa(ss);
+    if ((owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
+    size_t tails = 0, dead = 0, block_pos = 0;
+    if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
+        !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+    sl.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
+    sl.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
+    const size_t kv_layers = layers + (draft ? 1 : 0);
+    sl.max_kv_bytes.assign(kv_layers, {});
+    for (size_t j = 0; j < layers; ++j) {
+        const auto& st = owned(ss, j);
+        const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
+        if (!conversation_kv_part_sizes(st, g, upto, true, sl.max_kv_bytes[j], error)) return false;
+    }
+    if (draft) {
+        const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft->max_cells, 0));
+        if (!conversation_kv_part_sizes(*draft, g, dupto, false, sl.max_kv_bytes.back(), error)) return false;
+    }
     return true;
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
                                       const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
-    ConversationStateSizes z;
-    if (!conversation_session_sizes(g, ss, z, error)) return false;
-    if (ss.max_cells < 0) return fail(error, "invalid session cells");
-    const uint64_t tokens = std::min<uint64_t>(max_tokens, (uint64_t) ss.max_cells);
-    const size_t layers = owned_qsa(ss);
-    if ((owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
-    size_t tails = 0, dead = 0, block_pos = 0;
-    if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
-        !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
-    l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
-    l.max_kv_layers = layers + 1;
     l.geometry = geometry_key(g);
-    l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
-    l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
-    l.max_kv_bytes.assign(layers + 1, {});
-    for (size_t j = 0; j < layers; ++j) {
-        const auto& st = owned(ss, j);
-        const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
-        if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[j], error)) return false;
-    }
-    const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
-    if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    SessionReadLimits::SessionStageLimits sl;
+    if (!conversation_stage_read_limits(sl, ss, g, &draft, max_tokens, error)) return false;
+    l.max_tokens = read_limit_tokens(max_tokens, ss);
+    l.max_kv_layers = sl.max_kv_bytes.size();   // the QSA layers, then the draft
+    l.layer_range = sl.layer_range;
+    l.max_state_bytes = sl.max_state_bytes;
+    l.max_kv_bytes = std::move(sl.max_kv_bytes);
     limits = std::move(l);
     return true;
 }
