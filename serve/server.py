@@ -80,6 +80,7 @@ from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
+from serve import error_reporting  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -7353,6 +7354,7 @@ class Server(ThreadingHTTPServer):
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], ConnectionError):   # a client that hangs up needs no stack trace
+            error_reporting.capture(sys.exc_info()[1])           # the traceback is printed here and the exception stops; without this the tracker sees nothing
             super().handle_error(request, client_address)
 
     def server_close(self):
@@ -8147,6 +8149,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     split_joined_args(cfg)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
+    if error_reporting.init(cfg):
+        print("error reporting: on - only exceptions that reach the handler boundary; a handler that keeps its exception reports nothing, and the engine reports nothing at all", flush=True)
     attestation_key = os.environ.pop("STRATA_OWNER_ATTEST_KEY", None)
     launch_attestation = None
     if a.owner_fd is not None:

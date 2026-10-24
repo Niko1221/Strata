@@ -9,7 +9,8 @@ you trust can check it. Where Strata does less than you might hope, the page say
 - **Your chats, prompts, files, pictures and models stay on your PC.** They leave only when you choose it: you add an
   outside model service, you open the server to other devices or to the internet, or the agent searches the web or opens a page
   (see [What the agent can do](#what-the-coding-agent-can-do-on-your-pc)).
-- **There is no telemetry.** Strata sends no usage data, no crash reports and no analytics, and has no account to sign in to.
+- **There is no telemetry by default.** Strata sends no usage data, no crash reports and no analytics, and has no account
+  to sign in to. The one exception is the opt-in error reporter: it sends nothing until you name a tracker and set a DSN.
 - **Starting and running a model never downloads anything.** Downloads and updates are separate steps that you start.
 - **The server listens on your PC only.** Reaching it from another device needs an API key.
 - **Once a model is downloaded, Strata runs without internet.** Starting, loading, serving and chatting need no
@@ -22,9 +23,11 @@ you trust can check it. Where Strata does less than you might hope, the page say
 
 ## Does Strata phone home?
 
-No. A search of the app, the Terminal, the engine server and the installers found no analytics library, no crash
-reporter and no code that reports usage anywhere. The app's privacy notes say the same
-(`apps/host/src/components/PrivacyNotes.tsx`: "Strata sends no usage telemetry").
+No, unless you turn on the opt-in error reporter and give it a DSN. A search of the app, the Terminal, the engine server
+and the installers found no analytics library and no code that reports usage. The only thing that can report a failure is
+the tracker you name yourself, and only when you set a DSN and install the extra package. The app's privacy notes say the
+same (`apps/host/src/components/PrivacyNotes.tsx`: "Strata sends no usage telemetry") — that is true for usage, and the
+table below is the opt-in exception for failures.
 
 Some things sound similar and stay on your PC:
 
@@ -53,6 +56,7 @@ Like any download, each connection below shows the other side your IP address an
 | Tailscale, local network | Not Strata's traffic. Strata only reads Tailscale's status and shows the address | Only if you choose that access in `strata launch` |
 | An image link in an API request | The address in the link | Only when a program sends your server a request with an `http(s)` image link. `--offline` refuses it |
 | Remote tool servers (MCP) | The address you put in the run config | Only when you add one |
+| Error reporting (opt-in) | The tracker named by `STRATA_GLITCHTIP_DSN` or by `error_reporting.dsn` in the run config | Only when you set a DSN **and** `sentry-sdk` is installed. With no DSN nothing is sent, and the extra package is not installed by setup. A handler that keeps its exception sends nothing: only failures that reach the handler boundary are reported. No request content and no personal data is sent (`send_default_pii` stays off) |
 | A website you open in the app's preview pane | That website | Only when you type an address into **Open a website** |
 | Share to X or Reddit (Monitor screenshot) | Your browser opens x.com or reddit.com with a caption and a link to the Strata page | Only when you click it. The screenshot is saved to your disk, not uploaded |
 
