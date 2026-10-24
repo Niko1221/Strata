@@ -1,10 +1,16 @@
-// batch_read.hpp: the pieces of a --batch prompt read, where the concurrent read runs (synthetic: no model, no GPU).
+// batch_read.hpp: the pieces of a --batch prompt read, where the concurrent read runs; prompt_uploads.hpp: what its
+// pinned slots are grown to before a read (synthetic: no model, no GPU).
+#include "strata/prefill/prompt_uploads.hpp"
 #include "strata/program/batch_read.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
 
+using strata::prefill::kPictureRunBytes;
+using strata::prefill::picture_run_rows;
+using strata::prefill::prompt_upload_bytes;
 using strata::program::batch_read_piece;
 using strata::program::concurrent_read_off;
 using strata::program::ConcurrentReadSetup;
@@ -80,6 +86,44 @@ int main() {
     CHECK(!piped_read_lead_in(true, true, -1.0, 400.0));
     CHECK(!piped_read_lead_in(false, true, 0.0, 400.0));
     CHECK(!piped_read_lead_in(true, false, 0.0, 400.0));
+    // prompt_upload_bytes: what the concurrent read grows the prompt path's pinned slots to before a read
+    // (the model's K = 10 routed ids a token, rows of N = 2560 floats)
+    const int64_t K = 10, N = 2560, row = N * 4;
+    // text: the routing tables, or the PLE rows when they could not be pinned - the sizes before pictures were read so
+    for (int64_t T : {1, 512, 4096, 16384}) {
+        CHECK(prompt_upload_bytes(T, K, N, false, false) == T * K * 4);
+        CHECK(prompt_upload_bytes(T, K, N, true, false) == T * N * 4);
+    }
+    // a picture's rows go up in runs of at most 4 MiB: 409 rows of 10,240 bytes
+    CHECK(picture_run_rows(row) == 409);
+    CHECK(prompt_upload_bytes(16384, K, N, false, true) == 409 * row);
+    CHECK(prompt_upload_bytes(100, K, N, false, true) == 100 * row);       // a chunk holds at most T of them
+    CHECK(prompt_upload_bytes(16384, K, N, true, true) == 16384 * row);    // the PLE rows are larger still
+    CHECK(picture_run_rows(kPictureRunBytes + 1) == 1);                    // a row wider than a run: one at a time
+    CHECK(picture_run_rows(0) == kPictureRunBytes);
+    // the default path: the gather's run is the one it had before this header (prefill.cpp), for every row width
+    // up to 8 MiB
+    for (int64_t rb = 1; rb <= (int64_t(8) << 20); rb += rb < 65536 ? 1 : 4093)
+        if (picture_run_rows(rb) != std::max<int64_t>(1, (4 << 20) / rb)) { CHECK(false); break; }
+    // every upload the picture rows make fits the slots grown for them: the prompt path's gather (prefill.cpp),
+    // over chunks with picture rows at different places
+    for (int64_t T : {1, 7, 408, 409, 410, 1000, 4096, 16384}) {
+        const int64_t reserved = prompt_upload_bytes(T, K, N, false, true), run_max = picture_run_rows(row);
+        for (int layout = 0; layout < 4; ++layout) {
+            auto pic = [&](int64_t t) {   // all picture rows; every other; a picture from the middle on; one 409-row run in
+                return layout == 0 ? true : layout == 1 ? t % 2 == 0 : layout == 2 ? t >= T / 2 : (t >= 3 && t < 412);
+            };
+            int64_t largest = 0;
+            for (int64_t t = 0; t < T;) {
+                if (!pic(t)) { ++t; continue; }
+                int64_t t1 = t + 1;
+                while (t1 < T && t1 - t < run_max && pic(t1)) ++t1;
+                largest = std::max(largest, (t1 - t) * row);
+                t = t1;
+            }
+            CHECK(largest <= reserved);
+        }
+    }
     if (fails == 0) std::printf("batch_read_test: ok\n");
     return fails == 0 ? 0 : 1;
 }
