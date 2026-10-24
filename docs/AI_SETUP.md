@@ -55,6 +55,7 @@ To check by hand:
 | AMD GPU | `Get-CimInstance Win32_VideoController \| Select-Object Name, AdapterRAM` (AdapterRAM is capped at 4 GB; trust the model name) | `lspci \| grep -i -E 'vga\|display'`; VRAM: `cat /sys/class/drm/card*/device/mem_info_vram_total` (bytes); `rocm-smi` only if ROCm is installed | - |
 | RAM | `(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB` | `free -g` | `sysctl -n hw.memsize` (bytes) |
 | Free disk | `Get-PSDrive -PSProvider FileSystem` | `df -h .` | `df -h ~` |
+| GPU's NUMA node (Linux) | does not apply | `cat /sys/bus/pci/devices/<BDF>/numa_node` (`<BDF>` is the one `nvidia-smi -q` or `lspci` prints); on a two-socket PC, give that number to `--numa-hot-node` together with `--resident-budget-gib` (without a budget the flag is off and nothing is placed) ([DETAILS.md](DETAILS.md#numa-placement---numa-hot-node-linux-dual-socket-off-by-default)) | - |
 
 If the PC does not meet them, say which part is missing and stop.
 

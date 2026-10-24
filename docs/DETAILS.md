@@ -2212,6 +2212,24 @@ placement started`.
 
 ---
 
+## NUMA placement: `--numa-hot-node` (Linux, dual-socket, off by default)
+
+On a two-socket PC the GPU hangs off one NUMA node, and `--numa-hot-node <n|off>` names it (`0` is a node number;
+only `off`, or no flag, is off): the pools that belong beside the GPU - the expert RAM complement, the K/V streaming
+pool, the host embedding, the doorbell and the weight staging buffers - are bound to that node with `mbind` and
+`set_mempolicy`, and a conversation cache's parked segments go to the other one. It needs `--resident-budget-gib`:
+without a budget there is no upper bound to size the complement's claim from, so `--numa-hot-node` is turned off and
+none of those pools or parked segments is placed. The claim runs before the expert cache's fill, so it keeps the
+files' cached pages: the on-demand drop in `pin_cache_complement` - the pack and MTP pages `set_extra_drop_files`
+lists, ~2.2 GiB measured - does not run on this path. It is opt-in, and off (the default)
+is byte-identical to before; a host with a single node still runs the claim and the binds, though there is no second
+node for the placement to differ. On one Tesla V100-SXM2-32GB box with two sockets the five pools stayed on the
+GPU's node (unchanged) and the parked segments landed 89% on node 0. Find the node with
+`cat /sys/bus/pci/devices/<GPU-BDF>/numa_node` (the BDF is the one `nvidia-smi -q` prints); it is a fact about the
+PC, so it is read once and written into the configuration.
+
+---
+
 ## Experimental speed projection (EXPERIMENTAL, off by default)
 
 **This is an experiment, not a finished feature.** It ships with Strata but stays off unless you turn it on.

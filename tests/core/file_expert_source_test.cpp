@@ -1,4 +1,5 @@
 #include "strata/core/expert_source.hpp"
+#include "strata/core/numa_policy.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -39,6 +40,9 @@
 #define PSAPI_VERSION 2
 #include <windows.h>
 #include <psapi.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -48,6 +52,15 @@ namespace {
 void require(bool ok, const std::string& message) {
     if (!ok) throw std::runtime_error(message);
 }
+
+#if defined(__linux__) && defined(SYS_get_mempolicy)
+/// The NUMA node the page at `p` is allocated on (get_mempolicy, MPOL_F_NODE|MPOL_F_ADDR); -1 when unanswerable.
+int page_node_of(const void* p) {
+    int node = -1;
+    if (syscall(SYS_get_mempolicy, &node, nullptr, 0, p, 1 | 2 /*MPOL_F_NODE|MPOL_F_ADDR*/) != 0) return -1;
+    return node;
+}
+#endif
 
 struct TempDirectory {
     fs::path path;
@@ -444,10 +457,165 @@ void test_numa_slice_ranges() {
     require(!(b[0].first <= 870400 && 870400 < b[0].second), "the gate/up boundary page was in slice 1's gate range");
 }
 
+// S2/S3: the two node accessors every placement site tests BEFORE it does anything.  They are process-wide and -1
+// is "off" - the state a run that never passed --numa-hot-node leaves them in, and the reason such a run takes no
+// placement branch and issues not one syscall.
+void test_numa_node_accessors() {
+    using namespace strata::core::detail;
+    require(numa_hot_node() == -1 && numa_cold_node() == -1, "-1 (off) is the default of both node accessors");
+    set_numa_hot_node(1);
+    set_numa_cold_node(0);
+    require(numa_hot_node() == 1 && numa_cold_node() == 0, "a node set is read back from the same accessor");
+    set_numa_hot_node(-1);
+    set_numa_cold_node(-1);
+    require(numa_hot_node() == -1 && numa_cold_node() == -1, "off can be set back");
+    std::cout << "numa node accessors: off by default, round-trip: PASS\n";
+}
+
+// S1: the claim is judged against the target node's OWN free memory before a page is mapped.  These are the three
+// pieces that judgment is made of - the node meminfo parse, the fit arithmetic, and the node id enumeration (the
+// entries are a set, not the 0..count-1 range their count would suggest) - and all three are GPU-free and allocate
+// nothing.
+void test_numa_node_guard() {
+    using namespace strata::core::detail;
+    constexpr uint64_t GiB = 1ull << 30;
+    uint64_t bytes = 0;
+    require(numa_node_memfree_from_text("Node 1 MemFree:         52428800 kB\n", bytes) && bytes == 52428800ull * 1024,
+            "a node's MemFree line was misread");
+    require(numa_node_memfree_from_text("Node 0 MemTotal: 59000000 kB\nNode 0 MemFree: 4096 kB\n", bytes) &&
+                bytes == 4096ull * 1024, "a MemFree line after other lines was misread");
+    require(!numa_node_memfree_from_text("MemFree: 1284096 kB\n", bytes),
+            "a /proc/meminfo line was read as a node's own MemFree");
+    require(!numa_node_memfree_from_text("Node 1 MemUsed: 7 kB\n", bytes), "a text with no MemFree line was read");
+    // the scaling bound: the largest reading that fits is taken, one past it is refused rather than wrapped
+    require(numa_node_memfree_from_text("Node 1 MemFree:         18014398509481983 kB\n", bytes) &&
+                bytes == 18014398509481983ull * 1024, "the largest MemFree reading that fits was refused");
+    require(!numa_node_memfree_from_text("Node 1 MemFree:         18446744073709551615 kB\n", bytes),
+            "a MemFree reading too large to scale was accepted");
+    require(node_claim_fits(10 * GiB, 6 * GiB, 4 * GiB), "a claim that fits with the reserve was refused");
+    require(!node_claim_fits(10 * GiB, 6 * GiB, 4 * GiB + 1), "a claim eating into the reserve was accepted");
+    require(node_claim_fits(GiB, GiB, 0), "a claim equal to the free memory and no reserve was refused");
+    require(!node_claim_fits(10 * GiB, 11 * GiB, 0), "a claim past the node's free memory was accepted");
+    require(!node_claim_fits(0, 1, 0) && !node_claim_fits(2 * GiB, 2 * GiB, 1), "an empty node took a claim");
+    require(!node_claim_fits(std::numeric_limits<uint64_t>::max(), std::numeric_limits<uint64_t>::max() - 1, 2),
+            "a claim that would overflow was accepted");
+    // the enumeration: the ids ARE the sysfs entries, ascending and distinct, and readable one by one
+    const std::vector<int> ids = numa_node_ids();
+    require((int) ids.size() == numa_node_count(), "the node count disagrees with the node ids");
+    require(std::is_sorted(ids.begin(), ids.end()) && std::adjacent_find(ids.begin(), ids.end()) == ids.end(),
+            "the node ids are not strictly ascending");
+    for (int id : ids)
+        require(fs::is_directory("/sys/devices/system/node/node" + std::to_string(id)),
+                "an enumerated node has no sysfs entry");
+    if (!ids.empty()) {
+        require(numa_node_memfree_bytes(ids.front(), bytes), "the first node's own MemFree could not be read");
+        require(!numa_node_memfree_bytes(ids.back() + 1, bytes), "a node that does not exist answered");
+    } else {
+        require(!numa_node_memfree_bytes(0, bytes), "a host with no node sysfs answered for node 0");
+    }
+    std::cout << "numa node guard: meminfo parse, fit arithmetic and node ids: PASS\n";
+}
+
+// S1 (--numa-hot-node): the resident complement's pages are claimed on one node BEFORE the startup reads - mmap,
+// mbind(MPOL_BIND) and the pages faulted in while the node is still empty - and `pin_cache_complement` registers
+// and locks that arena instead of allocating one.  Only the claim itself is testable without a GPU (the
+// complement's use of it needs a real ExpertCache: the --rotation-gpu path).
+void test_numa_hot_node() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+#if defined(__linux__) && defined(SYS_mbind) && defined(SYS_get_mempolicy)
+    const std::vector<int> node_ids = strata::core::detail::numa_node_ids();
+    require(!node_ids.empty(), "a host with /sys/devices/system/node/node* has at least one node");
+    TempDirectory dir;
+    std::string err;
+    require(expert_layout_load(dir.path.string(), 1, 2, err), err);
+    create_pack(dir.path, 2 * BLOB);
+    FileExpertSource source;
+    require(!source.reserve_resident_arena(32ull << 20, 0, node_ids.front(), err) && !err.empty(),
+            "a claim before the mapped experts were opened was accepted");
+    require(source.open(dir.path.string(), 1, 2, err), err);
+    require(!source.reserve_resident_arena(0, 0, node_ids.front(), err),
+            "a claim with no resident budget was accepted");
+    constexpr uint64_t sample_physical = 1000;
+    require(detail::resident_budget_physical_bytes(sample_physical, source.reserved_arena() != nullptr,
+                                                    source.reserved_arena_bytes()) == sample_physical,
+            "an inactive arena received resident-budget credit");
+    if (node_ids.size() < 2) {
+        std::cout << "file_expert_source_test: --numa-hot-node placement skipped (one NUMA node here)\n";
+        source.close();
+        return;
+    }
+    const uint64_t want = 32ull << 20;
+    const int hot = node_ids[1], first = node_ids.front();
+    // S1's own guard turns down a node whose OWN MemFree cannot carry the claim plus the reserve kept free (0
+    // here).  A host whose second node is that tight is a low-memory host, not a regression: skip the placement
+    // checks rather than fail it.
+    uint64_t hot_free = 0;
+    if (!detail::numa_node_memfree_bytes(hot, hot_free) || !detail::node_claim_fits(hot_free, want, 0)) {
+        std::cout << "file_expert_source_test: --numa-hot-node placement skipped (node " << hot
+                  << " has no room for the " << (want >> 20) << " MiB claim)\n";
+        source.close();
+        return;
+    }
+    require(source.reserve_resident_arena(want, 0, hot, err), err);
+    require(source.reserved_arena_bytes() == want, "the claim was not sized by the requested budget");
+    require(detail::resident_budget_physical_bytes(sample_physical, source.reserved_arena() != nullptr,
+                                                    source.reserved_arena_bytes()) == sample_physical + want,
+            "an active preclaim was not credited back to the resident-budget reading");
+    uint8_t* arena = (uint8_t*) source.reserved_arena();
+    require(arena != nullptr, "a successful claim has no arena");
+    for (uint64_t at = 0; at < want; at += 1ull << 20) {
+        require(page_node_of(arena + at) == hot, "a page claimed for a node is not on it");
+        arena[at] = (uint8_t) (at >> 20);
+        require(arena[at] == (uint8_t) (at >> 20), "the claimed arena is not writable memory");
+    }
+    // one claim per source, and close() gives it back
+    require(!source.reserve_resident_arena(want, 0, first, err), "a second claim on one source was accepted");
+    require(source.reserved_arena_bytes() == want && source.reserved_arena() == arena,
+            "the refused second claim touched the first");
+    source.close();
+    require(source.reserved_arena_bytes() == 0 && source.reserved_arena() == nullptr, "close() kept the claim");
+    require(detail::resident_budget_physical_bytes(sample_physical, source.reserved_arena() != nullptr,
+                                                    source.reserved_arena_bytes()) == sample_physical,
+            "close() left resident-budget preclaim credit behind");
+    // the first node id is a node number, not "off" (node 0 on every host that has a node 0)
+    require(source.open(dir.path.string(), 1, 2, err), err);
+    require(source.reserve_resident_arena(want, 0, first, err), err);
+    uint8_t* zero = (uint8_t*) source.reserved_arena();
+    require(zero != nullptr, "a node-0 claim has no arena");
+    zero[0] = 1;
+    zero[want - 4096] = 1;
+    require(page_node_of(zero) == first && page_node_of(zero + want - 4096) == first,
+            "node 0 is a node number: its claim must be placed on node 0");
+    source.close();
+    // a node this host does not have is refused - its own meminfo is not even there - not silently placed elsewhere
+    require(source.open(dir.path.string(), 1, 2, err), err);
+    require(!source.reserve_resident_arena(want, 0, node_ids.back() + 1, err) && !err.empty(),
+            "a claim on a node this host does not have was accepted");
+    require(source.reserved_arena() == nullptr, "a refused claim left an arena behind");
+    source.close();
+    std::cout << "numa hot node: " << node_ids.size() << " nodes, claims on " << hot << " and " << first
+              << " placed there: PASS\n";
+#else
+    std::cout << "file_expert_source_test: --numa-hot-node test skipped (not a Linux host with mbind)\n";
+#endif
+}
+
 void test_resident_memory_budget() {
     using strata::core::detail::clamp_resident_budget;
+    using strata::core::detail::resident_budget_physical_bytes;
     constexpr uint64_t GiB = 1ull << 30, margin = 256ull << 20, headroom = 4 * GiB;
     constexpr uint64_t unlimited = std::numeric_limits<uint64_t>::max();
+    // The pre-claimed arena's credit: no claim (or no active arena) is the identity, and a claim that reaches past
+    // UINT64_MAX saturates instead of wrapping the reading down to a tiny budget.
+    require(resident_budget_physical_bytes(1000, false, 0) == 1000, "an inactive arena received resident-budget credit");
+    require(resident_budget_physical_bytes(1000, true, 0) == 1000, "an empty active arena received resident-budget credit");
+    require(resident_budget_physical_bytes(1000, true, 24) == 1024, "an active preclaim was not credited back");
+    require(resident_budget_physical_bytes(unlimited - 8, true, 8) == unlimited,
+            "a credit to exactly UINT64_MAX did not land");
+    require(resident_budget_physical_bytes(unlimited - 1, true, 2) == unlimited,
+            "a credit past UINT64_MAX wrapped instead of saturating");
+    require(resident_budget_physical_bytes(unlimited, true, unlimited) == unlimited, "a full credit wrapped");
     // #730: RAM can hold the requested cache, but Windows cannot commit it.
     require(clamp_resident_budget(66 * GiB, 69 * GiB, 47 * GiB, headroom) == 43 * GiB - margin,
             "a RAM budget exceeded available commit capacity");
@@ -993,6 +1161,9 @@ int main(int argc, char** argv) {
         test_resident_memory_budget();
         test_pin_pacing();
         test_numa_slice_ranges();
+        test_numa_node_accessors();
+        test_numa_node_guard();
+        test_numa_hot_node();
         test_cgroup_memory_budget();
         test_host_memory();
         test_canonical_layout();

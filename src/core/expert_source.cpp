@@ -7,6 +7,7 @@
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/numa_policy.hpp"
 
 #include "strata/core/pinned.hpp"
 #include "strata/platform/memory.hpp"
@@ -89,6 +90,15 @@ bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64
     const uint64_t usage_after_reclaim = stat.current - reclaimable;
     bytes = usage_after_reclaim < limit ? limit - usage_after_reclaim : 0;
     return true;
+}
+
+uint64_t resident_budget_physical_bytes(uint64_t physical, bool arena_active, uint64_t arena_bytes) {
+    // No active arena, or nothing claimed yet, is the identity; a claim within arena_bytes of UINT64_MAX saturates
+    // rather than wrapping the reading down to a tiny budget.
+    if (!arena_active || arena_bytes == 0) return physical;
+    return arena_bytes <= std::numeric_limits<uint64_t>::max() - physical
+               ? physical + arena_bytes
+               : std::numeric_limits<uint64_t>::max();
 }
 
 uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom) {
@@ -460,6 +470,72 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     m.available = (uint64_t) pages * (uint64_t) page_bytes;
     return m.available > 0;
 #endif
+}
+
+std::vector<int> numa_node_ids() {
+#if defined(__linux__)
+    // The sysfs index IS the node number, so the entries are the nodes that EXIST: firmware PXM ids can leave
+    // holes (a hot-removed or offline node), and then a node number is a set to test membership against, never
+    // the 0..count-1 range its count would suggest.
+    const std::filesystem::path root("/sys/devices/system/node");
+    std::error_code ec;
+    if (!std::filesystem::is_directory(root, ec)) return {};
+    std::vector<int> ids;
+    for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.size() <= 4 || name.compare(0, 4, "node") != 0 ||
+            !std::all_of(name.begin() + 4, name.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            continue;
+        errno = 0;
+        const long id = std::strtol(name.c_str() + 4, nullptr, 10);
+        if (errno == ERANGE || id > std::numeric_limits<int>::max()) continue;   // not a node number this host can have
+        ids.push_back((int) id);
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+#else
+    return {};   // no sysfs: the caller skips its range check
+#endif
+}
+
+int numa_node_count() { return (int) numa_node_ids().size(); }
+
+bool numa_node_memfree_from_text(const std::string& meminfo_text, uint64_t& bytes) {
+    std::istringstream in(meminfo_text);
+    std::string line;
+    while (std::getline(in, line)) {
+        // "Node 1 MemFree: 52428800 kB" - four fields, so a /proc/meminfo line ("MemFree: ... kB", no node
+        // prefix) does not pass for a node's own reading.
+        std::istringstream fields(line);
+        std::string node_word, id, key;
+        uint64_t kb = 0;
+        if (fields >> node_word >> id >> key >> kb && key == "MemFree:") {
+            // A reading past this bound would wrap in the scaling below, and a wrapped figure reads as a nearly
+            // empty node (or a huge one): refuse the line instead, leaving the caller to refuse the claim.
+            if (kb > std::numeric_limits<uint64_t>::max() / 1024) return false;
+            bytes = kb * 1024;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool numa_node_memfree_bytes(int node, uint64_t& bytes) {
+#if defined(__linux__)
+    std::ifstream info("/sys/devices/system/node/node" + std::to_string(node) + "/meminfo");
+    if (!info) return false;
+    std::stringstream text;
+    text << info.rdbuf();
+    return numa_node_memfree_from_text(text.str(), bytes);
+#else
+    (void) node;
+    (void) bytes;
+    return false;
+#endif
+}
+
+bool node_claim_fits(uint64_t node_free, uint64_t bytes, uint64_t reserve) {
+    return bytes <= node_free && node_free - bytes >= reserve;
 }
 
 }  // namespace detail
@@ -1525,12 +1601,17 @@ void FileExpertSource::close() {
     ram_stop();
     io_stop();
     inputs_.clear();
+    release_reserved_arena();   // S1: a claim never taken by pin_cache_complement (an early exit) is given back
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
         else {
             if (complement_registered_) (void) cudaHostUnregister(complement_arena_);
             if (complement_locked_ > 0)
                 strata::platform::unlock_resident((uint8_t*) complement_arena_ + complement_lock_off_, complement_locked_);
+#if defined(__linux__)
+            if (complement_arena_mmap_bytes_ > 0) (void) munmap(complement_arena_, (size_t) complement_arena_mmap_bytes_);
+            else
+#endif
             std::free(complement_arena_);
         }
     }
@@ -1548,6 +1629,7 @@ void FileExpertSource::close() {
     exchanges_ = 0;
     file_reads_.store(0);
     complement_arena_ = nullptr;
+    complement_arena_mmap_bytes_ = 0;
     complement_host_ = nullptr;
     complement_device_ = nullptr;
     complement_bytes_ = 0;
@@ -3454,6 +3536,130 @@ uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
 #endif
 }
 
+void FileExpertSource::release_reserved_arena() {
+#if defined(__linux__)
+    if (arena_preclaim_ != nullptr) (void) munmap(arena_preclaim_, (size_t) arena_preclaim_bytes_);
+#endif
+    arena_preclaim_ = nullptr;
+    arena_preclaim_bytes_ = 0;
+    arena_preclaim_node_ = -1;
+}
+
+void* FileExpertSource::take_reserved_arena(uint64_t bytes, uint64_t& mmap_bytes) {
+    mmap_bytes = 0;
+    if (arena_preclaim_ == nullptr) return nullptr;
+    if (bytes > arena_preclaim_bytes_) {
+        // The complement is sized from a RAM/commit reading taken AFTER the claim's, and it came out larger (the
+        // kernel gave memory back between the two).  Nothing can be placed: hand the claim back and let the
+        // caller allocate as it always did, rather than copy past the arena.
+        std::fprintf(stderr, "FileExpertSource: the complement is %.2f GiB, past the %.2f GiB claimed on node %d: "
+                             "the claim is released and the arena allocated as before\n",
+                     (double) bytes / 1073741824.0, (double) arena_preclaim_bytes_ / 1073741824.0,
+                     arena_preclaim_node_);
+        release_reserved_arena();
+        return nullptr;
+    }
+    uint64_t keep = bytes;
+#if defined(__linux__)
+    const long page = sysconf(_SC_PAGESIZE);
+    if (page > 0) keep = (bytes + (uint64_t) page - 1) / (uint64_t) page * (uint64_t) page;
+    // The claim was sized for the budget's UPPER bound: give the unused tail back (it is mmap'd, so munmap is
+    // the way).  `keep` is page-aligned and rounds `bytes` UP, so a registration of `bytes` stays inside it.
+    if (keep < arena_preclaim_bytes_)
+        (void) munmap((uint8_t*) arena_preclaim_ + keep, (size_t) (arena_preclaim_bytes_ - keep));
+#endif
+    void* arena = arena_preclaim_;
+    mmap_bytes = keep;
+    arena_preclaim_ = nullptr;
+    arena_preclaim_bytes_ = 0;
+    return arena;
+}
+
+bool FileExpertSource::reserve_resident_arena(uint64_t requested_bytes, uint64_t headroom_bytes, int node,
+                                              std::string& err) {
+    err.clear();
+    if (arena_preclaim_ != nullptr) { err = "a complement arena is already claimed"; return false; }
+    if (base_ == nullptr) { err = "open the mapped experts before claiming the complement's arena"; return false; }
+    if (requested_bytes == 0) { err = "no --resident-budget-gib to size the claim from"; return false; }
+#if !(defined(__linux__) && defined(SYS_mbind) && defined(SYS_set_mempolicy) && defined(SYS_get_mempolicy))
+    (void) headroom_bytes; (void) node;
+    err = "this build has no NUMA placement (mbind/set_mempolicy; Linux only)";
+    return false;
+#else
+    // The complement clamps its own budget from a reading taken LATER (inside pin_cache_complement); the same
+    // clamp on this earlier reading is therefore the upper bound of the bytes it will copy.
+    uint64_t physical = 0, commit = std::numeric_limits<uint64_t>::max();
+    if (!available_memory_bytes(physical, &commit)) {
+        err = "cannot determine the available memory for --numa-hot-node";
+        return false;
+    }
+    const uint64_t bytes = detail::clamp_resident_budget(requested_bytes, physical, commit, headroom_bytes);
+    if (bytes == 0) { err = "no room for the complement's claim after the resident headroom"; return false; }
+    // The clamp above sizes the claim from the WHOLE host's available memory, but the claim itself is placed
+    // STRICTLY on one node (the mbind below, and the fault loop after it: when that node runs out, the kernel's
+    // only answer left is the OOM killer).  So before a page is mapped, ask the node itself: its OWN MemFree -
+    // not the host's MemAvailable, and not the reclaimable cache the readings above lean on, since these pages
+    // are page-locked later - must carry the claim plus the reserve the caller keeps free (the resident headroom,
+    // the same figure the global clamp already withholds; STRATA_RESIDENT_HEADROOM_GIB tunes both).  A node whose
+    // meminfo cannot be read, is memoryless, or cannot carry the claim with that reserve turns the claim down,
+    // and the caller starts as before.
+    uint64_t node_free = 0;
+    if (!detail::numa_node_memfree_bytes(node, node_free)) {
+        err = "cannot read NUMA node " + std::to_string(node) + "'s own free memory (/sys/devices/system/node/node" +
+              std::to_string(node) + "/meminfo)";
+        return false;
+    }
+    if (node_free == 0) {
+        err = "NUMA node " + std::to_string(node) + " is memoryless or has nothing free";
+        return false;
+    }
+    if (!detail::node_claim_fits(node_free, bytes, headroom_bytes)) {
+        char msg[224];
+        std::snprintf(msg, sizeof msg, "the %.2f GiB claim plus %.2f GiB of headroom does not fit node %d's %.2f GiB "
+                      "of free memory",
+                      (double) bytes / 1073741824.0, (double) headroom_bytes / 1073741824.0, node,
+                      (double) node_free / 1073741824.0);
+        err = msg;
+        return false;
+    }
+    const long page = sysconf(_SC_PAGESIZE);
+    if (page <= 0) { err = "cannot determine the page size for --numa-hot-node"; return false; }
+    void* arena = mmap(nullptr, (size_t) bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (arena == MAP_FAILED) {
+        err = "mmap of " + std::to_string(bytes >> 20) + " MiB failed (" + std::strerror(errno) + ")";
+        return false;
+    }
+    int bind_error = 0;
+    if (!detail::numa_bind_range(arena, bytes, node, bind_error)) {
+        const int failed_errno = bind_error;
+        (void) munmap(arena, (size_t) bytes);
+        err = "cannot bind " + std::to_string(bytes >> 20) + " MiB to NUMA node " + std::to_string(node) +
+              " (mbind: " + std::strerror(failed_errno) + ")";
+        return false;
+    }
+    const auto claim_t0 = std::chrono::steady_clock::now();
+    {
+        // The thread's policy for the touch only, and put back at the end of the scope: a thread left bound to a
+        // node that is full fails its later allocations.  mbind on the arena decides the placement either way.
+        detail::ThreadNodeBinding binding;
+        std::string why;
+        if (!binding.bind(node, why))
+            std::fprintf(stderr, "FileExpertSource: --numa-hot-node %d: %s; the arena's own bind stands\n",
+                         node, why.c_str());
+        // The pages are faulted in HERE, while the node is still empty - which is the whole point of the claim.
+        for (uint64_t at = 0; at < bytes; at += (uint64_t) page) ((volatile uint8_t*) arena)[at] = 0;
+    }
+    arena_preclaim_ = arena;
+    arena_preclaim_bytes_ = bytes;
+    arena_preclaim_node_ = node;
+    std::fprintf(stderr, "FileExpertSource: --numa-hot-node %d: %.2f GiB of the complement's arena claimed on the "
+                         "node in %.1f s, before the expert cache's fill\n",
+                 node, (double) bytes / 1073741824.0,
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - claim_t0).count());
+    return true;
+#endif
+}
+
 bool FileExpertSource::pin_cache_complement(
     const ExpertCache& cache, std::string& err, bool pin,
     const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,
@@ -3521,10 +3727,31 @@ bool FileExpertSource::pin_cache_complement(
             err = "FileExpertSource: cannot determine available memory for --resident-budget-gib";
             return false;
         }
+        // S1: reserve_resident_arena faulted this budget's own arena in before this reading (nothing has been
+        // copied into it yet), so the claim sits in `physical` - and in the cgroup's MemoryAvailable, whose tighter
+        // of the two bounds `physical` already is - while it is also the very memory this budget is sizing.  Counting
+        // it as consumed clamps the budget by the claim itself (measured 2026-10-15: 49 GiB requested -> 42.75).
+        // Add the not-yet-used claim back, which is the reading the clamp would have taken had it run before the
+        // claim.  Zero when nothing was claimed, so the non-arena path is unchanged.
+        const bool arena_active = arena_preclaim_ != nullptr;
+        const uint64_t claim_credit = arena_active ? arena_preclaim_bytes_ : 0;
+        const uint64_t physical_reading = physical;   // the reading before the claim is credited back, for the log
+        physical = detail::resident_budget_physical_bytes(physical, arena_active, claim_credit);
         budget_physical = physical;
         const uint64_t available = std::min(physical, budget_commit);
         const char* limit = budget_commit < physical ? "commit" : "RAM";
         const uint64_t clamped = detail::clamp_resident_budget(budget_bytes, physical, budget_commit, headroom_bytes);
+        if (claim_credit > 0) {
+            char requested[32];
+            if (what_fits) std::snprintf(requested, sizeof requested, "%s", "what fits");
+            else std::snprintf(requested, sizeof requested, "%.2f GiB", (double) budget_bytes / 1073741824.0);
+            std::fprintf(stderr, "FileExpertSource: --resident-budget-gib %s: reading %.2f GiB + the %.2f GiB of the "
+                                 "pre-claimed arena not yet used = %.2f GiB available, minus %.0f GiB headroom and "
+                                 "a 0.25 GiB margin: %.2f GiB granted\n",
+                         requested, (double) physical_reading / 1073741824.0,
+                         (double) claim_credit / 1073741824.0, (double) available / 1073741824.0,
+                         (double) headroom_bytes / 1073741824.0, (double) clamped / 1073741824.0);
+        }
         if (budget_bytes > clamped) {
             // #403: 256 MiB under the room, so the engine's own allocations after this reading still leave the
             // headroom (a budget clamped to exactly the room failed the safety check below on a reading a few MB
@@ -3680,6 +3907,8 @@ bool FileExpertSource::pin_cache_complement(
     const uint8_t* device = nullptr;
     bool pinned_ok = false;
     bool paced = false;         ///< #1250: the pages are taken in steps and page-locked afterwards
+    bool preclaimed = false;    ///< S1: the arena came from reserve_resident_arena (mmap'd, on --numa-hot-node)
+    uint64_t arena_mmap_bytes = 0;   ///< ... and it is this long: give it back with munmap, not free
     uint64_t locked = 0;
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
@@ -3693,6 +3922,10 @@ bool FileExpertSource::pin_cache_complement(
         else {
             if (partial_pin > 0) (void) cudaHostUnregister(arena);
             if (locked > 0) strata::platform::unlock_resident((uint8_t*) arena + lock_off, locked);
+#if defined(__linux__)
+            if (arena_mmap_bytes > 0) (void) munmap(arena, (size_t) arena_mmap_bytes);
+            else
+#endif
             std::free(arena);
         }
         arena = nullptr;
@@ -3724,6 +3957,24 @@ bool FileExpertSource::pin_cache_complement(
                      (double) bytes / 1073741824.0, pin ? "page-locked" : "pageable resident");
         log_complement_memory("before complement allocation", bytes);
         std::fflush(stderr);
+        // S1 (--numa-hot-node): when the complement's pages were claimed on the hot node before the expert cache's
+        // fill (reserve_resident_arena), the claim IS the arena.  The driver's cudaHostAlloc cannot be placed after
+        // the fact, and there is nothing left for #1250's pacing to do - the pages are faults of the past.
+        if (arena == nullptr) {
+            arena = take_reserved_arena(bytes, arena_mmap_bytes);
+            preclaimed = arena != nullptr;
+        }
+        // S1 with STRATA_NUMA_SPLIT: both place the complement and only one of them can, so say which one did.  The
+        // split's placement lives in the paced path, which a claim skips, while the pool's own split still runs.
+#if defined(__linux__)
+        if (preclaimed) {
+            const auto& split = strata::kernels::cpu::active_numa_split();
+            if (split.on && !split.test)
+                std::fprintf(stderr, "FileExpertSource: --numa-hot-node claimed the complement on node %d: the "
+                                     "STRATA_NUMA_SPLIT complement placement does not run (the CPU pool split itself "
+                                     "is unaffected)\n", arena_preclaim_node_);
+        }
+#endif
         // #1250: the driver takes page-locked pages in one go and cannot wait for the kernel to reclaim file cache: with
         // the cache of the model files the engine read itself in the way (MemFree low, MemAvailable high) a host was
         // OOM-killed here.  First give those pages back (the engine's own mappings); when what is really free still
@@ -3737,7 +3988,7 @@ bool FileExpertSource::pin_cache_complement(
                                                      : std::max<uint64_t>(headroom_bytes, 2ull << 30);
         }();
 #if defined(__linux__)
-        if (pin) {
+        if (pin && !preclaimed) {   // the claimed pages are already there: the pacing below has nothing to decide
             static const int guard = [] {
                 const char* v = std::getenv("STRATA_PIN_GUARD");
                 return v == nullptr ? 1 : std::atoi(v);
@@ -3777,12 +4028,15 @@ bool FileExpertSource::pin_cache_complement(
                     std::fprintf(stderr, "FileExpertSource: the rest comes from reclaimed cache of other files: "
                                          "page-locking it in steps, as far as the RAM allows (#1250)\n");
             }
-        } else if (strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test) {
+        } else if (!preclaimed && strata::kernels::cpu::active_numa_split().on &&
+                   !strata::kernels::cpu::active_numa_split().test) {
+            // A claim already placed the complement (its own line above says so), so this failure line is for the
+            // paths that had no claim to place: without !preclaimed it would also print after a good claim.
             std::fprintf(stderr, "FileExpertSource: WARNING: NUMA placement FAILED: the complement is not page-locked, "
                                  "nothing placed\n");
         }
 #endif
-        if (pin && !paced) {
+        if (pin && !paced && !preclaimed) {
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
                                                          cudaHostAllocMapped | cudaHostAllocPortable);
             if (allocated == cudaSuccess) {
@@ -3806,38 +4060,43 @@ bool FileExpertSource::pin_cache_complement(
                 arena = nullptr;
             }
         }
-        if (arena == nullptr) {
-            if (!note.empty()) {
-                std::fprintf(stderr, "FileExpertSource: %s; trying pageable memory\n", note.c_str());
-                log_complement_memory("before pageable allocation", bytes);
-                std::fflush(stderr);
-            }
-            errno = 0;
-            if (paced) {   // page-aligned: the steps are registered on page boundaries
+        // ... and with a claim there is nothing to allocate: the arena exists, and only the driver's registration
+        // and the working-set lock below are left to do (an arena cudaHostAlloc'd above is registered already, so
+        // it skips this).
+        if (arena == nullptr || preclaimed) {
+            if (arena == nullptr) {
+                if (!note.empty()) {
+                    std::fprintf(stderr, "FileExpertSource: %s; trying pageable memory\n", note.c_str());
+                    log_complement_memory("before pageable allocation", bytes);
+                    std::fflush(stderr);
+                }
+                errno = 0;
+                if (paced) {   // page-aligned: the steps are registered on page boundaries
 #if !defined(_WIN32)
-                void* aligned = nullptr;
-                const uint64_t page = 4096;
-                if (posix_memalign(&aligned, (size_t) page, (size_t) ((bytes + page - 1) / page * page)) == 0) arena = aligned;
+                    void* aligned = nullptr;
+                    const uint64_t page = 4096;
+                    if (posix_memalign(&aligned, (size_t) page, (size_t) ((bytes + page - 1) / page * page)) == 0) arena = aligned;
 #endif
 #if defined(__linux__)
-                // STRATA_NUMA_SPLIT: a 2 MiB huge page would put several slices on its toucher's node, so the arena
-                // takes 4 KiB pages (one call, no VMA split)
-                if (arena != nullptr && numa.place) {
-                    if (madvise(arena, (size_t) ((bytes + page - 1) / page * page), MADV_NOHUGEPAGE) != 0)
-                        std::fprintf(stderr, "FileExpertSource: WARNING: madvise(MADV_NOHUGEPAGE) on the complement "
-                                             "failed (errno %d)\n", errno);
-                }
+                    // STRATA_NUMA_SPLIT: a 2 MiB huge page would put several slices on its toucher's node, so the arena
+                    // takes 4 KiB pages (one call, no VMA split)
+                    if (arena != nullptr && numa.place) {
+                        if (madvise(arena, (size_t) ((bytes + page - 1) / page * page), MADV_NOHUGEPAGE) != 0)
+                            std::fprintf(stderr, "FileExpertSource: WARNING: madvise(MADV_NOHUGEPAGE) on the complement "
+                                                 "failed (errno %d)\n", errno);
+                    }
 #endif
-            } else {
-                arena = std::malloc((size_t) bytes);
-            }
-            if (arena == nullptr) {
-                const int allocation_errno = errno;
-                err = "FileExpertSource: pageable resident complement allocation failed (malloc errno " +
-                      std::to_string(allocation_errno) + ": " + std::strerror(allocation_errno) + ")";
-                if (!note.empty()) err += "; " + note;
-                log_complement_memory("after pageable allocation failure", bytes);
-                return false;
+                } else {
+                    arena = std::malloc((size_t) bytes);
+                }
+                if (arena == nullptr) {
+                    const int allocation_errno = errno;
+                    err = "FileExpertSource: pageable resident complement allocation failed (malloc errno " +
+                          std::to_string(allocation_errno) + ": " + std::strerror(allocation_errno) + ")";
+                    if (!note.empty()) err += "; " + note;
+                    log_complement_memory("after pageable allocation failure", bytes);
+                    return false;
+                }
             }
             if (pin) {
                 // CS-T, a RAM budget: its bytes are in profile order, hottest first, so the driver is asked to
@@ -3858,7 +4117,33 @@ bool FileExpertSource::pin_cache_complement(
                     const char* v = std::getenv("STRATA_PARTIAL_PIN_GIB");
                     return (uint64_t) ((v != nullptr && std::atof(v) > 0 ? std::atof(v) : 24.0) * 1073741824.0);
                 }();
-                if (paced) {
+                if (preclaimed) {
+                    // S1: the pages are there already, on the hot node; the driver only page-locks them - nothing
+                    // is allocated - in ONE registration, so a blob never straddles two registrations.
+                    if (cudaHostRegister(arena, (size_t) bytes, cudaHostRegisterMapped | cudaHostRegisterPortable) ==
+                        cudaSuccess) {
+                        void* alias = nullptr;
+                        if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
+                            device = (const uint8_t*) alias;
+                            partial_pin = bytes;
+                        } else {
+                            (void) cudaGetLastError();
+                            (void) cudaHostUnregister(arena);
+                        }
+                    } else {
+                        (void) cudaGetLastError();
+                    }
+                    char msg[220];
+                    if (partial_pin > 0)
+                        std::snprintf(msg, sizeof msg, "%.2f GiB page-locked and mapped, claimed on NUMA node %d",
+                                      (double) partial_pin / 1073741824.0, arena_preclaim_node_);
+                    else {
+                        std::snprintf(msg, sizeof msg, "the driver refused the page-locking; locked in the working "
+                                      "set instead (claimed on NUMA node %d)", arena_preclaim_node_);
+                        std::fprintf(stderr, "FileExpertSource: %s\n", msg);
+                    }
+                    note += std::string(note.empty() ? "" : "; ") + msg;
+                } else if (paced) {
                     // #1250: the pages are taken in 1 GiB steps by ordinary page faults (which reclaim file cache as
                     // they need to), each only while the RAM available (the cgroup's room included) stays above the
                     // reserve; then the pages that are there are page-locked in ONE registration (nothing is
@@ -4106,6 +4391,7 @@ bool FileExpertSource::pin_cache_complement(
     }
 
     complement_arena_ = arena;
+    complement_arena_mmap_bytes_ = arena_mmap_bytes;
     complement_host_ = host;
     complement_device_ = device;
     complement_bytes_ = bytes;
@@ -4113,8 +4399,8 @@ bool FileExpertSource::pin_cache_complement(
     complement_pinned_ = (pinned_ok || partial_pin > 0) && bytes > 0;
     complement_pin_limit_ = pinned_ok ? bytes : partial_pin;
     complement_registered_ = !pinned_ok && partial_pin > 0;
-    // a paced registration that covers the whole arena is as good as a cudaHostAlloc'd one
-    complement_partial_ = complement_registered_ && !(paced && partial_pin >= bytes);
+    // a paced (or claimed) registration that covers the whole arena is as good as a cudaHostAlloc'd one
+    complement_partial_ = complement_registered_ && !((paced || preclaimed) && partial_pin >= bytes);
     complement_locked_ = locked;
     complement_lock_off_ = lock_off;
     complement_lent_slots_ = lend ? n_slots - keep_from : budget_lent;   // a budget keeps its own tail of the region
