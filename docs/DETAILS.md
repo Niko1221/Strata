@@ -1815,6 +1815,40 @@ test images.
 
 **Stager threads for a GGUF read in place (0.1.41, #1353):** a native pack read from its GGUF shards in place (UD-Q4_K_XL, a Q8_0 pack) copies each expert with 32 threads and a 128-deep ring when the bytes are page faults on an SSD. If the shards' pages are already in the page cache (a big-RAM box, a warm start) those copies are memory copies and the same profile ran 4-7x slower than the 4-thread default (a 124K-token Q8 prompt: 57 -> 350-410 tok/s with the default). The engine now checks a sample of the experts with `mincore` at the first prompt (Linux) and takes the RAM profile when 90% or more of their pages are resident, saying so in its log; a cold or partly cached GGUF keeps the SSD profile. `STRATA_STAGER_SSD=1` / `0` forces either profile; `STRATA_STAGER_THREADS` still wins. The bytes copied are the same.
 
+## A faster engine start on Windows (on by default with CUDA: `STRATA_ARENA_PREFAULT`, `STRATA_DENSE_UPLOAD_THREADS`, `STRATA_EARLY_ARENA`)
+
+On Windows with an NVIDIA card, three changes shorten the engine's load. Each has a switch that restores the old way.
+Measured on an RTX 3090 24 GB, Core Ultra 9 285K, 95 GB DDR5-6800 and a PCIe 5 SSD reading 11.2 GiB/s, with IQ3_S at a
+262,144-token context: the engine alone was ready in 8.72 s instead of 15.94 s (medians of 8 + 8 starts, every start
+with the changes faster than every start without).
+
+- **The arena's pages are touched by several threads before it is pinned** (`STRATA_ARENA_PREFAULT`). Left to
+  `cudaHostRegister`, the first touch of the 46.8 GiB expert arena ran on one thread inside it, about 5 s; min(16,
+  hardware threads) threads take 0.5-0.7 s in most starts (1.1 s or 2.5 s with other programs busy).
+  `STRATA_ARENA_PREFAULT=0` leaves the first touch to `cudaHostRegister`;
+  `=N` sets the threads. Not used with large pages, a shared arena file, or an arena that is not pinned (integrated
+  GPU).
+- **The projection matrices are uploaded by 8 threads** (`STRATA_DENSE_UPLOAD_THREADS`). Windows does not read a mapped
+  file ahead, so one copy per matrix took its page faults 4 KiB at a time: 1.5 s for 2019 MiB. Eight threads, each
+  reading 8 MiB pieces into pinned buffers, take 0.3 s. `STRATA_DENSE_UPLOAD_THREADS=1` restores the single copy.
+  `STRATA_DENSE_CHECKSUM=1` prints a hash of the matrices as the GPU holds them, for checking that both ways give the
+  same bytes (they do: the same hash with 1 and 8 threads).
+- **The expert arena is loaded from the start** (`STRATA_EARLY_ARENA`). Before, it was read only after the dense
+  weights, the draft layer and the output head. Now a thread pins it and reads the experts into it while those load;
+  the arena is ready about 2 s sooner. The other loads then share the drive with it and take longer (done at about
+  6.5 s instead of 2.7 s here); the bytes read are the same, only their order changes, so on a slower drive the gain
+  may be smaller. It starts only when the free RAM covers the arena plus the RAM floor
+  (`--conversation-cache-min-free-mib`, at least 8 GiB); otherwise the start is as before, with the line
+  `STRATA_EARLY_ARENA: expert read not started: ...` saying why. Not used with two GPUs (a layer split, also one
+  that `--split-skip-if-fits` later drops, or remote experts), a pin cap, a shared arena file, `--mmap-experts`, `STRATA_PIN_BY_NEED=1` or `STRATA_DEFERRED_REGISTER=1`.
+  If the early read fails, the line `STRATA_EARLY_ARENA: the early arena is not used (...)` says why and the arena
+  loads as before. A load that fails before the arena is opened exits only once the early read has finished.
+  `STRATA_EARLY_ARENA=0` turns it off.
+
+The answers do not change: the expert arena's checksum (`STRATA_VERIFY_ARENA=1`) is the same with these on and off, and
+decode and prompt speed after loading were unchanged in the same runs. None of this is built for Linux, macOS, AMD
+(HIP) or Intel Arc (SYCL): there the start is as before.
+
 ## Short prompts: the CPU shares the experts (on by default on one NVIDIA GPU, `STRATA_PREFILL_CPU_SHARE`)
 
 A prompt chunk of a few thousand tokens (an agent's tool result, a test's output, a short follow-up) streams every routed
