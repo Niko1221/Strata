@@ -14,6 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_device_count();
+extern "C" int strata_hybrid_is_hip_device(int ordinal);
+#endif
+
 namespace strata::core {
 namespace {
 constexpr int64_t H = strata::kernels::cpu::H;
@@ -69,7 +74,15 @@ RemoteExperts::~RemoteExperts() { close(); }
 
 bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     int count = 0;
+#if defined(STRATA_HYBRID)
+    count = strata_hybrid_device_count();
+    if (count < 0) {
+        err = "too many HIP devices (" + std::to_string(-count) + "); this build supports 8";
+        return false;
+    }
+#else
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
+#endif
     if (device < 0 || device >= count) {
         err = "CUDA" + std::to_string(device) + " experts: CUDA device is not visible";
         return false;
@@ -138,7 +151,15 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          std::vector<uint8_t>& claimed, std::string& err, bool auto_size) {
     close();
     int count = 0;
+#if defined(STRATA_HYBRID)
+    count = strata_hybrid_device_count();
+    if (count < 0) {
+        err = "too many HIP devices (" + std::to_string(-count) + "); this build supports 8";
+        return false;
+    }
+#else
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
+#endif
     if (device < 0 || device >= count || slots <= 0 || ranked.empty() ||
         layers <= 0 || experts <= 0 || claimed.size() != (size_t) layers * (size_t) experts ||
         device == primary_device()) {   // the helper cannot be the primary device (any visible ordinal)
@@ -366,12 +387,19 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     // takes - on HIP especially, where the CUDA branch's cudaInitDevice(ScheduleSpin) does not exist and the
     // device keeps its default policy.  STRATA_REMOTE_SPIN=0 keeps the blocking sync (the same switch the CUDA
     // branch reads).
-#if defined(STRATA_USE_HIP)   // HIP only: the CUDA branch's cudaInitDevice(ScheduleSpin) already makes the sync spin
+#if defined(STRATA_USE_HIP) || defined(STRATA_HYBRID)
+    // HIP has no cudaInitDevice(ScheduleSpin). A hybrid build still takes that
+    // call for an NVIDIA helper, and busy-waits only when this helper is HIP.
     static const bool spin = [] {
         const char* v = std::getenv("STRATA_REMOTE_SPIN");
         return !(v != nullptr && v[0] == '0');
     }();
-    if (spin) {
+#if defined(STRATA_HYBRID)
+    const bool hip_helper = strata_hybrid_is_hip_device(device_) != 0;
+#else
+    const bool hip_helper = true;
+#endif
+    if (spin && hip_helper) {
         cudaError_t e;
         while ((e = cudaStreamQuery(stream_)) == cudaErrorNotReady) {
         }

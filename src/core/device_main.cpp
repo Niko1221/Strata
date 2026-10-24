@@ -48,6 +48,10 @@ int main(int argc, char** argv) {
     //     cannot run: <why>                       (only for a card this binary cannot run)
     if (list_devices) {
         const int count = strata::core::device_count();
+        if (count < 0) {
+            std::printf("strata hybrid: %d HIP devices; this build supports 8\n", -count);
+            return 1;
+        }
         if (count == 0) std::printf("(no GPU device)\n");
         for (int ordinal = 0; ordinal < count; ++ordinal) {
             std::string name, detail;
@@ -68,6 +72,11 @@ int main(int argc, char** argv) {
 #if defined(STRATA_USE_HIP)
         std::printf("  HIP arch            %s wave32 (compiled for %s)\n", d.arch.c_str(),
                     strata::core::compiled_gpu_archs());
+#elif defined(STRATA_HYBRID)
+        if (!d.arch.empty())
+            std::printf("  HIP arch            %s (compiled for %s)\n", d.arch.c_str(), STRATA_HIP_ARCHS);
+        else
+            std::printf("  compute capability  %d.%d   (sm_%d%d)\n", d.cc_major, d.cc_minor, d.cc_major, d.cc_minor);
 #else
         std::printf("  compute capability  %d.%d   (sm_%d%d)\n", d.cc_major, d.cc_minor, d.cc_major, d.cc_minor);
 #endif

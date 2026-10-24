@@ -17,6 +17,10 @@
 #include <stdexcept>
 #include <vector>
 
+#if defined(STRATA_HYBRID)
+extern "C" int strata_hybrid_device_count();
+#endif
+
 namespace strata::core {
 
 static bool g_peer_portable = false;
@@ -126,7 +130,15 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
                        std::string& err) {
     close();
     int count = 0;
+#if defined(STRATA_HYBRID)
+    count = strata_hybrid_device_count();
+    if (count < 0) {
+        err = "peer experts: too many HIP devices";
+        return false;
+    }
+#else
     if (!ck(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err)) return false;
+#endif
     if (device < 1 || device >= count) {
         err = "peer experts: CUDA device " + std::to_string(device) + " is not visible (" + std::to_string(count) +
               " devices; set CUDA_VISIBLE_DEVICES)";
