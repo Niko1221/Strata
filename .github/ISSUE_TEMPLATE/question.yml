@@ -4,10 +4,11 @@ title: "[Area] "
 labels: ["question"]
 body:
   - type: markdown
-    value: |
-      Not sure how to do something, or want to share numbers from your machine? Ask here. To share a full benchmark, see [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md#share-a-benchmark).
+    attributes:
+      value: |
+        Not sure how to do something, or want to share numbers from your machine? Ask here. To share a full benchmark, see [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md#share-a-benchmark).
 
-      **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
+        **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
   - type: dropdown
     id: area
     attributes:

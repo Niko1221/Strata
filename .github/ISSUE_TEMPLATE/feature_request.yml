@@ -4,10 +4,11 @@ title: "[Area] "
 labels: ["enhancement"]
 body:
   - type: markdown
-    value: |
-      Explain what you want in plain language. For a large feature, a change to a default or a refactor, please agree the scope here first. Read [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md).
+    attributes:
+      value: |
+        Explain what you want in plain language. For a large feature, a change to a default or a refactor, please agree the scope here first. Read [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md).
 
-      **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
+        **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
   - type: dropdown
     id: area
     attributes:
@@ -37,5 +38,6 @@ body:
     validations:
       required: false
   - type: markdown
-    value: |
-      All of this counts: model and architecture support, the server and API, the app and the Terminal, multi-GPU and layer split, images and vision, MCP servers, setup and installation, and performance.
+    attributes:
+      value: |
+        All of this counts: model and architecture support, the server and API, the app and the Terminal, multi-GPU and layer split, images and vision, MCP servers, setup and installation, and performance.

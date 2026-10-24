@@ -4,14 +4,15 @@ title: "[Area] "
 labels: ["bug"]
 body:
   - type: markdown
-    value: |
-      Thanks for the report. Please read [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md) first.
+    attributes:
+      value: |
+        Thanks for the report. Please read [CONTRIBUTING.md](https://github.com/Niko1221/Strata/blob/main/CONTRIBUTING.md) first.
 
-      Search the [open and closed issues](https://github.com/Niko1221/Strata/issues?q=is%3Aissue) first: this may already be tracked, and new evidence belongs in that thread.
+        Search the [open and closed issues](https://github.com/Niko1221/Strata/issues?q=is%3Aissue) first: this may already be tracked, and new evidence belongs in that thread.
 
-      Write only what you saw. Do not guess at steps, errors, hardware or severity.
+        Write only what you saw. Do not guess at steps, errors, hardware or severity.
 
-      **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
+        **The title must start with its area:** [Engine], [GUI], [TUI], [Benchmark], [Docs] or [Other]. Choose the same one below.
   - type: dropdown
     id: area
     attributes:
@@ -95,7 +96,8 @@ body:
     validations:
       required: false
   - type: markdown
-    value: |
-      A couple of extras that help a lot:
+    attributes:
+      value: |
+        A couple of extras that help a lot:
 
-      - Check the [troubleshooting page](https://github.com/Niko1221/Strata/blob/main/docs/TROUBLESHOOTING.md) first, many reports are already solved there.
+        - Check the [troubleshooting page](https://github.com/Niko1221/Strata/blob/main/docs/TROUBLESHOOTING.md) first, many reports are already solved there.
