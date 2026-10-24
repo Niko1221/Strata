@@ -13578,13 +13578,14 @@ int main(int argc, char** argv) {
                 }
                 // The carves a save/restore addresses: the main session, then every later stage's own
                 // session in park's order (the shape park's per-stage capture and restore use), and each carve's
-                // own device (main is 0, the batch-slot restore's convention).  The draft layer follows park's own
+                // own device (main is the engine's primary device: 0 unless STRATA_PRIMARY_DEVICE
+                // moved it, which only a no-split engine can do; the batch-slot restore's convention).  The draft layer follows park's own
                 // rule (park_current_body's draft0/draft_of): an engine without --mtp has no draft group, and with
                 // one it sits in stage 0's group when there is no split or the drafter sits on the first card,
                 // else in the last stage's.
                 std::vector<strata::core::SessionState*> sessions{&ss};
                 for (const auto& st : stages) sessions.push_back(&st->ss);
-                std::vector<int> devices{0};
+                std::vector<int> devices{strata::core::primary_device()};
                 for (const auto& st : stages) devices.push_back(st->dev);
                 std::vector<bool> draft_of(sessions.size(), false);
                 if (use_mtp) draft_of[mtp_first || stages.empty() ? 0 : sessions.size() - 1] = true;
