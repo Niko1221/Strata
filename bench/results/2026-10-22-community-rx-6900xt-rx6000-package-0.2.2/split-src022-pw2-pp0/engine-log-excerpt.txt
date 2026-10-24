@@ -1,0 +1,73 @@
+[strata] 2026-10-22 20:33:49 engine started: /work/stock-0.2.2/build-hip/strata --serve --pack /m/packs/iq3_s --native /m/flash-next/GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --ple-gguf /m/flash-next/GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf --expert-profile /m/expert-profile.bin --expert-cache auto --prefill auto --spec 3 --spec-min-p 0.7 --mtp /m/mtp/rt --max-context 131072 --kv int8 --kv-resident 32768 --ple-io ram --pipeline-windows 2 --layer-split auto
+strata generate: memory guard: limit 121.5 GiB (source: meminfo), current 3.4 GiB, reclaimable cache credited 0.0 GiB; available 118.1 GiB (MemAvailable 118.1 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: PCIe probe: 14.1 GB/s host->device (best of 14.1 14.1 14.1 14.1) -> pcie_frac 0.39 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /m/packs/iq3_s experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.4 s)
+strata generate: 1466 MiB of weights loaded from /m/packs/iq3_s in 0.8 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights, in 1.1 s
+strata generate: PLE table locked in RAM (--ple-io ram) in 1.6 s
+strata generate: note: --pipeline-windows 2 on a layer split of two stages without the draft layer on the first card (STRATA_MTP_STAGE0=1 asks for it): the draft chain then shares the last card with its window and the pipeline lost to the serial loop on 2x R9700 before 0.1.44 (docs/MULTI_GPU.md); kept as asked, --pipeline-windows 0 turns it off
+strata generate: layer split: CUDA1 PCIe probe 14.1 GB/s (best of 14.1 14.1 14.1 14.1) -> pcie_frac 0.39
+strata generate: layer split: CUDA1 holds its weights; 12.19 GiB free (its session follows the split search)
+strata generate: profile /m/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: layer split auto: CUDA0 40 SMs at 2.66 GHz -> 0.68 ms per layer, 11.26 GiB free before its session carve
+strata generate: layer split auto: CUDA1 40 SMs at 2.66 GHz -> 0.68 ms per layer, 10.28 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 14.1 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 14.1 GB/s -> miss cost x1.00
+strata prefill: HIP device 0 gfx1030 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)
+strata generate: layer split auto: K=24 - predicted 37.2 ms per decode window; the caches hold 10985 of 24576 profiled pairs (~97.6% of the routed mass), best of 46 placements
+strata generate: PLE on, table 320001536 rows of /m/flash-next/GSQ-RCO-IQ3_S/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+strata generate: layer split: CUDA1 holds its weights, session [24, 48) and the head; 11.32 GiB free
+strata mtp: draft layer loaded, 837 MiB of VRAM (experts 675, dense 111), files read in 0.72 s (1092 MiB/s)
+strata generate: GPU 0: AMD Radeon RX 6900 XT (gfx1030)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 6692 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE)
+strata generate: loaded 46.84 GiB at 3.13 GiB/s
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: CPU pool tasks/phase: 18 (automatic), participating threads: 6
+strata generate: CPU pool: 5 workers by default (6 physical cores, 12 logical processors; bounded by every physical core but the host's)
+strata generate: 5 pool workers on logical processors 1,2,3,4,5, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 1-5 (5 workers, one per physical core; host on 0)
+strata generate: --pipeline-windows 2: 272 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 11.80 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 4376 slots
+strata generate: expert cache 6031 slots, 10.85 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+strata generate: pre-filled 6031 of 6031 slots from the profile in 1.2 s (9508 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 10.50 GiB free of 15.98, room for experts 9.56 GiB
+strata generate: layer split: CUDA1 runs layers 24-47, expert cache 4770 slots (9.56 GiB), 4770 of its 12288 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-23
+strata prefill: HIP device 1 gfx1030 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 5 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.47)
+strata generate: token graph hit path: 10801 resident experts, decided on the device
+strata serve: prompt chunk auto: 8192 tokens, a 384-slot ring
+strata serve: the prompt path borrows 2358 CUDA0 cache slots (4.25 GiB)
+strata serve:   CUDA1 prompt path borrows 2127 of its 4770 slots (4.25 GiB)
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 1 in 14 ms (STRATA_PREFILL_WARM=0 skips)
+strata hc: CUDA1: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata serve: layer split: layers 0-23 (CUDA0), 24-47 (CUDA1), one hand-off per window
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows (decode too; the GDN snapshots beside the window)
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 712 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 582 MiB of VRAM free with everything loaded
+strata decode timing: 2 windows, avg T 2.00, 1.00 tokens/window, 47.01 ms/window = verify 46.99 (GPU-reach wait 77.85 + per-layer host 21.29 [plan 0.12 actq 0.10 jobs 0.02 CPU 27.53] + stage 0.15) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 7.16 (8.64 entries), VRAM hits 12.79, PCIe 3.49; adapt wait 0.00 join 0.00, 0.0 swaps/window
+strata serve: prompt 19 tokens = 0 reused + 19 read in 449 ms (42.3 tok/s), 2 generated in 94 ms (21.3 tok/s), drafts accepted 2 of 2, 1 checkpoints
+strata decode timing: 136 windows, avg T 2.13, 1.88 tokens/window, 26.03 ms/window = verify 26.03 (GPU-reach wait 16.50 + per-layer host 3.90 [plan 0.09 actq 0.07 jobs 0.01 CPU 7.44] + stage 0.07) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 1.73 (2.15 entries), VRAM hits 21.84, PCIe 0.44; adapt wait 0.00 join 0.00, 18.4 swaps/window
+strata serve: prompt 4096 tokens = 0 reused + 4096 read in 8843 ms (463.2 tok/s), 256 generated in 3540 ms (72.3 tok/s), drafts accepted 120 of 154, 1 checkpoints
+strata decode timing: 129 windows, avg T 2.24, 1.98 tokens/window, 24.91 ms/window = verify 24.91 (GPU-reach wait 17.77 + per-layer host 1.82 [plan 0.08 actq 0.05 jobs 0.01 CPU 3.27] + stage 0.07) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.79 (0.88 entries), VRAM hits 25.17, PCIe 0.11; adapt wait 0.00 join 0.00, 7.9 swaps/window
+strata serve: prompt 4096 tokens = 0 reused + 4096 read in 8793 ms (465.8 tok/s), 256 generated in 3213 ms (79.7 tok/s), drafts accepted 127 of 160, 1 checkpoints
+strata decode timing: 123 windows, avg T 2.30, 2.08 tokens/window, 26.06 ms/window = verify 26.06 (GPU-reach wait 18.06 + per-layer host 1.84 [plan 0.09 actq 0.05 jobs 0.01 CPU 3.48] + stage 0.07) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.83 (0.92 entries), VRAM hits 25.28, PCIe 0.14; adapt wait 0.00 join 0.00, 7.9 swaps/window
+strata serve: prompt 32768 tokens = 0 reused + 32768 read in 42924 ms (763.4 tok/s), 256 generated in 3205 ms (79.9 tok/s), drafts accepted 134 of 160, 2 checkpoints
+strata decode timing: 137 windows, avg T 2.09, 1.87 tokens/window, 26.26 ms/window = verify 26.26 (GPU-reach wait 18.87 + per-layer host 1.59 [plan 0.08 actq 0.04 jobs 0.01 CPU 3.01] + stage 0.07) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.72 (0.84 entries), VRAM hits 24.12, PCIe 0.10; adapt wait 0.00 join 0.00, 6.5 swaps/window
+strata serve: prompt 32768 tokens = 0 reused + 32768 read in 43287 ms (757.0 tok/s), 256 generated in 3598 ms (71.2 tok/s), drafts accepted 120 of 150, 2 checkpoints
+strata decode timing: 130 windows, avg T 2.17, 1.97 tokens/window, 26.77 ms/window = verify 26.77 (GPU-reach wait 19.49 + per-layer host 1.56 [plan 0.09 actq 0.04 jobs 0.01 CPU 3.03] + stage 0.07) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.72 (0.80 entries), VRAM hits 24.74, PCIe 0.11; adapt wait 0.00 join 0.00, 7.0 swaps/window
+strata serve: prompt 128000 tokens = 0 reused + 128000 read in 146375 ms (874.5 tok/s), 256 generated in 3480 ms (73.6 tok/s), drafts accepted 128 of 152, 6 checkpoints
+strata decode timing: 134 windows, avg T 2.08, 1.91 tokens/window, 26.12 ms/window = verify 26.12 (GPU-reach wait 18.65 + per-layer host 1.50 [plan 0.08 actq 0.04 jobs 0.01 CPU 2.97] + stage 0.07) + commit/emit 0.00 + draft 0.00; per layer-window: CPU experts 0.70 (0.79 entries), VRAM hits 23.34, PCIe 0.10; adapt wait 0.00 join 0.00, 6.8 swaps/window
+strata serve: prompt 128000 tokens = 0 reused + 128000 read in 146726 ms (872.4 tok/s), 256 generated in 3501 ms (73.1 tok/s), drafts accepted 122 of 145, 6 checkpoints
+ready: http://127.0.0.1:8089/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 131072 tokens)
