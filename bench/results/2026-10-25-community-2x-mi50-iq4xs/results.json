@@ -1,0 +1,117 @@
+{
+  "date": "2026-10-25",
+  "strata": {
+    "version": "0.2.1",
+    "engine": "0.1.46",
+    "commit": "9076725"
+  },
+  "hardware": {
+    "gpus": "2x AMD Instinct MI50 16 GB (gfx906, 1002:66af)",
+    "power_cap_w": 200,
+    "pcie": "3.0 x8",
+    "cpu": "AMD Ryzen 7 5700X",
+    "ram": "128 GB DDR4 @ 2400 MT/s (JEDEC), 4x32 GB",
+    "os": "Ubuntu 24.04, kernel 6.8.0-147",
+    "rocm": "7.14 (mixa3607/rocm-gfx906:7.14-complete)"
+  },
+  "flags": [
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--layer-split",
+    "27",
+    "--spec",
+    "3",
+    "--spec-min-p",
+    "0.9",
+    "--prefill",
+    "2048",
+    "--vram-reserve-mib",
+    "1024",
+    "--pipeline-windows",
+    "2",
+    "--trim-stage-weights",
+    "--vision"
+  ],
+  "models": {
+    "IQ3_S": {
+      "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "context": 131072,
+      "short_chat": {
+        "decode_tps": 61.0,
+        "prompt_tps": 55,
+        "runs": 5
+      },
+      "prompt_1_6k": {
+        "decode_tps": 71.3,
+        "prompt_tps": 180,
+        "runs": 5
+      },
+      "prompt_31k": {
+        "decode_tps": 73.7,
+        "prompt_tps": 691,
+        "runs": 2
+      },
+      "expert_cache": {
+        "slots": 12245,
+        "gib": 23.9,
+        "hit_rate": [
+          0.98,
+          0.997
+        ]
+      },
+      "experts_ram_gib": 46.8,
+      "ready_seconds": 40
+    },
+    "IQ4_XS": {
+      "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+      "file": "UD-IQ4_XS",
+      "context": 262144,
+      "pack_flags": [
+        "--compat-bf16"
+      ],
+      "short_chat": {
+        "decode_tps": 58.6,
+        "prompt_tps": 53,
+        "runs": 5
+      },
+      "prompt_1_6k": {
+        "decode_tps": 62.8,
+        "prompt_tps": 149,
+        "runs": 5
+      },
+      "prompt_31k": {
+        "decode_tps": 57.5,
+        "prompt_tps": 533,
+        "runs": 2
+      },
+      "prompt_140k": {
+        "decode_tps": 59.0,
+        "prompt_tps": 546,
+        "runs": 1,
+        "needle_ok": true
+      },
+      "expert_cache": {
+        "slots": 9876,
+        "gib": 22.8,
+        "hit_rate": [
+          0.904,
+          0.94
+        ]
+      },
+      "experts_ram_gib": 55.4,
+      "ready_seconds": 48
+    }
+  },
+  "quality": {
+    "suite_17": "17/17",
+    "suite_13": "13/13",
+    "vision": "ok"
+  },
+  "notes": [
+    "RAM at DOCP 3200 or manual 3600 hung the machine under sustained inference; JEDEC 2400 is stable.",
+    "clang 23 (ROCm 7.14) crashed at -j16 on two mmq-instance units; -j8 with a retry pass built everything.",
+    "unsloth MTP gguf does not feed mtp_rt.py unchanged; the existing draft runtime works."
+  ]
+}

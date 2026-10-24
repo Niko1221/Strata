@@ -1,0 +1,80 @@
+# 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM: Strata 0.2.1, IQ3_S at 131K and IQ4_XS at 262K
+
+Follow-up to [the 0.1.43.1 report](../2026-10-19-community-2x-mi50-5700x/README.md). Same box, moved to the 0.2.1
+release (engine 0.1.46) and 128 GB of RAM, with two models measured on the same flags. Everything below is a
+measurement on hardware we own; the machine is a headless server used for local inference, not a benchmark rig.
+
+## Provenance
+
+- Strata 0.2.1, engine `strata --version` = **0.1.46**, source build at tag `v0.2.1` (`9076725`).
+- Build: `cmake -S . -B build-906 -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_HIP_GFX906=ON
+  -DCMAKE_HIP_ARCHITECTURES=gfx906 -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang
+  -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++`, then `ninja -C build-906 strata strata-device`. No local patches.
+  With clang 23 (ROCm 7.14) a 16-way build crashed the compiler itself (SIGSEGV in `globalopt`/`cgscc`) on two
+  `mmq-instance-*.cu` units; `-j8` plus a retry pass built all targets.
+- `strata-device --selftest`: OK.
+
+## Hardware
+
+| | |
+| --- | --- |
+| GPUs | 2x AMD Instinct MI50 16 GB, gfx906 (`1002:66af`), 200 W power cap each, PCIe 3.0 x8 |
+| CPU | AMD Ryzen 7 5700X (8C/16T), stock BIOS (PBO Auto) |
+| RAM | 128 GB DDR4 (4x32 GB Kingston KF3200C16D4/32GX), JEDEC **2400 MT/s** |
+| OS | Ubuntu 24.04, kernel 6.8.0-147, ROCm 7.14 in `mixa3607/rocm-gfx906:7.14-complete` |
+| Storage | 512 GB NVMe (455 GB root LV) |
+
+Memory note: at DOCP 3200 and at manual 3600 the machine hung under sustained inference (an uncorrected machine
+check and hard resets), so it runs at the JEDEC 2400 profile. On this engine RAM speed is worth ~2% at most
+(measured 2400 vs 3600 in the earlier report), so the loss is not material.
+
+## Models and configuration
+
+- **IQ3_S**: `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`, `IQ3_S` (2 shards, 78 GB), 131,072-token context.
+- **IQ4_XS**: `unsloth/Qwen3.8-Flash-Next-GGUF`, `UD-IQ4_XS` (3 shards, 87 GB), 262,144-token context.
+  The pack needs `--compat-bf16`: 195 dense tensors are Q8_0 in this file and the engine wants BF16 for them.
+- MTP draft runtime rebuilt from the same base model's draft layer (786 MB). The `MTP/mtp-*-Q8_0.gguf` file in the
+  unsloth repository does not feed `mtp_rt.py` unchanged (`KeyError: mtp.layers.0.mlp.experts.gate_up_proj`).
+- Vision: CPU encoder (`strata-vision`, mmproj BF16).
+- Flags, identical for both models:
+
+```text
+--max-context <131072|262144> --kv int8 --kv-resident 32768 --layer-split 27
+--spec 3 --spec-min-p 0.9 --prefill 2048 --vram-reserve-mib 1024
+--pipeline-windows 2 --trim-stage-weights --vision
+```
+
+## Method
+
+- Greedy (`temperature 0`), unique prompt text per run so the prompt cache never helps.
+- Short chat: 5 runs, 128-token cap. 1.6K prompt: 5 runs, 128 tokens. 31K prompt: 2 runs, 64 tokens.
+- Timing from the engine's own `timings` block (`prompt_per_second`, `predicted_per_second`).
+- Quality: 17 tasks with programmatic answers (arithmetic, unit conversion, an executable Python function with
+  edge cases, strict JSON, a needle with decoy numbers, Russian case, exact-length constraints).
+- Long context: a 140,908-token prompt with a five-digit code in the middle, answer checked.
+
+## Results
+
+| Configuration | Prompt tokens | Decode tok/s | Prompt tok/s | Runs |
+| --- | ---: | ---: | ---: | ---: |
+| IQ3_S, short chat | 80 | 61.0 | 55 | 5 |
+| IQ3_S, 1.6K | 726 | 71.3 | 180 | 5 |
+| IQ3_S, 31K | 31,446 | **73.7** | **691** | 2 |
+| IQ4_XS, short chat | 80 | 58.6 | 53 | 5 |
+| IQ4_XS, 1.6K | 726 | 62.8 | 149 | 5 |
+| IQ4_XS, 31K | 31,446 | 57.5 | 533 | 2 |
+| IQ4_XS, 140K | 140,908 | 59.0 | 546 | 1 |
+
+- Expert cache: IQ3_S 12,245 slots / 23.9 GiB, 98.0-99.7% hit; IQ4_XS 9,876 slots / 22.8 GiB, 90.4-94.0% hit
+  (bigger experts, same VRAM). Experts in RAM: 46.8 GiB and 55.4 GiB.
+- Load to ready: 40 s (IQ3_S) and 48 s (IQ4_XS); switching models between the two takes that long.
+- Power under a 31K prompt: ~406 W peak for both cards, 49-54 C edge.
+
+## Correctness and limitations
+
+- Quality suite: 17/17 for both models; a second 13-task suite also 13/13 for both. On short, checkable tasks the
+  3.06 vs 4.25 bit difference did not show.
+- The 140K needle was found (answer `48213`), so the 262,144-token window is usable on 2x16 GB with KV streaming.
+- Vision answered correctly on a two-shape image (10-11 s per image, 320 prompt tokens).
+- Not measured: 262K prefill beyond 140K, two clients at once, power at 262K, `--kv fp16` (other gfx906 owners use
+  it at 262K), and any GPU-encoder path (the encoder runs on the CPU here).
