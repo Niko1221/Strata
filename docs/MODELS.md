@@ -6,6 +6,9 @@ makers' compressions). It also runs a smaller model, [Qwen3.6-35B-A3B](#qwen36-3
 (`strata launch`) and the installer recommend one for your PC; this page explains the choice. Back to the
 [README](../README.md).
 
+For developers, the separate [experimental Muse Spark reference CLI](MUSE_SPARK.md) is opt-in, accepts token IDs,
+and is not a supported installer/chat-server choice. Its synthetic checks are not full-checkpoint validation.
+
 > **On this page:** [Pick by memory](#pick-by-memory) · [Speed](#how-fast-is-each-size) · [The sizes](#the-sizes) ·
 > [Will it fit?](#will-it-fit) · [The versions](#the-versions) · [Qwen3.6](#qwen36-35b-a3b) ·
 > [Adding another model](#adding-or-switching-models)

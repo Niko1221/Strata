@@ -230,6 +230,9 @@ Measured on a 16 GB AMD card (RX 9070 XT, Ryzen 9 3900X, 47 GB RAM):
 The bars use one scale for both tables. A card with more VRAM is faster: an RTX 3090 (24 GB) should write about 100-140
 tokens per second. The engine version behind each number is in [DETAILS.md](docs/DETAILS.md#speed-measured).
 
+Developers: an [experimental Muse Spark reference CLI](docs/MUSE_SPARK.md) can be built separately. It is
+not an installer/chat-server model, and does not establish full 816B checkpoint performance.
+
 ## Using it
 
 ### In the app
