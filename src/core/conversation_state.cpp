@@ -140,27 +140,49 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& ss, 
     return true;
 }
 
-bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss,
-                                      const ModelGeometry& g, std::string& error) {
-    ConversationStateSizes z;
-    if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
-        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
-        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
-        return fail(error, "invalid checkpoint running-state payload");
-    return true;
-}
-
 #if defined(STRATA_GPU_METAL)
 }  // namespace strata::core
 namespace strata::metal_engine {
 // the running state lives in the Metal decode window (metal/src/engine/window.cpp), not in the session's buffers
 bool window_checkpoint_save(strata::core::ConversationCheckpoint& c, std::string& error);
 bool window_checkpoint_restore(const strata::core::ConversationCheckpoint& c, std::string& error);
+// the payload sizes the window saves and restores (its own geometry, not the generic CUDA session's)
+bool window_checkpoint_sizes(size_t& gdn, size_t& ple, size_t& tails, size_t& dead, size_t& block_pos);
 }  // namespace strata::metal_engine
 namespace strata::core {
 #endif
+
+// The byte sizes of a checkpoint's five running-state arrays: the one rule the validator (save side) and the read limits
+// (restore side) share. Metal: the decode window's own geometry; elsewhere the session's carve.
+static bool checkpoint_payload_sizes(const SessionState& ss, const ConversationStateSizes& z, std::array<size_t, 5>& m,
+                                     std::string& error) {
+    m = {z.gdn, ss.ple_hist ? z.ple : 0, owned_qsa(ss) * z.tail, owned_qsa(ss) * z.dead, owned_qsa(ss) * z.block_pos};
+#if defined(STRATA_GPU_METAL)
+    // the Metal window keeps the running state and the indexer block positions itself: check its geometry
+    if (!strata::metal_engine::window_checkpoint_sizes(m[0], m[1], m[2], m[3], m[4])) return fail(error, "metal window: not up");
+#else
+    (void) error;
+#endif
+    return true;
+}
+
+bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss,
+                                      const ModelGeometry& g, std::string& error) {
+    ConversationStateSizes z;
+    if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
+    std::array<size_t, 5> m;
+    if (!checkpoint_payload_sizes(ss, z, m, error)) return false;
+    const size_t gdn = m[0], ple = m[1], tails = m[2], dead = m[3], block_pos = m[4];
+    const struct { const char* name; size_t actual, expected; } fields[] = {
+        {"gdn", c.gdn.size(), gdn}, {"ple", c.ple.size(), ple}, {"tails", c.tails.size(), tails},
+        {"dead", c.dead.size(), dead}, {"block_pos", c.block_pos.size(), block_pos}};
+    for (const auto& f : fields)
+        if (f.actual != f.expected)
+            return fail(error, ("invalid checkpoint running-state payload: " + std::string(f.name) + " is " +
+                                std::to_string(f.actual) + " bytes, expected " + std::to_string(f.expected)).c_str());
+    if (!image_keys(c.imgs, c.ids.size())) return fail(error, "invalid checkpoint image keys");
+    return true;
+}
 
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
                                   const ModelGeometry& g, std::string& error) {
@@ -360,13 +382,15 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     size_t tails = 0, dead = 0, block_pos = 0;
     if (!product(tails, {layers, z.tail}) || !product(dead, {layers, z.dead}) ||
         !product(block_pos, {layers, z.block_pos})) return fail(error, "indexer byte count overflow");
+    std::array<size_t, 5> payload;
+    if (!checkpoint_payload_sizes(ss, z, payload, error)) return false;
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
     l.max_kv_layers = layers + 1;
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
-    l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
+    l.max_state_bytes = {payload[0], payload[1], payload[2], payload[3], payload[4]};
     l.max_kv_bytes.assign(layers + 1, {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
