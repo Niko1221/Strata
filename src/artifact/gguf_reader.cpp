@@ -40,11 +40,14 @@ int main(int argc, char** argv) {
                     ++unknown;
                     continue;
                 }
-                if (t->elements() % (uint64_t)el) {
+                const uint64_t nb = strata::tensor_payload_bytes(*t);
+                const uint64_t payload = g.file_size() - g.data_start();
+                // Check before subtracting: an offset past EOF can wrap the last gap into a small,
+                // apparently valid value. The shared helper also refuses overflowing tensor sizes.
+                if (nb == 0 || t->offset > payload || nb > payload - t->offset) {
                     ++bad;
                     continue;
                 }
-                const uint64_t nb = t->elements() / (uint64_t)el * (uint64_t)by;
                 // The bracket is on the GAP to the next tensor's offset, not on that offset itself -
                 // offsets are relative to data_start, so the gap is a difference. Comparing against
                 // the raw offset flagged almost every tensor (213/214) while the same test in Python
@@ -56,7 +59,7 @@ int main(int argc, char** argv) {
             std::printf("  geometry bracket: %zu out of range, %zu types unknown\n", bad, unknown);
             const std::string err = strata::check_architecture(g);
             std::printf("  architecture guard: %s\n", err.empty() ? "PASS" : ("FAIL - " + err).c_str());
-            if (bad) return 1;
+            if (bad || !err.empty()) return 1;
         }
         return 0;
     } catch (const std::exception& e) {
