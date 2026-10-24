@@ -51,6 +51,9 @@ class FeedError(RuntimeError):
 
 class FeedDowngrade(FeedError):
     """A feed or a package older than what this PC already has."""
+    # .sequence is the feed's, .accepted the last one this PC took (the updater adds the folder that holds it)
+    sequence: int | None = None
+    accepted: int | None = None
 
 
 def version_key(value: str) -> tuple[int, ...]:
@@ -150,6 +153,9 @@ class Feed:
     source: str                    # where it was read from (the base for relative URLs)
     key_id: str                    # who signed it
     raw: bytes = field(default=b"", repr=False)
+    #: the DeepSeek-V4.1 engine packages (feed member ``dsv41``, same entry shape as ``engine``): a separate download that setup fetches when
+    #: DeepSeek is chosen. Kept out of ``engine`` so that `strata update` and select_engine never pick one as THE engine. Older Controls ignore the member.
+    dsv41: tuple[EnginePackage, ...] = ()
 
     def url(self, ref: str) -> str:
         return transfer.resolve_ref(transfer.base_of(self.source), ref)
@@ -275,8 +281,20 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             if ident in seen:
                 raise FeedError(f"the feed lists engine {pkg.label} twice")
             seen.add(ident)
+    dsv41 = []
+    raw_dsv41 = data.get("dsv41")
+    if raw_dsv41 is not None:
+        if not isinstance(raw_dsv41, dict) or not isinstance(raw_dsv41.get("packages"), list):
+            raise FeedError("the feed's dsv41 member lists no packages")
+        dsv41 = [_engine_package(item) for item in raw_dsv41["packages"]]
+        seen = set()
+        for pkg in dsv41:
+            ident = (pkg.version, pkg.platform, pkg.backend, pkg.variant)
+            if ident in seen:
+                raise FeedError(f"the feed lists DeepSeek engine {pkg.label} twice")
+            seen.add(ident)
     return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
-                control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload)
+                control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41))
 
 
 def _expired_words(expires_at: str, now: dt.datetime, server_now: dt.datetime | None) -> str:
@@ -314,8 +332,10 @@ def verify_and_parse(payload: bytes, signature_bytes: bytes, *, source: str, tru
     if feed.expires_at and _time(feed.expires_at, "expires_at") < now:
         raise FeedError(_expired_words(feed.expires_at, now, server_now))
     if last_sequence is not None and feed.sequence < last_sequence:
-        raise FeedDowngrade(f"the update feed is older than the one already accepted (sequence {feed.sequence} < {last_sequence}); "
-                            "refusing a replayed feed")
+        down = FeedDowngrade(f"the update feed is older than the one already accepted (sequence {feed.sequence} < {last_sequence}); "
+                             "refusing a replayed feed")
+        down.sequence, down.accepted = feed.sequence, last_sequence
+        raise down
     return feed
 
 

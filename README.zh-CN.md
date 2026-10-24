@@ -33,7 +33,7 @@ Strata 运行 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-N
 - **免费。** MIT 许可证，不用注册账号，不走云端。
 - **隐私。** 没有遥测。Strata 下载什么、什么时候联网、如何校验下载内容，都写在 [docs/SAFETY.md](docs/SAFETY.md)。
 
-版本 0.2.2 · 引擎 0.1.47
+版本 0.2.3 · 引擎 0.1.48
 
 ## 硬件要求
 
@@ -72,16 +72,16 @@ Strata 运行 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-N
 
 | 系统 | 你的显卡 | 要下载的文件 |
 | --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX，驱动 580 或更新 | [`Strata-0.2.2-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda13.exe) |
-| | NVIDIA，较旧的显卡，或驱动低于 580 | [`Strata-0.2.2-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda12.exe) |
-| | AMD Radeon RX 9000 系列或 Radeon AI PRO R9700 | [`Strata-0.2.2-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip.exe) |
-| | AMD Radeon RX 7000 系列或 Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX，驱动 580 或更新 | [`Strata-0.2.2-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA，较旧的显卡，或驱动低于 580 | [`Strata-0.2.2-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon RX 9000 系列或 Radeon AI PRO R9700 | [`Strata-0.2.2-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx9070.AppImage) |
-| | AMD Radeon RX 7000 系列 | [`Strata-0.2.2-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-strixhalo.AppImage) |
-| **Mac**（Apple 芯片，macOS 15 及以上） | 内置 | [`Strata-0.2.2-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-mac.dmg) |
+| **Windows 10 / 11** | NVIDIA RTX，驱动 580 或更新 | [`Strata-0.2.3-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda13.exe) |
+| | NVIDIA，较旧的显卡，或驱动低于 580 | [`Strata-0.2.3-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda12.exe) |
+| | AMD Radeon RX 9000 系列或 Radeon AI PRO R9700 | [`Strata-0.2.3-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip.exe) |
+| | AMD Radeon RX 7000 系列或 Ryzen AI Max (Strix Halo) | [`Strata-0.2.3-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip-rdna3.exe) |
+| **Linux** | NVIDIA RTX，驱动 580 或更新 | [`Strata-0.2.3-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda13.AppImage) |
+| | NVIDIA，较旧的显卡，或驱动低于 580 | [`Strata-0.2.3-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda12.AppImage) |
+| | AMD Radeon RX 9000 系列或 Radeon AI PRO R9700 | [`Strata-0.2.3-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx9070.AppImage) |
+| | AMD Radeon RX 7000 系列 | [`Strata-0.2.3-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx7900.AppImage) |
+| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.3-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-strixhalo.AppImage) |
+| **Mac**（Apple 芯片，macOS 15 及以上） | 内置 | [`Strata-0.2.3-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-mac.dmg) |
 
 **不确定时：** NVIDIA 显卡的驱动版本在 580 及以上就选 `cuda13`，否则选 `cuda12`。`cuda12` 适用于较旧的显卡和驱动。
 `hip` 和 `amd` 的文件是给 AMD 显卡用的。其他 AMD 显卡（RX 6000）目前还没有现成的应用，
@@ -181,6 +181,21 @@ Gyro 可在 NVIDIA 和 AMD 显卡（AMD 为实验性支持）以及 Linux 上的
 - **[OrcaRouter 的 Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** 需要手动设置。
 
 所有尺寸、下载大小，以及各种配置能跑什么：[docs/MODELS.md](docs/MODELS.md)。
+
+### DeepSeek V4.1-Flash（终端版，0.2.4 起）
+
+[DeepSeek V4.1-Flash](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) 是另一个大得多的模型。下面三个版本由 ISTA-DASLab 制作。Strata 在一台有一块 12 GB 显卡和 46 到 64 GB 内存的电脑上运行它们，其余部分从固态硬盘读取。它可在 NVIDIA RTX 30 到 50 系列显卡和 Radeon AI PRO R9700 上运行。它使用自己的引擎包 `strata-dsv41`，你选择 DeepSeek 时由 `strata launch` 下载。桌面应用暂时不提供它。
+
+| 版本 | 下载大小 | 与原模型相比的质量 | 生成速度 |
+| --- | ---: | --- | --- |
+| **IQ1_M**（1.75 位） | 239 GB | KL 0.217，困惑度 3.80（+21%）；代码 +8.9%，智能体任务 +10.2%；普通英文散文表现较弱。据 ISTA-DASLab 的模型卡，它保留了基础模型任务平均分的 98.7%（AIME25、GPQA-Diamond、LiveCodeBench v6）。 | 尚未测量 |
+| **IQ2_XXS** (2.00 位) | 257 GB | KL 0.170，困惑度 3.63（+15.5%）；代码 +8.6%，智能体任务 +5.3% | RTX 3060 上每秒约 8 到 10 个 token（代码 9.9，智能体任务 7.8），RTX 5070 上约 5 个 |
+| **IQ2_XS** (2.25 位) | 274 GB | KL 0.107，困惑度 3.37（+7.3%）；代码 +3.2%，智能体任务 +2.2% | 一块 Radeon AI PRO R9700 上每秒约 11 个 token |
+| **IQ4_NL**（Engram 表，不是第三个模型） | 111 GB，已包含在上面三个下载中 | 模型从内存或固态硬盘读取的 4 位 Engram 查找表。三个版本共用这一个文件（`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`）。 | 不适用 |
+
+4 块 Radeon AI PRO R9700：每秒约 31 个 token，使用 DSpark 时为 55 到 69。
+
+用 `strata launch --model ist-das-2.00bpw`（或 `ist-das-1.75bpw`、`ist-das-2.25bpw`）启动。详情、各显卡的速度和手动安装见 [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md)。
 
 ## 速度如何？
 

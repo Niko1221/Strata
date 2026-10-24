@@ -69,7 +69,7 @@ Setup lists them for an Arc like for any card and warns, never refuses, when VRA
 card: an Arc A750 (8 GB, i915 driver) in a PC with a Ryzen 5 5600X (6 cores, AVX2) and 62 GB of RAM, on the first-release files of Gyro-S and
 Gyro-M (the same size as the pinned ones, a different SHA-256). The pinned Gyro-S passes the same parity run (16 cases, 0 failures) and
 answers correctly through the server; it was not compared with CUDA.
-Not tested: a B-series card, two Arc cards (the second-card expert helper refuses a Gyro pack and says so), an Arc on the xe driver. The Battlemage AOT build
+Not tested by us: a B-series card (supported since 2026-10-22; `strata launch` says it is new and how to report a problem), two Arc cards (the second-card expert helper refuses a Gyro pack and says so), an Arc on the xe driver. The Battlemage AOT build
 (`bmg-g31`) compiles with the trellis kernels; it was not run.
 
 The trellis decode kernels do the same integer and float operations in the same order as the CUDA ones (int8 codebook, q8_1 activations),

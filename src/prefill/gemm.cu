@@ -36,6 +36,17 @@
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
 #include "hipblaslt_tuning.hpp"
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include <hip/hip_runtime_api.h>
 #include <hipblaslt/hipblaslt.h>
 #include <hipblaslt/hipblaslt-ext.hpp>
@@ -238,9 +249,34 @@ struct HipLtDescriptors {
     }
 };
 
+// The engine package's own tuning folder (<engine folder>/tuning), for a start that did not come through the launcher (a hand-made
+// config, a CLI run): without a table the prompt GEMMs fall back to plain hipBLAS and a Strix Halo reads prompts at half speed
+// (340 against 690 tok/s, IQ3_S 4K).  The launcher sets STRATA_HIPBLASLT_TUNING itself; this is the same table found by the engine.
+std::string own_tuning_dir() {
+#if defined(_WIN32)
+    char p[4096] = {};
+    const DWORD n = GetModuleFileNameA(nullptr, p, (DWORD) sizeof(p));
+    std::string s(p, n);
+    const size_t k = s.find_last_of("\\/");
+    return k == std::string::npos ? std::string() : s.substr(0, k + 1) + "tuning/";
+#else
+    char p[4096] = {};
+    const ssize_t n = readlink("/proc/self/exe", p, sizeof(p) - 1);
+    std::string s(p, n > 0 ? (size_t) n : 0);
+    const size_t k = s.find_last_of('/');
+    return k == std::string::npos ? std::string() : s.substr(0, k + 1) + "tuning/";
+#endif
+}
+
 std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t workspace_bytes) {
+    std::string path_own;
     const char* path = std::getenv("STRATA_HIPBLASLT_TUNING");
-    if (!path || !*path) return nullptr;
+    bool from_package = false;
+    if (!path || !*path) {
+        const char* sw = std::getenv("STRATA_HIPBLASLT_TABLE");     // the launcher's switch: off / 0 / false = never the packaged table
+        if (sw != nullptr && (std::strcmp(sw, "off") == 0 || std::strcmp(sw, "0") == 0 || std::strcmp(sw, "false") == 0)) return nullptr;
+        from_package = true;                                          // the file is found below, once the card and the version are known
+    }
 
     auto state = std::make_unique<HipLtState>();
     state->workspace = workspace;
@@ -265,6 +301,15 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     const auto suffix = arch.find(':');
     if (suffix != std::string::npos) arch.resize(suffix);
 
+    if (from_package) {
+        const std::string dir = own_tuning_dir();
+        if (dir.empty()) return nullptr;
+        path_own = dir + arch + "-hipblaslt-" + std::to_string(version) + ".txt";
+        std::FILE* f = std::fopen(path_own.c_str(), "rb");
+        if (f == nullptr) return nullptr;       // no table for this card and hipBLASLt version beside the engine: plain hipBLAS as before
+        std::fclose(f);
+        path = path_own.c_str();
+    }
     std::string error;
     if (!state->table.load(path, arch, version, error)) {
         std::fprintf(stderr, "prefill gemm: %s; using hipBLASEx\n", error.c_str());

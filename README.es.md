@@ -33,7 +33,7 @@ con tus aplicaciones y tus agentes de programación. Tus chats y tus archivos se
 - **Gratis.** Licencia MIT, sin cuenta, sin nube.
 - **Privado.** Sin telemetría. Lo que Strata descarga, cuándo usa internet y cómo comprueba las descargas está en [docs/SAFETY.md](docs/SAFETY.md).
 
-Versión 0.2.2 · motor 0.1.47
+Versión 0.2.3 · motor 0.1.48
 
 ## Lo que necesitas
 
@@ -73,16 +73,16 @@ sabes cuál elegir? Mira el párrafo que hay debajo de la tabla.
 
 | Sistema | Tu tarjeta gráfica | Archivo que descargar |
 | --- | --- | --- |
-| **Windows 10 / 11** | NVIDIA RTX, controlador 580 o posterior | [`Strata-0.2.2-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda13.exe) |
-| | NVIDIA, tarjeta más antigua o controlador anterior a 580 | [`Strata-0.2.2-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-cuda12.exe) |
-| | AMD Radeon serie RX 9000 o Radeon AI PRO R9700 | [`Strata-0.2.2-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip.exe) |
-| | AMD Radeon serie RX 7000 o Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-windows-hip-rdna3.exe) |
-| **Linux** | NVIDIA RTX, controlador 580 o posterior | [`Strata-0.2.2-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda13.AppImage) |
-| | NVIDIA, tarjeta más antigua o controlador anterior a 580 | [`Strata-0.2.2-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-nvidia-cuda12.AppImage) |
-| | AMD Radeon serie RX 9000 o Radeon AI PRO R9700 | [`Strata-0.2.2-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx9070.AppImage) |
-| | AMD Radeon serie RX 7000 | [`Strata-0.2.2-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-rx7900.AppImage) |
-| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.2-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-linux-amd-strixhalo.AppImage) |
-| **Mac** (Apple Silicon, macOS 15 o posterior) | integrada | [`Strata-0.2.2-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.2-mac.dmg) |
+| **Windows 10 / 11** | NVIDIA RTX, controlador 580 o posterior | [`Strata-0.2.3-windows-cuda13.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda13.exe) |
+| | NVIDIA, tarjeta más antigua o controlador anterior a 580 | [`Strata-0.2.3-windows-cuda12.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-cuda12.exe) |
+| | AMD Radeon serie RX 9000 o Radeon AI PRO R9700 | [`Strata-0.2.3-windows-hip.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip.exe) |
+| | AMD Radeon serie RX 7000 o Ryzen AI Max (Strix Halo) | [`Strata-0.2.3-windows-hip-rdna3.exe`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-windows-hip-rdna3.exe) |
+| **Linux** | NVIDIA RTX, controlador 580 o posterior | [`Strata-0.2.3-linux-nvidia-cuda13.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda13.AppImage) |
+| | NVIDIA, tarjeta más antigua o controlador anterior a 580 | [`Strata-0.2.3-linux-nvidia-cuda12.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-nvidia-cuda12.AppImage) |
+| | AMD Radeon serie RX 9000 o Radeon AI PRO R9700 | [`Strata-0.2.3-linux-amd-rx9070.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx9070.AppImage) |
+| | AMD Radeon serie RX 7000 | [`Strata-0.2.3-linux-amd-rx7900.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-rx7900.AppImage) |
+| | AMD Ryzen AI Max (Strix Halo) | [`Strata-0.2.3-linux-amd-strixhalo.AppImage`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-linux-amd-strixhalo.AppImage) |
+| **Mac** (Apple Silicon, macOS 15 o posterior) | integrada | [`Strata-0.2.3-mac.dmg`](https://github.com/Niko1221/Strata/releases/latest/download/Strata-0.2.3-mac.dmg) |
 
 **Si no estás seguro:** con NVIDIA, elige `cuda13` si la versión de tu controlador es la 580 o posterior, y `cuda12` en caso
 contrario. `cuda12` es para tarjetas y controladores más antiguos. Los archivos `hip` y `amd` son para tarjetas AMD. Las
@@ -189,6 +189,21 @@ Más opciones:
 - **[El Uncensored IQ3_XXS de OrcaRouter](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** se configura a mano.
 
 Todos los tamaños, descargas y lo que cabe en cada equipo: [docs/MODELS.md](docs/MODELS.md).
+
+### DeepSeek V4.1-Flash (en el Terminal, desde 0.2.4)
+
+[DeepSeek V4.1-Flash](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) es otro modelo, mucho más grande. ISTA-DASLab hizo los tres conjuntos de abajo. Strata los ejecuta en un PC con una tarjeta gráfica de 12 GB y de 46 a 64 GB de RAM, y lee el resto de tu SSD. Funciona en tarjetas NVIDIA RTX de las series 30 a 50 y en la Radeon AI PRO R9700. Usa su propio paquete de motor, `strata-dsv41`, que `strata launch` descarga cuando eliges DeepSeek. La app de escritorio todavía no lo ofrece.
+
+| Conjunto | Descarga | Calidad frente al modelo original | Responde a |
+| --- | ---: | --- | --- |
+| **IQ1_M** (1,75 bits) | 239 GB | KL 0,217, perplejidad 3,80 (+21 %); código +8,9 %, tareas de agente +10,2 %; más débil con prosa inglesa corriente. Según la ficha del modelo de ISTA-DASLab, conserva el 98,7 % del promedio de tareas del modelo base (AIME25, GPQA-Diamond, LiveCodeBench v6). | aún sin medir |
+| **IQ2_XXS** (2.00 bits) | 257 GB | KL 0,170, perplejidad 3,63 (+15,5 %); código +8,6 %, tareas de agente +5,3 % | de 8 a 10 tokens/s en una RTX 3060 (código 9,9, tareas de agente 7,8), unos 5 en una RTX 5070 |
+| **IQ2_XS** (2.25 bits) | 274 GB | KL 0,107, perplejidad 3,37 (+7,3 %); código +3,2 %, tareas de agente +2,2 % | unos 11 tokens/s en una Radeon AI PRO R9700 |
+| **IQ4_NL** (tabla Engram, no es un tercer modelo) | 111 GB, ya incluidos en las tres descargas de arriba | La tabla de consulta Engram de 4 bits que el modelo lee de la RAM o del SSD. Los tres conjuntos usan este único archivo (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`). | n/a |
+
+4x Radeon AI PRO R9700: unos 31 tokens/s, de 55 a 69 con DSpark.
+
+Inícialo con `strata launch --model ist-das-2.00bpw` (o `ist-das-1.75bpw`, `ist-das-2.25bpw`). Detalles, velocidades por tarjeta e instalación manual: [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md).
 
 ## ¿Qué velocidad tiene?
 

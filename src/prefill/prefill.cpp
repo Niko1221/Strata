@@ -1,6 +1,9 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
+#if defined(STRATA_HAVE_DFLASH2)
+#include "strata/kernels/dflash2.hpp"
+#endif
 #include "strata/prefill/warm_policy.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
@@ -1051,7 +1054,19 @@ strata::kernels::QsaAttnPools pools_of(const strata::kernels::KvHostPools& h, co
 }  // namespace
 
 Prefill::Prefill() : impl_(new Impl) {}
-Prefill::~Prefill() { release(); }
+Prefill::~Prefill() {
+    clear_taps();
+    release();
+}
+
+void Prefill::clear_taps() {
+    if (tap_dev_ != nullptr) {
+        cudaFree(tap_dev_);
+        tap_dev_ = nullptr;
+    }
+    tap_layers_.clear();
+    on_taps = nullptr;
+}
 
 void Prefill::reset() {
     release();
@@ -2680,6 +2695,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     int ple_buf = 0;
 
     if (hand_in_ == nullptr) stopped_at_ = -1;
+#if defined(STRATA_HAVE_DFLASH2)
+    std::vector<int> tap_slot;
+    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
+        if (tap_dev_ == nullptr &&
+            cudaMalloc((void**) &tap_dev_, (size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd * 4) != cudaSuccess) {
+            (void) cudaGetLastError();
+            tap_dev_ = nullptr;
+            err = "prefill: the DFlash2 tap staging does not fit in VRAM";
+            return false;
+        }
+        tap_slot.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+    }
+#endif
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
@@ -2691,6 +2720,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = std::min(C, n - c0), p0 = pos0 + c0;
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
+#if defined(STRATA_HAVE_DFLASH2)
+        // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
+        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const int64_t tap_rows = T - tap_t0;
+        if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
+#else
+        const int64_t tap_t0 = 0, tap_rows = 0;
+#endif
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         const auto tsetup = Clock::now();
@@ -4836,6 +4873,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+#if defined(STRATA_HAVE_DFLASH2)
+                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                                                  (int) HC, (int) tap_rows, m.cs);
+#endif
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
@@ -4933,6 +4975,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 std::fclose(f);
             }
         }
+#if defined(STRATA_HAVE_DFLASH2)
+        if (tap_rows > 0 && on_taps) {
+            if (cudaStreamSynchronize(m.cs) != cudaSuccess) { err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+            if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
+        }
+#endif
         if (on_chunk || on_stage_chunk) {
             const auto toc = Clock::now();
             if (cudaStreamSynchronize(m.cs) != cudaSuccess) {

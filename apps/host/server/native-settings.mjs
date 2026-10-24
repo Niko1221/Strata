@@ -1,3 +1,4 @@
+import { validMcpName, MCP_NAME_HELP } from './mcp-names.mjs';
 /** Editable native keys. Unknown config keys and program paths stay intact. */
 export const NATIVE_FIELDS=[
  {id:'reasoning_budget_tokens',label:'Thinking token budget',group:'Responses',type:'number',min:0,max:1048576,hint:'Leave blank for the model default.'},
@@ -8,6 +9,7 @@ export const NATIVE_FIELDS=[
  {id:'idle_unload_s',label:'Unload after idle seconds',group:'Serving',type:'number',min:0,max:86400,hint:'Zero keeps the model loaded.'},
  {id:'lazy_load',label:'Load on first request',group:'Serving',type:'boolean'},
  {id:'mtp',label:'Draft layer (MTP)',group:'Serving',type:'boolean',hint:'The draft layer guesses several words ahead, which makes answers faster, and costs about 1 GB of graphics memory and some RAM. Turn it off if the model stops while it starts, or the card is small: the expert cache gets that memory back and answers are slower. Default is on.'},
+ {id:'drafting',label:'Drafting',group:'Serving',type:'enum',choices:['auto','mtp','dflash2','off'],hint:'Which drafter guesses words ahead to make answers faster. Auto (recommended) lets Strata pick from what it measured on cards like yours; today that is the MTP. DFlash2 is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If DFlash2 cannot run, the MTP is used and Details says why. Off turns the draft layer off.'},
  {id:'batchMtp',label:'MTP per request',group:'Serving',type:'boolean',hint:'Each concurrent request uses the draft layer. Left alone, Strata turns it on for one graphics card with 24 GB or more and several requests at once, and off otherwise; choose on or off here to decide yourself.'},
  {id:'parallel',label:'Concurrent requests',group:'Serving',type:'number',min:1,max:8,hint:'More slots need more memory and can slow each response.'},
  {id:'engine_silence_s',label:'Engine stall timeout (seconds)',group:'Recovery',type:'number',min:10,max:3600},
@@ -24,7 +26,7 @@ export const NATIVE_FIELDS=[
  {id:'mcp_max_result_chars',label:'Maximum tool result characters',group:'Tools',type:'number',min:100,max:1000000},
 ];
 /** Settings the app itself applies when it starts a model (they are not read from the engine's source, so the engine's text never says it supports them). */
-export const APP_OWNED_FIELDS=['mtp','batchMtp'];
+export const APP_OWNED_FIELDS=['mtp','batchMtp','drafting'];
 /** The engine arguments without the draft layer: --mtp <folder or count>, --spec-min-p <p> (its confidence threshold) and --batch-mtp. --spec stays: prompt lookup still uses its windows. Same rule as strata_control/draft_layer.py. */
 export function withoutDraftLayer(args){
  const out=[];const list=(args??[]).map(String);
@@ -56,7 +58,9 @@ export function publicMcpServers(servers){return Object.fromEntries(Object.entri
 export function validateMcpServers(servers,previous={}){
  if(!servers||typeof servers!=='object'||Array.isArray(servers)||Object.keys(servers).length>30)throw new Error('MCP servers must be an object with at most 30 entries.');
  const out={};for(const [name,s] of Object.entries(servers)){
-  if(!/^[a-z0-9_-]{1,64}$/i.test(name)||!s||typeof s!=='object'||Array.isArray(s))throw new Error('Give each tool server a simple, unique name.');
+  if(!s||typeof s!=='object'||Array.isArray(s))throw new Error('Give each tool server a simple, unique name.');
+  // a name that was saved before the 32-character rule stays saveable (unrelated settings must not be blocked); the agent reports it as left out
+  if(!validMcpName(name)&&!Object.hasOwn(previous??{},name))throw new Error(MCP_NAME_HELP);
   if(!!s.command===!!s.url)throw new Error(`${name}: choose a command or HTTP URL.`);
   for(const key of Object.keys(s))if(!['command','args','env','cwd','url','headers','disabled'].includes(key))throw new Error(`${name}: unsupported property ${key}.`);
   if(s.command&&(typeof s.command!=='string'||s.command.length>1000||/[\n\r\0]/.test(s.command)))throw new Error(`${name}: choose a valid program.`);
