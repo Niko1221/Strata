@@ -83,6 +83,7 @@ from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+from serve import park_keeper  # noqa: E402
 from serve import images as images_api  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -1183,6 +1184,7 @@ class StrataEngine:
         self.wlock = threading.Lock()                   # stdin writes from several request threads
         self.pump = threading.Thread(target=self._pump, daemon=True)
         self.pump.start()
+        self.park_from_disk()                           # STRATA_PARK_DIR (opt-in): the conversations parked last stop
 
     def _pump(self):
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
@@ -1276,8 +1278,108 @@ class StrataEngine:
 
     def unload(self):
         """Release GPU/RAM between requests, retaining the spawn config for automatic reloading."""
+        self.park_to_disk()
         self.close()
         self.unloaded = True
+
+    # STRATA_PARK_DIR (opt-in, unset by default): a folder the parked conversations of the engine's conversation cache
+    # go to when the engine is stopped gracefully or unloaded (Ctrl+C, SIGTERM, POST /unload, the idle unload), and come
+    # back from when it starts again, so the next turn of a long conversation is not read again from its first token.
+    # The engine's PARKSAVE / PARKLOAD do the work (generate.cpp): one session file per conversation and stage, a
+    # manifest, bound to this engine file, its STRATA_* switches and the model.  Every save writes to that disk (the
+    # engine skips what is there unchanged, conversations under STRATA_PARK_MIN_TOKENS (16384) and older than
+    # STRATA_PARK_MAX_AGE_H (48 h), and all but 2 checkpoints each), so mind an SSD's write endurance.  Unset: nothing
+    # is written or read, as before.  Any failure is said and the stop / start goes on.
+    PARK_DIR = os.environ.get("STRATA_PARK_DIR", "").strip()
+    # STRATA_PARK_RAMLIKE=1 (Windows, with STRATA_PARK_DIR): the engine writes the parked conversations to named
+    # pagefile-backed sections instead of files, and a keeper process (serve/park_keeper.py) holds them in RAM from the
+    # stop to the next start.  Nothing goes to a disk but the folder's small park-mem.manifest and keeper.json (the
+    # pagefile only if memory runs short).  The RAM and commit stay taken until the next start or STRATA_PARK_MAX_AGE_H;
+    # a reboot loses them.
+    PARK_RAMLIKE = os.environ.get("STRATA_PARK_RAMLIKE", "").strip() == "1" and os.name == "nt"
+
+    def _park_max_age_s(self) -> float:
+        try:
+            return max(0.0, float(os.environ.get("STRATA_PARK_MAX_AGE_H", "48") or 48)) * 3600
+        except ValueError:
+            return 48 * 3600.0
+
+    def park_known(self) -> bool:
+        """This engine takes PARKSAVE / PARKLOAD (its INFO line says park_files=1, or 2 when it can also write named
+        sections; an older engine would answer ERR, which the session exchange treats as out of step and ends the
+        engine).  With STRATA_PARK_RAMLIKE an engine without sections is not asked: it would write files instead."""
+        level = self.info.get("park_files")
+        need = 2 if self.PARK_RAMLIKE else 1
+        if isinstance(level, int) and level >= need:
+            return True
+        if self.PARK_DIR and not self.__dict__.get("_park_said"):
+            self.__dict__["_park_said"] = True
+            print("[strata] STRATA_PARK_DIR is set but this engine does not save parked conversations"
+                  f"{' in RAM (STRATA_PARK_RAMLIKE)' if self.PARK_RAMLIKE else ''}: they are not kept over a restart",
+                  flush=True)
+        return False
+
+    def park_to_disk(self):
+        """PARKSAVE: the parked conversations (the live one parked first) to STRATA_PARK_DIR.  Between requests only
+        (the caller holds the service FIFO, or no request can run any more)."""
+        if not self.PARK_DIR or self.batch or not self.alive() or not self.park_known():
+            return
+        try:
+            r = self.session_file("parksave", self.PARK_DIR)
+            where = "RAM (named sections)" if self.PARK_RAMLIKE else self.PARK_DIR
+            print(f"[strata] parked conversations saved: {r['tokens']} kept ({r['bytes'] / 1e9:.2f} GB written now) "
+                  f"in {where}, {r['ms'] / 1000:.1f} s", flush=True)
+        except Exception as e:                          # never let it block the stop
+            print(f"[strata] parked conversations not saved: {e}", flush=True)
+            return
+        if self.PARK_RAMLIKE:
+            self._park_keep(r["tokens"])
+
+    def _park_keep(self, conversations: int) -> None:
+        """STRATA_PARK_RAMLIKE: a keeper process takes the sections the engine still holds, before the engine is
+        closed.  A keeper that is not ready in time only means the conversations are read again after the restart."""
+        if not conversations:
+            park_keeper.release(self.PARK_DIR)          # nothing kept: an older keeper ends too
+            return
+        try:
+            t0 = time.monotonic()
+            doc = park_keeper.spawn(self.PARK_DIR, self._park_max_age_s())
+            missing = doc.get("missing") or []
+            print(f"[strata] parked conversations kept in RAM by keeper PID {doc['pid']}: {doc['sections']} sections, "
+                  f"{doc['bytes'] / 1e9:.2f} GB ({time.monotonic() - t0:.1f} s; released at the next start or after "
+                  f"{self._park_max_age_s() / 3600:.0f} h){'; MISSING ' + ', '.join(missing) if missing else ''}",
+                  flush=True)
+        except Exception as e:
+            print(f"[strata] parked conversations not kept in RAM: {e}", flush=True)
+
+    def park_from_disk(self):
+        """PARKLOAD: the conversations the last stop saved, back in the engine's parked list."""
+        if not self.PARK_DIR or self.batch or not self.alive() or not self.park_known():
+            return
+        keeper = None
+        if self.PARK_RAMLIKE:
+            keeper = park_keeper.status(self.PARK_DIR)
+            if keeper is None:
+                manifest = os.path.join(self.PARK_DIR, park_keeper.MANIFEST)
+                if os.path.exists(manifest):
+                    print("[strata] parked conversations: no keeper holds them any more (a reboot, or aged out); "
+                          "nothing to load", flush=True)
+                    try:
+                        os.remove(manifest)
+                    except OSError:
+                        pass
+                return
+        elif not os.path.exists(os.path.join(self.PARK_DIR, "park.manifest")):
+            return
+        try:
+            r = self.session_file("parkload", self.PARK_DIR)
+            where = f"RAM (keeper PID {keeper['pid']})" if keeper else self.PARK_DIR
+            print(f"[strata] parked conversations loaded: {r['tokens']} ({r['bytes'] / 1e9:.2f} GB) from "
+                  f"{where}, {r['ms'] / 1000:.1f} s", flush=True)
+        except Exception as e:
+            print(f"[strata] parked conversations not loaded: {e}", flush=True)
+        if keeper is not None:
+            park_keeper.release(self.PARK_DIR)          # loaded (or not loadable): the keeper and its sections end
 
     RESTART_RETRY_S = 15.0   # between the tries of restart(): a dying engine's VRAM may take a while to come back
 
@@ -2370,16 +2472,19 @@ class StrataEngine:
         a step that blocks in one call (a flush, the device transfer): until the next line the wait is that step's
         explicit allowance (at most SESSION_WAIT_MAX_S) when it is longer than engine_silence_s - no more, so a step
         that never ends is still ended."""
-        if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
+        # "parksave" / "parkload": every parked conversation to / from a folder (STRATA_PARK_DIR; the engine's
+        # PARKSAVE / PARKLOAD answer like SAVE / RESTORE, with a conversation count in place of the tokens)
+        commands = {"save": "SAVE", "restore": "RESTORE", "parksave": "PARKSAVE", "parkload": "PARKLOAD"}
+        if action not in commands or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
-            self.proc.stdin.write(f"{'SAVE' if action == 'save' else 'RESTORE'} {path}\n")
+            self.proc.stdin.write(f"{commands[action]} {path}\n")
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         silence = float(self.silence_s or 0)
         heard = time.monotonic()
-        want = "SAVED" if action == "save" else "RESTORED"
+        want = "SAVED" if action in ("save", "parksave") else "RESTORED"
 
         def out_of_step(line: str) -> EngineDied:
             self.ended = True                               # not alive from now: the next request restarts it
@@ -4422,6 +4527,21 @@ class Service:
             if counted:
                 with self.status_lock:
                     self.status["queued"] -= 1
+
+    def park_at_exit(self):
+        """STRATA_PARK_DIR: the parked conversations saved before the server ends the engine at a clean stop (Ctrl+C,
+        SIGTERM, the console's close).  Skipped while a request still holds the engine (PARKSAVE runs between
+        requests only); the stop then goes on as before."""
+        park = getattr(self.engine, "park_to_disk", None)
+        if park is None or not getattr(self.engine, "PARK_DIR", ""):
+            return
+        if not self.fifo.acquire(timeout=1.0):
+            print("[strata] parked conversations not saved: a request is still running", flush=True)
+            return
+        try:
+            park()
+        finally:
+            self.fifo.release()
 
     UNLOAD_WAIT_S = 300.0       # #1997: POST /unload?wait=1 waits this long for the running turn (wait=<s> to choose)
 
@@ -7969,6 +8089,10 @@ def start_replicas(cfg: dict, groups: list[list[int]], exe: str, effort_end: lis
     and CPU cores, started together; the ReplicaEngine in front spreads the requests."""
     from serve import replicas as rp
     n = len(groups)
+    if StrataEngine.PARK_DIR:
+        print("[strata] STRATA_PARK_DIR is not used with replicas: the parked conversations are not kept over a "
+              "restart", flush=True)
+        StrataEngine.PARK_DIR = ""
     cpus = rp.cpu_sets(n, cfg.get("replica_cpus") is not False)
     print(f"[strata] {n} replicas on the cards {' | '.join(','.join(map(str, g)) for g in groups)}"
           f"{' (own CPU cores each)' if cpus else ''}: requests go to the least busy one, a conversation back to its own",
@@ -8685,8 +8809,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
                 print(f"[strata] drain deadline expired; cancelling {cancelled} owned request(s) ...", flush=True)
                 svc.wait_for_drain(5)
                 drained = False
-        closers = [httpd.shutdown, getattr(engine, "close", None), vision.shutdown if vision else None,
-                   hub.close if hub is not None else None]
+        closers = [httpd.shutdown, svc.park_at_exit, getattr(engine, "close", None),
+                   vision.shutdown if vision else None, hub.close if hub is not None else None]
         try:
             for close in filter(None, closers):
                 try:

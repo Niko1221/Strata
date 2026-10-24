@@ -1321,7 +1321,7 @@ moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
 sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
 retention for diagnostic comparisons. Parked snapshots are not
-persisted across restarts; the session files below are.
+persisted across restarts unless the server is started with `STRATA_PARK_DIR` (below); the session files below are.
 
 **Session files (disk).** The conversation the engine holds can be saved to a file and restored later, also after a
 restart of the same engine version, so a long prompt is not read again. The server exposes the save and restore
@@ -1454,6 +1454,59 @@ more than 16 MiB apart. A symbolic link, a second hard link and a file with one 
 (the last also while a restored conversation was live, which then went on to answer); a fresh engine with another
 `--rope-freq-base` refused the file and then answered; a save with a RAM floor above the machine's RAM was refused as
 `memory` before any copy, the file it would have replaced untouched. The times are single runs.
+
+**Parked conversations over a restart (opt-in, `STRATA_PARK_DIR`).** With the conversation cache on, a server started
+with the environment variable `STRATA_PARK_DIR=<folder>` writes the parked conversations (the live one parked first) to
+that folder when it stops gracefully - Ctrl+C, SIGTERM, `POST /unload`, the idle unload - and the next start puts them
+back in the parked list before the first request. A long conversation's next turn then continues from its saved state
+instead of reading the whole prompt again. It works with `--layer-split`: each stage of a conversation is its own
+session file (the format and identity checks above), and a `park.manifest` written last lists them. Underneath, the
+server sends the engine `PARKSAVE <folder>` and `PARKLOAD <folder>` between requests, answered like `SAVE` / `RESTORE`
+with a conversation count in place of the tokens.
+
+Every graceful stop writes what changed since the last one, which can be several GB per long conversation (5.33 GB for
+260K tokens below), so on an SSD it spends write endurance for as long as it is on. To keep that small, a save skips a
+conversation whose files are already in the folder and that has not run since, conversations shorter than
+`STRATA_PARK_MIN_TOKENS` tokens (default 16384: a short one is cheaper to read again than to keep) and ones parked more
+than `STRATA_PARK_MAX_AGE_H` hours ago (default 48, 0 = no limit; a start does not load those either), and it writes
+only two checkpoints of each: the deepest, where the next turn resumes, and the shallowest, the system prompt's root.
+The files are bound to the model, to the engine file (its size and modification time) and to every `STRATA_*` variable
+except `STRATA_PARK_*`: after an engine update or a changed switch nothing is loaded and the next stop replaces them. A
+save that does not finish (a forced kill, a crash, a power cut) leaves the previous manifest and its files. A request
+still running when the server is stopped is not waited for by the save (it is skipped then). Not used with
+`--peer-device`, `--batch` (`"parallel"`) or replicas. Unset (the default), nothing is written or read; delete the
+folder to free its space.
+
+Measured on four GP100 dies (Swift 1.5 IQ3_XXS GGUF, `--layer-split 12,24,36`, NVMe SSD, Windows): a 260,834-token
+conversation that takes 296 s to read from zero was saved in 3.6 s (5.33 GB) and loaded in 3.2 s at the next start; its
+next turn took 7.2 s (260,834 tokens reused, 893 read). A 30K conversation's turn after two restarts reused 34,838
+tokens and its reply was identical to the one without a restart. A stop with no request since the last load wrote
+nothing. Single runs, engine 0.1.41 with this change.
+
+**Kept in RAM instead of files (Windows, opt-in, `STRATA_PARK_RAMLIKE=1`).** With `STRATA_PARK_DIR` set as well, the
+engine writes the same session bytes into named, pagefile-backed memory sections instead of files, and before the
+engine is closed the server starts a small keeper process (`serve/park_keeper.py`, outside the server's process tree)
+that maps them and keeps them in RAM until the next start has loaded them. The folder gets only two small files
+(`park-mem.manifest`, `keeper.json`); no conversation is written to a disk. Why not a file marked temporary: on
+Windows 11 a file created with `FILE_ATTRIBUTE_TEMPORARY` (also with `FILE_FLAG_DELETE_ON_CLOSE`) and never flushed
+still reached the disk as it was written (4 GiB of 4 GiB, handle still open), while the section pages stay in the
+keeper's working set.
+
+What it costs: the parked conversations take their size in RAM and commit from the stop until the next start, or until
+`STRATA_PARK_MAX_AGE_H` (the keeper then ends; a newer save also replaces it). A save is refused when less than
+`STRATA_PARK_RAMLIKE_FLOOR_MIB` (default 8192) of commit would be left. A reboot or a sign-out loses them; the next start
+says so and reads the conversations again. Only under memory pressure can Windows page them out to the pagefile. Every
+kept conversation is copied again at each stop (a RAM copy, about 1.4 s for 1.94 GB). The keeper needs to outlive the
+server: if the server runs inside a job that ends its processes and does not allow a breakaway, the keeper ends with
+it and nothing is kept. Off unless set, and only on Windows (elsewhere the engine refuses the save and says why).
+
+Measured on four GP100 dies (Swift 1.5 IQ3_S GGUF, `--layer-split 12,24,36`, Windows 11, `STRATA_PARK_MIN_TOKENS=50000`):
+a 103,749-token conversation that takes 94-95 s to read from zero was kept over a graceful stop (8.2 s in all: 1.94 GB
+copied in 1.4 s, the keeper ready in 1.8 s) and loaded at the next start in 3.0 s; its next turn reused 103,721 tokens,
+read 28 and took 975 ms (390 ms without the restart), with the same reply. The system disk took 3.4 MiB during the
+stop (the two small files and logs; the same stop with files writes 1.94 GB) and nothing was paged out in the ten
+minutes after it. A second run kept 3 conversations (6.75 GB; stop 11.1 s, load 3.5 s); its 15 replies were identical
+to an engine without the change.
 
 **Current limits (v1):** one request at a time unless `"parallel": N` is set (opt-in batch slots, up to N requests
 decoded together: [BATCHING.md](BATCHING.md)), and one conversation cached at a time (switching between two chats

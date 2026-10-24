@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -166,6 +167,12 @@ struct SavedConversation {
     bool cvec = true;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
+    // PARKSAVE / PARKLOAD (generate.cpp), run-time only, not in the session file: when this conversation was parked
+    // (unix seconds; the park manifest keeps it over a restart), and the name its files already carry on disk - set
+    // when it was loaded from there or written there, so a later PARKSAVE does not write the same bytes again.  A
+    // parked image never changes while parked (a conversation that runs again is taken out and parked as a new image).
+    int64_t parked_unix = 0;
+    mutable std::string disk_name;
 
     /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
     bool pinned() const {
@@ -363,6 +370,10 @@ public:
 
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
+    // The parked conversations, least recently active first (PARKSAVE writes them in this order).  The
+    // mutable form only lends a checkpoint list out for the length of one file write (PARKSAVE) and puts it back.
+    const std::deque<SavedConversation>& entries() const { return entries_; }
+    std::deque<SavedConversation>& entries_mut() { return entries_; }
 
     // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:
     // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
