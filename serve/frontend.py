@@ -729,6 +729,8 @@ def param_end(text: str, final: bool = False, names=None) -> int:
             follows = None
         elif after.startswith("<=") and ">" not in after.split("\n", 1)[0] and "\n" not in after:
             follows = None                  # a damaged `<=NAME>` opener still arriving
+        elif names and "\n" not in after and ">" not in after and any(("<%s>" % n).startswith(after) for n in names):
+            follows = None                  # a bare `<NAME>` opener still arriving
         else:
             follows = False
         if follows and text[:at].count(FUNC_START) > text[:at].count(FUNC_END):
@@ -936,18 +938,25 @@ def fix_fused(buf: str, schemas: dict) -> str:
 _DAMAGED_PARAM = re.compile(r"(?:</parameter>|<function=[^>\n]*>)\s*<=([^>\s]+)>")
 
 
+_BARE_PARAM = re.compile(r"</parameter>\s*<([^<>\s=/]+)>")
+
+
 def fix_param_openers(buf: str, schemas: dict, start: int = 0) -> str:
     """recover: inside a call, `<=NAME>` after the function opener or a `</parameter>` is `<parameter=NAME>` when NAME
-    is a declared parameter of that call's tool (seen from Coder-L).  Only text from `start` on is rewritten."""
+    is a declared parameter of that call's tool (seen from Coder-L); so is a bare `<NAME>` after a `</parameter>` when
+    NAME is declared and not set yet in the call.  Only text from `start` on is rewritten."""
     out, last = [], 0
-    for m in _DAMAGED_PARAM.finditer(buf):
-        if m.start(1) - 2 < start:
+    ms = [(m.start(1) - 2, m) for m in _DAMAGED_PARAM.finditer(buf)]
+    ms += [(m.start(1) - 1, m) for m in _BARE_PARAM.finditer(buf)]
+    for cut, m in sorted(ms, key=lambda t: t[0]):
+        if cut < start or cut < last:
             continue
         f = buf.rfind(FUNC_START, 0, m.start(1))
         name = buf[f + len(FUNC_START):buf.find(">", f)].strip() if f >= 0 else ""
         props = ((schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
-        if m.group(1) in props:
-            out += [buf[last:m.start(1) - 2], PARAM_START + m.group(1) + ">"]
+        bare = buf[cut] == "<" and buf[cut:cut + 2] != "<="
+        if m.group(1) in props and not (bare and PARAM_START + m.group(1) + ">" in buf[f:cut]):
+            out += [buf[last:cut], PARAM_START + m.group(1) + ">"]
             last = m.end()
     return buf[:0].join(out) + buf[last:] if out else buf
 
@@ -1582,7 +1591,7 @@ class OutputParser:
                 self.state, self.lead = "content", call is not None
             else:
                 drop = None
-                if self.recover and "<=" in self.buf:
+                if self.recover and ("<=" in self.buf or PARAM_END in self.buf):
                     self.buf = fix_param_openers(self.buf, self.schemas, self.sp if self.stream_tools else 0)
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
                     i = function_end(self.buf, self.schemas)      # </tool_call> after it is the wrapper's closer, dropped
