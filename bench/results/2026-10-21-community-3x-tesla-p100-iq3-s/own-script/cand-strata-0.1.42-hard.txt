@@ -1,0 +1,15 @@
+start 19:59:56, GPU C: 60 46 48 
+strata   code semver_sort      PASS   968 tok @  45.9 tok/s   23.9 s  
+strata   code cron_next        FAIL  1657 tok @  43.4 tok/s   41.2 s  ValueError: No matching datetime found within 366 days
+strata   code json_parse       PASS  2120 tok @  49.4 tok/s   45.7 s  
+strata   code regex_match      PASS  3891 tok @  46.7 tok/s   86.2 s  
+strata   code osa_distance     PASS   456 tok @  47.6 tok/s   12.3 s  
+strata   code parse_csv        PASS   819 tok @  45.8 tok/s   20.7 s  
+strata   code run_limited      PASS   478 tok @  44.3 tok/s   13.3 s  
+strata   code lex_shortest_path PASS  1099 tok @  42.9 tok/s   28.4 s  
+strata   code-hard total 7/8 passed, 11488 tokens, 272 s
+end 20:04:31
+GPU0 max 76C, max 131W, thermal slowdown 0/137
+GPU1 max 66C, max 141W, thermal slowdown 0/137
+GPU2 max 74C, max 147W, thermal slowdown 0/137
+DONE

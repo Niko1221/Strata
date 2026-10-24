@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-10-21: 3x Tesla P100 16 GB (sm_60, one on PCIe 2.0 x4), Ryzen 5 2600, 64 GB RAM](../bench/results/2026-10-21-community-3x-tesla-p100-iq3-s/README.md):
+  Strata 0.2.1 built from the root Dockerfile for sm_60 / CUDA 12.9 (#3503), Flash-Next IQ3_S, 262,144-token context, `resident-experts` + `kv-resident=32768`, layer split, 140 W per card; `strata_bench.py`: decode 38.2 tok/s (chat) and 40.4 (agent turns), prompt 242/384 tok/s at 4K/16K, agent cache hit 69%; plus an engine 0.1.42 -> 0.1.46 comparison on the same box (code replies about +12%).
 
 ## Run the standard benchmark
 
