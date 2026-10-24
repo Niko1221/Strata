@@ -238,7 +238,7 @@ inline bool layout_table_complete(const ModelGeometry& g) { return g.family == s
 
 /// Checks the model `m` (all shards) against the layout table of `g`.  `checked` counts the tensors found.
 inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g, std::string& err,
-                              size_t* checked = nullptr) {
+                              size_t* checked = nullptr, bool allow_unit_axis = false) {
     std::set<std::string> named;
     size_t n = 0;
     auto check = [&](const std::string& name, const std::vector<int64_t>& shape) {
@@ -249,7 +249,10 @@ inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g
             err = "missing " + name;
             return false;
         }
-        bool same = t->shape.size() == shape.size();
+        // Some F16 exporters retain a matrix's singleton output axis for the shared-expert gate.
+        // The opt-in F16 driver reads that vector as contiguous scalars, without changing its payload.
+        bool same = t->shape.size() == shape.size() ||
+                    (allow_unit_axis && shape.size() == 1 && t->shape.size() == 2 && t->shape[1] == 1);
         for (size_t i = 0; same && i < shape.size(); ++i) same = t->shape[i] == (uint64_t) shape[i];
         if (!same) {
             std::string got, want;

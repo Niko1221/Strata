@@ -1,0 +1,19 @@
+gpu 3 32 0 True ids and complete logit bytes identical
+gpu 3 32 2 True ids and complete logit bytes identical
+gpu 32 32 0 True ids and complete logit bytes identical
+gpu 32 32 2 True ids and complete logit bytes identical
+gpu 128 32 0 True ids and complete logit bytes identical
+gpu 128 32 2 True ids and complete logit bytes identical
+gpu 512 256 0 True ids and complete logit bytes identical
+gpu 128 32 0 False ids and complete logit bytes identical
+hybrid 3 32 0 True ids and complete logit bytes identical
+hybrid 3 32 2 True ids and complete logit bytes identical
+hybrid 32 32 0 True ids and complete logit bytes identical
+hybrid 32 32 2 True ids and complete logit bytes identical
+hybrid 128 32 0 True ids and complete logit bytes identical
+hybrid 128 32 2 True ids and complete logit bytes identical
+hybrid 512 256 0 True ids and complete logit bytes identical
+hybrid 128 32 0 False ids and complete logit bytes identical
+gpu MTP protocol outputs identical
+hybrid MTP protocol outputs identical
+PASS
