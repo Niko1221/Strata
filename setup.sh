@@ -4,6 +4,12 @@
 # Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 # NixOS (or STRATA_UV=1) with uv installed: uv makes the project venv; every other Linux uses the standard venv.
 cd "$(dirname "$0")" || exit 1
+# A Mac: the Metal engine needs Apple Silicon. Said here, before anything is downloaded (the standalone Python below
+# is an arm64 build). A terminal opened with Rosetta reports x86_64, so the chip itself (hw.optional.arm64) decides.
+if [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" != arm64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" != 1 ]; then
+  echo "This Mac has an Intel processor: Strata's Mac engine (Metal) needs Apple Silicon (M1 or newer). See docs/MAC.md."
+  exit 1
+fi
 # A bundled Python runtime (the python/ folder of the terminal archive) is used when it is there: nothing to find,
 # install or download. update.sh runs this file, so it uses it too.
 if [ -x python/bin/python3 ]; then

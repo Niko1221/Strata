@@ -9,8 +9,12 @@ cd "$(dirname "$0")" || exit 1
 main() {
   if [ -e .git ]; then
     if ! command -v git >/dev/null 2>&1; then
-      echo "This folder is a git clone, but git is not installed: install it (sudo apt install git) or run"
-      echo "\"git pull\" here yourself, then run ./update.sh again."
+      if [ "$(uname -s)" = Darwin ]; then
+        echo "This folder is a git clone, but git is not installed: install Apple's Command Line Tools (xcode-select --install)"
+      else
+        echo "This folder is a git clone, but git is not installed: install it (sudo apt install git)"
+      fi
+      echo "or run \"git pull\" here yourself, then run ./update.sh again."
       exit 1
     fi
     echo "Getting the newest Strata (git pull) ..."

@@ -26,6 +26,8 @@ Strata 运行 **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-N
 你的聊天记录和文件都留在你自己的电脑上。
 
 **第一次用？** 先看[硬件要求](#硬件要求)，再[安装应用](#方式-astrata-应用)。
+**用 Mac？** 装应用的 `.dmg`，或者[下载源码](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip)后双击
+`START-HERE.command`：它会在你的 Mac 上构建引擎、下载模型并启动（[Mac](docs/MAC.md)）。
 
 - **游戏电脑就能跑。** 内存和显存加起来有 32 GB 就可以开始。
 - **能接入你的工具。** 支持 OpenAI 和 Anthropic 的 API，Claude Code、Codex CLI、OpenCode 等智能体都能连上。
@@ -302,8 +304,10 @@ strata doctor                                  # 检查已安装的引擎文件
 **Windows：** 双击 `START-HERE.bat`。**Linux：** 在 Strata 文件夹里运行 `./setup.sh`。
 
 **Mac（Apple 芯片，macOS 15 及以上）：** 先用 `xcode-select --install` 安装一次 Apple 的命令行工具（不需要完整的 Xcode）。
-在 Strata 文件夹里打开终端，运行 `./setup.sh`。它会在你的 Mac 上构建 Mac 引擎（约 7 分钟），问同样的问题，下载模型并启动。
-下次运行 `./setup.sh` 会直接启动。你的 Mac 适合哪个尺寸：[docs/MAC.md](docs/MAC.md)。
+在 Strata 文件夹里双击 `START-HERE.command`（或在终端里运行 `./setup.sh`）。它会在你的 Mac 上构建 Mac 引擎（约 7 分钟），
+问同样的问题，下载模型并启动。下次再双击就直接启动。`SETUP.command`、`UPDATE.command` 和 `BENCH.command` 对应 Windows 的
+`SETUP.bat`、`UPDATE.bat` 和 `BENCH.bat`。如果 macOS 提示从 zip 解压出来的 `.command` 文件“来自身份不明的开发者”，
+右键点击它，选择**打开**（只需一次；`git clone` 下来的文件没有这个标记）。你的 Mac 适合哪个尺寸：[docs/MAC.md](docs/MAC.md)。
 
 安装程序会找到你的显卡，并设置合适的引擎。它会问你用哪个模型和尺寸、上下文多长（模型能记住多少文字），以及是否要读取图片。
 直接按回车就是推荐的选择。然后它会下载模型（约 70 GB）并启动。如果下载中断，再运行一次就会继续。浏览器会打开

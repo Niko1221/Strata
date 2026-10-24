@@ -192,9 +192,12 @@ git clone https://github.com/Niko1221/Strata.git && cd Strata
 ## From source: Mac
 
 On an Apple Silicon Mac with macOS 15 or newer, install Apple's Command Line Tools once (`xcode-select --install`),
-then run `./setup.sh` in the Strata folder. It builds the Mac (Metal) engine on your Mac and asks the same
-questions. The app and the Terminal do not build anything. All of it, and what fits which memory size, is in
-[MAC.md](MAC.md).
+then double-click `START-HERE.command` in the Strata folder, or run `./setup.sh` there in Terminal. It builds the
+Mac (Metal) engine on your Mac and asks the same questions. `SETUP.command`, `UPDATE.command` and `BENCH.command`
+are the Mac's `SETUP.bat`, `UPDATE.bat` and `BENCH.bat` (each runs the `.sh` of the same name in a Terminal window
+and keeps the window open on an error). macOS blocks a `.command` file that came in a downloaded zip the first time:
+right-click it and choose **Open**. The app and the Terminal do not build anything. All of it, and what fits which
+memory size, is in [MAC.md](MAC.md).
 
 ## AMD cards
 

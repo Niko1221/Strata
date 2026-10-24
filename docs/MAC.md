@@ -8,8 +8,8 @@ kernels are replaced by Metal ones (`metal/`), and the host code and the server 
   Tools ([below](#the-desktop-app-and-strata-launch-on-a-mac)). macOS 15 or newer, as for the source build. If macOS says the
   app is "damaged", see [Troubleshooting](TROUBLESHOOTING.md#the-desktop-app-and-the-terminal); how the builds are signed:
   [packaging/mac/README.md](../packaging/mac/README.md).
-- **From source: `./setup.sh`.** It sets things up the way `START-HERE.bat` does on Windows and builds the engine on your Mac
-  (about 1-15 minutes).
+- **From source: `START-HERE.command` (a double-click in Finder) or `./setup.sh` (in Terminal).** It sets things up the way
+  `START-HERE.bat` does on Windows and builds the engine on your Mac (about 1-15 minutes).
 
 **Pictures:** on by default in the app, the Terminal and the source build. The reader (`strata-vision`) comes in the engine package
 and runs on the Mac's GPU through Metal ([Limits](#limits-this-version)). The NVIDIA, AMD and Intel engines are unchanged.
@@ -53,6 +53,13 @@ with 32 GB and an M1 Max with 34 GB, where the experts stream from the SSD (the 
 git clone https://github.com/Niko1221/Strata && cd Strata
 ./setup.sh                 # asks the size; --yes takes the recommended answers
 ```
+
+Without a terminal: [download the source](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip), unzip it and
+double-click `START-HERE.command` in the folder. It opens a Terminal window and runs `./setup.sh` there; options go the same way
+(`SETUP.command` is `--setup`, `UPDATE.command` runs `./update.sh`, `BENCH.command` runs `./bench.sh`), and on an error the window
+stays open with the reason. The first time, macOS says a `.command` file from a downloaded zip "cannot be opened because it is
+from an unidentified developer": right-click it and choose **Open** (a `git clone` has no such mark). An Intel Mac is told at
+once that the engine needs Apple Silicon; nothing is downloaded.
 
 What the first run does (each step is skipped when it is already done):
 
