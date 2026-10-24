@@ -549,6 +549,105 @@ int main() {
             l2.max_stage_state_bytes[1][0] = 998;
             check(rejects(sp, id, "limit", l2), "stage parts: a part state array over its stage limit refused");
         }
+        // review battery: every new v2 section is inside the payload hash, and every structural field has
+        // its own check - a raw byte flip fails the hash, a rehashed flip fails the structure.
+        {
+            auto rehash = [](std::vector<char>& d) {
+                uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
+                const uint64_t h = session_hash64(d.data() + 64, payload, 0);
+                std::memcpy(d.data() + 64 + payload, &h, 8);
+            };
+            const size_t live_cp = 64 + 22 * 8 + 2 * 40;                 // the live checkpoint's record
+            const size_t parts_at = live_cp + 8 + 1000 * 4 + 8 + 1 * 16 + (8 + 4099) + (8 + 77) + (8 + 301) +
+                                    (8 + 64) + (8 + 8) + 8;              // ...used, then its parts count
+            const size_t part_len = 8 + 1000 * 4 + 8 + 1 * 16 + (8 + 999) + (8 + 7) + (8 + 11) + (8 + 3) +
+                                    (8 + 2) + 8 + 8;                     // a part: arrays, used, own count
+            auto arrays = [](size_t rec) {                               // a part record's data arrays
+                return std::vector<std::pair<const char*, size_t>>{
+                    {"ids",       rec + 8 + 4},
+                    {"imgs",      rec + 8 + 1000 * 4 + 8 + 4},
+                    {"gdn",       rec + 8 + 1000 * 4 + 8 + 16 + 8 + 10},
+                    {"ple",       rec + 8 + 1000 * 4 + 8 + 16 + (8 + 999) + 8 + 3},
+                    {"tails",     rec + 8 + 1000 * 4 + 8 + 16 + (8 + 999) + (8 + 7) + 8 + 5},
+                    {"dead",      rec + 8 + 1000 * 4 + 8 + 16 + (8 + 999) + (8 + 7) + (8 + 11) + 8 + 1},
+                    {"block_pos", rec + 8 + 1000 * 4 + 8 + 16 + (8 + 999) + (8 + 7) + (8 + 11) + (8 + 3) + 8 + 1},
+                };
+            };
+            const fs::path sp2 = dir / "battery.bin";
+            check(session_file_write(sp2.string(), split, id, written, error), "battery: fixture written");
+            auto flip = [&](size_t at, const char* name, const char* needle, const SessionReadLimits& lim) {
+                auto d = slurp(sp2);
+                d[at] ^= 0x40;
+                const fs::path tp = dir / name; spit(tp, d);
+                return rejects(tp, id, needle, lim);
+            };
+            // raw flips: every new section is caught - the stage table first by the live-layout comparison
+            // (a wall in front of the hash), the checkpoint arrays and K/V bytes by the payload hash
+            check(flip(64 + 22 * 8 + 4, "bat-table.bin", "split", l),
+                  "battery: a stage table byte is caught by the layout comparison");
+            for (size_t p = 0; p < 2; ++p) {
+                const size_t rec = parts_at + 8 + p * part_len;
+                for (const auto& [what, at] : arrays(rec)) {
+                    const std::string nm = std::string("bat-") + (p ? "p1-" : "p0-") + what + ".bin";
+                    check(flip(at, nm.c_str(), "checksum", l), ("battery: a byte in part " + std::to_string(p) + " " + what +
+                                                                " is hashed").c_str());
+                }
+            }
+            {
+                uint64_t payload = 0; std::memcpy(&payload, slurp(sp2).data() + 32, 8);
+                // the last kv entry (layer 2): ... v_scale count(8)+data(512), pooled count(8)+data(0)
+                check(flip(64 + payload - 8 - 256, "bat-kvlast.bin", "checksum", l),
+                      "battery: the last K/V bytes of the last stage group are hashed");
+            }
+            // rehashed flips: the structural checks stand on their own
+            {   // a stage table entry grown past the live layout: the layout comparison refuses
+                auto d = slurp(sp2);
+                uint64_t cells = 0; std::memcpy(&cells, d.data() + 64 + 22 * 8 + 16, 8);
+                check(cells == 9, "battery: offset finds the stage QSA carve size");
+                cells += 1; std::memcpy(d.data() + 64 + 22 * 8 + 16, &cells, 8);
+                rehash(d);
+                const fs::path tp = dir / "bat-table-h.bin"; spit(tp, d);
+                check(rejects(tp, id, "split", l), "battery: a rehashed stage table mismatch is refused");
+            }
+            {   // a chain checkpoint's parts count trimmed: the parts-vs-table rule refuses
+                const size_t cp0 = parts_at + 8 + 2 * part_len + 8;     // the checkpoint-array count field
+                uint64_t n0 = 0; std::memcpy(&n0, slurp(sp2).data() + cp0, 8);
+                check(n0 == 10, "battery: offset finds the first chain checkpoint's ids count");
+                const size_t at = cp0 + 8 + 10 * 4 + 8 + 1 * 16 + (8 + 4099) + (8 + 77) + (8 + 301) + (8 + 64) +
+                                  (8 + 8) + 8;
+                auto d = slurp(sp2);
+                uint64_t cnt = 0; std::memcpy(&cnt, d.data() + at, 8);
+                check(cnt == 2, "battery: offset finds a chain checkpoint's parts count");
+                cnt = 1; std::memcpy(d.data() + at, &cnt, 8);
+                rehash(d);
+                const fs::path tp = dir / "bat-chain-h.bin"; spit(tp, d);
+                check(rejects(tp, id, "stage parts", l),
+                      "battery: a rehashed chain checkpoint parts mismatch is refused");
+            }
+            {   // a part's array count grown past its stage limit: the per-stage bound refuses
+                SessionReadLimits l3;
+                l3.stages = split.stage_table;
+                l3.max_stage_state_bytes = {{999, 7, 11, 3, 2}, {999, 7, 11, 3, 2}};
+                auto d = slurp(sp2);
+                const size_t at = parts_at + 8 + 8 + 1000 * 4 + 8 + 16;   // part 0's gdn count field
+                uint64_t n = 0; std::memcpy(&n, d.data() + at, 8);
+                check(n == 999, "battery: offset finds a part array's count");
+                n = 1001; std::memcpy(d.data() + at, &n, 8);
+                rehash(d);
+                const fs::path tp = dir / "bat-grown-h.bin"; spit(tp, d);
+                check(rejects(tp, id, "limit", l3),
+                      "battery: a rehashed grown part array is refused by the stage limit");
+            }
+            // a refused read admission is typed memory (the engine's RAM-floor refusal path)
+            {
+                SessionReadLimits lm;
+                lm.admit = [](uint64_t, std::string& why) { why = "not enough RAM to read it (test)"; return false; };
+                SavedConversation out; size_t bytes = 0; std::string error; SessionStatus st;
+                check(!session_file_read(sp2.string(), id, out, bytes, error, lm, &st) &&
+                      st.error == SessionError::memory && error.find("not enough RAM") != std::string::npos,
+                      "battery: a refused read admission is typed memory");
+            }
+        }
     }
     // free-space reserve: an impossible reserve refuses the write and leaves the existing file untouched
     {
