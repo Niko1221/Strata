@@ -558,5 +558,43 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // STRATA_CKPT_PARK_REUSE: drop_superseded hands the dropped entry's checkpoints (every stage image's) to the
+        // park instead of freeing them; without a harvest vector nothing changes.  The split keeps each part's capture.
+        auto cp = [](std::vector<int32_t> ids, uint64_t capture, uint8_t fill) {
+            ConversationCheckpoint c;
+            c.ids = std::move(ids);
+            c.capture = capture;
+            c.gdn.assign(32, fill);
+            return c;
+        };
+        ConversationCache cache(1 << 20, 8);
+        SavedConversation old = image({1, 2, 3, 4, 60, 70});
+        old.checkpoints = {cp({1, 2, 3, 4}, 11, 1), cp({1, 2, 3, 4, 60}, 12, 2)};
+        SavedConversation part = image({1, 2, 3, 4, 60, 70});
+        part.checkpoints = {cp({1, 2, 3, 4}, 21, 3), cp({1, 2, 3, 4, 60}, 22, 4)};
+        old.stage_images.push_back(std::move(part));
+        check(cache.put(std::move(old)), "park the copy a turn back (two stages)");
+        const std::vector<ConversationCheckpoint> chain = {cp({1, 2, 3, 4}, 11, 1), cp({1, 2, 3, 4, 60}, 12, 2),
+                                                           cp({1, 2, 3, 4, 60, 70, 80}, 13, 5)};
+        std::vector<ConversationCheckpoint> harvest;
+        check(cache.drop_superseded({1, 2, 3, 4, 60, 70, 80, 90}, {}, chain, true, &harvest) == 1 && cache.size() == 0,
+              "the superseded copy is dropped");
+        check(harvest.size() == 4 && harvest[0].capture == 11 && harvest[1].capture == 12 && harvest[2].capture == 21 &&
+              harvest[3].capture == 22 && harvest[3].gdn.size() == 32 && harvest[3].gdn[0] == 4,
+              "its checkpoints, the later stages' too, are handed over whole");
+        check(cache.bytes() == 0, "the dropped entry is no longer charged");
+
+        std::vector<ConversationCheckpoint> two;
+        ConversationCheckpoint whole = cp({1, 2, 3}, 31, 6);
+        whole.stage_parts.push_back(cp({1, 2, 3}, 32, 7));
+        two.push_back(std::move(whole));
+        auto split = conversation_checkpoints_split(std::move(two), 1);
+        check(split.stage0.size() == 1 && split.stage0[0].capture == 31 && split.parts[0].size() == 1 &&
+              split.parts[0][0].capture == 32 && split.parts[0][0].gdn[0] == 7, "the split keeps each part's capture");
+        std::vector<ConversationCheckpoint> back;
+        check(conversation_checkpoints_merge(std::move(split), back) && back.size() == 1 && back[0].capture == 31 &&
+              back[0].stage_parts.size() == 1 && back[0].stage_parts[0].capture == 32, "and the merge puts it back");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

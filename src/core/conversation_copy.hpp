@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/progress.hpp"
 
 #include <cuda_runtime.h>
@@ -85,6 +86,7 @@ inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoi
     o.block_pos = copy_beating(c.block_pos);
     o.used = c.used;
     o.pinned = c.pinned;
+    o.capture = c.capture;
     o.stage_parts.reserve(c.stage_parts.size());
     for (const auto& part : c.stage_parts) o.stage_parts.push_back(copy_checkpoint_beating(part));
     return o;
@@ -94,6 +96,59 @@ inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::v
     std::vector<ConversationCheckpoint> out;
     out.reserve(cs.size());
     for (const auto& c : cs) out.push_back(copy_checkpoint_beating(c));
+    return out;
+}
+
+inline size_t checkpoint_state_bytes(const ConversationCheckpoint& c) {
+    return c.gdn.capacity() + c.ple.capacity() + c.tails.capacity() + c.dead.capacity() + c.block_pos.capacity();
+}
+
+inline bool same_state_shape(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
+    return a.gdn.size() == b.gdn.size() && a.ple.size() == b.ple.size() && a.tails.size() == b.tails.size() &&
+           a.dead.size() == b.dead.size() && a.block_pos.size() == b.block_pos.size() && a.stage_parts.empty() &&
+           b.stage_parts.empty();
+}
+
+/// STRATA_CKPT_PARK_REUSE: copy_checkpoints_beating, except that a checkpoint whose bytes `src` already holds
+/// (ConversationParkSource) has its buffers moved in.  The result equals the copy: the metadata is copied from the
+/// view's checkpoint as copy_checkpoint_beating copies it, and moved buffers hold the same bytes (the same capture).
+inline std::vector<ConversationCheckpoint> park_checkpoints(const std::vector<ConversationCheckpoint>& cs,
+                                                            ConversationParkSource& src) {
+    std::vector<ConversationCheckpoint> out;
+    out.reserve(cs.size());
+    for (size_t i = 0; i < cs.size(); ++i) {
+        const ConversationCheckpoint& c = cs[i];
+        ConversationCheckpoint* from = nullptr;
+        if (src.harvest != nullptr && c.capture != 0)
+            for (auto& h : *src.harvest)
+                if (h.capture == c.capture && !h.gdn.empty() && same_state_shape(h, c) && h.ids == c.ids &&
+                    h.imgs == c.imgs) { from = &h; break; }
+        if (from == nullptr && src.consume != nullptr && src.consume->size() == cs.size() &&
+            &(*src.consume)[i] == &c && c.stage_parts.empty())
+            from = &(*src.consume)[i];
+        if (from == nullptr) {
+            out.push_back(copy_checkpoint_beating(c));
+            ++src.copied;
+            continue;
+        }
+        ConversationCheckpoint o;
+        o.ids = c.ids;
+        o.imgs = c.imgs;
+        o.used = c.used;
+        o.pinned = c.pinned;
+        o.capture = c.capture;
+        // (a consumed checkpoint is `c` itself: its metadata is copied above, before its buffers move)
+        o.gdn = std::move(from->gdn);
+        o.ple = std::move(from->ple);
+        o.tails = std::move(from->tails);
+        o.dead = std::move(from->dead);
+        o.block_pos = std::move(from->block_pos);
+        from->gdn.clear(); from->ple.clear(); from->tails.clear(); from->dead.clear(); from->block_pos.clear();
+        ++src.moved;
+        src.moved_bytes += checkpoint_state_bytes(o);
+        core::progress_beat();
+        out.push_back(std::move(o));
+    }
     return out;
 }
 
