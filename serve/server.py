@@ -7086,7 +7086,10 @@ class Service:
                             self.ensure_loaded()
                     # Decide after the FIFO wait, using fresh allocator/workload data.
                     # This does not issue calibration requests on the user's behalf.
-                    if self.coadaptive.enabled and not par and not emb and (sampling or {}).get("pcie_frac") is None:
+                    request_tune = (sampling or {}).get("strata_tune")
+                    explicit_route = ((sampling or {}).get("pcie_frac") is not None
+                                      or isinstance(request_tune, dict) and request_tune.get("pcie_frac") is not None)
+                    if self.coadaptive.enabled and not par and not emb and not explicit_route:
                         with self.memory_lock:
                             native = getattr(self.engine, "native_capacity", None)
                             if native is not None and native["proc"] is not self.engine.proc:
@@ -7094,7 +7097,9 @@ class Service:
                             route = self.coadaptive.choose_route(self.memory_snapshot(), native,
                                                                  len(ids), max_new, time.time(), sampling)
                             if self.coadaptive.active:
-                                sampling = {**(sampling or {}), "pcie_frac": route}
+                                # Native request routing is serialized from strata_tune.
+                                sampling = {**(sampling or {}), "strata_tune": {
+                                    **(request_tune if isinstance(request_tune, dict) else {}), "pcie_frac": route}}
                     with self.status_lock:
                         if par:
                             self.status["queued"] -= 1
