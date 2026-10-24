@@ -1,0 +1,169 @@
+{
+ "schema": 1,
+ "date": "2026-10-24",
+ "note": "Aggregate completion tok/s and nvidia-smi medians per concurrency level. Four rounds at every level (one cold, three warm) with the same 2.9K-token prompt in every request and the expert cache warmed first, so the level is decode-bound. `vals` is every round; the other fields are the median of those rounds.",
+ "engine": "0.1.49",
+ "power_limit_w": 180,
+ "gpu": [
+  0,
+  1
+ ],
+ "levels": {
+  "1": {
+   "concurrency": 1,
+   "split only": {
+    "aggregate_tps": 58.58,
+    "rounds": 4,
+    "per_round": [
+     57.4,
+     59.5,
+     57.6,
+     59.9
+    ],
+    "gpu_util_pct": [
+     50,
+     50
+    ],
+    "power_w": [
+     92,
+     167
+    ]
+   },
+   "batch 4/2": {
+    "aggregate_tps": 54.38,
+    "rounds": 4,
+    "per_round": [
+     52.4,
+     56.3,
+     45.4,
+     59.4
+    ],
+    "gpu_util_pct": [
+     49,
+     50
+    ],
+    "power_w": [
+     91,
+     161
+    ]
+   }
+  },
+  "2": {
+   "concurrency": 2,
+   "split only": {
+    "aggregate_tps": 59.71,
+    "rounds": 4,
+    "per_round": [
+     59.9,
+     58.1,
+     59.5,
+     59.9
+    ],
+    "gpu_util_pct": [
+     49,
+     51
+    ],
+    "power_w": [
+     92,
+     163
+    ]
+   },
+   "batch 4/2": {
+    "aggregate_tps": 64.34,
+    "rounds": 4,
+    "per_round": [
+     64.5,
+     64.3,
+     62.4,
+     64.3
+    ],
+    "gpu_util_pct": [
+     94,
+     100
+    ],
+    "power_w": [
+     121,
+     176
+    ]
+   }
+  },
+  "4": {
+   "concurrency": 4,
+   "split only": {
+    "aggregate_tps": 59.84,
+    "rounds": 4,
+    "per_round": [
+     60.5,
+     59.9,
+     59.3,
+     59.7
+    ],
+    "gpu_util_pct": [
+     49,
+     50
+    ],
+    "power_w": [
+     94,
+     164
+    ]
+   },
+   "batch 4/2": {
+    "aggregate_tps": 82.88,
+    "rounds": 4,
+    "per_round": [
+     86.9,
+     79.7,
+     86.1,
+     79.2
+    ],
+    "gpu_util_pct": [
+     95,
+     99
+    ],
+    "power_w": [
+     125,
+     174
+    ]
+   }
+  },
+  "8": {
+   "concurrency": 8,
+   "split only": {
+    "aggregate_tps": 59.93,
+    "rounds": 4,
+    "per_round": [
+     59.6,
+     60.0,
+     61.0,
+     59.9
+    ],
+    "gpu_util_pct": [
+     49,
+     50
+    ],
+    "power_w": [
+     92,
+     167
+    ]
+   },
+   "batch 4/2": {
+    "aggregate_tps": 85.04,
+    "rounds": 4,
+    "per_round": [
+     83.2,
+     86.9,
+     84.4,
+     85.6
+    ],
+    "gpu_util_pct": [
+     90,
+     99
+    ],
+    "power_w": [
+     125,
+     173
+    ]
+   }
+  }
+ }
+}

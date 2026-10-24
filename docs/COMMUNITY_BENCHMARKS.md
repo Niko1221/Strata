@@ -20,6 +20,17 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-10-24: 2x RTX 2080 Ti 22 GB, dual-socket Xeon E5-2696 v4 (88 logical CPUs, AVX2 only), 94 GiB RAM, NVLink](../bench/results/2026-10-24-community-2x2080ti-dual-socket/README.md):
+  Strata `main` @ engine 0.1.49 source build, Unsloth UD-IQ4_XS at 131K with `--vision`; a single-GPU vs layer-split
+  comparison on the same cards (decode 35.2 -> 51.0 tok/s, 11.6K prompt 672 -> 908 tok/s; the win is the CPU pool falling
+  9.52 -> 0.79 ms per window on this slow CPU), what `--batch 4 --batch-groups 2` buys on concurrent requests
+  (concurrency alone leaves the cards at 49-51% utilisation; `--batch` reaches 95-100% and +39-42% at concurrency 4-8,
+  at the cost of 7% at concurrency 1), the canonical suite, and a same-day vLLM comparison (Strata 2.31-2.37x vLLM at
+  concurrency 4-8; vLLM is flat at ~35 tok/s from 1 to 8 requests). Quality 31/31. The same config also produced a
+  `strata bench run` pilot under `strata-qwen38-thinking-v1-draft.1`, track `custom`, kept in
+  [2026-10-24-standard-2x-rtx-2080-ti-20261024T062225Z-375ff2de](../bench/results/2026-10-24-standard-2x-rtx-2080-ti-20261024T062225Z-375ff2de/README.md)
+  (21 of 21 required requests finished, 0 failed, 12/12 sanity checks, 3 min 52 s); it is draft pilot data, not a
+  standard or approved result.
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

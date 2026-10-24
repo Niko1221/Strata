@@ -1,0 +1,47 @@
+{
+ "note": "The config the engine was started from on 2026-10-24. `<data>` is the model directory and `<checkout>` the source tree; substitute your own. `--batch 4 --batch-groups 2` and `--prompt-cache-every 4096` are the two additions this report argues for; the rest is the engine's own recommendation for this card and RAM size.",
+ "gpu": [
+  0,
+  1
+ ],
+ "args": [
+  "--pack",
+  "<data>/packs/unsloth-ud-iq4_xs",
+  "--native",
+  "<data>/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+  "--expert-profile",
+  "<checkout>/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<data>/mtp/rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "int8",
+  "--kv-resident",
+  "32768",
+  "--resident-budget-gib",
+  "55",
+  "--vision",
+  "--vram-reserve-mib",
+  "700",
+  "--batch",
+  "4",
+  "--batch-groups",
+  "2",
+  "--prompt-cache-every",
+  "4096"
+ ],
+ "vision": {
+  "enabled": true,
+  "note": "a second binary (strata-vision) serves image requests; not exercised by the numbers in this report"
+ },
+ "power_limit_w": 180
+}
