@@ -1,0 +1,51 @@
+{
+ "observed_minutes": 65.7,
+ "requests": 116,
+ "failed": 0,
+ "checks": 29,
+ "checks_correct": 29,
+ "by_kind": {
+  "check": {
+   "n": 29,
+   "prompt_tokens_median": 29,
+   "decode_tps_first_half": 5.4,
+   "decode_tps_second_half": 5.8,
+   "prompt_tps_first_half": 14.6,
+   "prompt_tps_second_half": 14.4
+  },
+  "p32000": {
+   "n": 29,
+   "prompt_tokens_median": 31932,
+   "decode_tps_first_half": 24.9,
+   "decode_tps_second_half": 24.6,
+   "prompt_tps_first_half": 349.5,
+   "prompt_tps_second_half": 349.6
+  },
+  "p4096": {
+   "n": 29,
+   "prompt_tokens_median": 4039,
+   "decode_tps_first_half": 26.5,
+   "decode_tps_second_half": 25.75,
+   "prompt_tps_first_half": 177.3,
+   "prompt_tps_second_half": 177.45
+  },
+  "p512": {
+   "n": 29,
+   "prompt_tokens_median": 451,
+   "decode_tps_first_half": 26.0,
+   "decode_tps_second_half": 25.7,
+   "prompt_tps_first_half": 116.4,
+   "prompt_tps_second_half": 118.1
+  }
+ },
+ "samples": 391,
+ "gpu_temp_max_c": 67.0,
+ "gpu_power_max_w": 115.49,
+ "vram_used_max_mib": 11555.0,
+ "engine_rss_first_last_max_mib": [
+  36015.9,
+  36572.9,
+  36671.8
+ ],
+ "mem_available_min_gib": 210.24
+}

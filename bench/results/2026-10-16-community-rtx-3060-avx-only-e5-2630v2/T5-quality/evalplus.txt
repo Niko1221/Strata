@@ -1,0 +1,2 @@
+Load from ground-truth from <WORKDIR>/experiments/06_test/cache/evalplus/fe585eb4df8c88d844eeb463ea4d0302-numeric-first40-strata0141.pkl
+{"file": "iq2_xs-samples.jsonl", "evaluated": 40, "base_pass": 37, "plus_pass": 35}

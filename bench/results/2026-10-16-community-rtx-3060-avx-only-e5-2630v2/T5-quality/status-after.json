@@ -1,0 +1,77 @@
+{
+ "service": "strata",
+ "model": "qwen3.8-flash-next-iq2_xs",
+ "loaded": true,
+ "auto_load": true,
+ "structured_output": {
+  "formats": [
+   "json_object",
+   "json_schema"
+  ],
+  "method": "prompt_and_validate",
+  "constrained_decoding": false,
+  "stream_buffered": true
+ },
+ "engine": "0.1.44.1",
+ "started": 1792132964,
+ "uptime_s": 445,
+ "cache_max_tokens": 40960,
+ "context": {
+  "native": 40960,
+  "max_positions": 40960
+ },
+ "concurrency": {
+  "serving": 1,
+  "requested": 1
+ },
+ "dialects": [
+  "/v1/chat/completions",
+  "/v1/messages",
+  "/v1/responses"
+ ],
+ "vision": {
+  "enabled": false,
+  "available": false,
+  "error": null
+ },
+ "image_generation": {
+  "enabled": false
+ },
+ "activity": {
+  "requests": 68,
+  "in_flight": 0,
+  "last_request_at": 1792133409
+ },
+ "last_timings": {
+  "cache_n": 330,
+  "prompt_n": 36,
+  "prompt_ms": 900.8,
+  "prompt_per_token_ms": 25.022,
+  "prompt_per_second": 40.0,
+  "predicted_n": 3,
+  "predicted_ms": 89.2,
+  "predicted_per_token_ms": 29.733,
+  "predicted_per_second": 33.6,
+  "draft_n": 3,
+  "draft_n_accepted": 3,
+  "at": 1792133409
+ },
+ "vram": {
+  "elastic": false
+ },
+ "machine": {
+  "at": 1792133409,
+  "gpu": {
+   "name": "NVIDIA GeForce RTX 3060",
+   "used_mib": 11946.0,
+   "total_mib": 12288.0,
+   "util_pct": 100,
+   "temp_c": 61,
+   "power_w": 100.568
+  },
+  "ram": {
+   "used_gib": 41.5,
+   "total_gib": 251.8
+  }
+ }
+}

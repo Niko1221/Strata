@@ -1,0 +1,131 @@
+module	exit	seconds	result
+tools.test_bench_eviction	0	1	OK
+tools.test_bench_host	0	0	OK
+tools.test_calibrate	0	1	OK
+tools.test_check_isa_guard	0	1	OK
+tools.test_conversation_cache_disabled	0	1	OK
+tools.test_conversation_cache_growth	0	1	OK
+tools.test_conversation_cache_http_smoke	0	1	OK
+tools.test_conversation_cache_isolation	0	1	OK
+tools.test_conversation_cache_parity	0	1	OK
+tools.test_conversation_cache_soak	0	0	OK
+tools.test_conversation_restore_speed	0	1	OK
+tools.test_dll_closure	0	0	OK (skipped=1)
+tools.test_docker_entrypoint	0	81	OK
+tools.test_draft_vocab	0	1	OK
+tools.test_effort_end_args	0	0	OK
+tools.test_iq_pack	1	1	?
+tools.test_make_profile	0	0	OK
+tools.test_make_profile_mix	0	1	OK
+tools.test_mtp_fetch	0	0	OK
+tools.test_nvfp4_local_pack	1	1	FAILED (errors=1)
+tools.test_picture_defaults	0	2	OK
+tools.test_pool_plan	0	1	OK
+tools.test_qimage	0	0	OK
+tools.test_research_run	0	2	OK
+tools.test_setup_amd	0	0	OK
+tools.test_setup_bench_tips	0	1	OK
+tools.test_setup_choices	1	5	FAILED (errors=4)
+tools.test_setup_compute_mode	0	0	OK
+tools.test_setup_config	0	4	OK
+tools.test_setup_configs	0	0	OK
+tools.test_setup_cuda_repo	0	0	OK
+tools.test_setup_download	0	14	OK
+tools.test_setup_draft_vocab	0	0	OK
+tools.test_setup_engine_hash	1	1	FAILED (failures=2)
+tools.test_setup_engine_keep	0	1	OK
+tools.test_setup_golden	1	8	FAILED (failures=48)
+tools.test_setup_gpu_fit	0	2	OK
+tools.test_setup_gyro	0	0	OK
+tools.test_setup_hotfix_tag	0	0	OK
+tools.test_setup_hybrid	0	1	OK
+tools.test_setup_llama_archive	0	1	OK
+tools.test_setup_lowram	0	0	OK
+tools.test_setup_mac	0	1	OK
+tools.test_setup_menu	0	0	OK
+tools.test_setup_model_pins	0	1	OK
+tools.test_setup_modelscope	0	3	OK
+tools.test_setup_nvfp4	0	1	OK
+tools.test_setup_oldcpu	0	1	OK (skipped=1)
+tools.test_setup_older_gpus	0	2	OK
+tools.test_setup_page_file	0	0	OK
+tools.test_setup_parallel	0	1	OK
+tools.test_setup_pcie	0	0	OK
+tools.test_setup_pins	0	1	OK
+tools.test_setup_prompts	0	0	OK
+tools.test_setup_qwen36	0	1	OK
+tools.test_setup_remote_opt	0	0	OK
+tools.test_setup_rerun_size	0	2	OK
+tools.test_setup_risk	0	17	OK
+tools.test_setup_rocm_pins	0	0	OK
+tools.test_setup_rope	0	1	OK
+tools.test_setup_shard_check	0	0	OK
+tools.test_setup_small_card	0	1	OK
+tools.test_setup_stale_stamp	0	1	OK
+tools.test_setup_start_gpus_amd	0	0	OK
+tools.test_setup_strix_halo	0	1	OK
+tools.test_setup_sycl	0	0	OK
+tools.test_setup_unsloth	0	7	OK
+tools.test_setup_update	0	1	OK
+tools.test_setup_update_gpu	0	0	OK
+tools.test_shards	0	1	OK
+tools.test_source_nul_bytes	0	1	OK
+tools.test_strata_bench	0	7	OK
+tools.test_strata_inspect	0	0	OK
+tools.test_strata_mcp	0	10	OK
+tools.test_strata_tokenizer	0	2	OK (skipped=3)
+tools.test_tokenizer_plain_spans	0	1	OK
+tools.test_vision_reader	0	0	OK
+tools.test_windows_amd_gpu	0	1	OK
+serve.test_admit_order	0	1	OK
+serve.test_anthropic_base_url	0	1	OK (skipped=3)
+serve.test_cache_drop	0	1	OK
+serve.test_chunked_body	0	1	OK
+serve.test_context_overflow	0	1	OK
+serve.test_control_cancel	0	1	OK
+serve.test_detok	0	14	OK (skipped=5)
+serve.test_effort_paths	0	1	OK
+serve.test_env_to_user	0	1	OK
+serve.test_exif_orientation	0	0	OK
+serve.test_family_name	0	1	OK
+serve.test_fatal_recovery	0	3	OK
+serve.test_frontend	0	1	OK
+serve.test_images	0	8	OK
+serve.test_keepawake	1	3	FAILED (failures=1)
+serve.test_lifecycle	0	7	OK
+serve.test_lifeline	1	19	FAILED (failures=1)
+serve.test_logit_bias	0	2	OK
+serve.test_mcp	0	15	OK
+serve.test_model_card_sampling	0	1	OK
+serve.test_monitor	0	6	OK
+serve.test_parallel	0	77	OK
+serve.test_parser_call_scan	0	0	OK
+serve.test_parser_hold	0	1	OK
+serve.test_parser_track	0	0	OK
+serve.test_prometheus	0	3	OK
+serve.test_prompt_encoder	0	9	OK
+serve.test_q36_config	0	1	OK
+serve.test_queue_keepalive	0	2	OK
+serve.test_quiet_cancel	0	18	OK
+serve.test_ready_timeout	0	6	OK
+serve.test_reasoning_loop_recovery	0	3	OK
+serve.test_reasoning_rescue	0	7	OK
+serve.test_reasoning_tools	0	3	OK
+serve.test_replicas	0	8	OK
+serve.test_request_accounting	0	4	OK
+serve.test_request_hardening	0	2	OK
+serve.test_responses	0	12	OK (skipped=1)
+serve.test_restart_waiters	0	13	OK
+serve.test_runconfig	0	4	OK
+serve.test_security	0	12	OK
+serve.test_server	0	130	OK
+serve.test_session_save_retry	0	2	OK
+serve.test_slot_alloc	0	1	OK
+serve.test_slots	0	9	OK
+serve.test_structured	0	6	OK (skipped=2)
+serve.test_tool_name_space	0	0	OK
+serve.test_vision_busy	0	1	OK
+serve.test_vision_elastic	0	2	OK
+serve.test_vram	0	3	OK
+serve.test_web_sampling	0	1	OK (skipped=4)
+serve.test_winjob	0	0	OK (skipped=3)

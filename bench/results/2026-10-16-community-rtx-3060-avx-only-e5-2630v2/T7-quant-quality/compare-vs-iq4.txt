@@ -1,0 +1,8 @@
+reference: <WORKDIR>/experiments/06_test/results/2026-10-16/T7-quant-quality/ud-iq4_xs-run1.tsv
+run                                      segment         pos    top1       KL   KL p99     PPL PPL ref
+iq2_xs-run1.tsv                          code            999  90.29%  0.20423      nan   2.087   2.068
+iq2_xs-run1.tsv                          docs            999  67.87%  0.39906      nan  10.724  10.128
+iq2_xs-run1.tsv                          english         999  75.48%  0.29378      nan   4.635   4.309
+iq2_xs-run1.tsv                          multilingual    999  87.29%  0.15097      nan   2.785   2.736
+iq2_xs-run1.tsv                          agent           999  80.68%  0.49630      nan   6.664   4.980
+iq2_xs-run1.tsv                          all            4995  80.32%  0.30887   3.4172   4.539   4.149

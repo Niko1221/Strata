@@ -1,0 +1,10 @@
+   4k depth  10%: FOUND  (3,327 prompt tokens, 23 s)
+   4k depth  50%: FOUND  (3,327 prompt tokens, 23 s)
+   4k depth  90%: FOUND  (3,328 prompt tokens, 23 s)
+  16k depth  10%: FOUND  (15,157 prompt tokens, 48 s)
+  16k depth  50%: FOUND  (15,155 prompt tokens, 48 s)
+  16k depth  90%: FOUND  (15,155 prompt tokens, 48 s)
+  32k depth  10%: FOUND  (32,778 prompt tokens, 92 s)
+  32k depth  50%: FOUND  (32,778 prompt tokens, 92 s)
+  32k depth  90%: FOUND  (32,779 prompt tokens, 92 s)
+9 of 9 found

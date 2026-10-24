@@ -1,0 +1,167 @@
+[   0.1 min] #  0 check   ok=True prompt=29 pp=14.3 decode=5.6  correct=True
+[   0.2 min] #  1 p512    ok=True prompt=538 pp=101.5 decode=15.8 
+[   0.7 min] #  2 p4096   ok=True prompt=4316 pp=189.1 decode=24.4 
+[   2.4 min] #  3 p32000  ok=True prompt=33598 pp=347.4 decode=26.2 
+[   2.5 min] #  4 check   ok=True prompt=29 pp=15.3 decode=5.8  correct=True
+[   2.6 min] #  5 p512    ok=True prompt=451 pp=124.7 decode=28.7 
+[   3.0 min] #  6 p4096   ok=True prompt=4030 pp=178.2 decode=26.8 
+[   4.7 min] #  7 p32000  ok=True prompt=31985 pp=350.3 decode=26.7 
+[   4.7 min] #  8 check   ok=True prompt=29 pp=14.6 decode=5.7  correct=True
+[   4.8 min] #  9 p512    ok=True prompt=457 pp=120.3 decode=25.3 
+[   5.3 min] # 10 p4096   ok=True prompt=4032 pp=176.9 decode=27.2 
+[   6.9 min] # 11 p32000  ok=True prompt=31900 pp=349.5 decode=23.4 
+[   7.0 min] # 12 check   ok=True prompt=29 pp=14.5 decode=5.2  correct=True
+[   7.2 min] # 13 p512    ok=True prompt=448 pp=116.1 decode=23.1 
+[   7.6 min] # 14 p4096   ok=True prompt=4045 pp=177.9 decode=27.7 
+[   9.2 min] # 15 p32000  ok=True prompt=31932 pp=350.0 decode=25.4 
+[   9.3 min] # 16 check   ok=True prompt=29 pp=14.6 decode=6.1  correct=True
+[   9.4 min] # 17 p512    ok=True prompt=457 pp=121.5 decode=26.2 
+[   9.8 min] # 18 p4096   ok=True prompt=4022 pp=177.3 decode=25.2 
+[  11.5 min] # 19 p32000  ok=True prompt=31934 pp=349.8 decode=24.7 
+[  11.5 min] # 20 check   ok=True prompt=29 pp=14.5 decode=5.2  correct=True
+[  11.6 min] # 21 p512    ok=True prompt=447 pp=115.7 decode=27.5 
+[  12.1 min] # 22 p4096   ok=True prompt=4049 pp=178.4 decode=27.3 
+[  13.7 min] # 23 p32000  ok=True prompt=31911 pp=349.6 decode=24.0 
+[  13.8 min] # 24 check   ok=True prompt=29 pp=14.4 decode=5.3  correct=True
+[  13.9 min] # 25 p512    ok=True prompt=451 pp=116.4 decode=28.0 
+[  14.3 min] # 26 p4096   ok=True prompt=4016 pp=177.1 decode=28.0 
+[  15.9 min] # 27 p32000  ok=True prompt=31932 pp=349.6 decode=24.5 
+[  16.0 min] # 28 check   ok=True prompt=29 pp=14.7 decode=5.4  correct=True
+[  16.2 min] # 29 p512    ok=True prompt=459 pp=117.8 decode=24.3 
+[  16.6 min] # 30 p4096   ok=True prompt=4034 pp=176.9 decode=25.7 
+[  18.3 min] # 31 p32000  ok=True prompt=32030 pp=349.5 decode=25.1 
+[  18.3 min] # 32 check   ok=True prompt=29 pp=13.8 decode=4.9  correct=True
+[  18.4 min] # 33 p512    ok=True prompt=444 pp=115.6 decode=25.2 
+[  18.9 min] # 34 p4096   ok=True prompt=4045 pp=176.9 decode=24.5 
+[  20.5 min] # 35 p32000  ok=True prompt=31910 pp=349.3 decode=24.4 
+[  20.6 min] # 36 check   ok=True prompt=29 pp=14.6 decode=5.0  correct=True
+[  20.7 min] # 37 p512    ok=True prompt=459 pp=118.4 decode=26.0 
+[  21.2 min] # 38 p4096   ok=True prompt=4052 pp=178.3 decode=26.5 
+[  22.8 min] # 39 p32000  ok=True prompt=31919 pp=348.7 decode=27.1 
+[  22.9 min] # 40 check   ok=True prompt=29 pp=14.6 decode=6.6  correct=True
+[  23.0 min] # 41 p512    ok=True prompt=450 pp=117.6 decode=23.8 
+[  23.4 min] # 42 p4096   ok=True prompt=3992 pp=175.4 decode=26.5 
+[  25.1 min] # 43 p32000  ok=True prompt=31890 pp=349.5 decode=24.7 
+[  25.1 min] # 44 check   ok=True prompt=29 pp=14.8 decode=5.4  correct=True
+[  25.2 min] # 45 p512    ok=True prompt=452 pp=116.4 decode=25.3 
+[  25.7 min] # 46 p4096   ok=True prompt=4061 pp=178.4 decode=24.1 
+[  27.3 min] # 47 p32000  ok=True prompt=31965 pp=349.6 decode=25.5 
+[  27.3 min] # 48 check   ok=True prompt=29 pp=14.4 decode=5.9  correct=True
+[  27.5 min] # 49 p512    ok=True prompt=457 pp=114.0 decode=29.1 
+[  27.9 min] # 50 p4096   ok=True prompt=4025 pp=177.3 decode=26.6 
+[  29.6 min] # 51 p32000  ok=True prompt=31914 pp=345.7 decode=25.1 
+[  29.6 min] # 52 check   ok=True prompt=29 pp=14.6 decode=5.5  correct=True
+[  29.7 min] # 53 p512    ok=True prompt=438 pp=117.7 decode=28.5 
+[  30.2 min] # 54 p4096   ok=True prompt=4080 pp=179.5 decode=24.8 
+[  31.8 min] # 55 p32000  ok=True prompt=32050 pp=349.4 decode=24.3 
+[  31.9 min] # 56 check   ok=True prompt=29 pp=14.1 decode=5.4  correct=True
+[  32.0 min] # 57 p512    ok=True prompt=454 pp=109.1 decode=27.7 
+[  32.5 min] # 58 p4096   ok=True prompt=4008 pp=176.5 decode=25.6 
+[  34.1 min] # 59 p32000  ok=True prompt=31873 pp=349.3 decode=23.7 
+[  34.1 min] # 60 check   ok=True prompt=29 pp=14.4 decode=5.7  correct=True
+[  34.3 min] # 61 p512    ok=True prompt=450 pp=113.2 decode=23.8 
+[  34.7 min] # 62 p4096   ok=True prompt=4043 pp=177.9 decode=25.7 
+[  36.3 min] # 63 p32000  ok=True prompt=31874 pp=348.6 decode=24.1 
+[  36.4 min] # 64 check   ok=True prompt=29 pp=14.7 decode=6.0  correct=True
+[  36.5 min] # 65 p512    ok=True prompt=455 pp=119.9 decode=24.1 
+[  37.0 min] # 66 p4096   ok=True prompt=3986 pp=175.1 decode=23.2 
+[  38.6 min] # 67 p32000  ok=True prompt=32013 pp=350.6 decode=26.6 
+[  38.7 min] # 68 check   ok=True prompt=29 pp=15.0 decode=5.7  correct=True
+[  38.8 min] # 69 p512    ok=True prompt=447 pp=117.2 decode=25.7 
+[  39.2 min] # 70 p4096   ok=True prompt=4039 pp=177.9 decode=32.4 
+[  40.9 min] # 71 p32000  ok=True prompt=31936 pp=349.7 decode=22.8 
+[  40.9 min] # 72 check   ok=True prompt=29 pp=14.4 decode=5.1  correct=True
+[  41.0 min] # 73 p512    ok=True prompt=448 pp=116.9 decode=25.5 
+[  41.5 min] # 74 p4096   ok=True prompt=4066 pp=178.9 decode=25.5 
+[  43.1 min] # 75 p32000  ok=True prompt=31976 pp=349.8 decode=26.5 
+[  43.2 min] # 76 check   ok=True prompt=29 pp=14.1 decode=6.3  correct=True
+[  43.3 min] # 77 p512    ok=True prompt=464 pp=118.3 decode=26.1 
+[  43.8 min] # 78 p4096   ok=True prompt=4043 pp=177.9 decode=26.3 
+[  45.4 min] # 79 p32000  ok=True prompt=31899 pp=349.6 decode=26.4 
+[  45.4 min] # 80 check   ok=True prompt=29 pp=14.6 decode=5.3  correct=True
+[  45.5 min] # 81 p512    ok=True prompt=443 pp=114.2 decode=26.2 
+[  46.0 min] # 82 p4096   ok=True prompt=4030 pp=177.3 decode=24.7 
+[  47.6 min] # 83 p32000  ok=True prompt=31937 pp=349.8 decode=25.7 
+[  47.7 min] # 84 check   ok=True prompt=29 pp=14.7 decode=6.9  correct=True
+[  47.8 min] # 85 p512    ok=True prompt=453 pp=118.1 decode=25.3 
+[  48.3 min] # 86 p4096   ok=True prompt=3989 pp=174.2 decode=24.8 
+[  49.9 min] # 87 p32000  ok=True prompt=31941 pp=349.1 decode=24.1 
+[  49.9 min] # 88 check   ok=True prompt=29 pp=14.3 decode=6.2  correct=True
+[  50.1 min] # 89 p512    ok=True prompt=451 pp=118.1 decode=22.7 
+[  50.6 min] # 90 p4096   ok=True prompt=4089 pp=179.2 decode=25.9 
+[  52.2 min] # 91 p32000  ok=True prompt=31884 pp=348.4 decode=27.2 
+[  52.2 min] # 92 check   ok=True prompt=29 pp=14.6 decode=6.4  correct=True
+[  52.4 min] # 93 p512    ok=True prompt=452 pp=120.0 decode=25.7 
+[  52.8 min] # 94 p4096   ok=True prompt=4042 pp=177.3 decode=26.1 
+[  54.4 min] # 95 p32000  ok=True prompt=32048 pp=350.8 decode=25.3 
+[  54.5 min] # 96 check   ok=True prompt=29 pp=14.3 decode=6.0  correct=True
+[  54.6 min] # 97 p512    ok=True prompt=450 pp=118.4 decode=25.1 
+[  55.0 min] # 98 p4096   ok=True prompt=4009 pp=176.0 decode=25.8 
+[  56.7 min] # 99 p32000  ok=True prompt=31881 pp=349.2 decode=24.1 
+[  56.7 min] #100 check   ok=True prompt=29 pp=14.2 decode=5.1  correct=True
+[  56.9 min] #101 p512    ok=True prompt=454 pp=118.5 decode=25.9 
+[  57.3 min] #102 p4096   ok=True prompt=4060 pp=177.6 decode=25.7 
+[  59.0 min] #103 p32000  ok=True prompt=31998 pp=350.6 decode=22.9 
+[  59.0 min] #104 check   ok=True prompt=29 pp=13.9 decode=5.9  correct=True
+[  59.1 min] #105 p512    ok=True prompt=457 pp=113.8 decode=27.2 
+[  59.6 min] #106 p4096   ok=True prompt=4021 pp=177.1 decode=24.8 
+[  61.2 min] #107 p32000  ok=True prompt=31889 pp=349.3 decode=25.7 
+[  61.3 min] #108 check   ok=True prompt=29 pp=14.7 decode=5.2  correct=True
+[  61.4 min] #109 p512    ok=True prompt=448 pp=118.7 decode=26.5 
+[  61.8 min] #110 p4096   ok=True prompt=4071 pp=179.1 decode=27.6 
+[  63.5 min] #111 p32000  ok=True prompt=31916 pp=349.8 decode=24.6 
+[  63.5 min] #112 check   ok=True prompt=29 pp=14.2 decode=5.7  correct=True
+[  63.6 min] #113 p512    ok=True prompt=445 pp=111.8 decode=26.3 
+[  64.1 min] #114 p4096   ok=True prompt=4003 pp=175.8 decode=28.9 
+[  65.7 min] #115 p32000  ok=True prompt=31908 pp=349.6 decode=24.2 
+{
+ "observed_minutes": 65.7,
+ "requests": 116,
+ "failed": 0,
+ "checks": 29,
+ "checks_correct": 29,
+ "by_kind": {
+  "check": {
+   "n": 29,
+   "prompt_tokens_median": 29,
+   "decode_tps_first_half": 5.4,
+   "decode_tps_second_half": 5.8,
+   "prompt_tps_first_half": 14.6,
+   "prompt_tps_second_half": 14.4
+  },
+  "p32000": {
+   "n": 29,
+   "prompt_tokens_median": 31932,
+   "decode_tps_first_half": 24.9,
+   "decode_tps_second_half": 24.6,
+   "prompt_tps_first_half": 349.5,
+   "prompt_tps_second_half": 349.6
+  },
+  "p4096": {
+   "n": 29,
+   "prompt_tokens_median": 4039,
+   "decode_tps_first_half": 26.5,
+   "decode_tps_second_half": 25.75,
+   "prompt_tps_first_half": 177.3,
+   "prompt_tps_second_half": 177.45
+  },
+  "p512": {
+   "n": 29,
+   "prompt_tokens_median": 451,
+   "decode_tps_first_half": 26.0,
+   "decode_tps_second_half": 25.7,
+   "prompt_tps_first_half": 116.4,
+   "prompt_tps_second_half": 118.1
+  }
+ },
+ "samples": 391,
+ "gpu_temp_max_c": 67.0,
+ "gpu_power_max_w": 115.49,
+ "vram_used_max_mib": 11555.0,
+ "engine_rss_first_last_max_mib": [
+  36015.9,
+  36572.9,
+  36671.8
+ ],
+ "mem_available_min_gib": 210.24
+}

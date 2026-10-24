@@ -1,0 +1,9 @@
+reference: <WORKDIR>/experiments/06_test/results/2026-10-16/T7-quant-quality/iq2_xs-run1.tsv
+run                                      segment         pos    top1       KL   KL p99     PPL PPL ref
+iq2_xs-run2.tsv                          code            999 100.00%  0.00000      nan   2.087   2.087
+iq2_xs-run2.tsv                          docs            999 100.00%  0.00000      nan  10.724  10.724
+iq2_xs-run2.tsv                          english         999 100.00%  0.00000      nan   4.635   4.635
+iq2_xs-run2.tsv                          multilingual    999 100.00%  0.00000      nan   2.785   2.785
+iq2_xs-run2.tsv                          agent           999 100.00%  0.00000      nan   6.664   6.664
+iq2_xs-run2.tsv                          all            4995 100.00%  0.00000   0.0000   4.539   4.539
+run1 and run2: byte-identical
