@@ -720,6 +720,8 @@ def param_end(text: str, final: bool = False) -> int:
             return at
         if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
             return at if final else -2
+        if after.startswith("<=") and ">" not in after.split("\n", 1)[0] and "\n" not in after:
+            return at if final else -2      # a damaged `<=NAME>` opener still arriving
         at = text.find(PARAM_END, at + 1)
     return -1
 
@@ -864,6 +866,46 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
 
 
+_BOOLS = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}
+
+
+def coerce_param(value: str, declared) -> object:
+    """A parameter value by its declared JSON-schema type, shared by the whole-call and the streaming parser.
+    "string" stays raw; boolean also reads True/False/yes/no/1/0 (any case); integer/number read numeric strings;
+    array/object and an undeclared type are JSON-decoded.  Whatever does not convert stays the raw string."""
+    if declared == "string":
+        return value
+    text = value.strip()
+    if declared == "boolean" and text.lower() in _BOOLS:
+        return _BOOLS[text.lower()]
+    try:
+        v = json.loads(value)
+    except ValueError:
+        return value
+    if declared == "boolean" and not isinstance(v, bool):
+        return value
+    return v
+
+
+_DAMAGED_PARAM = re.compile(r"(?:</parameter>|<function=[^>\n]*>)\s*<=([^>\s]+)>")
+
+
+def fix_param_openers(buf: str, schemas: dict, start: int = 0) -> str:
+    """recover: inside a call, `<=NAME>` after the function opener or a `</parameter>` is `<parameter=NAME>` when NAME
+    is a declared parameter of that call's tool (seen from Coder-L).  Only text from `start` on is rewritten."""
+    out, last = [], 0
+    for m in _DAMAGED_PARAM.finditer(buf):
+        if m.start(1) - 2 < start:
+            continue
+        f = buf.rfind(FUNC_START, 0, m.start(1))
+        name = buf[f + len(FUNC_START):buf.find(">", f)].strip() if f >= 0 else ""
+        props = ((schemas.get(name) or {}).get("parameters") or {}).get("properties") or {}
+        if m.group(1) in props:
+            out += [buf[last:m.start(1) - 2], PARAM_START + m.group(1) + ">"]
+            last = m.end()
+    return buf[:0].join(out) + buf[last:] if out else buf
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -887,13 +929,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         if value.endswith("\n"):
             value = value[:-1]
         declared = (props.get(pname) or {}).get("type")
-        if declared == "string":
-            args[pname] = value
-        else:
-            try:
-                args[pname] = json.loads(value)
-            except ValueError:
-                args[pname] = value
+        args[pname] = coerce_param(value, declared)
     return ToolCall(name=name, arguments=args)
 
 
@@ -1127,6 +1163,7 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.spname = ""
 
     def _wrapped_call_end(self) -> int:
         # Without a closing tag the structural walk cannot finish. Search only
@@ -1179,6 +1216,7 @@ class OutputParser:
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
+                    self.spname = pname
                     if self.sdeclared.get(pname) == "string":
                         args('"')
                         self.ss, self.sval_started = "str", False
@@ -1223,10 +1261,7 @@ class OutputParser:
                     value = value[1:]
                 if value.endswith("\n"):
                     value = value[:-1]
-                try:
-                    v = json.loads(value)
-                except ValueError:
-                    v = value
+                v = coerce_param(value, self.sdeclared.get(self.spname))
                 args(json.dumps(v, ensure_ascii=False))
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"
@@ -1498,6 +1533,8 @@ class OutputParser:
                 self.state, self.lead = "content", call is not None
             else:
                 drop = None
+                if self.recover and "<=" in self.buf:
+                    self.buf = fix_param_openers(self.buf, self.schemas, self.sp if self.stream_tools else 0)
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
                     i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
                     if i >= 0:
