@@ -1,0 +1,8 @@
+strata: prefill plan: chunk 8192, ring 96 kept: file set 31.7 GiB fits the page cache 39.5 GiB -> about 0.0 GB read from the drive per 32768-token prompt (4 chunks)
+strata: prefill plan inputs: 40.0 GiB experts, 11.3 GiB in the GPU caches, 0.0 GiB RAM copy (0 lend slots kept), file tier 28.7 GiB; 39.5 GiB available for the page cache; PCIe 12.0 GB/s; drive 1.50 GB/s (assumed); a 32768-token prompt
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
+strata generate: native pack: /home/<user>/Strata-data/packs/iq3_xxs experts (largest blob 2.33 MB), token embedding IQ3_S in mapped host memory (260 MiB, 0.3 s)
+strata generate: experts via mmap (--mmap-experts; the A/B arm of R2.1)
+strata: prefill plan: chunk 8192, ring 96 kept: file set 31.7 GiB fits the page cache 40.1 GiB -> about 0.0 GB read from the drive per 32768-token prompt (4 chunks)
+strata: prefill plan inputs: 40.0 GiB experts, 11.3 GiB in the GPU caches, 0.0 GiB RAM copy (0 lend slots kept), file tier 28.7 GiB; 40.1 GiB available for the page cache; PCIe 12.0 GB/s; drive 1.50 GB/s (assumed); a 32768-token prompt
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
