@@ -8306,6 +8306,18 @@ int main(int argc, char** argv) {
         }
 #endif
     }
+#if defined(_WIN32)
+    // #3065: STRATA_PROMPT_DIRECT=1 also without a RAM budget - the low-RAM mode (--mmap-experts, no
+    // --resident-budget-gib), where the decode reads experts.bin through the mapping and a long prompt's copies out of
+    // it are millions of page faults that also push the decode's cached experts out of RAM.  The same bytes either way.
+    if (srcp == &src && o.mmap_experts && o.resident_budget <= 0 && !src.unbuffered() &&
+        [] { const char* v = std::getenv("STRATA_PROMPT_DIRECT"); return v != nullptr && v[0] == '1'; }()) {
+        std::string pw;
+        const bool pd = src.open_prompt_direct(pw);
+        std::fprintf(stderr, "strata generate: the prompt path's expert reads %s\n",
+                     pd ? "go unbuffered (STRATA_PROMPT_DIRECT=1, mmap mode)" : ("stay mapped: " + pw).c_str());
+    }
+#endif
     // (the arena mode has no RAM copy to exchange with: its experts are always in RAM, the tier only copies them in)
     if (o.adapt_async && !src.complement_ready() && srcp != &arena_src) adapt_async_off("the resident RAM mode is not running");
     // pp-opt: with the file tier unbuffered, the mapped view of experts.bin is only a fallback from here on - and while

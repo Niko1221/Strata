@@ -1477,11 +1477,16 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (files && std::getenv("STRATA_STAGER_RING") == nullptr) m.stager->kRing = 4 * threads;
         // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request (copy_blobs);
         // STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before)
+        // #3065: with prompt_reads the source reads every unpinned blob itself, 8 neighbours per request by default, on
+        // the RAM profile's threads; the ring holds every thread's batch twice over
+        const bool preads = src != nullptr && src->prompt_reads();
         {
             const char* bv = std::getenv("STRATA_STAGER_BATCH");
-            const int want = bv ? std::atoi(bv) : files ? 8 : 1;
+            const int want = bv ? std::atoi(bv) : (files || preads) ? 8 : 1;
             m.stager->batch = std::clamp(want, 1, Stager::kMaxBatch);
         }
+        if (preads && !files && std::getenv("STRATA_STAGER_RING") == nullptr)
+            m.stager->kRing = std::clamp(2 * m.stager->batch * threads, 16, 256);
         if (!m.stager->init((size_t) MAXBLOB(), threads)) ok = false;
         m.stager->batch = std::min(m.stager->batch, m.stager->kRing);
     }
@@ -2967,7 +2972,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
                     int job = -1;
                     const uint8_t* b = nullptr;
-                    if (m.src->transient(l, e)) {   // CS-T: copied by the source into the stager's buffer
+                    // CS-T / #3065 (prompt_reads): copied by the source into the stager's buffer
+                    if (m.src->transient(l, e) || (m.src->prompt_reads() && !m.src->pinned(l, e))) {
                         job = (int) js.size();
                         js.push_back({nullptr, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
                     } else {
@@ -4430,7 +4436,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                                 if (m.src->pinned(l, e)) continue;
                                 job_of[j] = (int) js.size();
-                                if (m.src->transient(l, e)) {   // CS-T: copied by the source
+                                if (m.src->transient(l, e) || m.src->prompt_reads()) {   // CS-T / #3065: by the source
                                     js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
                                     continue;
                                 }
