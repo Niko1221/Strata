@@ -497,6 +497,8 @@ class ModelScreen(Base):
         if problem:
             self.say(f"{problem[0]} {problem[1]}", True)
             return
+        if self.check_own_deepseek(path):
+            return
         try:
             plan = models.plan_import(models.absolute(path))
         except Exception as e:                               # noqa: BLE001
@@ -517,6 +519,37 @@ class ModelScreen(Base):
             holds = next((m for m in plan.get("messages") or [] if "holds" in m), "")
             self.say(f"These files cannot be used as they are ({why}). " + (holds + " " if holds else "") +
                      "Check that every shard is in the folder, or pick a model from the list.", True)
+
+    def check_own_deepseek(self, path: str) -> bool:
+        """The files are DeepSeek-V4.1-Flash's (the pinned shard names): taken as that model, as `strata launch --model-path` does, instead of
+        the generic file check, which does not know DeepSeek and said "could not be read" for its n-gram shard (#3914).  True when it answered."""
+        from strata_cli.launch.runner import Runner
+        try:
+            mod = self.ctx.catalog.strata.setup_module()
+            found = Runner.deepseek_set_in(mod, path, self.ctx.settings.model)
+        except Exception:                                    # noqa: BLE001 - not DeepSeek's: the usual check goes on
+            return False
+        if found is None:
+            return False
+        model, d, folder = found
+        legacy = getattr(mod, "DSV41_LEGACY_NAMES", {})
+        missing = [n for n in d["shards"] if not (folder / n).exists() and not (legacy.get(n) and (folder / legacy[n]).exists())]
+        if missing:
+            self.say(f"These are DeepSeek-V4.1-Flash {d.get('label', model)} files, but {len(missing)} of {len(d['shards'])} parts are not in {folder} "
+                     f"(first missing: {missing[0]}). Put every part in the folder, or pick a model from the list.", True)
+            return True
+        s = self.ctx.settings
+        s.model_path, s.family, s.model = str(folder), "deepseek41", model
+        self.ctx.picked_in_list = False
+        self.close_field("own")
+        gb = sum(x.stat().st_size for x in folder.iterdir() if x.is_file() and x.name.endswith(".gguf")) / 1e9
+        self.say(f"These files are DeepSeek-V4.1-Flash {d.get('label', model)} ({gb:.0f} GB in this folder). Press Enter to use them.")
+        try:
+            self.menu().select(("deepseek41", model))
+        except Exception:                                    # noqa: BLE001 - the list may not show it; the choice is already made
+            pass
+        self.paint()
+        return True
 
     def action_back(self) -> None:
         if self.input_open():
@@ -1041,9 +1074,15 @@ class TuningScreen(Base):
     def on_mount(self) -> None:
         s = self.ctx.settings
         first = self.ctx.fresh_setup and not s.is_tuned
-        items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
-                 Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
-                 Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
+        if s.family == "deepseek41":                         # DeepSeek's own short tune (tools/dsv41/tune.py): its real length and what it tries
+            items = [Item(["Quick", "about 5-10 minutes", "tries the DSpark drafter on or off, a shorter draft block and the CPU threads; keeps only clear gains"
+                           + ("; suggested the first time" if first else "")], key="quick"),
+                     Item(["Thorough", "about 10-15 minutes", "also tries every CPU thread"], key="thorough"),
+                     Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
+        else:
+            items = [Item(["Quick", "about 20 minutes", "checks the most likely gains" + ("; suggested the first time" if first else "")], key="quick"),
+                     Item(["Thorough", "up to 2 hours", "tries more settings, measures each one several times"], key="thorough"),
+                     Item(["Skip", "", "use the default settings (already good on most computers)"], key="skip")]
         if not self.ctx.tune_chosen and s.tune == "skip" and not s.is_tuned and self.ctx.fresh_setup:
             s.tune = "quick"
         self.query_one(Menu).set_items(items, {"quick": 0, "thorough": 1, "skip": 2}.get(s.tune, 0))
@@ -1449,7 +1488,8 @@ class SaveScreen(Base):
                  ("Context", S.context_label(s.context) + f", memory {s.kv or 'int8'}"),
                  ("Pictures", "on" if s.vision != "off" else "off"),
                  ("Parallel", f"{s.parallel} at a time" if s.parallel else f"fit to your card ({S.fit_parallel(self.ctx.computer.main_vram_gb)})"),
-                 ("Tuning", {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"}[s.tune]),
+                 ("Tuning", ({"quick": "quick (about 5-10 min)", "thorough": "thorough (about 10-15 min)", "skip": "skipped"} if s.family == "deepseek41"
+                              else {"quick": "quick (about 20 min)", "thorough": "thorough (up to 2 h)", "skip": "skipped"})[s.tune]),
                  ("Access", f"{S.ACCESS_WORDS[s.access]}, port {s.port}" + (", API key on" if s.api_key else ", no API key")),
                  ("Storage", s.data_dir or str(self.ctx.default_folder()))]
         if s.extra:

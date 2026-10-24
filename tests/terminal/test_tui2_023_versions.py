@@ -20,11 +20,12 @@ def first(path, pattern):
 
 
 class VersionBump(unittest.TestCase):
-    def test_the_terminal_is_0_2_3_1_and_control_is_0_1_48_1_while_the_engine_stays_0_1_48(self):
-        # 0.2.3.1 is a Control-only hotfix (#3810): the app stays 0.2.3 and the engine packages stay 0.1.48 (metal/CMakeLists.txt keeps 0.1.48)
-        self.assertEqual(strata_cli.PRODUCT_VERSION, "0.2.3.1")
-        self.assertEqual(strata_cli.version(), "0.1.48.1")                # the CMake project version: Control
-        self.assertEqual(first("CMakeLists.txt", r"^project\(strata VERSION ([0-9.]+) "), "0.1.48.1")
+    def test_the_terminal_is_0_2_4_2_and_control_is_0_1_49_2_while_the_app_stays_0_2_3(self):
+        # 0.2.4 is a Terminal / Control and engine release (DeepSeek V4.1-Flash): the app stays 0.2.3, the three DeepSeek engine packages are 0.1.49,
+        # the other engine packages stay 0.1.48 (metal/CMakeLists.txt keeps 0.1.48)
+        self.assertEqual(strata_cli.PRODUCT_VERSION, "0.2.4.2")
+        self.assertEqual(strata_cli.version(), "0.1.49.2")                # the CMake project version: Control
+        self.assertEqual(first("CMakeLists.txt", r"^project\(strata VERSION ([0-9.]+) "), "0.1.49.2")
         self.assertIn('STRATA_VERSION="0.1.48-metal"', (ROOT / "metal" / "CMakeLists.txt").read_text(encoding="utf-8"))
 
     def test_every_place_the_app_version_lives_says_0_2_3(self):
@@ -41,14 +42,13 @@ class VersionBump(unittest.TestCase):
         self.assertIn("Version 0.2.3, engine 0.1.48.", (ROOT / "AGENTS.md").read_text(encoding="utf-8"))
         for name in ("README.md", "README.de.md", "README.es.md", "README.fr.md", "README.ja.md", "README.pt-BR.md", "README.zh-CN.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("0.2.3 · ", text, name)
-            self.assertIn("0.1.48", text, name)
+            self.assertIn("Strata-0.2.3-", text, name)       # (the restyled READMEs state the app version through the download buttons: the app stays 0.2.3)
             self.assertNotIn("Strata-0.2.2-", text, name)
 
     def test_version_prints_the_product_and_the_build(self):
         done = subprocess.run([sys.executable, str(ROOT / "strata.py"), "--version"], capture_output=True, text=True, cwd=str(ROOT),
                               env={**os.environ, "STRATA_NO_HANDOVER": "1"})
-        self.assertTrue(done.stdout.startswith("strata 0.2.3.1 (build 0.1.48.1;"), done.stdout)
+        self.assertTrue(done.stdout.startswith("strata 0.2.4.2 (build 0.1.49.2;"), done.stdout)
 
 
 class UpdateFromTheLastRelease(test_updater.UpdaterCase):

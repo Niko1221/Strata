@@ -16,11 +16,14 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace strata::kernels::cpu {
@@ -129,6 +132,88 @@ bool q8k_avx1(int type) {
 }
 }  // namespace
 
+// STRATA_ACT_DUMP=<prefix> (research, off by default): the second moments of the vectors that enter the CPU experts, in the
+// basis the experts use (after the Hadamard rotation of a folded layer): per layer the gate/up input (the token's hidden
+// state, once per token) and the down input (the SwiGLU output, once per routed expert).  STRATA_ACT_DUMP_LAYERS=10,20 picks
+// the layers (default none), STRATA_ACT_DUMP_COV=1 adds the full covariance.  Files <prefix>_L<l>_<gu|dn>.bin: int64 n,
+// int64 count, double sum x^2 [n], (double sum x x^T [n*n]); rewritten every 2000 records and at exit.
+namespace {
+struct ActAcc {
+    int64_t n = 0, count = 0;
+    std::vector<double> sq, cov;
+};
+struct ActDump {
+    bool on = false, cov = false;
+    std::string prefix;
+    std::vector<int> layers;
+    std::map<std::pair<int, int>, ActAcc> acc;
+    std::mutex mu;
+    int64_t records = 0;
+    ActDump() {
+        const char* p = std::getenv("STRATA_ACT_DUMP");
+        if (p == nullptr || *p == 0) return;
+        prefix = p;
+        cov = std::getenv("STRATA_ACT_DUMP_COV") != nullptr && std::atoi(std::getenv("STRATA_ACT_DUMP_COV")) != 0;
+        if (const char* l = std::getenv("STRATA_ACT_DUMP_LAYERS")) {
+            std::string s(l);
+            size_t at = 0;
+            while (at < s.size()) {
+                layers.push_back(std::atoi(s.c_str() + at));
+                const size_t c = s.find(',', at);
+                if (c == std::string::npos) break;
+                at = c + 1;
+            }
+        }
+        on = !layers.empty();
+        if (on) std::atexit([] { act_dump_flush(); });
+    }
+    static void act_dump_flush();
+};
+ActDump& act_dump() {
+    static ActDump* d = new ActDump;   // never destroyed: the atexit flush must still find it
+    return *d;
+}
+void ActDump::act_dump_flush() {
+    ActDump& d = act_dump();
+    std::lock_guard<std::mutex> lk(d.mu);
+    for (auto& kv : d.acc) {
+        const std::string path = d.prefix + "_L" + std::to_string(kv.first.first) + (kv.first.second ? "_dn.bin" : "_gu.bin");
+        FILE* f = std::fopen((path + ".tmp").c_str(), "wb");
+        if (!f) continue;
+        std::fwrite(&kv.second.n, 8, 1, f);
+        std::fwrite(&kv.second.count, 8, 1, f);
+        std::fwrite(kv.second.sq.data(), 8, kv.second.sq.size(), f);
+        if (!kv.second.cov.empty()) std::fwrite(kv.second.cov.data(), 8, kv.second.cov.size(), f);
+        std::fclose(f);
+        std::rename((path + ".tmp").c_str(), path.c_str());
+    }
+}
+void act_dump_record(int layer, int kind, const float* v, int64_t n) {
+    ActDump& d = act_dump();
+    if (std::find(d.layers.begin(), d.layers.end(), layer) == d.layers.end()) return;
+    std::lock_guard<std::mutex> lk(d.mu);
+    ActAcc& a = d.acc[{layer, kind}];
+    if (a.n == 0) {
+        a.n = n;
+        a.sq.assign((size_t) n, 0.0);
+        if (d.cov) a.cov.assign((size_t) n * (size_t) n, 0.0);
+    }
+    for (int64_t i = 0; i < n; ++i) a.sq[(size_t) i] += (double) v[i] * v[i];
+    if (d.cov)
+        for (int64_t i = 0; i < n; ++i) {
+            double* row = a.cov.data() + (size_t) i * (size_t) n;
+            const double vi = v[i];
+            for (int64_t j = 0; j < n; ++j) row[j] += vi * v[j];
+        }
+    ++a.count;
+    if (++d.records % (d.cov ? 400000 : 2000) == 0) {
+        d.mu.unlock();
+        ActDump::act_dump_flush();
+        d.mu.lock();
+    }
+}
+}  // namespace
+
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
     if (f.had_gu) {   // Hadamard-folded gate/up: quantize H (s * x), never x itself (hadamard.hpp)
         thread_local std::vector<float> tmp;
@@ -136,6 +221,7 @@ void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
         hadamard_rotate(tmp.data(), (int) f.n_embd, f.had_block, f.gu_signs);
         x = tmp.data();
     }
+    if (act_dump().on) act_dump_record(f.layer, 0, x, f.n_embd);
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
@@ -148,6 +234,7 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
         hadamard_rotate(tmp.data(), (int) f.n_ff, f.had_block, f.d_signs);
         h = tmp.data();
     }
+    if (act_dump().on) act_dump_record(f.layer, 1, h, f.n_ff);
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
     traits(f.d_act)->from_float(h, dst, f.n_ff);

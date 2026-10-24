@@ -7,7 +7,7 @@ in the Terminal's look, with presets, an Advanced table, an access choice and a 
 ## Install (one line)
 
 ```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh | sh          # Linux, macOS
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh          # Linux, macOS
 irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex                # Windows PowerShell
 ```
 

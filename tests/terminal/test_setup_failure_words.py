@@ -68,5 +68,11 @@ class SetupFailureWords(unittest.TestCase):
                 self.assertIsNone(run.keep_setup_output(["x"]))
 
 
+    def test_a_message_that_ends_with_a_full_stop_does_not_get_a_second_one(self):
+        error = setup_failure(TRACEBACK, "Strata can't reach GitHub to download the DeepSeek engine.", "Check the internet connection.", "/tmp/a.setup.log", False)
+        self.assertIn("DeepSeek engine. Check", error.text + " " + error.next)
+        self.assertNotIn("engine..", error.text)
+
+
 if __name__ == "__main__":
     unittest.main()

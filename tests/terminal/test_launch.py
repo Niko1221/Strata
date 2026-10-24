@@ -109,6 +109,9 @@ class CatalogRules(unittest.TestCase):
             models, families, contexts, source = cat.tables()
             self.assertEqual(source, "setup.py")                       # the same tables setup.py and the app read
             for r in rows:
+                if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3}[r.model], delta=0.1)
+                    continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
             self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier
@@ -966,6 +969,17 @@ class FlagsCommand(unittest.TestCase):
         code, out, _ = run_cli(["launch", "--show-key", "--preset", "Office"])
         self.assertEqual(code, 0)                                              # the preset's own key
         self.assertTrue(out.strip().startswith("sk-strata-"))
+
+    def test_a_setup_line_joined_after_the_model_could_not_be_installed_starts_with_a_capital(self):
+        from strata_cli.launch.runner import setup_failure
+        e = setup_failure([], "the model does not answer sensibly after the preparation: no answer", "", None, False)
+        self.assertTrue(e.text.startswith("The model could not be installed. The model does not answer sensibly"), e.text)
+
+    def test_a_reason_joined_after_a_sentence_starts_with_a_capital(self):
+        from strata_cli.launch.runner import capital
+        self.assertEqual(capital("the update feed could not be read: no route"), "The update feed could not be read: no route")
+        self.assertEqual(capital("Already fine."), "Already fine.")
+        self.assertEqual(capital(""), "")
 
     def test_launch_error_is_one_plain_sentence(self):
         from strata_cli.launch.runner import LaunchError

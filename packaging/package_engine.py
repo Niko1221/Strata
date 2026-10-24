@@ -14,8 +14,9 @@ checks and starts; it is not signed, not published, and nothing here uploads it.
 (`engine_component.register_signature_verifier`); `--sign-with` is deliberately absent until then.
 
 Files taken from --src, by default: the entrypoint, every `*.dll` / `*.so` / `*.so.*` / `*.dylib` / `*.metallib`
-beside it, `BUILD.json`, `LICENSE*`, and the picture reader `strata-vision[.exe]` when the build has one (without it the
-engine answers text only: setup.py Control mode keeps the person's picture choice only when it is there). `--include GLOB` (repeatable, relative to --src, `**` allowed) adds more, for
+beside it, `BUILD.json`, `LICENSE*`, the picture reader `strata-vision[.exe]` when the build has one (without it the
+engine answers text only: setup.py Control mode keeps the person's picture choice only when it is there) and the DeepSeek-V4.1
+engine `strata-dsv41[.exe]` (setup.py dsv41_exe() looks for it beside the engine; `--require-dsv41` refuses a package without it). `--include GLOB` (repeatable, relative to --src, `**` allowed) adds more, for
 example `strata-vision.exe`, `strata-device.exe` or `rocm/**`. `--tree` takes every regular file under --src (the HIP
 package ships a `rocm/` tree of kernels). Symlinks are never followed or copied.
 """
@@ -43,6 +44,9 @@ from strata_control import engine_component as ec  # noqa: E402
 from strata_control.components import BACKEND_MATRIX, host_platform  # noqa: E402
 
 
+DSV41_EXE = "strata-dsv41"
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -54,7 +58,8 @@ def sha256(path: Path) -> str:
 def wanted(path: Path) -> bool:
     name = path.name.lower()
     return (name.endswith((".dll", ".so", ".dylib", ".metallib")) or ".so." in name or name == "build.json"
-            or name.startswith("license") or name in ("strata-vision", "strata-vision.exe", "strata-vision-hip", "strata-vision-hip.exe"))   # the picture readers (CPU, AMD GPU) beside the engine
+            or name.startswith("license") or name in ("strata-vision", "strata-vision.exe", "strata-vision-hip", "strata-vision-hip.exe",
+                                                       DSV41_EXE, DSV41_EXE + ".exe"))   # the picture readers (CPU, AMD GPU) and the DeepSeek-V4.1 engine beside the engine
 
 
 READER_NAMES = ("strata-vision", "strata-vision.exe")
@@ -164,7 +169,8 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
           archs: tuple[str, ...] = (), min_driver: dict | None = None, build_id: str | None = None,
           min_runtime: str | None = None, notes: str = "", tree: bool = False, include: list[str] | None = None,
           variant: str = "", search: list[Path] | None = None, allow_libs: list[str] | None = None,
-          check_reader: bool = False, allow_stale_vision: bool = False, allow_no_reader: bool = False) -> Path:
+          check_reader: bool = False, allow_stale_vision: bool = False, allow_no_reader: bool = False,
+          require_dsv41: bool = False) -> Path:
     if backend not in BACKEND_MATRIX:
         raise SystemExit(f"unknown backend {backend!r}")
     if backend != "cpu" and not archs:
@@ -186,6 +192,9 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
         for note in check_picture_reader(src, backend, target, archs, variant=variant, allow_stale=allow_stale_vision,
                                          allow_none=allow_no_reader):
             print("note: " + note)
+    if require_dsv41 and not any((src / n).is_file() for n in (DSV41_EXE, DSV41_EXE + ".exe")):
+        raise SystemExit(f"refusing to package: {src} has no {DSV41_EXE}[.exe] (--require-dsv41); build it with -DSTRATA_BUILD_DSV41=ON "
+                         "(--target strata-dsv41) and copy it beside the engine")
     folder = out / (f"{version}-{target}-{backend}" + (f"-{variant}" if variant else ""))
     if folder.exists():
         raise SystemExit(f"{folder} already exists; remove it first (packages are immutable)")
@@ -213,7 +222,9 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
             manifest["notes"] = notes
         (staging / ec.MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
         if os.name != "nt":
-            (staging / entrypoint).chmod(0o755)
+            for exe_name in (entrypoint, DSV41_EXE, "strata-vision", "strata-vision-hip"):      # the programs setup starts: executable in the tar
+                if (staging / exe_name).is_file():
+                    (staging / exe_name).chmod(0o755)
         ec.verify(ec.read_manifest(staging), full=True)
         staging.rename(folder)
     except BaseException:
@@ -295,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="folder to copy a missing imported DLL from (default on Windows: CUDA_PATH/bin/x64, HIP_PATH/bin, PATH)")
     ap.add_argument("--allow-lib", action="append", default=[], metavar="NAME",
                     help="an imported library that really is provided by the target system (rare; named so the check passes)")
+    ap.add_argument("--require-dsv41", action="store_true",
+                    help="refuse the package when --src has no strata-dsv41[.exe] (the DeepSeek-V4.1 engine that setup.py looks for beside the engine)")
     ap.add_argument("--include", action="append", default=[], metavar="GLOB", help="more files, relative to --src")
     ap.add_argument("--stamp-vision", type=Path, metavar="STAGE", help="write --vision-archs into STAGE/BUILD.json and exit")
     ap.add_argument("--vision-archs", default="", help="with --stamp-vision: the architectures the reader was built for, e.g. '60;61;70;75;80;86;89'")
@@ -308,6 +321,9 @@ def main(argv: list[str] | None = None) -> int:
             ec.verify(component, full=True)
         except ec.ComponentProblem as exc:
             print(f"{a.verify}: REFUSED: {exc}")
+            return 1
+        if a.require_dsv41 and not any(f[0] in (DSV41_EXE, DSV41_EXE + ".exe") for f in component.files):
+            print(f"{a.verify}: REFUSED: no {DSV41_EXE}[.exe] in the manifest (--require-dsv41)")
             return 1
         bad = binary_deps.uncovered(a.verify)
         if bad:
@@ -336,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                    archs=tuple(a.arch), min_driver=drivers, build_id=a.build_id, min_runtime=a.min_runtime,
                    notes=a.notes, tree=a.tree, include=a.include, variant=a.variant,
                    search=a.search, allow_libs=a.allow_lib, check_reader=True, allow_stale_vision=a.allow_stale_vision,
-                   allow_no_reader=a.no_picture_reader)
+                   allow_no_reader=a.no_picture_reader, require_dsv41=a.require_dsv41)
     entries = [p for p in folder.rglob("*") if p.is_file()]
     total = sum(p.stat().st_size for p in entries)
     print(f"{folder}  ({total / (1 << 20):.1f} MiB, {len(entries)} files, manifest sha256 {package_sha256(folder)})")
