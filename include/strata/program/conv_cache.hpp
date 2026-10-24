@@ -77,6 +77,18 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     return v;
 }
 
+/// A parked snapshot is restored on every GPU in a layer split.  If any one of
+/// them is already below the configured reserve, rereading the prompt is safer
+/// than turning a recoverable cache hit into a process-fatal CUDA allocation.
+/// A single-GPU restore has no split-stage residency to admit, so it keeps the
+/// existing restore path even when the sizing reserve exceeds current free VRAM.
+inline bool restore_has_headroom(bool layer_split, const uint64_t* free_bytes, size_t n, uint64_t floor) {
+    if (!layer_split || free_bytes == nullptr || n == 0 || floor == 0) return true;
+    for (size_t i = 0; i < n; ++i)
+        if (free_bytes[i] < floor) return false;
+    return true;
+}
+
 /// --prompt-cache-spread: the item whose removal leaves the smallest gap for its distance from the newest, so the kept
 /// points thin out geometrically towards the root and an edit d tokens before the end reads about d again.  `lens`:
 /// the chain's token counts.  Never the root, the newest or a pinned item; the tail rule first, as above.
