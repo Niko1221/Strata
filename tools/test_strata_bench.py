@@ -206,6 +206,24 @@ class RedactionTests(unittest.TestCase):
         self.assertNotIn("hunter2", json.dumps(v))
 
 
+@unittest.skipUnless(os.name == "nt", "reads the Windows display class")
+class WindowsGpuDetectionTests(unittest.TestCase):
+    def test_an_intel_arc_is_named_when_there_is_no_nvidia_smi_or_amd_card(self):
+        """The SYCL backend runs on an Intel card, which has no nvidia-smi of its own: without this the report of a
+        B70 run was headed "Community benchmark on CPU only" (measured 2026-10-21)."""
+        arc = {"name": "Intel(R) Arc(TM) Pro B70 Graphics", "provider": "Intel Corporation",
+               "driver": "32.0.101.8976", "vram_bytes": 32 << 30}
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # the patch targets import from the repo root
+        import serve.telemetry  # noqa: F401
+        with mock.patch.object(B, "run_cmd", return_value=""), \
+                mock.patch("serve.telemetry.windows_amd_cards", return_value=[]), \
+                mock.patch("serve.telemetry.windows_display_adapters", return_value=[arc]):
+            info = B.gpu_info_local()
+        self.assertEqual([g["name"] for g in info["gpus"]], ["Intel(R) Arc(TM) Pro B70 Graphics"])
+        self.assertEqual(info["gpus"][0]["vram_mib"], 32 << 10)
+        self.assertEqual(info["gpus"][0]["driver"], "32.0.101.8976")
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         p = mock.patch.object(B, "gpu_info_local", return_value={"gpus": []})     # the server's own GPU name, not this PC's

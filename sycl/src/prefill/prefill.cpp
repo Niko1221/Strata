@@ -14,6 +14,10 @@
 #include "strata/core/progress.hpp"
 #include "strata/core/on_device.hpp"
 
+#ifdef _WIN32
+#include <direct.h>                     // _mkdir, for i8_cache_write's cache folder
+#endif
+
 #include "strata/core/layout.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/native_qsa.hpp"
@@ -893,7 +897,11 @@ void i8_cache_write(const std::string& key, const I8Cross& c) {
     }
     std::FILE* f = std::fopen(path.c_str(), "w");
     if (!f) {
+#ifdef _WIN32
+        _mkdir(dir.c_str());            // direct.h: no mode argument, and the path is forward-slashed above
+#else
         ::mkdir(dir.c_str(), 0755);
+#endif
         f = std::fopen(path.c_str(), "w");
         if (!f) return;
     }

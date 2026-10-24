@@ -504,13 +504,15 @@ def gpu_info_local() -> dict:
             info["rocm_driver"] = m2.group(1)
     if not info["gpus"] and os.name == "nt":
         # #1587: Windows with only an AMD card has neither nvidia-smi nor rocm-smi; the display class in the registry
-        # names the card, its VRAM and its driver (the run was labelled "CPU only" before)
+        # names the card, its VRAM and its driver (the run was labelled "CPU only" before).  An Intel Arc (the SYCL
+        # backend) sits in that same class and has no nvidia-smi either, so it is named here too (#...).
         try:
             if str(ROOT) not in sys.path:
                 sys.path.insert(0, str(ROOT))
-            from serve.telemetry import windows_amd_cards
+            from serve.telemetry import windows_amd_cards, windows_display_adapters
+            cards = windows_amd_cards() + windows_display_adapters("intel")
             info["gpus"] = [{"name": c["name"], "vram_mib": (c["vram_bytes"] >> 20) if c["vram_bytes"] else None,
-                             "driver": c["driver"]} for c in windows_amd_cards()]
+                             "driver": c["driver"]} for c in cards]
         except Exception:   # noqa: BLE001 - a report without the card's name is still a report
             pass
     return info

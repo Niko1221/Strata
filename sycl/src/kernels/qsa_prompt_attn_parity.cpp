@@ -357,7 +357,11 @@ int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2
 }  // namespace
 
 int main(int argc, char** argv) {
-    setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);   // SYCL port: the batched kernel under test is the XMX one (opt-in in the engine)
+#ifdef _WIN32
+    if (!std::getenv("STRATA_PROMPT_ATTN_XMX")) _putenv_s("STRATA_PROMPT_ATTN_XMX", "1");
+#else
+    setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);
+#endif
 #if defined(__HIP_PLATFORM_AMD__)
     // S6: on AMD the kernel under test is the RDNA4 matrix-core one (opt-in in the engine); other cards skip
     {
