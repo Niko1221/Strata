@@ -1,0 +1,5 @@
+{
+  "teacher_tsv_byte_identical": true,
+  "prompt_logits_byte_identical": 20,
+  "prompts": 20
+}

@@ -1,0 +1,536 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 97a6054..bb08599 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1487,6 +1487,9 @@ endif()
+ # tiers bit for bit), and the whole product on the Flash's expert shapes.  CPU-only, no model, no GPU.
+ # exl3_lane_bench: the lane's time per expert from DRAM, measured as kq_cpu_bench measures the GGUF pairs.
+ if(STRATA_BUILD_TESTS)
++  add_executable(exl3_miss_plan_test src/program/exl3_miss_plan_test.cpp)
++  target_include_directories(exl3_miss_plan_test PRIVATE include)
++  add_test(NAME exl3_miss_plan_test COMMAND exl3_miss_plan_test)
+   add_executable(exl3_lane_test src/kernels/cpu/exl3_lane_test.cpp)
+   target_link_libraries(exl3_lane_test PRIVATE strata_kernels_cpu)
+   add_test(NAME exl3_lane_test COMMAND exl3_lane_test)
+@@ -1538,6 +1541,15 @@ if(STRATA_BUILD_TESTS AND (STRATA_ENABLE_HIP OR STRATA_ENABLE_CUDA))
+     set_tests_properties(ple_exl3_fixtures PROPERTIES FIXTURES_SETUP ngram_fixture_data)
+     add_test(NAME ple_exl3_parity COMMAND ple_exl3_parity ${CMAKE_CURRENT_BINARY_DIR}/ngram_fixture)
+     set_tests_properties(ple_exl3_parity PROPERTIES FIXTURES_REQUIRED ngram_fixture_data)
++    add_test(NAME ple_exl3_flat_k6_fixtures
++             COMMAND ${_exl3_python} ${CMAKE_CURRENT_SOURCE_DIR}/tools/exl3/emit_ngram_table.py
++                     --out ${CMAKE_CURRENT_BINARY_DIR}/ngram_flat_k6_fixture --K 6 --layout flat)
++    set_tests_properties(ple_exl3_flat_k6_fixtures PROPERTIES FIXTURES_SETUP ngram_flat_k6_data)
++    foreach(_mode mmap direct)
++      add_test(NAME ple_exl3_flat_k6_${_mode}
++               COMMAND ple_exl3_parity ${CMAKE_CURRENT_BINARY_DIR}/ngram_flat_k6_fixture ${_mode})
++      set_tests_properties(ple_exl3_flat_k6_${_mode} PROPERTIES FIXTURES_REQUIRED ngram_flat_k6_data)
++    endforeach()
+   endif()
+ endif()
+ 
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index 7995b68..64539c3 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -81,6 +81,7 @@ struct VerifyHits {
+     /// (n_layers entries; null: a GGUF pack).  The window's VRAM groups then run on the EXL3 grouped kernels
+     /// (kernels/exl3_dev.hpp) over the window's F32 MoE input; the pool publishes those groups (no PCIe share).
+     const strata::kernels::exl3::ExpertLayout* exl3_lay = nullptr;
++    bool exl3_miss_share = false;  ///< opt-in DMA of unchanged EXL3 blobs through the second GPU plan
+ };
+ 
+ class Verifier {
+@@ -612,6 +613,7 @@ private:
+     int32_t* plan_ = nullptr;                                     // device copy of the plan block
+     uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
+     static constexpr int64_t kStagingBlobs = 16;
++    uint64_t staging_blob_bytes_ = 0;  // EXL3 uses its own blob stride, not the GGUF layout
+     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
+     uint8_t* hit_xq_ = nullptr;
+     uint8_t* nat_xq_ = nullptr;   // plan v0.3 P6: q8_1 activations for a native pack's grouped experts
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 7541385..a68edcd 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -651,6 +651,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+     ss_ = &ss;
+     hits_ = hits;
+     x3_on_ = hits.exl3_lay != nullptr;
++    staging_blob_bytes_ = x3_on_ ? (hits.exl3_miss_share ? (uint64_t) hits.blob : 0)
++                                 : strata::kernels::cpu::expert_layout().max_blob;
+     head_ = head;
+     max_t_ = max_t;
+     sampling_.greedy = true;      // a fresh verifier samples greedily until set_sampling says otherwise
+@@ -787,7 +789,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+         shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
+         hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
+         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
+-        staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * strata::kernels::cpu::expert_layout().max_blob);
++        staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * staging_blob_bytes_);
+         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
+         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
+         hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>({
+@@ -852,7 +854,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
+         }
+     }
+     sink_.staging = (unsigned long long) staging_;
+-    sink_.staging_cap = kStagingBlobs;
++    sink_.staging_cap = staging_blob_bytes_ > 0 ? kStagingBlobs : 0;
+     (void) TS;
+     // STRATA_PIPED_CONCURRENT=1 (opt-in): a prompt can run on the same GPU while the batch windows run, so the windows'
+     // streams get the device's highest priority (HIP: the default priority, as the drafter's)
+@@ -1982,8 +1984,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+         auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy, float* dst_buf) {
+             if (x3_on_) {
+                 // --exl3: the tier's EXL3 experts over the group's F32 MoE input (pre's xm), each group's weights decoded
+-                // once for its entries, every entry the bits it gets alone (exl3_dev.hpp); no PCIe share on this path
+-                if (gy != 0) return;
++                // once for its entries, with identical kernels for resident groups and opt-in PCIe staging (exl3_dev.hpp)
++                if (gy != 0 && !hits_.exl3_miss_share) return;
+                 namespace x3 = strata::kernels::exl3;
+                 x3::GroupArgs a;
+                 a.grp_ptr = gp;
+@@ -1999,7 +2001,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
+                 a.u = a.h + (size_t) capx * (size_t) g.n_ff;
+                 a.cnt = x3_cnt_;
+                 a.lay = hits_.exl3_lay[(size_t) l];
+-                a.max_groups = (int) cap;
++                a.max_groups = gy != 0 ? (int) std::min<int64_t>(cap, kStagingBlobs) : (int) cap;
+                 a.max_entries = (int) cap;
+                 a.n_embd = (int) N;
+                 a.n_ff = (int) g.n_ff;
+@@ -3062,8 +3064,8 @@ void Verifier::set_plan_slot(int grp) {
+     sink_.start2 = base + ptr_off + 4 * cap;
+     const int G = last_batch_ ? 1 : (groups_[last_t_] > 0 ? groups_[last_t_] : 1);
+     const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+-    sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * strata::kernels::cpu::expert_layout().max_blob);
+-    sink_.staging_cap = per;
++    sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * staging_blob_bytes_);
++    sink_.staging_cap = staging_blob_bytes_ > 0 ? per : 0;
+ }
+ 
+ // Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.
+@@ -3089,6 +3091,11 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
+     Verifier* v = (Verifier*) ctx;
+     const uint32_t want = v->cur_layer_ + 1;
+     if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
++    if (v->x3_on_ && (n > v->sink_.staging_cap || bytes > v->staging_blob_bytes_ || src == nullptr)) {
++        std::fprintf(stderr, "strata EXL3 DMA: invalid staging request (%d blobs, %zu bytes)\n", n, bytes);
++        v->release_gpu_waits(5000);
++        std::abort();
++    }
+     v->copy_used_ = true;
+     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
+     // STRATA_DMA_BATCH (midhatn's #807, F12): the group's independent uploads as one cudaMemcpyBatchAsync.  Mode 0 is
+@@ -3097,7 +3104,14 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
+     // copied.
+     const int batch_mode = strata::core::dma_batch_mode();
+     if (batch_mode == 0) {
+-        for (int i = 0; i < n; ++i) cudaMemcpyAsync(stage + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, v->copy_);
++        for (int i = 0; i < n; ++i) {
++            const cudaError_t ce = cudaMemcpyAsync(stage + (size_t) i * bytes, src[i], bytes, cudaMemcpyHostToDevice, v->copy_);
++            if (v->x3_on_ && ce != cudaSuccess) {
++                std::fprintf(stderr, "strata EXL3 DMA: expert upload failed: %s\n", cudaGetErrorString(ce));
++                v->release_gpu_waits(5000);
++                std::abort();
++            }
++        }
+     } else {
+         const auto copied = strata::core::copy_expert_blobs(stage, src, n, bytes, v->copy_, batch_mode);
+         if (copied != cudaSuccess) {
+diff --git a/src/kernels/ngram.cpp b/src/kernels/ngram.cpp
+index dd7e230..6420882 100644
+--- a/src/kernels/ngram.cpp
++++ b/src/kernels/ngram.cpp
+@@ -449,7 +449,13 @@ bool PleTable::open_exl3(const std::string& path, std::string& err, const PleIoO
+         if (kv.first.rfind(prefix + ".shard_", 0) == 0 && kv.first.size() > 8 &&
+             kv.first.compare(kv.first.size() - 8, 8, ".trellis") == 0)
+             shards.push_back(&kv.second);
+-    if (shards.empty()) { err = "EXL3 ngram: no shard_N.trellis tensors"; return false; }
++    // Newer EXL3 exports store the same row encoding in one flat tensor.
++    // Read its payload directly; no repacking or requantization is needed.
++    if (shards.empty()) {
++        auto flat = tensors.find(prefix + ".trellis");
++        if (flat != tensors.end()) shards.push_back(&flat->second);
++    }
++    if (shards.empty()) { err = "EXL3 ngram: no flat or shard_N.trellis tensors"; return false; }
+     if (shards[0]->shape.size() != 2) { err = "EXL3 ngram: bad ring shape"; return false; }
+     const int words = (int) shards[0]->shape[1];
+ 
+diff --git a/src/kernels/ple_exl3_parity.cpp b/src/kernels/ple_exl3_parity.cpp
+index 29de542..f2abacb 100644
+--- a/src/kernels/ple_exl3_parity.cpp
++++ b/src/kernels/ple_exl3_parity.cpp
+@@ -24,20 +24,31 @@ int main(int argc, char** argv) {
+         std::fprintf(stderr, "open_exl3 failed: %s\n", err.c_str());
+         return 1;
+     }
+-    const int rows = (int) table.rows();
++    const bool sampled = argc > 3 && std::string(argv[3]) == "sampled";
++    std::vector<uint32_t> ids;
++    if (sampled) {
++        std::ifstream rf(dir + "/rows.u32", std::ios::binary);
++        uint32_t id;
++        while (rf.read(reinterpret_cast<char*>(&id), sizeof id)) ids.push_back(id);
++        if (ids.empty()) { std::fprintf(stderr, "empty rows.u32\n"); return 2; }
++    } else {
++        for (uint64_t id = 0; id < table.rows(); ++id) ids.push_back((uint32_t) id);
++    }
++    const size_t rows = ids.size();
+     const int dim = strata::kernels::PLE_HEAD_DIM;
+-    std::printf("format=%s mode=%s rows=%d\n", table.format(),
+-                io.mode == strata::kernels::PleIo::Direct ? "direct" : "mmap", rows);
++    std::printf("format=%s mode=%s table_rows=%llu checked_rows=%zu\n", table.format(),
++                io.mode == strata::kernels::PleIo::Direct ? "direct" : "mmap",
++                (unsigned long long) table.rows(), rows);
+ 
+     std::ifstream ef(dir + "/expected.f32", std::ios::binary);
+-    std::vector<float> exp((size_t) rows * dim);
++    std::vector<float> exp(rows * dim);
+     ef.read(reinterpret_cast<char*>(exp.data()), (std::streamsize) (exp.size() * 4));
+     if (!ef) { std::fprintf(stderr, "cannot read expected.f32\n"); return 2; }
+ 
+     double num = 0, den = 0, maxd = 0;
+     std::vector<float> got(dim);
+-    for (int r = 0; r < rows; ++r) {
+-        table.read_row((uint32_t) r, got.data());
++    for (size_t r = 0; r < rows; ++r) {
++        table.read_row(ids[r], got.data());
+         for (int j = 0; j < dim; ++j) {
+             double d = (double) got[j] - exp[(size_t) r * dim + j];
+             num += d * d;
+diff --git a/src/program/generate.cpp b/src/program/generate.cpp
+index fa363d8..c501bdf 100644
+--- a/src/program/generate.cpp
++++ b/src/program/generate.cpp
+@@ -68,6 +68,7 @@
+ #include "strata/core/native_dense.hpp"
+ #include "strata/program/batch_read.hpp"
+ #include "strata/program/logits_selection.hpp"
++#include "strata/program/exl3_miss_plan.hpp"
+ #include "strata/program/conv_cache.hpp"
+ #include "strata/program/split_rules.hpp"
+ #include "strata/prefill/share_rules.hpp"
+@@ -1374,6 +1375,9 @@ struct Exl3Drive {
+     const std::vector<strata::kernels::exl3::ExpertLayout>* lay = nullptr;   // per layer: the tier's blobs
+     strata::core::GpuPlanSink* plan = nullptr;
+     int64_t n_ff = 0;
++    bool miss_share = false;
++    int pcie_num = 0;
++    int64_t pcie_entries = 0, pcie_groups = 0;
+     int64_t tier_entries = 0, tier_groups = 0;   // the routes and the distinct experts the GPU took
+     // --exl3-helper-tier: the next-hottest experts in a second tier on the helper card (the run's device 1); both pools
+     // run them there (`help`) beside the lane, their rows back in the pool's own rows
+@@ -1615,6 +1619,7 @@ void drive_exl3_pool_multi(void* user, const float* x_f, const int32_t* ids, int
+     // order, each a group of its entries, as the GGUF dispatch publishes them), published before the lane starts so the
+     // GPU computes them inside the window's graph while the lane computes the rest; the window zeroes their rows here
+     bool on_gpu[cpu::MAXT * 64] = {};
++    bool on_pcie[cpu::MAXT * 64] = {};
+     if (ok) {
+         for (int64_t i = 0; i < n_tok * k; ++i)
+             if (ids[i] < 0 || ids[i] >= t->ram->n_expert()) { ok = false; err = "a routed expert id is out of range"; break; }
+@@ -1646,15 +1651,45 @@ void drive_exl3_pool_multi(void* user, const float* x_f, const int32_t* ids, int
+                 ++groups;
+             }
+             P.start[groups] = entries;
++            const int vram_entries = entries;
+             P.start2[0] = entries;
++            const uint8_t* dma_src[64] = {};
++            int fetches = 0;
++            const size_t blob_bytes = (size_t) t->ram->blob_bytes((int) layer);
++            if (t->miss_share && t->pcie_num > 0 && P.staging_cap > 0) {
++                bool excluded[cpu::MAXT * 64] = {};
++                int32_t firsts[cpu::MAXT * 64] = {};
++                for (int64_t i = 0; i < n; ++i)
++                    excluded[i] = on_gpu[i] || (t->helper != nullptr && t->helper->blob(layer, ids[i]) != nullptr);
++                const int chosen = strata::program::exl3_tail_misses(ids, excluded, (int) n, t->pcie_num,
++                                                                    (int) std::min<int64_t>(64, P.staging_cap), firsts);
++                for (int q = 0; q < chosen; ++q) {
++                    const int i = firsts[q];
++                    const int32_t e = ids[i];
++                    dma_src[fetches] = t->ram->blob((int) layer, e);
++                    P.ptr2[fetches] = P.staging + (size_t) fetches * blob_bytes;
++                    P.start2[fetches] = entries;
++                    for (int64_t j = i; j < n; ++j)
++                        if (ids[j] == e) {
++                            P.dst[entries] = (int32_t) j;
++                            P.tok[entries] = (int32_t) (j / k);
++                            on_pcie[j] = true;
++                            ++entries;
++                        }
++                    ++fetches;
++                }
++                P.start2[fetches] = entries;
++            }
+             P.counts[0] = groups;
+             P.counts[1] = entries;
+-            P.counts[2] = 0;
++            P.counts[2] = fetches;
+             std::atomic_thread_fence(std::memory_order_seq_cst);
+             if (P.publish) P.publish(P.ctx);
+-            if (P.fetch) P.fetch(P.ctx, nullptr, 0, 0);   // no PCIe share: flag B at once
++            if (P.fetch) P.fetch(P.ctx, dma_src, fetches, blob_bytes);
+             t->tier_groups += groups;
+-            t->tier_entries += entries;
++            t->tier_entries += vram_entries;
++            t->pcie_groups += fetches;
++            t->pcie_entries += entries - vram_entries;
+         }
+     }
+     // the helper tier's share: the window's experts the helper card holds (never the main tier's), run there now with the
+@@ -1693,7 +1728,7 @@ void drive_exl3_pool_multi(void* user, const float* x_f, const int32_t* ids, int
+         for (int64_t q = 0; q < n_tok && ok; ++q)
+             for (int64_t i = 0; i < k; ++i) {
+                 const int32_t e = ids[q * k + i];
+-                if (on_gpu[q * k + i] || on_help[q * k + i]) continue;   // the tiers': computed on a GPU
++                if (on_gpu[q * k + i] || on_help[q * k + i] || on_pcie[q * k + i]) continue;   // the tiers': computed on a GPU
+                 int16_t& s = t->job_of[(size_t) e];
+                 if (s < 0) {
+                     s = (int16_t) njobs;
+@@ -7184,6 +7219,11 @@ int main(int argc, char** argv) {
+                                                     (size_t) exl3_ram->mapping_bytes(), cudaHostRegisterPortable);
+             if (pe == cudaSuccess) {
+                 exl3_pin.p = const_cast<uint8_t*>(exl3_ram->mapping());
++                const char* ms = std::getenv("STRATA_EXL3_MISS_SHARE");
++                exl3_drive.miss_share = ms != nullptr && std::atoi(ms) != 0;
++                exl3_drive.pcie_num = exl3_drive.miss_share ? std::clamp((int) (o.pcie_frac * 256 + 0.5), 0, 256) : 0;
++                if (exl3_drive.miss_share)
++                    std::fprintf(stderr, "strata generate: EXL3 GPU miss-sharing ON (unchanged blobs, DMA plan; --pcie-frac controls the share)\n");
+                 std::fprintf(stderr, "strata generate: EXL3 RAM tier page-locked for the prompt path (%.1f GiB in %.1f s)\n",
+                              (double) exl3_ram->mapping_bytes() / (double) (1ull << 30),
+                              std::chrono::duration<double>(Clock::now() - p0).count());
+@@ -9591,6 +9631,7 @@ int main(int argc, char** argv) {
+             vh.slot_off = nullptr;
+             vh.n_slots = exl3_hits ? exl3_tier->slots() : 0;
+             vh.exl3_lay = exl3_hits ? exl3_lay.data() : nullptr;
++            vh.exl3_miss_share = exl3_hits && exl3_drive.miss_share;
+         }
+         // Layer split: `ver` runs layers [0, K1) and hands its residual to the next stage's verifier, and so on; the
+         // last runs the head.  The hand-offs are mapped pinned memory, portable: a stage on another GPU reads it.
+@@ -14635,6 +14676,7 @@ int main(int argc, char** argv) {
+             }
+             ver.pause_pcie_balance(req_pcie_set);   // the measured costs keep across requests
+             drive.d.pcie_num = std::max(0, std::min(256, (int) (req_pcie_frac * 256.0 + 0.5)));
++            exl3_drive.pcie_num = exl3_drive.miss_share ? drive.d.pcie_num : 0;
+             // a layer split: CUDA0's share as asked; a later GPU keeps its own (its link) unless the request sets one
+             for (int st = 0; st < split_drive.n; ++st)
+                 split_drive.pcie_num[st] = (st == 0 || split_same || req_pcie_frac != o.pcie_frac)
+@@ -14835,7 +14877,8 @@ int main(int argc, char** argv) {
+             // --exl3-lane: the decode's share of the EXL3 pool's counters (the request's log line below)
+             const int64_t x3_calls0 = exl3_drive.win_calls, x3_entries0 = exl3_drive.win_entries,
+                           x3_jobs0 = exl3_drive.win_jobs, x3_tier0 = exl3_drive.tier_entries,
+-                          x3_help0 = exl3_drive.help_entries,
++                          x3_help0 = exl3_drive.help_entries, x3_pcie0 = exl3_drive.pcie_entries,
++                          x3_dma0 = exl3_drive.pcie_groups,
+                           x3_swaps0 = exl3_drive.adapt != nullptr ? exl3_drive.adapt->swaps : 0;
+             // the verify windows: the first holds the last prompt token alone (STRATA_ADMIT_MERGE_FIRST: the prompt
+             // tokens from merge_at on, the last one's output its first token)
+@@ -15986,10 +16029,16 @@ int main(int argc, char** argv) {
+                         "experts_streamed=%lld\n",
+                         (long long) produced_n,
+                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
+-                        (long long) resume, (long long) req_hits, (long long) req_look,
+-                        (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
++                        (long long) resume,
++                        (long long) (exl3_serve ? exl3_drive.tier_entries - x3_tier0 : req_hits),
++                        (long long) (exl3_serve ? exl3_drive.win_entries - x3_entries0 -
++                            (exl3_drive.help_entries - x3_help0) - (exl3_drive.pcie_entries - x3_pcie0) : req_look),
++                        (long long) (exl3_serve ? exl3_drive.win_jobs - x3_jobs0 + exl3_drive.pcie_groups - x3_dma0
++                                              : src.ram_reads() - ram0),
++                        (long long) (src.file_reads() - files0),
+                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
+-                        (long long) req_offload, chain_txt, (long long) req_chunk,
++                        (long long) (exl3_serve ? exl3_drive.pcie_entries - x3_pcie0 + exl3_drive.help_entries - x3_help0
++                                              : req_offload), chain_txt, (long long) req_chunk,
+                         (long long) (sp.chain_experts_streamed() - streamed0));
+             std::fflush(stdout);
+             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
+@@ -16116,6 +16165,10 @@ int main(int argc, char** argv) {
+                              (double) (exl3_drive.win_jobs - x3_jobs0) / wc,
+                              (long long) ((exl3_drive.adapt != nullptr ? exl3_drive.adapt->swaps : 0) - x3_swaps0),
+                              (long long) (fb >> 20));
++                std::fprintf(stderr, "strata serve: EXL3 miss share: %lld entries, pcie_blobs=%lld, ram_blobs=%lld (CPU jobs plus DMA blobs)\n",
++                             (long long) (exl3_drive.pcie_entries - x3_pcie0),
++                             (long long) (exl3_drive.pcie_groups - x3_dma0),
++                             (long long) (exl3_drive.win_jobs - x3_jobs0 + exl3_drive.pcie_groups - x3_dma0));
+             }
+             // the VRAM share of the experts the pool looked up while decoding; experts it sent over PCIe for the GPU
+             // to read (--pcie-frac) are in neither count - #588: so that share is said beside it (raising --pcie-frac
+@@ -16858,6 +16911,7 @@ int main(int argc, char** argv) {
+         vh.slot_off = exl3_win ? nullptr : xcache.slot_offsets();   // E-6: the device plan's pointers
+         vh.n_slots = exl3_hits ? exl3_tier->slots() : exl3_win ? 0 : xcache.slots();
+         vh.exl3_lay = exl3_hits ? exl3_lay.data() : nullptr;
++        vh.exl3_miss_share = exl3_hits && exl3_drive.miss_share;
+         if (pcie_balance()) ver.set_pcie_balance(&drive.d.pcie_model);
+         // (the EXL3 prompt reader's windows take up to kVerifyMaxT tokens; the decode windows stay within --spec)
+         const int ver_max_t = exl3_win_prompt ? std::max(o.spec, strata::kernels::kVerifyMaxT) : o.spec;
+diff --git a/tools/calibrate.py b/tools/calibrate.py
+index 397cd8f..5784355 100644
+--- a/tools/calibrate.py
++++ b/tools/calibrate.py
+@@ -222,8 +222,10 @@ def run(cfg: dict, say=print, start_engine=None) -> dict:
+     tok = ST.Tokenizer(toks, (tpath / "merges.txt").read_text(encoding="utf-8").split("\n"),
+                        json.loads((tpath / "token_type.json").read_text()))
+     ids_list = [chat_ids(tok, p) for p in PROMPTS]
+-    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok),
+-                   hip=cfg.get("backend") == "hip")
++    opts = {"hip": cfg.get("backend") == "hip"}
++    if "--exl3" in cfg.get("args", []):
++        opts["pcie_enabled"] = str((cfg.get("env") or {}).get("STRATA_EXL3_MISS_SHARE", "0")) != "0"
++    return measure(engine_args(cfg), ids_list, start_engine, say, host_worker_extras(), doc_prompt(tok), **opts)
+ 
+ 
+ def engine_args(cfg: dict) -> list[str]:
+@@ -272,7 +274,7 @@ def sweep(s, values: list, base_tune: dict, key: str, label: str, say) -> dict:
+     return out
+ 
+ 
+-def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), long_prompt=None, hip: bool = False) -> dict:
++def measure(base_args: list[str], ids_list, start_engine, say=print, extra_workers=(), long_prompt=None, hip: bool = False, pcie_enabled: bool = True) -> dict:
+     t0 = time.time()
+     report: dict = {}
+     say("  Loading the model for the measurements ...")
+@@ -296,7 +298,11 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
+             pipe, rep_pipe = measure_pipe(eng, long_prompt, say)
+             report.update(rep_pipe)
+         # 1. the PCIe share, at the default draft floor
+-        by_pcie = sweep(s, sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}), {"spec_min_p": d_minp}, "pcie_frac",
++        pcie_values = sorted(set(PCIE_FRACS) | {round(d_pcie, 2)}) if pcie_enabled else [round(d_pcie, 2)]
++        if not pcie_enabled:
++            report["pcie_skipped"] = "EXL3 miss-sharing is off; PCIe fraction does not affect this path"
++            say("  Skipping PCIe share sweep: EXL3 miss-sharing is disabled.")
++        by_pcie = sweep(s, pcie_values, {"spec_min_p": d_minp}, "pcie_frac",
+                         "PCIe share", say)
+         best_pcie = max(by_pcie, key=lambda k: statistics.median(by_pcie[k]))
+         # 2. the draft floor, at that share
+@@ -351,7 +357,12 @@ def measure(base_args: list[str], ids_list, start_engine, say=print, extra_worke
+     # 5. the adaptive expert tier (a restart each), with everything chosen so far
+     tuned = apply(base_args, settings)
+     by_adapt = {}
+-    for cand in ADAPT_CANDIDATES:
++    # EXL3 has its own adaptive tier; these native-GGUF flags do not affect it.
++    adapt_candidates = () if "--exl3" in base_args else ADAPT_CANDIDATES
++    if not adapt_candidates:
++        report["adapt_skipped"] = "EXL3 uses --exl3-tier-adapt, not the GGUF --adapt-* flags"
++        say("  Skipping native-GGUF expert-tier calibration for EXL3.")
++    for cand in adapt_candidates:
+         key = "default" if cand is None else "/".join(cand)
+         args = tuned
+         for flag, v in zip(ADAPT_FLAGS, cand or (None,) * len(ADAPT_FLAGS)):
+diff --git a/tools/exl3/emit_ngram_table.py b/tools/exl3/emit_ngram_table.py
+index b74111c..e1251fd 100644
+--- a/tools/exl3/emit_ngram_table.py
++++ b/tools/exl3/emit_ngram_table.py
+@@ -25,6 +25,7 @@ def main() -> int:
+     ap.add_argument("--rows", type=int, default=32)
+     ap.add_argument("--K", type=int, default=5)
+     ap.add_argument("--seed", type=int, default=99)
++    ap.add_argument("--layout", choices=["sharded", "flat"], default="sharded")
+     args = ap.parse_args()
+     from safetensors.numpy import save_file
+ 
+@@ -47,7 +48,7 @@ def main() -> int:
+     out = pathlib.Path(args.out)
+     out.mkdir(parents=True, exist_ok=True)
+     save_file({
+-        PREFIX + ".shard_0.trellis": rings,
++        PREFIX + (".trellis" if args.layout == "flat" else ".shard_0.trellis"): rings,
+         PREFIX + ".head_bias": head_bias,
+         PREFIX + ".head_offsets": offsets,
+         PREFIX + ".head_vocab_sizes": sizes,
+diff --git a/tools/exl3/tokenizer_to_pack.py b/tools/exl3/tokenizer_to_pack.py
+index 74948da..2b05bca 100644
+--- a/tools/exl3/tokenizer_to_pack.py
++++ b/tools/exl3/tokenizer_to_pack.py
+@@ -65,7 +65,7 @@ def main() -> int:
+ 
+     out = pathlib.Path(args.out) / "tokenizer"
+     out.mkdir(parents=True, exist_ok=True)
+-    (out / "vocab.json").write_text(json.dumps(tokens, ensure_ascii=False), encoding="utf-8")
++    (out / "vocab.json").write_text(json.dumps({token: i for i, token in enumerate(tokens)}, ensure_ascii=False), encoding="utf-8")
+     (out / "merges.txt").write_text("\n".join(merges), encoding="utf-8")
+     (out / "token_type.json").write_text(json.dumps(types), encoding="utf-8")
+     pack_cfg = {
+diff --git a/tools/quant_quality.py b/tools/quant_quality.py
+index 10065e3..c3ba07d 100644
+--- a/tools/quant_quality.py
++++ b/tools/quant_quality.py
+@@ -195,10 +195,11 @@ def cmd_prompt(a) -> int:
+     if mem_available_gb() < a.min_free_gb:
+         raise SystemExit(f"only {mem_available_gb():.0f} GB available (< {a.min_free_gb}): not starting an engine")
+     args = engine_args(cfg, a.gpu_experts, max(PROMPT_LENS))
+-    k = args.index("--short-read")
+-    del args[k:k + 2]                      # the default (64): these prompts take the batched prompt path
+-    k = args.index("--prefill")
+-    args[k + 1] = "auto"
++    if not getattr(a, "keep_config", False):
++        k = args.index("--short-read")
++        del args[k:k + 2]                  # default: these prompts take the batched path
++        k = args.index("--prefill")
++        args[k + 1] = "auto"
+     if a.wrap:
+         args = a.wrap.split() + args
+     errf = open(out / "stderr.txt", "w")
+diff --git a/tools/strata_bench.py b/tools/strata_bench.py
+index 89dc30e..b91fe87 100644
+--- a/tools/strata_bench.py
++++ b/tools/strata_bench.py
+@@ -970,6 +970,7 @@ def main(argv=None) -> int:
+             return 2
+         cfg = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
+     key = a.api_key or ((cfg or {}).get("api_key") or "")
++    port = a.port or int((cfg or {}).get("port", 8080))
+     if a.url:
+         base = a.url.rstrip("/")
+     else:
+diff --git a/include/strata/program/exl3_miss_plan.hpp b/include/strata/program/exl3_miss_plan.hpp
+new file mode 100644
+index 0000000..4ed2d6c
+--- /dev/null
++++ b/include/strata/program/exl3_miss_plan.hpp
+@@ -0,0 +1,20 @@
++#pragma once
++#include <algorithm>
++#include <cstdint>
++
++namespace strata::program {
++// Match the GGUF dispatcher: the last fraction of distinct misses, bounded by DMA capacity.
++inline int exl3_tail_misses(const int32_t* ids, const bool* excluded, int n, int frac256, int cap, int32_t* firsts) {
++    if (n <= 0 || cap <= 0 || frac256 <= 0) return 0;
++    int misses = 0;
++    for (int i = 0; i < n; ++i) {
++        if (excluded[i]) continue;
++        bool first = true;
++        for (int j = 0; j < i && first; ++j) first = ids[j] != ids[i];
++        if (first) firsts[misses++] = i;
++    }
++    const int take = std::min(cap, (misses * std::clamp(frac256, 0, 256)) >> 8);
++    for (int i = 0; i < take; ++i) firsts[i] = firsts[misses - take + i];
++    return take;
++}
++}  // namespace strata::program
+diff --git a/src/program/exl3_miss_plan_test.cpp b/src/program/exl3_miss_plan_test.cpp
+new file mode 100644
+index 0000000..df94712
+--- /dev/null
++++ b/src/program/exl3_miss_plan_test.cpp
+@@ -0,0 +1,19 @@
++#include "strata/program/exl3_miss_plan.hpp"
++#include <cstdio>
++#include <cstdlib>
++#define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "failed line %d: %s\n", __LINE__, #x); return 1; } } while (0)
++int main() {
++    const int32_t ids[] = {2,2,3,4,3,5};
++    const bool excluded[] = {false,false,true,false,true,false};
++    int32_t out[6] = {};
++    using strata::program::exl3_tail_misses;
++    CHECK(exl3_tail_misses(ids, excluded, 6, 0, 16, out) == 0);
++    CHECK(exl3_tail_misses(ids, excluded, 6, 128, 16, out) == 1 && out[0] == 5);
++    CHECK(exl3_tail_misses(ids, excluded, 6, 256, 2, out) == 2 && out[0] == 3 && out[1] == 5);
++    CHECK(exl3_tail_misses(ids, excluded, 6, 256, 16, out) == 3 && out[0] == 0 && out[1] == 3 && out[2] == 5);
++    CHECK(exl3_tail_misses(ids, excluded, 6, 256, 0, out) == 0);
++    const bool all[] = {true,true,true,true,true,true};
++    CHECK(exl3_tail_misses(ids, all, 6, 256, 16, out) == 0);
++    CHECK(exl3_tail_misses(nullptr, nullptr, 0, 256, 16, out) == 0);
++    std::puts("EXL3 miss selection: zero share, repeats, resident/helper exclusion and staging caps passed");
++}

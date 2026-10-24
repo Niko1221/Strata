@@ -1,0 +1,123 @@
+{
+  "control_vs_worker": {
+    "exact_sequences": 2,
+    "sequences": 15,
+    "details": [
+      {
+        "prompt_tokens": 512,
+        "repeat": 0,
+        "exact": true,
+        "first_difference": null
+      },
+      {
+        "prompt_tokens": 512,
+        "repeat": 1,
+        "exact": false,
+        "first_difference": 108
+      },
+      {
+        "prompt_tokens": 512,
+        "repeat": 2,
+        "exact": false,
+        "first_difference": 123
+      },
+      {
+        "prompt_tokens": 2048,
+        "repeat": 0,
+        "exact": false,
+        "first_difference": 90
+      },
+      {
+        "prompt_tokens": 2048,
+        "repeat": 1,
+        "exact": false,
+        "first_difference": 70
+      },
+      {
+        "prompt_tokens": 2048,
+        "repeat": 2,
+        "exact": false,
+        "first_difference": 90
+      },
+      {
+        "prompt_tokens": 8192,
+        "repeat": 0,
+        "exact": false,
+        "first_difference": 19
+      },
+      {
+        "prompt_tokens": 8192,
+        "repeat": 1,
+        "exact": false,
+        "first_difference": 59
+      },
+      {
+        "prompt_tokens": 8192,
+        "repeat": 2,
+        "exact": false,
+        "first_difference": 93
+      },
+      {
+        "prompt_tokens": 32768,
+        "repeat": 0,
+        "exact": false,
+        "first_difference": 74
+      },
+      {
+        "prompt_tokens": 32768,
+        "repeat": 1,
+        "exact": false,
+        "first_difference": 39
+      },
+      {
+        "prompt_tokens": 32768,
+        "repeat": 2,
+        "exact": false,
+        "first_difference": 6
+      },
+      {
+        "prompt_tokens": 65392,
+        "repeat": 0,
+        "exact": false,
+        "first_difference": 52
+      },
+      {
+        "prompt_tokens": 65392,
+        "repeat": 1,
+        "exact": false,
+        "first_difference": 119
+      },
+      {
+        "prompt_tokens": 65392,
+        "repeat": 2,
+        "exact": true,
+        "first_difference": null
+      }
+    ]
+  },
+  "identical_control_repeat_512": {
+    "exact_sequences": 3,
+    "sequences": 3,
+    "details": [
+      {
+        "prompt_tokens": 512,
+        "repeat": 0,
+        "exact": true,
+        "first_difference": null
+      },
+      {
+        "prompt_tokens": 512,
+        "repeat": 1,
+        "exact": true,
+        "first_difference": null
+      },
+      {
+        "prompt_tokens": 512,
+        "repeat": 2,
+        "exact": true,
+        "first_difference": null
+      }
+    ]
+  },
+  "note": "Free-generation sequence equality is repeatability, not task accuracy; after a divergence, token positions do not share the same context."
+}
