@@ -85,6 +85,20 @@ note; never under WSL, which cannot stream).
 
 Under WSL2 the driver caps what `cudaHostAlloc` may pin at about 1 GiB, so the KV host copy is pinned with `cudaHostRegister` of ordinary memory there (detected through `/dev/dxg`); `STRATA_KV_HOST_REGISTER=1` forces that order on any system and `=0` forces `cudaHostAlloc` first (the other method is the fallback in both cases). On Linux without WSL nothing changes by default; with the switch the engine prints `KV streaming: the host copy is pinned with cudaHostRegister` (#1498 by yjamil8; WSL not tested here, the forced path was run on a Tesla P100: `--kv int8 --kv-resident 32768`, answers and decode speed unchanged).
 
+**One KV pool for all the sessions (`--kv-pool-tokens N`, with `--kv-resident`; ported from PR #1011 by xdbxdbx):**
+KV streaming pins the whole context's K/V per session, so `--batch` slots plus the main session pin (slots + 1) x the
+context (15.5 GiB for four slots at 262,144 cells, 8-bit KV). With the pool, N cells per QSA layer are pinned once
+(524,288 cells: 6.2 GiB) and a session holds only the 4,096-cell chunks its conversation has reached; a conversation
+moves between the main session and a slot by swapping chunks (its checkpoint chain moves with them, so a prompt with an
+edited last message still resumes from a periodic checkpoint: both lanes of two 133k conversations reuse 118,784 tokens
+(engine 0.1.44.1, with a separately proposed slot choice that is not in this change; not re-measured on 0.2.0-beta);
+at 256k per lane that needs `--conversation-cache-mib` of at least 4528), and when the pool is full an idle slot's cached
+conversation gives way, then a new request is refused (HTTP 503, `Retry-After`, `kv_pool_full`) or a decoding lane ends
+`length` with `"truncated": true`. It works across a layer split. Measured on 0.2.0-beta (engine 0.1.45.3, 2 x RTX 3080,
+two lanes of about 256k, same binary with and without the flag): a conversation moves in 0.36-0.5 s instead of 3.5-5.2 s
+copied, 3.2 GiB more `MemAvailable` at idle, no change in short-context speed. Details, the behaviour when it is full
+and what was not measured: docs/BATCHING.md.
+
 **4-bit KV cache (engine 0.1.8, optional):** `START-HERE.bat --setup` asks above 8K context (or pass `--kv q4_0`). It
 halves the KV cache's memory with a Hadamard rotation before 4-bit rounding (PR #21), about 4% faster at 128K, but it
 is measurably less precise on long documents (perplexity +8-12%; needle tests still pass). 8-bit stays the default.
@@ -1229,6 +1243,13 @@ conversations keep a slot.
 advanced N tokens past the copy it would supersede; a turn that grew by a few hundred tokens keeps the older copy
 instead of writing a whole snapshot that the next turn drops. The cost is that a resume from the older copy reads up
 to N tokens again (#2265).
+
+
+The K/V retained after a restore belongs to the conversation it was restored from: the engine remembers that
+conversation's tokens and pictures, and a later parking may only reuse the bytes of the prefix two conversations
+actually share. When the session gives its conversation up - it moved into a batch slot (the shared KV pool,
+`--kv-pool-tokens`), the request was cancelled, the session was reset - the retained K/V is dropped with it
+instead of waiting to be mistaken for another conversation's.
 `--conversation-cache-min-free-mib N` (default 2560) additionally requires that
 RAM headroom remain available: the engine checks before allocation (against the
 snapshot's estimated size, less the K/V it already retains) and again after capture.

@@ -391,6 +391,21 @@ class ClientGone(Exception):
     waiting for its turn): nothing is left to answer."""
 
 
+class PoolFull(ValueError):
+    """The engine's shared KV pool (--kv-pool-tokens) cannot hold another conversation now: the decoding lanes hold it.
+    Retryable - a 503 with Retry-After, not the 400 of a request that can never fit (that one is refused before the
+    engine sees it)."""
+
+
+POOL_FULL_PREFIX = "KV pool full"
+POOL_RETRY_S = 10
+
+
+def engine_error(msg: str) -> ValueError:
+    """The exception for an engine ERR line: PoolFull for the KV pool's refusal, else ValueError."""
+    return PoolFull(msg) if msg.startswith(POOL_FULL_PREFIX) else ValueError(msg)
+
+
 class ModelBusy(RuntimeError):
     """Explicit model controls must not interrupt active or queued requests."""
 
@@ -1154,6 +1169,7 @@ class StrataEngine:
         groups_run = int(self.info.get("batch_groups") or groups)
         self.slot_gs = gs if groups > 1 and groups_run > 1 else 0
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
+        self.pool = None                                # the engine's last POOL line (--kv-pool-tokens)
         self.slot_busy = [False] * self.batch
         # #1603: who owns a busy flag.  slot_claims: slots a request of this server picked or reserved and has not
         # given back; slot_releasing: slots handed to the background BDONE wait.  A busy slot in neither has no owner
@@ -1210,6 +1226,14 @@ class StrataEngine:
                 sample = parse_stage_in_flight_sample(line)
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
+                continue
+            if line.startswith("POOL "):                # --kv-pool-tokens: the shared KV pool's use, for /metrics
+                f = line.split()
+                try:
+                    self.pool = {"cells": int(f[1]), "free": int(f[2]), "main": int(f[3]),
+                                 "slots": [int(x) for x in f[4].split(",")] if f[4] != "-" else []}
+                except (IndexError, ValueError):
+                    pass
                 continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
@@ -1532,7 +1556,7 @@ class StrataEngine:
                     self._yielded = (int(f[1]), int(f[2]))
             elif line.startswith("ERR"):
                 self._ctl_erred = True                   # #1059: the engine refused it and is idle: no DONE follows
-                raise ValueError(line[4:].strip())
+                raise engine_error(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
                 return
@@ -1859,7 +1883,7 @@ class StrataEngine:
                     if slot is None:
                         finish = (self.last or {}).get("finish") if isinstance(self.last, dict) else None
                         left = int(max_new) - len(out)
-                        if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
+                        if cancel.is_set() or left <= 0 or finish in ("stop", "length", "pool") or (out and out[-1] in EOS_IDS):
                             return
                         if reused0 is None:
                             reused0 = (self.last or {}).get("reused")
@@ -2276,7 +2300,7 @@ class StrataEngine:
                     return
                 elif line.startswith("ERR"):
                     done = True
-                    raise ValueError(line[4:].strip())
+                    raise engine_error(line[4:].strip())
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
                 if self.can_stop:
@@ -4625,6 +4649,8 @@ class Service:
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+        if getattr(self.engine, "pool", None):         # --kv-pool-tokens: cells in all, free, held by each session
+            live["kv_pool"] = self.engine.pool
         par = int(getattr(self.engine, "batch", 0) or 0)
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:
@@ -5147,6 +5173,7 @@ class Service:
         timings, before = None, None                    # this request's timings; the engine's `last` before it
         recovery_count, reasoning_text, repeat_coverage = 0, "", 0.0
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
+        truncated = False
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
@@ -5493,6 +5520,8 @@ class Service:
                         if st.get("busy") and not timed_out:
                             last = request_stats(segments)          # only this request's own DONEs count
                             started = st.get("started", time.time())
+                            # the engine's KV pool (--kv-pool-tokens) was full: ended short of what was asked
+                            truncated = last.get("finish") == "pool"
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
                             hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
@@ -5605,7 +5634,7 @@ class Service:
             yield "event", Event("content", stops.flush())     # the held tail was not a stop string after all
         done = {"finish": finish, "completion_tokens": n, "reused": (timings or {}).get("cache_n", 0),
                 "timings": timings, "reasoning_tokens": thinking_n,
-                "reasoning_recoveries": recovery_count}
+                "reasoning_recoveries": recovery_count, "truncated": truncated}
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
         yield "done", done
@@ -5892,6 +5921,8 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
+            if x.get("truncated"):
+                last["truncated"] = True                # llama.cpp's field: ended short of what was asked
             yield last
 
 
@@ -5938,6 +5969,8 @@ def openai_collect(chunks) -> dict:
            "usage": last["usage"]}
     if last.get("timings"):
         out["timings"] = last["timings"]
+    if last.get("truncated"):
+        out["truncated"] = True
     return out
 
 
@@ -6846,6 +6879,13 @@ def make_handler(svc: Service):
                 print(f"[strata] 503: {e}", flush=True)
                 self._json(503, responses_error_body(str(e), "server_error") if path == "/v1/responses"
                            else {"error": {"type": "server_error", "message": str(e)}})
+            except PoolFull as e:                            # retryable: the pool frees as the lanes finish
+                retry = {"Retry-After": str(POOL_RETRY_S)}
+                if path == "/v1/responses":
+                    self._json(503, responses_error_body(str(e), "server_error", code="kv_pool_full"), retry)
+                else:
+                    self._json(503, {"error": {"type": "server_error", "code": "kv_pool_full", "message": str(e)}},
+                               retry)
             except ValueError as e:
                 print(f"[strata] 400 invalid request: {e}", flush=True)
                 if path == "/v1/responses":
@@ -7199,6 +7239,8 @@ def make_handler(svc: Service):
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
             except ValueError as e:                          # the engine's ERR after the stream started: the
                 err = {"error": {"type": "server_error", "message": str(e)}}   # headers are sent, so no 400 now
+                if isinstance(e, PoolFull):                  # nor a 503: the code and the wait go in the event
+                    err["error"].update(code="kv_pool_full", retry_after=POOL_RETRY_S)
                 self._note(error=err["error"])
                 self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
 
@@ -7269,6 +7311,9 @@ def make_handler(svc: Service):
                                                                 code="server_error"))
                 except EngineNonFinite as e:                 # #879, twice: not the request's fault
                     return self._json(503, responses_error_body(str(e), "server_error", code="server_error"))
+                except PoolFull as e:
+                    return self._json(503, responses_error_body(str(e), "server_error", code="kv_pool_full"),
+                                      {"Retry-After": str(POOL_RETRY_S)})
                 except ValueError as e:                      # the engine's ERR line
                     return self._json(500, responses_error_body(str(e), "server_error", code="server_error"))
                 return self._json(200, result)
@@ -7304,7 +7349,7 @@ def make_handler(svc: Service):
             except StructuredOutputError as e:
                 self._responses_failed(asm, str(e), "structured_output_failed", send)
             except ValueError as e:                          # the engine's ERR after the stream started
-                self._responses_failed(asm, str(e), "server_error", send)
+                self._responses_failed(asm, str(e), "kv_pool_full" if isinstance(e, PoolFull) else "server_error", send)
 
         def _responses_failed(self, asm, message, code, send):
             e = asm.failed(message, code)
@@ -7428,7 +7473,9 @@ def make_handler(svc: Service):
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
             except ValueError as e:                          # the engine's ERR after the stream started
-                err = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
+                # the KV pool's refusal is Anthropic's overloaded_error: its clients retry that one
+                kind = "overloaded_error" if isinstance(e, PoolFull) else "api_error"
+                err = {"type": "error", "error": {"type": kind, "message": str(e)}}
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
 
