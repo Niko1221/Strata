@@ -17,6 +17,17 @@
 > tests/terminal 1586 过，余 4 失败为环境类（2 个仓库目录被识别为安装根、2 个 Windows PID 句柄存活时序，
 > 与本分支改动无关）；apps/host npm test 4 失败均为 Windows 符号链接权限（EPERM）与本机限制。分支较 fork
 > 领先 5 个提交，**未推送、未开 PR（等用户指示）**。）
+>
+> **（2026-10-24 深夜：生产暴露一个 Phase 1 底座缺陷并已修复**——约束请求在长中文回答上退化出填充字
+> （"符号"→"符好"、"好好好" 连环）。排查链：重放复现 → bisect（无思考/无语法均干净）→ STRATA_GRAMMAR_DEBUG
+> 抓到窄掩码 → 逐 token 对账发现窄态全是合法的工具调用跟踪、填充字其实产生于"宽松"掩码 → 对账 vocab.json
+> 的标准 GPT2 bytes_to_unicode 映射，定位到 `sp_piece_to_text` 只解码了 Ġ/Ċ/latin-1/printable，
+> U+0121-U+0143（字节 127-160、173——多数中文 UTF-8 的第二字节）未还原 → 88,990/248,320 个 token 的 piece
+> 保持无效 UTF-8 → 每个语法掩码永久封禁 36% 词表。修复 = 补全映射表（`grammar_vocab.cpp`，与 HF
+> tokenizers / llama.cpp 转换器同一张表）。验证：根掩码开放 159,330 → 248,129；复现请求（工具语法+思考+MTP
+> 链，草稿接受 72%）三次长回答全干净；验收 JSON 49/50（唯一 502 是 recipe 题触顶输出预算——修复前它
+> "通过"只因坏词表让回答变短）、工具 30/30、约束 135.9 vs plain 124.3 tok/s（草稿吃掉掩码成本且有富余）。
+> 提交见 git log；`bench/results/vocab-fix3-grammar-4090/`。）
 
 ## 接力状态（2026-10-24 晚）
 
