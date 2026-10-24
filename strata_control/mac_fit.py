@@ -32,6 +32,10 @@ MAC_MODELS = {
     "Gyro-S": {"shard1_gb": 29.7, "tested": True, "family": "gyro", "shards": 1, "file_gb": 58.5},
     "Gyro-M": {"shard1_gb": 63.2, "tested": False, "family": "gyro", "shards": 1, "file_gb": 92.0},
 }
+# Swift 1.5 (UkisAI's fine-tune, --family swift; opt-in, never offered by the size menu): its two shards cut through a
+# layer (IQ3_S: layer 14's gate in shard 1, its up and down in shard 2) and shard 1 holds the n-gram table, so setup
+# repacks it like Unsloth's files.  shard1_gb: the repacked file (IQ3_S: 54.8 GB measured).  Only IQ3_S is measured.
+MAC_SWIFT = {"IQ3_S": {"shard1_gb": 54.8, "tested": True, "family": "swift"}}
 
 # The recommended sizes (owner's decision): IQ3_S is the default where it stays resident, UD-Q4_K_XL the higher-quality one
 RECOMMENDED = ("IQ3_S", "UD-Q4_K_XL")   # the owner's recommended sizes (UD-IQ4_XS is not offered on Mac yet)
@@ -129,13 +133,18 @@ def gpu_budget_gb(ram_gb: float) -> float:
     return ws
 
 
-def model_need_gb(model: str) -> float:
-    return MAC_MODELS[model]["shard1_gb"] + OVERHEAD_GB
+def mac_model(model: str, family: str | None = None) -> dict:
+    """The pack's entry: Swift's own sizes for --family swift, MAC_MODELS otherwise."""
+    return MAC_SWIFT[model] if family == "swift" else MAC_MODELS[model]
 
 
-def streams(model: str, ram_gb: float) -> bool:
+def model_need_gb(model: str, family: str | None = None) -> float:
+    return mac_model(model, family)["shard1_gb"] + OVERHEAD_GB
+
+
+def streams(model: str, ram_gb: float, family: str | None = None) -> bool:
     """The pack does not fit Metal's share of the memory: the engine streams its experts from the SSD."""
-    return model_need_gb(model) > gpu_budget_gb(ram_gb)
+    return model_need_gb(model, family) > gpu_budget_gb(ram_gb)
 
 
 def recommend_model(ram_gb: float) -> tuple[str, list[str]]:
@@ -157,18 +166,19 @@ def recommend_model(ram_gb: float) -> tuple[str, list[str]]:
                     "draft layer (slower when streaming)"]
 
 
-def model_note(model: str, ram_gb: float) -> list[str]:
+def model_note(model: str, ram_gb: float, family: str | None = None) -> list[str]:
     """What a chosen pack risks on this Mac (said, never refused)."""
     notes = []
-    if streams(model, ram_gb):
-        notes.append(f"{model} needs ~{model_need_gb(model):.0f} GB of the {gpu_budget_gb(ram_gb):.0f} GB Metal keeps "
-                     "resident on this Mac: its experts stream from the SSD (automatic)"
-                     + (f"; measured on a 32 GB M4: {STREAM_MEASURED[model]}" if model in STREAM_MEASURED else
-                        "; not measured streaming"))
-    if MAC_MODELS[model].get("missing"):
-        notes.append(f"{model} does not run on this Metal engine yet ({MAC_MODELS[model]['missing']} are missing): the "
+    m = mac_model(model, family)
+    if streams(model, ram_gb, family):
+        notes.append(f"{model} needs ~{model_need_gb(model, family):.0f} GB of the {gpu_budget_gb(ram_gb):.0f} GB Metal "
+                     "keeps resident on this Mac: its experts stream from the SSD (automatic)"
+                     + (f"; measured on a 32 GB M4: {STREAM_MEASURED[model]}"
+                        if model in STREAM_MEASURED and family != "swift" else "; not measured streaming"))
+    if m.get("missing"):
+        notes.append(f"{model} does not run on this Metal engine yet ({m['missing']} are missing): the "
                      "engine will stop when it loads; kept as you chose (for testing a newer engine)")
-    elif not MAC_MODELS[model]["tested"]:
+    elif not m["tested"]:
         notes.append(f"{model} has not been measured on a Mac yet")
     return notes
 
