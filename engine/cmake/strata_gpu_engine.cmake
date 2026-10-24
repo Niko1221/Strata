@@ -440,6 +440,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
     add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
     set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_executable(conversation_stage_split_test src/core/conversation_stage_split_test.cpp)
+    target_link_libraries(conversation_stage_split_test PRIVATE strata_engine)
+    add_test(NAME conversation_stage_split_test COMMAND conversation_stage_split_test)
+    set_tests_properties(conversation_stage_split_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # the same test with a GDN state over 1 MiB and the opt-in background checkpoint copy (STRATA_CKPT_ASYNC=1), alone and with
     # recent states kept in VRAM (STRATA_CKPT_VRAM_SLOTS): every checkpoint, capture and restore must give the same bytes
     add_test(NAME conversation_snapshot_test_ckpt_async COMMAND conversation_snapshot_test)
