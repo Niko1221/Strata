@@ -1,0 +1,34 @@
+/src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+test_a_good_request_still_answers (serve.test_request_hardening.Hardening.test_a_good_request_still_answers) ... [strata] done: 8 tokens in 0 s (56111.1 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_a_wrong_type_is_a_400_that_names_the_field (serve.test_request_hardening.Hardening.test_a_wrong_type_is_a_400_that_names_the_field) ... ok
+test_default_limit_is_generous (serve.test_request_hardening.Hardening.test_default_limit_is_generous) ... ok
+test_in_type_values_and_nulls_still_answer (serve.test_request_hardening.Hardening.test_in_type_values_and_nulls_still_answer) ... [strata] done: 8 tokens in 0 s (54032.9 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 8 tokens in 0 s (34169.5 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+[strata] done: 8 tokens in 0 s (50610.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_llama_cpp_names_for_the_repetition_penalty (serve.test_request_hardening.Hardening.test_llama_cpp_names_for_the_repetition_penalty)
+#1819: repeat_penalty / repeat_last_n are repetition_penalty / penalty_last_n; the OpenAI-style name wins. ... [strata] done: 8 tokens in 0 s (38173.4 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_negative_or_bad_content_length_is_400 (serve.test_request_hardening.Hardening.test_negative_or_bad_content_length_is_400) ... ok
+test_not_json_is_400 (serve.test_request_hardening.Hardening.test_not_json_is_400) ... ok
+test_numeric_strings_are_read_and_used (serve.test_request_hardening.Hardening.test_numeric_strings_are_read_and_used) ... [strata] done: 8 tokens in 0 s (65028.0 tok/s) (length, cancel=False)
+[strata] the reply reached max tokens while still thinking, so it has no answer: a thinking budget (reasoning_budget_tokens, in the request or in strata-<model>.json for every request) leaves room to answer
+ok
+test_oversized_content_length_is_413_unread (serve.test_request_hardening.Hardening.test_oversized_content_length_is_413_unread) ... ok
+test_wrong_shapes_are_400 (serve.test_request_hardening.Hardening.test_wrong_shapes_are_400) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.619s
+
+OK

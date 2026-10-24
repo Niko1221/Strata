@@ -1,0 +1,20 @@
+test_null_is_the_default_again (serve.test_runconfig.Apply.test_null_is_the_default_again) ... ok
+test_only_the_named_keys_change (serve.test_runconfig.Apply.test_only_the_named_keys_change) ... ok
+test_refused (serve.test_runconfig.Apply.test_refused) ... ok
+test_view (serve.test_runconfig.Apply.test_view) ... ok
+test_only_from_strata_s_own_page (serve.test_runconfig.Http.test_only_from_strata_s_own_page) ... /src/serve/telemetry.py:454: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/stat' mode='r' encoding='UTF-8'>
+  f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/src/serve/telemetry.py:437: ResourceWarning: unclosed file <_io.TextIOWrapper name='/proc/cpuinfo' mode='r' encoding='utf-8'>
+  return line.split(":", 1)[1].strip()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+ok
+test_read_and_write_from_the_page (serve.test_runconfig.Http.test_read_and_write_from_the_page) ... ok
+test_the_api_key (serve.test_runconfig.Http.test_the_api_key) ... ok
+test_the_page_has_the_view (serve.test_runconfig.Http.test_the_page_has_the_view) ... ok
+test_without_a_run_config (serve.test_runconfig.Http.test_without_a_run_config) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 2.829s
+
+OK

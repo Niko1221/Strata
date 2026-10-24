@@ -1,0 +1,9 @@
+test_default_off (serve.test_cache_drop.CacheDrop.test_default_off) ... ok
+test_files_and_advise (serve.test_cache_drop.CacheDrop.test_files_and_advise) ... ok
+test_not_while_engine_runs_or_not_opted_in (serve.test_cache_drop.CacheDrop.test_not_while_engine_runs_or_not_opted_in) ... ok
+test_on (serve.test_cache_drop.CacheDrop.test_on) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+OK

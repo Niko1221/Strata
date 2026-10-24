@@ -1,0 +1,30 @@
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (55778.0 tok/s) (stop, cancel=False), expert cache 88.9% hit
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (28025.4 tok/s) (stop, cancel=False), expert cache 88.9% hit
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 98 tokens in 0 s (48747.8 tok/s) (cancel, cancel=True), expert cache 88.9% hit
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] the continuation ended without a DONE line.  The next request starts the engine again.
+[strata] done: 95 tokens in 0 s (31616.2 tok/s) (error, cancel=False), expert cache 90.0% hit
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (100893.9 tok/s) (stop, cancel=False), expert cache 88.9% hit
+[strata] thinking budget reached (20 tokens): wrapping up the thinking
+[strata] done: 112 tokens in 0 s (31924.0 tok/s) (stop, cancel=False), expert cache 88.9% hit
+[strata] thinking capped at 200 of max_tokens 400 to leave room for the answer (budget 10000)
+[strata] done: 211 tokens in 0 s (65001.7 tok/s) (stop, cancel=False), expert cache 90.0% hit
+test_anthropic_nonstream_classifies_only_original_input_as_cached (serve.test_request_accounting.RequestAccounting.test_anthropic_nonstream_classifies_only_original_input_as_cached) ... ok
+test_anthropic_stream_classifies_only_original_input_as_cached (serve.test_request_accounting.RequestAccounting.test_anthropic_stream_classifies_only_original_input_as_cached) ... ok
+test_cancelled_continuation_keeps_original_input_and_counts_each_done_once (serve.test_request_accounting.RequestAccounting.test_cancelled_continuation_keeps_original_input_and_counts_each_done_once) ... ok
+test_failed_continuation_does_not_count_the_first_done_twice (serve.test_request_accounting.RequestAccounting.test_failed_continuation_does_not_count_the_first_done_twice) ... ok
+test_openai_nonstream_keeps_original_cache_and_all_segment_work (serve.test_request_accounting.RequestAccounting.test_openai_nonstream_keeps_original_cache_and_all_segment_work) ... ok
+test_openai_stream_keeps_original_cache_and_all_segment_work (serve.test_request_accounting.RequestAccounting.test_openai_stream_keeps_original_cache_and_all_segment_work) ... ok
+test_single_segment_keeps_its_own_usage_and_timings (serve.test_request_accounting.RequestAccounting.test_single_segment_keeps_its_own_usage_and_timings) ... ok
+test_prompt_n_is_what_was_read (serve.test_request_accounting.SlotLegAccounting.test_prompt_n_is_what_was_read) ... ok
+test_solo_leg_adds_to_the_slot_leg (serve.test_request_accounting.SlotLegAccounting.test_solo_leg_adds_to_the_slot_leg) ... ok
+test_two_hand_backs_sum (serve.test_request_accounting.SlotLegAccounting.test_two_hand_backs_sum) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 3.945s
+
+OK

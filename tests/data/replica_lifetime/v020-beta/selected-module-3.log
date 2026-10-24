@@ -1,0 +1,321 @@
+[strata] "parallel" must be a whole number of requests (2..8), not '4': ignored
+[strata] "parallel" must be a whole number of requests (2..8), not True: ignored
+[strata] "parallel": 12 - the engine runs at most 8 requests together; it will use 8
+[strata] done: 8 tokens in 0 s (28.4 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 0 s (28.6 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 1 s (29.7 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 1 s (29.5 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 1 s (29.6 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 1 s (29.8 tok/s) (length, cancel=False)
+[strata] answering: 5 of max 8 tokens, 28.7 tok/s, 1 s
+[strata] answering: 5 of max 8 tokens, 34.5 tok/s, 1 s
+[strata] done: 8 tokens in 1 s (30.0 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 1 s so far
+[strata] done: 8 tokens in 1 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 1 s so far
+[strata] done: 8 tokens in 1 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 1 s so far
+[strata] done: 8 tokens in 1 s (29.8 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 1 s so far
+[strata] done: 8 tokens in 2 s (29.9 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 2 s so far
+[strata] done: 8 tokens in 2 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 2 s so far
+[strata] done: 8 tokens in 2 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 2 s so far
+[strata] done: 8 tokens in 2 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 2 s so far
+[strata] done: 8 tokens in 2 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 2 s so far
+[strata] done: 8 tokens in 2 s (29.9 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 2 s so far
+[strata] done: 8 tokens in 3 s (29.5 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.5 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.8 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 3 s so far
+[strata] done: 8 tokens in 3 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 3 s so far
+[strata] done: 8 tokens in 4 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 4 s so far
+[strata] done: 8 tokens in 4 s (30.0 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 4 s so far
+[strata] done: 8 tokens in 4 s (28.3 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 4 s so far
+[strata] done: 8 tokens in 4 s (28.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 4 s so far
+[strata] done: 8 tokens in 4 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 4 s so far
+[strata] done: 8 tokens in 4 s (29.5 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 4 s so far
+[strata] done: 8 tokens in 5 s (26.5 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (26.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (29.8 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (29.5 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (29.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (25.3 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 5 s (25.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 5 s so far
+[strata] done: 8 tokens in 6 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 6 s so far
+[strata] done: 8 tokens in 6 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 6 s so far
+[strata] done: 8 tokens in 6 s (29.5 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 6 s so far
+[strata] done: 8 tokens in 6 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 6 s so far
+[strata] done: 8 tokens in 6 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 6 s so far
+[strata] done: 8 tokens in 6 s (27.9 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 6 s so far
+[strata] done: 8 tokens in 7 s (26.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (27.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (29.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (29.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (29.8 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (29.9 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 7 s (29.7 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 7 s so far
+[strata] done: 8 tokens in 8 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 8 s so far
+[strata] done: 8 tokens in 8 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 45 tokens, 8 s so far
+[strata] done: 8 tokens in 8 s (29.3 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 8 s so far
+[strata] done: 8 tokens in 8 s (29.2 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 8 s so far
+[strata] done: 8 tokens in 8 s (29.6 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 8 s so far
+[strata] done: 8 tokens in 8 s (29.4 tok/s) (length, cancel=False)
+[strata] reading the prompt: 32 of 46 tokens, 8 s so far
+[strata] done: 8 tokens in 9 s (29.2 tok/s) (length, cancel=False)
+[strata] done: 8 tokens in 9 s (33.3 tok/s) (length, cancel=False)
+[strata] done: 10 tokens in 1 s (32.1 tok/s) (stop, cancel=False)
+[strata] thinking: 28 of max 200 tokens, 30.1 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (36.6 tok/s) (stop, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 1). The engine exited (code 1) after it reported: verify batch: layer 34 never rang (graph finished) - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 5 tokens in 0 s (25.2 tok/s) (error, cancel=False)
+[strata] the engine stopped unexpectedly (exit code 1). The engine exited (code 1) after it reported: verify batch: layer 34 never rang (graph finished) - please report it at github.com/Niko1221/Strata/issues with the log. The next request starts the engine again.
+[strata] done: 1 tokens in 0 s (16.1 tok/s) (error, cancel=False)
+[strata] parallel: slot(s) 0, 1 were marked busy with no request using them (issue #1603); freed, the waiting request goes on
+[strata] reading the prompt: 32 of 52 tokens, 1 s so far
+[strata] done: 10 tokens in 1 s (27.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (24.6 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 2,400 of 3,037 tokens, 1 s so far
+[strata] done: 10 tokens in 2 s (32.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (47.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.1 tok/s) (stop, cancel=False)
+[strata] loading the model again (it was unloaded) ...
+[strata] the engine is running again
+[strata] done: 10 tokens in 0 s (48.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (33.2 tok/s) (stop, cancel=False)
+[strata] answering: 40 of max 200 tokens, 40.2 tok/s, 1 s
+[strata] done: 55 tokens in 1 s (41.6 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (29.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (32.4 tok/s) (stop, cancel=False)
+[strata] parallel requests: 4 asked, the engine runs 2 (its log says why)
+[strata] done: 10 tokens in 0 s (48.6 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (24.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (24.6 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 2,496 of 3,037 tokens, 1 s so far
+[strata] done: 10 tokens in 1 s (31.2 tok/s) (stop, cancel=False)
+[strata] answering: 6 of max 60 tokens, 3.3 tok/s, 2 s
+[strata] reading the prompt: 2,560 of 3,037 tokens, 2 s so far
+[strata] answering: 2 of max 64 tokens, 2.3 tok/s, 2 s
+[strata] done: 10 tokens in 2 s (7.7 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 2 s (28.8 tok/s) (stop, cancel=False)
+[strata] answering: 32 of max 60 tokens, 11.2 tok/s, 3 s
+[strata] done: 55 tokens in 4 s (15.4 tok/s) (stop, cancel=False)
+[strata] parallel: slot(s) 0 were marked busy with no request using them (issue #1603); freed, the waiting request goes on
+[strata] done: 10 tokens in 0 s (48.8 tok/s) (stop, cancel=False)
+[strata] done: 3 tokens in 0 s (49.0 tok/s) (disconnect, cancel=True)
+[strata] thinking: 23 of max 512 tokens, 26.2 tok/s, 1 s
+[strata] thinking: 19 of max 512 tokens, 32.0 tok/s, 1 s
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (cancel, cancel=True)
+[strata] thinking: 51 of max 512 tokens, 31.5 tok/s, 2 s
+[strata] done: 55 tokens in 2 s (28.9 tok/s) (stop, cancel=False)
+[strata] done: 55 tokens in 2 s (31.5 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (47.7 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (26.4 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.8 tok/s) (stop, cancel=False)
+[strata] done: 0 tokens in 1 s (0.0 tok/s) (disconnect, cancel=True)
+[strata] thinking: 19 of max 512 tokens, 21.3 tok/s, 1 s
+[strata] thinking: 52 of max 512 tokens, 27.1 tok/s, 2 s
+[strata] done: 55 tokens in 2 s (27.3 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (46.4 tok/s) (stop, cancel=False)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (1/6) (issue #1994)
+[strata] done: 10 tokens in 1 s (32.9 tok/s) (stop, cancel=False)
+[strata] answering: 33 of max 64 tokens, 32.7 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (32.4 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.4 tok/s) (stop, cancel=False)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (1/6) (issue #1994)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (2/6) (issue #1994)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (3/6) (issue #1994)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (4/6) (issue #1994)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (5/6) (issue #1994)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (6/6) (issue #1994)
+[strata] parallel: the engine refused slot 1 (BGEN: no such free slot (--batch 2) or a bad max_new); trying another slot (7/6) (issue #1994)
+[strata] done: 0 tokens in 0 s (0.0 tok/s) (length, cancel=False)
+[strata] answering: 35 of max 64 tokens, 35.0 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (33.7 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (33.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 1 s (32.7 tok/s) (stop, cancel=False)
+[strata] answering: 31 of max 64 tokens, 30.4 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (31.1 tok/s) (stop, cancel=False)
+[strata] answering: 32 of max 64 tokens, 31.9 tok/s, 1 s
+[strata] answering: 30 of max 64 tokens, 31.7 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (31.1 tok/s) (stop, cancel=False)
+[strata] done: 55 tokens in 2 s (31.4 tok/s) (stop, cancel=False)
+[strata] starting the engine: reading the model's weights ...
+[strata] parallel requests: 4 asked, the engine runs 2 (its log says why)
+[strata] parallel requests: 4 asked, the engine runs one at a time (its log says why)
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (32.1 tok/s) (stop, cancel=False)
+[strata] answering: 40 of max 200 tokens, 40.4 tok/s, 1 s
+[strata] done: 55 tokens in 1 s (41.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (33.0 tok/s) (stop, cancel=False)
+[strata] answering: 32 of max 200 tokens, 32.2 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (32.1 tok/s) (stop, cancel=False)
+[strata] answering: 1 of max 64 tokens, 29.8 tok/s, 1 s
+[strata] reading the prompt: 32 of 3,037 tokens, 2 s so far
+[strata] answering: 3 of max 64 tokens, 2.8 tok/s, 2 s
+[strata] done: 10 tokens in 2 s (7.3 tok/s) (stop, cancel=False)
+[strata] answering: 2 of max 64 tokens, 37.4 tok/s, 3 s
+[strata] done: 10 tokens in 3 s (32.9 tok/s) (stop, cancel=False)
+[strata] answering: 1 of max 64 tokens, 1.2 tok/s, 2 s
+[strata] reading the prompt: 2,560 of 3,037 tokens, 3 s so far
+[strata] answering: 3 of max 64 tokens, 1.6 tok/s, 3 s
+[strata] done: 10 tokens in 3 s (4.4 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 3 s (33.4 tok/s) (stop, cancel=False)
+[strata] the engine's logits became non-finite before the first token (#879); it dropped its cached state: sending the request again once
+[strata] done: 10 tokens in 0 s (49.1 tok/s) (stop, cancel=False)
+[strata] the engine's logits became non-finite before the first token (#879); it dropped its cached state: sending the request again once
+[strata] done: 10 tokens in 0 s (33.0 tok/s) (stop, cancel=False)
+[strata] answering: 34 of max 64 tokens, 33.6 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (33.0 tok/s) (stop, cancel=False)
+[strata] the engine's logits became non-finite after 2 tokens (#879): the reply ends here as "length"; the engine dropped its cached state, so the next request reads its prompt from the start
+[strata] done: 2 tokens in 0 s (23.5 tok/s) (length, cancel=False)
+[strata] answering: 34 of max 64 tokens, 33.3 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (32.8 tok/s) (stop, cancel=False)
+[strata] starting the engine: reading the model's weights ...
+[strata] answering: 32 of max 64 tokens, 32.0 tok/s, 1 s
+[strata] answering: 30 of max 64 tokens, 32.0 tok/s, 1 s
+[strata] done: 55 tokens in 2 s (30.8 tok/s) (stop, cancel=False)
+[strata] done: 55 tokens in 2 s (30.8 tok/s) (stop, cancel=False)
+[strata] thinking limited to 2882 of max_tokens 3842 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking limited to 2882 of max_tokens 3842 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking limited to 2882 of max_tokens 3842 so the answer has room ("answer_room": false in the config turns this off)
+[strata] thinking limited to 2882 of max_tokens 3842 so the answer has room ("answer_room": false in the config turns this off)
+[strata] done: 10 tokens in 0 s (48.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] parallel requests: 1 asked, the engine runs one at a time (its log says why)
+[strata] done: 10 tokens in 0 s (48.9 tok/s) (stop, cancel=False)
+[strata] done: 9 tokens in 0 s (48.9 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (48.7 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 0 s (49.0 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 2,560 of 3,037 tokens, 2 s so far
+[strata] answering: 2 of max 64 tokens, 2.3 tok/s, 2 s
+[strata] done: 10 tokens in 2 s (7.8 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 2 s (33.4 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 1,984 of 3,037 tokens, 1 s so far
+[strata] reading the prompt: 32 of 3,037 tokens, 2 s so far
+[strata] done: 10 tokens in 2 s (25.1 tok/s) (stop, cancel=False)
+[strata] reading the prompt: 32 of 43 tokens, 2 s so far
+[strata] answering: 2 of max 64 tokens, 23.6 tok/s, 3 s
+[strata] done: 10 tokens in 3 s (29.6 tok/s) (stop, cancel=False)
+[strata] done: 10 tokens in 2 s (32.6 tok/s) (stop, cancel=False)
+test_parallel_above_the_window_says_so_unless_batch_mtp (serve.test_parallel.ParallelArgs.test_parallel_above_the_window_says_so_unless_batch_mtp) ... ok
+test_parallel_config_key (serve.test_parallel.ParallelArgs.test_parallel_config_key) ... ok
+test_a_burst_of_connections_is_not_reset (serve.test_parallel.ParallelService.test_a_burst_of_connections_is_not_reset)
+30-40 clients at once got "connection reset by peer" with the listen backlog of 5 (4 x R9700 burst): the ... ok
+test_a_continued_request_reports_its_own_prompt_reuse (serve.test_parallel.ParallelService.test_a_continued_request_reports_its_own_prompt_reuse)
+A request STOPped on the solo path and continued in a slot (or back on the solo path) is sent again as its ... ok
+test_a_failed_window_names_its_error (serve.test_parallel.ParallelService.test_a_failed_window_names_its_error) ... ok
+test_a_leaked_busy_slot_does_not_hang_the_next_request (serve.test_parallel.ParallelService.test_a_leaked_busy_slot_does_not_hang_the_next_request)
+#1603: a slot whose busy flag has no owner (no request holds it, no BDONE wait is running) kept every later ... ok
+test_a_long_prompt_gives_way_to_a_short_one (serve.test_parallel.ParallelService.test_a_long_prompt_gives_way_to_a_short_one)
+#656: a long solo prompt read gives way at a chunk boundary; the short request is answered first, then the ... ok
+test_a_parallel_request_does_not_wait_for_the_fifo_on_a_loaded_engine (serve.test_parallel.ParallelService.test_a_parallel_request_does_not_wait_for_the_fifo_on_a_loaded_engine)
+#1603: parallel requests used to take the FIFO (held by an image encode, /v1/vram, load) just to find the ... ok
+test_a_request_moved_between_solo_and_slot_keeps_its_totals (serve.test_parallel.ParallelService.test_a_request_moved_between_solo_and_slot_keeps_its_totals)
+#1869/#1870: a request that read its prompt and decoded on the solo path, was STOPped when another arrived and ... ok
+test_a_slot_request_ended_by_its_stop_token_reports_the_slot_leg (serve.test_parallel.ParallelService.test_a_slot_request_ended_by_its_stop_token_reports_the_slot_leg)
+#1869: the consumer leaves at the stop token, before the BDONE: the request kept the admission's one token and ... ok
+test_admission_cap_uses_effective_slots_and_rejects_before_stream (serve.test_parallel.ParallelService.test_admission_cap_uses_effective_slots_and_rejects_before_stream) ... ok
+test_an_admission_gives_way_too (serve.test_parallel.ParallelService.test_an_admission_gives_way_too)
+The same while another request decodes in a slot: the long one is being admitted, a short one waits. ... ok
+test_an_admission_is_asked_between_far_apart_progress_lines (serve.test_parallel.ParallelService.test_an_admission_is_asked_between_far_apart_progress_lines)
+As above for a read admitted beside a decoding slot (BGEN, `ask()`): with one PP line per 80 chunks the ... ok
+test_an_owned_busy_slot_is_never_taken (serve.test_parallel.ParallelService.test_an_owned_busy_slot_is_never_taken)
+The leak check frees only slots with no owner: a slot a request holds stays busy however long it waits. ... ok
+test_batch_groups_auto_follows_the_engine (serve.test_parallel.ParallelService.test_batch_groups_auto_follows_the_engine)
+--batch-groups auto: the engine picks the groups and says so (INFO batch_groups=G); the server spreads the ... ok
+test_benchmark_cancel_suite_releases_batch_queue_and_slots (serve.test_parallel.ParallelService.test_benchmark_cancel_suite_releases_batch_queue_and_slots) ... ok
+test_benchmark_overload_suite_preserves_batch_recovery (serve.test_parallel.ParallelService.test_benchmark_overload_suite_preserves_batch_recovery) ... ok
+test_benchmark_prefill_cancel_observes_progress_and_companion_completion (serve.test_parallel.ParallelService.test_benchmark_prefill_cancel_observes_progress_and_companion_completion) ... ok
+test_bgen_refused_by_the_engine_is_retried_not_a_400 (serve.test_parallel.ParallelService.test_bgen_refused_by_the_engine_is_retried_not_a_400)
+#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request ... ok
+test_bgen_refused_for_good_is_a_retryable_503_and_frees_the_slots (serve.test_parallel.ParallelService.test_bgen_refused_for_good_is_a_retryable_503_and_frees_the_slots)
+#1994: when the engine keeps refusing, the answer is a 503 (retryable), never a 400, and no slot stays busy. ... ok
+test_concurrent_requests_share_the_slots (serve.test_parallel.ParallelService.test_concurrent_requests_share_the_slots) ... ok
+test_engine_batch_window_sample_reaches_telemetry_without_entering_reply (serve.test_parallel.ParallelService.test_engine_batch_window_sample_reaches_telemetry_without_entering_reply) ... ok
+test_engine_log_resolves_four_stage_layer_and_device_mapping (serve.test_parallel.ParallelService.test_engine_log_resolves_four_stage_layer_and_device_mapping) ... ok
+test_engine_reports_fewer_slots (serve.test_parallel.ParallelService.test_engine_reports_fewer_slots) ... ok
+test_engine_turns_batching_off (serve.test_parallel.ParallelService.test_engine_turns_batching_off) ... ok
+test_left_alone_it_goes_back_to_the_solo_path (serve.test_parallel.ParallelService.test_left_alone_it_goes_back_to_the_solo_path)
+A request decoding in a slot whose neighbour finished goes back to the solo path (MTP drafts), continued ... ok
+test_next_turn_goes_back_to_its_slot (serve.test_parallel.ParallelService.test_next_turn_goes_back_to_its_slot) ... ok
+test_no_way_given_to_a_long_one (serve.test_parallel.ParallelService.test_no_way_given_to_a_long_one)
+Two prompts of about the same length: no BYIELD (it only goes to a much shorter one). ... ok
+test_no_way_given_to_a_long_one_between_far_apart_progress_lines (serve.test_parallel.ParallelService.test_no_way_given_to_a_long_one_between_far_apart_progress_lines)
+The ask between PP lines keeps the rule: a waiting request about as long gets no BYIELD there either. ... ok
+test_nonfinite_in_batch_mode (serve.test_parallel.ParallelService.test_nonfinite_in_batch_mode)
+#879 in --batch mode: DONE ... nonfinite on the solo path or at an admission (nothing emitted yet) sends the ... ok
+test_pipeline_stage_host_spans_reach_telemetry_without_entering_reply (serve.test_parallel.ParallelService.test_pipeline_stage_host_spans_reach_telemetry_without_entering_reply) ... ok
+test_queue_timeout_parallel_control_and_stream_formats (serve.test_parallel.ParallelService.test_queue_timeout_parallel_control_and_stream_formats) ... ok
+test_queue_timeout_parallel_slot_wait_releases_control (serve.test_parallel.ParallelService.test_queue_timeout_parallel_slot_wait_releases_control) ... ok
+test_queue_timeout_serial_fifo_returns_429_and_recovers (serve.test_parallel.ParallelService.test_queue_timeout_serial_fifo_returns_429_and_recovers) ... ok
+test_stop_strings_in_a_batch_slot (serve.test_parallel.ParallelService.test_stop_strings_in_a_batch_slot)
+#454: a stop string cuts the answer in --batch mode too, and the slot is freed for the next request. ... ok
+test_telemetry_keeps_engine_waiting_age_visible (serve.test_parallel.ParallelService.test_telemetry_keeps_engine_waiting_age_visible) ... ok
+test_the_way_is_asked_between_far_apart_progress_lines (serve.test_parallel.ParallelService.test_the_way_is_asked_between_far_apart_progress_lines)
+#656 when the PP lines come far apart (the pipelined groups' read in pieces of one chunk: one PP per piece, ... ok
+test_three_requests_long_long_short_do_not_deadlock (serve.test_parallel.ParallelService.test_three_requests_long_long_short_do_not_deadlock)
+ENGINE_REVIEW finding 1 (0.1.41 check): two long prompts fill both slots, a short one arrives a moment later ... ok
+test_a_rewritten_next_turn_goes_to_the_slot_of_its_chat (serve.test_parallel.PickSlot.test_a_rewritten_next_turn_goes_to_the_slot_of_its_chat) ... ok
+test_batch_groups_spread_requests_over_the_groups (serve.test_parallel.PickSlot.test_batch_groups_spread_requests_over_the_groups) ... ok
+test_slots_view (serve.test_parallel.PickSlot.test_slots_view) ... ok
+test_the_slot_that_holds_the_conversation (serve.test_parallel.PickSlot.test_the_slot_that_holds_the_conversation) ... ok
+
+----------------------------------------------------------------------
+Ran 42 tests in 81.685s
+
+OK

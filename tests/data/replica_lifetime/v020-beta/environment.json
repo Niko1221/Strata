@@ -1,0 +1,14 @@
+{
+  "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "dependencies": {
+    "jinja2": "3.1.6",
+    "markupsafe": "3.0.3",
+    "regex": "2026.9.10"
+  },
+  "gpu_used": false,
+  "model_loaded": false,
+  "runtime_native_builds": "NOT_RUN",
+  "gpu_on_v020": "NOT_RUN",
+  "source_archive_sha256": "e1325f505ff487d6445a736a727378df02a6517f26df43185f1b78bc6ffc58a6"
+}
