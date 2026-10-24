@@ -1,0 +1,14 @@
+Internal ctest changing into directory: <workspace>/build-dflash2
+Test project <workspace>/build-dflash2
+    Start  65: dflash2_extension_parity
+1/4 Test  #65: dflash2_extension_parity .........   Passed    6.86 sec
+    Start  66: dflash_taps_test
+2/4 Test  #66: dflash_taps_test .................   Passed    0.22 sec
+    Start 118: dflash_policy_test
+3/4 Test #118: dflash_policy_test ...............   Passed    0.00 sec
+    Start 119: dflash_load_test
+4/4 Test #119: dflash_load_test .................   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   7.09 sec

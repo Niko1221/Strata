@@ -1,0 +1,39 @@
+.................Q4_0: /tmp/tmpurkgw3zw/Q4_0.gguf (18048 bytes)
+Q5_0: /tmp/tmpurkgw3zw/Q5_0.gguf (19712 bytes)
+Q8_0: /tmp/tmpurkgw3zw/Q8_0.gguf (24704 bytes)
+Q4_0: /tmp/tmpfetlr1n0/Q4_0.gguf (18048 bytes)
+Q5_0: /tmp/tmpfetlr1n0/Q5_0.gguf (19712 bytes)
+Q8_0: /tmp/tmpfetlr1n0/Q8_0.gguf (24704 bytes)
+......s.......Original BF16 head: 300/1536 bytes
+Original BF16 head: 600/1536 bytes
+Original BF16 head: 900/1536 bytes
+Original BF16 head: 1200/1536 bytes
+Original BF16 head: 1500/1536 bytes
+Original BF16 head: 1536/1536 bytes
+Original BF16 DFlash head: /tmp/tmpg_3moe6h/head.gguf
+Original BF16 DFlash head: /tmp/tmpg_3moe6h/head.gguf (cached)
+Original BF16 head: 300/1536 bytes
+Original BF16 head: 600/1536 bytes
+Original BF16 head: 900/1536 bytes
+Original BF16 head: 1200/1536 bytes
+Original BF16 head: 1500/1536 bytes
+Original BF16 head: 1536/1536 bytes
+Original BF16 DFlash head: /tmp/tmpg_3moe6h/head.gguf
+..{"source": "/tmp/tmpc5l6drc2/collision.gguf.part", "source_type": "Q8_0", "output": "/tmp/tmpc5l6drc2/collision.gguf", "output_type": "Q8_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "payload_bytes": 51680, "max_abs": 0.0, "relative_l2": 0.0, "cosine": 1.0}
+{"source": "/tmp/tmpc5l6drc2/head.gguf", "source_type": "Q8_0", "output": "/tmp/tmpc5l6drc2/copy.gguf", "output_type": "Q8_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "payload_bytes": 51680, "max_abs": 0.0, "relative_l2": 0.0, "cosine": 1.0}
+{"source": "/tmp/tmpc5l6drc2/head.gguf", "source_type": "Q8_0", "output": "/tmp/tmpc5l6drc2/Q8_0.gguf", "output_type": "Q8_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "payload_bytes": 51680, "max_abs": 0.0, "relative_l2": 0.0, "cosine": 1.0}
+{"source": "/tmp/tmpc5l6drc2/head.gguf", "source_type": "Q8_0", "output": "/tmp/tmpc5l6drc2/Q4_0.gguf", "output_type": "Q4_0", "shape": [2560, 19], "source_tensor_sha256": "055c6b69bc64949322350b21b5cbde51fee71eb2269859fb9409546062027326", "output_tensor_sha256": "7ba6c5759c9f067156001d2c60b9d271cc6f6a4d1e8c834aa2f7235d2c06b9dc", "payload_bytes": 27360, "max_abs": 0.01734638214111328, "relative_l2": 0.086006548944549, "cosine": 0.9963111714528191}
+...........Q8_0: /tmp/tmpsogh9iya/Q8_0-a.gguf (1472 bytes)
+Q8_0: /tmp/tmpsogh9iya/Q8_0-b.gguf (1472 bytes)
+Q5_0: /tmp/tmpsogh9iya/Q5_0-a.gguf (1152 bytes)
+Q5_0: /tmp/tmpsogh9iya/Q5_0-b.gguf (1152 bytes)
+Q4_0: /tmp/tmpsogh9iya/Q4_0-a.gguf (1056 bytes)
+Q4_0: /tmp/tmpsogh9iya/Q4_0-b.gguf (1056 bytes)
+Q8_0: /tmp/tmpsogh9iya/collision.gguf (1472 bytes)
+............Q8_0: /tmp/tmpyy_419e7/dflash2/dflash2-7ec3de85bc6ed138-Q8_0.gguf (4416 bytes)
+  [ok] DFlash2 Q8_0 already prepared
+.
+----------------------------------------------------------------------
+Ran 57 tests in 0.421s
+
+OK (skipped=1)
