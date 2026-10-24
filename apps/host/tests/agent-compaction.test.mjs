@@ -36,7 +36,7 @@ test('a long chat on a small window compacts before it overflows, and the conver
   for (let i = 0; i < 6; i++) {
     const frames = [];
     await bridge.runTurn({ chatId: 'long', message: `SCRIPT:echo round${i} ${big}`, workspacePath: ws, mode: 'bypass', onFrame: f => frames.push(f) });
-    replies.push(frames.filter(f => f.type === 'delta').map(f => f.text).join('').slice(0, 12));
+    replies.push(frames.filter(f => f.type === 'delta' && !f.noteReason).map(f => f.text).join('').slice(0, 12));
     assert.equal(frames.at(-1).type, 'done', `round ${i} ended normally`);
   }
   assert.ok(replies.every(r => /^round\d/.test(r)), 'every round was answered: ' + replies.join(' | '));

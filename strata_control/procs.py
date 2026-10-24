@@ -78,6 +78,30 @@ def start_token(pid: int) -> str | None:
     return None if not out or out.endswith("Z") else "s:" + out
 
 
+def started_epoch(pid: int) -> float | None:
+    """When the process at `pid` was created, in seconds since 1970, or None when there is no such process or the time cannot be read.
+    A number recorded in an old file can belong to a later process; a creation time after the file was written proves it does."""
+    if type(pid) is not int or pid <= 0:
+        return None
+    if psutil is not None:
+        try:
+            return float(psutil.Process(pid).create_time())
+        except (psutil.Error, OSError):
+            return None
+    if WINDOWS:
+        from strata_control import winproc
+        ticks = winproc.process_started(pid)
+        return None if ticks is None else (ticks - 116444736000000000) / 1e7     # 100 ns ticks since 1601
+    if sys.platform.startswith("linux"):
+        token = start_token(pid)
+        try:
+            boot = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+            return boot + int(token[2:]) / os.sysconf("SC_CLK_TCK") if token else None
+        except (OSError, ValueError, StopIteration):
+            return None
+    return None
+
+
 def command_line(pid: int) -> list[str] | None:
     """The process's argv, or None when it cannot be read (then it is never treated as a match)."""
     if sys.platform.startswith("linux"):

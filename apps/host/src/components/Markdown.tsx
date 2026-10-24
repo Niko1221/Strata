@@ -5,8 +5,21 @@ import { Btn, IconBtn } from './ui';
 import { SyntaxCode } from './SyntaxCode';
 import { MathView } from './MathView';
 import { displayBlock, hasMath, splitMath } from '../lib/math';
-function inlineMarks(text: string, onOpenLink?: (url: string) => void): ReactNode {
-    return text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^\s)]+\))/g).map((part, i) => {
+import { imagePlan } from '../lib/markdown-images';
+function inlineMarks(text: string, onOpenLink?: (url: string) => void, imageSession?: string | null): ReactNode {
+    return text.split(/(!\[[^\]]*\]\([^\s)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^\s)]+\))/g).map((part, i) => {
+        const image = part.match(/^!\[([^\]]*)\]\(([^\s)]+)\)$/);
+        if (image) {
+            const plan = imagePlan(image[2], imageSession);
+            if (plan.kind === 'img')
+                return <img key={i} src={plan.src} alt={image[1]} className="md-image" loading="lazy" referrerPolicy="no-referrer"/>;
+            if (plan.kind === 'link')
+                return <a key={i} href={plan.href} target="_blank" rel="noreferrer" onClick={e => { if (onOpenLink) {
+                    e.preventDefault();
+                    onOpenLink(plan.href);
+                } }}>{image[1] || plan.href}</a>;
+            return <Fragment key={i}>{image[1] || part}</Fragment>;
+        }
         if (part.startsWith('`') && part.endsWith('`'))
             return <code key={i} className="md-code">{part.slice(1, -1)}</code>;
         if (part.startsWith('**') && part.endsWith('**'))
@@ -23,21 +36,23 @@ function inlineMarks(text: string, onOpenLink?: (url: string) => void): ReactNod
     });
 }
 /** Text with its inline marks and, outside code spans, its math (#3268). Math is cut out first: a * or _ inside a formula is not emphasis. */
-function inline(text: string, onOpenLink?: (url: string) => void): ReactNode {
+function inline(text: string, onOpenLink?: (url: string) => void, imageSession?: string | null): ReactNode {
     if (!hasMath(text))
-        return inlineMarks(text, onOpenLink);
+        return inlineMarks(text, onOpenLink, imageSession);
     return text.split(/(`[^`]+`)/g).map((chunk, c) => {
         if (chunk.length > 1 && chunk.startsWith('`') && chunk.endsWith('`'))
-            return <Fragment key={c}>{inlineMarks(chunk, onOpenLink)}</Fragment>;
+            return <Fragment key={c}>{inlineMarks(chunk, onOpenLink, imageSession)}</Fragment>;
         return <Fragment key={c}>{splitMath(chunk).map((part, p) => part.kind === 'math'
             ? <MathView key={p} tex={part.tex} display={part.display}/>
-            : <Fragment key={p}>{inlineMarks(part.text, onOpenLink)}</Fragment>)}</Fragment>;
+            : <Fragment key={p}>{inlineMarks(part.text, onOpenLink, imageSession)}</Fragment>)}</Fragment>;
     });
 }
-export function Markdown({ text, onOpenLink, onPreviewHtml }: {
+export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
     text: string;
     onOpenLink?: (url: string) => void;
     onPreviewHtml?: (html: string) => void;
+    /** The chat whose folder a picture path in the answer is read from (the host serves only files inside it). */
+    imageSession?: string | null;
 }) {
     const nodes: ReactNode[] = [];
     const lines = text.split('\n');
@@ -66,7 +81,7 @@ export function Markdown({ text, onOpenLink, onPreviewHtml }: {
         const heading = line.match(/^(#{1,6})\s+(.+)$/);
         if (heading) {
             const Tag = heading[1].length <= 2 ? 'h2' : heading[1].length === 3 ? 'h3' : 'h4';
-            nodes.push(<Tag key={i}>{tr(inline(heading[2], onOpenLink))}</Tag>);
+            nodes.push(<Tag key={i}>{tr(inline(heading[2], onOpenLink, imageSession))}</Tag>);
             i++;
             continue;
         }
@@ -90,7 +105,7 @@ export function Markdown({ text, onOpenLink, onPreviewHtml }: {
             i += 2;
             while (i < lines.length && lines[i].includes('|'))
                 rows.push(cells(lines[i++]));
-            nodes.push(<div className="md-table-wrap" key={key}><table className="md-table"><thead><tr>{tr(header.map((c, j) => <th key={j}>{tr(inline(c, onOpenLink))}</th>))}</tr></thead><tbody>{tr(rows.map((r, j) => <tr key={j}>{tr(r.map((c, k) => <td key={k}>{tr(inline(c, onOpenLink))}</td>))}</tr>))}</tbody></table></div>);
+            nodes.push(<div className="md-table-wrap" key={key}><table className="md-table"><thead><tr>{tr(header.map((c, j) => <th key={j}>{tr(inline(c, onOpenLink, imageSession))}</th>))}</tr></thead><tbody>{tr(rows.map((r, j) => <tr key={j}>{tr(r.map((c, k) => <td key={k}>{tr(inline(c, onOpenLink, imageSession))}</td>))}</tr>))}</tbody></table></div>);
             continue;
         }
         if (/^>\s?/.test(line)) {
@@ -98,7 +113,7 @@ export function Markdown({ text, onOpenLink, onPreviewHtml }: {
             i++;
             continue;
         }
-        nodes.push(<p key={i}>{tr(inline(line, onOpenLink))}</p>);
+        nodes.push(<p key={i}>{tr(inline(line, onOpenLink, imageSession))}</p>);
         i++;
     }
     return <>{tr(nodes)}</>;

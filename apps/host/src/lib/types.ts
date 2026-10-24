@@ -358,6 +358,10 @@ export interface ChatMessage {
   promptTps?: number;
   durationMs?: number;
   error?: string;
+  /** What went wrong, as a code the page acts on (a context error offers its own recovery buttons). */
+  errorCode?: string;
+  /** The engine's own text of the error, kept behind Details. */
+  errorDetail?: string;
   tools?: ToolCall[];
 }
 

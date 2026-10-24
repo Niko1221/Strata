@@ -69,7 +69,36 @@ const SAFE_VERSION = /^(node|python|python3|py|npm|pnpm|git|dotnet|cargo|rustc|g
 const UNSAFE_SYNTAX = /[;&<>`${}()]|\r|\n|--%|\bout-file\b|\bset-content\b|\badd-content\b|\binvoke-|\biex\b|\bstart-|\bnew-|\bremove-|\bcopy-|\bmove-|\brename-|\bclear-|\bset-|\bpush-|\bexpand-|\bsave-|\binstall-|\bcurl\b|\bwget\b|\bsudo\b|\bsh\b|\bbash\b|\bpwsh\b|\bpowershell\b|\bcmd\b|-exec\b|-delete\b|-execdir\b/i;
 
 /**
+ * The command with every quoted text replaced by a plain stand-in, or null when it cannot be read safely. What is inside quotes is data
+ * (a path like "C:\Users\x\Q&A", a pattern like 'a|b'), so an & ; | ( ) < > or { in it must not decide anything. Two things still can:
+ * inside double quotes a $ or a backtick expands (a variable, a sub-command), and an unterminated quote means the text was not understood.
+ * Either one gives null, and the command asks as before.
+ * @param {string} text
+ * @returns {string|null}
+ */
+export function maskQuotes(text) {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c !== '"' && c !== "'") { out += c; continue; }
+    let end = text.indexOf(c, i + 1);
+    // PowerShell writes a quote inside a quoted text by doubling it ('it''s'): the text goes on past the pair.
+    while (end >= 0 && text[end + 1] === c) end = text.indexOf(c, end + 2);
+    if (end < 0) return null;
+    if (c === '"' && /[$`]/.test(text.slice(i + 1, end))) return null;
+    // A quoted text is a whole word. One glued to other characters (--out"put"=f, "a"b) or one that starts with a dash could hide an option from the
+    // word checks below (git diff "--output=f" writes a file), so those are not understood either.
+    const before = text[i - 1], after = text[end + 1];
+    if ((before !== undefined && !/[\s|]/.test(before)) || (after !== undefined && !/[\s|]/.test(after)) || text[i + 1] === '-') return null;
+    out += '"_"';
+    i = end;
+  }
+  return out;
+}
+
+/**
  * Whether a shell command only reads. Conservative by design: one unrecognised word and the answer is no.
+ * Quoted text is data and is looked at after it has been set aside (maskQuotes): Get-ChildItem "C:\Users\x\Q&A" only lists.
  * @param {string} command
  * @returns {boolean}
  */
@@ -77,8 +106,9 @@ export function isReadOnlyShell(command) {
   const text = String(command ?? '').trim();
   if (!text || text.length > 600) return false;
   if (SAFE_VERSION.test(text)) return true;
-  if (UNSAFE_SYNTAX.test(text)) return false;
-  const segments = text.split('|').map(s => s.trim());
+  const masked = maskQuotes(text);
+  if (masked === null || UNSAFE_SYNTAX.test(masked)) return false;
+  const segments = masked.split('|').map(s => s.trim());
   return segments.every((segment) => {
     if (!segment) return false;
     const words = segment.split(/\s+/);
@@ -219,8 +249,13 @@ export function apply(ctx, config = {}) {
   ctx.on('tools/pre-execute', async (exec, next) => {
     const agent = exec.agent;
     if (!agent || exec.name === 'run_code') return next();
+    // Fail closed (T4): a session whose preset cannot be read (a reset in progress, a helper whose chat is gone) is treated as Manual, so
+    // anything this file cannot prove is read-only still asks. It used to run unasked.
     let preset;
-    try { preset = effectivePreset(agent.session); } catch { return next(); }
+    try { preset = effectivePreset(agent.session); } catch (e) {
+      preset = MANUAL_PRESET;
+      try { console.warn(`[strata-gate] could not read the permission mode for this call (${e?.message ?? e}); treating it as Manual`); } catch { /* logging must never decide a permission */ }
+    }
     // A helper that was set to ask while the chat was in Manual must stop asking the moment the chat leaves Manual,
     // so a mode change applies to the very next tool call of a running goal and its helpers.
     if (preset !== MANUAL_PRESET && agent.session.header?.origin === 'subagent' && ctx.approval.overrideOf(agent.session) === 'ask') {

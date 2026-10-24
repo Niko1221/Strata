@@ -29,11 +29,11 @@ inline __m256i rows4(const long long* tab, uint32_t s0, uint32_t s1, uint32_t s2
 }
 
 template <int KB>
-void rows_t(const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt, float* const* out, int r0,
+void rows_t(const int16_t* table, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt, float* const* out, int r0,
             int r1) {
     const int nb = n / 128;
     constexpr size_t bsz = 2 + 4 * KB;
-    const long long* tab = (const long long*) tq_state_table();
+    const long long* tab = (const long long*) table;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* x = w + (size_t) r * row_bytes;
         __m128 acc[kTqMaxTokens];
@@ -77,11 +77,13 @@ void rows_t(const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, in
 
 }  // namespace
 
-void tq_rows_avx2(int kb, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
+void tq_rows_avx2(int kb, const int16_t* table, const uint8_t* w, size_t row_bytes, int n, const TqAct* const* a, int nt,
                   float* const* out, int r0, int r1) {
-    if (kb == 8) rows_t<8>(w, row_bytes, n, a, nt, out, r0, r1);
-    else if (kb == 6) rows_t<6>(w, row_bytes, n, a, nt, out, r0, r1);
-    else rows_t<7>(w, row_bytes, n, a, nt, out, r0, r1);
+    if (kb == 8) rows_t<8>(table, w, row_bytes, n, a, nt, out, r0, r1);
+    else if (kb == 6) rows_t<6>(table, w, row_bytes, n, a, nt, out, r0, r1);
+    else if (kb == 5) rows_t<5>(table, w, row_bytes, n, a, nt, out, r0, r1);   // experimental TQK5X
+    else if (kb == 4) rows_t<4>(table, w, row_bytes, n, a, nt, out, r0, r1);   // experimental TQK4X
+    else rows_t<7>(table, w, row_bytes, n, a, nt, out, r0, r1);
 }
 
 }  // namespace strata::kernels::cpu::tq_detail

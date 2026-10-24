@@ -237,9 +237,12 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         """strata launch, serve, the monitor and the API reach no model host: the names are in setup.py and the install
         tools only (and strata_control.acquisition refuses a download under STRATA_NO_ACQUIRE=1)."""
         hosts = re.compile(r"huggingface\.co|hf-mirror|HF_ENDPOINT|modelscope|hf_hub_download", re.I)
-        # The one harmless mention: the model-card link a benchmark result file names. Nothing opens it. Dropping just
-        # that line from the scan keeps the rule exact for everything else.
-        harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',)
+        # The harmless mentions: the model-card link a benchmark result file names (nothing opens it), and the pinned
+        # DFlash2 drafter address, which only `strata drafting fetch` downloads from, behind acquisition.require (refused
+        # under STRATA_NO_ACQUIRE, so a start or a server never reaches it). Dropping just those lines from the scan keeps
+        # the rule exact for everything else.
+        harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',
+                    'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):
