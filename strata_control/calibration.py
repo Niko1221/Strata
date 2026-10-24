@@ -275,6 +275,8 @@ def measure(ref: str, output: Path, *, exclusive_ack: bool = False, say=print, r
     if not exclusive_ack:
         raise ProfileError("calibration measure requires an exclusive-access acknowledgement")
     path, profile, revision, cfg = _target(ref)
+    if cfg.get("backend") == "metal":                # its tiles replace the file the config names: setup.sh's review only
+        raise ProfileError("a Mac calibrates with ./setup.sh --calibrate", 2)
     with profiles._lock(_lock_name(path)), _managed_exclusive():
         current_path, profile, revision, cfg = _target(ref)
         if current_path != path or (expected_profile_revision is not None and

@@ -333,6 +333,14 @@ class CalibrationFlowTests(unittest.TestCase):
                 calibration.measure("local", output, exclusive_ack=True,
                                     runner=lambda *_a, **_k: self.fail("the sweep must not start"))
 
+    def test_a_mac_config_is_refused(self):
+        # a Mac's tiles go through ./setup.sh --calibrate: measure would replace the file the config names
+        cfg = json.loads(self.config.read_text())
+        self.config.write_text(json.dumps({**cfg, "backend": "metal"}))
+        with self.assertRaisesRegex(profiles.ProfileError, "setup.sh --calibrate"):
+            calibration.measure("local", self.root / "report.json", exclusive_ack=True,
+                                runner=lambda *_a, **_k: self.fail("the sweep must not start"))
+
     def test_calibration_rechecks_reviewed_digests_inside_operation_lock(self):
         report_path = self.root / "pinned-calibration.json"
         with self.assertRaisesRegex(profiles.ProfileError, "source changed after review"):
