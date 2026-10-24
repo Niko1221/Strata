@@ -1,3 +1,10 @@
+- [2026-10-24: RTX 5070 Ti Laptop 12 GB, Ryzen 9 9955HX, 64 GB DDR5](../bench/results/2026-10-24-community-rtx-5070-ti-laptop-12g/README.md):
+  Strata 0.1.46 release (commit a7bdbfdabc9a), Flash-Next IQ3_XXS abliterated (orcarouter Uncensored GGUF), 262,144-token context,
+  --kv int8, expert cache 1745 slots at --vram-reserve-mib 1000 (4.94 GiB), STRATA_ROUTE_RESIDENT=1;
+  3 clean runs each at 396 / 4,187 / 32,857 prompt tokens with a 256-token cap; prompt 376-427 / 893-901 / 978 tok/s,
+  decode medians 92.5 / 90.2 / 97.2 tok/s, draft acceptance 92-100%; documents the 12 GB VRAM-headroom ladder
+  (reserve 1536: 1123 MiB free and 1197 slots; reserve 1000: 455 MiB free at request start, engine warns, #2065)
+  as the binding constraint on a 12 GB card; needle check not measured at submission.
 # Community bench results, index
 
 One row per community folder in this directory (ported for 0.1.40.2 and 0.1.41 from the community bench PRs, authors credited in the commits). Raw dumps, logs and binaries were trimmed from the folders; each trimmed folder has a `TRIMMED.md` listing what was left out. The README in each folder has the full method.
@@ -121,3 +128,4 @@ Notes:
 | [2026-10-10-community-2x-p40-iq3_s](2026-10-10-community-2x-p40-iq3_s/) | 2x Tesla P40 24 GB, Xeon E5-2699 v3, 125 GB RAM, Ubuntu 22.04 | Flash-Next IQ3_S, 131K, layer split | 350 / 558 (3.9K / 21.9K) | 35.0 (short prompt); needles 6/6 at 32K and 128K | 0.1.41 (source build) | #1799 |
 | [2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141](2026-10-09-community-rtx-5060ti-wsl2-iq3_s-0141/) | RTX 5060 Ti 16 GB (PCIe 4.0 x8), Ryzen 7 3700X, 128 GB RAM, WSL2 | Flash-Next IQ3_S, 131K, experimental speed projection | 343 / 598 (3.8K / 19.2K), single runs | 48.2 / 47.7 (1,400 / 1,284 tokens), single runs | 0.1.41 | #1751 |
 | [2026-10-08-community-rtx4070-iq2-xs](2026-10-08-community-rtx4070-iq2-xs/) | RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4, Windows 11 | Flash-Next IQ2_XS, 100K cells, q4_0 KV, adaptive cache E4/S24 | 28,912-token prompt (not redistributed) | 48.23 (accepted-decode median of 5); a modified, locally built engine, not an official release | modified local build (provenance.json) | #1739 |
+| [2026-10-24-community-rtx-5070-ti-laptop-12g](2026-10-24-community-rtx-5070-ti-laptop-12g/) | RTX 5070 Ti Laptop 12 GB, Ryzen 9 9955HX, 64 GB DDR5-5600, Windows 11 | IQ3_XXS (abliterated, orcarouter Uncensored) | 376-427 (396) / 893-901 (4,187) / 978 (32,857) | short 92.5-96.2 / 4K 86.1-94.2 / 32K 97.2 (fresh 256-token runs; drafts 92-100%) | 0.1.46 (a7bdbfdabc9a) | - |
