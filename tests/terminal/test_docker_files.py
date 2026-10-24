@@ -54,6 +54,16 @@ class Scripts(unittest.TestCase):
             self.assertTrue((ctx / "Dockerfile").is_file())
             self.assertTrue((ctx / "terminal-src" / "docs" / "TERMINAL_LAUNCH.md").is_file())
             self.assertTrue((ctx / "engine" / "pkg" / "engine-component.json").is_file())
+            # the bundle reads tools/ modules by path as well (INSTALLER_SCRIPTS), and the DeepSeek ones are nested: every name must be in the
+            # context, or package_terminal.py stops the build at "installer tool missing: tools/<name>.py" (the image build after v0.2.4.1 was broken this way)
+            pt = ast.parse((ROOT / "packaging" / "package_terminal.py").read_text(encoding="utf-8"))
+            tools: set[str] = set()
+            for node in pt.body:
+                if isinstance(node, ast.Assign) and any(getattr(t, "id", "") in ("INSTALLER_TOOLS", "INSTALLER_SCRIPTS") for t in node.targets):
+                    tools.update(ast.literal_eval(node.value))
+            self.assertTrue({"dsv41/pack_gguf", "dsv41/tune"} <= tools)          # the nested ones this assertion exists for
+            for name in sorted(tools):
+                self.assertTrue((ctx / "terminal-src" / "tools" / f"{name}.py").is_file(), f"build.sh did not copy tools/{name}.py into the context")
 
     def test_scripts_use_unix_line_ends(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "publish.sh"):
