@@ -30,6 +30,7 @@ class KeepAwake:
         self._cond = threading.Condition()
         self._closed = False
         self._thread = None
+        self._primed = False
 
     @classmethod
     def create(cls, enabled: bool, say=print):
@@ -45,10 +46,15 @@ class KeepAwake:
             say(f'[strata] "prevent_sleep" could not be set up: {e}', flush=True)
             return None
         atexit.register(ka.close)
+        ka._start()   # the daemon waits on the condition from the start, so a fast request (acquire then release
+                      # before the thread would otherwise exist) cannot lose the transient count>0 transition
         say('[strata] prevent_sleep: Windows stays awake while a request is running or queued', flush=True)
         return ka
 
     def _loop(self):
+        with self._cond:
+            self._primed = True
+            self._cond.notify_all()
         held = False
         while True:
             with self._cond:
@@ -71,6 +77,10 @@ class KeepAwake:
         if self._thread is None:
             self._thread = threading.Thread(target=self._loop, daemon=True, name="keep-awake")
             self._thread.start()
+            # the OS thread may not have entered _loop yet; wait until it signals it has, so a request that
+            # finishes fast (acquire then release before the thread exists) cannot miss the transient hold
+            while not self._primed:
+                self._cond.wait()
 
     def acquire(self):
         with self._cond:
