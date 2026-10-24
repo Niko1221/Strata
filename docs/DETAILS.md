@@ -2545,4 +2545,21 @@ CUDA card, where it measured +1..3 % prompt speed on a Tesla P100 at 30-60K toke
 
 Options that change answers (other summation order) are separate and explicit: `STRATA_SELECT_SIMT=1|2` (FP32 tiled block scorer,
 KL 0.01 against the warp scorer per #2071), `STRATA_PA_V2T=1` (v2 prompt attention, #2092/#2146), `STRATA_PF_FUSED=1
-STRATA_PF_FUSED_SM75=1` (fused int8 prompt experts for the Q2_0 pack, #2145; only on a 7.5 card, sm_80+ is unchanged), `STRATA_BF16_TC=1` with `STRATA_XN_F16` (#2091).
+STRATA_PF_FUSED_SM75=1` (fused int8 prompt experts for the Q2_0 pack, #2145; only on a 7.5 card, sm_80+ is unchanged), `STRATA_PF_FUSED_Q2N=1` (the native Q2_0 pack's prompt experts on sm_80+, below), `STRATA_BF16_TC=1` with `STRATA_XN_F16` (#2091).
+
+### The native Q2_0 pack's prompt experts on the fused int8 kernels (`STRATA_PF_FUSED_Q2N=1`, opt-in, sm_80+)
+
+A PC whose CPU lacks the AVX-512 set setup looks for gets the native Q2_0 pack, and on a CUDA card of sm_80 or newer its
+Q2_0 / Q2_0 layers read prompts through MMQ's Q2_0 kernel: #2145's fused kernel for that format is set up only on a 7.5 card
+(above). `STRATA_PF_FUSED_Q2N=1` sets it up on any sm_80+ card and takes it for those layers, under its own variable so that
+`STRATA_PF_FUSED=1` keeps its bits. Unset, the engine is unchanged (first-token logits byte-identical to the 0.2.2 engine on
+40 prompts of 1-5K tokens).
+
+Measured on an RTX 5080 16 GB (sm_120, Linux, CUDA 13.0), i9-14900K, 2,100 of the experts in VRAM, the CPU prompt share off,
+against the same build unset: at the same 4,864-token chunk (4 interleaved rounds) the fused path reads 4K, 16K and 23K
+prompts 2-3.5% faster (4/4 rounds each; it also gets the 512-slot ring). With `--prefill auto` (5 rounds) its smaller buffers
+make the chunk 5,632 tokens instead of 4,864, and the 16K prompt reads 32-33% faster (2,592 -> 3,438 tok/s), the 23K one 14%,
+a 4K one 0-2% (one chunk either way). Per layer (`prefill_fused_iq_test`, Q2_0 / Q2_0) the fused path is 1.92x / 1.37x / 1.30x
+the MMQ path at 2,048 / 4,864 / 8,192 tokens, with MMQ's error against FP32. First-token KL against the FP16 prompt path over
+30 prompts of 1.5-4.6K tokens (one chunk each): 0.0110 (MMQ 0.0112), top-1 28/30 (MMQ 29/30). Not measured: a card that holds
+every expert, other sm_80+ cards, Windows, the generated text.
