@@ -944,6 +944,7 @@ class OutputParser:
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
         self.recover = recover
+        self.alt_end = ""            # the closer `</NAME>` of a call opened as `<NAME>`
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._reset_scan()
@@ -1419,6 +1420,8 @@ class OutputParser:
                         return out
                     if loose:                            # #3441: `<=NAME>` etc. is `<function=NAME>`
                         at = len(self.buf) - len(after)
+                        if self.recover and re.match(r"<\s*[A-Za-z0-9_.\-]+\s*>", after):
+                            self.alt_end = "</" + loose[0] + ">"       # `<NAME>` opener: its closer may be `</NAME>`
                         self.buf = self.buf[:at] + FUNC_START + loose[0] + ">" + after[loose[1]:]
                         continue
                 kind = self._follower(after) if self.recover else None
@@ -1504,6 +1507,8 @@ class OutputParser:
                         elif after and not CALL_END.startswith(after):
                             drop = 0
                 else:
+                    if self.alt_end:
+                        self.buf = re.sub(r"(</parameter>\s*)" + re.escape(self.alt_end), r"\1" + FUNC_END, self.buf)
                     i = self._wrapped_call_end()
                     if i >= 0:
                         drop = len(CALL_END)
@@ -1532,6 +1537,7 @@ class OutputParser:
                 body = self.buf[:i]
                 self.buf = self.buf[i + drop:]
                 batch, self.batch = self.batch, False
+                self.alt_end = ""
                 out += self._finish_call(body)
                 if batch and out[-1].kind == "tool_call":
                     self.state, self.lead = "call", False
