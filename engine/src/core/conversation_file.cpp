@@ -1056,11 +1056,18 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
         return l.max_file_bytes;
     for (uint64_t b : l.max_state_bytes) if (b == open) return l.max_file_bytes;
     if (l.max_kv_bytes.size() < l.max_kv_layers) return l.max_file_bytes;
-    // one checkpoint: ids (8 + 4 per token), images (8 + 16 per image), five state arrays (8 + bytes), used (8)
-    uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
-    for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
-    cp = sat_add(cp, 16);                                        // v2: used and the checkpoint's own stage-parts count
-    cp = sat_add(cp, sat_mul(l.max_stages, cp));                 // v2: one part per admitted stage, same record shape
+    // One checkpoint record over a carve's state sizes `sb`: ids (8 + 4 per token), images (8 + 16 per image),
+    // five state arrays (8 + bytes), and the two u64 fields v2 adds to every record (used, stage-parts count).
+    const auto cp_over = [&](const std::array<uint64_t, 5>& sb) {
+        uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
+        for (uint64_t b : sb) cp = sat_add(cp, sat_add(8, b));
+        return sat_add(cp, 16);
+    };
+    if (l.max_stage_state_bytes.size() < l.max_stages) return l.max_file_bytes;
+    // v2: every checkpoint carries the main record plus one part per admitted stage, each part budgeted with
+    // the stage's OWN state bounds (later carves differ from the main one).
+    uint64_t cp = cp_over(l.max_state_bytes);
+    for (size_t k = 0; k < l.max_stages && k < l.max_stage_state_bytes.size(); ++k) cp = sat_add(cp, cp_over(l.max_stage_state_bytes[k]));
     uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
     n = sat_add(n, sat_add(8, sat_mul(l.max_stages, 40)));        // stage table (v2): count + 40 bytes per entry
     n = sat_add(n, cp);                                            // live
