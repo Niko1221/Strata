@@ -67,19 +67,33 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
-  
-- [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
-  Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
-  `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
-  +5% on prompt reading; `--batch` gives no aggregate gain, 2400 → 3600 MT/s RAM is +2%, `--kv-resident` neutral.
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+
+## Run the standard benchmark
+
+```sh
+strata bench run --profile NAME --track default --track-notes "release 0.2.1, setup defaults"
+strata bench run --url http://127.0.0.1:8080          # a server that is already running
+```
+
+With `--profile` the command starts that profile's engine, waits for the model, runs the protocol and stops the engine. With `--url`
+it uses the server that is running. Start from a freshly loaded engine and close other programs that use the GPU: the
+protocol counts a second run against the same engine as reuse of the cache and marks it `nonconforming`. The command prints a
+summary when it ends and writes a folder `<date>-standard-<gpu>-<run id>` with `README.md`, `results.json`, `outputs.jsonl`,
+the settings, the chat template and, when it started the engine, the engine log. `strata bench report FOLDER` shows it again.
+
+A run is `complete`, `partial` (something was skipped or cancelled) or `nonconforming` (for example a remote server, a missing
+commit or model hash, or reused prompt text). A complete run can still fail sanity checks; low scores and slow hardware are valid
+results. The runner does not know the quantization repository's revision, the original weights' revision or what else ran on the
+machine: pass `--model-revision`, `--source-revision` and `--background`, or the result says `null` with a reason. To share
+a result, follow [Submit and review](BENCHMARK_PROTOCOL.md#submit-and-review) in the protocol, not the pull request steps below.
 
 ## Run the benchmark
 
 The simplest report is one command after setup. Windows: double-click `BENCH.bat`. Linux: `./bench.sh`. Or
 `python tools/strata_bench.py` from the Strata folder. Setup also offers it at the end of an interactive install
-(default no). The Terminal's `strata bench run` ([TERMINAL.md](TERMINAL.md)) is a different tool: it measures serving suites and
-writes JSON evidence for your own comparisons, but not the `README.md` report in this format and not the draft standard protocol.
+(default no). The Terminal's `strata bench run` runs the standard benchmark (next section); its `--suite serving-smoke` and
+other serving suites ([TERMINAL.md](TERMINAL.md)) write JSON evidence for your own comparisons, not a report in this format.
 
 It starts the model with the settings you already have (the newest `strata-*.json`; `--config FILE` picks another one),
 or uses a Strata server that is already running on that port (`--url http://127.0.0.1:8080` for another address). It then
@@ -100,6 +114,10 @@ latency are measured by the client. Thinking is off for the suite so the answers
 Close other programs first: a browser or a game changes the numbers.
 
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
+- [2026-10-19: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 64 GB RAM](../bench/results/2026-10-19-community-2x-mi50-5700x/README.md):
+  Strata v0.1.43.1 gfx906 source build, Flash-Next IQ3_XXS, 131,072-token context, layer split across both cards;
+  `--pipeline-windows 2` +36% decode (49.2 → 66.9 tok/s) with the prompt rate unchanged, `--trim-stage-weights`
+  +5% on prompt reading; `--batch` gives no aggregate gain, 2400 → 3600 MT/s RAM is +2%, `--kv-resident` neutral.
 - [2026-10-25: 2x AMD Instinct MI50 16 GB (gfx906), Ryzen 7 5700X, 128 GB RAM](../bench/results/2026-10-25-community-2x-mi50-iq4xs/README.md):
   Strata 0.2.1 (engine 0.1.46) gfx906 source build, IQ3_S at 131,072 tokens and UD-IQ4_XS at 262,144;
   decode 73.7 / 57.5 tok/s and prompt 691 / 533 tok/s at a 31K prompt, 140,908-token prompt read at 546 tok/s
