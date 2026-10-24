@@ -1,0 +1,346 @@
+TAP version 13
+# Subtest: only the update step may acquire: Control keeps STRATA_NO_ACQUIRE unless `acquire` is asked for
+ok 1 - only the update step may acquire: Control keeps STRATA_NO_ACQUIRE unless `acquire` is asked for
+  ---
+  duration_ms: 0.9984
+  type: 'test'
+  ...
+# Subtest: an updated Control wins only when it is newer than the bundled one, and only when whole
+ok 2 - an updated Control wins only when it is newer than the bundled one, and only when whole
+  ---
+  duration_ms: 39.0851
+  type: 'test'
+  ...
+# Subtest: runCli streams JSON lines as events and returns the last record; `acquire` reaches the environment
+ok 3 - runCli streams JSON lines as events and returns the last record; `acquire` reaches the environment
+  ---
+  duration_ms: 1.0781
+  type: 'test'
+  ...
+# Subtest: createControl: the update calls ask the explicit commands; a failed step carries its message and exit code
+ok 4 - createControl: the update calls ask the explicit commands; a failed step carries its message and exit code
+  ---
+  duration_ms: 0.6062
+  type: 'test'
+  ...
+# Subtest: the Settings update check maps the feed to the existing result shape
+ok 5 - the Settings update check maps the feed to the existing result shape
+  ---
+  duration_ms: 1.7605
+  type: 'test'
+  ...
+# Subtest: the shell bridge client exists only inside the desktop app, speaks to loopback with the token, and polls to the end
+ok 6 - the shell bridge client exists only inside the desktop app, speaks to loopback with the token, and polls to the end
+  ---
+  duration_ms: 12.7686
+  type: 'test'
+  ...
+# Subtest: packaged: "Update engine" runs the explicit component update, shows its progress, and then offers the rollback
+ok 7 - packaged: "Update engine" runs the explicit component update, shows its progress, and then offers the rollback
+  ---
+  duration_ms: 51.2181
+  type: 'test'
+  ...
+# Subtest: packaged: progress events become the existing job summary and download bar
+ok 8 - packaged: progress events become the existing job summary and download bar
+  ---
+  duration_ms: 60.1747
+  type: 'test'
+  ...
+# Subtest: packaged: no update while a model is loaded; calibration is still refused
+ok 9 - packaged: no update while a model is loaded; calibration is still refused
+  ---
+  duration_ms: 111.6158
+  type: 'test'
+  ...
+# Subtest: packaged: "Update Strata" updates Control through the feed, then the app through the shell
+ok 10 - packaged: "Update Strata" updates Control through the feed, then the app through the shell
+  ---
+  duration_ms: 24.0854
+  type: 'test'
+  ...
+# Subtest: without the shell bridge "Update Strata" still updates Control and says nothing false about the app
+ok 11 - without the shell bridge "Update Strata" still updates Control and says nothing false about the app
+  ---
+  duration_ms: 26.6594
+  type: 'test'
+  ...
+# Subtest: packaged: opening the app, listing models and loading one never reach the update step
+ok 12 - packaged: opening the app, listing models and loading one never reach the update step
+  ---
+  duration_ms: 41.8247
+  type: 'test'
+  ...
+# Subtest: plain words in the app: codes, hashes and exit codes stay in details, never in the main text
+ok 13 - plain words in the app: codes, hashes and exit codes stay in details, never in the main text
+  ---
+  duration_ms: 0.8841
+  type: 'test'
+  ...
+# Subtest: a failed update job shows plain words and keeps the technical reason as details
+ok 14 - a failed update job shows plain words and keeps the technical reason as details
+  ---
+  duration_ms: 26.3945
+  type: 'test'
+  ...
+# Subtest: offline, the signed-feed check says there is no internet connection in plain words and keeps the reason in details
+ok 15 - offline, the signed-feed check says there is no internet connection in plain words and keeps the reason in details
+  ---
+  duration_ms: 0.319
+  type: 'test'
+  ...
+# Subtest: the app updater and the host never reach the network by themselves: only check() does
+ok 16 - the app updater and the host never reach the network by themselves: only check() does
+  ---
+  duration_ms: 0.2766
+  type: 'test'
+  ...
+# Subtest: a later finished update of the same component settles the interruption, in any array order, and the records are untouched
+ok 17 - a later finished update of the same component settles the interruption, in any array order, and the records are untouched
+  ---
+  duration_ms: 0.2426
+  type: 'test'
+  ...
+# Subtest: no retry: the interruption stays an ordinary failure
+ok 18 - no retry: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0531
+  type: 'test'
+  ...
+# Subtest: running retry: the interruption stays an ordinary failure
+ok 19 - running retry: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0345
+  type: 'test'
+  ...
+# Subtest: cancelled retry: the interruption stays an ordinary failure
+ok 20 - cancelled retry: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0315
+  type: 'test'
+  ...
+# Subtest: success before the interruption: the interruption stays an ordinary failure
+ok 21 - success before the interruption: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0269
+  type: 'test'
+  ...
+# Subtest: same time: the interruption stays an ordinary failure
+ok 22 - same time: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0298
+  type: 'test'
+  ...
+# Subtest: invalid time: the interruption stays an ordinary failure
+ok 23 - invalid time: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0307
+  type: 'test'
+  ...
+# Subtest: other component: the interruption stays an ordinary failure
+ok 24 - other component: the interruption stays an ordinary failure
+  ---
+  duration_ms: 0.0244
+  type: 'test'
+  ...
+# Subtest: an ordinary failure is never settled, and an invalid interruption time stays a failure
+ok 25 - an ordinary failure is never settled, and an invalid interruption time stays a failure
+  ---
+  duration_ms: 0.0582
+  type: 'test'
+  ...
+# Subtest: NativeOperations: later successful App update turns the interrupted warning into retained history
+ok 26 - NativeOperations: later successful App update turns the interrupted warning into retained history
+  ---
+  duration_ms: 6.9945
+  type: 'test'
+  ...
+# Subtest: NativeOperations: recovered Engine history does not hide an unresolved App update
+ok 27 - NativeOperations: recovered Engine history does not hide an unresolved App update
+  ---
+  duration_ms: 1.6617
+  type: 'test'
+  ...
+# Subtest: NativeOperations: no completed retry keeps the interrupted warning active
+ok 28 - NativeOperations: no completed retry keeps the interrupted warning active
+  ---
+  duration_ms: 0.8381
+  type: 'test'
+  ...
+# Subtest: NativeOperations: running retry keeps the interrupted warning active
+ok 29 - NativeOperations: running retry keeps the interrupted warning active
+  ---
+  duration_ms: 0.8768
+  type: 'test'
+  ...
+# Subtest: NativeOperations: cancelled retry keeps the interrupted warning active
+ok 30 - NativeOperations: cancelled retry keeps the interrupted warning active
+  ---
+  duration_ms: 0.4772
+  type: 'test'
+  ...
+# Subtest: NativeOperations: success before interruption keeps the interrupted warning active
+ok 31 - NativeOperations: success before interruption keeps the interrupted warning active
+  ---
+  duration_ms: 0.4523
+  type: 'test'
+  ...
+# Subtest: NativeOperations: same timestamp keeps the interrupted warning active
+ok 32 - NativeOperations: same timestamp keeps the interrupted warning active
+  ---
+  duration_ms: 0.525
+  type: 'test'
+  ...
+# Subtest: NativeOperations: invalid success time keeps the interrupted warning active
+ok 33 - NativeOperations: invalid success time keeps the interrupted warning active
+  ---
+  duration_ms: 0.4672
+  type: 'test'
+  ...
+# Subtest: NativeOperations: other component keeps the interrupted warning active
+ok 34 - NativeOperations: other component keeps the interrupted warning active
+  ---
+  duration_ms: 0.6255
+  type: 'test'
+  ...
+# Subtest: NativeOperations: an ordinary update failure and a later failure remain active
+ok 35 - NativeOperations: an ordinary update failure and a later failure remain active
+  ---
+  duration_ms: 1.2486
+  type: 'test'
+  ...
+# Subtest: NativeOperations: array order does not change recovery and invalid interruption time remains an alert
+ok 36 - NativeOperations: array order does not change recovery and invalid interruption time remains an alert
+  ---
+  duration_ms: 0.9346
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: later successful App update turns the interrupted warning into retained history
+ok 37 - SettingsUpdates: later successful App update turns the interrupted warning into retained history
+  ---
+  duration_ms: 10.8399
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: recovered Engine history does not hide an unresolved App update
+ok 38 - SettingsUpdates: recovered Engine history does not hide an unresolved App update
+  ---
+  duration_ms: 1.1404
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: no completed retry keeps the interrupted warning active
+ok 39 - SettingsUpdates: no completed retry keeps the interrupted warning active
+  ---
+  duration_ms: 0.7694
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: running retry keeps the interrupted warning active
+ok 40 - SettingsUpdates: running retry keeps the interrupted warning active
+  ---
+  duration_ms: 0.8243
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: cancelled retry keeps the interrupted warning active
+ok 41 - SettingsUpdates: cancelled retry keeps the interrupted warning active
+  ---
+  duration_ms: 1.673
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: success before interruption keeps the interrupted warning active
+ok 42 - SettingsUpdates: success before interruption keeps the interrupted warning active
+  ---
+  duration_ms: 0.7085
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: same timestamp keeps the interrupted warning active
+ok 43 - SettingsUpdates: same timestamp keeps the interrupted warning active
+  ---
+  duration_ms: 0.657
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: invalid success time keeps the interrupted warning active
+ok 44 - SettingsUpdates: invalid success time keeps the interrupted warning active
+  ---
+  duration_ms: 0.6447
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: other component keeps the interrupted warning active
+ok 45 - SettingsUpdates: other component keeps the interrupted warning active
+  ---
+  duration_ms: 0.8356
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: an ordinary update failure and a later failure remain active
+ok 46 - SettingsUpdates: an ordinary update failure and a later failure remain active
+  ---
+  duration_ms: 1.7518
+  type: 'test'
+  ...
+# Subtest: SettingsUpdates: array order does not change recovery and invalid interruption time remains an alert
+ok 47 - SettingsUpdates: array order does not change recovery and invalid interruption time remains an alert
+  ---
+  duration_ms: 2.1827
+  type: 'test'
+  ...
+# Subtest: item 1: downloaded models get a short name, family and quantization
+ok 48 - item 1: downloaded models get a short name, family and quantization
+  ---
+  duration_ms: 8.8663
+  type: 'test'
+  ...
+# Subtest: item 2: Diagnostics has one button, View logs; Save logs lives in the logs view
+ok 49 - item 2: Diagnostics has one button, View logs; Save logs lives in the logs view
+  ---
+  duration_ms: 0.4589
+  type: 'test'
+  ...
+# Subtest: item 4: the Monitor sentence is plain words; the screenshot leaves out the model state and the conversation cache
+ok 50 - item 4: the Monitor sentence is plain words; the screenshot leaves out the model state and the conversation cache
+  ---
+  duration_ms: 134.2318
+  type: 'test'
+  ...
+# Subtest: items 6, 7, 8: Bypass permissions everywhere, no deleted-tasks list or suggestions, a + icon, and a plain "Task removed"
+ok 51 - items 6, 7, 8: Bypass permissions everywhere, no deleted-tasks list or suggestions, a + icon, and a plain "Task removed"
+  ---
+  duration_ms: 3.7872
+  type: 'test'
+  ...
+# Subtest: a saved check is read back for the same installed versions
+ok 52 - a saved check is read back for the same installed versions
+  ---
+  duration_ms: 0.2176
+  type: 'test'
+  ...
+# Subtest: a check made for other versions is ignored, so an old "Update available" does not linger after an update
+ok 53 - a check made for other versions is ignored, so an old "Update available" does not linger after an update
+  ---
+  duration_ms: 0.042
+  type: 'test'
+  ...
+# Subtest: a new Control version, or a version that is not known yet, hides the old result
+ok 54 - a new Control version, or a version that is not known yet, hides the old result
+  ---
+  duration_ms: 0.0379
+  type: 'test'
+  ...
+# Subtest: unreadable or blocked storage is harmless
+ok 55 - unreadable or blocked storage is harmless
+  ---
+  duration_ms: 0.1937
+  type: 'test'
+  ...
+# Subtest: opening the Engine and Update settings makes no update call: only a button press does
+ok 56 - opening the Engine and Update settings makes no update call: only a button press does
+  ---
+  duration_ms: 3.3072
+  type: 'test'
+  ...
+1..56
+# tests 56
+# suites 0
+# pass 56
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1233.2717

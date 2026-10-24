@@ -20,3 +20,10 @@ export function jobErrorText(job: NativeJob, jobs: readonly NativeJob[]): string
     ? 'This update was cut short when the app restarted. A later update finished, so nothing needs doing.'
     : job.error ?? job.summary;
 }
+
+/** Present confirmed recovery as retained history, using the host's shared classification. */
+export function nativeJobDiagnostics(jobs: readonly NativeJob[]) {
+  const recoveredIds = recoveredInterruptions(jobs);
+  return { errors: jobs.filter(job => job.state === 'error' && !recoveredIds.has(job.id)),
+    recovered: jobs.filter(job => recoveredIds.has(job.id)) };
+}

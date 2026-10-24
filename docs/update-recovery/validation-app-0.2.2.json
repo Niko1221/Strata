@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "date": "2026-10-22",
+  "platform": "Windows x64",
+  "node": "v24.12.0",
+  "appVersion": "0.2.2",
+  "upstreamBase": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+  "testedMerge": "b1cab16e396f6b2512bbd164d942a281e7f83152",
+  "priorHead": "bd8a6770b0fe5ede2584753458fb711113597223",
+  "sourceSha256": {
+    "apps/host/src/components/NativeOperations.tsx": "df617fa6ea83ea46e852ebb7381c14048288bd922a44344669f72170d1db6535",
+    "apps/host/src/components/RecoveredUpdateHistory.tsx": "fe79e31067b8465102d551f16e24ea3ee67395997aea2572bd0e4ab2b30b668a",
+    "apps/host/src/components/SettingsUpdates.tsx": "117c998207b1870b1dcbfd9fde3b0a3a80c79f9d0d32b3382d429a4bba4ec8f3",
+    "apps/host/src/lib/native-job-diagnostics.ts": "29f48d5f83a11606cd4563985c103272e11d0466b684ca9f3514374dad5204cb",
+    "apps/host/tests/native-update-recovery.test.mjs": "1af75bbfa0c3a30b087d250f2ed9ab1a489736cb818825f62dc65dccde8eee60",
+    "apps/host/src/lib/native.ts": "cfd54a2895c76e0d9888b003ed14af3b71a3f9d08cbc40b45297a3e033a92ecb",
+    "apps/host/src/lib/types.ts": "ea4b9c8867e8510aa6887372756cfdae1d1d3df939e56ff8245d3ba58703b348",
+    "apps/host/src/lib/update-cache.ts": "2884148479860ce48413127731081113b0ae4428828df0a72d790b24458d8804",
+    "apps/host/package.json": "17bdd14a35104747bb00507e449554da993edd54aa8b5a77b735ab32fb6435a9",
+    "apps/host/package-lock.json": "f63801c25d8f51cc61708d7018d25dc1058886b8813571437626ac8e038d5ef3"
+  },
+  "validation": {
+    "affectedTests": {
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0,
+      "tapSha256": "d80bbb899b4d7ec7ee5d65d41c10d746dffe2d070489ce710f728cb0d628f3cd"
+    },
+    "typecheck": "passed",
+    "build": "passed",
+    "diffCheck": "passed"
+  },
+  "fixture": {
+    "builtDistIndexSha256": "4192691485f3c9aaf5a4872efc1745090448baf6279c6a436c55c5c14b04445e",
+    "scriptSha256": "1bbf0620ecdf0c0d210b3900bee2d8151cb5d5ba4cb920a47019690df2f0830e",
+    "appVersion": "0.2.2",
+    "engineVersion": "0.1.47",
+    "hardware": "synthetic",
+    "jobs": "synthetic interrupted update followed by later completed update",
+    "mutationHttpStatus": 501,
+    "backendStarted": false
+  },
+  "observed": {
+    "engineHistoryVisible": true,
+    "aboutHistoryVisible": true,
+    "bothExpandedOriginalInterruption": true,
+    "activeRecoveredAlert": false,
+    "aboutAppVersion": "0.2.2",
+    "inputJobsUnchangedInRepositoryTests": true
+  },
+  "screenshots": [
+    {
+      "file": "engine-history-0.2.2.jpg",
+      "sha256": "0d20608fec28bf29fc36e5f69f5fc69e991320e324f70e1b3646790288a235e7",
+      "width": 1280,
+      "height": 720,
+      "kind": "anonymous browser fixture of built App0.2.2 UI",
+      "exifXmpIptcCommentMetadata": false
+    },
+    {
+      "file": "about-history-0.2.2.jpg",
+      "sha256": "ba3f398d3a20eee4abcc74fa286e0293ead685a2e4f0cc06243f3070ba61111e",
+      "width": 1280,
+      "height": 720,
+      "kind": "anonymous browser fixture of built App0.2.2 UI",
+      "exifXmpIptcCommentMetadata": false
+    }
+  ],
+  "cleanup": {
+    "qaTabClosed": true,
+    "fixturePortClosed": true,
+    "fixtureExitCode": 0
+  },
+  "limits": [
+    "No real updater/installer restart, signed install, native shell or GPU/model execution",
+    "Synthetic records establish classification/rendering, not a successful installation",
+    "Current main merged normally; no dependency versions changed (only root App version metadata changed)"
+  ]
+}
