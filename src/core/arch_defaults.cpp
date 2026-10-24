@@ -74,9 +74,15 @@ bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows) {
 }
 
 bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows, bool on) {
-    if (!on || windows || !integrated || !strata::kernels::gfx_arch_is(gcn_arch, "gfx1103")) return false;
+    if (!integrated) return false;
     const char* reg = std::getenv("STRATA_UMA_REGISTER");
-    return !(reg != nullptr && reg[0] == '1');
+    if (reg != nullptr && reg[0] == '1') return false;
+    // 0.2.1.2: a Strix Halo (gfx1151) on Windows.  Registering the 47 GiB arena with the driver took ALL the free VRAM (91 GiB before,
+    // 0 after; BIOS carve-out 64 GB + 32 GB shared): the expert cache got 0 slots and the engine exited ("the embedding buffer
+    // failed"), 3 of 3 starts (notes-022-strix.md).  Unregistered, the arena is held by the working-set lock and the cache gets
+    // 24,576 slots.  Independent of `on` (that is the 780M's opt-in).  STRATA_ARENA_PIN_GIB=N / 0 still registers it.
+    if (windows) return strata::kernels::gfx_arch_is(gcn_arch, "gfx1151");
+    return on && strata::kernels::gfx_arch_is(gcn_arch, "gfx1103");
 }
 
 std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated) {

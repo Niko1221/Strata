@@ -298,6 +298,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -353,6 +358,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -404,8 +414,17 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -448,15 +467,24 @@
     "131072",
     "--kv",
     "int8",
-    "--mmap-experts",
+    "--resident-experts",
     "--vision",
     "--vram-reserve-mib",
     "700"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -509,6 +537,10 @@
    },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
+   "gpu_roles": {
+    "0": "main",
+    "1": "off"
+   },
    "gpus_asked": true,
    "lib_dirs": [
     "<cuda>"
@@ -561,6 +593,11 @@
     0,
     1
    ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
    "layer_split": "auto",
    "lib_dirs": [
@@ -611,8 +648,17 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -660,8 +706,17 @@
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
@@ -684,11 +739,11 @@
   "config": {
    "args": [
     "--pack",
-    "<T>/data/packs/iq3_s",
+    "<T>/data/packs/iq3_xxs",
     "--native",
-    "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "--ple-gguf",
-    "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
     "--expert-profile",
     "<T>/data/expert-profile.bin",
     "--expert-cache",
@@ -705,26 +760,35 @@
     "65536",
     "--kv",
     "int8",
-    "--mmap-experts",
+    "--resident-experts",
     "--vision"
    ],
    "cwd": "<T>",
    "exe": "<T>/engine/<EXE>",
-   "gpu": 0,
+   "gpu": [
+    0,
+    1
+   ],
+   "gpu_order": "as_given",
+   "gpu_roles": {
+    "0": "helper",
+    "1": "main"
+   },
    "gpus_asked": true,
+   "layer_split": "auto",
    "lib_dirs": [
     "<cuda>"
    ],
-   "log": "<T>/strata-iq3_s.log",
-   "model_name": "qwen3.8-flash-next-iq3_s",
+   "log": "<T>/strata-iq3_xxs.log",
+   "model_name": "qwen3.8-flash-next-iq3_xxs",
    "port": 8080,
-   "tokenizer": "<T>/data/packs/iq3_s/tokenizer",
+   "tokenizer": "<T>/data/packs/iq3_xxs/tokenizer",
    "vision": {
     "exe": "<T>/engine/strata-vision.exe",
     "gpu": false,
     "max_tokens": 300,
     "mmproj": "<T>/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
-    "model": "<T>/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "model": "<T>/models/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "threads": 6
    }
   }
@@ -763,6 +827,10 @@
    },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
+   "gpu_roles": {
+    "0": "main",
+    "1": "off"
+   },
    "gpus_asked": true,
    "lib_dirs": [
     "<cuda>"

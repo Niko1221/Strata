@@ -5,13 +5,13 @@
 #
 # Build it with docker/build.sh (it assembles the build context: the Terminal sources and the package folder):
 #
-#     docker/build.sh --flavor cuda --engine /path/to/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.1-cuda13
+#     docker/build.sh --flavor cuda --engine /path/to/0.1.45.3-linux-x86_64-cuda-cuda13 --tag strata:0.2.3-cuda13
 #
 # Plain `docker build` also works when the context folder has this layout (build.sh makes it):
 #     terminal-src/   the files package_terminal.py needs (packaging/, strata_cli/, strata_control/, serve/, tools/, data/, ...)
 #     engine/         one folder per engine package, exactly as `package_engine.py` wrote it (engine-component.json inside)
 #     docker/         entrypoint.sh, strata-wrapper.sh, healthcheck.sh
-#   docker build --build-arg FLAVOR=cuda -t strata:0.2.1-cuda13 -f Dockerfile <context>
+#   docker build --build-arg FLAVOR=cuda -t strata:0.2.3-cuda13 -f Dockerfile <context>
 #
 # FLAVOR picks the small set of system libraries the runtime image adds and its base:
 #   cuda  NVIDIA: the engine package carries cudart/cublas; the driver's libcuda comes from nvidia-container-toolkit
@@ -31,6 +31,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY terminal-src/ /src/
+# the sources have no .git here (and the image has no git): build.sh passes the commit they are from, package_terminal.py writes it to COMMIT
+ARG STRATA_COMMIT=
+ENV STRATA_BUILD_COMMIT=${STRATA_COMMIT}
 RUN python3 /src/packaging/package_terminal.py --out /out --cache /cache \
  && mkdir -p /opt/strata \
  && tar -xzf /out/strata-terminal-*-linux-x86_64.tar.gz -C /opt/strata \

@@ -113,6 +113,14 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _file_words(exc: BaseException) -> str:
+    try:
+        from strata_control import longpath
+    except ImportError:                                 # the standalone monitor bundle does not carry strata_control
+        return f"local file operation failed ({type(exc).__name__})"
+    return longpath.file_words(exc)
+
+
 def _error(message: str, code: int, machine: bool) -> int:
     if machine:
         print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": code, "message": message}}))
@@ -184,7 +192,7 @@ def run(a: argparse.Namespace) -> int:
             return _error("JSON monitor output requires --once; interactive monitor uses a terminal", 2, machine)
         if a.command == "monitor" and not a.once and not sys.stdout.isatty():
             return _error("interactive monitor needs a terminal; use --once or strata status --json", 2, machine)
-        found = running_launch() if a.command == "monitor" and not (a.url or a.connection) else None
+        found = running_launch() if a.command in ("monitor", "status", "logs") and not (a.url or a.connection) else None
         resolved = connections.resolve(url=found["url"] if found else a.url, connection=a.connection,
                                        credential_env=a.credential_env, timeout=a.timeout)
         endpoint = Endpoint(resolved["url"], os.environ.get(resolved["credential_env"]) or (found or {}).get("key"),
@@ -229,7 +237,7 @@ def run(a: argparse.Namespace) -> int:
     except BrokenPipeError:
         return 0
     except OSError as e:
-        return _error(f"local file operation failed ({type(e).__name__})", 6, machine)
+        return _error(_file_words(e), 6, machine)
     except KeyboardInterrupt:
         if a.command == "logs" and a.follow:
             return 0

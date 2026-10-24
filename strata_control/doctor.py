@@ -192,6 +192,8 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
                                "required": True, "reason": "missing argument value"})
             continue
         raw = args[index + 1]
+        if arg == "--mtp" and str(raw).isdigit():
+            continue                                    # Qwen3.6: --mtp 2 is the draft depth, not a folder (#3298)
         if kind == "file_with_scale":
             candidate, separator, scale = raw.rpartition(":")
             if separator:

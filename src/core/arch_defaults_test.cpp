@@ -190,6 +190,17 @@ int main() {
     CHECK(!igpu_uma_arena_default("gfx1103", false, false, true));    // a gfx1103 that is not integrated
     for (const char* g : {"gfx1150", "gfx1151", "gfx1152", "gfx1100", "gfx1101", "gfx1200", "gfx1201", "gfx1030", "gfx11030", "", "gfx90a"})
         CHECK(!igpu_uma_arena_default(g, true, false, true));
+    // 0.2.1.2: Strix Halo on Windows is unregistered by default (on or off), nothing else on Windows; Linux gfx1151 unchanged
+    CHECK(igpu_uma_arena_default("gfx1151", true, true));
+    CHECK(igpu_uma_arena_default("gfx1151:sramecc+:xnack-", true, true));
+    CHECK(!igpu_uma_arena_default("gfx1151", false, true));           // not integrated
+    CHECK(!igpu_uma_arena_default("gfx1151", true, false));           // Linux
+    for (const char* g : {"gfx1150", "gfx1152", "gfx1103", "gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "", "gfx90a"})
+        CHECK(!igpu_uma_arena_default(g, true, true));
+    CHECK(!igpu_uma_arena_default(nullptr, true, true));
+    put("STRATA_UMA_REGISTER", "1");
+    CHECK(!igpu_uma_arena_default("gfx1151", true, true));
+    unset("STRATA_UMA_REGISTER");
     CHECK(!igpu_uma_arena_default(nullptr, true, false, true));
     put("STRATA_UMA_REGISTER", "1");
     CHECK(!igpu_uma_arena_default("gfx1103", true, false, true));     // the user registers the arena as before

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { engineProgressMark } from './agent/engine-progress.mjs';
+import './system-ca.mjs';        // #3722: the operating system's certificates, before any HTTPS request
 import { createCloudflare } from './cloudflare.mjs';
 import { createConnectorInstaller } from './cloudflared-install.mjs';
 import { findRunningConnector } from './cloudflared-find.mjs';
@@ -15,6 +17,7 @@ import { materializeSkills, parseSkillFile, skillSlug, writeCreatedSkill } from 
 import { systemFonts } from './fonts.mjs';
 import { tuningDir } from './platform-paths.mjs';
 import { createAgentBridge, plainTurnFailure } from './agent/agent-bridge.mjs';
+import { mcpSkippedNotices } from './agent/profile.mjs';
 import { createAgentTools } from './agent/tools-settings.mjs';
 import { withPlainStatus } from './agent/status.mjs';
 import { findBrowser, findPlaywrightMcp } from './agent/browser-probe.mjs';
@@ -55,6 +58,7 @@ import { RequestQueue } from './request-queue.mjs';
 import { selectSkills, skillInstructions } from './skill-selection.mjs';
 import { createModelProviders } from './model-providers.mjs';
 import { createForkTimeskip } from './timeskip-fork.mjs';
+import { prepareOversized } from './oversize.mjs';
 import { createChatFolders, chatRootOf, openFile, resolveChatFile, previewFile, rawFile, createAttachments, withAttachments } from './chat-files.mjs';
 import { createLlmProxy, samplingFromExpert } from './agent/llm-shape.mjs';
 import { checkUpdates, checkComponentUpdates } from './updates.mjs';
@@ -72,6 +76,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
 import { proxyCompletion } from './inference.mjs';
 import { apiPath } from './api-paths.mjs';
+import { findFreePort, listenProblem } from './ports.mjs';
 import { validateChatImages } from './chat-images.mjs';
 import { createTimeSkip, measureFolder, timeskipRevisionMessage, imageTypeOf } from './timeskip.mjs';
 
@@ -173,12 +178,15 @@ const agent = createAgentBridge({
   // The person's Response settings (thinking budget, Expert sampling) reach the agent's model through this host's own forwarding endpoint.
   proxyBase: `http://127.0.0.1:${PORT}/api/internal/agent-llm`,
   expertSampling: () => samplingFromExpert(store.get().expert),
+  // How far a local engine has got (the 2 s /metrics poll), for the agent's stall watchdog: it moves while a long prompt is read.
+  engineProgress: instanceId => engineProgressMark(native.readyInstances().find(i => i.id === instanceId)),
   onPlan: (chatId, event, plan) => hub.send('plan', { chatId, event, plan }),
   onQueue: (chatId, queue) => hub.send('queue', { chatId, queue }),
   dataDir: store.DATA_DIR,
   componentsDir: componentsDirectory(),
   // The installer ships the Harness next to the host (<install>/host/server -> <install>/harness).
   bundledDir: resolve(HERE, '..', '..', 'harness'),
+  defaultLocalId: () => native.defaultInstanceId(),
   localInstances: () => native.readyInstances().map(i => ({
     id: i.id, label: i.label, baseUrl: `http://127.0.0.1:${i.port}/v1`, modelId: i.apiModelId,
     context: i.metrics?.engine?.max_context ?? i.context ?? undefined, key: i.key, vision: i.vision,
@@ -269,7 +277,7 @@ function setupState() {
     flowVersion: 2,
     completedAt: s.setup.completedAt,
     history: s.setup.history ?? [],
-    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR },
+    app: { version: appVersion(), modelsDir: store.MODELS_DIR, dataDir: store.DATA_DIR, modelsDirNotice: store.MODELS_DIR_NOTICE },
   };
 }
 
@@ -600,8 +608,11 @@ async function runAgentTurn({ res, controller, chatId, body, message, workspaceI
     const goalLine = /^\/goal(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const planLine = /^\/plan(?:\s+([\s\S]*))?$/i.exec(message.trim());
     const researchLine = /^\/research(?:\s+([\s\S]*))?$/i.exec(message.trim());
+    // "/compact" summarises the older messages of this chat now (it used to go to the model as text, which answered it as a question).
+    const compactLine = /^\/compact\s*$/i.test(message.trim());
     const turnOptions = { chatId, message, workspacePath: cwd, choice, images, mode: typeof body.mode === 'string' ? body.mode : null, thinking: typeof body.thinking === 'string' ? body.thinking : null, thinkingBudget: Number.isFinite(body.thinkingBudget) ? body.thinkingBudget : 0, history: Array.isArray(body.history) ? body.history : [], onFrame: write, signal: controller.signal };
     const result = typeof body.planId === 'string' && body.message === '/plan start' ? await agent.planGoal({ ...turnOptions, planId: body.planId })
+      : compactLine ? await agent.compactCommand(turnOptions)
       : researchLine ? await agent.researchCommand({ ...turnOptions, line: researchLine[1] ?? '' })
       : planLine ? await agent.planCommand({ ...turnOptions, line: planLine[1] ?? '' })
       : goalLine ? await agent.goalCommand({ ...turnOptions, line: goalLine[1] ?? '' }) : await agent.runTurn(turnOptions);
@@ -709,6 +720,7 @@ async function runTurn({ message, history = [], onFrame, signal, client, workspa
           durationMs: Date.now() - started,
           ttftMs: firstTokenMs ?? undefined,
           cachedTokens: result.cachedTokens,
+          tps: result.tps,
           usageSource: result.usageSource,
         });
         if(models.REAL){monitor.setRecordedContext({ ...result, requestId: entry.id, sessionId });monitor.idle();}
@@ -908,8 +920,10 @@ const tasks = createTaskService({
 const taskTimer = setInterval(() => tasks.tick(), 15000);
 taskTimer.unref();
 
-const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), changed: () => serving.setSharing(localShare.state()) });
-const tunnelPort = Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2);
+// The share and tunnel listeners take a free port (the next ones above the host's own) instead of a fixed PORT+1 / PORT+2 that Docker, WSL or Hyper-V may hold or reserve.
+const sharePort = await findFreePort(Number(process.env.STRATA_SHARE_PORT ?? PORT + 1), '0.0.0.0', { skip: [PORT] });
+const localShare = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, port: sharePort, changed: () => serving.setSharing(localShare.state()) });
+const tunnelPort = await findFreePort(Number(process.env.STRATA_TUNNEL_PORT ?? PORT + 2), '127.0.0.1', { skip: [PORT, sharePort] });
 const tunnelOrigin = createLocalShare({ handle: openai, hasKey: () => !!store.get().serving?.apiKey, host: '127.0.0.1', port: tunnelPort });
 const connector = createConnectorInstaller({ directory: join(store.HOME, 'engine', 'cloudflare'), componentDirectory: join(componentsDirectory(), 'cloudflared') });
 const cloudflare = createCloudflare({ origin: tunnelOrigin, originUrl: `http://127.0.0.1:${tunnelPort}`, hasKey: () => !!store.get().serving?.apiKey, changed: serving.setTunnel, locate: connector.locate, prepareConnector: connector.ensure, connectorInfo: connector.connector, findRunning: findRunningConnector });
@@ -962,6 +976,17 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native'&&method==='GET')return json(res,200,await native.refresh(url.searchParams.get('refresh')==='1'));
   if(path==='/api/native'&&method==='PATCH')return json(res,200,await native.configure(await readBody(req)));
   if(path==='/api/native/directory'&&method==='POST')return json(res,200,native.setDownloadDirectory((await readBody(req)).directory));
+  /* Settings > Storage > Models folder: pick (or type) a folder, say what it means, then start the choice. Copying is Control's (strata models move). */
+  if(path==='/api/native/models-folder/plan'&&method==='POST'){
+   const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
+   const picked=typed?{path:typed}:await chooseFolder('Choose a folder for your models');
+   if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});}
+   if(picked.cancelled)return json(res,200,{cancelled:true});
+   return json(res,200,{plan:await native.planModelsFolder(picked.path)});}
+  if(path==='/api/native/models-folder/start'&&method==='POST'){const body=await readBody(req);const result=await native.startModelsFolder({folder:body.path,choice:body.choice,stopRunning:body.stopRunning===true});return json(res,result.id?202:200,result);}
+  if(path==='/api/native/models-folder/interrupted'&&method==='GET')return json(res,200,{interrupted:await native.interruptedMove()});
+  if(path==='/api/native/models-folder/resume'&&method==='POST'){const body=await readBody(req);return json(res,202,await native.finishInterruptedMove({stopRunning:body.stopRunning===true}));}
+  if(path==='/api/native/models-folder/leave'&&method==='POST')return json(res,200,await native.leaveInterruptedMove());
   if(path==='/api/native/plan'&&method==='POST')return json(res,200,await native.plan(await readBody(req)));
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});
@@ -979,7 +1004,7 @@ async function api(req, res, path, method, url) {
    return json(res,200,{path:file});}
   if(path==='/api/native/local/preview'&&method==='POST'){
    /* "Use a local GGUF": pick (or type) the folder, and Control says what is in it. Nothing is copied or changed. */
-   const typed=await typedFolder((await readBody(req)).path,{isAbsolute});
+   const typed=await typedFolder((await readBody(req)).path,{isAbsolute,fileType:/\.gguf$/i});
    const picked=typed?{path:typed}:await chooseFolder('Choose the folder that holds your GGUF files');
    if(picked.unavailable){const u=chooserUnavailable(picked);return error(res,501,u.message,{code:u.code});};
    if(picked.cancelled)return json(res,200,{cancelled:true});
@@ -1006,7 +1031,7 @@ async function api(req, res, path, method, url) {
   if(nativeSettingsFile&&method==='POST')return json(res,200,await native.openSettingsFile(nativeSettingsFile[1]));
 
   // Credentials are handled only on the host. Responses and events expose a key-set flag.
-  return error(res,404,'Unknown native control action.');}catch(e){return error(res,/Finish|Unload|running|current operation/.test(e.message)?409:400,e.message);}}
+  return error(res,404,'Unknown native control action.');}catch(e){return error(res,/Finish|Unload|running|current operation/.test(e.message)?409:400,e.message,{...(e.code&&typeof e.code==='string'?{code:e.code}:{}),...(e.details?{details:String(e.details)}:{})});}}
 
   if (path === '/api/model-providers' && method === 'GET') return json(res, 200, withPictureAnswers(modelProviders.list()));
   if (path === '/api/model-providers/discover' && method === 'POST') {
@@ -1702,6 +1727,16 @@ async function api(req, res, path, method, url) {
     try { const f = rawFile(chatRoot(url.searchParams.get('sessionId') ?? ''), url.searchParams.get('path')); res.writeHead(200, { 'content-type': f.mime, 'content-length': f.bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(f.bytes); return undefined; }
     catch (e) { return error(res, e.code === 'outside' ? 403 : 400, e.message); }
   }
+  /* A message too large for the model's window, made small enough to send: its text as a file in the chat's folder, or a shortened preview (oversize.mjs). */
+  if (path === '/api/chat/oversize' && method === 'POST') {
+    const body = await readBody(req, 12 * 1024 * 1024);
+    const text = String(body.text ?? '');
+    if (!text.trim()) return error(res, 400, 'text is required');
+    let instance = null;
+    try { instance = native.resolveInstance(body.nativeModelId ?? native.state().defaultId); } catch { /* no local model: the length alone decides */ }
+    try { return json(res, 200, await prepareOversized({ mode: body.mode === 'file' ? 'file' : 'preview', text, root: chatRoot(String(body.sessionId ?? '')), instance })); }
+    catch (e) { return error(res, 400, 'The message could not be prepared. Try a shorter message.'); }
+  }
   /* "Attach as context": the file is named in the next message of the chat, so the assistant reads it again. */
   if (path === '/api/chat/attachments' && method === 'GET') return json(res, 200, { files: chatAttachments.list(url.searchParams.get('sessionId') ?? '') });
   if (path === '/api/chat/attachments' && method === 'POST') {
@@ -1919,6 +1954,8 @@ async function api(req, res, path, method, url) {
     if (chatId && !agentSkip) {
       const capability = agent.status();
       if (capability.state !== 'unavailable') {
+        const skipped = mcpSkippedNotices(capability.skippedServers);
+        for (const notice of skipped) res.write(`${JSON.stringify({ type: 'notice', ...notice })}\n`);
         await runAgentTurn({ res, controller, chatId, body, message, workspaceId, images });
         res.end();
         return undefined;
@@ -2161,6 +2198,12 @@ async function staticFile(req, res, path) {
 
 /* ------------------------------------------------------------------ start --- */
 
+server.on('error', error => {
+  if (server.listening) { console.error(`[strata] ${error.message}`); return; }
+  // a taken or Windows-reserved port: one plain sentence instead of a stack trace
+  console.error(`[strata] ${listenProblem(error, PORT, HOST)}`);
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
   if (process.send) process.send({ type: 'strata-ready', port: PORT });
   // Engines a lost owner left behind (an earlier crash, an older version): ended after a PID + start time + command-line check.

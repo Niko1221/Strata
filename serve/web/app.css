@@ -4,7 +4,7 @@
 html, body { height: 100%; }
 body { display: flex; flex-direction: column; overflow: hidden; }
 main { flex: 1; min-height: 0; display: flex; }
-.view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.view { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .view[hidden] { display: none; }
 .muted { color: var(--st-ink-muted); }
 .small { font-size: var(--st-fs-xs); }
@@ -23,7 +23,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .chat-empty__sub { margin-top: var(--st-s-3); color: var(--st-ink-muted); }
 .st-msg { width: 100%; }
 .st-msg--assistant { align-self: flex-start; }
-.st-msg--assistant .st-bubble { width: 100%; }
+.st-msg--assistant .st-bubble { width: 100%; overflow-wrap: anywhere; }
 .st-msg--user .st-bubble { white-space: pre-wrap; overflow-wrap: anywhere; }
 .st-bubble > :first-child { margin-top: 0; }
 .st-bubble > :last-child { margin-bottom: 0; }
@@ -38,7 +38,7 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-bubble blockquote { margin: 0 0 var(--st-s-3); padding-left: var(--st-s-3); border-left: 3px solid var(--st-line);
                         color: var(--st-ink-muted); }
 .st-bubble hr { border: 0; border-top: 1px solid var(--st-line); margin: var(--st-s-4) 0; }
-.st-bubble table { border-collapse: collapse; margin: 0 0 var(--st-s-3); font-size: var(--st-fs-md); }
+.st-bubble table { border-collapse: collapse; margin: 0 0 var(--st-s-3); font-size: var(--st-fs-md); display: block; max-width: 100%; overflow-x: auto; }
 .st-bubble th, .st-bubble td { border: 1px solid var(--st-line); padding: 6px 10px; text-align: left; }
 .msg-images { display: flex; flex-wrap: wrap; gap: var(--st-s-2); justify-content: flex-end; }
 .msg-images img { max-width: 220px; max-height: 180px; border-radius: var(--st-r-md); border: 1px solid var(--st-line); }
@@ -53,8 +53,9 @@ main { flex: 1; min-height: 0; display: flex; }
              font-size: var(--st-fs-md); }
 /* MCP tool calls inside an answer: one compact collapsible block per call */
 .st-bubble .tool-call { margin: var(--st-s-3) 0; }
-.tool-call > summary { min-width: 0; padding: 8px 12px; }
-.tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap; }
+.tool-call > summary { min-width: 0; padding: 8px 12px; overflow: hidden; }
+.tool-call__name { font: 500 var(--st-fs-sm)/1.2 var(--st-font-mono); color: var(--st-ink); white-space: nowrap;
+                   min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tool-call__preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--st-fs-xs); }
 .tool-call .st-badge, .tool-call summary .small { flex: none; }
 .tool-call[data-state="error"] { border-color: color-mix(in srgb, var(--st-danger) 35%, var(--st-line)); }
@@ -127,11 +128,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .cc-note { margin: 0; }
 .cc-note:empty { display: none; }
 .mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
-.cfg-form { display: grid; grid-template-columns: minmax(180px, max-content) minmax(0, 1fr); gap: var(--st-s-3) var(--st-s-4);
+.cfg-form { display: grid; grid-template-columns: minmax(0, max-content) minmax(180px, 1fr); gap: var(--st-s-3) var(--st-s-4);
             align-items: center; }
-.cfg-form label { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); }
+.cfg-form label { font-size: var(--st-fs-sm); font-weight: var(--st-fw-medium); overflow-wrap: anywhere; }
 .cfg-form label code { font: 400 12px var(--st-font-mono); color: var(--st-ink-muted); display: block; }
-.cfg-form .st-input { height: 38px; width: 100%; max-width: 360px; }
+.cfg-form .st-input { height: 38px; width: 100%; max-width: 360px; min-width: 0; }
 .cfg-actions { display: flex; align-items: center; gap: var(--st-s-3); }
 .mcp-server { display: flex; flex-direction: column; gap: var(--st-s-2); padding-top: var(--st-s-3); border-top: 1px solid var(--st-line-soft); }
 .mcp-server:first-child { padding-top: 0; border-top: 0; }

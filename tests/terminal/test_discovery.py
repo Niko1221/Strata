@@ -198,7 +198,7 @@ class GuiLayout(unittest.TestCase):
         self.assertIn("more than one model", text)
         self.assertIn("holds 2 models", text)
         self.assertIn("gyro Gyro-S", text)
-        self.assertIn("Point at the .gguf file of the one you want", text)
+        self.assertIn("type the path of its .gguf file", text)
         self.assertNotIn("multiple_model_groups", text)
         self.assertNotIn("not a model size", text)
 

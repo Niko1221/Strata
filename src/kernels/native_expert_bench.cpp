@@ -14,7 +14,9 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -82,6 +84,8 @@ int main(int argc, char** argv) {
         std::vector<float> x((size_t) NTOK * H);
         for (auto& v : x) v = nd(rng);
         const int NE = G * T;
+        // BENCH_CAP=n: the launch is sized for n possible groups (the engine passes n_tokens * K), G of them real: what the empty block rows cost
+        const int CAP = std::getenv("BENCH_CAP") ? std::max(G, std::atoi(std::getenv("BENCH_CAP"))) : G, CAPE = std::max(NE, CAP);
         std::vector<unsigned long long> ptr(G);
         std::vector<int32_t> start(G + 1), dst(NE), tok(NE);
         const auto L = K::native_expert_layout(f.gu_type, f.d_type, H, FF);
@@ -93,7 +97,7 @@ int main(int argc, char** argv) {
         cudaMalloc((void**) &dblob, blobs.size());
         cudaMalloc(&dx, x.size() * 4);
         cudaMalloc(&dxq, (size_t) NTOK * H / 32 * 36);
-        cudaMalloc(&dscr, K::native_expert_scratch_bytes(NE, FF));
+        cudaMalloc(&dscr, K::native_expert_scratch_bytes(CAPE, FF));
         cudaMalloc((void**) &dout, (size_t) NE * H * 4);
         cudaMalloc((void**) &dptr, (size_t) G * 8);
         cudaMalloc((void**) &dstart, (size_t) (G + 1) * 4);
@@ -119,7 +123,7 @@ int main(int argc, char** argv) {
         K::quantize_q8_1_rows((const float*) dx, NTOK, H, dxq, s);
         auto run = [&](int m, int phase) {
             K::native_expert_set_mode(m, phase);
-            K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, G, NE, dxq, dscr, dout, s);
+            K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, CAP, CAPE, dxq, dscr, dout, s);
         };
         std::vector<float> ref((size_t) NE * H), got((size_t) NE * H);
         cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
@@ -151,6 +155,9 @@ int main(int argc, char** argv) {
         for (int round = 0; round < 3; ++round)   // interleaved, the minimum: the clocks wander between runs
             for (int k = 0; k < 2; ++k)
                 for (int p = 0; p < 3; ++p) us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
+        uint64_t fnv = 1469598103934665603ull;   // FNV-1a of the output bytes: equal hashes across two builds = bitwise equal outputs
+        for (size_t i = 0; i < got.size() * 4; ++i) fnv = (fnv ^ reinterpret_cast<const uint8_t*>(got.data())[i]) * 1099511628211ull;
+        std::printf("hash %016llx\n", (unsigned long long) fnv);
         std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
                     " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s) | %s\n",
                     l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T,

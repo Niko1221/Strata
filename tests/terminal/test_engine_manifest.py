@@ -90,6 +90,35 @@ class Manifest(unittest.TestCase):
         folder = self.package()
         self.assertNotIn("link.so", {f[0] for f in ec.read_manifest(folder).files})
 
+    def test_linux_programs_are_executable_in_the_tar_even_from_a_windows_packer(self):
+        import feed_tool
+        folder = self.package()
+        elf = bytes([0x7f]) + b"ELF" + bytes(60)
+        for name in ("strata-dsv41", "strata-vision"):                    # ELF programs without execute bits (copied over from Windows)
+            (folder / name).write_bytes(elf)
+            os.chmod(folder / name, 0o644)
+        (folder / "libx.so").write_bytes(elf)
+        if WINDOWS:                                                       # a Linux package packed on Windows: the ELF header decides
+            self.assertEqual(feed_tool._mode(folder / "strata-dsv41", "strata-dsv41", "strata"), 0o755)
+            self.assertEqual(feed_tool._mode(folder / "strata-vision", "strata-vision", "strata"), 0o755)
+
+    def test_strata_dsv41_travels_beside_the_engine_and_can_be_required(self):
+        dsv = "strata-dsv41.exe" if WINDOWS else "strata-dsv41"
+        with self.assertRaises(SystemExit):
+            self.package(require_dsv41=True)                                  # a package without it is refused when it is required
+        self.assertNotIn(dsv, {f[0] for f in ec.read_manifest(self.package()).files})   # optional by default (Intel, Mac, Pascal ...)
+        (self.src / dsv).write_bytes(b"dsv41-binary-" * 50)
+        other = self.root / "again"
+        other.mkdir()
+        folder = package_engine.build(self.src, "cuda", "0.1.46", HERE, other, archs=("sm_86",), build_id="x", require_dsv41=True)
+        self.assertIn(dsv, {f[0] for f in ec.read_manifest(folder).files})
+        self.assertEqual(package_engine.main(["--verify", str(folder), "--require-dsv41"]), 0)
+        (self.src / dsv).unlink()
+        plain = self.root / "plain"
+        plain.mkdir()
+        bare = package_engine.build(self.src, "cuda", "0.1.47", HERE, plain, archs=("sm_86",), build_id="x")
+        self.assertEqual(package_engine.main(["--verify", str(bare), "--require-dsv41"]), 1)
+
     def test_a_gpu_package_without_archs_is_refused_by_the_packager(self):
         with self.assertRaises(SystemExit):
             self.package(archs=())
@@ -225,12 +254,21 @@ class Start(unittest.TestCase):
 
     def test_two_builds_of_one_version_prefer_the_newer_driver_when_both_fit(self):
         other = make_source(self.root / "src3")
-        old = package_engine.build(other, "cuda", "0.1.45", HERE, self.out, archs=("sm_86",),
+        old = package_engine.build(other, "cuda", "0.1.45", HERE, self.out, archs=("sm_60", "sm_86"),
                                    min_driver={"nvidia": "575.51"}, build_id="b-12", variant="cuda12")
         self.assertEqual(old.name, f"0.1.45-{HERE}-cuda-cuda12")
         self.assertEqual(ec.read_manifest(old).variant, "cuda12")
         self.assertEqual(Path(self.start(driver="610.0")).parent.resolve(), self.folder.resolve())    # 580.65 build wins
         self.assertEqual(Path(self.start(driver="576.0")).parent.resolve(), old.resolve())            # only the CUDA 12 one fits
+
+    def test_a_cuda12_package_without_pascal_or_volta_code_is_refused(self):
+        """#3503: the Linux cuda12 package shipped with 0.2.1 had sm_75/86/89 only; P100 containers restarted in a loop."""
+        other = make_source(self.root / "src4")
+        with self.assertRaises(SystemExit) as caught:
+            package_engine.build(other, "cuda", "0.1.45", HERE, self.out, archs=("sm_75", "sm_86", "sm_89", "compute_89"),
+                                 min_driver={"nvidia": "575.51"}, build_id="b-12", variant="cuda12")
+        self.assertIn("sm_60", str(caught.exception))
+        package_engine.build(other, "cuda", "0.1.45", HERE, self.out, archs=("sm_70", "sm_86"), build_id="b-13", variant="cuda12")
 
     def test_a_good_package_does_not_hide_a_tampered_one(self):
         newer = package_engine.build(make_source(self.root / "src2"), "cuda", "0.1.46", HERE, self.out,

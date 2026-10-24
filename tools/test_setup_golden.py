@@ -98,6 +98,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "load_settings", lambda: {}),
             mock.patch.object(setup, "save_settings", lambda s: None),
             mock.patch.object(setup, "gpus", lambda: found),
+            mock.patch.object(setup, "card_speeds", lambda: {}),
             mock.patch.object(setup, "amd_gpus", lambda: []),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, avx512)),
@@ -113,7 +114,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),
-            mock.patch.object(setup, "verify_sha256", lambda *a: None),
+            mock.patch.object(setup, "verify_sha256", lambda *a, **k: None),
             mock.patch.object(setup, "run", lambda *a, **k: None),
             mock.patch.object(setup, "mtp_corrupt", lambda *a, **k: False),
             mock.patch.object(setup, "refresh_draft_vocab", lambda *a, **k: None),
@@ -179,7 +180,7 @@ class Golden(unittest.TestCase):
         lowram_multi = self.golden["32GB-2x24GB qwen IQ3_XXS"]["config"]   # #364 -> #642: low-RAM, two cards -> both
         self.assertIn("--resident-experts" if "--resident-experts" in lowram_multi["args"] else "--mmap-experts",
                       lowram_multi["args"])
-        self.assertEqual(lowram_multi.get("gpu"), [0, 1])                   # 0.1.40 (#642): resident on both cards
+        self.assertEqual(lowram_multi.get("gpu"), [0, 1])                   # 0.1.40 (#642): resident on both cards; roles: Main 1 goes last, as before
 
     def test_yes(self):
         for key, ram, found, family, model in self.cases():
