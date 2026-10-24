@@ -2355,6 +2355,20 @@ void grammar_debug_mask(const strata::grammar::SlotGrammar& sg, int tok) {
     std::fflush(stderr);
 }
 
+// #3862: the drafted window's chain rows, one line each (STRATA_GRAMMAR_DEBUG=1): which draft the
+// row followed and how much the mask for the state it leaves still allows.
+void grammar_debug_row(int row, const std::vector<uint32_t>& mask) {
+    int allowed = 0, first = -1;
+    for (int w = 0; w < (int) mask.size(); ++w) {
+        const uint32_t inv = ~mask[(size_t) w];
+        for (int b = 0; b < 32; ++b) {
+            if ((inv >> b) & 1u) { ++allowed; if (first < 0) first = w * 32 + b; }
+        }
+    }
+    std::fprintf(stderr, "gdbg chain row=%d words=%d allowed=%d first_open=%d\n", row, (int) mask.size(), allowed, first);
+    std::fflush(stderr);
+}
+
 int main(int argc, char** argv) {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -12528,14 +12542,19 @@ int main(int argc, char** argv) {
                 std::printf("ERR logit_bias: %s\n", o.batch > 0 ? "continuous batching is not supported" : bias_error.c_str());
                 continue;
             }
-            // #3862: a grammar request must name a registered grammar. The MTP drafter (--mtp, --batch-mtp)
-            // and a request that raises the draft floor (--spec-min-p) are hard refusals: their verify trees
-            // would accept draft tokens the grammar never sampled. The suffix/n-gram drafting (--spec launches,
-            // the IQ packs' requirement) is turned off per request instead (sfx_on): the state stacks advance
-            // one sampled token at a time, and the request pays the drafted-free speed cost.
+            // #3862: a grammar request must name a registered grammar. A request that raises the draft
+            // floor (--spec-min-p) is still a hard refusal: the floor filters the drafts before the
+            // verify, and the mask rows are built for the states the drafts leave - the two orders
+            // interact, phase 2 leaves the floor off. --batch-mtp joins it until its own chain (its
+            // draft rows sample through a per-row mask hand-off the solo path does not need). The MTP
+            // drafter rides the masked windows now: every row's mask is the chain state its draft
+            // prefix leaves (the window assembly below), so a drafted request stays grammatical token
+            // for token. The suffix/n-gram drafting (--spec launches, the IQ packs' requirement) is
+            // turned off per request instead (sfx_on): its proposals do not come from a model the
+            // chain can score.
             std::shared_ptr<const strata::grammar::GrammarEntry> req_grammar;
             if (req_grammar_named) {
-                if (!o.mtp.empty() || o.batch_mtp || req_spec_min_named) {
+                if (o.batch_mtp || req_spec_min_named) {
                     std::printf("ERR grammar + speculative decoding is not supported\n");
                     continue;
                 }
@@ -14167,7 +14186,18 @@ int main(int argc, char** argv) {
             }
             ver.set_sampling(req_sp);
             if (pipe) ver_b.set_sampling(req_sp);   // (reaches the later stage's odd verifier)
-            if (use_mtp) mtp.set_draft_sampling(req_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
+            if (use_mtp) {
+                // #3862: the drafter proposes from its own distribution - the target's mask rows are not
+                // the states a draft leaves. A proposal the grammar cannot take dies at the verify (its
+                // row's mask is built past the draft's prefix, so the row that would emit it refuses it);
+                // masking the drafter would only hide proposals it was free to make.
+                strata::kernels::SamplerParams draft_sp = req_sp;
+                if (slot_grammar) {
+                    draft_sp.grammar_mask = nullptr;
+                    draft_sp.mask_stride_words = 0;
+                }
+                mtp.set_draft_sampling(draft_sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
+            }
             {   // aux_cpus=0|1: where the non-pool, non-host threads run for this request (-1 = the start-up --aux-cpus); moves
                 // threads only.  An enabled placement is swept at every request: it catches threads created since.
                 static const bool aux_start = strata::aux_cpus::enabled();
@@ -14265,6 +14295,9 @@ int main(int argc, char** argv) {
             int64_t merge_at = -1;
             auto merge_from = [&](int64_t a0, int64_t to) -> int64_t {
                 if (!admit_merge_first_env() || admit_slot < 0 || max_new != 1 || batch_mtp || pipe) return -1;
+                if (req_grammar) return -1;   // #3862: the merged rows' masks are the chain's job; row t of a merged
+                                              // window holds prompt tokens the grammar never consumed - keep the
+                                              // single-row first window, whose mask row 0 is the root state's
                 if (to != n - 1 || to == turn_at || to == root_at || to == message_at || to == pin_at) return -1;
                 if (!req_imgs.empty() || kvg.on || peer.valid() || remote_caches || remote_opt || fs_swap) return -1;
                 if (std::getenv("STRATA_LOGPOS") != nullptr) return -1;
@@ -15302,6 +15335,46 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 tr("window", p, T);
+                // #3862: a drafted window rides the grammar row by row. Row t samples the token that
+                // follows window[0..t], so its mask is the state advanced through the drafts in
+                // window[1..t] - row 0's mask is the current state's, uploaded with the last emit (or at
+                // admission). A scratch clone walks the drafts and stages each row's mask; a draft the
+                // grammar cannot take ends the chain there: the row before it was masked against the
+                // state the draft jumps from, so that row cannot emit the draft, the acceptance breaks
+                // at or before it, and every row from it on is discarded - their masks reuse the last
+                // good row's (copied on the device; never read for a token that goes out).
+                if (slot_grammar && T > 1) {
+                    std::shared_ptr<strata::grammar::grammar> scratch(
+                        strata::grammar::grammar_clone(*slot_grammar->g),
+                        [](strata::grammar::grammar* gp) { strata::grammar::grammar_free(gp); });
+                    int chain_t = T;   // the first row the chain did not reach
+                    for (int t = 1; t < T; ++t) {
+                        try {
+                            strata::grammar::grammar_accept(*scratch, window[(size_t) t],
+                                                            slot_grammar->entry->vocab->token_to_piece(window[(size_t) t]));
+                        } catch (const std::exception&) {
+                            chain_t = t;   // the draft is illegal here: rows t.. reuse the row before it
+                            break;
+                        }
+                        const std::vector<uint32_t>& m = slot_grammar->entry->cache->mask_for(
+                            strata::grammar::grammar_stacks(scratch.get()),
+                            strata::grammar::grammar_get_rules(scratch.get()));
+                        if (cudaMemcpy(grammar_ring.row(t), m.data(), (size_t) grammar_ring.words * sizeof(uint32_t),
+                                       cudaMemcpyHostToDevice) != cudaSuccess) {
+                            std::printf("ERR grammar mask upload failed\n");
+                            return 1;
+                        }
+                        if (grammar_debug_on()) grammar_debug_row(t, m);
+                    }
+                    for (int t = chain_t; t < T; ++t) {
+                        if (cudaMemcpy(grammar_ring.row(t), grammar_ring.row(chain_t - 1),
+                                       (size_t) grammar_ring.words * sizeof(uint32_t),
+                                       cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                            std::printf("ERR grammar mask copy failed\n");
+                            return 1;
+                        }
+                    }
+                }
                 const Clock::time_point tw0 = Clock::now();
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
                 // a suffix window and the lookup chain's tail are point masses and keep the exact-match rule
