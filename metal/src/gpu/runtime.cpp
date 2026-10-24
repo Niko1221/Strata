@@ -379,6 +379,7 @@ Error device_clock_khz(int* v, int) { *v = 0; return fail(kErrorUnsupported); }
 Error runtime_version(int* v) { *v = 0; return kSuccess; }
 Error device_can_access_peer(int* v, int, int) { *v = 0; return kSuccess; }
 Error device_enable_peer_access(int, unsigned) { return fail(kErrorUnsupported); }
+Error device_disable_peer_access(int) { return kSuccess; }   // one GPU: peer access was never enabled, so nothing to disable
 Error get_device_properties(DeviceProp* p, int dev) {
     if (dev != 0) return fail(kErrorInvalidValue);
     *p = DeviceProp{};
@@ -462,6 +463,10 @@ Error memcpy_2d_async(void* dst, size_t dpitch, const void* src, size_t spitch, 
 Error memcpy_peer_async(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes, Stream st) {
     if (dst_dev != 0 || src_dev != 0) return fail(kErrorInvalidValue);   // one GPU
     return memcpy_async(dst, src, bytes, kDeviceToDevice, st);
+}
+Error memcpy_peer(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes) {
+    if (dst_dev != 0 || src_dev != 0) return fail(kErrorInvalidValue);   // one GPU
+    return memcpy_sync(dst, src, bytes, kDeviceToDevice);
 }
 Error memcpy_async(void* dst, const void* src, size_t bytes, CopyKind, Stream st) {
     StreamImpl* s = S(st);

@@ -71,6 +71,7 @@ bool Context::supports_metal4() const {
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
+uint64_t Context::max_threadgroup_memory() const { return [impl_->dev maxThreadgroupMemoryLength]; }
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
     std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
@@ -103,6 +104,10 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
     }
     impl_->libs.push_back(lib);
     return (int)impl_->libs.size() - 1;
+}
+
+bool Context::has_function(int lib, const std::string& fn) const {
+    return [[impl_->libs[lib] functionNames] containsObject:[NSString stringWithUTF8String:fn.c_str()]];
 }
 
 Pipeline Context::pipeline(int lib, const std::string& fn, const Constants& c) {
@@ -344,6 +349,48 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
             ev.signaledValue = base + 2 * s + 2;
         }
         impl_->ev_v = base + 2 * cuts.size() + 2;
+        [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
+double Context::run_graph_flag(const std::vector<Dispatch>& ds, const std::vector<int>& cuts, const Dispatch& seq_d,
+                               const Dispatch& spin_d, const int* seq, int* rel, void (*at_cut)(void*, int),
+                               void* user) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        size_t i = 0;
+        for (size_t s = 0; s <= cuts.size(); ++s) {
+            const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
+            if (s > 0) {   // the gate: this segment's dispatches may not read pre-patch state
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, spin_d);
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            const size_t first = i;
+            for (; i < end; ++i) {
+                if (i > first && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, ds[i]);
+            }
+            if (s < cuts.size()) {   // mark the cut: visible only after this segment's writes
+                [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                encode(enc, seq_d);
+            }
+        }
+        [enc endEncoding];
+        [cb commit];
+        for (size_t s = 0; s < cuts.size(); ++s) {
+            while (*seq < (int) s + 1) {
+                if (cb.status >= MTLCommandBufferStatusCompleted) break;   // an error: the wait below reports it
+            }
+            at_cut(user, (int) s);
+            *rel = (int) s + 1;
+        }
         [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);

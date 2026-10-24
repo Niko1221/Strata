@@ -96,7 +96,7 @@ kernel void gemv(device const uchar* W [[buffer(0)]], device const float* xp [[b
                   GV(F, 32, 1, 8, 8) GV(F, 16, 1, 8, 4) GV(F, 32, 1, 8, 2) GV(F, 8, 1, 8, 1)                   GV(F, 1, 1, 4, 1) GV(F, 1, 2, 4, 1) GV(F, 2, 1, 4, 1) GV(F, 2, 2, 4, 1) GV(F, 1, 1, 2, 1) GV(F, 4, 4, 4, 1)
 #ifndef GEMV_TYPES
 #define GEMV_TYPES GV_SET(T_F32) GV_SET(T_BF16) GV_SET(T_Q8_0) GV_SET(T_Q4_0) GV_SET(T_Q5_0) GV_SET(T_IQ4_NL) GV_SET(T_IQ4_XS) \
-                   GV_SET(T_Q2_0) GV_SET(T_IQ3_S) GV_SET(T_Q3_K) GV_SET(T_Q4_K) GV_SET(T_Q5_K) GV_SET(T_Q6_K)
+                   GV_SET(T_Q2_0) GV_SET(T_IQ3_S) GV_SET(T_IQ3_XXS) GV_SET(T_IQ2_S) GV_SET(T_Q3_K) GV_SET(T_Q4_K) GV_SET(T_Q5_K) GV_SET(T_Q6_K)
 #endif
 GEMV_TYPES
 

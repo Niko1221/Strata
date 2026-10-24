@@ -1,0 +1,18 @@
+# round 20: two open questions. (1) Is the stream window's KERNEL BUSY still ~49 ms (then 36 ms of the 85-105
+# is GPU idle at the cuts -> build the async-residency pipeline), or is the busy itself higher on arena memory
+# (then it's a memory-path problem)? KPROF=2 now works in stream mode (gate removed): KS2_p replays the 20th T2
+# window's dispatches serially and prints the per-class busy sum. (2) Replicate round 19's PS_p = 81.6 GPU /
+# 20.61 tok/s (single observation): PS2 arms twice, positions 2 and 8, five anchors.
+# Law so far: window ~= 49 + 0.55*miss + fixed cut overhead ~25-30 ms; P24 shows read-ahead past ~70/window
+# backfires (contention: 100.3 ms at 3.9 misses).
+# Run: cd /Users/pc/src/Strata-fork && ./gap/gap.sh gap/arms-round20.txt 2>&1 | tee /tmp/round20.log
+name|binary|extra-env|tokens|maxnew|ctx|extra-args
+D_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+PS2_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12 STRATA_METAL_READ_SPLIT=4|t357.txt|128|40960|
+D_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+KS2_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_KPROF=2|t357.txt|128|40960|
+D_p3|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+P12_p|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12|t357.txt|128|40960|
+D_p4|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|
+PS2_p2|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1 STRATA_METAL_PREFETCH=12 STRATA_METAL_READ_SPLIT=4|t357.txt|128|40960|
+D_p5|/Users/pc/src/Strata-fork/build-metal/strata|STRATA_METAL_PROFILE=1|t357.txt|128|40960|

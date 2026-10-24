@@ -69,6 +69,46 @@ accepted, so a different answer to the same prompt moves it by several percent. 
 [`bench/results/2026-09-24-final`](../bench/results/2026-09-24-final/matrix.md); these:
 [`bench/results/2026-09-28-speed-0114`](../bench/results/2026-09-28-speed-0114/README.md).
 
+### Apple silicon: M1 Max (this fork)
+
+Apple M1 Max, 64 GB unified (DRAM read ceiling measured 367 GB/s, SLC peak 686 GB/s at 32 MiB), Qwen3.8-Flash-Next
+IQ3_XXS 47 GB pack, 48 layers, engine 0.1.43 fork (`metal/src`), `--prefill auto --spec 2 --expert-cache 64
+--mmap-experts`, MTP q2_0 draft, no other GPU work running. Medians of 2-4 paired runs per arm, baseline anchors
+before and after each arm; `gap/results/1016-*`, harness `gap/gap.sh`, profile `gap/m1-env.sh`.
+
+| Run | default path | with `gap/m1-env.sh` |
+| --- | ---: | ---: |
+| pp2048 at 262K ctx (t2048, 1 chunk) | 184 warm (164 cold first arm) | 197 (mpp + scan_v; cold 164 -> 194, +18%) |
+| pp130K (one needle prompt, 4096-token chunks) | 281-285 | - |
+| tg128 at 40K ctx (t357 prompt) | 19.8-20.9 (15.4 before the copy-overlap, +27%) | - |
+| tg128 at 262K ctx | 15.8 | - |
+| decode at 130K ctx | 10.2-10.8 | - |
+
+Copy-overlap (`STRATA_ADAPT_OVERLAP`, #2010) is on by default on Metal in this fork: +24-28% decode on the M1 Max,
+same tokens. The M1 Max's other measured levers change the greedy continuation after a few tokens, so they stay
+opt-in: the fp16-slab expert path (`STRATA_METAL_PROMPT_MOE=mpp`, +5-8% warm pp2048, +18% when the pack is cold, and
+it holds its speed instead of the default path's 170-186 swing) and the packed-row prompt scan
+(`STRATA_METAL_GDN_SCAN=scan_v`, +1-2%). Every decode tile retune measured flat-to-worse (gemv L/S/K classes, MoE
+tile shapes, `GEMV_NR=2`, spec depths 4/6/8): the M5-tuned picks hold on the M1, because M1 decode is
+quant-decode/latency-bound (kernels run 100-130 GB/s against the 367 GB/s streaming ceiling) rather than bandwidth-
+bound. `STRATA_METAL_PROMPT_EXPERTS=v3` must not be used on the M1: it hits the GPU watchdog (the M1's coop
+right-input layout is not k-runs-of-4). Needle recall at 130K with a repeated filler: correct at depths 5%, 75% and
+95% (exact code tokens), missed at 25% and 50% within 24 tokens.
+
+Streaming decode (what this box serves: `STRATA_METAL_STREAM=1`, 33 GB arena, `gap/results/1018-*`) got two
+changes on 2026-10-18, both with byte-identical answers (the 128-token t357 output line md5s
+`956dbac3e10818130ee6a82d3327f688` in every arm). Read-ahead depth 12 for big-expert packs (default, was 6;
+`STRATA_METAL_PREFETCH=0` opts out): decode misses 15.9 -> 8.6 per window, window GPU 88.8 -> 83.0 ms,
+19.0 -> 20.3 tok/s, 7 candidate vs 7 anchor arms, +63 MB read per window overlapped behind the GPU. And the cut
+handshake is now a device-flag spin (`cut_seq`/`cut_spin` in `metal/kernels/units.metal`,
+`Context::run_graph_flag`): the MTLSharedEvent pair costs 230-400 us per cut on the M1 Max because the queue
+stops and re-arms around every window's 48 cuts (`dispatch_lat` seg rows); the spin propagates in ~90 us and
+never stops the queue. Window T=2 went 87.8 -> 56.0 ms, against the busy + miss floor of ~55.5 ms, and decode
+19.5-20.3 -> 29.75-30.49 tok/s (3 flag vs 3 event arms interleaved; re-confirmed as the default against the
+opt-out anchors at 29.97-30.49 vs 19.21-19.90, gap/results/1018-1545; `STRATA_METAL_CUT=event` opts back). The
+0.8 ms/miss law held in every arm; `gap/gap.sh` pins `STRATA_METAL_ARENA_GB=33` so the dynamic file-cache floor
+(`sysctl vm.vm_page_filecache_min`) cannot move the arena between arms.
+
 IQ3_XXS and IQ3_S at 262K are not measured: with their 43 / 50 GB of experts, a 260K-token context brings a 64 GB PC
 to its memory limit by setup's estimate (the experts + the context's KV cache + 24 GB), so setup recommends up to 128K
 with them on 64 GB. A longer context you choose (`--context 262144`, or a pick in its list) is kept, with a note: users
@@ -819,6 +859,19 @@ copies report progress to the watchdog, and Windows counts page faults at 8 a un
 whether the file tier is busy. The cure for the slowness itself is memory: a smaller `--resident-budget-gib`, a smaller
 `--conversation-cache-mib`, or the pagefile on an SSD.
 
+**On macOS the file-tier reading never worked (#1407), and from 0.1.45 it does.** `file_tier_activity()` only
+had the Linux `/proc` and the Windows counters; on macOS it returned 0, so the 600 s allowance never engaged and
+the stall report printed "0 MiB resident, 0 MiB in swap, 0 major page faults" whatever the machine was doing. On
+the M1 Max serving a streaming window (33 GB arena) with 6.1 GB of RAM free, the first request after a boot read a
+57-token prompt in 92.2 s (0.6 tok/s while the weights and the arena page in; wiring the 33 GB took 48 s of it),
+then decoded at 27.5 tok/s - the default 60 s limit stopped the engine mid-page-in and every restart paid the page-in
+again. macOS now counts `pageins + faults/8` from `task_info(TASK_EVENTS_INFO)` (the Windows #1984 formula's Mac
+form) and the stall report shows real resident, swapped, available and fault figures. What the counting cannot cover
+is a box paging the GPU's side: with a second model server resident, Metal buffers come in from kernel context while
+the task's fault counter sits still for over 10 s (measured: 23.8 GB of the engine in swap, 0 GB of the arena wired,
+the counter frozen while swap grew). The cure there is RAM: a smaller `STRATA_METAL_ARENA_GB`, or one engine per
+64 GB box.
+
 ---
 
 ## Using it
@@ -1191,6 +1244,25 @@ it decodes when the conversation never left (`tools/parking_test.py`). FP16,
 INT8, Q4_0 and identity-layout K8V4 snapshots are supported; the K8V4 draft ring
 remains INT8, as in upstream. Windows/HIP and multi-GPU runtime coverage must be
 reported separately from Linux/CUDA evidence.
+
+`--conversation-cache-min-tokens 2048` keeps a short side request from taking a whole slot from a long conversation
+(a parked conversation costs a slot whatever its length, `wants()` in `conv_cache.hpp`). The shape this cache is for
+on this box (M1 Max, an omp agent loop): 417-889-token auxiliary calls land between the main turns, and without
+parking each main turn re-read the whole transcript - 22 reused out of 46 requests, 30k-47k-token prompts, 84-132 s
+of prefill each (`strata-iq3_xxs.log`, 2026-10-18). `metal/tools/parking_check.py` drives the same conversation
+through both arms and writes `gap/results/<stamp>/parking_check.md`; 2026-10-19, M1 Max, 64 GB, engine 0.1.45-metal,
+IQ3_XXS pack, 4,504 to 8,516-token turns with a 600-to-800-token side request between them: with parking ON every
+turn after a side request reused its prefix (4,499 of 6,520 and 6,515 of 8,516 tokens) and prefilled in 6.5 s
+against 17.6/23.6 s for the same prompts with parking OFF (28-37%); parks took 37-39 ms, a restore with its
+checkpoint 8-10 ms, decode was unchanged at 27-30 tok/s, and a parked conversation held 418-566 MB
+(the GDN recurrence, QSA tails and PLE history plus the conversation's window K/V cells). Parking had been dead on
+this box for four reasons, all fixed in 0.1.45-metal: the RAM guard could not read host memory on macOS, the
+window's checkpoint layout failed the CPU-payload size check, the session's CUDA-shaped K/V pools are given back
+at startup so a park had to repack the window's own cells (`window_kv_pools`/`window_cells` in
+`metal/src/engine/window.cpp`, `src/core/conversation_snapshot.cpp` - the shuffle is not its own inverse, save and
+restore run opposite directions), and the default `--kv fp16` did not set the int8 flag the window kernels always
+use, so the snapshot math did not describe the stored bytes. `STRATA_PARK_DEBUG=1` logs every park copy and a
+malloc integrity check around the park.
 
 The web page's Monitor tab has a **Conversation cache** card (0.1.39, #596): the parked conversations against the
 slots and the RAM budget, how many were parked, restored and evicted, and the last switch (read from the engine's

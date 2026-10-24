@@ -40,6 +40,7 @@ target_link_libraries(mtl_rt PUBLIC "-framework Metal" "-framework Foundation")
 
 file(GLOB STRATA_METAL_TESTS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp)
 list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_hello.cpp)
+list(REMOVE_ITEM STRATA_METAL_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/window_cells_test.cpp)   # links the engine host library, not just mtl_rt
 foreach(src ${STRATA_METAL_TESTS})
   get_filename_component(t ${src} NAME_WE)
   add_executable(${t} ${src})
@@ -112,6 +113,7 @@ target_compile_definitions(strata_metal_host PUBLIC STRATA_NATIVE_EXPERTS=1 STRA
 target_compile_options(strata_metal_host PRIVATE -Wno-unused-parameter -Wno-deprecated-declarations)
 target_link_libraries(strata_metal_host PUBLIC strata_gpu_metal ggml-cpu ggml-base)
 
+
 add_library(strata_metal_kernels STATIC ${STRATA_METAL_ENGINE_SOURCES})
 target_include_directories(strata_metal_kernels PRIVATE src ${STRATA_ROOT}/third_party/ggml)
 target_compile_definitions(strata_metal_kernels PRIVATE
@@ -119,6 +121,11 @@ target_compile_definitions(strata_metal_kernels PRIVATE
   STRATA_METAL_ENGINE_KERNELS_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/src/engine/msl"
   STRATA_METAL_DATA_DEFAULT="${STRATA_ROOT}/data")
 target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
+
+# the park's repack shuffle, model-free (pure CPU; the engine libraries provide the symbol)
+add_executable(window_cells_test tests/window_cells_test.cpp)
+target_link_libraries(window_cells_test PRIVATE strata_metal_kernels)
+add_test(NAME window_cells_test COMMAND window_cells_test)
 
 add_executable(strata ${S}/program/generate.cpp)
 target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)

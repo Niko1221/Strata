@@ -73,6 +73,7 @@ Error device_clock_khz(int* v, int dev);
 Error runtime_version(int* v);
 Error device_can_access_peer(int* v, int dev, int peer);
 Error device_enable_peer_access(int peer, unsigned flags);
+Error device_disable_peer_access(int peer);
 inline constexpr Error kErrorPeerAccessAlreadyEnabled = Error(704);
 
 Error malloc_device_raw(void** p, size_t bytes);
@@ -96,6 +97,7 @@ Error memcpy_async(void* dst, const void* src, size_t bytes, CopyKind k, Stream 
 Error memcpy_2d_async(void* dst, size_t dpitch, const void* src, size_t spitch, size_t width, size_t height, CopyKind k,
                       Stream s = nullptr);
 Error memcpy_peer_async(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes, Stream s = nullptr);
+Error memcpy_peer(void* dst, int dst_dev, const void* src, int src_dev, size_t bytes);
 
 Error stream_create(Stream* s, unsigned flags);
 inline Error stream_create(Stream* s) { return stream_create(s, 0); }

@@ -8,6 +8,13 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <vector>
+
+#if defined(STRATA_GPU_METAL)
+#include <cstdio>
+#include <cstdlib>
+namespace strata::metal_engine { bool window_kv_pools(const strata::core::QsaState& st, void* out[5], size_t cap[5]); }
+#endif
 
 namespace strata::core {
 namespace {
@@ -110,6 +117,37 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
     return true;
 }
 
+}  // namespace (the park block below is left open: window_cells is checked model-free by
+   // metal/tests/window_cells_test.cpp)
+#if defined(STRATA_GPU_METAL)
+// park/restore for the Metal decode window: the window stores [cell][head][unit], the session pools (and the
+// snapshot image's bytes) are [page][head][page_size][unit] with a page = one indexer block, so the cold-path
+// copy repacks a page at a time.  The window's own pools were given back at startup; a state the window does
+// not hold (the drafter's ring under --mtp, a streaming mode, a K/V format its kernels do not implement) parks
+// nothing: these copies return false and serve reports the reason instead of touching a dead allocation.
+bool window_pools(const QsaState& st, void* out[5], size_t cap[5]) {
+    return st.kv_int8 && !st.kv_q4 && !st.kv_hybrid && st.kv_mode == 0 &&
+           strata::metal_engine::window_kv_pools(st, out, cap);
+}
+
+void window_cells(void* dst, const void* src, int64_t cells, int64_t page, int64_t heads, size_t unit, bool to_image) {
+    uint8_t* d = static_cast<uint8_t*>(dst);
+    const uint8_t* s = static_cast<const uint8_t*>(src);
+    // window order is [cell][head][unit]; the image order is [page][head][cell in page][unit].
+    // pg counts pages, p counts the page's first cell.  to_image runs the park's shuffle; the
+    // restore swaps the two index expressions (running the same one twice is not the identity).
+    for (int64_t pg = 0, p = 0; p < cells; ++pg, p += page)
+        for (int64_t h = 0; h < heads; ++h)
+            for (int64_t r = 0; r < page; ++r) {
+                const size_t wi = size_t(((p + r) * heads + h) * unit);
+                const size_t ii = size_t(((pg * heads + h) * page + r) * unit);
+                std::memcpy(d + (to_image ? ii : wi), s + (to_image ? wi : ii), unit);
+            }
+}
+#endif
+
+namespace {
+
 bool transfer(void* dst, const void* src, size_t n, std::string& error) {
     if (!n) return true;
     if (!src || !dst) { error = "conversation snapshot: missing state buffer"; return false; }
@@ -165,6 +203,26 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     const auto src = pools(st);
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<ConversationBuffer*,5> dst = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
+#if defined(STRATA_GPU_METAL)
+    (void) src; (void) whole_cells;
+    void* wp[5]; size_t cap[5];
+    if (!window_pools(st, wp, cap)) { error = "conversation snapshot: the Metal window holds no live cells for this K/V"; return false; }
+    for (size_t i = 0; i < dst.size(); ++i) {
+        // the cells are the live K/V: repack them into the image's page order, whole range (the
+        // incremental prefix below is CUDA's retained-image path; the window park is a cold copy)
+        dst[i]->resize(sizes[i]);
+        if (!sizes[i]) continue;
+        std::vector<uint8_t> scr(sizes[i]);
+        const size_t unit = i == 4 ? 0 : sizes[i] / ((size_t) l.cells * (size_t) g.n_head_kv);
+        if (sizes[i] > cap[i]) { error = "conversation snapshot: the Metal window's cells are smaller than the snapshot range"; return false; }
+        if (std::getenv("STRATA_PARK_DEBUG"))
+            std::fprintf(stderr, "strata metal park: part %zu size %zu cells %lld unit %zu cap %zu\n", i, sizes[i], (long long) l.cells, unit, cap[i]);
+        if (i == 4) std::memcpy(scr.data(), wp[4], sizes[i]);   // indexer pool rows: block-linear in both layouts
+        else window_cells(scr.data(), wp[i], l.cells, l.page_size, g.n_head_kv, unit, true);
+        dst[i]->visit(0, sizes[i], [&](uint8_t* p, size_t n, size_t at) { std::memcpy(p, scr.data() + at, n); return true; });
+    }
+    return true;
+#else
     for (size_t i = 0; i < dst.size(); ++i) {
         // Recopy the partial page and the indexer's moving spare row. Completed
         // pages/rows strictly before the first rewritten token remain identical.
@@ -178,6 +236,7 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         if (reused_bytes) *reused_bytes += keep;
     }
     return true;
+#endif
 }
 
 bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
@@ -238,6 +297,16 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
     const auto src = pools(from);
     const auto dst = pools(to);
     const std::array<size_t,5> sizes = {lf.data, lf.value_data, lf.scales, lf.value_scales, lf.pooled};
+#if defined(STRATA_GPU_METAL)
+    (void) src; (void) dst; (void) queued;
+    void* wf[5]; void* wt[5]; size_t cf[5];
+    if (!window_pools(from, wf, cf) || !window_pools(to, wt, cf)) { error = "conversation snapshot: the Metal window holds no live cells for this K/V copy"; return false; }
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (sizes[i] > cf[i]) { error = "conversation snapshot: the Metal window's cells are smaller than the copy"; return false; }
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (sizes[i]) std::memcpy(wt[i], wf[i], sizes[i]);   // both sides are the window's own cell order
+    return refresh_residency(to, g, upto, error);
+#else
     for (size_t i = 0; i < sizes.size(); ++i) {
         if (!sizes[i]) continue;
         if (!src[i] || !dst[i]) { error = "conversation snapshot: missing state buffer"; return false; }
@@ -249,6 +318,7 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
         if (e != cudaSuccess) { error = std::string("conversation snapshot direct copy: ") + cudaGetErrorString(e); return false; }
     }
     return refresh_residency(to, g, upto, error);
+#endif
 }
 
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
@@ -256,11 +326,30 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto dst = pools(st);
+#if defined(STRATA_GPU_METAL)
+    (void) dst;
+    void* wp[5]; size_t cap[5];
+    if (!window_pools(st, wp, cap)) { error = "conversation snapshot: the Metal window holds no live cells for this K/V"; return false; }
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error)) return false;
+    for (size_t i = 0; i < src.size(); ++i) {
+        const size_t n = src[i]->size();
+        if (!n) continue;
+        std::vector<uint8_t> scr(n);
+        src[i]->visit(0, n, [&](const uint8_t* p, size_t m, size_t at) { std::memcpy(scr.data() + at, p, m); return true; });
+        const size_t unit = i == 4 ? 0 : n / ((size_t) l.cells * (size_t) g.n_head_kv);
+        if (n > cap[i]) { error = "conversation snapshot: the snapshot is larger than the Metal window's cells"; return false; }
+        if (i == 4) std::memcpy(wp[4], scr.data(), n);
+        else window_cells(wp[i], scr.data(), l.cells, l.page_size, g.n_head_kv, unit, false);
+    }
+    return refresh_residency(st, g, upto, error);
+#else
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
     return refresh_residency(st, g, upto, error);
+#endif
 }
 
 bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
@@ -277,11 +366,27 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
     for (size_t i = 0; i < src.size(); ++i)
         if (sizes[i] > src[i]->size()) { error = "conversation snapshot: prefix beyond the K/V payload"; return false; }
     const auto dst = pools(st);
+#if defined(STRATA_GPU_METAL)
+    (void) dst;
+    void* wp[5]; size_t cap[5];
+    if (!window_pools(st, wp, cap)) { error = "conversation snapshot: the Metal window holds no live cells for this K/V"; return false; }
+    for (size_t i = 0; i < src.size(); ++i) {
+        if (!sizes[i]) continue;
+        std::vector<uint8_t> scr(sizes[i]);
+        src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) { std::memcpy(scr.data() + at, p, n); return true; });
+        const size_t unit = i == 4 ? 0 : sizes[i] / ((size_t) l.cells * (size_t) g.n_head_kv);
+        if (sizes[i] > cap[i]) { error = "conversation snapshot: the snapshot is larger than the Metal window's cells"; return false; }
+        if (i == 4) std::memcpy(wp[4], scr.data(), sizes[i]);
+        else window_cells(wp[i], scr.data(), l.cells, l.page_size, g.n_head_kv, unit, false);
+    }
+    return refresh_residency(st, g, upto, error);
+#else
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
             })) return false;
     return refresh_residency(st, g, upto, error);
+#endif
 }
 
 bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,
@@ -294,6 +399,12 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
 
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,
                             int64_t upto, bool index, std::string& error) {
+#if defined(STRATA_GPU_METAL)
+    // the session K/V file reads the pools linearly; the window's cells are in another order and a byte-range
+    // read would repack on every page boundary.  A parked window can still restore such a file (the copies
+    // above repack); the file save side stays CUDA-only.
+    error = "conversation snapshot: session K/V files are not supported over the Metal window"; return false;
+#endif
     Layout l{};
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
     SessionKvSource s;
